@@ -17,15 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * An edit made in the editor is a committed edit (swamp-club#4107): the
- * editor works on a copy, and the copy is saved through the repository as a
- * piped edit is. Before the fix, a v3 checkout's editor edit changed only
- * its own file, so the other checkout never saw it. Each command runs as its
- * own process would: the v3 handles close between commands. The editor is a
- * shell script set as EDITOR, so these cases skip on Windows.
- */
-
 import "../src/domain/models/models.ts";
 import {
   assert,
@@ -60,7 +51,6 @@ type Kind = "workflow" | "model" | "vault";
 
 const json = (repoDir: string) => ["--repo-dir", repoDir, "--json"];
 
-/** Runs one command in `repoDir` as its own process, returning its JSON. */
 async function cli(
   repoDir: string,
   args: string[],
@@ -84,7 +74,6 @@ async function cli(
   }
 }
 
-/** Runs one editor-mode command that must fail; returns its error. */
 async function cliRejecting(
   repoDir: string,
   args: string[],
@@ -104,7 +93,6 @@ async function cliRejecting(
   }
 }
 
-/** The definition `name` of `kind` as checkout `repoDir` holds it after a `get`. */
 async function loaded(
   repoDir: string,
   kind: Kind,
@@ -155,12 +143,6 @@ function editedBy(kind: Kind, doc: Record<string, unknown>): unknown {
     : (doc.tags as Record<string, unknown> | undefined)?.editedBy;
 }
 
-/**
- * An editor script in `dir` that waits a moment, as a person would, then
- * replaces the file it is given with `content`, recording the path it was
- * given. Its EDITOR value is returned. It is not a known editor, so swamp
- * waits for its process to exit.
- */
 async function scriptedEditor(
   dir: string,
   content: string,
@@ -209,7 +191,6 @@ for (const kind of ["workflow", "model", "vault"] as const) {
         });
 
         assertEquals(result.status, "updated");
-        // The editor never opened the stored file.
         const given = await editor.givenPath();
         assert(
           !given.startsWith(repos.repoA),
@@ -233,14 +214,11 @@ for (const kind of ["workflow", "model", "vault"] as const) {
     fn: async () => {
       await withV3RowRepos({ managedConfig: true }, async (repos, ds) => {
         await create(repos.repoA, kind, "deploy");
-        // Both checkouts load deploy at the same version, then A edits it.
         const base = await loaded(repos.repoB, kind, "deploy");
         await cli(repos.repoA, [kind, "edit", "deploy"], {
           stdin: stringifyYaml(withEdit(kind, base, "A")),
         });
 
-        // B's command catches its checkout up, so the editor opens on A's
-        // version; the script saves B's edit over it.
         const editor = await scriptedEditor(
           ds,
           stringifyYaml(withEdit(kind, base, "B")),
@@ -283,7 +261,6 @@ for (const kind of ["workflow", "model", "vault"] as const) {
       } finally {
         restore();
       }
-      // The copy was removed, not left in TMPDIR.
       await assertRejects(
         () => Deno.stat(dirname(copy!)),
         Deno.errors.NotFound,
@@ -394,7 +371,6 @@ Deno.test({
       assertEquals((await tags())?.editedBy, undefined);
       const dir = await Deno.makeTempDir({ prefix: "swamp-editor-v2-" });
       try {
-        // The editor changes the copy it is given in place.
         const script = join(dir, "editor.sh");
         await Deno.writeTextFile(
           script,
@@ -412,7 +388,6 @@ Deno.test({
           env: editor.env,
         });
         assertEquals(result.status, "updated");
-        // Whatever A's edit marked for the push lands on the remote and in B.
         await settle(repos);
         assertEquals((await tags())?.editedBy, "A");
       } finally {
@@ -473,7 +448,6 @@ for (const kind of ["workflow", "model", "vault"] as const) {
           await Deno.readTextFile(kept!),
           stringifyYaml(withEdit(kind, base, "B")),
         );
-        // A's edit stands, in both checkouts.
         for (const repoDir of [repos.repoA, repos.repoB]) {
           assertEquals(
             editedBy(kind, await loaded(repoDir, kind, "deploy")),

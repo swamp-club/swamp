@@ -209,7 +209,6 @@ Deno.test("modelUsageSummary: outputs recorded under a type the definition no lo
     [["def-a", "a", "test/model"], ["def-a", "a", "test/old"]],
   );
   assertEquals(data.totals.executions, 2);
-  // Authorized on the name under its own type, as the output search is.
   assertEquals(
     asked.find((g) => g.type === "test/old")!.modelName,
     undefined,

@@ -54,10 +54,8 @@ const arbStepSpec = fc.record({
   gate: fc.boolean(),
   guarded: fc.boolean(),
   forEach: fc.boolean(),
-  /** Index of an earlier step it depends on, if any (modulo position). */
   dependsOn: fc.option(fc.nat(), { nil: undefined }),
   condition: fc.nat({ max: CONDITIONS.length - 1 }),
-  /** States of the step's record, or of each forEach iteration. */
   states: fc.array(
     fc.constantFrom<StepState>(
       "pending",
@@ -69,7 +67,6 @@ const arbStepSpec = fc.record({
     ),
     { minLength: 1, maxLength: 2 },
   ),
-  /** Whether a forEach step's record was replaced by its iterations. */
   expanded: fc.boolean(),
 });
 
@@ -77,14 +74,12 @@ const arbJobSpec = fc.record({
   steps: fc.array(arbStepSpec, { minLength: 1, maxLength: 3 }),
   dependsOn: fc.option(fc.nat(), { nil: undefined }),
   condition: fc.nat({ max: CONDITIONS.length - 1 }),
-  /** pending: never started (or reopened); running: started. */
   running: fc.boolean(),
 });
 
 const arbScenario = fc.record({
   jobs: fc.array(arbJobSpec, { minLength: 1, maxLength: 4 }),
   suspended: fc.boolean(),
-  /** The definition settled against: the run's, one missing a job, none. */
   definition: fc.constantFrom("same", "drop-first-job", "none"),
 });
 
@@ -149,7 +144,6 @@ function setState(step: StepRun, state: StepState): void {
   }
 }
 
-/** The stored run: as a suspension, a dead owner or a reopen left it. */
 function buildRun(workflow: Workflow, scenario: Scenario): WorkflowRun {
   const run = WorkflowRun.create(workflow);
   run.start(12345);
@@ -159,7 +153,6 @@ function buildRun(workflow: Workflow, scenario: Scenario): WorkflowRun {
     jobSpec.steps.forEach((stepSpec, i) => {
       const name = `s${i}`;
       const isForEach = stepSpec.forEach && !stepSpec.gate;
-      // A pending job holds only what a reopen leaves: pending or finished.
       const states = stepSpec.states.map((state) =>
         !jobSpec.running &&
           (state === "running" || state === "waiting_approval")
@@ -192,7 +185,6 @@ function settlementDefinition(
   return Workflow.create({
     id: workflow.id,
     name: workflow.name,
-    // Dropping the first job also drops every dependsOn naming it.
     jobs: workflow.jobs.slice(1).map((job) =>
       Job.create({
         name: job.name,
@@ -203,7 +195,6 @@ function settlementDefinition(
   });
 }
 
-/** The definition step a record stands for, by name or forEach template. */
 function definedStep(
   definition: Workflow | undefined,
   jobName: string,
@@ -318,11 +309,6 @@ const arbCondition: fc.Arbitrary<TriggerCondition> = fc.letrec<
 
 type DependencyOutcome = "succeeded" | "failed" | "skipped";
 
-/**
- * A job whose steps d0, d1... all ended `outcome`, and a step gated on them.
- * With `cleanupDeps` each is always-gated on a root step, so each is a cleanup
- * step; otherwise each is work.
- */
 function gatedOnFinished(
   conditions: TriggerCondition[],
   outcome: DependencyOutcome,
@@ -426,11 +412,6 @@ Deno.test("runsAfterFailure: a dependency that was skipped, or is work, answers 
   );
 });
 
-/**
- * Jobs d0, d1... that all ended `outcome`, and a job gated on them. With
- * `cleanupDeps` each is always-gated on a root job, so each is a cleanup job;
- * otherwise each is work.
- */
 function jobGatedOnFinished(
   conditions: TriggerCondition[],
   outcome: "succeeded" | "failed",

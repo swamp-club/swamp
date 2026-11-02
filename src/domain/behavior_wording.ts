@@ -20,41 +20,20 @@
 import { UserError } from "./errors.ts";
 
 /**
- * Messages in the spelling the user typed (swamp-club#3437).
- *
- * Behavior is the product term for a model (design/primitives/behaviors.md),
- * so every message reads in behavior words by default. Only the legacy
- * `swamp model …` tree reads in model words. The code that builds a message
- * rarely knows which tree ran, so it builds both spellings from one template
- * with {@link wordedText}: the behavior spelling becomes the message, and the
- * model spelling rides along on the error ({@link markModelWording}) or the
- * warning, for the CLI boundary to print when the command was `swamp model`.
- *
- * Words that name code — `export const model`, the `models/` folder,
- * `context.runModel`, flag names — are not nouns here and stay in the template
- * as written.
+ * messages build both spellings from one template; the behavior spelling is the
+ * message, and the model spelling rides along for the CLI boundary to print
+ * under swamp model. Words naming code stay as written
  */
 
-/** The nouns of one spelling. */
 export interface BehaviorWords {
-  /** `behavior` or `model`. */
   readonly noun: string;
-  /** `Behavior` or `Model`. */
   readonly Noun: string;
-  /** `behaviors` or `models`. */
   readonly nouns: string;
-  /** `Behaviors` or `Models`. */
   readonly Nouns: string;
-  /**
-   * A method of one: `method` or `model method`. The glossary renames
-   * "model method" to plain "method".
-   */
   readonly method: string;
-  /** `Method` or `Model method`. */
   readonly Method: string;
 }
 
-/** The product spelling, used by every command outside `swamp model`. */
 export const BEHAVIOR_WORDS: BehaviorWords = {
   noun: "behavior",
   Noun: "Behavior",
@@ -64,7 +43,6 @@ export const BEHAVIOR_WORDS: BehaviorWords = {
   Method: "Method",
 };
 
-/** The legacy spelling, used only under `swamp model …`. */
 export const MODEL_WORDS: BehaviorWords = {
   noun: "model",
   Noun: "Model",
@@ -74,15 +52,11 @@ export const MODEL_WORDS: BehaviorWords = {
   Method: "Model method",
 };
 
-/** One message in both spellings. */
 export interface WordedText {
-  /** The behavior spelling: the message everywhere but `swamp model`. */
   readonly text: string;
-  /** The model spelling, printed under `swamp model …`. */
   readonly modelText: string;
 }
 
-/** Builds `build`'s message in both spellings. */
 export function wordedText(
   build: (words: BehaviorWords) => string,
 ): WordedText {
@@ -90,18 +64,11 @@ export function wordedText(
 }
 
 /**
- * Where an error or a SwampError keeps its model spelling. A module-private
- * symbol on a non-enumerable property, so JSON output, `Object.keys` and
- * default inspection never see it.
+ * a module-private symbol on a non-enumerable property, so JSON output,
+ * Object.keys and default inspection never see it
  */
 const MODEL_WORDING = Symbol("swamp.modelWording");
 
-/**
- * Stores `modelText` as the model spelling of `target`'s message. A text
- * equal in both spellings stores nothing.
- *
- * @returns The same target, so a call site can `throw markModelWording(...)`
- */
 export function markModelWording<T extends object>(
   target: T,
   modelText: string,
@@ -118,9 +85,8 @@ export function markModelWording<T extends object>(
 }
 
 /**
- * The model spelling marked on `value` itself, or `undefined`. The `cause`
- * chain is never read: a wrapper with its own message must not print its
- * cause's text in its place.
+ * the cause chain is never read: a wrapper with its own message must not print
+ * its cause's text in its place
  */
 export function modelWording(value: unknown): string | undefined {
   if (typeof value !== "object" || value === null) return undefined;
@@ -129,11 +95,8 @@ export function modelWording(value: unknown): string | undefined {
 }
 
 /**
- * Copies `from`'s model spelling to `to` when both carry the same message, as
- * when an error is rethrown as another type. A wrapper whose message differs
- * gets nothing; it builds its own {@link wordedText} if it needs one.
- *
- * @returns `to`
+ * copies only when both carry the same message, as when an error is rethrown as
+ * another type; a wrapper with a different message builds its own wordedText
  */
 export function carryModelWording<T extends object>(
   from: unknown,
@@ -147,20 +110,14 @@ export function carryModelWording<T extends object>(
   return markModelWording(to, modelText);
 }
 
-/** An Error whose message is `worded`, carrying its model spelling. */
 export function wordedError(worded: WordedText): Error {
   return markModelWording(new Error(worded.text), worded.modelText);
 }
 
-/** A UserError whose message is `worded`, carrying its model spelling. */
 export function wordedUserError(worded: WordedText, code?: string): UserError {
   return markModelWording(new UserError(worded.text, code), worded.modelText);
 }
 
-/**
- * The text of `value`'s message in the spelling of `surface`. `surface` is
- * `"model"` only under `swamp model …`.
- */
 export function messageFor(
   value: { readonly message: string },
   surface: "model" | "behavior",

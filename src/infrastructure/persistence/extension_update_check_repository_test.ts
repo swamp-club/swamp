@@ -90,7 +90,6 @@ Deno.test("FileExtensionUpdateCheckRepository: write is atomic (no partial-write
     }));
     await Promise.all(writers.map((data) => repo.write(data)));
 
-    // Final read must succeed (atomic rename guarantees a complete file).
     const final = await repo.read();
     // One of the writers' maps wins (last-writer-wins on the whole map);
     // the file is never garbage.

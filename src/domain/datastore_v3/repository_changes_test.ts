@@ -38,7 +38,6 @@ function bytes(value: string): Uint8Array {
   return new TextEncoder().encode(value);
 }
 
-/** Each change's kind, key and intent, as plain data for comparison. */
 function shape(change: TypedChange): Record<string, unknown> {
   const plain = (intent: unknown): unknown =>
     JSON.parse(JSON.stringify(intent));
@@ -109,7 +108,6 @@ Deno.test("ModelChanges: removals tombstone both files with the version, and a m
     tombstone: `${PREFIX}/vpc/latest`,
     intent: { kind: "data.gc", model: MODEL, name: "vpc" },
   });
-  // A marker lowered by a delete carries no version either.
   assertEquals(
     shape(changes.latestPut({ kind: "data.delete" }, "vpc", 1, bytes("1"))),
     {
@@ -171,7 +169,6 @@ const NAME_PATH = "config/models/aws-ec2/vpc.yaml";
 const ID = "3F0E7D1C-2B4A-4C6D-8E9F-0A1B2C3D4E5F";
 const RUN = "9a8b7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d";
 
-/** A change's precondition, if any. */
 function expectOf(change: TypedChange): unknown {
   return "put" in change
     ? change.put.expect

@@ -241,7 +241,6 @@ Deno.test("DatastoreLockLeases: a lease not renewed within its TTL is released, 
       await subject.release("user:alice", taken.lease.leaseId),
       false,
     );
-    // Free for the next caller.
     assertEquals(
       (await subject.acquire(request("user:bob"))).kind,
       "acquired",
@@ -270,7 +269,6 @@ Deno.test("DatastoreLockLeases.renew: extends the lease, and only for the princi
     );
     assertEquals(renewed?.ttlMs, 90_000);
     assertEquals(renewed?.expiresAt, new Date(now + 90_000).toISOString());
-    // Another principal cannot release it either.
     assertEquals(await subject.release("user:bob", taken.lease.leaseId), false);
     assert(locks.held.has(lockKeyOf(model)));
   } finally {
@@ -314,9 +312,7 @@ Deno.test("DatastoreLockLeases.acquire: a principal holds a bounded number of le
       outcomes.map((outcome) => outcome.kind).sort(),
       ["acquired", "acquired", "too-many"],
     );
-    // The refused one holds nothing.
     assertEquals(locks.held.size, 2);
-    // Another principal is unaffected.
     assertEquals(
       (await subject.acquire({
         ...request("user:bob"),
@@ -339,12 +335,9 @@ Deno.test("DatastoreLockLeases.dispose: releases every lease and ends waiting ac
   assertEquals((await waiting).kind, "held");
   assertEquals(locks.held.size, 0);
   assertEquals(subject.size, 0);
-  // After shutdown nothing is taken.
   assertEquals((await subject.acquire(request("user:carol"))).kind, "held");
   assertEquals(locks.held.size, 0);
 });
-
-// Fenced leases (swamp-club#4121).
 
 Deno.test("DatastoreLockLeases.acquire: a fenced lease's fence is above the partition's lease fence and every fence issued for the key", async () => {
   const locks = fakeLocks();
@@ -440,7 +433,6 @@ Deno.test("lockTargetOfPartition: a behavior's partition is its model lock's, a 
     lockTargetOfPartition(partitionOf({ kind: "lockfile" })),
     undefined,
   );
-  // Each covered partition's key is the lock key serve holds for it.
   assertEquals(
     lockKeyOf(
       lockTargetOfPartition(
@@ -502,7 +494,6 @@ Deno.test("DatastoreLockLeases.acquire: a caller that hangs up while the fence i
   }
 });
 
-/** A control-plane store in memory, as every serve node shares one. */
 function memoryControlPlane() {
   const records = new Map<string, Uint8Array>();
   const store = {
@@ -524,10 +515,6 @@ function memoryControlPlane() {
   return store;
 }
 
-/**
- * A serve node's leases over a shared control plane: its own locks, as a
- * node's file locks are its own, and the writer fence it leads at.
- */
 function node(
   shared: ReturnType<typeof memoryControlPlane>,
   leaderFence: () => number | undefined,
@@ -557,7 +544,6 @@ Deno.test("DatastoreLockLeases: an explicit lease survives a takeover, and its h
     await first.subject.adopt();
     const taken = await first.subject.acquire(explicit("user:alice"));
     assert(taken.kind === "acquired");
-    // A command's lease is not kept.
     const command = await first.subject.acquire({
       ...request("user:bob"),
       target: { kind: "model", modelType: "aws/ec2", modelId: RUN },
@@ -580,7 +566,6 @@ Deno.test("DatastoreLockLeases: an explicit lease survives a takeover, and its h
       3_600_000,
     );
     assertEquals(renewed?.leaseId, taken.lease.leaseId);
-    // Nobody else takes the key while the adopted lease lives.
     assertEquals(
       await second.subject.acquire(explicit("user:bob")),
       { kind: "held", heldBy: "other" },
@@ -601,12 +586,10 @@ Deno.test("DatastoreLockLeases: the deposed leader's shutdown after a takeover l
     const taken = await first.subject.acquire(explicit("user:alice"));
     assert(taken.kind === "acquired");
     await second.subject.adopt();
-    // The deposed leader stops, as it does once it notices.
     await first.subject.dispose();
     assert(
       [...shared.records.keys()].some((key) => key.startsWith("leases/2/")),
     );
-    // A later leader still finds the lease.
     await second.subject.dispose();
     await third.subject.adopt();
     assertEquals(
@@ -636,7 +619,6 @@ Deno.test("DatastoreLockLeases: a deposed leader's late write lands in a prefix 
     await third.subject.adopt();
     assertEquals(third.subject.fencedLeaseOn(model), undefined);
     assertEquals(third.subject.size, 0);
-    // And the stale prefix is gone.
     assertEquals(
       [...shared.records.keys()].filter((key) => key.startsWith("leases/1/")),
       [],
@@ -731,7 +713,6 @@ Deno.test("DatastoreLockLeases: an explicit lease the leader cannot record is no
     );
     assertEquals(subject.size, 0);
     assertEquals(locks.held.has(lockKeyOf(model)), false);
-    // A command's lease is never recorded, so it is granted.
     assertEquals(
       (await subject.acquire(request("user:alice"))).kind,
       "acquired",
@@ -795,7 +776,6 @@ Deno.test("DatastoreLockLeases.adopt: a control plane that cannot be read keeps 
     assert(taken.kind === "acquired");
 
     await second.adopt();
-    // Not adopted yet: the gate stays shut rather than opening empty.
     assertEquals(second.adopting, true);
     await waitFor(() => !second.adopting, "the kept leases adopted");
     assertEquals(second.fencedLeaseOn(model)?.leaseId, taken.lease.leaseId);
@@ -833,7 +813,6 @@ Deno.test("DatastoreLockLeases.adopt: a lease that fails to adopt keeps the gate
     assertEquals(second.adopting, true);
     await waitFor(() => !second.adopting, "the kept leases adopted");
     assertEquals(second.fencedLeaseOn(model)?.leaseId, taken.lease.leaseId);
-    // Its record is under the new leader's prefix, not forgotten.
     const third = node(shared, () => 3);
     try {
       await third.subject.adopt();
@@ -854,7 +833,6 @@ Deno.test("DatastoreLockLeases.adopt: a live lease whose lock is still held at t
   const shared = memoryControlPlane();
   const first = node(shared, () => 1);
   const locks = fakeLocks();
-  // A run of the leader before still holds serve's own lock on the key.
   locks.serveTakes(lockKeyOf(model));
   const second = leases(locks, {
     maxWaitMs: 20,
@@ -870,7 +848,6 @@ Deno.test("DatastoreLockLeases.adopt: a live lease whose lock is still held at t
     assert(taken.kind === "acquired");
 
     await second.adopt();
-    // Not adopted yet, and not forgotten: lease requests keep waiting.
     assertEquals(second.adopting, true);
     assertEquals(second.fencedLeaseOn(model), undefined);
     const records = [...shared.records.keys()].filter((key) =>
@@ -914,7 +891,6 @@ Deno.test("DatastoreLockLeases.dispose: stops an adoption still retrying", async
 
 Deno.test("DatastoreLockLeases.acquire: an explicit lease refused because its record write failed is never adopted, though the write landed and its removal failed too", async () => {
   const shared = memoryControlPlane();
-  // The put lands, then the reply is lost; the clean-up delete fails too.
   const flaky = {
     ...shared,
     put: async (key: string, data: Uint8Array) => {
@@ -932,13 +908,11 @@ Deno.test("DatastoreLockLeases.acquire: an explicit lease refused because its re
   });
   const second = node(shared, () => 2);
   try {
-    // Leader 1's prefix is complete, so the next leader reads it.
     await shared.put("leases/1/complete", new TextEncoder().encode("now"));
     assertEquals(
       (await first.acquire(explicit("user:alice"))).kind,
       "not-kept",
     );
-    // The landed record is there, but nobody was granted its lease.
     assert(
       [...shared.records.keys()].some((key) =>
         key.startsWith("leases/1/") && key !== "leases/1/complete"
@@ -1041,7 +1015,6 @@ Deno.test("DatastoreLockLeases.dispose: a shutdown while a lease waits for its l
 Deno.test("DatastoreLockLeases.acquire: an explicit lease whose record cannot be confirmed is granted, and a takeover before its next renewal ends it", async () => {
   const shared = memoryControlPlane();
   let puts = 0;
-  // The pending record is written; its confirmation is not.
   const store = {
     ...shared,
     put: (key: string, data: Uint8Array) =>
@@ -1093,7 +1066,6 @@ function holdableControlPlane() {
   return {
     shared,
     store,
-    /** Holds the next put; resolves `started` once it is waiting. */
     hold() {
       let release!: () => void;
       gate = new Promise((resolve) => (release = resolve));
@@ -1150,7 +1122,6 @@ Deno.test("DatastoreLockLeases.acquire: a confirmation racing a forced release l
   });
   try {
     await subject.adopt();
-    // The pending write goes through; the confirming one is held.
     let puts = 0;
     const store = plane.store;
     const put = store.put;
@@ -1158,7 +1129,6 @@ Deno.test("DatastoreLockLeases.acquire: a confirmation racing a forced release l
     store.put = async (key: string, data: Uint8Array) => {
       const first = ++puts === 1;
       await put(key, data);
-      // Held from the next write on: the confirmation.
       if (first) held = plane.hold();
     };
     const acquiring = subject.acquire(explicit("user:alice"));
@@ -1212,15 +1182,12 @@ Deno.test("DatastoreLockLeases.whenAdopted: serve's own run waits for a kept lea
     assert(taken.kind === "acquired");
     await second.adopt();
     assertEquals(second.adoptionPending(lockKeyOf(model)), true);
-    // A key no kept lease is on is free at once.
     assertEquals(second.adoptionPending(other), false);
     await second.whenAdopted(other, 0);
-    // Still pending past the wait: the run gets a lock timeout.
     await assertRejects(
       () => second.whenAdopted(lockKeyOf(model), 10),
       LockTimeoutError,
     );
-    // Once the lock frees, the lease is adopted and the run may go on.
     const waiting = second.whenAdopted(lockKeyOf(model), 10_000);
     locks.held.delete(lockKeyOf(model));
     await waiting;
@@ -1260,7 +1227,6 @@ Deno.test("DatastoreLockLeases.whenAdopted: while the kept leases cannot even be
 Deno.test("DatastoreLockLeases.adoptionPendingFor: only a key whose kept lease is not adopted yet waits, and every key while the kept leases are unknown", async () => {
   const shared = memoryControlPlane();
   const first = node(shared, () => 1);
-  // The leader before's run still holds the behavior's lock here.
   const second = node(shared, () => 2, { maxWaitMs: 10, adoptRetryMs: 5 });
   const other: LockTarget = {
     kind: "model",
@@ -1268,7 +1234,6 @@ Deno.test("DatastoreLockLeases.adoptionPendingFor: only a key whose kept lease i
     modelId: RUN,
   };
   try {
-    // Before adoption starts, the kept leases are unknown.
     assertEquals(second.subject.adoptionPendingFor(other), true);
     assertEquals(second.subject.adoptionPendingFor(undefined), true);
     assertEquals(second.subject.leaseAdoptionPending("any"), true);
@@ -1287,7 +1252,6 @@ Deno.test("DatastoreLockLeases.adoptionPendingFor: only a key whose kept lease i
       second.subject.leaseAdoptionPending(taken.lease.leaseId),
       true,
     );
-    // A lease taken meanwhile is live, so it does not wait.
     const meanwhile = await second.subject.acquire({
       ...explicit("user:bob"),
       target: other,
@@ -1392,7 +1356,6 @@ Deno.test("DatastoreLockLeases.adopt: a retry never holds back writes to a lease
     maxWaitMs: 300,
     adoptRetryMs: 5,
   });
-  // The leader before's run holds the kept lease's lock.
   locks.serveTakes(lockKeyOf(model));
   const first = subject.adopt();
   try {
@@ -1410,7 +1373,6 @@ Deno.test("DatastoreLockLeases.adopt: a retry never holds back writes to a lease
     assertEquals(subject.leaseAdoptionPending(meanwhile.lease.leaseId), false);
     assertEquals(subject.adoptionPendingFor(model), true);
     assertEquals(subject.leaseAdoptionPending(records[0].leaseId), true);
-    // An id no kept lease has is answered as lost, not as pending.
     assertEquals(subject.leaseAdoptionPending(crypto.randomUUID()), false);
   } finally {
     await subject.dispose();

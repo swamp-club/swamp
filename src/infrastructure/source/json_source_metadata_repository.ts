@@ -27,9 +27,6 @@ import type {
 import { SourceMetadataSchema } from "../../domain/source/mod.ts";
 import { getSourceMetaPath, getSwampSourceDir } from "./source_paths.ts";
 
-/**
- * JSON file-based implementation of SourceMetadataRepository.
- */
 export class JsonSourceMetadataRepository implements SourceMetadataRepository {
   private readonly metaPath: string;
   private readonly sourceDir: string;
@@ -39,16 +36,10 @@ export class JsonSourceMetadataRepository implements SourceMetadataRepository {
     this.sourceDir = getSwampSourceDir();
   }
 
-  /**
-   * Get the source directory path.
-   */
   getSourceDir(): string {
     return this.sourceDir;
   }
 
-  /**
-   * Read source metadata from disk.
-   */
   async read(): Promise<SourceMetadata | null> {
     try {
       const content = await Deno.readTextFile(this.metaPath);
@@ -66,18 +57,12 @@ export class JsonSourceMetadataRepository implements SourceMetadataRepository {
     }
   }
 
-  /**
-   * Write source metadata to disk.
-   */
   async write(metadata: SourceMetadata): Promise<void> {
     await ensureDir(dirname(this.metaPath));
     const content = JSON.stringify(metadata, null, 2);
     await atomicWriteTextFile(this.metaPath, content);
   }
 
-  /**
-   * Delete source metadata file.
-   */
   async delete(): Promise<void> {
     try {
       await Deno.remove(this.metaPath);

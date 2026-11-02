@@ -202,8 +202,6 @@ Deno.test("issueCreate: includes url in result", async () => {
   }
 });
 
-// ---- Regression: plain-lab request body is byte-identical ----
-
 Deno.test("issueCreate: plain lab request body is byte-identical to caller body (regression)", async () => {
   let captured: { body: string } | undefined;
   const deps = makeDeps({
@@ -223,11 +221,8 @@ Deno.test("issueCreate: plain lab request body is byte-identical to caller body 
     type: "bug",
   }));
 
-  // Exact match — no trimming, no appending.
   assertEquals(captured?.body, userBody);
 });
-
-// ---- Extension-lab path ----
 
 Deno.test("issueCreate: extension-lab variant set when extensionName present", async () => {
   const deps = makeDeps({

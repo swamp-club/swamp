@@ -38,10 +38,6 @@ import { modelRegistry } from "../../domain/models/model.ts";
 import { vaultTypeRegistry } from "../../domain/vaults/vault_type_registry.ts";
 import { reportRegistry } from "../../domain/reports/report_registry.ts";
 
-/**
- * Builds the full ModelMethodRunDeps needed to run methods on the built-in
- * server token model, with direct type execution enabled.
- */
 export async function createServerTokenRunDeps(
   repoDir: string,
   repoContext: RepositoryContext,

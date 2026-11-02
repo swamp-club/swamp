@@ -17,23 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Typed secret destinations end to end (design/enablers/typed-secrets.md
- * Sections 6.3, 7.1 and 7.2, typed-secrets 3.4), through real components in
- * process: a typed run's registry and bag, a SecretLoader over a counting
- * vault, the method execution service, a recorder behavior and the built-in
- * command/shell behavior. Refusing destinations are refused before any read,
- * check or method; every canary class reaches each allowed boundary exactly;
- * the shell's own argv holds no plaintext; a NUL fails before any launch; a
- * failed method leaves a redacted output record; and a stand-in derives from a
- * typed evaluation with no load. The option-off path is pinned beside it.
- *
- * The shell cases run the host shell, as the canary boundary suite does:
- * `withMockedCommand` cannot stand in for `Deno.Command.spawn`. They are
- * POSIX-only, and the argv read is Linux-only (`/proc/<pid>/cmdline`, the
- * observation the sink inventory names for direct-shell-argv).
- */
-
 import { ProvenanceMap } from "../src/domain/expressions/provenance_map.ts";
 import {
   assert,
@@ -98,7 +81,6 @@ const VAULT = "canary";
 const posix = { ignore: Deno.build.os === "windows" };
 const DATA_REF = { vaultName: VAULT, key: "stored" };
 
-/** The key canary `i` is stored under. */
 const keyOf = (i: number) => `k${i}`;
 
 /**
@@ -122,22 +104,16 @@ interface Fixture {
   loader: SecretLoader;
   service: DefaultMethodExecutionService;
   dataRepo: FileSystemUnifiedDataRepository;
-  /** Every output record a method boundary saved. */
   outputs: ModelOutput[];
-  /** Every method event a step emitted. */
   events: MethodExecutionEvent[];
-  /** A context for one delivery of `definition`. */
   context: (
     modelType: ModelType,
     definition: Definition,
     methodName: string,
     overrides?: Partial<MethodContext>,
   ) => MethodContext;
-  /** Runs `fn` under the run's vault access. */
   access: <T>(fn: () => Promise<T>) => Promise<T>;
-  /** A vault.get() reference to canary `i`, issued into the run. */
   ref: (i: number) => string;
-  /** A data-origin reference, as the accessor adapter issues one. */
   dataRef: () => string;
 }
 
@@ -263,7 +239,6 @@ async function withFixture(
   }
 }
 
-/** What the recorder saw at each boundary. */
 interface Seen {
   method?: {
     args: Record<string, unknown>;
@@ -275,11 +250,6 @@ interface Seen {
   };
 }
 
-/**
- * A per-run type with a string field per canary as method arguments and as
- * optional global arguments, a refusing `workingDir`, a recording check and
- * a recording method.
- */
 function recorder(canaries: readonly Canary[], seen: Seen): ModelDefinition {
   const strings = (prefix: string) =>
     z.object(
@@ -319,7 +289,6 @@ function recorder(canaries: readonly Canary[], seen: Seen): ModelDefinition {
   };
 }
 
-/** The value kind of each canary's entry in `values`, by class. */
 function kindsByClass(
   canaries: readonly Canary[],
   values: Record<string, unknown> | undefined,
@@ -343,14 +312,12 @@ function allOf(
   );
 }
 
-/** Lowercase hex of the UTF-8 bytes of `value`. */
 function utf8Hex(value: string): string {
   return [...new TextEncoder().encode(value)]
     .map((b) => b.toString(16).padStart(2, "0"))
     .join("");
 }
 
-/** Runs the shell behavior on `definition` and returns its stdout. */
 async function runShell(
   f: Fixture,
   definition: Definition,
@@ -378,7 +345,6 @@ async function runShell(
   return result.stdout;
 }
 
-/** Runs one delivery of `definition` on `modelDef` under the run's access. */
 function deliveryOn(f: Fixture) {
   return (
     modelDef: ModelDefinition,
@@ -399,7 +365,6 @@ function deliveryOn(f: Fixture) {
     );
 }
 
-/** Asserts `attempt` is refused at `destination` with no secret in the text. */
 async function assertRefused(
   attempt: () => Promise<unknown>,
   destination: string,
@@ -419,7 +384,6 @@ async function assertRefused(
   }
 }
 
-/** Asserts a refused run read no vault, ran nothing and wrote nothing. */
 async function assertNothingRan(f: Fixture, seen: Seen = {}): Promise<void> {
   assertEquals(f.vault.reads, []);
   assertEquals(seen, {});
@@ -583,7 +547,6 @@ Deno.test("typed secret destinations: every canary class reaches method argument
       kindsByClass(f.canaries, seen.check?.methodArgs, "m"),
       allOf(f.canaries, "sentinel"),
     );
-    // One load per reference for the attempt, none for anything else.
     assertEquals(
       Object.fromEntries(f.canaries.map((_, i) => [keyOf(i), 1])),
       Object.fromEntries(
@@ -646,7 +609,6 @@ Deno.test(
       );
       if (Deno.build.os === "linux") {
         const argv = out.find((l) => l.startsWith("argv:"))!.slice(5);
-        // The command text names the environment variable, never a value.
         assert(
           argv.includes(utf8Hex("__SWAMP_VAULT_0")),
           "no reference in argv",
@@ -659,7 +621,6 @@ Deno.test(
           );
         }
       }
-      // Each reference loaded once for the attempt.
       for (const [i] of f.canaries.entries()) {
         assertEquals(f.vault.readsOf(keyOf(i)), 1, keyOf(i));
       }
@@ -806,10 +767,9 @@ Deno.test(
   "typed secret destinations: a run authored under globalArguments is placed through the environment with the option on or off, so the shell's own argv holds the reference and no plaintext",
   posix,
   async () => {
-    // The merge the shell fills from is built before the boundary writes
-    // values into the global arguments, in either mode: with the option off,
-    // a run under globalArguments used to reach the sh -c argv as plaintext
-    // (swamp-club#3627).
+    // the merge the shell fills from is built before the boundary writes values
+    // into global arguments, in either mode, so plaintext never reaches the sh
+    // -c argv
     {
       const mode = `typed ${true}`;
       await withFixture(async (f) => {

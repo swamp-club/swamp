@@ -102,7 +102,6 @@ Deno.test("spliceOrigin: a computed result reading data is data except vouched o
   const origin = spliceOrigin("inputs.a + inputs.b", c, value);
   assertEquals(origin.map.overlapsData("", 0, 4), true);
   assertEquals(origin.map.overlapsData("", 4, value.length), false);
-  // A data namespace makes a computed result data.
   assertEquals(
     spliceOrigin('data.latest("m", "d").attributes.x + ""', c, "v").map
       .isWholeData,
@@ -111,7 +110,6 @@ Deno.test("spliceOrigin: a computed result reading data is data except vouched o
 });
 
 Deno.test("spliceOrigin: expression text literal() produces is data, even where the same text is authored", () => {
-  // The bound input holds T authored, and literal() produces T again.
   const c = ctx({ b: T }, {});
   assertEquals(
     spliceOrigin(`literal('${T}')`, c, T).map.overlapsData("", 0, T.length),
@@ -123,7 +121,6 @@ Deno.test("spliceOrigin: expression text literal() produces is data, even where 
     origin.map.overlapsData("", value.length - T.length, value.length),
     true,
   );
-  // literal() text with no expression in it leaves the result authored.
   assertEquals(
     spliceOrigin("literal('{{ x }}')", c, "{{ x }}").map.isAuthored,
     true,
@@ -135,7 +132,6 @@ Deno.test("attachBindingProvenance: replaces the namespaces it names and keeps t
   attachBindingProvenance(c, { self: ProvenanceMap.data() });
   assertEquals(bindingProvenanceOf(c).inputs?.isWholeData, true);
   assertEquals(bindingProvenanceOf(c).self?.isWholeData, true);
-  // Object spread carries it to derived contexts.
   assertEquals(bindingProvenanceOf({ ...c }).inputs?.isWholeData, true);
 });
 
@@ -152,11 +148,6 @@ Deno.test("spliceOrigin: vault results remain data after literal-name normalizat
   }
 });
 
-/**
- * A model namespace shaped like ModelResolver.buildContext: each behavior
- * indexed by name and by id (one shared entry), definition fields beside
- * resource and file loaders that replace themselves on first read.
- */
 function aliasedModelContext(names: string[]) {
   const loads = { count: 0 };
   const model: Record<string, unknown> = {};
@@ -192,7 +183,6 @@ function aliasedModelContext(names: string[]) {
   return { context: { model, env: {} }, loads };
 }
 
-/** The model namespace map as built one withWholeData call per path. */
 function incrementalModelMap(model: Record<string, unknown>): ProvenanceMap {
   let map = ProvenanceMap.authored();
   for (const [name, entry] of Object.entries(model)) {
@@ -240,7 +230,6 @@ Deno.test("spliceOrigin: a computed model read vouches definition text without l
     [...origin.authoredRaws ?? []].sort(),
     ['${{ vault.get("v", "db") }}', '${{ vault.get("v", "web") }}'],
   );
-  // Resource text is data whether or not a loader already ran.
   void (context.model as Record<string, { resource: unknown }>).db.resource;
   const loaded = spliceOrigin(
     'model.db.input.globalArguments.?url.orValue("none")',
@@ -283,7 +272,6 @@ Deno.test("spliceOrigin: root maps are reused within a call but refreshed after 
   });
   const expression = 'model.db.input.globalArguments.?url.orValue("none")';
   spliceOrigin(expression, context, "none");
-  // One map construction and one authored-text scan.
   assertEquals(enumerations, 2);
   const entry = context.model.db as Record<string, unknown>;
   entry.execution = { output: T };

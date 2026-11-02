@@ -18,35 +18,9 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * Detects use of `Deno.Command`, the subprocess API, in TypeScript and
- * JavaScript source, for the extension safety warning `deno-command`.
- *
- * The source is read as a syntax tree, so comments, strings, template text
- * and regex literals never count, and neither do TypeScript types. Two
- * things are flagged:
- *
- * - `Command` read off `Deno`, in any spelling: `Deno.Command`,
- *   `Deno?.Command`, `Deno["Command"]`, through casts, through a global
- *   object (`globalThis.Deno.Command`), and `import C = Deno.Command`.
- *   Flagged whether it is called, constructed, stored or passed.
- * - `Deno` itself used as a value, since an alias reaches `Command`: stored
- *   (`const d = Deno`), passed, spread, destructured, `import D = Deno`, a
- *   `Deno` key destructured from a global object, a lookup call given a
- *   global object and the literal `"Deno"`, and `Deno[key]` with a key that
- *   is not a literal.
- *
- * Member reads of any other `Deno` key (`Deno.env`), `typeof Deno` and
- * `"x" in Deno` are not flagged, nor is a member named `Command` on any other
- * object: a CLI framework's `Command` class or a field named `Command` is
- * not a subprocess. `Command` read off a member named `Deno` on any receiver
- * (`g.Deno.Command`, `this.Deno.Command`) is flagged, since the receiver may
- * be the global object under another name. Not caught: other uses of such an
- * alias (`const g = globalThis; const d = g.Deno; new d.Command()`, or a
- * parameter pattern given it: `(({ Deno: d }) => ...)(globalThis)`), since
- * following them would mean flagging every member named `Deno`, and names
- * assembled at runtime
- * (`globalThis["De" + "no"]`). A file that does not parse falls back to the
- * old text check: each line containing `Deno.Command(`.
+ * flags Command read off Deno in any spelling, and Deno used as a value since
+ * an alias reaches Command. Aliased reads and runtime-assembled names are not
+ * caught; unparseable files fall back to a text check.
  */
 
 import {
@@ -71,14 +45,12 @@ import {
   walkRuntimeNodes,
 } from "./extension_source_ast.ts";
 
-/** The form of `Deno.Command` use a finding reports. */
 export type DenoCommandKind =
   | "command-reference"
   | "deno-value"
   | "deno-computed-access"
   | "unparsed-text";
 
-/** One use of `Deno.Command`, 1-based line and column. */
 export interface DenoCommandFinding {
   line: number;
   column: number;
@@ -105,7 +77,6 @@ const IMPORT_SPECIFIERS = new Set([
   "ImportNamespaceSpecifier",
 ]);
 
-/** The old text check, used when the source does not parse. */
 function textFallback(source: string): DenoCommandFinding[] {
   const findings: DenoCommandFinding[] = [];
   const lines = source.split("\n");
@@ -118,10 +89,6 @@ function textFallback(source: string): DenoCommandFinding[] {
   return findings;
 }
 
-/**
- * The expression is `Deno`: the bare name, or `Deno` read off a global
- * object (`globalThis.Deno`, `globalThis["Deno"]`), through casts.
- */
 function isDeno(node: AstNode | undefined): boolean {
   const target = unwrap(node);
   if (!target) return false;
@@ -130,10 +97,6 @@ function isDeno(node: AstNode | undefined): boolean {
     isGlobalObject(child(target, "object"));
 }
 
-/**
- * A TypeScript qualified name `Deno`, or `<anything>.Deno`, as on the left
- * of `import C = Deno.Command` or `import C = g.Deno.Command`.
- */
 function isDenoQualified(node: AstNode | undefined): boolean {
   if (!node) return false;
   if (node.type === "Identifier") return str(node, "name") === DENO;
@@ -142,17 +105,14 @@ function isDenoQualified(node: AstNode | undefined): boolean {
 }
 
 /**
- * The expression is a member named `Deno` on any receiver (`g.Deno`,
- * `this.Deno`). Reading `Command` off it is flagged, as the text check did
- * for `g.Deno.Command(`; the receiver may be the global object under
- * another name. A bare `x.Deno` is not flagged.
+ * reading Command off a member named Deno on any receiver is flagged, since the
+ * receiver may be the global object under another name; a bare x.Deno is not
  */
 function isDenoMember(node: AstNode | undefined): boolean {
   const target = unwrap(node);
   return isMember(target) && memberName(target) === DENO;
 }
 
-/** Inside `import type X = ...`, which is erased at run time. */
 function inTypeOnlyImportEquals(visit: Visit): boolean {
   for (let v: Visit | null = visit; v; v = v.parent) {
     if (v.node.type === "TSImportEqualsDeclaration") {
@@ -162,7 +122,6 @@ function inTypeOnlyImportEquals(visit: Visit): boolean {
   return false;
 }
 
-/** An identifier in a position that declares a name rather than reading one. */
 function isBindingSite(visit: Visit): boolean {
   const parent = visit.parent?.node;
   if (!parent) return false;
@@ -170,11 +129,9 @@ function isBindingSite(visit: Visit): boolean {
   if (parent.type === "TSParameterProperty" && key === "parameter") {
     return true;
   }
-  // `export * as Deno from "./x.ts"` names a namespace of that module.
   if (parent.type === "ExportNamespaceSpecifier" && key === "exported") {
     return true;
   }
-  // `export { Deno } from "./x.ts"` names the other module's export.
   if (
     parent.type === "ExportSpecifier" && key === "local" &&
     child(visit.parent?.parent?.node, "source") !== undefined
@@ -187,13 +144,10 @@ function isBindingSite(visit: Visit): boolean {
   if (parent.type === "RestElement" && key === "argument") return true;
   if (parent.type === "ArrayPattern" && key === "elements") return true;
   if (parent.type === "AssignmentPattern" && key === "left") return true;
-  // The value of a pattern property is the name it binds: `{ Deno: d }`
-  // binds `d`, shorthand `{ Deno }` binds `Deno`.
   return parent.type === "ObjectProperty" && key === "value" &&
     visit.parent?.parent?.node.type === "ObjectPattern";
 }
 
-/** A pattern property's key name: `Deno` in `{ Deno: d }` or `{ ["Deno"]: d }`. */
 function propertyKeyName(property: AstNode): string | undefined {
   const key = child(property, "key");
   return property.computed === true
@@ -201,11 +155,6 @@ function propertyKeyName(property: AstNode): string | undefined {
     : str(key, "name") ?? literalKey(key);
 }
 
-/**
- * The pattern destructures a global object: it is bound from one directly
- * (`const { ... } = globalThis`), or it is nested under global-object keys
- * of such a pattern (`const { self: { ... } } = globalThis`).
- */
 function destructuresGlobalObject(pattern: Visit): boolean {
   let current = pattern;
   for (let i = 0; i < MAX_CHAIN; i++) {
@@ -223,7 +172,6 @@ function destructuresGlobalObject(pattern: Visit): boolean {
   return false;
 }
 
-/** The expression a pattern destructures: `const <pattern> = <source>`. */
 function patternSource(pattern: Visit): AstNode | undefined {
   const owner = pattern.parent;
   if (!owner) return undefined;
@@ -270,7 +218,6 @@ class Analyzer {
     }
   }
 
-  /** `Deno.Command`, `Deno[key]`, and `globalThis.Deno` used as a value. */
   private checkMember(visit: Visit): void {
     const node = visit.node;
     const object = child(node, "object");
@@ -309,11 +256,6 @@ class Analyzer {
     this.checkDenoValue(visit, visit.node);
   }
 
-  /**
-   * `Deno` (bare or off a global object) at `visit`: flagged unless it is
-   * read from (`Deno.env`, `Deno[key]` - checked as a member), tested
-   * (`typeof Deno`, `"x" in Deno`), or the left of a qualified name.
-   */
   private checkDenoValue(visit: Visit, at: AstNode): void {
     let current = visit;
     for (let i = 0; i < MAX_CHAIN; i++) {
@@ -334,7 +276,6 @@ class Analyzer {
     this.flag(at, "deno-value");
   }
 
-  /** `import C = Deno.Command`, `import C = globalThis.Deno.Command`. */
   private checkQualifiedName(node: AstNode): void {
     const right = child(node, "right");
     if (
@@ -344,10 +285,6 @@ class Analyzer {
     }
   }
 
-  /**
-   * `const { Deno: d } = globalThis`, `const { self: { Deno: d } } =
-   * globalThis`: a `Deno` key read off a global object.
-   */
   private checkPatternKey(visit: Visit): void {
     const pattern = visit.parent;
     if (pattern?.node.type !== "ObjectPattern") return;
@@ -356,10 +293,6 @@ class Analyzer {
     if (destructuresGlobalObject(pattern)) this.flag(key, "deno-value");
   }
 
-  /**
-   * `Reflect.get(globalThis, "Deno")`: one call given both a global object
-   * and the literal name reads `Deno` the way `globalThis["Deno"]` does.
-   */
   private checkGlobalLookup(call: AstNode): void {
     const args = call.arguments;
     if (!Array.isArray(args)) return;
@@ -371,12 +304,6 @@ class Analyzer {
   }
 }
 
-/**
- * Finds uses of `Deno.Command` in `source`. Never throws: a file that does
- * not parse is checked with the old text check instead. `program` is the
- * result of {@link parseExtensionSource} when the caller already parsed the
- * source (null when it did not parse); omitted, the source is parsed here.
- */
 export function findDenoCommandUse(
   source: string,
   program: AstNode | null = parseExtensionSource(source),

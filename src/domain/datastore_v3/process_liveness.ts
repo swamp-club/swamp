@@ -18,85 +18,38 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * Whether the process a v3 writer record names is still running
- * (swamp-club#3564): one rule for the writer lease, the writer marker, the
- * checkout sidecar and the commit outbox.
- *
- * A record names its writer by pid and {@link ProcessIdentity}: the host
- * and pid namespace, the kernel's boot id and the process's start time. A
- * pid means something only on the kernel that assigned it, so a record is
- * judged by its pid only when it was written on this kernel: the same host
- * and namespace, and the same boot. Otherwise it is **unjudgeable**, and the
- * verdict is `unknown`: the caller falls back to the lease's TTL and fence,
- * never to "gone". A boot id that differs is unjudgeable too, never proof
- * of a reboot: two machines can share a hostname and the root pid
- * namespace's id. So is a boot id missing on either side where the platform
- * has one (Linux, macOS: a read that failed, an image without `cat`), since
- * the same hostname in the root namespace then names nothing. Only where no
- * boot id exists (Windows) do the host and pid alone decide, as before.
- *
- * The hostname stays part of this rule: VMs restored from one memory
- * snapshot share a boot id, and only their hostnames tell them apart, so
- * ignoring it could judge another machine's live writer gone. Questions
- * about this machine's own files, which other checks also guard (a
- * Litestream sidecar's lock and command line), use {@link sameKernel},
- * which survives a hostname change (swamp-club#3801).
- *
- * On this kernel, a pid that is absent, a zombie, or started at another
- * time than the record says is `gone`; any other present pid is `alive`.
- * When either side has no start time (the **start time is unreadable**:
- * Windows, another user's process, a failed probe), presence alone decides,
- * as it did before identities were recorded. The two cases are kept apart:
- * an unreadable start time never makes a record unjudgeable, since mapping
- * a live writer to `unknown` would let outbox recovery land its entry.
- *
- * @module
+ * a pid means something only on the kernel that assigned it: a record from
+ * another host, pid namespace or boot is unjudgeable (unknown), so callers fall
+ * back to TTL and fence, never to gone
  */
 
-/** The longest string an identity field may hold. */
 const MAX_IDENTITY_FIELD_LENGTH = 1024;
 
-/** Which process a record's pid belongs to, as recorded where it ran. */
 export interface ProcessIdentity {
-  /**
-   * The host and pid namespace (`processHostIdentity()`): the hostname, and
-   * on Linux the pid namespace's id.
-   */
   readonly host: string;
-  /** The kernel's boot id, where the platform gives one. */
   readonly bootId?: string;
-  /** The process's start time, an opaque per-platform stamp. */
   readonly startTime?: string;
 }
 
-/** What a probe of a pid on this kernel finds, without disturbing it. */
 export interface ProcessProbe {
-  /** Whether a process with the pid exists, zombies included. */
   readonly present: boolean;
-  /** Whether it has exited and waits to be reaped. */
   readonly zombie: boolean;
-  /** Its start time, undefined when it cannot be read. */
   readonly startTime?: string;
 }
 
-/** Gone, alive, or not judgeable from this kernel. */
 export type ProcessVerdict = "gone" | "alive" | "unknown";
 
-/** The writer a record names. */
 export interface RecordedProcess {
   readonly pid: number;
-  /** Undefined in a record from a swamp before identities were recorded. */
   readonly process?: ProcessIdentity;
   /**
-   * Whether the caller knows the record is not this process's, from a
-   * token only this process holds (a marker's or an outbox entry's
-   * instance). A record with this process's pid that is not its own was
-   * written by a predecessor whose pid this process reuses.
+   * the caller knows the record is not this process's from a token only it
+   * holds; a record with this process's pid that is not its own came from a
+   * predecessor whose pid was reused
    */
   readonly notThisProcess?: boolean;
 }
 
-/** This process, and how it probes another pid. */
 export interface LocalProcess {
   readonly pid: number;
   readonly identity: ProcessIdentity;
@@ -119,7 +72,6 @@ export interface LocalProcess {
   readonly hostname?: () => string;
 }
 
-/** Decides whether the writer `recorded` names is still running. */
 export function judgeRecordedProcess(
   recorded: RecordedProcess,
   local: LocalProcess,
@@ -160,15 +112,9 @@ function unjudgeable(
 }
 
 /**
- * Whether `recorded` was written on this kernel and pid namespace, whatever
- * the hostname was then (swamp-club#3801): the same boot id and pid
- * namespace. A DHCP renewal renames a machine under a running process, so a
- * file this machine keeps for itself (a Litestream sidecar's presence) is
- * judged by this, never by the hostname. A container sharing the host's
- * boot id is another namespace. Only when neither side names a namespace on
- * a platform that has them (it could not be read) does the hostname decide
- * alongside the boot id. Not for judging another writer gone: see
- * {@link judgeRecordedProcess}.
+ * a DHCP renewal renames a machine under a running process, so files this
+ * machine keeps for itself are judged by boot id and pid namespace, not
+ * hostname; not for judging another writer gone
  */
 export function sameKernel(
   recorded: ProcessIdentity,
@@ -190,7 +136,6 @@ export function sameKernel(
   return !local.bootIdRequired;
 }
 
-/** The pid namespace a host identity names (`<hostname>#<namespace>`). */
 function pidNamespaceOf(host: string): string | undefined {
   const at = host.lastIndexOf("#");
   return at === -1 ? undefined : host.slice(at + 1);

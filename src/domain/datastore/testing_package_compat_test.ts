@@ -18,11 +18,8 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * Type compatibility test for @swamp-club/swamp-testing datastore types.
- *
- * Verifies that the testing package's datastore types remain structurally
- * compatible with swamp's canonical types. If someone changes the canonical
- * interfaces, this file will fail to type-check.
+ * fails to type-check if the testing package's datastore types stop being
+ * structurally compatible with swamp's canonical interfaces
  */
 
 import type { DatastoreProvider as CanonicalDatastoreProvider } from "./datastore_provider.ts";
@@ -64,7 +61,6 @@ import type {
     as TestingWritableDatastoreControlPlaneStore,
 } from "../../../packages/testing/datastore_types.ts";
 
-// DistributedLock: verify method signatures match.
 function _checkDistributedLockFields(lock: TestingDistributedLock) {
   const _acquire: ReturnType<CanonicalDistributedLock["acquire"]> = lock
     .acquire();
@@ -75,20 +71,17 @@ function _checkDistributedLockFields(lock: TestingDistributedLock) {
   const _forceRelease: ReturnType<CanonicalDistributedLock["forceRelease"]> =
     lock.forceRelease("nonce");
 
-  // withLock — verify it exists and returns a Promise
   const _withLock: Promise<void> = lock.withLock(() => Promise.resolve());
 
   void [_acquire, _release, _inspect, _forceRelease, _withLock];
 }
 
-// DatastoreVerifier: verify method signature matches.
 function _checkDatastoreVerifierFields(verifier: TestingDatastoreVerifier) {
   const _verify: ReturnType<CanonicalDatastoreVerifier["verify"]> = verifier
     .verify();
   void [_verify];
 }
 
-// DatastoreSyncService: verify method signatures match.
 function _checkDatastoreSyncServiceFields(sync: TestingDatastoreSyncService) {
   const _pull: ReturnType<CanonicalDatastoreSyncService["pullChanged"]> = sync
     .pullChanged();
@@ -96,13 +89,9 @@ function _checkDatastoreSyncServiceFields(sync: TestingDatastoreSyncService) {
     .pushChanged();
   const _markDirty: ReturnType<CanonicalDatastoreSyncService["markDirty"]> =
     sync.markDirty();
-  // Verify the optional relPath member on DatastoreSyncOptions type-checks
-  // through both the canonical and testing-package signatures.
   const _markDirtyWithRelPath: ReturnType<
     CanonicalDatastoreSyncService["markDirty"]
   > = sync.markDirty({ relPath: "data/foo/v1/raw" });
-  // The namespace and subdirs options and every capability flag line up
-  // with the canonical types.
   const _scopedPull: ReturnType<CanonicalDatastoreSyncService["pullChanged"]> =
     sync.pullChanged({ namespace: "ns", subdirs: ["config"] });
   const _caps:
@@ -113,14 +102,11 @@ function _checkDatastoreSyncServiceFields(sync: TestingDatastoreSyncService) {
   const _testingCaps: TestingSyncCapabilities | undefined = (
     {} as CanonicalDatastoreSyncService
   ).capabilities?.();
-  // fetchContent has one signature in both packages, in both directions.
   const _fetchContent: CanonicalDatastoreSyncService["fetchContent"] =
     sync.fetchContent;
   const _testingFetchContent: TestingDatastoreSyncService["fetchContent"] = (
     {} as CanonicalDatastoreSyncService
   ).fetchContent;
-  // repairUnpushedFiles has one signature in both packages, in both
-  // directions.
   const _repairUnpushed: CanonicalDatastoreSyncService["repairUnpushedFiles"] =
     sync.repairUnpushedFiles;
   const _testingRepairUnpushed:
@@ -142,19 +128,16 @@ function _checkDatastoreSyncServiceFields(sync: TestingDatastoreSyncService) {
   ];
 }
 
-// SyncCapabilities: every canonical flag exists on the testing type.
 function _checkSyncCapabilitiesFields(caps: Required<TestingSyncCapabilities>) {
   const _all: Required<CanonicalSyncCapabilities> = caps;
   void [_all];
 }
 
-// DatastoreProvider: verify methods exist and return compatible types.
 function _checkDatastoreProviderFields(provider: TestingDatastoreProvider) {
   const _lock: TestingDistributedLock = provider.createLock("/path");
   const _verifier: TestingDatastoreVerifier = provider.createVerifier();
   const _path: string = provider.resolveDatastorePath("/repo");
 
-  // Optional methods — verify they exist on the type
   const _createSync: CanonicalDatastoreProvider["createSyncService"] =
     provider.createSyncService;
   const _resolveCachePath: CanonicalDatastoreProvider["resolveCachePath"] =
@@ -163,19 +146,16 @@ function _checkDatastoreProviderFields(provider: TestingDatastoreProvider) {
     "datastoreControlPlaneStore"
   ] = provider.datastoreControlPlaneStore;
   const _storage: CanonicalDatastoreProvider["storage"] = provider.storage;
-  // The v3 writer lease declaration, in both directions.
   const _datastoreWideLease: CanonicalDatastoreProvider["datastoreWideLease"] =
     provider.datastoreWideLease;
   const _testingDatastoreWideLease: TestingDatastoreProvider[
     "datastoreWideLease"
   ] = ({} as CanonicalDatastoreProvider).datastoreWideLease;
-  // The replica target, in both directions.
   const _replicaTarget: CanonicalDatastoreProvider["replicaTarget"] =
     provider.replicaTarget;
   const _testingReplicaTarget: TestingDatastoreProvider["replicaTarget"] = (
     {} as CanonicalDatastoreProvider
   ).replicaTarget;
-  // The replica paths, in both directions.
   const _replicaPaths: CanonicalDatastoreProvider["replicaPaths"] =
     provider.replicaPaths;
   const _testingReplicaPaths: TestingDatastoreProvider["replicaPaths"] = (
@@ -199,8 +179,6 @@ function _checkDatastoreProviderFields(provider: TestingDatastoreProvider) {
   ];
 }
 
-// Storage: the storage/1 types line up in both directions, so a storage
-// written against the testing types is one core can use and vice versa.
 function _checkDatastoreStorage(
   storage: TestingDatastoreStorage,
   caps: TestingStorageCapabilities,
@@ -216,24 +194,18 @@ function _checkDatastoreStorage(
   void [_storage, _back, _caps, _capsBack, _chunk, _chunkBack];
 }
 
-// Replica targets: one written against the testing type is one core can
-// use, and vice versa.
 function _checkV3ReplicaTarget(target: TestingV3ReplicaTarget) {
   const _target: CanonicalV3ReplicaTarget = target;
   const _back: TestingV3ReplicaTarget = {} as CanonicalV3ReplicaTarget;
   void [_target, _back];
 }
 
-// Replica path stores: one written against the testing type is one core
-// can use, and vice versa.
 function _checkReplicaPathStore(store: TestingReplicaPathStore) {
   const _store: CanonicalReplicaPathStore = store;
   const _back: TestingReplicaPathStore = {} as CanonicalReplicaPathStore;
   void [_store, _back];
 }
 
-// Control-plane stores: a store written against the testing types is one
-// core can use, read options included.
 function _checkControlPlaneStores(
   store: TestingControlPlaneStore,
   datastoreStore: TestingDatastoreControlPlaneStore,
@@ -246,8 +218,6 @@ function _checkControlPlaneStores(
   void [_store, _datastoreStore, _read];
 }
 
-// The writable datastore-wide store lines up in both directions, and is a
-// read-only one too.
 function _checkWritableDatastoreControlPlaneStore(
   store: TestingWritableDatastoreControlPlaneStore,
 ) {
@@ -258,7 +228,6 @@ function _checkWritableDatastoreControlPlaneStore(
   void [_store, _back, _readOnly];
 }
 
-// LockInfo: verify field types match.
 function _checkLockInfoFields(info: TestingLockInfo) {
   const _holder: string = info.holder;
   const _hostname: string = info.hostname;

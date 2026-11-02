@@ -37,7 +37,6 @@ const arbType = fc.constantFrom(
 ).map((raw) => ModelType.create(raw));
 const arbName = fc.stringMatching(/^[a-z][a-z0-9-]{0,15}$/);
 
-/** The record key a change writes or removes. */
 function keyOf(change: TypedChange): string {
   if ("put" in change) return change.put.key.toString();
   const op = change.op;
@@ -45,10 +44,6 @@ function keyOf(change: TypedChange): string {
   return op.key.toString();
 }
 
-/**
- * Every change any builder makes, for one model, data name and version: the
- * keys a repository can stage.
- */
 function everyChange(
   changes: ModelChanges,
   name: string,

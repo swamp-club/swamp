@@ -17,18 +17,12 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/** The repository this command opened to write, if any (swamp-club#3473). */
 let candidateRepoDir: string | undefined;
 
-/**
- * Records that this command opened `repoDir` to write, so teardown may run
- * its retention pass. Read-only commands never call it.
- */
 export function noteRetentionCandidate(repoDir: string): void {
   candidateRepoDir = repoDir;
 }
 
-/** Returns the noted repository and forgets it. */
 export function takeRetentionCandidate(): string | undefined {
   const repoDir = candidateRepoDir;
   candidateRepoDir = undefined;

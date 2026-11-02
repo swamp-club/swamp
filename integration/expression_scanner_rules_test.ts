@@ -18,25 +18,9 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * Fitness test for finding `${{ ... }}` expressions:
- *
- *   No production regex literal matches the `${{` opener except the ones
- *   pinned below.
- *
- * Where an expression ends decides its raw text, and the raw text keys the
- * values every evaluation pass carries (the values map, authored-expression
- * sets, deferred records, the serve vault allowlist). A hand-rolled
- * `/\$\{\{\s*(.+?)\s*\}\}/` ends an expression at the first `}}`, even one
- * inside a CEL string, so its raw text disagrees with everything else and an
- * authored expression silently becomes literal text (swamp-club#2492).
- *
- * Find expressions with `scanExpressions`, `matchSingleExpression`,
- * `replaceExpressionSpans` or `isExpressionsOnly` from
- * `src/domain/expressions/expression_scanner.ts`, or `extractExpressions` /
- * `containsExpression` from `expression_parser.ts`.
- *
- * The rule matches the regex-literal source `\$\{\{`. Test files are out of
- * scope. Static — no subprocesses, nothing is executed.
+ * no production regex may match the ${{ opener unless pinned: one ending at the
+ * first }}, even inside a CEL string, disagrees with the scanner and silently
+ * turns an authored expression into literal text
  */
 
 import {

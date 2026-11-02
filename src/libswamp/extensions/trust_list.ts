@@ -37,13 +37,11 @@ export type TrustListEvent =
   | { kind: "completed"; data: TrustListData }
   | { kind: "error"; error: SwampError };
 
-/** Dependencies for the trust list operation, injected for testability. */
 export interface TrustListDeps {
   readMarker: () => Promise<RepoMarkerData | null>;
   loadAuthCollectives: () => Promise<string[] | undefined>;
 }
 
-/** Wires real infrastructure into TrustListDeps. */
 export function createTrustListDeps(repoDir: string): TrustListDeps {
   const markerRepo = new RepoMarkerRepository();
   const authRepo = new AuthRepository();
@@ -62,7 +60,6 @@ export function createTrustListDeps(repoDir: string): TrustListDeps {
   };
 }
 
-/** Lists trusted collectives, merging explicit config with membership. */
 export async function* trustList(
   _ctx: LibSwampContext,
   deps: TrustListDeps,
@@ -73,8 +70,6 @@ export async function* trustList(
   const authCollectives = await deps.loadAuthCollectives();
 
   const explicit = marker?.trustedCollectives ?? DEFAULT_TRUSTED;
-  // Membership collectives are trusted only when explicitly opted in
-  // (swamp-club#465); the default is no membership trust.
   const trustMemberCollectives = marker?.trustMemberCollectives === true;
   const resolved = resolveTrustedCollectives(marker, authCollectives);
 

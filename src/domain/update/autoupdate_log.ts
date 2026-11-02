@@ -20,7 +20,7 @@
 export type AutoupdateOutcome = "updated" | "up_to_date" | "error";
 
 export interface AutoupdateLogEntry {
-  timestamp: string; // ISO 8601
+  timestamp: string;
   versionBefore: string;
   versionAfter: string | null;
   outcome: AutoupdateOutcome;

@@ -32,7 +32,7 @@ const arbIdentity: fc.Arbitrary<ProcessIdentity> = fc.record({
     "h1#pid:[1]",
     "h1#pid:[2]",
     "h2",
-    // A hostname that changed under one kernel (swamp-club#3801).
+    // a hostname that changed under one kernel
     "h2#pid:[1]",
   ),
   bootId: fc.option(fc.constantFrom("b1", "b2"), { nil: undefined }),
@@ -55,7 +55,6 @@ const arbCase = fc.record({
   pidNamespaces: fc.option(fc.boolean(), { nil: undefined }),
 });
 
-/** The pid namespace a host names, or undefined when it names none. */
 function namespaceOf(host: string): string | undefined {
   return host.includes("#") ? host.slice(host.indexOf("#") + 1) : undefined;
 }
@@ -125,7 +124,6 @@ Deno.test("judgeRecordedProcess: an unreadable start time never turns a present 
       (here, probe, recordedSide, bootIdRequired) => {
         // A kernel judged by pid: where boot ids exist, it has one.
         fc.pre(!bootIdRequired || here.bootId !== undefined);
-        // Same kernel; one side's start time unreadable.
         const { startTime: _, ...unstamped } = here;
         const verdict = judgeRecordedProcess(
           { pid: 2, process: recordedSide ? unstamped : here },

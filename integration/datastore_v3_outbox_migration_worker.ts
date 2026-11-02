@@ -17,12 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * One opener for the outbox migration test (swamp-club#3564): a worker
- * whose own connection opens the outbox once the test lets every opener
- * go at once.
- */
-
 import { SqliteCommitOutbox } from "../src/infrastructure/datastore_v3/sqlite_commit_outbox.ts";
 
 export interface OutboxOpenRequest {

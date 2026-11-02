@@ -116,30 +116,18 @@ import {
   isDeferredExpression,
 } from "./deferred_expression.ts";
 
-/**
- * Textual fallback for detecting references to the `vault` namespace, used
- * only when the expression does not parse (see
- * {@link containsVaultExpression}). Like {@link ENV_PATTERN}, it matches any
- * bare `vault` identifier but not member access such as `self.vault`.
- */
 const VAULT_PATTERN = /(?<![.\w])vault\b/;
 
 /**
- * Textual fallback for detecting references to the `env` map, used only when
- * cel-js cannot parse the expression (see {@link containsEnvExpression}).
- *
- * Matches any bare `env` identifier — dotted access, bracket-index access,
- * and `env` passed around as a value — but not member access such as
- * `inputs.env` or identifiers that merely contain the word. Every form must
- * be classified as runtime, or it would be evaluated in the persist phase,
- * where the context also carries the process environment.
+ * every form of env must be classified as runtime, or it would be evaluated in
+ * the persist phase, where the context also carries the process environment
  */
 const ENV_PATTERN = /(?<![.\w])env\b/;
 
 /**
- * A bag for a caller that passed none: a view of the run's registry when the
- * context carries the run's sensitive values, otherwise a registry of its
- * own for the paths with no run, such as the validate pre-flight checks.
+ * a view of the run's registry when the context carries the run's sensitive
+ * values, otherwise a registry of its own for paths with no run, such as
+ * validate pre-flight checks
  */
 function bagFor(context: ExpressionContext | undefined): VaultSecretBag {
   return new VaultSecretBag(
@@ -148,9 +136,9 @@ function bagFor(context: ExpressionContext | undefined): VaultSecretBag {
 }
 
 /**
- * A routing destination sees references only (typed-secrets 4.5). Check even
- * literal text: an earlier pass may already have issued its sentinel. Keys
- * are checked before entering them, so no sentinel becomes an error path.
+ * a routing destination sees references only; check even literal text, as an
+ * earlier pass may have issued its sentinel; keys are checked before entering
+ * them so no sentinel becomes an error path
  */
 function refuseRoutingSecrets(
   value: unknown,
@@ -231,15 +219,9 @@ function astReferencesEnv(node: ASTNode, bound: ReadonlySet<string>): boolean {
 }
 
 /**
- * Checks whether a CEL expression references the `vault` namespace, as
- * `vault.get(...)` does. Expressions containing vault references must NOT be
- * evaluated during the persist phase — they are resolved at runtime only.
- *
- * Decided on the parsed tree, the way evaluation reads it, so text inside a
- * string literal never counts and a call reached through `cel.bind` or a
- * parenthesised receiver does. When the text does not parse, a textual scan
- * over it with string literals removed stands in; it is conservative, so an
- * error can only defer to runtime.
+ * decided on the parsed tree so text inside a string literal never counts; when
+ * the text does not parse a conservative textual scan stands in, so an error
+ * can only defer to runtime
  */
 export function containsVaultExpression(celExpression: string): boolean {
   const roots = freeRoots(celExpression);
@@ -247,11 +229,6 @@ export function containsVaultExpression(celExpression: string): boolean {
   return VAULT_PATTERN.test(stripStringLiterals(celExpression));
 }
 
-/**
- * Checks whether a CEL expression references the env map in any form.
- * Expressions containing env references must NOT be evaluated during
- * the persist phase — they are resolved at runtime only.
- */
 export function containsEnvExpression(celExpression: string): boolean {
   try {
     return astReferencesEnv(parseCel(celExpression).ast, new Set());
@@ -262,11 +239,6 @@ export function containsEnvExpression(celExpression: string): boolean {
   }
 }
 
-/**
- * Checks whether a CEL expression contains any runtime-only references
- * (vault or env). Expressions matching this check are deferred to runtime
- * and skipped during the persist phase.
- */
 export function containsRuntimeExpression(celExpression: string): boolean {
   return isDeferredExpression(celExpression) ||
     containsVaultExpression(celExpression) ||
@@ -274,38 +246,18 @@ export function containsRuntimeExpression(celExpression: string): boolean {
 }
 
 /**
- * The set of expressions an author actually wrote, keyed by raw `${{ ... }}`
- * text (and bare assertion predicates), or `"unrestricted"` to opt out.
- *
- * CEL evaluation splices data content into the tree as raw text
- * ({@link replaceExpressions}), and every later pass — the runtime pass and
- * any second CEL pass over step inputs — re-parses that tree. Without
- * provenance the two are indistinguishable, so a plain string field holding
- * expression text would be evaluated as if the author had written it: a
- * `vault.get(...)` or `env` reference resolves a secret directly, and any other
- * CEL (a `data.latest()` call on another model's sensitive field, say) reads
- * one through the evaluation context. Callers that evaluate a post-CEL tree
- * must therefore pass the set collected from their pre-CEL source.
- *
- * `"unrestricted"` is for callers whose input is author-written source that has
- * had no substitution applied — it must be spelled out rather than defaulted, so
- * that every call site states which case it is in.
+ * later passes re-parse spliced data as CEL, so without this set a data string
+ * holding vault.get or env text would resolve a secret; pass the pre-CEL
+ * source's set, and spell out unrestricted explicitly
  */
 export type AuthoredExpressions =
   | ReadonlySet<string>
   | "unrestricted";
 
 /**
- * Collects the raw text of every expression in `data`.
- *
- * Call this on author-written source — a definition or workflow as loaded from
- * disk — *before* any CEL evaluation, and pass the result to every later pass.
- * Keyed on raw expression text rather than path because CEL substitution can
- * replace a whole subtree at a path, and workflow paths do not map onto
- * definition paths.
- *
- * @param data - Author-written source data, pre-CEL
- * @param into - Optional set to accumulate into, for unioning several sources
+ * call on author-written source before any CEL evaluation; keyed on raw text
+ * because substitution can replace a whole subtree at a path and workflow paths
+ * do not map onto definition paths
  */
 export function collectAuthoredExpressions(
   data: unknown,
@@ -317,7 +269,6 @@ export function collectAuthoredExpressions(
   return into;
 }
 
-/** Binding paths (`inputs.home`, `self`, `steps.a.outputs`) a CEL expression reads. */
 function referencedBindingPaths(cel: string): string[] {
   // A literal() argument is text, so it reads no binding.
   return [
@@ -328,7 +279,6 @@ function referencedBindingPaths(cel: string): string[] {
     .map((m) => m[1] + m[2]);
 }
 
-/** True when one path is the other or an ancestor of it. */
 function overlaps(a: string, b: string): boolean {
   const under = (path: string, root: string) =>
     path === root || path.startsWith(root + ".") ||
@@ -336,14 +286,10 @@ function overlaps(a: string, b: string): boolean {
   return under(a, b) || under(b, a);
 }
 
-/** Evaluates authored constants for {@link constantOutputRaws}. */
 let constantEvaluator: CelEvaluator | undefined;
 
-/** An authored set's constant outputs, computed on first use. */
 interface ConstantOutputs {
-  /** Each authored constant that produces expression text, with that text. */
   byConstant: Map<string, Set<string>>;
-  /** Every expression text any of them produces. */
   all: Set<string>;
 }
 
@@ -353,14 +299,9 @@ const constantOutputCache = new WeakMap<
 >();
 
 /**
- * The raw text of every expression that an authored constant evaluates to,
- * such as the `inputs.version` expression text that
- * `literal('${{ inputs.version }}')` produces. A constant reads no binding
- * (no free roots), so its output is text the author wrote on purpose, and a
- * later pass that refuses it has nothing to report (swamp-club#3402).
- *
- * Derived only from `authored`, which data cannot extend. Constants that fail
- * to evaluate are skipped, as are bare assertion predicates.
+ * a constant reads no binding, so its output is text the author wrote on
+ * purpose and a later refusing pass has nothing to report; derived only from
+ * authored, which data cannot extend
  */
 function constantOutputs(authored: ReadonlySet<string>): ConstantOutputs {
   const cached = constantOutputCache.get(authored);
@@ -386,11 +327,9 @@ function constantOutputs(authored: ReadonlySet<string>): ConstantOutputs {
 }
 
 /**
- * The authored constants (see {@link constantOutputs}) whose output includes
- * one of `raws`. A nested workflow inherits these from its parent, so the
- * child, too, recognises `literal()` output it receives as the parent
- * author's text. Evaluating a constant reads no binding, so inheriting one
- * grants the child no access.
+ * a nested workflow inherits these from its parent so the child also recognises
+ * literal() output as the parent author's text; evaluating a constant reads no
+ * binding, so inheriting grants no access
  */
 export function authoredConstantsProducing(
   authored: ReadonlySet<string>,
@@ -407,10 +346,9 @@ export function authoredConstantsProducing(
 }
 
 /**
- * Whether a refusal of `expr` is worth a warning: not when the text is
- * another templating system's (see {@link isForeignExpression}), which no
- * swamp evaluation could own, nor when an authored constant produced it, and
- * only the first time the step's rejection report sees it.
+ * not worth a warning when the text is another templating system's or an
+ * authored constant produced it, and only the first time the step's rejection
+ * report sees it
  */
 function reportsRefusal(
   expr: ExpressionLocation,
@@ -424,15 +362,8 @@ function reportsRefusal(
 }
 
 /**
- * Splits expressions into those the author wrote and those CEL substitution
- * introduced, logging a warning for each rejection so an injection attempt is
- * visible in the run log. Text an authored constant produced, such as
- * `literal()` output, and another templating system's text are refused
- * without a warning, and a step logs each refused raw text once.
- *
- * The raw expression text is logged because it is the reference, never a
- * resolved value — nothing has been evaluated at this point, and that is the
- * whole point of the rejection.
+ * the raw expression text is logged because it is the reference, never a
+ * resolved value: nothing has been evaluated at this point
  */
 export function partitionAuthored(
   expressions: ExpressionLocation[],
@@ -457,12 +388,9 @@ export function partitionAuthored(
 }
 
 /**
- * Warns that a refused expression is the stored reference of a sensitive
- * field whose vault read failed in this run, naming the vault, key and
- * provider error, in place of the data-content warning: swamp wrote that
- * reference, and the unreadable vault is why it is still text
- * (swamp-club#3806). The text is refused either way. False when `expr` is
- * not such a reference.
+ * warns in place of the data-content warning when a refused expression is the
+ * stored reference of a sensitive field whose vault read failed in this run;
+ * the text is refused either way
  */
 function warnedUnread(
   expr: ExpressionLocation,
@@ -476,10 +404,9 @@ function warnedUnread(
 }
 
 /**
- * {@link partitionAuthored}, then drops every occurrence that overlaps data in
- * `provenance`: expression text that arrived as data never evaluates, even
- * when its raw text matches an expression the author wrote. Strictly narrower
- * than the raw-text rule alone.
+ * drops every occurrence overlapping data in provenance: expression text that
+ * arrived as data never evaluates, even when its raw text matches an authored
+ * expression
  */
 export function partitionAuthoredAt(
   expressions: ExpressionLocation[],
@@ -503,11 +430,6 @@ export function partitionAuthoredAt(
   });
 }
 
-/**
- * Where data sits in the `{ inputs, self, run, steps }` bindings a deferred
- * reference resolves against: each namespace's binding provenance, with step
- * outputs always data.
- */
 function bindingTreeProvenance(context: ExpressionContext): ProvenanceMap {
   const bindings = bindingProvenanceOf(context);
   return ProvenanceMap.authored()
@@ -517,76 +439,44 @@ function bindingTreeProvenance(context: ExpressionContext): ProvenanceMap {
     .withWholeData("steps");
 }
 
-/**
- * Where data sits in a deferred record's captured bindings, as recorded when
- * it was captured. Records written before provenance existed carry none and
- * keep the behaviour they had then.
- */
+/** older records carry no provenance and keep their earlier behaviour */
 function deferredBindingsProvenance(record: DeferredExpression): ProvenanceMap {
   return record.provenance === undefined
     ? ProvenanceMap.authored()
     : ProvenanceMap.fromData(record.provenance);
 }
 
-/**
- * Result of resolving runtime expressions in a definition.
- * Includes the resolved definition and a VaultSecretBag containing
- * sentinel-to-value mappings for any vault secrets encountered.
- */
 export interface RuntimeResolutionResult {
   definition: Definition;
   secretBag: VaultSecretBag;
-  /**
-   * The expressions `keepUnevaluated` left as their authored text, keyed
-   * on raw text with the error each failed with. Absent when none did.
-   */
   failedExpressions?: FailedExpressions;
   /**
-   * Where data sits in `definition`'s data after the pass: the incoming
-   * provenance carried through, plus each runtime splice's origin, so an
-   * `env.X` value or a deferred data read is data where it landed
-   * (swamp-club#3868). Its offsets index `definition`, sentinels included.
+   * the incoming provenance carried through plus each runtime splice's origin,
+   * so an env.X value or deferred data read is data where it landed; offsets
+   * index definition, sentinels included
    */
   provenance: ProvenanceMap;
 }
 
-/** How a runtime pass treats an expression that fails to evaluate. */
 interface UnevaluatedPolicy {
-  /** True keeps the expression as its authored text; false fails the pass. */
   keep: (error: unknown, expression: ExpressionLocation) => boolean;
-  /** Where each kept expression is recorded, keyed on its raw text. */
   into: Map<string, Error>;
 }
 
-/** What a delivery's runtime pass adds to the pass over a whole definition. */
 interface RuntimePassOptions {
-  /** A subtree the pass neither resolves nor substitutes into. */
   skipPath?: (path: string) => boolean;
-  /** An expression that fails to evaluate; absent, it fails the pass. */
   unevaluated?: UnevaluatedPolicy;
 }
 
-/**
- * Result of evaluating a single definition.
- */
 export interface EvaluatedDefinition {
   definition: Definition;
   type: ModelType;
-  /** Expressions collected from source and inputs before substitution. */
   authoredExpressions: ReadonlySet<string>;
-  /** Whether any expressions were evaluated */
   hadExpressions: boolean;
-  /**
-   * Expressions left unresolved because evaluation failed, with the reason.
-   * Absent when nothing was evaluated (e.g. a definition loaded for
-   * `--last-evaluated`).
-   */
   failedExpressions?: FailedExpressions;
   /**
-   * The definition to execute: `definition` with sensitive data values in
-   * its arguments replaced by sentinels from the caller's bag. Present only
-   * when a bag was given; `definition` keeps real values for caching,
-   * reports and `self.globalArguments`.
+   * present only when a bag was given; definition keeps real values for
+   * caching, reports and self.globalArguments
    */
   sanitizedDefinition?: Definition;
   /**
@@ -594,7 +484,6 @@ export interface EvaluatedDefinition {
    * data, as for a definition evaluated straight from source.
    */
   provenance?: ProvenanceMap;
-  /** Where data sits in `sanitizedDefinition`'s data, when present. */
   sanitizedProvenance?: ProvenanceMap;
   /**
    * The definition as it was before evaluation. Its expression paths are the
@@ -604,47 +493,25 @@ export interface EvaluatedDefinition {
 }
 
 /**
- * Domain service for evaluating CEL expressions in model definitions.
- */
-/**
- * What a pass over data does with another templating system's `${{ ... }}`
- * text (see {@link isForeignExpression}) that fails to evaluate: `"fail"`
- * rethrows, as for any failed expression; `"passThrough"` leaves it raw when
- * it failed on its foreign root (see {@link failedOnForeignRoot}) and reads
- * no unlisted root (see {@link unlistedForeignRootError}).
- * Only a step's task inputs pass it through. Everything else a step-time
- * pass covers (placement, say) must be resolved by swamp.
+ * only a step's task inputs pass foreign text through; everything else a
+ * step-time pass covers (placement, say) must be resolved by swamp
  */
 export type ForeignTextRule = "fail" | "passThrough";
 
-/** What {@link ExpressionEvaluationService.passEvaluatorFor} binds a pass to. */
 export interface PassEvaluatorOptions {
-  /** The pass's issuing bag; a bag over the run's registry when absent. */
   readonly secretBag?: VaultSecretBag;
-  /** The authored location a vault check names. */
   readonly location: string;
   /**
    * The predicate destination of a guard or assert: a result that holds a
    * secret is refused instead of leaving as a sentinel.
    */
   readonly secretResult?: "refuse";
-  /** A routing destination: refuse issued references before returning a result. */
   readonly destination?: string;
 }
 
-/**
- * The evaluator a pass runs with: the shape the passes take, whether the
- * run is typed, and the pass's authorization step for the content it
- * evaluates synchronously (design/enablers/typed-secrets.md Section 3.4).
- */
 export interface PassEvaluator
   extends CelExpressionEvaluator, CelExpressionValidator {
-  /**
-   * Prepares the context for every expression in `content` and, in a typed
-   * run, authorizes the sensitive-field references a synchronous evaluation
-   * of them can read. Call it before `evaluate`; `evaluateAsync` prepares
-   * and authorizes for itself.
-   */
+  /** call it before evaluate; evaluateAsync prepares and authorizes for itself */
   prepare(content: unknown, context: Record<string, unknown>): Promise<void>;
 }
 
@@ -669,11 +536,8 @@ export class ExpressionEvaluationService {
   }
 
   /**
-   * The context a workflow-level evaluation (`swamp workflow evaluate`)
-   * runs against, from this service's resolver, so the context and a typed
-   * pass's vault check scope answer from one resolver. Loading every model
-   * definition is only needed when the workflow reads the model or file
-   * namespaces.
+   * loading every model definition is only needed when the workflow reads the
+   * model or file namespaces
    */
   buildEvaluationContext(
     needsModelNamespace: boolean,
@@ -684,11 +548,6 @@ export class ExpressionEvaluationService {
       : Promise.resolve(this.modelResolver.buildLightContext(sensitiveValues));
   }
 
-  /**
-   * What a typed evaluation runs with: the issuing bag, and the vault check
-   * scope the resolver's vault service answers, so vault.get checks and
-   * sensitive-field authorization ask the service a load reads through.
-   */
   private scopeFor(
     secretBag: VaultSecretBag,
     location: string,
@@ -709,9 +568,8 @@ export class ExpressionEvaluationService {
   }
 
   /**
-   * Binds the shared evaluator to this pass's issuing bag, lazy vault scope and
-   * destination. Synchronous passes prepare authorization for their own reads;
-   * authorization never carries from one pass to another.
+   * synchronous passes prepare authorization for their own reads; authorization
+   * never carries from one pass to another
    */
   passEvaluatorFor(
     sensitiveValues: RunSensitiveValues | undefined,
@@ -771,11 +629,6 @@ export class ExpressionEvaluationService {
     return false;
   }
 
-  /**
-   * {@link evaluateData} over a raw/sanitized pair: each expression is
-   * evaluated once, from the raw copy, and spliced into both; the sanitized
-   * copy replaces sensitive data values with sentinels from `secretBag`.
-   */
   async evaluateDataPair<T>(
     pair: SplicePair<T>,
     context: ExpressionContext,
@@ -803,17 +656,9 @@ export class ExpressionEvaluationService {
   }
 
   /**
-   * Evaluates expressions in arbitrary data with the given context.
-   * Used at step-execution seams over workflow-level data.
-   *
-   * @param data - The data containing expressions
-   * @param context - The evaluation context
-   * @param authored - Expressions the author wrote, collected from the
-   *   pre-CEL source with {@link collectAuthoredExpressions}. This seam runs
-   *   over data that has already had substitution applied, so anything not in
-   *   the set arrived as data content and is left as literal text. Pass
-   *   `"unrestricted"` only when `data` is unsubstituted source.
-   * @returns The data with expressions replaced
+   * this seam runs over already-substituted data, so anything not in authored
+   * arrived as data content and stays literal text; pass unrestricted only for
+   * unsubstituted source
    */
   async evaluateData(
     data: unknown,
@@ -839,11 +684,6 @@ export class ExpressionEvaluationService {
     );
   }
 
-  /**
-   * {@link evaluateData} over data whose provenance is known: an occurrence
-   * overlapping data is neither evaluated nor substituted, and the result's
-   * map records where each spliced value's data now sits.
-   */
   async evaluateDataTracked(
     data: unknown,
     provenance: ProvenanceMap,
@@ -900,19 +740,15 @@ export class ExpressionEvaluationService {
       { location: expressions[0].path, secretBag },
     );
 
-    // Evaluate CEL-only expressions; skip runtime expressions (vault, env)
     const evaluatedValues = new Map<string, unknown>();
     for (const expr of expressions) {
       if (containsRuntimeExpression(expr.celExpression)) {
         continue;
       }
 
-      // Skip syntactically-invalid CEL: the ${{ ... }} sequence appears
-      // inside a prose string (e.g. a plan body that documents expression
-      // syntax). Leaving the raw text in place preserves prose round-trip.
-      // The syntax check decides: the
-      // typed one would also refuse a vault alias, which is the typed
-      // evaluation's own refusal, not prose.
+      // skip invalid CEL so prose documenting expression syntax keeps its raw
+      // text; the syntax check decides, since the typed one would also refuse a
+      // vault alias, which is not prose
       if (!this.celEvaluator.validate(expr.celExpression).valid) {
         continue;
       }
@@ -924,10 +760,9 @@ export class ExpressionEvaluationService {
           context,
         );
       } catch (error) {
-        // In a step's task inputs, another templating system's text
-        // (${{ github.sha }}) stays raw and reaches the method as literal
-        // text (swamp-club#2528). Classified only after it fails, so a
-        // mistake here can never stop an expression that evaluates.
+        // in a step's task inputs another templating system's text stays raw
+        // and reaches the method as literal text; classified only after it
+        // fails, so a mistake here can never stop an expression that evaluates
         if (
           foreignText !== "passThrough" ||
           !isForeignExpression(expr.celExpression) ||
@@ -950,12 +785,9 @@ export class ExpressionEvaluationService {
   }
 
   /**
-   * Builds the context for a pass over a definition. Only definitions that
-   * read the model or file namespaces need every model definition loaded;
-   * everything else evaluates against the lightweight context. Runtime
-   * expressions may read those namespaces too (`env.X + model.y`), so the
-   * runtime pass over an evaluated definition makes the same choice from the
-   * expressions that remain in it.
+   * runtime expressions may read the model or file namespaces too (env.X +
+   * model.y), so the runtime pass makes the same choice from the expressions
+   * that remain
    */
   async buildRuntimeContext(
     definition: Definition,
@@ -974,16 +806,6 @@ export class ExpressionEvaluationService {
     return ctx;
   }
 
-  /**
-   * Evaluates expressions in a single definition.
-   *
-   * @param definition - The definition to evaluate
-   * @param type - The model type
-   * @param sensitiveValues - The run's record of resolved sensitive values
-   * @param inputValues - Optional input values to use in expression evaluation
-   * @param context - Optional pre-built context (for batch evaluation)
-   * @returns The evaluated definition
-   */
   async evaluateDefinition(
     definition: Definition,
     type: ModelType,
@@ -992,13 +814,10 @@ export class ExpressionEvaluationService {
     context?: ExpressionContext,
     secretBag?: VaultSecretBag,
     options: {
-      /** Where data already sits in the definition's data. */
       definition?: DefinitionPassProvenance;
-      /** Where data sits in `inputValues`. */
       inputs?: ProvenanceMap;
       /** On replay, only expressions vouched for by source/cache may run. */
       authoredExpressions?: ReadonlySet<string>;
-      /** On replay, evaluate only globals and the selected method. */
       methodName?: string;
     } = {},
   ): Promise<EvaluatedDefinition> {
@@ -1011,11 +830,9 @@ export class ExpressionEvaluationService {
         collectAuthoredExpressions(definitionData),
       );
 
-    // Build context if not provided.
     const ctx = context ??
       await this.buildRuntimeContext(definition, sensitiveValues, inputValues);
 
-    // Add inputs to context if provided
     if (inputValues) {
       ctx.inputs = inputValues;
       attachBindingProvenance(ctx, {
@@ -1023,7 +840,6 @@ export class ExpressionEvaluationService {
       });
     }
 
-    // Add self reference for the definition
     ctx.self = {
       id: definition.id,
       name: definition.name,
@@ -1066,12 +882,8 @@ export class ExpressionEvaluationService {
       };
     }
 
-    // In a typed run the pass issues into a bag of the run's registry, so a
-    // Secret a data read returned leaves CEL as a sentinel; a caller that
-    // passed no bag gets one over the run's registry. vault.get stays a
-    // runtime root here, so the scope's vault service answers only the
-    // authorization of sensitive-field references
-    // (design/enablers/typed-secrets.md Section 5).
+    // In a typed run the pass issues into a bag of the run's registry so a
+    // Secret from a data read leaves CEL as a sentinel.
     const passEvaluator = await this.passEvaluatorFor(sensitiveValues, {
       secretBag,
       location: definition.name,
@@ -1100,7 +912,6 @@ export class ExpressionEvaluationService {
         : (path) => isOutsideMethodDelivery(path, methodName),
     );
 
-    // Create new Definition from evaluated data
     const evaluatedDefinition = DefinitionClass.fromData(evaluatedData);
 
     return {
@@ -1120,13 +931,11 @@ export class ExpressionEvaluationService {
     };
   }
 
-  /** Replace parent-authored runtime input expressions with scoped references. */
   deferChildInputs(
     data: unknown,
     context: ExpressionContext,
     authored: AuthoredExpressions,
     omitBindings: readonly string[] = [],
-    /** Where data sits in `data`; occurrences in data are never deferred. */
     provenance: ProvenanceMap = ProvenanceMap.authored(),
   ) {
     const deferredExpressions = [...(context.deferredExpressions ?? [])];
@@ -1177,10 +986,9 @@ export class ExpressionEvaluationService {
   }
 
   /**
-   * A child cannot capture resume inputs, but a vault selector using one
-   * must keep the reference the parent selected. Bind just that selector
-   * before its scope is omitted. No vault value is checked or loaded here;
-   * the child still resolves the reference under its own vault access.
+   * a child cannot capture resume inputs but a vault selector using one must
+   * keep the reference the parent selected; bind just that selector, loading no
+   * vault value; the child resolves under its own vault access
    */
   private bindOmittedVaultSelectors(
     expression: string,
@@ -1207,9 +1015,9 @@ export class ExpressionEvaluationService {
         ) {
           return bare;
         }
-        // A vault selector is a routing value: in a typed run a Secret in
-        // it is refused rather than written into the child's expression as
-        // sentinel text (typed-secrets 4.1).
+        // a vault selector is a routing value: in a typed run a Secret in it is
+        // refused rather than written into the child's expression as sentinel
+        // text
         const registry = sensitiveValuesOf(context)?.sentinels;
         const evaluator = this.celEvaluator;
         const value = registry === undefined
@@ -1240,23 +1048,13 @@ export class ExpressionEvaluationService {
     return result + expression.slice(last);
   }
 
-  /**
-   * Evaluates all definitions in dependency order.
-   * Definitions are evaluated in topological order based on their expression dependencies.
-   *
-   * @returns Array of evaluated definitions
-   * @throws CyclicDependencyError if circular dependencies are detected
-   */
   async evaluateAllDefinitions(
     sensitiveValues: RunSensitiveValues,
   ): Promise<EvaluatedDefinition[]> {
-    // Load all definitions
     const allDefinitions = await this.definitionRepo.findAllGlobal();
 
-    // Build dependency graph
     const nodes = this.buildDefinitionDependencyGraph(allDefinitions);
 
-    // Sort topologically
     let sortedNames: string[];
     try {
       const sortResult = this.sortService.sort(nodes);
@@ -1278,7 +1076,6 @@ export class ExpressionEvaluationService {
       allDefinitions,
     );
 
-    // Map of definition name to definition data
     const definitionMap = new Map<
       string,
       { definition: Definition; type: ModelType }
@@ -1287,13 +1084,11 @@ export class ExpressionEvaluationService {
       definitionMap.set(definition.name, { definition, type });
     }
 
-    // Evaluate in order
     const results: EvaluatedDefinition[] = [];
     for (const name of sortedNames) {
       const entry = definitionMap.get(name);
       if (!entry) continue;
 
-      // Add self to context for this evaluation
       const ctxWithSelf: ExpressionContext = {
         ...context,
         self: {
@@ -1314,7 +1109,6 @@ export class ExpressionEvaluationService {
       );
       results.push(result);
 
-      // Update context with evaluated definition data for subsequent evaluations
       if (result.hadExpressions) {
         const modelData = context.model[name] ?? {
           input: {
@@ -1334,7 +1128,6 @@ export class ExpressionEvaluationService {
           inputs: result.definition.inputs,
         };
         context.model[name] = modelData;
-        // Also update by UUID
         context.model[result.definition.id] = modelData;
       }
     }
@@ -1342,9 +1135,6 @@ export class ExpressionEvaluationService {
     return results;
   }
 
-  /**
-   * Builds a dependency graph from definitions based on their expressions.
-   */
   private buildDefinitionDependencyGraph(
     definitions: { definition: Definition; type: ModelType }[],
   ): GraphNode[] {
@@ -1355,7 +1145,6 @@ export class ExpressionEvaluationService {
       const definitionData = definition.toData();
       const expressions = extractExpressions(definitionData);
 
-      // Collect all model references from expressions
       const dependencies: string[] = [];
       for (const expr of expressions) {
         const refs = extractModelRefs(expr.celExpression);
@@ -1371,7 +1160,7 @@ export class ExpressionEvaluationService {
 
       nodes.push({
         name: definition.name,
-        weight: 0, // All definitions have equal weight
+        weight: 0,
         dependencies,
       });
     }
@@ -1379,33 +1168,15 @@ export class ExpressionEvaluationService {
     return nodes;
   }
 
-  /**
-   * Checks if any string value in the definition contains expressions.
-   */
   hasDefinitionExpressions(definition: Definition): boolean {
     const data = definition.toData();
     return this.checkForExpressions(data);
   }
 
   /**
-   * Resolves remaining runtime expressions (vault and env) in an already-evaluated definition.
-   * This is the runtime phase — vault secrets and env variables are resolved here and never persisted.
-   *
-   * Vault secrets are replaced with sentinel tokens that stand for their
-   * references; no value is read. The caller's delivery loads the returned
-   * VaultSecretBag ({@link secretLoader}) and resolves through the loaded view:
-   * - Non-shell contexts: VaultSecretBag.resolveDeep() for raw values
-   * - Shell commands: VaultSecretBag.resolveForShell() for env var injection
-   *
-   * @param definition - The definition (may contain remaining ${{ vault.get(...) }} or ${{ env.* }} expressions)
-   * @param redactor - Optional SecretRedactor for the value an existence probe reads
-   * @param expressionContext - Optional context for CEL-evaluating dynamic vault.get() arguments
-   * @param authored - Expressions the author wrote, collected from the pre-CEL
-   *   source with {@link collectAuthoredExpressions}. Anything else in the
-   *   definition arrived via data substitution and is left as literal text.
-   *   Required so every caller states whether its input is author-written;
-   *   pass `"unrestricted"` only when no substitution has run.
-   * @returns The definition with sentinels and the VaultSecretBag for resolving them
+   * vault secrets become sentinels standing for their references, no value is
+   * read; the caller's delivery loads the bag; expressions not in authored
+   * arrived via data substitution and stay literal text
    */
   async resolveRuntimeExpressionsInDefinition(
     definition: Definition,
@@ -1429,21 +1200,15 @@ export class ExpressionEvaluationService {
        */
       provenance?: ProvenanceMap;
       /**
-       * The method this delivery is for. Given, the pass covers the
-       * runtime expressions of the global arguments and of this method's
-       * subtree only ({@link isDeliveredWithMethod}); every other method's
-       * are left as authored, neither checked, loaded nor failed on, as
-       * the definition pass's failures in them are never asserted, and
-       * nothing is substituted into them, not even the value of a raw text
-       * they share with this method. Absent, the pass covers the whole
-       * definition.
+       * given, the pass covers runtime expressions of the global arguments and
+       * this method's subtree only; every other method's are left as authored,
+       * with nothing substituted into them even from a shared raw text
        */
       methodName?: string;
       /**
-       * Decides an expression whose evaluation failed: true leaves it as
-       * its authored text and records it in the result's
-       * `failedExpressions`, and the pass goes on to the next expression;
-       * false, and the default, fails the pass with the error.
+       * true leaves a failed expression as its authored text, records it in
+       * failedExpressions and goes on; false, the default, fails the pass with
+       * the error
        */
       keepUnevaluated?: (
         error: unknown,
@@ -1457,10 +1222,9 @@ export class ExpressionEvaluationService {
     const expressions = extractExpressions(definitionData);
     const provenance = options.provenance ?? ProvenanceMap.authored();
 
-    // Filter to only runtime expressions (vault or env), of the delivery's
-    // method when one is named, then to those the author actually wrote at
-    // an authored position — see AuthoredExpressions. Description prose
-    // may document the syntax and is never resolved.
+    // description prose may document the syntax and is never resolved; only
+    // runtime expressions of the delivery's method, at authored positions, are
+    // resolved
     const methodName = options.methodName;
     const isDescription = definitionDescriptionPaths(definitionData);
     const runtimeExpressions = partitionAuthoredAt(
@@ -1522,36 +1286,23 @@ export class ExpressionEvaluationService {
   }
 
   /**
-   * A loader that reads vault.get() values at delivery through the vault
-   * service this evaluator's existence checks ask. A method boundary loads
-   * the step's bag with it (design/enablers/typed-secrets.md Section 3.3).
+   * a method boundary loads the step's bag with a loader that reads vault.get()
+   * values at delivery through the same vault service the existence checks ask
    */
   secretLoader(redactor: SecretRedactor | undefined): SecretLoader {
     return this.modelResolver.secretLoader(redactor);
   }
 
   /**
-   * Resolves remaining runtime expressions (vault and env) in arbitrary data.
-   * This is the runtime phase — vault secrets and env variables are resolved here and never persisted.
-   *
-   * Typed routing callers supply a destination: references in both the input
-   * and result are refused without loading, even when no expression remains.
-   * Legacy callers and trusted validation load inline (no bag is returned).
-   * These callers are pinned by the Section 3.3 fitness rule.
-   *
-   * @param data - The data (may contain remaining runtime expressions)
-   * @param redactor - Optional SecretRedactor to register resolved secret values for redaction
-   * @param expressionContext - Optional context for CEL-evaluating dynamic vault.get() arguments
-   * @param authored - Expressions the author wrote. See
-   *   {@link resolveRuntimeExpressionsInDefinition}.
-   * @returns Resolved data; typed routing refuses secrets before returning it.
+   * typed routing callers supply a destination: references in both input and
+   * result are refused without loading, even when no expression remains; legacy
+   * callers and trusted validation load inline, no bag returned
    */
   async resolveRuntimeExpressionsInData(
     data: unknown,
     redactor: SecretRedactor | undefined,
     expressionContext: ExpressionContext | undefined,
     authored: AuthoredExpressions,
-    /** Where data sits in `data`. */
     provenance: ProvenanceMap = ProvenanceMap.authored(),
     /** Typed routing refuses before any load; legacy/trusted callers still load. */
     destination?: PassEvaluatorOptions & { destination: string },
@@ -1616,28 +1367,15 @@ export class ExpressionEvaluationService {
   }
 
   /**
-   * Resolves both CEL expressions (with the supplied context, including
-   * self.* for forEach iteration) and runtime expressions (env, vault)
-   * in arbitrary data in a single call. Two-pass composition:
-   *
-   *   1. {@link evaluateData} — CEL only, skips runtime. Resolves self.*,
-   *      inputs.*, model.*, data.*, etc. against the supplied context.
-   *   2. {@link resolveRuntimeExpressionsInData} — env and vault, with the
-   *      caller's destination. Typed routing refuses references; legacy
-   *      callers load and redact. The context carries dynamic vault selectors.
-   *
-   * Used at execution-time seams that consume workflow-level data where
-   * CEL must materialize before runtime resolution walks the now-CEL-
-   * resolved tree. Because the CEL pass splices data content into that tree,
-   * the caller must supply provenance collected from authored source before
-   * any substitution, and both passes apply it.
+   * the CEL pass splices data content into the tree, so the caller must supply
+   * provenance collected from authored source before any substitution, and both
+   * passes apply it
    */
   async resolveAllExpressionsInData(
     data: unknown,
     context: ExpressionContext,
     redactor: SecretRedactor | undefined,
     authored: AuthoredExpressions,
-    /** Where data sits in `data`. */
     provenance: ProvenanceMap = ProvenanceMap.authored(),
     destination?: PassEvaluatorOptions & { destination: string },
   ): Promise<unknown> {
@@ -1657,10 +1395,6 @@ export class ExpressionEvaluationService {
     );
   }
 
-  /**
-   * Internal: resolves runtime expressions in definition data and returns a new Definition.
-   * Vault secrets are replaced with sentinel tokens stored in the secretBag.
-   */
   private async resolveRuntimeInExpressions(
     definitionData: ReturnType<Definition["toData"]>,
     runtimeExpressions: ExpressionLocation[],
@@ -1704,7 +1438,6 @@ export class ExpressionEvaluationService {
     };
   }
 
-  /** Resolve registered references with parent bindings and fresh runtime services. */
   private async resolveRuntimeData(
     data: unknown,
     expressions: ExpressionLocation[],
@@ -1723,22 +1456,18 @@ export class ExpressionEvaluationService {
     );
     const resolvedReferences = new Map<string, unknown>();
     const resolving = new Set<string>();
-    // Only the bindings an expression reads are resolved, so an unused
-    // reference (a missing env var or vault key in another input) never
-    // becomes a dependency of this expression. Resolved references are
-    // memoized, so re-substituting per expression is cheap. `location` is
-    // the authored expression being resolved, which a vault.get() in a
-    // deferred binding is reported at.
+    // only the bindings an expression reads are resolved, so an unused
+    // reference (a missing env var or vault key in another input) never becomes
+    // a dependency of it; resolved references are memoized
     const withBindings = async (
       ctx: ExpressionContext,
       cel: string,
       location: string,
     ): Promise<ExpressionContext> => {
       const { inputs, self, run } = ctx;
-      // The steps subtree is whole data (bindingTreeProvenance), so nothing
-      // in it is ever spliced: the context's own steps stay, which keeps
-      // the sources a step context carries under its symbol key
-      // (typed-secrets 4.2); a rebuilt copy would drop them.
+      // the steps subtree is whole data, so nothing in it is spliced: the
+      // context's own steps stay, keeping the sources a step context carries
+      // under its symbol key; a rebuilt copy would drop them
       return {
         ...ctx,
         ...await resolveBindings(
@@ -1808,9 +1537,9 @@ export class ExpressionEvaluationService {
             self: bindings.self,
             run: bindings.run,
             workflowRunId: bindings.workflowRunId,
-            // A typed capture carries each step's output sources as plain
-            // data; they come back under the symbol key, and the plain key
-            // never reaches CEL (typed-secrets 4.2).
+            // a typed capture carries each step's output sources as plain data;
+            // they come back under the symbol key, and the plain key never
+            // reaches CEL
             steps: fromPersistedStepContexts(bindings.steps),
           }, {
             inputs: recordProvenance.subtree("inputs"),
@@ -1829,15 +1558,9 @@ export class ExpressionEvaluationService {
         : ctx;
       const evaluator = this.celEvaluator;
       {
-        // A typed run evaluates vault.get as the CEL function: the evaluator
-        // checks every direct call up front, refuses an alias, and issues
-        // the sentinel on release into the step's bag
-        // (design/enablers/typed-secrets.md Sections 3.4 and 4.4). Text that
-        // is not CEL stays raw outside strict validation. The screen parses the
-        // normalized source, with legacy bare-token arguments such as
-        // vault.get(my-vault, a@b) already quoted as the evaluator parses
-        // them; it records an alias rather than refusing it, so an alias
-        // still reaches the typed evaluator and is refused there.
+        // a typed run evaluates vault.get as the CEL function, which refuses an
+        // alias and issues the sentinel into the step's bag; the screen only
+        // records an alias so the typed evaluator refuses it
         try {
           analyzeVaultCalls(expr.celExpression);
         } catch (error) {
@@ -1882,13 +1605,9 @@ export class ExpressionEvaluationService {
         );
       }
     }
-    // Only this final splice is sanitized; the binding resolution above builds
-    // context, which keeps raw values. An occurrence in data is never
-    // substituted, even when an authored occurrence shares its raw text, and
-    // neither is one in a subtree the pass skips.
-    // Each splice carries its origin, as the definition pass records it, so
-    // a runtime value from data (`env.X`, a deferred data read) is data
-    // where it lands.
+    // only this final splice is sanitized; an occurrence in data or a skipped
+    // subtree is never substituted, even if an authored one shares its raw
+    // text; each splice carries its origin
     return replaceExpressionsTracked(
       data,
       values,

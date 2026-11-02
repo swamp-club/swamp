@@ -151,8 +151,8 @@ const runHistoryCommand = withRemoteOptions(
         return;
       }
 
-      // It only reads: it never takes the v3 writer lease, which would start a
-      // replication lineage on a bucket (swamp-club#3801).
+      // it only reads: it never takes the v3 writer lease, which would start a
+      // replication lineage on a bucket.
       const { repoDir } = await requireInitializedRepoReadOnly({
         repoDir: resolveRepoDir(options.repoDir),
         outputMode: ctx.outputMode,
@@ -175,7 +175,6 @@ const runHistoryCommand = withRemoteOptions(
     }),
 );
 
-/** How far back `run doctor` looks for workflow runs left `running`. */
 const ORPHAN_SCAN_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
 
 export interface LocalRunDiagnosis {
@@ -187,23 +186,13 @@ export interface LocalRunDiagnosis {
   readonly orphanedReaped: number;
   readonly orphanedMethodRuns: number;
   readonly orphanedMethodReaped: number;
-  /** Why method runs could not be checked or settled, if they could not. */
   readonly orphanedMethodError?: string;
 }
 
 /**
- * Local `swamp run doctor`. A tracker row is stale when its heartbeat
- * expired or its owner is a dead process on this host. Workflow and method
- * run records still `running` whose tracker row shows a dead owner are
- * orphaned; with `fix`, the stale rows are reaped, the orphaned workflow
- * records interrupted so `swamp workflow recover` accepts them, and the
- * orphaned method runs cancelled.
- *
- * Recent records are found by scanning; an older one is found through its
- * workflow tracker row, by workflow name or else by run id, so no run is
- * stranded by its age or a rename. With `fix`, an `interrupted` workflow
- * row whose record is no longer running, or gone, is marked settled, and
- * retention may then purge it. A settled row is not looked at again.
+ * a tracker row is stale when its heartbeat expired or its owner is a dead
+ * process on this host. Recent records are found by scanning, older ones through
+ * their workflow tracker row, so no run is stranded by its age or a rename.
  */
 export async function diagnoseLocalRuns(
   tracker: RunTrackerStore,
@@ -251,8 +240,8 @@ export async function diagnoseLocalRuns(
 
   let orphanedWorkflowRuns = 0;
   let orphanedReaped = 0;
-  // From the records, not the index as it stands: a stale entry would hide
-  // the very run being looked for (swamp-club#2518).
+  // from the records, not the index as it stands: a stale entry would hide the
+  // very run being looked for.
   await runRepo.verifyIndexes?.();
   const records = new Map(
     (await runRepo.findGlobalByStatus(
@@ -399,9 +388,9 @@ const runDoctorCommand = withRemoteOptions(
       const tracker = RunTrackerStore.fromSwampDir(swampPath(repoDir));
 
       try {
-        // In a root unit of work with no push, so the fix's saves stage into
-        // it instead of reaching the hook through signalChange's fallback
-        // (swamp-club#3056). Nothing pushes, as before.
+        // in a root unit of work with no push, so the fix's saves stage into it
+        // instead of reaching the hook through signalChange's fallback. Nothing
+        // pushes.
         const result = await runCommandInRootUnit(
           repoContext,
           { push: undefined },

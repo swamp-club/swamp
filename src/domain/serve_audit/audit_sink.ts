@@ -28,10 +28,8 @@ export interface AuditSink {
 }
 
 /**
- * Thrown by a sink's flush when events it was given are not yet in any store.
- * `sequences` are lost to the sink and must be sent again; `pending` are
- * still being retried by the sink and must be kept but not sent again. Either
- * is null when the sink cannot tell which events it covers, meaning all.
+ * sequences are lost to the sink and must be sent again; pending are still
+ * being retried by it and must be kept but not resent; null means all events
  */
 export class UnconfirmedEventsError extends Error {
   readonly sequences: ReadonlySet<number> | null;

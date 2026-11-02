@@ -17,22 +17,10 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Source of an audit timeline entry.
- * - "swamp": command was executed through swamp CLI
- * - "direct": command was executed directly via bash (not through swamp)
- */
 export type AuditSource = "swamp" | "direct";
 
-/**
- * Status of an audit entry.
- */
 export type AuditStatus = "success" | "error" | "user_error";
 
-/**
- * Unified audit timeline entry.
- * Merges telemetry data (swamp commands) with hook-captured bash commands.
- */
 export interface AuditEntry {
   readonly timestamp: string;
   readonly source: AuditSource;
@@ -40,15 +28,10 @@ export interface AuditEntry {
   readonly status: AuditStatus;
   readonly sessionId?: string;
   readonly durationMs?: number;
-  /** Exit code, present only for failed commands */
   readonly exitCode?: number;
-  /** Error message, present only for failed commands */
   readonly error?: string;
 }
 
-/**
- * Data transfer object for AuditEntry.
- */
 export interface AuditEntryData {
   timestamp: string;
   source: AuditSource;
@@ -60,9 +43,6 @@ export interface AuditEntryData {
   error?: string;
 }
 
-/**
- * Creates an AuditEntry from a swamp telemetry record.
- */
 export function createSwampAuditEntry(
   timestamp: string,
   summary: string,
@@ -72,9 +52,6 @@ export function createSwampAuditEntry(
   return { timestamp, source: "swamp", summary, status, durationMs };
 }
 
-/**
- * Creates an AuditEntry from a direct bash command.
- */
 export function createDirectAuditEntry(
   timestamp: string,
   summary: string,
@@ -92,9 +69,6 @@ export function createDirectAuditEntry(
   };
 }
 
-/**
- * Converts an AuditEntry to its data representation.
- */
 export function auditEntryToData(entry: AuditEntry): AuditEntryData {
   const data: AuditEntryData = {
     timestamp: entry.timestamp,

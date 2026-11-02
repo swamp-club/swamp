@@ -17,11 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Serve's datastore API (swamp-club#3915) end to end: an in-process client
- * against a port-0 server over a real v3 repository, as serve wires it.
- */
-
 import { assert, assertEquals } from "@std/assert";
 import { waitFor } from "@swamp-club/swamp-testing";
 import { join } from "@std/path";
@@ -88,7 +83,6 @@ Deno.test({
       assertEquals(committed.status, 200, JSON.stringify(committed.json));
       assertEquals(committed.json.seq, 1);
 
-      // Stamped by serve: the caller, and serve's own writer.
       const [{ commit }] = await server.v3.commitStore.readPartition(
         server.v3.namespace,
         partitionOf({
@@ -102,7 +96,6 @@ Deno.test({
       assertEquals((commit as Commit).principal, "user:caller");
       assertEquals(commit.writer, server.v3.writer);
 
-      // Serve's own checkout holds the file.
       assertEquals(
         await Deno.readFile(
           join(
@@ -238,7 +231,6 @@ Deno.test({
   sanitizeOps: false,
   sanitizeResources: false,
   fn: async () => {
-    // Bob may write a behavior of his own but read nothing of Alice's.
     const grants = [
       ...writer(),
       grant({
@@ -295,7 +287,6 @@ Deno.test({
       });
       assertEquals((await has.json()).held, []);
 
-      // Bob's changes feed holds none of Alice's commits, and still moves on.
       const changes = await getJson(
         `${server.url}/changes?cursor=0`,
         "bob-token",
@@ -580,7 +571,6 @@ Deno.test({
   fn: async () => {
     await withServer(writer(), async (server) => {
       const sha = "a".repeat(64);
-      // A streamed body carries no Content-Length.
       const upload = await fetch(`${server.url}/chunks/${sha}`, {
         method: "PUT",
         headers: { authorization: "Bearer alice-token" },
@@ -644,7 +634,6 @@ Deno.test({
   sanitizeOps: false,
   sanitizeResources: false,
   fn: async () => {
-    // Team members may edit and run behaviors; nobody may destroy web's data.
     const deny = grant({
       effect: "deny",
       actions: ["write"],
@@ -726,7 +715,6 @@ Deno.test({
   },
 });
 
-/** Whether serve's storage holds a chunk. */
 async function stored(server: Server, sha: string): Promise<boolean> {
   const held = await server.v3.storage.has(
     "_default",
@@ -746,7 +734,6 @@ Deno.test({
     await withServer(member(), async (server) => {
       const content = new TextEncoder().encode("member bytes");
       const sha = await sha256Hex(content);
-      // No partition named: only an admin may upload.
       const refused = await fetch(`${server.url}/chunks/${sha}`, {
         method: "PUT",
         headers: { authorization: "Bearer alice-token" },
@@ -754,8 +741,6 @@ Deno.test({
       });
       assertEquals(refused.status, 403);
       assertEquals((await refused.json()).code, "forbidden");
-      // A behavior's partition the member may run, and an auto-definition's,
-      // which names no type, so it needs admin.
       const modelPartition = partitionOf({
         kind: "model",
         type: server.modelType,
@@ -843,7 +828,6 @@ Deno.test({
     await withServer(writer(), async (server) => {
       const first = new TextEncoder().encode("first!");
       const second = new TextEncoder().encode("second");
-      // The first upload's body is held open until the second is answered.
       let reading!: () => void;
       const started = new Promise<void>((resolve) => reading = resolve);
       let release!: () => void;
@@ -964,7 +948,6 @@ Deno.test({
     await withServer(writer(), async (server) => {
       const carried = new TextEncoder().encode("c");
       const carriedSha = await sha256Hex(carried);
-      // One blob of 1,026 one-byte parts: one carried, 1,025 not.
       const parts = [{ sha256: carriedSha, size: 1 }];
       for (let i = 0; i < 1025; i++) {
         parts.push({ sha256: i.toString(16).padStart(64, "0"), size: 1 });
@@ -992,7 +975,6 @@ Deno.test({
   },
 });
 
-/** A behavior definition named `name` of `type`, stored as one chunk. */
 async function definitionCommit(
   name: string,
   type: string,
@@ -1021,7 +1003,6 @@ Deno.test({
   sanitizeOps: false,
   sanitizeResources: false,
   fn: async () => {
-    // Bob reads every behavior and its data, but is no admin.
     const grants = [
       ...writer(),
       grant({
@@ -1175,7 +1156,6 @@ Deno.test({
         await get(`${partitionPath(server)}?after=0`, "alice-token"),
         { status: 200, log: logId },
       );
-      // A refusal, here another namespace, names it too.
       assertEquals(
         await get(
           `${server.url.replace(/_default$/, "other")}/changes?cursor=0`,
@@ -1183,7 +1163,6 @@ Deno.test({
         ),
         { status: 404, log: logId },
       );
-      // A caller serve does not know learns nothing.
       assertEquals(await get(`${server.url}/changes?cursor=0`), {
         status: 401,
         log: null,
@@ -1216,7 +1195,6 @@ Deno.test({
       const first = await get(changes, "alice-token");
       assertEquals(first.status, 200);
       assert(first.access !== null && /^[0-9a-f]{64}$/.test(first.access));
-      // A refusal names it too; a caller serve does not know learns nothing.
       assertEquals(
         await get(
           `${server.url.replace(/_default$/, "other")}/changes?cursor=0`,
@@ -1225,12 +1203,10 @@ Deno.test({
         { status: 404, access: first.access },
       );
       assertEquals(await get(changes), { status: 401, access: null });
-      // Another caller has another view.
       const bob = await get(changes, "bob-token");
       assert(bob.access !== null && bob.access !== first.access);
 
       const service = server.ctx.policySnapshotLoader!.decisionService;
-      // A reload that changes only bob's grants keeps alice's.
       service.snapshot = new PolicySnapshot([
         ...grants,
         grant({
@@ -1241,7 +1217,6 @@ Deno.test({
       ], []);
       assertEquals(await get(changes, "alice-token"), first);
       assert((await get(changes, "bob-token")).access !== bob.access);
-      // A widened grant changes it, and putting it back restores it.
       service.snapshot = new PolicySnapshot([
         ...grants,
         grant({
@@ -1296,7 +1271,6 @@ Deno.test({
       const before = await get();
       const service = server.ctx.policySnapshotLoader!.decisionService;
       const narrowed = new PolicySnapshot(grants.slice(0, 1), []);
-      // A reload lands while serve answers: as it reads the log.
       const store = server.v3.commitStore;
       const changesSince = store.changesSince.bind(store);
       let swapped = false;

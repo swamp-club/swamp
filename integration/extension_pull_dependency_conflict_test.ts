@@ -18,10 +18,9 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * `extension pull` when a dependency's files conflict (swamp-club#3313):
- * pullExtension wired as the CLI wires it — InstallExtensionService over a
- * real catalog and lockfile — against a fake registry serving real
- * archives, with the overwrite prompt answered y.
+ * pullExtension wired as the CLI wires it, InstallExtensionService over a real
+ * catalog and lockfile, against a fake registry serving real archives, with the
+ * overwrite prompt answered y
  */
 
 import "../src/domain/models/models.ts";
@@ -73,7 +72,6 @@ export const model = {
 `;
 }
 
-/** An extension archive shipping one model file, as the registry serves it. */
 async function buildArchive(
   name: string,
   modelFile: string,

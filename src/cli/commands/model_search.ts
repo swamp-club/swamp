@@ -62,11 +62,6 @@ import type { ModelSearchResponse } from "../../serve/protocol.ts";
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
 
-/**
- * Creates a fetchPreview closure that fetches full model detail data.
- * This bridges the presentation layer to the libswamp modelGet application
- * service, capturing the definition repository dependency.
- */
 async function createModelFetchPreview(
   definitionRepo: YamlDefinitionRepository,
   surface: CommandSurface,
@@ -113,8 +108,7 @@ export async function modelSearchAction(
         payload: { query, includeInternal },
       },
     );
-    // A remote search prints a plain list and never starts the picker
-    // (swamp-club#3917).
+    // a remote search prints a plain list and never starts the picker.
     const renderer = createModelSearchRenderer(
       interactiveOutputMode(ctx),
       undefined,
@@ -166,13 +160,11 @@ export async function modelSearchAction(
   ctx.logger.debug("Model search command completed");
 }
 
-/** The preferred spelling: `swamp behavior search`. */
 export const BEHAVIOR_SEARCH_SYNTAX: CommandSyntax = {
   invocation: "swamp behavior search",
   surface: "behavior",
 };
 
-/** The legacy spelling: `swamp model search`. */
 export const MODEL_SEARCH_SYNTAX: CommandSyntax = {
   invocation: "swamp model search",
   surface: "model",

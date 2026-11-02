@@ -17,14 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Opens a commit-log root over a v3 repository context: the v3 counterpart
- * of `runInRootUnitOfWork` (swamp-club#3240). Dormant: only tests call it
- * until the v3 opt-in.
- *
- * @module
- */
-
 import type { MarkDirtyHook } from "../../domain/datastore/datastore_sync_service.ts";
 import { rethrowUnrecordedEnd } from "../../domain/datastore/unit_of_work.ts";
 import {
@@ -48,68 +40,49 @@ import {
 
 const logger = getSwampLogger(["datastore", "unit-of-work"]);
 
-/** How the operation a commit-log root ran ended. */
 export type CommitLogOutcome<T> =
   | { readonly completed: true; readonly value: T }
   | { readonly completed: false; readonly error: unknown };
 
-/** Whether a root commits or discards its changes when it ends. */
 export type CommitLogDisposition = "commit" | "discard";
 
-/** Options for {@link runInCommitLogRoot}. */
 export interface CommitLogRootOptions<T>
   extends Omit<CommitLogUnitOptions, "parent"> {
   /**
-   * Decides from the outcome whether the root commits or discards, as
-   * `pushWhen` decides a legacy root's push. By default it commits when
-   * `fn` resolves and discards when it throws. A workflow run passes
-   * {@link runOutcomeDisposition}.
+   * by default commits when fn resolves and discards when it throws; a workflow
+   * run passes runOutcomeDisposition
    */
   readonly disposition?: (outcome: CommitLogOutcome<T>) => CommitLogDisposition;
   /**
-   * Settles a refusal before a root commits (decision 7, swamp-club#3257).
-   * When given, a root that commits checkpoints first; if a partition was
-   * refused, it runs this with the root ambient, so the caller can save each
-   * held run again with the steps that wrote refused data failed
-   * ({@link reconcileRefusedRuns}), then releases the held run records,
-   * commits, and throws the refusal. Without it, a refusal holds every run
-   * record back and surfaces when the root commits. A child never runs it:
-   * its root commits.
+   * a committing root checkpoints first; on a refusal this runs with the root
+   * ambient to re-save held runs with refused steps failed, then it commits and
+   * throws the refusal. A child never runs it
    */
   readonly onRefused?: (error: PartitionsRefusedError) => Promise<void>;
   /**
-   * Told once how the root ended: `true` when its commit resolved, whether
-   * `fn` resolved or threw, `false` when it was discarded or its end failed
-   * (swamp-club#3759). A command prints what it held only on `true`. For a
-   * child, a commit rolls its changes up into the open parent.
+   * true when the root's commit resolved, whether fn resolved or threw; false
+   * when it was discarded or its end failed. A command prints what it held only
+   * on true
    */
   readonly onEnded?: (committed: boolean) => void;
 }
 
 /**
- * What `fn` gets of its root: it stages typed changes and can commit
- * partway through, but never ends the root. `stage` takes the path-only
- * changes a v2 root takes and refuses them (`PathOnlyChangeRefusedError`),
- * so code written against a v2 root fails loudly on v3 rather than losing
- * its change.
+ * stage refuses the path-only changes a v2 root takes
+ * (PathOnlyChangeRefusedError), so v2-style code fails loudly on v3 rather than
+ * losing its change
  */
 export type CommitLogRoot = Pick<
   CommitLogUnitOfWork,
   "stage" | "staged" | "stageOp" | "stageOps" | "stagedOps" | "checkpoint"
 >;
 
-/** Commits when `fn` resolved, discards when it threw. */
 export function defaultDisposition<T>(
   outcome: CommitLogOutcome<T>,
 ): CommitLogDisposition {
   return outcome.completed ? "commit" : "discard";
 }
 
-/**
- * The terminal statuses a workflow run's unit commits on (decision 5), as
- * `WorkflowRun` records them: decision 5's "completed" is `succeeded`
- * (swamp-club#3257).
- */
 export const RUN_COMMIT_STATUSES = [
   "succeeded",
   "failed",
@@ -118,14 +91,9 @@ export const RUN_COMMIT_STATUSES = [
 ] as const;
 
 /**
- * Decision 5 of "v3 domain model" (`design/enablers/datastores.md`): a
- * workflow run's root commits when the run ends `completed`, `failed`,
- * `suspended` or `cancelled` (a suspended run must be durable to resume; a
- * failed or cancelled run's record is its outcome), and discards on an
- * error. `fn` must therefore resolve with the run's terminal status, not
- * throw, when the run fails or is cancelled: a throw discards the run's
- * record back to what its last checkpoint committed, since a run
- * checkpoints as it saves its record (swamp-club#3587).
+ * a run's root commits when it ends succeeded, failed, suspended or cancelled
+ * and discards on an error; fn must resolve with the terminal status, since a
+ * throw discards back to the last checkpoint
  */
 export function runOutcomeDisposition(
   outcome: CommitLogOutcome<{ readonly status: string }>,
@@ -137,17 +105,9 @@ export function runOutcomeDisposition(
 }
 
 /**
- * Runs `fn` in a commit-log root over `repoContext.markDirty`, then ends the
- * root as `options.disposition` decides.
- *
- * - The context must have a hook: it is the context's identity. The hook is
- *   marked with `requireUnit`, so a write outside every unit bound to it is
- *   refused from then on (decision 3).
- * - `fn` runs with the root ambient, so the context's repositories stage
- *   into it. Inside an open commit-log unit for the same hook the root is
- *   that unit's child: its changes roll up, and the outer root commits.
- * - When `fn` threw, its error is rethrown; an error ending the root then is
- *   logged at warn. When `fn` resolved, an error ending the root is thrown.
+ * inside an open unit for the same hook the root is its child and changes roll
+ * up; when fn threw its error is rethrown and an error ending the root is only
+ * logged at warn
  */
 export async function runInCommitLogRoot<T>(
   repoContext: { readonly markDirty?: MarkDirtyHook },
@@ -195,9 +155,9 @@ export async function runInCommitLogRoot<T>(
       } catch (endError) {
         // An end that could not record the failure says so instead of it.
         rethrowUnrecordedEnd(endError, error);
-        // So does one that could not reach the storage: nothing of the
-        // operation, its failure included, was committed (swamp-club#3759),
-        // beyond the runs a checkpoint committed (swamp-club#3802).
+        // an end that could not reach the storage means nothing of the
+        // operation, its failure included, was committed, beyond the runs a
+        // checkpoint committed
         if (
           endError instanceof CommitUnreachableError ||
           endError instanceof RunPartlyCommittedError
@@ -228,13 +188,11 @@ export async function runInCommitLogRoot<T>(
   }
 }
 
-/** The settled refusals {@link runInCommitLogRoot} threw after it committed. */
 const refusalsThrownAfterCommit = new WeakSet<PartitionsRefusedError>();
 
 /**
- * Whether `error` is a settled refusal {@link runInCommitLogRoot} threw
- * after its root committed (swamp-club#3587). Any other error, a refusal the
- * root's own commit threw included, may have left the root uncommitted.
+ * any other error, a refusal the root's own commit threw included, may have
+ * left the root uncommitted
  */
 export function wasThrownAfterCommit(error: unknown): boolean {
   return error instanceof PartitionsRefusedError &&
@@ -242,11 +200,8 @@ export function wasThrownAfterCommit(error: unknown): boolean {
 }
 
 /**
- * Checkpoints `root`; on a refusal, runs `onRefused` with the root ambient
- * and releases the held run records. Returns the refusal, which the caller
- * throws once the root has committed. Another checkpoint error is retried a
- * few times, then left to the commit, which retries what is pending and
- * surfaces it.
+ * another checkpoint error is retried a few times, then left to the commit,
+ * which retries what is pending and surfaces it
  */
 async function settleRefusals(
   root: CommitLogUnitOfWork,
@@ -263,19 +218,17 @@ async function settleRefusals(
       if (error instanceof PartitionsRefusedError) {
         return await settle(root, onRefused, error);
       }
-      // Cut off from the storage before its append, a checkpoint meets no
-      // refusal, and another would wait out the same retries; the commit
-      // says the storage is unreachable (swamp-club#3802).
+      // cut off from the storage before its append, a checkpoint meets no
+      // refusal and another would wait out the same retries; the commit says
+      // the storage is unreachable
       if (failedReachingStorage(error)) return undefined;
       if (attempt === SETTLE_CHECKPOINT_ATTEMPTS) return undefined;
     }
   }
 }
 
-/** How often a root checkpoints to settle refusals before it commits. */
 const SETTLE_CHECKPOINT_ATTEMPTS = 3;
 
-/** Runs `onRefused` for `error` in `root` and releases its held runs. */
 async function settle(
   root: CommitLogUnitOfWork,
   onRefused: (error: PartitionsRefusedError) => Promise<void>,

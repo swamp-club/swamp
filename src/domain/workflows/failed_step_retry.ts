@@ -17,15 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Retry of a failed run: resuming it without `--from`.
- *
- * Selects the workflow steps a retry re-enters at — the entry templates of
- * the run's failed steps — after checking that the stored run is complete
- * and unambiguous enough to retry. The caller resets each entry template and
- * its dependents through the same path as `--from`.
- */
-
 import { UserError } from "../errors.ts";
 import { quoteShellWord } from "../shell_word.ts";
 import { pairExpressionJobs, workflowJobOf } from "./job_pairing.ts";
@@ -43,22 +34,10 @@ const TERMINAL_STATUSES: ReadonlySet<string> = new Set([
   "skipped",
 ]);
 
-/**
- * The workflow step a failed step came from: its forEach template, else the
- * step itself.
- */
 export function entryTemplateOf(step: FailedStepRef): string {
   return step.forEachTemplate ?? step.stepName;
 }
 
-/**
- * The `--job` that, with `--from <template>`, re-enters the step `template`
- * of the stored job `jobName`, as `--from` resolves it against the current
- * workflow: the workflow job that stored job belongs to (see
- * {@link workflowJobOf}), named as the workflow writes it. Undefined when
- * the step name is in at most one workflow job, or when the stored job
- * cannot be paired with a workflow job that has the step.
- */
 export function fromJobFor(
   workflow: Workflow,
   run: WorkflowRun,
@@ -74,11 +53,6 @@ export function fromJobFor(
   return job?.getStep(template) ? job.name : undefined;
 }
 
-/**
- * The `--from` arguments that re-enter the step `template` of the stored job
- * `jobName`, shell-quoted, with `--job` when the step name needs it (see
- * {@link fromJobFor}).
- */
 function fromArguments(
   workflow: Workflow,
   run: WorkflowRun,
@@ -91,25 +65,8 @@ function fromArguments(
 }
 
 /**
- * Returns the distinct entry templates of the run's failed steps, each with
- * the workflow job it is a step of (named as the workflow writes it), in
- * stored order, or throws a UserError naming the job or step that
- * makes the run ineligible for retry. Mutates nothing.
- *
- * A run is eligible when:
- * - no failed step is a rejected approval (retry never re-opens a gate);
- * - no failed step was stranded by a workflow change (a retry would fail it
- *   again);
- * - every job and step is succeeded, failed, or skipped;
- * - at least one failed step exists, and every failed job contains one;
- * - each entry template is a step of the same job in the current workflow;
- * - no stored job holds two records of the same name.
- *
- * Step names need be unique only within a job: a retry resets each entry
- * template in its own job.
- *
- * Refusals stay short and path-free: serve truncates client errors at 512
- * characters and hides any message that contains a filesystem path.
+ * refusals stay short and path-free: serve truncates client errors at 512
+ * characters and hides any message that contains a filesystem path
  */
 export function selectRetryTemplates(
   workflow: Workflow,

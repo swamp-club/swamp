@@ -32,7 +32,6 @@ import { getLogger } from "@logtape/logtape";
 
 const logger = getLogger(["swamp", "sources"]);
 
-/** The filesystem calls the expander makes; tests substitute their own. */
 export interface SourceGlobFs {
   readDir(path: string): AsyncIterable<Deno.DirEntry>;
   stat(path: string): Promise<Deno.FileInfo>;
@@ -43,8 +42,6 @@ const denoFs: SourceGlobFs = {
   stat: (path) => Deno.stat(path),
 };
 
-// The options swamp has always expanded source globs with (the @std/fs
-// expandGlob defaults plus globstar).
 const GLOB_OPTIONS: GlobOptions = {
   extended: true,
   globstar: true,
@@ -60,13 +57,9 @@ interface Entry {
 }
 
 /**
- * Expands a source glob to the directories it matches.
- *
- * Returns what `expandGlob(glob, { globstar: true })` from `@std/fs` returns,
- * filtered to directories and in the same order. The difference is that an
- * entry which disappears (or stops being a directory) between being listed
- * and being read is skipped, where `expandGlob` throws and fails the whole
- * expansion. Other errors still throw.
+ * unlike expandGlob, an entry that disappears or stops being a directory
+ * between listing and reading is skipped instead of failing the whole
+ * expansion; other errors still throw
  */
 export async function expandSourceGlob(
   glob: string,

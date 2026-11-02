@@ -43,13 +43,11 @@ export const SUPERSEDED_SKILLS: readonly string[] = [
 ];
 
 /**
- * Paths inside a bundled skill that newer swamp versions no longer ship,
- * relative to a skills dir and written with `/`. Installing skills writes each
- * bundled file in place and never deletes, so a moved folder would otherwise
- * stay installed next to its replacement.
+ * installing skills writes each bundled file in place and never deletes, so a
+ * moved folder would stay installed next to its replacement; paths are relative
+ * to a skills dir, written with /
  */
 export const SUPERSEDED_SKILL_PATHS: readonly string[] = [
-  // Moved to swamp/references/behavior (swamp-club#3332).
   "swamp/references/model",
 ];
 
@@ -125,11 +123,6 @@ export async function detectSupersededSkills(
   return found;
 }
 
-/**
- * Returns the repo-local skills dirs that may hold superseded skills: one per
- * built-in tool, de-duplicated. With no tools, falls back to the primary tool.
- * The startup warning and `repo upgrade` both use this list.
- */
 export function supersededSkillDirs(
   repoDir: string,
   tools: readonly string[],
@@ -144,13 +137,9 @@ export function supersededSkillDirs(
 }
 
 /**
- * Resolves the dirs from {@link supersededSkillDirs} to their real paths and
- * splits them by whether they stay inside the repo. Missing dirs are left out;
- * a dir whose path cannot be resolved for any other reason is returned in
- * `failed` rather than thrown.
- * Only `contained` dirs are checked by the startup warning or cleaned by
- * `repo upgrade`, so a symlink such as a committed `.claude` pointing outside
- * the repo is never reported or touched.
+ * only contained dirs are checked or cleaned, so a symlink such as a committed
+ * .claude pointing outside the repo is never reported or touched; unresolvable
+ * dirs go in failed
  */
 export async function resolveSupersededSkillDirs(
   repoDir: string,
@@ -187,9 +176,8 @@ export async function resolveSupersededSkillDirs(
 }
 
 /**
- * Removes superseded skills and skill paths from the repo-local skills dirs
- * that resolve inside the repo. Deletes go through the resolved path, and a failure on one
- * entry is logged without stopping the rest.
+ * deletes go through the resolved path, and a failure on one entry is logged
+ * without stopping the rest
  */
 export async function removeSupersededLocalSkills(
   repoDir: string,

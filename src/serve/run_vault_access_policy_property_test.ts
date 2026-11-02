@@ -36,7 +36,6 @@ const BOT: AccessPrincipal = {
   groups: [],
 };
 
-// Unconditional grants only, so a literal evaluator suffices.
 const noConditions = () => false;
 
 const grantArb = (kinds: readonly ("vault" | "data" | "model")[]) =>

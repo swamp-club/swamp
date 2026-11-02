@@ -34,10 +34,6 @@ import { oauthAccessTokenKey } from "./device_auth_handler.ts";
 
 await initializeLogging({});
 
-/**
- * An in-memory vault. Each fault set names a call that rejects: `vault/key`
- * for get and put, the vault name for list. `calls` records every call.
- */
 function createMockVault(): {
   secrets: Map<string, Map<string, string>>;
   vaultService: TokenSecretMigrationDeps["vaultService"];
@@ -114,10 +110,6 @@ function createMockDataQuery(
   } as TokenSecretMigrationDeps["dataQueryService"];
 }
 
-/**
- * Lock deps that take no lock and re-read from the same records the query
- * returned, so the record under the lock is the one that was listed.
- */
 function unchangedRecordLockDeps(
   records: { attributes: Record<string, unknown> }[],
 ): Pick<TokenSecretMigrationDeps, "withTokenLock" | "readTokenRecord"> {
@@ -460,7 +452,6 @@ Deno.test("migrateTokenSecrets: a token whose lock cannot be taken fails alone",
   assertEquals(secrets.get("user-vault")?.has("server-token-legacy"), true);
 });
 
-/** A legacy token holding both secrets in the user vault. */
 function oauthLegacyVault() {
   const mock = createMockVault();
   mock.secrets.set(
@@ -516,7 +507,6 @@ Deno.test("migrateTokenSecrets: keeps a token on its vault when copying its OAut
       "access-token",
     );
 
-    // The next start, with the vault healthy again, moves both keys.
     faults.get.clear();
     faults.put.clear();
     faults.list.clear();
@@ -550,7 +540,6 @@ Deno.test("migrateTokenSecrets: still skips a token whose server secret cannot b
   assertEquals(calls.includes("list:user-vault"), false);
 });
 
-/** A record an older migration repointed without its OAuth access token. */
 function halfMigratedRecord(overrides: Record<string, unknown> = {}) {
   return legacyRecord({ vaultName: TOKEN_SECRETS_VAULT_NAME, ...overrides });
 }
@@ -668,7 +657,6 @@ Deno.test("recoverOAuthAccessTokens: a listing or copy failure leaves the marker
 
     const result = await recoverOAuthAccessTokens(deps);
 
-    // A user vault that cannot be listed stops before any token is tried.
     assertEquals(result, {
       recovered: 0,
       failed: fault.list === "user-vault" ? 0 : 1,

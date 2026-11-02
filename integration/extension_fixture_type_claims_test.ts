@@ -17,12 +17,9 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// Type claims read out of test fixtures (swamp-club#2876). A source-mounted
-// extension ships `_test.ts` files whose string fixtures contain
-// `export const model = { type: "@acme/thing" }`. Source-mounted dirs walk
-// `_test.ts` files on purpose (swamp-club#389), so the cold index used to
-// read the fixture type as a claim; two fixtures naming one type then made
-// every later catalog save, such as an unrelated pull, fail I-Repo-1.
+// source-mounted dirs walk _test.ts files on purpose, so string fixtures
+// containing export const model must not be read as type claims, or two naming
+// one type make later catalog saves fail I-Repo-1
 
 import { assert, assertEquals, assertThrows } from "@std/assert";
 import { join } from "@std/path";
@@ -80,7 +77,7 @@ async function withLayout(fn: (layout: Layout) => Promise<void>) {
     realModel,
     `export const model = {\n  type: "@real/factory-${id}",\n  version: "1",\n};\n`,
   );
-  // A real model whose filename ends in _test.ts (swamp-club#389).
+  // a real model whose filename ends in _test.ts
   const testNamedModel = join(sourceDir, "docker_image_test.ts");
   await Deno.writeTextFile(
     testNamedModel,
@@ -178,7 +175,6 @@ async function exists(path: string): Promise<boolean> {
   }
 }
 
-/** A pulled extension unrelated to the source-mounted one. */
 function unrelatedPulledExtension(repoDir: string) {
   const extRoot = join(repoDir, ".swamp", "pulled-extensions", "@other/ext");
   const abs = join(extRoot, "models", "other.ts");
@@ -230,7 +226,6 @@ Deno.test("cold buildIndex indexes the real models of a source-mounted dir and n
         [],
       );
 
-      // The unrelated save the report saw refused now succeeds.
       repository.saveAll([unrelatedPulledExtension(layout.repoDir)]);
     } finally {
       catalog.close();
@@ -317,8 +312,8 @@ export const model = {
 
 Deno.test("opening a catalog holding fixture claims prunes them so an unrelated save succeeds", async () => {
   await withLayout(async (layout) => {
-    // The state a pre-fix binary left: two identity-less rows claiming the
-    // fixture type, written after this catalog was opened.
+    // two identity-less rows claiming the fixture type, written after this
+    // catalog was opened
     const seeded = await openRepository(layout);
     try {
       for (const fixture of layout.fixtures) {

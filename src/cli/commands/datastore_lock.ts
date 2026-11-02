@@ -59,9 +59,6 @@ import {
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
 
-/**
- * Shows the current datastore lock status.
- */
 const datastoreLockStatusCommand = new Command()
   .description("Show who holds the datastore lock")
   .example("Check lock status", "swamp datastore lock status")
@@ -80,9 +77,8 @@ const datastoreLockStatusCommand = new Command()
     const resolution = await resolveDatastoreForRepo(repoDir);
     const { datastoreConfig: config, engine } = resolution;
 
-    // A v3 datastore's lock that matters across processes is its writer
-    // lock (swamp-club#3279); a bucket datastore's is in its control plane,
-    // found through its local root (swamp-club#3534).
+    // a v3 datastore's cross-process lock is its writer lock; a bucket
+    // datastore's is in its control plane, found through its local root.
     const v3 = engine === "v3"
       ? await v3DatastoreConfigOf(repoDir, config)
       : undefined;
@@ -90,9 +86,9 @@ const datastoreLockStatusCommand = new Command()
       ? v3WriterLockHandle(v3.path)
       : await createDatastoreLock(config);
 
-    // A bucket has no lock files to walk, so each model's lock is built the
-    // way acquireModelLocks builds it and inspected (swamp-club#3372). A v3
-    // bucket datastore's model locks are file locks under its local root.
+    // a bucket has no lock files to walk, so each model's lock is built as
+    // acquireModelLocks builds it and inspected; a v3 bucket's model locks are
+    // file locks under its local root.
     let customModelLocks: CustomModelLockSource | undefined;
     if (isCustomDatastoreConfig(config) && v3 === undefined) {
       const provider = await resolveCustomProvider(config);
@@ -120,8 +116,8 @@ const datastoreLockStatusCommand = new Command()
       lockingConfigOf(config),
       customModelLocks,
     );
-    // A checkout written through serve also lists the leases serve holds
-    // on locks it could take (swamp-club#4121).
+    // a checkout written through serve also lists the leases serve holds on
+    // locks it could take.
     if (resolution.serveUpstream !== undefined) {
       const binding = serveUpstreamAt((await v3LocationOf(resolution)).path);
       if (binding !== undefined) {
@@ -152,9 +148,6 @@ const datastoreLockStatusCommand = new Command()
     );
   });
 
-/**
- * Force-releases a stuck datastore lock.
- */
 const datastoreLockReleaseCommand = new Command()
   .description("Force-release a stuck datastore lock")
   .example(
@@ -210,9 +203,8 @@ const datastoreLockReleaseCommand = new Command()
             `(e.g. aws-ec2/my-server, or @org/name/my-server for scoped extension types).`,
         );
       }
-      // A checkout written through serve asks serve to end the lease it
-      // holds on the behavior, whoever holds it: admin only
-      // (swamp-club#4195).
+      // a checkout written through serve asks serve to end the lease on the
+      // behavior, whoever holds it: admin only.
       if (resolution.serveUpstream !== undefined) {
         const binding = serveUpstreamAt(
           (await v3LocationOf(resolution)).path,
@@ -286,9 +278,6 @@ const datastoreLockReleaseCommand = new Command()
     );
   });
 
-/**
- * Parent command group for datastore lock operations.
- */
 export const datastoreLockCommand = new Command()
   .description("Manage datastore locks")
   .command("status", datastoreLockStatusCommand)

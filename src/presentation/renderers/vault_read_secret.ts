@@ -27,19 +27,9 @@ import { UserError } from "../../domain/errors.ts";
 const encoder = new TextEncoder();
 
 /**
- * Writes every byte of `bytes` to stdout, looping over short writes.
- *
- * On a non-terminal stdout Deno hands writes to a line-buffered writer: it
- * emits complete lines and returns a short count when the trailing partial
- * line does not fit its 1024-byte buffer. A single unchecked `writeSync`
- * therefore dropped the last line of a multi-line secret whose last line was
- * 1024+ chars with no trailing newline (swamp-club#3006). The next call
- * writes that tail directly.
- *
- * A zero-byte write means stdout is taking nothing more. It is not a user
- * mistake, but it is raised as a UserError so the CLI exits non-zero with a
- * clean message on stderr instead of spinning, or leaving a truncated file
- * behind with exit 0.
+ * loops over short writes: a non-terminal stdout is line-buffered and returns a
+ * short count for a long trailing partial line. a zero-byte write throws
+ * UserError so the CLI exits non-zero instead of spinning or truncating
  */
 function writeAllToStdout(bytes: Uint8Array): void {
   let remaining = bytes;

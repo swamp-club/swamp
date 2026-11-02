@@ -18,11 +18,9 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * What the auth gate decided for this invocation, for the commands that act
- * on it after it ran: `serve` hands its pass to the workers it enrolls, and
- * a `worker connect` without a credential is admitted at enrollment
- * (design/surfaces/auth-gate.md, "Remote workers"). runCli sets it once the
- * gate has run and clears it when the invocation ends.
+ * serve hands its pass to enrolled workers, and a credential-less worker
+ * connect is admitted at enrollment; runCli sets this after the gate runs and
+ * clears it at the end
  */
 
 import { NESTED_GATE_PASS_ENV } from "../domain/auth/nested_gate_pass.ts";
@@ -41,9 +39,7 @@ const logger = getSwampLogger(["auth", "gate"]);
 
 export interface AuthGateSession {
   readonly deps: AuthGateDeps;
-  /** The gate's outcome; a block only when admission is deferred. */
   readonly outcome: AuthGateOutcome;
-  /** When the gate ran, in Unix seconds. */
   readonly gateTime: number;
   /**
    * True for a `worker connect` with no credential: the gate's
@@ -67,12 +63,8 @@ export function currentAuthGateSession(): AuthGateSession | undefined {
 }
 
 /**
- * Hand this run's pass down to any swamp it starts (design/surfaces/
- * auth-gate.md, "Nested runs"), through the process env as
- * SWAMP_LOCK_HOLDER_PID is (see `nestedGatePassValue`). A run with nothing
- * to hand down clears any pass it inherited. Set once per process: when the
- * gate passes, or for a worker without a credential, when its orchestrator
- * admits it.
+ * hands this run's pass to swamps it starts through the process env; a run with
+ * nothing to hand down clears any pass it inherited. Set once per process.
  */
 export function publishNestedGatePass(handoff: GateHandoff | undefined): void {
   const value = nestedGatePassValue(handoff, Deno.pid);
@@ -84,12 +76,9 @@ export function publishNestedGatePass(handoff: GateHandoff | undefined): void {
 }
 
 /**
- * For a `worker connect` whose gate was deferred, the check it runs on the
- * pass its orchestrator sent at enrollment: it throws the gate's block
- * error, or records the run as verified and publishes the worker's own
- * nested pass for the dispatch runners it starts. Undefined when the gate
- * was not deferred: the worker passed on its own credential. Call it from
- * the command's action, after runCli has begun the session.
+ * checks the pass an orchestrator sent: throws the gate's block error, or
+ * records the run as verified and publishes the worker's own pass; undefined
+ * when not deferred. Call after runCli begins
  */
 export function deferredWorkerAdmission(
   publish: (handoff: GateHandoff) => void = publishNestedGatePass,

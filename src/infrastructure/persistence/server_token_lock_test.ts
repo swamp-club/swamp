@@ -55,8 +55,6 @@ function filesystemDatastore(dir: string): DatastoreConfig {
   return { type: "filesystem", path: dir } as DatastoreConfig;
 }
 
-// ── serverTokenLockKey ────────────────────────────────────────────────
-
 Deno.test("serverTokenLockKey: one stable key per token name", async () => {
   const key = await serverTokenLockKey(undefined, "ci-deploy");
   assertEquals(key, await serverTokenLockKey(undefined, "ci-deploy"));
@@ -122,7 +120,6 @@ Deno.test("withServerTokenLock - holds the token's lock for the callback and rel
       name,
       async () => {
         assertNotEquals(await observer.inspect(), null);
-        // Another token's lock is a different lock.
         assertEquals(await other.inspect(), null);
         return "done";
       },
@@ -198,7 +195,6 @@ Deno.test("withServerTokenLock - a timeout names the token, not the digest in it
         LockTimeoutError,
         `Server token '${name}' is being changed by another operation`,
       );
-      // Still the retryable lock timeout the CLI exits 75 for.
       assertEquals(error.code, "lock_timeout");
       assertEquals(error.message.includes("server-token-locks"), false);
     } finally {
@@ -224,7 +220,6 @@ function definitions(
       const found = entries.find((e) => e.id === id);
       return Promise.resolve(found ? result(found) : undefined);
     },
-    // The scans an id falls back to when nothing cached has it.
     findById: () => Promise.resolve(null),
     findByIdGlobal: () => Promise.resolve(null),
   } as unknown as DefinitionRepository;

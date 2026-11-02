@@ -17,12 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Writes the agent session record's and list summary's JSON Schemas for
- * extension authors (swamp-club#4154, swamp-club#4178).
- * session_record_json_schema_test.ts fails when a checked-in file drifts from
- * the Zod schema; run `deno run agent-session-schema` to regenerate them.
- */
 
 import {
   agentSessionRecordJsonSchema,

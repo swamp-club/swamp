@@ -120,7 +120,6 @@ Deno.test("ServeUpstreamState: the first caller stamp wins, and a reset forgets 
         fingerprint: "aaa",
         resetting: false,
       });
-      // A second stamp never replaces the first.
       assertEquals(state.stampCaller("bbb"), {
         fingerprint: "aaa",
         resetting: false,
@@ -135,7 +134,6 @@ Deno.test("ServeUpstreamState: the first caller stamp wins, and a reset forgets 
     } finally {
       state.close();
     }
-    // A reset cut short is still marked after a reopen.
     const reopened = ServeUpstreamState.open(path);
     try {
       assertEquals(reopened.stampCaller("bbb"), {
@@ -185,11 +183,9 @@ Deno.test("ServeUpstreamState.feedAnchor: recorded with the cursor, kept by a pa
       assertEquals(state.feedAnchor(), undefined);
       state.advanceFeedCursor(4, ANCHOR_A);
       assertEquals(state.feedAnchor(), ANCHOR_A);
-      // A page that carried no commit moves the cursor and keeps the anchor.
       state.advanceFeedCursor(6);
       assertEquals(state.feedCursor(), 6);
       assertEquals(state.feedAnchor(), ANCHOR_A);
-      // Another process that applied an older page lands neither.
       state.advanceFeedCursor(5, ANCHOR_B);
       assertEquals(state.feedCursor(), 6);
       assertEquals(state.feedAnchor(), ANCHOR_A);
@@ -282,7 +278,6 @@ Deno.test("ServeUpstreamState.copyId: random per file, kept across a reopen", as
     } finally {
       reopened.close();
     }
-    // A copy moved aside and started afresh at the same path has another.
     Deno.renameSync(copyDir, join(dir, "serve-1.moved"));
     const fresh = ServeUpstreamState.open(path);
     try {
@@ -318,8 +313,6 @@ Deno.test("ServeUpstreamState.recordBaseLoaded: the feed reads on from exactly t
         seq: 3,
         txnId: "t",
       });
-      // A base replaces every commit the copy held, those past its point
-      // too: the feed reads them again.
       state.recordBaseLoaded(9, [
         { namespace: "", partition: "model/a", seq: 2 },
       ]);
@@ -328,13 +321,11 @@ Deno.test("ServeUpstreamState.recordBaseLoaded: the feed reads on from exactly t
       assertEquals(state.basePoint(), 9);
       assertEquals(state.serveHead("", "model/a"), 2);
 
-      // A page read under another base point is not in the copy.
       assertEquals(state.advanceFeedCursor(15, undefined, 0), false);
       assertEquals(state.feedCursor(), 9);
       assertEquals(state.advanceFeedCursor(15, undefined, 9), true);
       assertEquals(state.feedCursor(), 15);
 
-      // A reset to another caller forgets the base too.
       state.beginCallerReset();
       assertEquals(state.basePoint(), 0);
     } finally {
@@ -379,7 +370,6 @@ Deno.test("ServeUpstreamState: a reset forgets the access, takes a new copy id, 
         seen: "b2",
         resetAt: 1_000,
       });
-      // A token reset keeps the time of the last access reset.
       state.beginCallerReset();
       state.finishCallerReset("token-b");
       assertEquals(state.access(), { resetAt: 1_000 });
@@ -419,8 +409,6 @@ Deno.test("ServeUpstreamState.recordAccessSeen: a mismatch sticks until a reset,
     try {
       state.stampCaller("token-a");
       state.recordAccessSeen("a1");
-      // Replicas that disagree: one reply under other access, then the
-      // copy's own again. The copy took the other reply's page.
       assertEquals(state.recordAccessSeen("b2").seen, "b2");
       assertEquals(state.recordAccessSeen("a1"), { built: "a1", seen: "b2" });
       assertEquals(state.recordAccessSeen("c3").seen, "b2");
@@ -458,7 +446,6 @@ Deno.test("ServeUpstreamState: a handle refuses to record its catch-up into a co
         const error = assertThrows(write, ServeCopyReplacedError);
         assertEquals(error.code, SERVE_COPY_REPLACED_CODE);
       }
-      // The reset copy kept none of it; the resetting handle writes on.
       assertEquals(resetter.feedCursor(), 0);
       assertEquals(resetter.serveHead("", "p"), 0);
       assertEquals(resetter.serveLogId(), undefined);
@@ -482,10 +469,8 @@ Deno.test("ServeUpstreamState.recordAccessSeen: a copy that read the feed before
   await withTempDir((dir) => {
     const state = ServeUpstreamState.open(join(dir, "serve_upstream.db"));
     try {
-      // Read through a serve that named no access, or by an older swamp.
       state.advanceFeedCursor(5, ANCHOR_A);
       assertEquals(state.recordAccessSeen("a1"), { built: "", seen: "a1" });
-      // Its reset makes the next access the one it was built under.
       state.beginCallerReset();
       state.finishCallerReset("token-a", 1_000);
       assertEquals(state.recordAccessSeen("a1"), {

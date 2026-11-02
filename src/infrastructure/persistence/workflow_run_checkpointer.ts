@@ -17,15 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * The {@link RunCheckpointer} of a repository context (swamp-club#3587): on
- * a v3 context each checkpoint commits what the units open around the save
- * have staged; on a v2 context it commits nothing, so a v2 run never pushes
- * mid-run.
- *
- * @module
- */
-
 import { hostname } from "node:os";
 import type { RunTrackerRepository } from "../../domain/models/run_tracker_repository.ts";
 import type { RunCheckpointer } from "../../domain/workflows/run_checkpointer.ts";
@@ -40,57 +31,34 @@ import type { RepositoryContext } from "./repository_factory.ts";
 const logger = getSwampLogger(["workflow", "checkpoint"]);
 
 /**
- * The least time between two checkpoints' starts. Each checkpoint stores the
- * whole run record, which grows with every step, so one per save would store
- * a 200-step run's record some 400 times (swamp-club#3587); a crash loses at
- * most about this long of a run's progress.
+ * each checkpoint stores the whole run record, so one per save would store it
+ * hundreds of times; a crash loses at most about this long of progress
  */
 export const RUN_CHECKPOINT_INTERVAL_MS = 2_000;
 
 /**
- * Checkpoints one operation's workflow runs. A save checkpoints at once
- * when none has started for {@link RUN_CHECKPOINT_INTERVAL_MS}, or when it
- * ends a top-level run (any status but pending or running); otherwise
- * one trailing checkpoint starts when that interval ends, so the latest save
- * always lands within about one interval. One is in flight at a time, and
- * the saves made while it runs share the next one. {@link close} cancels or
- * waits for the trailing checkpoint; call it once the operation's root has
- * ended.
- *
- * One checkpointer serves one operation, whose runs save through one chain
- * of open units: the run's use-case unit, which nested child runs and
- * parallel steps share. A checkpoint commits what that chain staged, and
- * counts every save made before it started as committed.
+ * a save checkpoints at once if none started within the interval or a top-level
+ * run ends; otherwise one trailing checkpoint starts when the interval ends.
+ * One in flight at a time.
  */
 export class WorkflowRunCheckpointer implements RunCheckpointer {
   readonly #repoContext: Pick<RepositoryContext, "markDirty" | "commitLog">;
-  /** Numbers each save, so a checkpoint knows which saves it covers. */
   #saves = 0;
-  /** The last save a checkpoint committed. */
   #committedThrough = 0;
-  /**
-   * Each run's first and latest save, and the steps a recovery would find
-   * in flight in its latest save (swamp-club#3882).
-   */
   readonly #runs = new Map<
     string,
     { first: number; latest: number; unknownSteps: readonly string[] }
   >();
-  /** The same steps, as of the latest save a checkpoint committed. */
   readonly #committedUnknownSteps = new Map<string, readonly string[]>();
   #current: Promise<void> | undefined;
   #next: Promise<void> | undefined;
-  /** A refusal stops checkpoints; the root settles it when it ends. */
   #refused = false;
   readonly #intervalMs: number;
   readonly #now: () => number;
-  /** When the last checkpoint started, epoch milliseconds. */
   #lastStarted = Number.NEGATIVE_INFINITY;
   #trailingTimer: ReturnType<typeof setTimeout> | undefined;
-  /** The trailing checkpoint once it has started; it never rejects. */
   #trailing: Promise<void> | undefined;
   #closed = false;
-  /** A failure is warned about once; repeats go to debug. */
   #warnedFailure = false;
 
   constructor(
@@ -111,10 +79,9 @@ export class WorkflowRunCheckpointer implements RunCheckpointer {
       unknownSteps: run.unknownStepsIfOrphaned(),
     });
     if (this.#refused || this.#closed) return;
-    // A top-level run's last save commits at once, so whether its final
-    // record landed is known before its root ends (see
-    // restoreUncommittedRuns). A nested child's is covered by its parent's,
-    // which comes later, so many child steps do not each force a commit.
+    // a top-level run's last save commits at once, so whether its final record
+    // landed is known before its root ends; a nested child's is covered by its
+    // parent's
     const ended = run.status !== "pending" && run.status !== "running" &&
       run.parentRun === undefined;
     if (ended && this.#trailingTimer !== undefined) {
@@ -135,10 +102,6 @@ export class WorkflowRunCheckpointer implements RunCheckpointer {
     }, wait);
   }
 
-  /**
-   * Cancels a trailing checkpoint not yet started and waits for one in
-   * flight. The root's own commit lands what it would have.
-   */
   async close(): Promise<void> {
     this.#closed = true;
     if (this.#trailingTimer !== undefined) {
@@ -151,16 +114,9 @@ export class WorkflowRunCheckpointer implements RunCheckpointer {
   }
 
   /**
-   * After the operation's root failed to end, puts back to `running` the
-   * tracker rows of runs this process completed whose latest save no
-   * checkpoint committed, when an earlier one did. Their committed record
-   * still says `running`, and only a row that says so too, with this
-   * process's pid, lets `workflow recover`, `run doctor --fix` and serve's
-   * reaper settle the run once this process is gone. `rootError` is what
-   * the root threw; a root that committed before throwing it leaves nothing
-   * to reopen. Closes the
-   * checkpointer first. Never rejects, since it runs while the root's error
-   * propagates; resolves with the run ids put back.
+   * puts back to running the tracker rows of completed runs whose latest save
+   * no checkpoint committed, so recovery and the reaper can settle them once
+   * this process is gone; never rejects
    */
   async restoreUncommittedRuns(
     tracker: () => Pick<RunTrackerRepository, "reopenCompleted"> | undefined,
@@ -196,10 +152,8 @@ export class WorkflowRunCheckpointer implements RunCheckpointer {
   }
 
   /**
-   * The steps of run `runId` that `workflow recover` would find in flight
-   * in the run's record as the last checkpoint committed it, which a
-   * recovery must be told to accept (swamp-club#3882); undefined when no
-   * checkpoint of this checkpointer committed the run.
+   * the steps a recovery would find in flight in the run's last committed
+   * record, which it must be told to accept
    */
   committedUnknownSteps(runId: string): readonly string[] | undefined {
     return this.#committedUnknownSteps.get(runId);
@@ -223,7 +177,6 @@ export class WorkflowRunCheckpointer implements RunCheckpointer {
 
   #start(): Promise<void> {
     const covers = this.#saves;
-    // Every save so far is one this checkpoint commits.
     const unknownSteps = [...this.#runs].map(([runId, saves]) =>
       [runId, saves.unknownSteps] as const
     );

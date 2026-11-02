@@ -18,19 +18,9 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * Direct readers of data content files (swamp-club#3178).
- *
- * On a lazily hydrating datastore the cache can hold a version's metadata
- * without its content, or content older than the metadata. Every read is
- * meant to go through the repository's content-ensuring step:
- * `getContent`, `stream` or `ensureContentLocal`. A reader that opens the
- * file itself, or reads it with the synchronous `getContentSync`, sees
- * nothing or stale bytes. These rules pin the readers that do, so a new one
- * fails here instead of waiting for a review to find it.
- *
- * Not seen here: paths that leave core as values — `DataRecord.path` and
- * `FileDataRecord.path`, read by `file.contents`, by users and by shell
- * commands, and content paths handed to extension code.
+ * on a lazily hydrating datastore the cache can lack content or hold stale
+ * content, so reads must go through getContent, stream or ensureContentLocal;
+ * these rules pin the readers that bypass them
  */
 
 import {
@@ -42,16 +32,11 @@ import {
   TOP_LEVEL_DECLARATION,
 } from "./arch_fitness_helpers.ts";
 
-/** A method declared directly in a class body. */
 const METHOD_DECLARATION =
   /^ {2}(?:(?:private|public|protected|static|async|override|get|set)\s+)*(?:\*\s*)?(\w+)\s*[(<]/;
 
 const KEYWORDS = new Set(["if", "for", "while", "switch", "return", "catch"]);
 
-/**
- * The function or method that contains each line: a top-level declaration,
- * narrowed for a class to the method declared in its body.
- */
 function enclosingUnits(lines: readonly string[]): string[] {
   let owner = "<module>";
   let inClass = false;
@@ -111,9 +96,9 @@ const POLICY =
   "a comment at the call and add it to the pinned list.";
 
 /**
- * Callers of the synchronous content read, which cannot hydrate. Each is
- * preceded by an ensuring step, reports what it could not read, or is a
- * documented limitation.
+ * callers of the synchronous content read, which cannot hydrate; each follows
+ * an ensuring step, reports what it could not read, or is a documented
+ * limitation
  */
 const PINNED_SYNC_READERS: readonly string[] = [
   // Delegates to the ephemeral or persistent repository.
@@ -132,9 +117,9 @@ const PINNED_SYNC_READERS: readonly string[] = [
 ];
 
 /**
- * Functions that open a content file by its path themselves: the
- * filesystem repository's readers, behind its ensuring step, its writers,
- * and the synchronous read itself.
+ * functions that open a content file by path themselves: the filesystem
+ * repository's readers behind its ensuring step, its writers, and the
+ * synchronous read
  */
 const PINNED_CONTENT_PATH_READERS: readonly string[] = [
   "src/infrastructure/persistence/unified_data_repository.ts#FileSystemUnifiedDataRepository.append",
@@ -143,8 +128,8 @@ const PINNED_CONTENT_PATH_READERS: readonly string[] = [
   "src/infrastructure/persistence/unified_data_repository.ts#FileSystemUnifiedDataRepository.getContent",
   "src/infrastructure/persistence/unified_data_repository.ts#FileSystemUnifiedDataRepository.getContentSync",
   "src/infrastructure/persistence/unified_data_repository.ts#FileSystemUnifiedDataRepository.stream",
-  // swamp-club#3250, v3 only: reads back a version this repository has just
-  // written, finalized, appended to or promoted, so its content is local.
+  // v3 only: reads back a version this repository just wrote, finalized,
+  // appended to or promoted, so its content is local
   "src/infrastructure/persistence/unified_data_repository.ts#FileSystemUnifiedDataRepository.writtenVersionChanges",
 ];
 

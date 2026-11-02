@@ -40,14 +40,12 @@ import {
 
 await initializeLogging({});
 
-/** A refusal from the network, as a dropped connection gives. */
 function refused(): Error {
   return Object.assign(new Error("connect ECONNREFUSED 127.0.0.1:9"), {
     code: "ECONNREFUSED",
   });
 }
 
-/** A store whose listings answer as `answer` says, counting them. */
 function scriptedStore(answer: (call: number) => Promise<string[]>) {
   let calls = 0;
   const store: ReplicaPathStore = {
@@ -57,7 +55,6 @@ function scriptedStore(answer: (call: number) => Promise<string[]>) {
   return { store, calls: () => calls };
 }
 
-/** A restore that waits until its signal aborts or `release` is called. */
 function pendingRestore() {
   let release: () => void = () => {};
   let seen: AbortSignal | undefined;
@@ -217,7 +214,6 @@ Deno.test("restoreWhileWatched: a listing the network refuses is followed by the
     const restore = pendingRestore();
     const restoring = restoreWhileWatched(store, restore.restore);
     await waitFor(() => calls() >= 1, "the first listing");
-    // The second listing is an interval away; the restore ends first.
     restore.release();
     assertEquals(await restoring, "restored");
     assertEquals(calls(), 1);
@@ -250,8 +246,8 @@ Deno.test("restoreProbeMs: SWAMP_V3_RESTORE_PROBE_MS sets the listing bound; uns
 
 Deno.test("replicaUnreachableAfterFailure: bounds its listing by SWAMP_V3_RESTORE_PROBE_MS when no test timing is set (swamp-club#4092)", async () => {
   const hung = scriptedStore(() => new Promise(() => {}));
-  // With the default 4 s bound the hung listing would hold this test 4 s;
-  // the variable's 20 ms ends it at once.
+  // the variable's short bound ends the test at once instead of waiting out the
+  // default bound on the hung listing
   const error = await withMockedEnv(
     { [RESTORE_PROBE_ENV_VAR]: "20" },
     () => replicaUnreachableAfterFailure(hung.store, new Error("failed")),

@@ -43,13 +43,10 @@ import { toPollOutcome } from "./poll_outcome.ts";
 
 const logger = getSwampLogger(["inbox", "notice"]);
 
-/** How long the background inbox poll may take in all. */
 export const INBOX_POLL_TIMEOUT_MS = 5_000;
 
-/** How long teardown waits for a poll still running before it aborts it. */
 export const INBOX_POLL_GRACE_MS = 250;
 
-/** Dependencies for the background poll and the notice, injected for tests. */
 export interface InboxNoticeDeps {
   loadCredentials: () => Promise<AuthCredentials | null>;
   inboxSummary: (
@@ -95,7 +92,6 @@ function waitOrAbort(ms: number, signal: AbortSignal): Promise<void> {
   });
 }
 
-/** Wires real infrastructure into InboxNoticeDeps. */
 export function createInboxNoticeDeps(
   options: CreateInboxNoticeDepsOptions = {},
 ): InboxNoticeDeps {
@@ -133,7 +129,6 @@ interface ActiveKey {
   cacheKey: InboxCacheKey;
 }
 
-/** The credential in use, or null. Throws when its server URL does not parse. */
 async function activeKey(deps: InboxNoticeDeps): Promise<ActiveKey | null> {
   const credentials = await deps.loadCredentials();
   // An empty key is the identity cache older versions left in auth.json
@@ -149,7 +144,6 @@ async function activeKey(deps: InboxNoticeDeps): Promise<ActiveKey | null> {
   };
 }
 
-/** A poll running alongside the command, settled once at teardown. */
 export interface InboxPoll {
   /**
    * Waits up to {@link INBOX_POLL_GRACE_MS} more for the poll, aborts it if it
@@ -159,11 +153,9 @@ export interface InboxPoll {
 }
 
 /**
- * Starts the inbox poll for the active key when one is due, or returns null.
- * Nothing is written until {@link InboxPoll.settle}, so a command that exits
- * early loses at most this one request. A process that cannot write the
- * inbox cache does not poll: it could not record the poll, so every run
- * would poll again. Never throws.
+ * nothing is written until settle, so a command that exits early loses at most
+ * this one request. A process that cannot write the inbox cache does not poll:
+ * it could not record the poll, so every run would poll again.
  */
 export async function startInboxPoll(
   deps: InboxNoticeDeps,
@@ -239,10 +231,9 @@ export async function startInboxPoll(
 }
 
 /**
- * The notice to print after the command, from the cache alone: it never
- * contacts swamp-club. A message's first showing is shown only once it is
- * recorded, so a notice that could never retire, as in a config directory
- * this process cannot write, is never shown at all. Never throws.
+ * from the cache alone: never contacts swamp-club. A notice is shown only once
+ * its first showing is recorded, so one that could never retire (unwritable
+ * config dir) is never shown.
  */
 export async function showInboxNotice(
   deps: InboxNoticeDeps,

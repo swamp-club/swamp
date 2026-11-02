@@ -93,15 +93,12 @@ Deno.test("RepoService property: claude instructions land in one target and a se
         assertEquals(await snapshot(), before);
         assertEquals(again.instructionsUpdated, false);
 
-        // Swamp's Claude rules live in exactly one Claude-owned target.
         const claudeIsLink = shape.claudeMd === "symlink";
         const inClaudeMd = !claudeIsLink &&
           (before.claude?.includes(SWAMP_SIGNATURE) ?? false);
         const inRules = before.rules?.includes(SWAMP_SIGNATURE) ?? false;
         assert(inClaudeMd !== inRules, JSON.stringify({ shape, before }));
 
-        // A repo's own AGENTS.md text is never removed, and a symlinked
-        // CLAUDE.md stays a symlink.
         if (shape.agentsMd === "user" || addedAgentsMd) {
           assert(before.agents?.includes(USER_AGENTS_MD));
         }
@@ -109,9 +106,6 @@ Deno.test("RepoService property: claude instructions land in one target and a se
           assert((await Deno.lstat(claudePath)).isSymlink);
         }
 
-        // Claude Code sees the repo's own AGENTS.md wherever swamp decides:
-        // natively when there is no CLAUDE.md, through the symlink, or
-        // through the import. A user's own CLAUDE.md is the exception.
         const agentsHasUserText = before.agents?.includes(USER_AGENTS_MD) ??
           false;
         if (agentsHasUserText && shape.claudeMd !== "user") {

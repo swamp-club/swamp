@@ -55,7 +55,6 @@ async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
   }
 }
 
-/** A Litestream child that exits on the signals it honours. */
 class FakeChild implements LitestreamChild {
   readonly pid = 4242;
   readonly signals: Deno.Signal[] = [];
@@ -76,9 +75,7 @@ class FakeChild implements LitestreamChild {
 interface Harness {
   readonly deps: SupervisorDeps;
   readonly child: FakeChild;
-  /** Fake time, advanced by every sleep. */
   now(): number;
-  /** Runs `fn` once fake time reaches `atMs` past the start. */
   at(atMs: number, fn: () => Promise<void> | void): void;
   started: boolean;
 }
@@ -111,7 +108,6 @@ function harness(
           pending.splice(pending.indexOf(due), 1);
           await due.fn();
         }
-        // Lets the fake child's exit settle.
         await new Promise((resolve) => setTimeout(resolve, 0));
       },
     },
@@ -204,7 +200,6 @@ Deno.test({
       const started = h.now();
       assertEquals(await runReplicationSupervisor(options, h.deps), "idle");
       assertEquals(stoppedWhileHeld, false);
-      // It stopped a whole idle timeout after the command released it.
       assert(h.now() - started >= 3_000 + options.idleMs);
     });
   },
@@ -250,7 +245,6 @@ Deno.test({
       });
       await probe.lock(true);
       const h = harness();
-      // The probe lets go 200 ms into the supervisor's retries.
       h.at(200, () => probe.close());
       assertEquals(await runReplicationSupervisor(options, h.deps), "idle");
       assert(h.started);
@@ -349,7 +343,6 @@ Deno.test("parseSupervisorArgs: reads back the replica check's interval (swamp-c
   assertEquals(parseSupervisorArgs(supervisorArgs(options)), options);
 });
 
-/** A sidecar whose copy acknowledged `txid` on lineage 3, with a fake check. */
 async function verifySetup(dir: string, txid = "0000000000000005") {
   const { options, paths } = await setup(dir);
   await writeCopyState(paths, {
@@ -377,8 +370,6 @@ Deno.test({
         return Promise.resolve(undefined);
       };
       assertEquals(await runReplicationSupervisor(options, h.deps), "idle");
-      // Once when it started, and not again at the idle exit: that TXID was
-      // tried, and no new one was acknowledged.
       assertEquals(calls.length, 1);
       assertEquals(calls[0].lineageFence, 3);
       assertEquals(calls[0].replicaType, "file");
@@ -468,10 +459,6 @@ const MINUTE = 60_000;
 const HOUR = 60 * MINUTE;
 const txidOf = (n: number) => n.toString(16).padStart(16, "0");
 
-/**
- * A fake check that records a passing verdict at the harness's time, the
- * way the real one does, and counts the restores it stands for.
- */
 function recordingVerify(
   h: Harness,
   paths: ReplicationPaths,
@@ -485,7 +472,6 @@ function recordingVerify(
       txid: copy!.txid,
       checkedAt: new Date(h.now()).toISOString(),
       ok: true,
-      // As the real check records it: only a snapshot it read through.
       ...(snapshotReadAt(request.snapshotTxid, copy!.txid) !== undefined
         ? { snapshotTxid: snapshotReadAt(request.snapshotTxid, copy!.txid) }
         : {}),
@@ -493,12 +479,6 @@ function recordingVerify(
   };
 }
 
-/**
- * A serve-shaped sidecar (swamp-club#4261): never idle, its writer
- * acknowledging a new TXID every minute for `hours`, then asked to stop.
- * `snapshotAt` gives the replica's newest snapshot at a time past the start.
- * Resolves with the restores and snapshot listings it ran.
- */
 async function serveDay(
   dir: string,
   hours: number,
@@ -542,10 +522,7 @@ Deno.test({
   async fn() {
     await withTempDir(async (dir) => {
       const { restores, polls } = await serveDay(dir, 12, () => txidOf(1));
-      // The new lineage, then the 4-hour backstop at hours 4 and 8; the
-      // stop comes before hour 12's. A 10-minute timer ran 72.
       assertEquals(restores.length, 3);
-      // One listing per 15 minutes at most, and none more.
       assert(polls <= 12 * 4 + 1, `${polls} listings`);
       assertEquals(restores[0].snapshotTxid, txidOf(1));
     });
@@ -563,7 +540,6 @@ Deno.test({
         3,
         (elapsed) => elapsed < HOUR ? txidOf(1) : txidOf(50),
       );
-      // The new lineage, then the snapshot written at hour 1.
       assertEquals(restores.length, 2);
       assertEquals(restores[1].snapshotTxid, txidOf(50));
     });
@@ -576,11 +552,7 @@ Deno.test({
   ignore: !UNIX,
   async fn() {
     await withTempDir(async (dir) => {
-      // The replica's snapshot is at TXID 71 throughout; the writer reaches
-      // it after about 70 minutes.
       const { restores } = await serveDay(dir, 3, () => txidOf(71));
-      // The new lineage (which did not read that snapshot), then the check
-      // that does, well before the 4-hour backstop.
       assertEquals(restores.length, 2);
       assertEquals(restores[1].snapshotTxid, txidOf(71));
     });
@@ -594,7 +566,6 @@ Deno.test({
   async fn() {
     await withTempDir(async (dir) => {
       const { restores } = await serveDay(dir, 9, () => undefined);
-      // The new lineage, then hours 4 and 8.
       assertEquals(restores.length, 3);
       assertEquals(restores[0].snapshotTxid, undefined);
     });
@@ -612,7 +583,6 @@ Deno.test({
       const start = h.now();
       const attempts: number[] = [];
       const record = recordingVerify(h, paths, []);
-      // The replica is unreachable for the first check only.
       h.deps.verifyReplica = async (request) => {
         attempts.push(h.now() - start);
         if (attempts.length === 1) throw new Error("replica unreachable");
@@ -637,10 +607,8 @@ Deno.test({
         ),
         "stop-requested",
       );
-      // The failed check, then one retry 10 minutes on, which records a
-      // verdict; nothing more within the hour.
-      // The delay counts from when the failed check settled, which the fake
-      // clock sees at the next tick: 10 minutes, give or take that tick.
+      // the delay counts from when the failed check settled, which the fake
+      // clock sees at the next tick: 10 minutes, give or take that tick
       assertEquals(attempts.length, 2);
       const gap = attempts[1] - attempts[0];
       assert(gap >= 10 * MINUTE && gap <= 11 * MINUTE, `${gap / MINUTE} min`);
@@ -657,8 +625,6 @@ Deno.test({
       const { options } = await verifySetup(dir, txidOf(1));
       const h = harness();
       let attempts = 0;
-      // Every check hangs for 30 minutes (the bucket dropping packets),
-      // then fails without a verdict.
       h.deps.verifyReplica = () => {
         attempts++;
         return new Promise((_, reject) => {
@@ -685,7 +651,6 @@ Deno.test({
         "idle",
       );
       assertEquals(attempts, 1);
-      // It waited out the one stalled check, and no more.
       assert(
         h.now() - started < 2 * HOUR,
         `${(h.now() - started) / MINUTE} min`,
@@ -735,7 +700,6 @@ Deno.test({
       const dayStart = time;
       let sidecars = 0;
       let txid = 1;
-      // Each command acknowledges a new TXID, then its sidecar idles out.
       while (time - dayStart < 8 * HOUR) {
         await writeCopyState(paths, {
           replicaRoot: "file:/r",
@@ -756,19 +720,14 @@ Deno.test({
           "idle",
         );
         sidecars++;
-        // The next command a minute after this sidecar stopped.
         time = h.now() + MINUTE;
       }
       assert(sidecars >= 60, `${sidecars} sidecars`);
-      // The new lineage and the backstop at hours 4 and 8 at most, against
-      // one restore per idle exit before swamp-club#4261.
       assert(
         restores.length <= 1 + Math.ceil(8 * HOUR / REPLICA_VERIFY_BACKSTOP_MS),
         `${restores.length} restores over ${sidecars} sidecars`,
       );
       assert(restores.length >= 2);
-      // A listing per sidecar at most: once when it first sees something
-      // uncovered, once when it goes idle.
       assert(polls <= 2 * sidecars, `${polls} listings`);
     });
   },

@@ -21,10 +21,8 @@ import { UserError } from "../errors.ts";
 import type { BlockReason } from "./auth_gate_policy.ts";
 
 /**
- * True for a block a later run can clear on its own — swamp-club refusing,
- * unreachable or failing — rather than one that needs the user to act (no
- * credential, a revoked key). Temporary blocks exit with 75 (EX_TEMPFAIL) so
- * CI wrappers can retry them and fail fast on the rest.
+ * true for a block a later run can clear on its own; temporary blocks exit 75
+ * (EX_TEMPFAIL) so CI wrappers can retry them and fail fast on the rest
  */
 export function isTemporaryBlock(reason: BlockReason): boolean {
   return reason.kind === "refused" ||
@@ -33,10 +31,8 @@ export function isTemporaryBlock(reason: BlockReason): boolean {
 }
 
 /**
- * The error a run the auth gate blocked exits with. It carries the reason,
- * so JSON output can report it as data and the exit code can tell a
- * temporary block from one that needs the user. Telemetry records the class
- * name, so blocks are countable by type.
+ * carries the reason so JSON output reports it as data and the exit code tells
+ * a temporary block from one needing the user
  */
 export class AuthGateBlockedError extends UserError {
   readonly reason: BlockReason;

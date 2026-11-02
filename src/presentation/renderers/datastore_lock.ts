@@ -57,7 +57,6 @@ function renderLockStatusLog(data: DatastoreLockStatusData): void {
     `  Backend:  ${data.datastoreType}`,
   ];
   if (info.fence !== undefined) {
-    // A v3 datastore's writer lease (swamp-club#3359).
     lines.push(`  Fence:    ${info.fence}`);
   }
   if (data.lockScope) {
@@ -66,8 +65,6 @@ function renderLockStatusLog(data: DatastoreLockStatusData): void {
 
   writeOutput(lines.join("\n"));
 }
-
-// ── Lock status renderer ───────────────────────────────────────────────
 
 function renderServeLeaseLog(data: ServeLeaseStatusData): void {
   const holder = data.heldBy === "caller"
@@ -110,8 +107,8 @@ class LogDatastoreLockStatusRenderer
 class JsonDatastoreLockStatusRenderer
   implements Renderer<DatastoreLockStatusEvent> {
   handlers(): EventHandlers<DatastoreLockStatusEvent> {
-    // Serve's leases ride on the final document, so a serve-mode checkout's
-    // status stays one JSON document (swamp-club#4195).
+    // serve's leases ride on the final document so a serve-mode checkout's
+    // status stays one JSON document
     const serveLeases: ServeLeaseStatusData[] = [];
     let serveLeasesTruncated = false;
     return {
@@ -152,8 +149,6 @@ export function createDatastoreLockStatusRenderer(
       return new LogDatastoreLockStatusRenderer();
   }
 }
-
-// ── Lock release renderer ──────────────────────────────────────────────
 
 class LogDatastoreLockReleaseRenderer
   implements Renderer<DatastoreLockReleaseEvent> {

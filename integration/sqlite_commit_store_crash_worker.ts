@@ -17,10 +17,9 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// Worker for sqlite_commit_store_crash_test.ts. It stands in for a writer
-// killed mid-append: it opens commits.db, starts the append's transaction,
-// writes the commit row and the head row exactly as the store does, reports
-// that it holds them, and waits to be terminated before it can commit.
+// stands in for a writer killed mid-append: opens the transaction, writes the
+// commit and head rows as the store does, reports it holds them, and waits to
+// be terminated before it can commit
 
 import { DatabaseSync } from "node:sqlite";
 

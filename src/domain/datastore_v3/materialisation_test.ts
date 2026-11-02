@@ -87,7 +87,6 @@ Deno.test("decideFile: a tombstone removes only its own partition's present file
     decideFile({ ...owned, present: false }, "p", 7, false),
     { kind: "keep" },
   );
-  // No put of the key was applied: removed, with no ownership to record.
   assertEquals(decideFile(undefined, "p", 7, false), {
     kind: "remove",
     next: undefined,
@@ -117,7 +116,6 @@ Deno.test("lexicalConflict: finds a file above the key or a file under it", () =
   assertEquals(lexicalConflict("data/w/1", isFile, under), undefined);
 });
 
-/** A key change of `key`: a put when `put`, else a tombstone. */
 function change(key: string, put: boolean): KeyChange {
   return {
     key: RecordKey.create(key),
@@ -189,7 +187,6 @@ Deno.test("NetReplayPlanner: a key whose directory was there before replays in f
   ], { present: ["data"] });
   assertEquals(plan.skipsWrite("", "data/x", 1), false);
   assertEquals(plan.keptForDirectory, 1);
-  // A key only ever removed, under a directory that was absent.
   assertEquals(plan.skipsRemoval("", "outputs/z", 3), true);
 });
 
@@ -224,7 +221,6 @@ Deno.test("NetReplayPlanner: keys that differ only by case or composition, or wh
   assertEquals(plan.keptForPrefix, plan.replaceable);
 });
 
-/** A plan of a base of `seeds` and the tail after it, at positions 11 on. */
 function basePlanOf(
   seeds: [key: string, owner: string, mark: number, present: boolean][],
   tail: [partition: string, changes: KeyChange[]][],

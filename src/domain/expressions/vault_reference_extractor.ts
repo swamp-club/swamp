@@ -97,7 +97,6 @@ function matchVaultGetCall(
   return undefined;
 }
 
-/** A whole quoted argument, or the full CEL expression to evaluate. */
 function vaultArgumentCaptures(argument: string): (string | undefined)[] {
   const segments = lexSegments(argument);
   const quoted = /^(['"`])([^]*?)\1$/.exec(argument);
@@ -112,12 +111,9 @@ function vaultArgumentCaptures(argument: string): (string | undefined)[] {
 }
 
 /**
- * Finds the `vault.get(...)` calls written as code in a CEL expression, in
- * order and without overlap. A call that starts inside a string literal or a
- * comment is text (`literal('vault.get(')`), and one reached through a member
- * (`self.vault.get(...)`, `self . vault.get(...)`) is not the vault
- * namespace. The resolver that fetches secrets and the serve allowlist both
- * read calls through this one matcher, so they always agree.
+ * a call inside a string, comment or member access is not the vault namespace;
+ * the secret resolver and the serve allowlist both read calls through this one
+ * matcher, so they always agree
  */
 export function findVaultGetCalls(celExpression: string): RegExpExecArray[] {
   const calls: RegExpExecArray[] = [];
@@ -140,7 +136,6 @@ export function findVaultGetCalls(celExpression: string): RegExpExecArray[] {
   return calls;
 }
 
-/** Whether `vault` at `at` is a root identifier rather than a member. */
 function isNamespaceRoot(text: string, at: number): boolean {
   let i = at - 1;
   if (i >= 0 && /\w/.test(text[i])) return false;
@@ -148,11 +143,6 @@ function isNamespaceRoot(text: string, at: number): boolean {
   return !(i >= 0 && text[i] === ".");
 }
 
-/**
- * The name a `vault.get` argument stands for when it is known without
- * evaluating anything: a quoted argument, or an unquoted one that is not
- * dynamic (see {@link isDynamicVaultArgument}). Undefined for a dynamic one.
- */
 function literalVaultArg(
   quoted: string | undefined,
   bare: string | undefined,
@@ -161,7 +151,6 @@ function literalVaultArg(
   return bare !== undefined && !isDynamicVaultArgument(bare) ? bare : undefined;
 }
 
-/** An analysis call restricted to the syntax the option-off resolver accepts. */
 export interface AnalyzedVaultCall {
   readonly start: number;
   readonly end: number;
@@ -173,11 +162,9 @@ export interface AnalyzedVaultCall {
 }
 
 /**
- * Shared AST analysis with an option-off compatibility filter. Malformed CEL
- * still needs legacy attribution (vault.get(t, db..x) must fail at evaluation,
- * not pass through as foreign text). The resolver also replaces calls under
- * macro bindings without regard to shadowing. Preserve those legacy records
- * until rollout; new typed evaluation uses analyzeVaultCalls directly.
+ * malformed CEL still needs legacy attribution (it must fail at evaluation, not
+ * pass as foreign text), and the resolver replaces calls under macro bindings
+ * regardless of shadowing; kept until rollout
  */
 export function vaultCallsForAnalysis(expression: string): AnalyzedVaultCall[] {
   const legacy = findVaultGetCalls(expression);
@@ -241,12 +228,9 @@ export function extractVaultReferences(
 }
 
 /**
- * `result` with `references` admitted as static references: each one is
- * spelled as the extractor spells it and added unless already listed, in
- * order, with `hasDynamicRefs` unchanged. A workflow step's arguments reach
- * serve with their secrets resolved, so the references its secret bag holds
- * are admitted this way beside any expression still written in the
- * arguments (swamp-club#3529). With no references the input is returned.
+ * a workflow step's arguments reach serve with secrets resolved, so the
+ * references its secret bag holds are admitted as static beside any expression
+ * still in the arguments; hasDynamicRefs is unchanged
  */
 export function withVaultReferences(
   result: VaultExtractionResult,

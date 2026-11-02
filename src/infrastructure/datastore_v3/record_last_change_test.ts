@@ -31,7 +31,6 @@ import {
 } from "../../domain/datastore_v3/v3_test_helpers.ts";
 import { recordLastChange } from "./record_last_change.ts";
 
-/** A commit store over `commits`, or one whose history is compacted. */
 function storeOf(commits: readonly Commit[], compacted = false) {
   return {
     head: () =>

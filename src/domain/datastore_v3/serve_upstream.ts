@@ -20,15 +20,10 @@
 import { UserError } from "../errors.ts";
 import { normalizeServerUrl } from "../auth/server_url.ts";
 
-/** What {@link ServeUpstreamTarget.create} takes. */
 export interface ServeUpstreamTargetInput {
-  /** The serve address, as configured: http(s) or ws(s). */
   serverUrl: string;
-  /** The bearer token bound to this address, when there is one. */
   token?: string;
-  /** PEM-encoded CA certificates to trust for the TLS connection. */
   caCerts?: readonly string[];
-  /** Extra headers for proxy or tunnel pass-through. */
   extraHeaders?: Readonly<Record<string, string>>;
 }
 
@@ -46,18 +41,9 @@ const RESERVED_HEADER_NAMES = new Set([
   "connection",
 ]);
 
-/**
- * The swamp serve a v3 checkout uses as its datastore upstream, with what
- * the client needs to reach it: the normalized http(s) address, the token
- * bound to that address, the CA certificates to trust and any pass-through
- * headers.
- *
- * Immutable. Equal targets are equal by value; {@link equals} compares them.
- * The token never appears in {@link toString} or JSON output.
- */
+/** the token never appears in toString or JSON output */
 export class ServeUpstreamTarget {
   private constructor(
-    /** The normalized http(s) address (see `normalizeServerUrl`). */
     readonly serverUrl: string,
     readonly token: string | undefined,
     readonly caCerts: readonly string[] | undefined,
@@ -65,13 +51,8 @@ export class ServeUpstreamTarget {
   ) {}
 
   /**
-   * Validates and normalizes the input.
-   *
-   * @throws {UserError} when the address is not an http(s) or ws(s) URL,
-   *   the token is empty or holds whitespace or control characters, a CA
-   *   certificate is empty, or a header is reserved or holds control
-   *   characters. No message echoes the address, the token or a header
-   *   value, any of which can carry a credential.
+   * no error message echoes the address, the token or a header value, any of
+   * which can carry a credential
    */
   static create(input: ServeUpstreamTargetInput): ServeUpstreamTarget {
     let serverUrl: string;
@@ -136,7 +117,6 @@ export class ServeUpstreamTarget {
     );
   }
 
-  /** Whether a token is bound to this address. */
   get hasToken(): boolean {
     return this.token !== undefined;
   }
@@ -164,7 +144,6 @@ export class ServeUpstreamTarget {
     return this.serverUrl;
   }
 
-  /** The address and whether a token is bound: never the token itself. */
   toJSON(): { serverUrl: string; hasToken: boolean } {
     return { serverUrl: this.serverUrl, hasToken: this.hasToken };
   }

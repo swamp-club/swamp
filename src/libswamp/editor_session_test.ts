@@ -22,7 +22,6 @@ import { dirname } from "@std/path";
 import { editInEditor, type EditorSessionDeps } from "./editor_session.ts";
 import { UserError } from "../domain/errors.ts";
 
-/** An editor that rewrites the file it is given with `edit`. */
 function fakeEditor(
   edit: (text: string) => string,
   seen: { path?: string; mode?: number | null } = {},

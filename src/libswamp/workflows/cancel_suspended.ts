@@ -58,18 +58,9 @@ import {
 export interface WorkflowCancelSuspendedData {
   runId: string;
   workflowName: string;
-  /** `running` for a run whose owner was gone (swamp-club#2518). */
   previousStatus: "suspended" | "running";
   status: "cancelled";
-  /**
-   * Nested runs the cancelled run's nested steps still waited on and that
-   * were left unfinished (swamp-club#2736).
-   */
   detachedNestedRuns?: DetachedNestedRunData[];
-  /**
-   * Nested runs cancelled with this run, and running ones asked to stop
-   * (swamp-club#2867).
-   */
   cancelledNestedRuns?: CascadedNestedRunData[];
   stopRequestedNestedRuns?: CascadedNestedRunData[];
 }
@@ -82,9 +73,8 @@ export type WorkflowCancelSuspendedEvent =
 export interface WorkflowCancelSuspendedInput {
   runId: string;
   /**
-   * When given, the run must belong to this workflow (name or id). It is
-   * checked against the workflow of the run found by `runId`, never resolved
-   * on its own, so an unknown name costs no workflow lookup.
+   * checked against the workflow of the run found by runId, never resolved on
+   * its own, so an unknown name costs no workflow lookup
    */
   workflowIdOrName?: string;
   /**
@@ -96,30 +86,22 @@ export interface WorkflowCancelSuspendedInput {
   reason: string;
 }
 
-/** What {@link locateSuspendedRunToCancel} needs to find a run. */
 export type LocateSuspendedRunInput = Pick<
   WorkflowCancelSuspendedInput,
   "runId" | "workflowIdOrName"
 >;
 
-/** A run the caller may cancel, as located before anything is changed. */
 export interface LocatedSuspendedRun {
-  /** The id of the workflow whose runs hold the run. */
   workflowId: string;
   workflow: CancelTargetWorkflow;
 }
 
-/** The workflow a run belongs to, as the authorize callback sees it. */
 export interface CancelTargetWorkflow {
   id: string;
   name: string;
 }
 
-/**
- * The run repository surface cancel needs: a run found by id alone, loading
- * only that run's file, plus the workflow-scoped read and the save. Structural
- * so the {@link WorkflowRunRepository} port does not grow `findGlobalById`.
- */
+/** structural so the WorkflowRunRepository port does not grow findGlobalById */
 type CancelRunRepository =
   & Pick<WorkflowRunRepository, "findById" | "save">
   & {
@@ -131,7 +113,6 @@ type CancelRunRepository =
 export interface WorkflowCancelSuspendedDeps {
   workflowRepo: WorkflowRepository;
   runRepo: CancelRunRepository;
-  /** Reads a run's own evaluated workflow snapshot, to settle it against. */
   findEvaluatedWorkflow: EvaluatedWorkflowLookup;
   runTracker?: RunTrackerRepository;
   /**
@@ -147,23 +128,13 @@ export interface WorkflowCancelSuspendedDeps {
    * gone, it is refused, since a live owner would save over the cancel.
    */
   ownerGone?: (run: WorkflowRun) => Promise<RunOwnerVerdict> | RunOwnerVerdict;
-  /**
-   * Cancels the nested runs the ended run waited on (swamp-club#2867).
-   * Without it they are only reported.
-   */
   cascade?: NestedCascade;
 }
 
-/**
- * Whether the owner of a run recorded `running` is shown gone. When it is
- * not, `why` completes "was not cancelled: ..." for the caller allowed to
- * cancel the run: what still holds the run, and what to do about it.
- */
 export type RunOwnerVerdict =
   | { gone: true }
   | { gone: false; why: string };
 
-/** The verdict when nothing is able to judge a running run's owner. */
 const OWNER_NOT_JUDGED: RunOwnerVerdict = {
   gone: false,
   why:
@@ -188,14 +159,8 @@ export function createWorkflowCancelSuspendedDeps(
   };
 }
 
-/** Code of the error reported for a missing, unauthorized or mismatched run. */
 export const CANCEL_SUSPENDED_NOT_FOUND = "not_found";
 
-/**
- * Code of the error reported for an authorized run that cannot be cancelled
- * here: one that is not suspended, including a run recorded `running` whose
- * owner is not shown gone.
- */
 export const CANCEL_SUSPENDED_NOT_SUSPENDED = "not_suspended";
 
 function cancelNotFound(runId: string): SwampError {
@@ -206,13 +171,9 @@ function cancelNotFound(runId: string): SwampError {
 }
 
 /**
- * Finds the run a cancel names and authorizes the caller against the workflow
- * it belongs to, without changing anything. Returns null for a missing run, a
- * run of another workflow than `workflowIdOrName`, and an unauthorized caller
- * alike, so an id reveals nothing. Needs no claim on the run: a caller that
- * goes on to cancel passes the returned `workflowId` to
- * {@link workflowCancelSuspended}, which reads and authorizes the run again
- * under its claim.
+ * returns null for a missing run, another workflow's run and an unauthorized
+ * caller alike, so an id reveals nothing; needs no claim, since
+ * workflowCancelSuspended reads and authorizes again under its own
  */
 export async function locateSuspendedRunToCancel(
   deps: WorkflowCancelSuspendedDeps,
@@ -231,20 +192,9 @@ export async function locateSuspendedRunToCancel(
 }
 
 /**
- * Cancels a persisted suspended run found by its id alone, such as one started
- * by `swamp serve` that no process is driving. The run is loaded, then the
- * caller is authorized against the workflow the run belongs to (never a name
- * the caller supplied), then it is cancelled and saved. A missing run, a run
- * of another workflow than `workflowIdOrName`, and an unauthorized caller all
- * get the same not-found error, so an id reveals nothing.
- *
- * A run recorded `running` is cancelled too, but only when `deps.ownerGone`
- * shows the process that ran it is gone, for example a serve instance killed
- * mid-step (swamp-club#2518). Its in-flight steps are settled as an offline
- * cancel settles them. Otherwise it is refused, saying what still holds it.
- *
- * Does no locking: the caller must hold whatever claim keeps other writers
- * off the run for the whole call, so the load here is a fresh read.
+ * authorizes against the run's own workflow, never a caller-supplied name; a
+ * running run is cancelled only when ownerGone shows its process is gone. Does
+ * no locking: the caller must hold a claim keeping other writers off the run
  */
 export async function* workflowCancelSuspended(
   ctx: LibSwampContext,
@@ -331,11 +281,6 @@ export async function* workflowCancelSuspended(
     ));
 }
 
-/**
- * Loads the run, resolves the workflow it belongs to, and checks it against
- * `workflowIdOrName` and the caller's authorization, in that order. Null for
- * any failure, which callers report as not found.
- */
 async function findAuthorizedRun(
   deps: WorkflowCancelSuspendedDeps,
   input: LocateSuspendedRunInput & { workflowId?: string },
@@ -370,14 +315,8 @@ async function findAuthorizedRun(
 }
 
 /**
- * Finds the run by its id alone, so nothing the caller sent is resolved before
- * a run exists: `workflowIdOrName` is checked afterwards against the run's own
- * workflow by {@link findAuthorizedRun}. A run id is always a UUID, so any
- * other id is not found without a repository read.
- *
- * Should one id ever sit under two workflows (only a hand-copied `.swamp`
- * tree could do that), the first found is used and a name naming the other
- * does not match.
+ * finds the run by id alone so nothing the caller sent is resolved before a run
+ * exists; a non-UUID id is not found without a repository read
  */
 async function findRun(
   deps: WorkflowCancelSuspendedDeps,
@@ -392,9 +331,8 @@ async function findRun(
   }
   const found = await deps.runRepo.findGlobalById(runId);
   if (!found) return null;
-  // Without a workflow to check against, only a run this could cancel is
-  // reported, suspended or left running: any other status stays not found,
-  // as it always has on this path.
+  // without a workflow to check against, only a suspended or running run is
+  // reported; any other status stays not found
   if (
     input.workflowIdOrName === undefined &&
     found.run.status !== "suspended" && found.run.status !== "running"

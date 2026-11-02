@@ -33,18 +33,15 @@ import { ExtensionCatalogStore } from "../../infrastructure/persistence/extensio
 import { swampPath } from "../../infrastructure/persistence/paths.ts";
 import { removeSourceSkills } from "./source_skills.ts";
 
-/** Dependencies for the source remove operation. */
 export interface SourceRemoveDeps {
   readSources: () => Promise<SwampSourcesConfig | null>;
   writeSources: (config: SwampSourcesConfig) => Promise<void>;
   removeSources: () => Promise<void>;
   purgeCatalogByPrefix: (prefix: string) => number;
   expandPath: (path: string) => Promise<string[]>;
-  /** Removes named skill directories from the repo's skills dir. */
   removeSkills: (skillNames: string[]) => Promise<void>;
 }
 
-/** Wires real infrastructure into SourceRemoveDeps. */
 export async function createSourceRemoveDeps(
   repoDir: string,
   skillsDirs?: string[],
@@ -82,7 +79,6 @@ export async function createSourceRemoveDeps(
   };
 }
 
-/** Removes a source path from `.swamp-sources.yaml`. */
 export async function* sourceRemove(
   _ctx: LibSwampContext,
   deps: SourceRemoveDeps,
@@ -113,7 +109,6 @@ export async function* sourceRemove(
   const removed = existing.sources[idx];
   const updated = existing.sources.filter((_, i) => i !== idx);
 
-  // Remove skills that were installed from this source.
   if (removed.installedSkills && removed.installedSkills.length > 0) {
     await deps.removeSkills(removed.installedSkills);
   }
@@ -124,7 +119,6 @@ export async function* sourceRemove(
     await deps.writeSources({ sources: updated });
   }
 
-  // Purge stale catalog rows contributed by the removed source.
   const expandedPaths = await deps.expandPath(removed.path);
   for (const expandedPath of expandedPaths) {
     deps.purgeCatalogByPrefix(expandedPath);

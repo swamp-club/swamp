@@ -18,15 +18,8 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * Test-only wiring that plugs an in-memory remote from
- * `@swamp-club/swamp-testing` into swamp's datastore type registry, so
- * `requireInitializedRepo` builds its repositories, `markDirty` hook and
- * flush paths against the fake exactly as it would against S3 or GCS.
- *
- * Test-only: production code must never import this module or
- * `@swamp-club/swamp-testing`.
- *
- * @module
+ * test-only: plugs an in-memory remote into the datastore type registry;
+ * production code must never import this module or swamp-testing
  */
 
 import { join } from "@std/path";
@@ -38,53 +31,32 @@ import type {
   LockOptions,
 } from "../../domain/datastore/distributed_lock.ts";
 
-/** A registered test datastore type and its disposer. */
 export interface TestDatastoreType {
-  /** The type's name: `options.typeName`, or a per-run `@test/remote-<uuid>`. */
   typeName: string;
-  /** Unregisters the type. Call it in a `finally`. */
   dispose: () => void;
 }
 
-/** Options for {@link registerTestDatastoreType}. */
 export interface TestDatastoreTypeOptions {
-  /**
-   * The type's name, for a test of behavior specific to one. Default a unique
-   * `@test/remote-` name.
-   */
   typeName?: string;
-  /**
-   * Called each time one of the type's locks is released, including at the
-   * end of `withLock`, so a test can place pushes relative to lock release.
-   */
   onLockRelease?: () => void;
   /**
-   * Replaces the type's lock, which never waits and whose `inspect()` reads
-   * null, so a test can share one lock table between clones.
+   * replaces the type's lock, which never waits and whose inspect() reads null,
+   * so a test can share one lock table between clones
    */
   createLock?: (options?: LockOptions) => DistributedLock;
   /**
-   * Sets the provider's `datastoreWideLease`. Unset by default, so the type
-   * never claims the v3 writer lease contract unless a test asks it to.
+   * unset by default, so the type never claims the v3 writer lease contract
+   * unless a test asks it to
    */
   datastoreWideLease?: boolean;
-  /** Passed to `remote.connect`, e.g. to leave out `fetchContent`. */
   connect?: Omit<ConnectOptions, "instance">;
   /**
-   * The provider's `listNamespaces`, which a v3 setup needs to tell the
-   * bucket holds no v2 namespace (swamp-club#3534). Absent by default.
+   * a v3 setup needs this to tell the bucket holds no v2 namespace; absent by
+   * default
    */
   listNamespaces?: () => Promise<string[]>;
 }
 
-/**
- * Registers a datastore type, per-run unless named, whose sync
- * service is `remote.connect(cachePath)`. The cache lives at
- * `<repoDir>/.test-cache`. Point a repo at it with
- * {@link configureTestDatastore}. Each of `datastoreControlPlaneStore`,
- * `storage`, `replicaTarget` and `replicaPaths` the remote has, the
- * provider offers too (swamp-club#3534).
- */
 export function registerTestDatastoreType(
   remote:
     & Pick<InMemoryRemote, "connect">
@@ -135,8 +107,8 @@ export function registerTestDatastoreType(
       }),
       resolveDatastorePath: (repoDir: string) => join(repoDir, ".test-store"),
       resolveCachePath: (repoDir: string) => join(repoDir, ".test-cache"),
-      // The fake's push manifest is its own opaque type, not core's branded
-      // PushManifest; core only hands it back to the same commitPush.
+      // the fake's push manifest is its own opaque type, not core's branded
+      // PushManifest; core only hands it back to the same commitPush
       createSyncService: (_repoDir: string, cachePath: string) =>
         remote.connect(
           cachePath,
@@ -171,10 +143,6 @@ export function registerTestDatastoreType(
   };
 }
 
-/**
- * Appends a `datastore:` block selecting `typeName` to the repo's
- * `.swamp.yaml`, as `swamp datastore setup extension` would.
- */
 export async function configureTestDatastore(
   repoDir: string,
   typeName: string,

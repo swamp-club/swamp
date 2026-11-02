@@ -17,27 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Runs skill evaluations using promptfoo. Three phases:
- *   1. Trigger evals — does the swamp skill activate for the right queries?
- *   2. Routing evals — once activated, does it route to the correct guide?
- *   3. Sufficiency evals — is guide.md alone sufficient for common queries?
- *
- * Usage: deno run eval-skill-triggers [--model <alias>] [--route cli|api] [--concurrency <n>] [--threshold <0.0-1.0>]
- *
- * Supported models: opus (default), sonnet, fable, gpt-5.4, gemini-2.5-pro,
- * gemini-3.1-pro, gpt-6-astra (Codex CLI only)
- *
- * Routes: `cli` runs sonnet/opus through `claude -p`, so a claude.ai login is
- * enough and no API key is read. `gpt-6-astra` uses `codex exec`. `api` calls the provider APIs directly. The
- * default is `api` in GitHub Actions and for every model without a CLI route,
- * and `cli` otherwise.
- *
- * Environment (api route only):
- *   ANTHROPIC_API_KEY - Required for sonnet/opus/fable models.
- *   OPENAI_API_KEY    - Required for gpt-5.4 model.
- *   GOOGLE_API_KEY    - Required for gemini models.
- */
 
 import { parseArgs } from "@std/cli/parse-args";
 import { join } from "@std/path";
@@ -59,7 +38,6 @@ const API_KEY_ENV: Record<string, string> = {
   "gemini-3.1-pro": "GOOGLE_API_KEY",
 };
 
-// Maps model aliases to the API model ID used for preflight checks.
 const PREFLIGHT_MODEL_ID: Record<string, string> = {
   "sonnet": "claude-sonnet-4-5",
   "opus": "claude-opus-5-5",
@@ -120,7 +98,6 @@ function buildPreflightRequest(
   }
 }
 
-/** Pings the selected CLI so a missing executable or login fails before evals. */
 async function cliPreflightCheck(model: string): Promise<void> {
   const cli = CLI_MODELS[model];
   if (cli.provider === "codex") {
@@ -210,12 +187,10 @@ async function preflightCheck(model: string): Promise<void> {
     Deno.exit(1);
   }
 
-  // Drain the response body
   await resp.text();
   console.log(`Preflight: ${model} API access verified.`);
 }
 
-// Per-million-token pricing for cost estimation
 const TOKEN_PRICING: Record<string, { prompt: number; completion: number }> = {
   "sonnet": { prompt: 3.0, completion: 15.0 },
   "opus": { prompt: 4.0, completion: 20.0 },
@@ -271,7 +246,6 @@ interface PhaseResult {
   cost: number;
   tokens: EvalStats["tokenUsage"];
   failures: EvalResult[];
-  /** Exact models the CLI route resolved its alias to. */
   resolvedModels: string[];
 }
 
@@ -361,9 +335,8 @@ async function runPromptfooEval(
   });
 
   const { code } = await command.output();
-  // promptfoo exits with code 100 when any assertions fail, which is expected.
-  // We handle pass/fail via our own threshold check below. Only treat other
-  // non-zero codes as hard failures (e.g., missing API key, config errors).
+  // promptfoo exits 100 when assertions fail; the threshold check below handles
+  // that, so only other non-zero codes are hard failures
   if (code !== 0 && code !== 100) {
     console.error("promptfoo eval failed with exit code", code);
     Deno.exit(1);
@@ -482,7 +455,6 @@ async function main(): Promise<void> {
       `Skipping ${model} eval: ${requiredKeyEnv} environment variable is not set.`;
     console.warn(message);
 
-    // Write skip status to GitHub Actions summary
     const summaryFile = Deno.env.get("GITHUB_STEP_SUMMARY");
     if (summaryFile) {
       let md = `## Skill Eval Results (${model})\n\n`;
@@ -490,15 +462,12 @@ async function main(): Promise<void> {
       await Deno.writeTextFile(summaryFile, md, { append: true });
     }
 
-    // Exit 0 — missing key is not a failure
     return;
   }
 
-  // Preflight: make a single call to verify access works
   if (route === "cli") await cliPreflightCheck(model);
   else await preflightCheck(model);
 
-  // Install promptfoo dependencies once
   console.log("Installing promptfoo dependencies…");
   try {
     await installPromptfooDeps(configDir);
@@ -507,7 +476,6 @@ async function main(): Promise<void> {
     Deno.exit(1);
   }
 
-  // Phase 1: Trigger evals
   console.log(
     `\n━━━ Phase 1: Trigger evals (${model}) ━━━`,
   );
@@ -519,7 +487,6 @@ async function main(): Promise<void> {
   );
   const triggerResult = summarizePhase("Trigger evals", triggerData, model, route);
 
-  // Phase 2: Routing evals
   console.log(
     `\n━━━ Phase 2: Routing evals (${model}) ━━━`,
   );
@@ -536,7 +503,6 @@ async function main(): Promise<void> {
     route,
   );
 
-  // Phase 3: Sufficiency evals
   console.log(
     `\n━━━ Phase 3: Sufficiency evals (${model}) ━━━`,
   );
@@ -553,7 +519,6 @@ async function main(): Promise<void> {
     route,
   );
 
-  // Combined summary
   const totalPassed = triggerResult.passed + routingResult.passed +
     sufficiencyResult.passed;
   const totalTests = triggerResult.total + routingResult.total +
@@ -568,7 +533,6 @@ async function main(): Promise<void> {
   );
   if (route === "api") console.log(`Total cost: $${totalCost.toFixed(2)}`);
 
-  // Write GitHub Actions summary
   const summaryFile = Deno.env.get("GITHUB_STEP_SUMMARY");
   if (summaryFile) {
     let md = `## Skill Eval Results (${model})\n\n`;
@@ -620,7 +584,6 @@ async function main(): Promise<void> {
     await Deno.writeTextFile(summaryFile, md, { append: true });
   }
 
-  // Check threshold against combined rate
   if (combinedRate < passThreshold) {
     console.error(
       `\nFAIL (${model}): Combined pass rate ${(combinedRate * 100).toFixed(1)}% is below ${(passThreshold * 100).toFixed(0)}% threshold`,

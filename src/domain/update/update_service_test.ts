@@ -72,8 +72,6 @@ const platform = Platform.from("darwin", "aarch64");
 // not a permission problem, so these tests never touch a real install dir.
 const missingBinaryPath = "/nonexistent-swamp-update-test/bin/swamp";
 
-// --- isDevBuild tests ---
-
 Deno.test("isDevBuild returns true for empty sha", () => {
   assertEquals(isDevBuild("20260206.200442.0-sha."), true);
 });
@@ -89,8 +87,6 @@ Deno.test("isDevBuild returns false for version with full sha", () => {
 Deno.test("isDevBuild returns false for version with short sha", () => {
   assertEquals(isDevBuild("20260207.123456.0-sha.abcd"), false);
 });
-
-// --- parseVersionFromRedirectUrl tests ---
 
 Deno.test("parseVersionFromRedirectUrl extracts version from redirect URL", () => {
   const url =
@@ -110,8 +106,6 @@ Deno.test("parseVersionFromRedirectUrl handles URL with dev sha", () => {
     "https://artifacts.swamp-club.com/swamp/20260206.200442.0-sha./binary/darwin/aarch64/swamp-stable-binary-darwin-aarch64.tar.gz";
   assertEquals(parseVersionFromRedirectUrl(url), "20260206.200442.0-sha.");
 });
-
-// --- UpdateService.check tests ---
 
 Deno.test("check returns up_to_date when no redirect", async () => {
   const service = new UpdateService(
@@ -181,8 +175,6 @@ Deno.test("check has no warning for release build", async () => {
   assertEquals(result.warning, undefined);
 });
 
-// --- UpdateService.update tests ---
-
 Deno.test("update returns up_to_date when already current", async () => {
   const redirectUrl =
     "https://artifacts.swamp-club.com/swamp/20260207.123456.0-sha.abc12345/binary/darwin/aarch64/swamp-stable-binary-darwin-aarch64.tar.gz";
@@ -216,7 +208,6 @@ Deno.test("update returns updated when new version available", async () => {
     assertEquals(result.previousVersion, "20260207.123456.0-sha.abc12345");
     assertEquals(result.newVersion, "20260208.000000.0-sha.def56789");
   }
-  // Verify download used the resolved versioned URL, not the stable URL
   assertEquals(calls.downloadUrls, [redirectUrl]);
 });
 
@@ -234,8 +225,6 @@ Deno.test("update includes warning for dev build", async () => {
   assertEquals(typeof result.warning, "string");
   assertEquals(result.warning?.includes("development build"), true);
 });
-
-// --- Redirect URL validation tests ---
 
 Deno.test("check rejects redirect to untrusted host", async () => {
   const redirectUrl =
@@ -268,8 +257,6 @@ Deno.test("update rejects redirect to untrusted host", async () => {
     "Untrusted redirect host",
   );
 });
-
-// --- Checksum flow tests ---
 
 Deno.test("update fetches checksum and passes it to downloadAndInstall", async () => {
   const redirectUrl =
@@ -359,8 +346,6 @@ Deno.test("update stops before the checksum fetch once the signal is aborted", a
   assertEquals(calls.downloadUrls, []);
 });
 
-// --- Pre-flight permission check tests ---
-
 // chmod mode bits are POSIX-only, and root ignores them.
 const modeBitsIgnored = Deno.build.os === "windows" || Deno.uid() === 0;
 
@@ -391,7 +376,6 @@ Deno.test({
 
       assertEquals(result.status, "updated");
       assertEquals(calls.downloadUrls, [redirectUrl]);
-      // The write probe leaves nothing behind
       const entries = [];
       for await (const entry of Deno.readDir(tempDir)) entries.push(entry.name);
       assertEquals(entries, ["swamp"]);
@@ -564,8 +548,6 @@ Deno.test({
     }
   },
 });
-
-// --- permissionDeniedMessage tests ---
 
 const posixFacts = {
   os: "darwin" as const,
@@ -778,8 +760,6 @@ Deno.test("permissionDeniedMessage: a sticky directory that refuses new files gi
   assert(!message.includes("sticky"));
   assert(!message.includes("sudo chown alice /opt/shared/swamp"));
 });
-
-// --- needlessRootUpdateWarning tests ---
 
 Deno.test("needlessRootUpdateWarning: sudo into the invoking user's own directory warns", () => {
   const warning = needlessRootUpdateWarning(

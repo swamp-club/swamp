@@ -63,25 +63,13 @@ export type SuspendedRunCancelResult =
     status: "cancelled";
     runId: string;
     workflowName: string;
-    /**
-     * Nested runs the cancelled run waited on and that were left unfinished
-     * (swamp-club#2736).
-     */
     detachedNestedRuns?: DetachedNestedRunData[];
-    /**
-     * Nested runs cancelled with the run, and running ones asked to stop
-     * (swamp-club#2867).
-     */
     cancelledNestedRuns?: CascadedNestedRunData[];
     stopRequestedNestedRuns?: CascadedNestedRunData[];
   }
-  /** A run is registered under the id: cancel it through the registry. */
   | { status: "active" }
-  /** Another operation holds the id's reservation. */
   | { status: "busy"; message: string }
-  /** Missing, unauthorized, or of another workflow; indistinguishable. */
   | { status: "not_found"; message: string }
-  /** Authorized, but no longer suspended. */
   | { status: "not_suspended"; message: string };
 
 export const SUSPENDED_RUN_BUSY_MESSAGE =
@@ -95,21 +83,9 @@ function suspendedRunNotFound(runId: string): SuspendedRunCancelResult {
 }
 
 /**
- * Decides whether a run recorded `running` has lost its owner, for
- * {@link cancelSuspendedRunAndPush}. Never for a run this instance drives.
- *
- * A run with a tracker row from this host is judged on that row alone, by
- * host and pid: the
- * row a previous serve process left carries that process's instance id, so
- * this instance's own id would never count it local, and it would stay
- * uncancellable until its heartbeat aged out. A run of another instance with
- * no row from this host (none at all, or one written under another hostname,
- * as after a container restart) is gone when the control plane holds no
- * heartbeat for that instance while holding one for this instance, as the
- * boot reaper judges it where there is a remote control plane. Anything else is
- * not shown gone.
- *
- * `onDeadPid` receives the dead owner's pid when the tracker row decided.
+ * judged on this host's tracker row alone, by host and pid; with no such row,
+ * gone only when the control plane has no heartbeat for that instance but has
+ * this one's. Anything else is not shown gone
  */
 export function ownerGoneDecider(
   ctx:
@@ -126,10 +102,9 @@ export function ownerGoneDecider(
     // A row another host wrote says nothing here: its pid is not ours to
     // check. The run is then judged like one with no row.
     if (ctx.runTracker && tracked?.isLocalTo(liveness.hostname)) {
-      // This process drives the run, but no registry here holds it by this
-      // id: a nested run, or one whose start has not been recorded yet. A
-      // row a previous process left under a reused pid (serve as PID 1 in a
-      // container) carries that process's instance id and is not this one.
+      // this process drives the run but no registry holds it by this id (a
+      // nested run, or one not yet recorded). A row from a previous process
+      // under a reused pid carries its own instance id and is not this one.
       if (
         tracked.pid === Deno.pid &&
         (tracked.instanceId === undefined ||
@@ -152,18 +127,16 @@ export function ownerGoneDecider(
       ctx.controlPlaneStore && ctx.instanceId && run.instanceId &&
       run.instanceId !== ctx.instanceId
     ) {
-      // A missing heartbeat means something only where heartbeats are
-      // written. Without a control-plane-capable datastore serve keeps a
-      // local store and writes none, so every instance would look gone,
-      // including a live one on another host. This instance's own heartbeat
-      // is the evidence that they are being recorded.
+      // a missing heartbeat means something only where heartbeats are written;
+      // without a control-plane datastore serve writes none, so this instance's
+      // own heartbeat is the evidence they are recorded
       const [own, theirs] = await Promise.all([
         ctx.controlPlaneStore.get(`heartbeats/${ctx.instanceId}`),
         ctx.controlPlaneStore.get(`heartbeats/${run.instanceId}`),
       ]);
       if (own === null) return { gone: false, why: OWNER_UNKNOWN };
-      // A stopped record is what an instance leaves when it stopped without
-      // pushing its interrupted runs (swamp-club#3958): it is gone.
+      // a stopped record is what an instance leaves when it stopped without
+      // pushing its interrupted runs: it is gone
       const theirRecord = theirs === null
         ? null
         : InstanceHeartbeatService.parseRecord(theirs);
@@ -194,18 +167,9 @@ const OWNER_UNKNOWN =
   "the serve host has no run tracker record of the process running it, and no instance heartbeats to tell whether the serve instance that started it is alive, so swamp cannot tell that nothing is running it";
 
 /**
- * Cancels a persisted run that no process in this serve instance is driving,
- * suspended or left `running` by an owner that is gone, and pushes the result.
- * Callers do not take the sync gate: this
- * takes it itself, only once the caller is known to be allowed.
- *
- * The run is first located and `authorize` asked about its own workflow while
- * holding neither the sync gate nor the run id's reservation, so a caller
- * refused or naming an unknown run gets not found without ever blocking other
- * handlers or another operation on the run (swamp-club#2648, #2649). Only then
- * is the gate taken and the id reserved for the fresh read, check, save and
- * push, so the cancel never interleaves with a resume, approve or reject of the
- * same run in this process.
+ * authorize runs holding neither the sync gate nor the run id's reservation, so
+ * a refused caller gets not found without blocking others; then both cover
+ * read, save and push so it never interleaves with a resume
  */
 export async function cancelSuspendedRunAndPush(
   ctx: ConnectionContext,
@@ -257,12 +221,6 @@ export async function cancelSuspendedRunAndPush(
   );
 }
 
-/**
- * The gated half of {@link cancelSuspendedRunAndPush}: reserves the run id,
- * cancels the run read afresh from the workflow it was located in, releases
- * the reservation however that settles, and pushes. It runs in the request's
- * root unit of work, whose flush is that push, on every outcome.
- */
 async function cancelLocatedRunAndPush(
   ctx: ConnectionContext,
   registry: ActiveRunRegistry,
@@ -284,8 +242,8 @@ async function cancelLocatedRunAndPush(
       try {
         let failure: SwampError | undefined;
         let result: SuspendedRunCancelResult | undefined;
-        // The suspended nested runs the run waited on are cancelled in this
-        // unit of work, so one push carries them (swamp-club#2867).
+        // the suspended nested runs the run waited on are cancelled in this
+        // unit of work, so one push carries them
         const cascading: WorkflowCancelSuspendedDeps = {
           ...deps,
           cascade: serveNestedCascade(ctx, registry, request.reason),
@@ -338,9 +296,8 @@ async function cancelLocatedRunAndPush(
 }
 
 /**
- * Settles the method runs the dead owner of a just-cancelled run left
- * `running`, so its steps' method runs do not outlive the cancel. Best
- * effort: one left unsettled is kept for `run doctor --fix`.
+ * settles method runs the dead owner left running so they do not outlive the
+ * cancel; best effort, an unsettled one is left for the run doctor fix
  */
 async function settleMethodRunsOf(
   ctx: ConnectionContext,
@@ -362,14 +319,12 @@ async function settleMethodRunsOf(
   }
 }
 
-/** How long a cancel waits for an aborted run to leave the registry. */
 export const RUN_CANCEL_GRACE_MS = 5_000;
 
 /**
- * Waits for an aborted run to finish and leave the registry, up to `graceMs`.
- * Returns whether it left. A run that left may have saved itself suspended
- * rather than cancelled: a resume that reached another approval gate just
- * before the abort. The caller then cancels the persisted run.
+ * a run that left may have saved itself suspended rather than cancelled, e.g. a
+ * resume that reached another approval gate just before the abort; the caller
+ * then cancels the persisted run
  */
 export async function awaitAbortedRun(
   registry: ActiveRunRegistry,

@@ -17,15 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Non-regression for swamp-club#2464: giving scheduled and webhook runs a
- * service principal and authorizing them must not stop any existing webhook
- * or schedule. Grants are loaded from a grants file into a real repository on
- * disk the way serve loads them, and the trigger authorizer decides with the
- * real policy snapshot. Only an explicit deny naming a service principal
- * stops a run.
- */
-
 import { join } from "@std/path";
 import { assertEquals } from "@std/assert";
 import { waitFor } from "@swamp-club/swamp-testing";
@@ -72,7 +63,6 @@ import {
 } from "../src/libswamp/workflows/scheduled_execution.ts";
 import type { WorkflowRunInput } from "../src/libswamp/workflows/run.ts";
 
-// Import models barrel to trigger built-in registration.
 import "../src/domain/models/models.ts";
 import { initializeLogging } from "../src/infrastructure/logging/logger.ts";
 
@@ -80,7 +70,6 @@ await initializeLogging({});
 
 const SECRET = "hook-secret";
 
-/** Grants an existing deployment might hold; none can name a service. */
 const LEGACY_GRANTS = `grants:
   - subject: user:alice
     effect: allow

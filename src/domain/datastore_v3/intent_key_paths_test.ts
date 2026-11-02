@@ -103,7 +103,6 @@ Deno.test("bindKey: an output names its type across segments and its own behavio
   assert(bound(output, `outputs/@swamp/aws-ec2/create/${file}`));
   assert(!bound(output, `outputs/@swamp/aws-s3/create/${file}`));
   assert(!bound(output, `outputs/@swamp/create/${file}`));
-  // Another behavior of the same type's output, or a name of no output.
   assert(
     !bound(
       output,

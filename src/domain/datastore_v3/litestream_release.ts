@@ -17,21 +17,9 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * The Litestream release a swamp build pins (swamp-club#3358): which upstream
- * asset each platform uses, the digests every download and every start is
- * checked against, and the platforms a pinned version can replicate on.
- *
- * Pure rules, no I/O. The pin itself lives in
- * `src/infrastructure/datastore_v3/litestream/litestream_pin.ts`, generated
- * by `scripts/refresh_litestream_pin.ts`. See
- * `design/enablers/datastore-litestream.md`.
- */
-
 /** Upstream's GitHub repository, the only place the binary is fetched from. */
 export const LITESTREAM_REPOSITORY = "benbjohnson/litestream";
 
-/** Upstream asset names for the five targets swamp ships to. */
 export const LITESTREAM_TARGETS = [
   "darwin-arm64",
   "darwin-x86_64",
@@ -43,18 +31,14 @@ export const LITESTREAM_TARGETS = [
 export type LitestreamTarget = typeof LITESTREAM_TARGETS[number];
 
 /**
- * The first Litestream release that replicates on Windows. 0.5.16 and 0.5.17
- * fail every directory fsync there, so replication stops after the first two
- * LTX files and restore fails the same way (litestream#1542, fixed by #1548).
- * Below it Windows stays on v2.
+ * first release that replicates on Windows: earlier ones fail every directory
+ * fsync there, so replication stops after two LTX files and restore fails;
+ * below it Windows stays on v2
  */
 export const LITESTREAM_WINDOWS_MIN_VERSION = "0.5.18";
 
-/** The two digests pinned for one target. */
 export interface LitestreamTargetDigests {
-  /** SHA-256 of upstream's release archive, as in its `checksums.txt`. */
   readonly archiveSha256: string;
-  /** SHA-256 of the binary inside that archive. */
   readonly binarySha256: string;
 }
 
@@ -67,9 +51,8 @@ const VERSION = /^\d+\.\d+\.\d+$/;
 const SHA256 = /^[0-9a-f]{64}$/;
 
 /**
- * A pinned Litestream version with the archive and binary digest of every
- * target. Refuses a malformed version or digest and a missing target, so a
- * bad pin fails where it is built, never at download time.
+ * refuses a malformed version or digest and a missing target, so a bad pin
+ * fails where it is built, never at download time
  */
 export class LitestreamPin {
   private constructor(private readonly data: LitestreamPinData) {}
@@ -105,10 +88,6 @@ export class LitestreamPin {
   }
 }
 
-/**
- * The upstream target for a `Deno.build` os and arch, or undefined when
- * swamp has no Litestream for it.
- */
 export function litestreamTargetFor(
   os: string,
   arch: string,
@@ -124,7 +103,6 @@ export function isWindowsTarget(target: LitestreamTarget): boolean {
   return target.startsWith("windows-");
 }
 
-/** Upstream's archive name, e.g. `litestream-0.5.17-linux-x86_64.tar.gz`. */
 export function litestreamArchiveName(
   version: string,
   target: LitestreamTarget,
@@ -133,7 +111,6 @@ export function litestreamArchiveName(
   return `litestream-${version}-${target}.${ext}`;
 }
 
-/** The download URL of a target's archive on upstream's GitHub release. */
 export function litestreamArchiveUrl(
   version: string,
   target: LitestreamTarget,
@@ -143,15 +120,10 @@ export function litestreamArchiveUrl(
   }`;
 }
 
-/** The executable's file name inside the archive and in the cache. */
 export function litestreamBinaryName(target: LitestreamTarget): string {
   return isWindowsTarget(target) ? "litestream.exe" : "litestream";
 }
 
-/**
- * Compares two MAJOR.MINOR.PATCH versions numerically: negative when `a` is
- * older, zero when equal, positive when newer.
- */
 export function compareLitestreamVersions(a: string, b: string): number {
   const left = a.split(".").map(Number);
   const right = b.split(".").map(Number);
@@ -166,11 +138,6 @@ export type LitestreamAvailability =
   | { readonly available: true; readonly target: LitestreamTarget }
   | { readonly available: false; readonly reason: string };
 
-/**
- * Whether the pinned Litestream can replicate on this os and arch. Windows
- * needs {@link LITESTREAM_WINDOWS_MIN_VERSION} or later; below it, v3
- * replication is not available there yet and Windows stays on v2.
- */
 export function litestreamAvailability(
   pin: LitestreamPin,
   os: string,

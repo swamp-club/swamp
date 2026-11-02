@@ -17,18 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Expressions that read another namespace's data, through every path that
- * builds its own query service (swamp-club#3306): a model method run, a
- * workflow run, workflow evaluate and model evaluate.
- *
- * A catalog pull brings another namespace's rows without their content. The
- * repository context carries the datastore's foreign content fetcher on its
- * data repository, so a query service built from that repository — or from
- * one a path builds itself and is handed the fetcher for — reads the
- * attributes from the remote on demand.
- */
-
 import { assertEquals } from "@std/assert";
 import { parse as parseYaml } from "@std/yaml";
 import { z } from "zod";
@@ -74,7 +62,6 @@ interface Fixture {
   resolver: DefaultDatastorePathResolver;
   repo: RepositoryContext;
   type: ModelType;
-  /** Arguments the test model's `run` method was executed with. */
   executions: unknown[];
   fetcher: ForeignContentFetcher;
   fetched: Array<{ namespace: string; relPath: string }>;
@@ -88,7 +75,6 @@ async function removeDir(dir: string): Promise<void> {
   }
 }
 
-/** A row as `datastore catalog pull` writes it: no content on local disk. */
 function securityRow(dataName = "output"): CatalogRow {
   return {
     namespace: "security",
@@ -138,8 +124,6 @@ async function withForeignRecord(
       new TextEncoder().encode('{"content":"security"}'),
     );
   };
-  // As repo_context builds it over a datastore whose sync service can read
-  // another namespace.
   const repo = createRepositoryContext({
     repoDir: dir,
     datastoreResolver: resolver,
@@ -224,7 +208,6 @@ Deno.test("foreign content: a workflow run reads another namespace's attributes"
     });
     await repo.workflowRepo.save(workflow);
 
-    // Built as serve builds it; the CLI passes the same repository fetcher.
     const deps = await createWorkflowRunDeps(dir, repo, config);
     const service = deps.createExecutionService(
       repo.workflowRepo,
@@ -241,7 +224,6 @@ Deno.test("foreign content: a workflow run reads another namespace's attributes"
 
 Deno.test("foreign content: workflow evaluate saves another namespace's attribute", async () => {
   await withForeignRecord(async ({ dir, resolver, repo, fetcher }) => {
-    // Evaluate saves the expansion only when it changes the step count.
     repo.catalogStore.upsert(securityRow("second"));
     await repo.workflowRepo.save(Workflow.create({
       name: "reads-security",
@@ -263,8 +245,6 @@ Deno.test("foreign content: workflow evaluate saves another namespace's attribut
       })],
     }));
 
-    // The deps build a repository of their own, so they are handed the
-    // context's fetcher, as `swamp workflow evaluate` hands it.
     const deps = createWorkflowEvaluateDeps(
       dir,
       repo.workflowRepo,
@@ -316,10 +296,7 @@ Deno.test("foreign content: model evaluate resolves another namespace's attribut
       return definition.getMethodArguments("run").value;
     };
 
-    // As `swamp model evaluate` hands it.
     assertEquals(await evaluate(fetcher), "security");
-    // Without one the foreign row has no attributes to read, so the
-    // expression is left as written.
     assertEquals(await evaluate(), FOREIGN_READ);
   });
 });

@@ -186,7 +186,6 @@ Deno.test("StartSession.fromData: rejects steps that break the session's invaria
   for (const [data, message] of bad) {
     assertThrows(() => StartSession.fromData(data), UserError, message);
   }
-  // The same steps with what they need are accepted.
   StartSession.fromData({ ...base, step: "task" });
   StartSession.fromData({ ...base, step: "agent", task: "t" });
   StartSession.fromData({

@@ -186,7 +186,6 @@ Deno.test("StoreSink: store failure does not crash", async () => {
   });
 
   await sink.write([makeEvent("test")]);
-  // The good store has the batch, so flush does not report it.
   await sink.flush();
   await sink.close();
 
@@ -219,7 +218,6 @@ Deno.test("StoreSink: a batch one store missed is retried there under the same k
   await sink.flush();
   await sink.flush();
 
-  // First put, two failed retries, one that landed, then nothing more.
   assertEquals(keys.length, 4);
   assertEquals(new Set(keys).size, 1);
   assertEquals([...goodStore.written.keys()], [keys[0]]);
@@ -404,7 +402,6 @@ Deno.test("StoreSink: timer flush during close does not duplicate events", async
 
   await sink.close();
 
-  // All writes should be for event-1, and there should be exactly 1 batch
   assertEquals(store.written.size, 1);
   const content = decoder.decode([...store.written.values()][0]);
   const parsed = JSON.parse(content.trim());
@@ -412,7 +409,7 @@ Deno.test("StoreSink: timer flush during close does not duplicate events", async
 });
 
 Deno.test("StoreSink: write accepts more events than fit in a spread call", async () => {
-  // push(...events) threw RangeError above ~125k events (swamp-club#2565).
+  // spreading a very large event list into push throws RangeError
   const count = 150_000;
   const store = createMockStore();
   const sink = new StoreSink({
@@ -518,7 +515,6 @@ Deno.test("StoreSink: a date object no store took is retried under its key and r
   failDate = null;
   await sink.flush();
 
-  // The first put, a retry in the same flush, and the one that landed.
   const lateKeys = keys.filter((k) => k.includes("2026-10-07"));
   assertEquals(lateKeys.length, 3);
   assertEquals(new Set(lateKeys).size, 1);
@@ -620,14 +616,12 @@ Deno.test("StoreSink: evicting one store's retry does not report an object lost 
     maxRetryBytes: 2 * oneEvent,
   });
 
-  // Neither store takes event 2's object; the other date lands.
   await sink.write([
     event(1, "2026-10-06T23:59:58.000Z"),
     event(2, "2026-10-07T00:00:01.000Z"),
   ]);
   const flushing = sink.flush();
   await waitFor(() => lateAttempts === 2, "store B's retry in flight");
-  // A new batch queues a retry, which evicts store A's retry of event 2.
   await sink.write([
     event(3, "2026-10-07T00:00:02.000Z"),
     event(4, "2026-10-07T00:00:03.000Z"),

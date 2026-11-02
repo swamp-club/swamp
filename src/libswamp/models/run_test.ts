@@ -83,8 +83,6 @@ import { errorPaths, markErrorPaths } from "../../domain/errors.ts";
 
 await initializeLogging({});
 
-// --- Test helpers ---
-
 const TEST_MODEL_TYPE = ModelType.create("test/model");
 
 function createTestDefinition(
@@ -187,7 +185,6 @@ function createFakeEvaluationService(): any {
   };
 }
 
-/** What the real service does once the arguments pass: the caller's hook. */
 async function validatedArguments(
   options?: { onArgumentsValidated?: () => Promise<void> },
 ): Promise<void> {
@@ -262,8 +259,6 @@ function createTestInput(
     lastEvaluated: false,
   };
 }
-
-// --- Tests ---
 
 Deno.test("modelMethodRun yields validating_inputs and resolving_model prefix events", async () => {
   const definition = createTestDefinition("test-model", "run");
@@ -461,7 +456,6 @@ for (const fails of [false, true]) {
   });
 }
 
-/** A tracker that records the rows a run registers. */
 function createRecordingTracker(registrations: ActiveRun[]) {
   return {
     register: (run: ActiveRun) => {
@@ -659,7 +653,6 @@ Deno.test("modelMethodRun: a different --input leaves the method summary's defin
 
   const hashes: unknown[] = [];
   for (const value of ["first", "second"]) {
-    // Each run loads the stored definition afresh, as the CLI does.
     const events = await collect<ModelMethodRunEvent>(
       modelMethodRun(
         createLibSwampContext(),
@@ -695,22 +688,18 @@ Deno.test("modelMethodRun marks output cancelled on abort", async () => {
     } as ReturnType<typeof createFakeOutputRepo>,
   };
 
-  // Abort before execution to simulate cancellation
   controller.abort();
   const ctx = createLibSwampContext({ signal: controller.signal });
   const events = await collect(
     modelMethodRun(ctx, deps, createTestInput("test-model", "run")),
   );
 
-  // No error event should be yielded — the output is marked cancelled
   const errorEvents = events.filter((e) => e.kind === "error");
   assertEquals(errorEvents.length, 0);
-  // The stream says so itself, so a caller never reads the run as a success
   const cancelledEvents = events.filter((e) => e.kind === "cancelled");
   assertEquals(cancelledEvents.length, 1);
   assertEquals(events.at(-1)?.kind, "cancelled");
   assertEquals(events.some((e) => e.kind === "completed"), false);
-  // The output should have been saved as cancelled
   const cancelledSaves = savedOutputs.filter((o) => o.status === "cancelled");
   assertEquals(cancelledSaves.length > 0, true);
 });
@@ -739,7 +728,6 @@ Deno.test("modelMethodRun: a cancelled run commits its v3 unit and yields the sa
       },
       staged: () => [],
     };
-    // A unit that takes typed changes is a v3 commit-log unit.
     if (typed) typedStagers.register(uow, () => Promise.resolve());
     return uow;
   };
@@ -759,17 +747,11 @@ Deno.test("modelMethodRun: a cancelled run commits its v3 unit and yields the sa
   }
 
   assertEquals(ends, ["v3 commit", "legacy abandon"]);
-  // The stream is the same on both: it ends on the cancelled event
-  // (swamp-club#3317), with no error event.
   assertEquals(kinds[0], kinds[1]);
   assertEquals(kinds[0].at(-1), "cancelled");
   assertEquals(kinds[0].includes("error"), false);
 });
 
-/**
- * Runs a method that fails once `controller` has aborted, and reports the
- * cancelled output's error message and the reason its tracker row got.
- */
 async function cancelledRunRecords(
   controller: AbortController,
 ): Promise<{ message: string | undefined; reason: string | undefined }> {
@@ -873,8 +855,6 @@ Deno.test("modelMethodRun: a timed-out run yields a cancelled event naming the t
   }
 });
 
-// --- Error factory tests ---
-
 Deno.test("modelNotFound returns correct error", () => {
   const error = modelNotFound("my-model");
   assertEquals(error.code, "model_not_found");
@@ -914,8 +894,6 @@ Deno.test("methodExecutionFailed wraps error", () => {
   assertEquals(error.cause?.message, "boom");
 });
 
-// ---------- Unknown override input key rejection ----------
-
 Deno.test("modelMethodRun: rejects unknown override input key with validation_failed error", async () => {
   const definition = Definition.create({
     name: "test-model",
@@ -928,7 +906,6 @@ Deno.test("modelMethodRun: rejects unknown override input key with validation_fa
   const events = await collect(
     modelMethodRun(ctx, deps, {
       ...createTestInput("test-model", "run"),
-      // "typoKey" is not a model input key and not a method argument key
       inputs: { typoKey: "oops" },
     }),
   );
@@ -953,7 +930,6 @@ Deno.test("modelMethodRun: accepts known override input key", async () => {
   const events = await collect(
     modelMethodRun(ctx, deps, {
       ...createTestInput("test-model", "run"),
-      // "key" is in the method schema z.object({ key: z.string().optional() })
       inputs: { key: "hello" },
     }),
   );
@@ -976,7 +952,6 @@ Deno.test("modelMethodRun: rejects prototype-chain key like 'constructor'", asyn
   const events = await collect(
     modelMethodRun(ctx, deps, {
       ...createTestInput("test-model", "run"),
-      // "constructor" is on Object.prototype but is NOT a method argument
       inputs: { constructor: "oops" },
     }),
   );
@@ -1025,8 +1000,6 @@ Deno.test("modelMethodRun: rejects unknown key when method arguments use .refine
     assertEquals(errorEvent.error.message.includes("typoKey"), true);
   }
 });
-
-// --- Sensitive argument registration tests ---
 
 Deno.test("modelMethodRun: registers sensitive string-array method arg values with the redactor", async () => {
   const secretValue = "SUPER_SECRET_TOKEN_XYZ";
@@ -1120,7 +1093,6 @@ Deno.test("modelMethodRun: registers sensitive string method arg values with the
   );
 
   assertEquals(redactor.redact(secretValue), "***");
-  // Non-sensitive field value is not redacted
   assertEquals(redactor.redact("us-east-1"), "us-east-1");
 });
 
@@ -1344,10 +1316,9 @@ Deno.test("modelMethodRun: direct execution resolves @-prefixed type from regist
 });
 
 Deno.test("modelMethodRun: direct execution uses canonical type when getModelDef resolves @-prefixed internal type", async () => {
-  // Simulates the #1676 fix: getModelDef("@swamp/grant") returns the model def
-  // (because resolveModelType strips @ for internal types), but the model's
-  // canonical type is "swamp/grant" (without @). Data must be stored under
-  // the canonical type to be discoverable by findAllForType.
+  // getModelDef("@swamp/grant") resolves because resolveModelType strips @ for
+  // internal types, but the canonical type is swamp/grant; data must be stored
+  // under it for findAllForType to find it
   const canonicalType = ModelType.create("swamp/grant");
   const modelDef: ModelDefinition = {
     type: canonicalType,
@@ -1367,8 +1338,6 @@ Deno.test("modelMethodRun: direct execution uses canonical type when getModelDef
       const key = typeof type === "string"
         ? ModelType.create(type).normalized
         : type.normalized;
-      // Matches both "@swamp/grant" and "swamp/grant" — just like
-      // resolveModelType after the #1676 fix
       if (key === "@swamp/grant" || key === "swamp/grant") return modelDef;
       return undefined;
     },
@@ -1482,8 +1451,6 @@ Deno.test("modelMethodRun: does not yield auto_gc_completed when autoGc is false
   const gcEvent = events.find((e) => e.kind === "auto_gc_completed");
   assertEquals(gcEvent, undefined);
 });
-
-// --- EventBus ModelUpdated emission tests ---
 
 Deno.test("modelMethodRun: publishes ModelUpdated when method writes data and eventBus is provided", async () => {
   const definition = createTestDefinition("test-model", "run");
@@ -1642,7 +1609,6 @@ Deno.test("modelMethodRun: a run that fails the argument check does not replace 
   );
   assertEquals(saved, []);
 
-  // A passing run still saves, without the --input overrides.
   await collect(
     modelMethodRun(
       createLibSwampContext(),
@@ -2060,7 +2026,6 @@ Deno.test("modelMethodRun: a typed --last-evaluated replay restores cached refer
     false,
     JSON.stringify(events.find((e) => e.kind === "error")),
   );
-  // The replay created no vault service: nothing was read to restore.
   assertEquals(vaultServicesAtRuntimePass, 0);
   const key = executed?.getMethodArguments("run").key as string;
   assertEquals(key.includes(secret), false);
@@ -2070,7 +2035,6 @@ Deno.test("modelMethodRun: a typed --last-evaluated replay restores cached refer
   assertEquals(entry?.reference, { vaultName: "prod", key: "api-token" });
   assertEquals(entry?.dataOrigin, true);
   assertEquals(entry !== undefined && "value" in entry, false);
-  // Unloaded, the sentinel is never delivered as text.
   assertThrows(() => executedBag!.resolveRaw(key), Error, "was not loaded");
 });
 
@@ -2092,7 +2056,6 @@ Deno.test("modelMethodRun keeps an empty-markdown report in the completed run's 
       ),
     );
 
-    // Matches workflow run, whose JSON also keeps empty reports.
     const completed = events.find((e) => e.kind === "completed");
     if (completed?.kind !== "completed") {
       throw new Error("expected a completed event");
@@ -2232,7 +2195,6 @@ Deno.test("modelMethodRun: direct execution proceeds on a different definition t
   assertEquals(seen.every((id) => id === winner.id), true);
 });
 
-/** What each `onWrittenVersions` call named, as `dataName/version`. */
 function writtenNames(
   told: readonly [readonly WrittenVersion[], string][],
 ): [string[], string][] {
@@ -2374,7 +2336,6 @@ Deno.test("methodExecutionFailed: keeps a worded cause's model spelling (swamp-c
   assertEquals(messageFor(error, "model"), 'Model "x" stores sensitive output');
 });
 
-/** A type with sensitive global and method arguments (swamp-club#3681). */
 function createSensitiveModelDef(): ModelDefinition {
   return {
     type: TEST_MODEL_TYPE,
@@ -2477,7 +2438,6 @@ Deno.test("modelMethodRun: the default run shares one registry across passes and
   let delivered: SecretBagRegistry | undefined;
   const deps: ModelMethodRunDeps = {
     ...createTestDeps(definition, modelDef),
-    // A typed run's values mask the registry's sentinels through the redactor.
     createRunLog: () =>
       Promise.resolve({
         logFilePath: "/tmp/test.log",
@@ -2614,7 +2574,6 @@ Deno.test("modelMethodRun: the saved evaluated definition holds the mask for a s
     name: "visible",
   });
   assertEquals(JSON.stringify(saved[0].toData()).includes("CANARY"), false);
-  // The masked positions go to the cache beside the definition.
   assertEquals(recorded[0], [
     ["globalArguments", "gtoken"],
     ["methods", "run", "arguments", "secret"],
@@ -2622,7 +2581,6 @@ Deno.test("modelMethodRun: the saved evaluated definition holds the mask for a s
 });
 
 Deno.test("modelMethodRun: --last-evaluated refuses a recorded masked argument even when the type no longer marks the field sensitive (swamp-club#3681)", async () => {
-  // Version 2 of the type dropped the marker on gtoken.
   const drifted: ModelDefinition = {
     ...createTestModelDef("run"),
     globalArguments: z.object({ gtoken: z.string().optional() }),
@@ -2975,7 +2933,6 @@ Deno.test("modelMethodRun: the evaluation is saved through the execution service
       }) as any,
   });
 
-  // Refused before validation passes: nothing is saved.
   const refused = await collect(
     modelMethodRun(
       createLibSwampContext(),
@@ -2988,7 +2945,6 @@ Deno.test("modelMethodRun: the evaluation is saved through the execution service
   assertEquals(refused.at(-1)?.kind, "error");
   assertEquals(saved, []);
 
-  // Validated: saved once, before the method body runs.
   await collect(
     modelMethodRun(
       createLibSwampContext(),
@@ -3022,7 +2978,6 @@ Deno.test("methodExecutionFailed: preserves secret refusal codes through redacti
   }
 });
 
-/** Direct-type deps for `type`, auto-creating its definition. */
 function directTypeDeps(type: ModelType): ModelMethodRunDeps {
   const modelDef: ModelDefinition = {
     type,
@@ -3068,7 +3023,6 @@ Deno.test("modelMethodRun: in the enrollment area preparation is a prepare phase
     const setup = findSpan(spans, "swamp.model.method.setup");
     assert(isChildOf(prepare, run));
     assertEquals(prepare.attributes["swamp.outcome"], "ok");
-    // Setup is prepare's sibling, not its child, and prepare finished first.
     assert(isChildOf(setup, run));
     assert(spans.indexOf(prepare) < spans.indexOf(setup));
     for (const resolution of diagnosticPhases(spans, "type_resolution")) {

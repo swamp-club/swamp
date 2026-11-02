@@ -183,8 +183,6 @@ Deno.test("cronLogPath: returns an absolute path", () => {
   assertPathStringIncludes(path, "autoupdate-cron.log");
 });
 
-// --- LaunchDaemon (daemon mode) tests ---
-
 Deno.test("buildPlist: daemon mode includes UserName key", () => {
   const plist = buildPlist("/usr/local/bin/swamp", "daily", "daemon");
   assertStringIncludes(plist, "<key>UserName</key>");
@@ -227,8 +225,6 @@ Deno.test("autoupdateLogDir: agent mode returns user Library path", () => {
   assertPathStringIncludes(dir, "Library/Logs/swamp");
 });
 
-// --- Binary ownership detection tests ---
-
 Deno.test("detectBinaryOwnership: user-owned binary returns agent", () => {
   assertEquals(detectBinaryOwnership(501, 501), "agent");
 });
@@ -257,8 +253,6 @@ Deno.test("detectBinaryOwnership: root-owned binary with root user returns daemo
   assertEquals(detectBinaryOwnership(0, 0), "daemon");
 });
 
-// --- Systemd system mode tests (Linux/macOS only — systemdUserDir needs HOME) ---
-
 Deno.test({
   name: "systemdUnitDir: agent mode returns user config path",
   ignore: Deno.build.os === "windows",
@@ -271,8 +265,6 @@ Deno.test({
 Deno.test("systemdUnitDir: daemon mode returns /etc/systemd/system", () => {
   assertEquals(systemdUnitDir("daemon"), "/etc/systemd/system");
 });
-
-// --- Cron root mode tests ---
 
 Deno.test({
   name: "cronLogPath: agent mode returns user data dir path",
@@ -288,8 +280,6 @@ Deno.test("cronLogPath: daemon mode returns /var/log/swamp path", () => {
   assertPathStringIncludes(cronLogPath("daemon"), "var/log/swamp");
   assertPathStringIncludes(cronLogPath("daemon"), "autoupdate-cron.log");
 });
-
-// --- Cron missing-binary resilience tests ---
 
 Deno.test({
   name:

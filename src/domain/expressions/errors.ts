@@ -24,9 +24,6 @@ import {
   wordedText,
 } from "../behavior_wording.ts";
 
-/**
- * Base error for all expression-related errors.
- */
 export class ExpressionError extends Error {
   readonly expression?: string;
   readonly path?: string;
@@ -44,9 +41,6 @@ export class ExpressionError extends Error {
   }
 }
 
-/**
- * Error thrown when a model referenced in an expression cannot be found.
- */
 export class ModelNotFoundError extends ExpressionError {
   constructor(
     readonly modelRef: string,
@@ -60,9 +54,6 @@ export class ModelNotFoundError extends ExpressionError {
   }
 }
 
-/**
- * Error thrown when an expression is syntactically or semantically invalid.
- */
 export class InvalidExpressionError extends ExpressionError {
   constructor(
     message: string,
@@ -80,7 +71,6 @@ export class InvalidExpressionError extends ExpressionError {
   }
 }
 
-/** A missing run input or environment binding, without a value-bearing cause. */
 export class UnboundExpressionError extends InvalidExpressionError {
   constructor(message: string, expression: string) {
     super(message, expression);
@@ -89,10 +79,8 @@ export class UnboundExpressionError extends InvalidExpressionError {
 }
 
 /**
- * Upstream data that does not exist yet: a model reference with no resource
- * or file data, or a non-optional select on a data lookup that found no
- * record. Like an absent binding, it is a gap a later run fills, so
- * validation leaves the expression as its stored text.
+ * like an absent binding, this is a gap a later run fills, so validation leaves
+ * the expression as its stored text
  */
 export class MissingModelDataError extends InvalidExpressionError {
   constructor(
@@ -110,9 +98,8 @@ export class MissingModelDataError extends InvalidExpressionError {
 }
 
 /**
- * Error thrown when a method is about to run with an argument that still holds
- * an expression whose evaluation failed. Carries the original evaluation error
- * as its cause so the CEL message (and its caret) reaches the user.
+ * carries the original evaluation error as its cause so the CEL message (and
+ * its caret) reaches the user
  */
 export class UnresolvedExpressionError extends ExpressionError {
   constructor(expression: string, path: string, cause: Error) {
@@ -123,8 +110,8 @@ export class UnresolvedExpressionError extends ExpressionError {
       cause,
     );
     this.name = "UnresolvedExpressionError";
-    // The wrapper adds text, so it builds its own model spelling from the
-    // cause's (swamp-club#3437).
+    // the wrapper adds text, so it builds its own model spelling from the
+    // cause's
     const causeModelText = modelWording(cause);
     if (causeModelText !== undefined) {
       markModelWording(
@@ -135,26 +122,21 @@ export class UnresolvedExpressionError extends ExpressionError {
   }
 }
 
-/** An expression applied an operation outside a secret's allowed set. */
 export const SECRET_OPERATION_UNSUPPORTED = "secret_operation_unsupported";
 
-/** An expression sent a secret where secrets are not accepted. */
 export const SECRET_DESTINATION_REFUSED = "secret_destination_refused";
 
 /**
- * A data record's sensitive-fields tag, one of its paths, or a tagged value
- * is not what the writer stores, so the record cannot enter an expression
- * (design/enablers/typed-secrets.md Section 6.1).
+ * a data record's sensitive-fields tag, one of its paths, or a tagged value is
+ * not what the writer stores, so the record cannot enter an expression
  */
 export const SECRET_REFERENCE_INVALID = "secret_reference_invalid";
 
-/** The stable codes an expression's secret refusal carries. */
 export type SecretRefusalCode =
   | typeof SECRET_OPERATION_UNSUPPORTED
   | typeof SECRET_DESTINATION_REFUSED
   | typeof SECRET_REFERENCE_INVALID;
 
-/** Keeps a secret refusal's code through evaluation and transport wrappers. */
 export function secretRefusalCode(
   error: unknown,
 ): SecretRefusalCode | undefined {
@@ -172,18 +154,15 @@ export function secretRefusalCode(
 }
 
 /**
- * An expression refused an operation on a secret
- * (design/enablers/typed-secrets.md Section 4). The message names the refused
- * operation, the code and the expression, never a value, and the error
- * carries no cause: a cel-js error or the refusing handler's own error can
- * name an operand.
+ * the message names the operation, code and expression, never a value, and the
+ * error carries no cause: a cel-js error or the refusing handler's error can
+ * name an operand
  */
 export class SecretRefusedError extends UserError {
   declare readonly code: SecretRefusalCode;
 
   constructor(
     code: SecretRefusalCode,
-    /** What was refused: an operator or function signature, or a rule. */
     readonly operation: string,
     readonly expression: string,
   ) {
@@ -195,9 +174,6 @@ export class SecretRefusedError extends UserError {
   }
 }
 
-/**
- * Error thrown when circular dependencies are detected between expressions.
- */
 export class CyclicDependencyError extends ExpressionError {
   constructor(readonly cycle: string[]) {
     super(`Cyclic dependency detected: ${cycle.join(" -> ")}`);

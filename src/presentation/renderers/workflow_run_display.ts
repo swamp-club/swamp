@@ -37,12 +37,10 @@ export function renderWorkflowRunDisplay(
   }
 }
 
-/** " (key K)" for a wait whose step declared a key, else nothing. */
 function keySuffix(key: string | undefined): string {
   return key === undefined ? "" : ` (key ${escapeControlCharacters(key)})`;
 }
 
-/** Says so when the signal arrived before its wait opened (swamp-club#3214). */
 function heldSuffix(receipt: { heldAsPending?: true }): string {
   return receipt.heldAsPending
     ? ", held as a pending signal until the wait took it"
@@ -84,7 +82,6 @@ function renderLogWorkflowRun(data: WorkflowRunView): void {
           `      -> waiting on nested run ${step.nestedRun.runId} of workflow ${step.nestedRun.workflowName}`,
         );
       } else if (step.wait?.receipt && step.status === "waiting") {
-        // Signalled since the run suspended: the next resume applies it.
         writeOutput(
           `      -> signal ${step.wait.receipt.id} received for wait ${step.wait.id}${
             keySuffix(step.wait.key)
@@ -101,7 +98,6 @@ function renderLogWorkflowRun(data: WorkflowRunView): void {
           } until ${step.wait.deadline}`,
         );
       } else if (step.wait?.receipt?.heldAsPending) {
-        // Answered before its wait opened: the one place this is shown.
         writeOutput(
           `      -> signal ${step.wait.receipt.id} received for wait ${step.wait.id}${
             keySuffix(step.wait.key)
@@ -120,14 +116,8 @@ function renderLogWorkflowRun(data: WorkflowRunView): void {
       }
 
       if (step.status === "skipped" && step.skipReason) {
-        // Word for word what the verification report says for the same
-        // fact, so a reader comparing the two surfaces never has to work out
-        // whether they mean the same thing.
-        //
-        // A switch rather than a chain of ternaries: the chain ended in an
-        // else that swallowed anything unrecognised, so a fourth `kind`
-        // would have been silently labelled "job was skipped". Here the
-        // string return type makes a missing case a compile error.
+        // word for word what the verification report says for the same fact; a
+        // switch makes a missing skip kind a compile error
         const detail = ((r: StepSkipReasonView): string => {
           switch (r.kind) {
             case "guarded":

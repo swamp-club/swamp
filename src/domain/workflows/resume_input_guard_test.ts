@@ -51,7 +51,6 @@ function approval(name: string, prompt: string, dependsOn: string[]): Step {
   });
 }
 
-/** The issue's workflow: a gate, an approval, then the step it guards. */
 function gatedDestroy(prompt = "Destroy ${{ inputs.target }}?"): Workflow {
   return Workflow.create({
     name: "gated-destroy",
@@ -70,10 +69,6 @@ function gatedDestroy(prompt = "Destroy ${{ inputs.target }}?"): Workflow {
 
 type Records = Record<string, Partial<StepRunData>[]>;
 
-/**
- * A stored run of `wf` with the given step records per job and the given run
- * status. Records default to pending.
- */
 function storedRun(
   wf: Workflow,
   status: "suspended" | "failed",
@@ -135,7 +130,6 @@ const approvedRun = (wf: Workflow, inputs?: Record<string, unknown>) =>
   }, inputs);
 
 Deno.test("checkResumeInputOverrides: refuses changing a value the run has", () => {
-  // The issue's path 2: the gate passed and the approver saw "scratch".
   const wf = gatedDestroy();
   const run = approvedRun(wf);
   const message = refusal(wf, run, { target: "protected" });
@@ -174,8 +168,7 @@ Deno.test("checkResumeInputOverrides: refuses regardless of what any step read",
 });
 
 Deno.test("checkResumeInputOverrides: accepts a key the run does not have", () => {
-  // A late input: a vault key name minted during the gate, read only after
-  // it (swamp-club#467).
+  // a late input: a vault key name minted during the gate, read only after it
   const wf = Workflow.create({
     name: "deploy",
     jobs: [
@@ -196,11 +189,9 @@ Deno.test("checkResumeInputOverrides: accepts a key the run does not have", () =
 });
 
 Deno.test("checkResumeInputOverrides: accepts a key the run does not have even when a finished step tested for it", () => {
-  // The limit the design accepts (design/enablers/input-pinning.md, Late
-  // inputs): `check` ran `has(inputs.force)` and saw the key absent. Whether
-  // it did cannot be told without reading what the step evaluated, which is
-  // the inference this check does not do. The key is added. A check that
-  // must bind a late input runs after the input arrives.
+  // accepted limit: telling whether a finished step tested has(inputs.force)
+  // would mean reading what it evaluated, which this check does not do; a check
+  // that must bind a late input runs after it arrives
   const wf = Workflow.create({
     name: "absent",
     jobs: [
@@ -241,11 +232,8 @@ Deno.test("checkResumeInputOverrides: a nested override is compared at its top-l
   const run = storedRun(wf, "suspended", {
     main: [{ stepName: "gate", status: "succeeded" }, { stepName: "act" }],
   }, { creds: { user: "u", key: "old" } });
-  // Merged, the same value: no change.
   accepts(wf, run, { creds: { key: "old" } });
-  // Merged, a different value: the top-level key changes.
   refusal(wf, run, { creds: { key: "new" } });
-  // Merged, a key added inside: the top-level key changes too.
   refusal(wf, run, { creds: { extra: 1 } });
 });
 
@@ -305,7 +293,6 @@ Deno.test("checkResumeInputOverrides: an input named like an Object property is 
 Deno.test("checkResumeInputOverrides: a refusal of several inputs names them all and fits serve's error limit", () => {
   const wf = gatedDestroy();
   const run = approvedRun(wf, { target: "a", region: "b", account: "c" });
-  // refusal() asserts the 512-character bound.
   const message = refusal(wf, run, {
     target: "x",
     region: "y",
@@ -333,9 +320,9 @@ Deno.test("checkResumeInputOverrides: a serve-started run is pointed to cancel i
 });
 
 Deno.test("checkResumeInputOverrides: a key an older swamp resumed with, and recorded no value for, cannot take another", () => {
-  // Before swamp-club#3583 a resume listed the keys it supplied and kept the
-  // run's inputs as started. Such a run has the key with a value nothing can
-  // compare, so it is pinned like any other.
+  // an older swamp resumed by listing the keys it supplied and kept the run's
+  // inputs as started; such a run has the key with a value nothing can compare,
+  // so it is pinned like any other
   const wf = gatedDestroy();
   const data = approvedRun(wf, { target: "scratch" }).toData();
   data.resumeInputs = ["authKey"];
@@ -346,7 +333,6 @@ Deno.test("checkResumeInputOverrides: a key an older swamp resumed with, and rec
     'input "authKey" was supplied at an earlier resume, which recorded no value to compare with, and a value a run has cannot change',
   );
   assertEquals(message.includes("other"), false, "message leaks a value");
-  // Both kinds in one refusal, and a key the run never had still added.
   const both = refusal(wf, run, { target: "x", authKey: "y", region: "eu" });
   assertStringIncludes(both, 'input "target" already has a value');
   assertStringIncludes(both, 'input "authKey" was supplied');

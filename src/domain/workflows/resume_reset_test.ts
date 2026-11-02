@@ -80,10 +80,6 @@ function workflow(jobs: JobSpec[], name = "resume-wf"): Workflow {
   });
 }
 
-/**
- * Finishes a run created from `wf`: every step named in `failed` fails, every
- * other step succeeds, and a job fails when one of its steps did.
- */
 function failedRun(wf: Workflow, failed: string[]): WorkflowRun {
   const run = WorkflowRun.create(wf);
   run.start();
@@ -130,7 +126,6 @@ function refusal(wf: Workflow, run: WorkflowRun, fromStep?: string): string {
   throw new Error("expected planFailedRunResume to refuse");
 }
 
-/** The step names of a reset set, across jobs. */
 function stepNames(refs: readonly StepRunRef[]): Set<string> {
   return new Set(refs.map((r) => r.stepName));
 }
@@ -139,7 +134,6 @@ function sortRefs(refs: readonly StepRunRef[]): string[] {
   return refs.map((r) => `${r.jobName}/${r.stepName}`).sort();
 }
 
-/** build: compile → test (fails); release (depends on build): publish. */
 function movedBefore(): Workflow {
   return workflow([
     { name: "build", steps: [plain("compile"), plain("test", ["compile"])] },
@@ -521,8 +515,8 @@ Deno.test("planFailedRunResume: resets only the kept step when a shared step nam
 });
 
 /**
- * The workflow of swamp-club#3815: jobs a and b each have a step "s", b
- * depends on a, and b also has "t" after its "s". b's s failed.
+ * jobs a and b each have a step s, b depends on a and also has t after its s;
+ * b's s failed
  */
 function sharedNameRun(): { wf: Workflow; run: WorkflowRun } {
   const wf = workflow([
@@ -664,10 +658,6 @@ Deno.test("planFailedRunResume: --job selects an expression-named job by its nam
   assertEquals(sortRefs(inMain.steps), ["main/s"]);
 });
 
-/**
- * Two expression-named jobs and a literal one, all with a step "restart",
- * stored as site-west, site-east and literal. site-east's restart failed.
- */
 function siteRun(): { wf: Workflow; run: WorkflowRun } {
   const wf = workflow([
     { name: "site-${{ inputs.a }}", steps: [plain("restart")] },
@@ -817,7 +807,6 @@ function refusalOfPlan(
   return message;
 }
 
-/** A step whose task input reads `expression`. */
 function reading(name: string, expression: string, dependsOn: string[] = []) {
   return Step.create({
     name,
@@ -829,10 +818,6 @@ function reading(name: string, expression: string, dependsOn: string[] = []) {
   });
 }
 
-/**
- * Jobs host-a and host-b each run fetch, then deploy reading `read`.
- * host-a's deploy failed.
- */
 function hostsRun(read: string): { wf: Workflow; run: WorkflowRun } {
   const wf = workflow(["host-a", "host-b"].map((name) => ({
     name,
@@ -1035,7 +1020,6 @@ Deno.test("planFailedRunResume: refusals stay within the serve limit for long na
       dependsOn: [build],
     },
   ]);
-  // The refusal names the template, not the longer iteration name.
   const message = refusal(moved, run, test);
   assertStringIncludes(
     message,
@@ -1121,10 +1105,6 @@ Deno.test("planFailedRunResume: an added step named like one kept in another job
   );
 });
 
-/**
- * main: prep → gate → deploy → notify; post (depends on main): announce.
- * The shape of the swamp-club#2498 reproduction.
- */
 function gatedBefore(): Workflow {
   return workflow([
     {
@@ -1140,11 +1120,6 @@ function gatedBefore(): Workflow {
   ]);
 }
 
-/**
- * A run of `wf` suspended at `gate` in job `main` and then approved: the
- * steps up to the gate succeeded, the rest of `main` is pending, `main` is
- * running, and every other job is pending.
- */
 function suspendedRun(wf: Workflow): WorkflowRun {
   const run = WorkflowRun.create(wf);
   run.start();
@@ -1162,10 +1137,6 @@ function suspendedRun(wf: Workflow): WorkflowRun {
   return run;
 }
 
-/**
- * Asserts that the check refuses `run` without changing it, and that serve's
- * 512-character error limit keeps the whole way out.
- */
 function suspendedRefusal(wf: Workflow, run: WorkflowRun): string {
   const before = JSON.stringify(run.toData());
   try {
@@ -1317,7 +1288,6 @@ Deno.test("checkSuspendedRunResume: refuses an added or renamed job", () => {
   );
 });
 
-/** main: prep → gate → deploy (forEach), expanded to deploy-dev, deploy-prod. */
 function gatedForEach(): { before: Workflow; run: WorkflowRun } {
   const before = workflow([
     {
@@ -1371,8 +1341,8 @@ Deno.test("checkSuspendedRunResume: refuses a forEach step moved to another job"
 });
 
 Deno.test("checkSuspendedRunResume: accepts iterations of a forEach step, whatever its collection now holds", () => {
-  // The check never evaluates a collection, so narrowing it through a
-  // resume --input still resumes, as before.
+  // the check never evaluates a collection, so narrowing it through a resume
+  // --input still resumes
   const { before, run } = gatedForEach();
   checkSuspendedRunResume(before, run);
 });
@@ -1524,10 +1494,6 @@ Deno.test("checkSuspendedRunResume: tells a run started by swamp serve to cancel
   assert(!message.includes(`cancel ${added.name} --run`), message);
 });
 
-/**
- * main: prep → gate → notify (pending); post: a forEach step also named
- * notify, whose stored records cannot show that post had it.
- */
 function forEachNamedLikeRemoval(
   post: { status: "pending" | "running"; steps: string[] },
 ): { run: WorkflowRun; removed: Workflow } {
@@ -1745,11 +1711,6 @@ Deno.test("checkSuspendedRunResume: serve's error limit keeps the way out for lo
   );
 });
 
-/**
- * A run of `wf` whose job `pre` the abort interrupted: `check` was in flight
- * and `queued`, which never started, was cancelled. Job `main` then suspended
- * at its gate, and the gate was approved.
- */
 function settledSuspendedRun(wf: Workflow): WorkflowRun {
   const run = suspendedRun(wf);
   const pre = run.getJob("pre")!;
@@ -1815,10 +1776,6 @@ Deno.test("checkSuspendedRunResume: refuses a removed finished job holding settl
   );
 });
 
-/**
- * main: `a` was in flight when the abort fired, `b` was queued beside it and
- * cancelled, and `c`, which depends on `a`, was skipped. The run then failed.
- */
 function settledFailedRun(wf: Workflow): WorkflowRun {
   const run = WorkflowRun.create(wf);
   run.start();
@@ -1857,10 +1814,6 @@ Deno.test("planFailedRunResume: does not track settled work whose step was remov
   assertEquals(sortRefs(plan.tracked), ["main/a", "main/c"]);
 });
 
-/**
- * `settledFailedRun`, plus a `teardown` job its cleanup skipped without
- * starting, so its step is settled by the abort.
- */
 function settledTeardownRun(wf: Workflow): WorkflowRun {
   const run = settledFailedRun(wf);
   run.getJob("teardown")!.skipNotStarted();
@@ -1939,11 +1892,6 @@ Deno.test("planFailedRunResume: leaves a same-named step another job finished ou
   assertEquals(sortRefs(plan.tracked), ["main/a", "main/b", "main/c"]);
 });
 
-/**
- * A run of `wf` whose job `pre` the abort ended `unknown`: `check` succeeded
- * and the guard of `create` never decided, so it stays pending. Job `main`
- * then suspended at its gate, and the gate was approved.
- */
 function undecidedSuspendedRun(wf: Workflow): WorkflowRun {
   const run = suspendedRun(wf);
   const pre = run.getJob("pre")!;

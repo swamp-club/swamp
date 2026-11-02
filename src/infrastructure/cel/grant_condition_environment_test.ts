@@ -24,8 +24,6 @@ import {
   validateGrantCondition,
 } from "./grant_condition_environment.ts";
 
-// --- Validation: valid conditions per resource kind ---
-
 Deno.test("validateGrantCondition: workflow tags condition", () => {
   const result = validateGrantCondition(
     'tags.env == "staging"',
@@ -89,8 +87,6 @@ Deno.test("validateGrantCondition: compound condition", () => {
   assertEquals(result, { valid: true });
 });
 
-// --- Validation: type errors caught ---
-
 Deno.test("validateGrantCondition: rejects typo field (tag instead of tags)", () => {
   const result = validateGrantCondition('tag.env == "staging"', "workflow");
   assertEquals(result.valid, false);
@@ -110,8 +106,6 @@ Deno.test("validateGrantCondition: rejects unknown top-level field", () => {
   assertEquals(result.valid, false);
 });
 
-// --- Validation: syntax errors ---
-
 Deno.test("validateGrantCondition: rejects invalid syntax", () => {
   const result = validateGrantCondition("name ==", "workflow");
   assertEquals(result.valid, false);
@@ -122,8 +116,6 @@ Deno.test("validateGrantCondition: rejects unclosed string", () => {
   const result = validateGrantCondition('name == "unclosed', "workflow");
   assertEquals(result.valid, false);
 });
-
-// --- Validation: length limit ---
 
 Deno.test("validateGrantCondition: rejects condition over 1KB", () => {
   const condition = "a".repeat(1025);
@@ -139,8 +131,6 @@ Deno.test("validateGrantCondition: accepts condition at exactly 1KB", () => {
   const result = validateGrantCondition(condition, "workflow");
   assertEquals(result, { valid: true });
 });
-
-// --- Seal tests: no I/O receivers ---
 
 Deno.test("validateGrantCondition: seal rejects data.latest()", () => {
   const result = validateGrantCondition(
@@ -179,8 +169,6 @@ Deno.test("validateGrantCondition: seal rejects arbitrary unknown variable", () 
   assertEquals(result.valid, false);
 });
 
-// --- RESOURCE_FIELDS fix: model name and tags now valid ---
-
 Deno.test("validateGrantCondition: model name condition", () => {
   const result = validateGrantCondition('name == "my-model"', "model");
   assertEquals(result, { valid: true });
@@ -190,8 +178,6 @@ Deno.test("validateGrantCondition: model tags condition", () => {
   const result = validateGrantCondition('tags.env == "prod"', "model");
   assertEquals(result, { valid: true });
 });
-
-// --- AST depth limit ---
 
 Deno.test("validateGrantCondition: accepts condition at max AST depth", () => {
   const terms = Array.from(
@@ -222,8 +208,6 @@ Deno.test("validateGrantCondition: realistic grant condition passes depth check"
   assertEquals(result, { valid: true });
 });
 
-// --- Comprehension nesting limit ---
-
 Deno.test("validateGrantCondition: accepts single comprehension", () => {
   const result = validateGrantCondition(
     "[1, 2, 3].exists(x, x > 1)",
@@ -249,8 +233,6 @@ Deno.test("validateGrantCondition: rejects comprehension nesting exceeding limit
   assertStringIncludes(result.error!, "comprehension nesting");
 });
 
-// --- Cost budget ---
-
 Deno.test("validateGrantCondition: accepts condition within cost budget", () => {
   const result = validateGrantCondition(
     'name == "deploy" && tags.env == "prod" && collective == "acme"',
@@ -273,8 +255,6 @@ Deno.test("validateGrantCondition: rejects condition exceeding cost budget", () 
   assertEquals(result.valid, false);
   assertStringIncludes(result.error!, "cost budget");
 });
-
-// --- matches() validation ---
 
 Deno.test("validateGrantCondition: accepts matches with literal pattern", () => {
   const result = validateGrantCondition(
@@ -319,8 +299,6 @@ Deno.test("validateGrantCondition: accepts matches with simple character class",
   assertEquals(result, { valid: true });
 });
 
-// --- Combined: first failure wins ---
-
 Deno.test("validateGrantCondition: reports first failure when multiple limits exceeded", () => {
   const terms = Array.from(
     { length: MAX_AST_DEPTH + 1 },
@@ -331,8 +309,6 @@ Deno.test("validateGrantCondition: reports first failure when multiple limits ex
   assertEquals(result.valid, false);
   assertStringIncludes(result.error!, "AST depth");
 });
-
-// --- Existing conditions still pass ---
 
 Deno.test("validateGrantCondition: all existing condition patterns pass cost bounds", () => {
   const conditions: [string, string][] = [

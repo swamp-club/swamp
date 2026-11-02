@@ -49,13 +49,6 @@ import { writeOutput } from "../../infrastructure/logging/logger.ts";
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
 
-/**
- * The interrupted run to recover. A run still `running` whose owning
- * process died without settling it (a force-exited `workflow run` or
- * `resume`) is interrupted first, so it is found like any other. With
- * `assessOnly` nothing is written: such a run is interrupted in memory only,
- * to show what recovery would do.
- */
 async function findRecoverableRun(
   repoDir: string,
   workflow: Workflow,
@@ -156,9 +149,8 @@ export const workflowRecoverCommand = new Command()
         outputMode: cliCtx.outputMode,
       });
 
-      // In a root unit of work with no push, so the run saves stage into it
-      // instead of reaching the hook through signalChange's fallback
-      // (swamp-club#3056). Nothing pushes, as before.
+      // root unit of work with no push, so the run saves stage into it instead
+      // of reaching the hook through signalChange's fallback
       await runCommandInRootUnit(repoContext, { push: undefined }, async () => {
         const workflow =
           await repoContext.workflowRepo.findByName(workflowIdOrName) ??

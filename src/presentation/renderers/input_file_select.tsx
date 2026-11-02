@@ -26,17 +26,11 @@ import { suppressInkTtyErrors } from "../output/ink_lifecycle.ts";
 import { useScrollableList } from "../output/hooks/mod.ts";
 import { join, relative } from "@std/path";
 
-/**
- * Result of input file selection.
- */
 export interface InputFileSelection {
   type: "file" | "skip";
   path?: string;
 }
 
-/**
- * Data for displaying input file selection.
- */
 export interface InputFileSelectData {
   workflowName: string;
   requiredInputs: string[];
@@ -44,36 +38,22 @@ export interface InputFileSelectData {
   searchDir: string;
 }
 
-/**
- * A discovered input file candidate.
- */
 interface InputFileCandidate {
   path: string;
   relativePath: string;
 }
 
-/**
- * Renders input file selection in either interactive or JSON mode.
- *
- * @param data - The data for input file selection
- * @param mode - The output mode (interactive or json)
- * @returns A promise that resolves with the selection, or undefined if cancelled
- */
 export async function renderInputFileSelect(
   data: InputFileSelectData,
   mode: OutputMode,
 ): Promise<InputFileSelection | undefined> {
   if (mode === "json") {
-    // In JSON mode, skip file selection
     return { type: "skip" };
   } else {
     return await renderInteractiveInputFileSelect(data);
   }
 }
 
-/**
- * Renders an interactive input file selection UI.
- */
 function renderInteractiveInputFileSelect(
   data: InputFileSelectData,
 ): Promise<InputFileSelection | undefined> {
@@ -111,9 +91,6 @@ interface InputFileSelectUIProps {
   onCancel: () => void;
 }
 
-/**
- * Interactive input file selection component.
- */
 export function InputFileSelectUI(
   props: InputFileSelectUIProps,
 ): React.ReactElement {
@@ -133,7 +110,6 @@ export function InputFileSelectUI(
   const [customPathMode, setCustomPathMode] = useState(false);
   const [customPath, setCustomPath] = useState("");
 
-  // Discover YAML files on mount
   useEffect(() => {
     discoverYamlFiles(searchDir).then((discovered) => {
       setFiles(discovered);
@@ -141,7 +117,6 @@ export function InputFileSelectUI(
     });
   }, [searchDir]);
 
-  // Create fzf instance for fuzzy searching
   const fzf = useMemo(
     () =>
       new Fzf(files, {
@@ -150,20 +125,16 @@ export function InputFileSelectUI(
     [files],
   );
 
-  // Get filtered results - files matching query
   const fileResults: FzfResultItem<InputFileCandidate>[] = fzf.find(query);
 
-  // Build display items: files + special options
   const displayItems = useMemo(() => {
     const items: DisplayItem[] = fileResults.map((r) => ({
       type: "file" as const,
       file: r.item,
     }));
 
-    // Add "enter custom path" option
     items.push({ type: "custom" as const });
 
-    // Add "skip" option if workflow has defaults for all inputs
     if (hasDefaults || requiredInputs.length === 0) {
       items.push({ type: "skip" as const });
     }
@@ -171,7 +142,6 @@ export function InputFileSelectUI(
     return items;
   }, [fileResults, hasDefaults, requiredInputs.length]);
 
-  // Use shared scrollable list hook
   const {
     selectedIndex,
     setSelectedIndex,
@@ -254,7 +224,6 @@ export function InputFileSelectUI(
       return;
     }
 
-    // Handle regular character input
     if (input && !key.ctrl && !key.meta) {
       setQuery((q) => q + input);
     }
@@ -383,7 +352,6 @@ function DisplayItemRow(props: DisplayItemRowProps): React.ReactElement {
     );
   }
 
-  // type === "skip"
   return (
     <Box>
       <Text color={isSelected ? "blue" : "gray"} bold={isSelected}>
@@ -394,10 +362,6 @@ function DisplayItemRow(props: DisplayItemRowProps): React.ReactElement {
   );
 }
 
-/**
- * Discovers YAML files in the given directory and subdirectories.
- * Limits depth to 3 levels to avoid scanning too deep.
- */
 async function discoverYamlFiles(
   baseDir: string,
   maxDepth: number = 3,
@@ -411,7 +375,6 @@ async function discoverYamlFiles(
       for await (const entry of Deno.readDir(dir)) {
         const fullPath = join(dir, entry.name);
 
-        // Skip hidden directories and common non-relevant directories
         if (entry.name.startsWith(".")) continue;
         if (entry.name === "node_modules") continue;
         if (entry.name === "vendor") continue;
@@ -441,7 +404,6 @@ async function discoverYamlFiles(
 
   await scan(baseDir, 0);
 
-  // Sort by path for consistent ordering
   files.sort((a, b) => a.relativePath.localeCompare(b.relativePath));
 
   return files;

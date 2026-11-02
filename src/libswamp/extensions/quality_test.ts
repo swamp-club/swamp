@@ -198,12 +198,6 @@ function makePushPrepareDeps(
 
 const MINIMAL_DOC_OUTPUT: DocOutput = { version: 1, nodes: {} };
 
-/**
- * In-process stand-in for the real tarball scorer plumbing: "extraction"
- * writes a fixed tree (ignoring the archive bytes — orchestration is
- * under test here, not the archiver) and "deno" invocations return
- * canned doc/lint output. No subprocesses are spawned.
- */
 function fakeScoreDeps(
   onRunDeno?: (args: string[], cwd: string) => void,
 ): RubricScoreDeps {
@@ -287,8 +281,6 @@ async function withQualityFixture(
   }
 }
 
-// ── Fresh run: aggregation into the band/score envelope ───────────────
-
 Deno.test("extensionQuality: fresh run yields packaging → scoring → completed with the full score envelope", async () => {
   await withQualityFixture(CLEAN_MODEL_SOURCE, async (repoDir, cacheRoot) => {
     const manifest = makeManifest({ license: "MIT" });
@@ -307,8 +299,6 @@ Deno.test("extensionQuality: fresh run yields packaging → scoring → complete
     assert(data.archiveSize > 0);
     assertEquals(data.dependencyTrustResult.passed, true);
 
-    // The documented envelope for a fully-earned extension whose
-    // repository URL is structurally verifiable (provisional factor).
     const score = data.score;
     assertEquals(score.rubricVersion, RUBRIC_VERSION);
     assertEquals(score.factors.length, 12);
@@ -347,8 +337,6 @@ Deno.test("extensionQuality: fresh run populates the package cache with tarball 
     assertEquals(cached.metadata.rubricVersion, RUBRIC_VERSION);
   });
 });
-
-// ── Cache reuse ───────────────────────────────────────────────────────
 
 Deno.test("extensionQuality: cache populated by quality is reused on second run", async () => {
   await withQualityFixture(CLEAN_MODEL_SOURCE, async (repoDir, cacheRoot) => {
@@ -406,8 +394,6 @@ Deno.test("extensionQuality: source content change produces a new hash and repac
     assertNotEquals(secondData.cacheHash, firstData.cacheHash);
   });
 });
-
-// ── Error paths ───────────────────────────────────────────────────────
 
 Deno.test("extensionQuality: a failed gate is reported beside the rubric and the cache is not written", async () => {
   await withQualityFixture(CLEAN_MODEL_SOURCE, async (repoDir, cacheRoot) => {
@@ -533,7 +519,6 @@ Deno.test("extensionQuality: bare imports the deno.json import map resolves leav
         JSON.stringify({ imports: { zod: "npm:zod@^4" } }),
       );
       const manifest = makeManifest();
-      // What Deno resolves the model's bare "zod" to under that config.
       const bareImports = [{
         importer: join(repoDir, "models", "echo.ts"),
         specifier: "zod",
@@ -564,8 +549,6 @@ Deno.test("extensionQuality: bare imports of installed package.json dependencies
     BARE_IMPORT_MODEL_SOURCE,
     async (repoDir, cacheRoot) => {
       const manifest = makeManifest();
-      // What the module graph resolves the model's bare "zod" to when zod
-      // 4.1.0 is installed for package.json's ^4.1.0.
       const bareImports = [{
         importer: join(repoDir, "models", "echo.ts"),
         specifier: "zod",
@@ -644,8 +627,6 @@ Deno.test("extensionQuality: a cache hit still reports bare import specifiers as
   );
 });
 
-// ── Dependency trust on the cache-hit path ────────────────────────────
-
 Deno.test("extensionQuality: cache hit re-audits dependency trust and folds the result into the score", async () => {
   await withQualityFixture(CLEAN_MODEL_SOURCE, async (repoDir, cacheRoot) => {
     const manifest = makeManifest();
@@ -654,7 +635,6 @@ Deno.test("extensionQuality: cache hit re-audits dependency trust and folds the 
     const cleanDeps = makeQualityDeps(cacheRoot);
     completedData(await collect(extensionQuality(ctx, cleanDeps, input)));
 
-    // Same cache, but the trust audit now reports a blocker.
     const failingDeps = makeQualityDeps(cacheRoot, {
       pushPrepareOverrides: {
         extractDependencySpecifiers: () =>
@@ -1005,8 +985,6 @@ Deno.test("extensionQuality: cache hit with no specifiers synthesizes a passing 
   });
 });
 
-// ── Import map handling ───────────────────────────────────────────────
-
 Deno.test("extensionQuality: the scorer's controlled config has no import map, as the registry's (swamp-club#3612)", async () => {
   await withQualityFixture(CLEAN_MODEL_SOURCE, async (repoDir, cacheRoot) => {
     const denoConfigPath = join(repoDir, "deno.json");
@@ -1064,8 +1042,6 @@ Deno.test("extensionQuality: unparseable deno config falls back to no import map
     assertEquals(capturedConfig!.imports, undefined);
   });
 });
-
-// ── Declared acceptances ──────────────────────────────────────────────
 
 const ACCEPTING_MODEL_SOURCE = [
   "const S = z.object({",
@@ -1227,7 +1203,6 @@ Deno.test("extensionQuality: a cache hit runs the gates the old cache-hit path s
   });
 });
 
-/** An archive index whose one model registers `type`. */
 function loadedModel(type: string): Promise<ExtensionTreeIndex> {
   return Promise.resolve({
     sources: [{
@@ -1381,11 +1356,8 @@ Deno.test("extensionQuality: a declared license is reported, and a non-SPDX one 
   }
 });
 
-// ── private source hosting (swamp-club#3406) ───────────────────────────
-
 const CREDS = { serverUrl: "https://club.test", apiKey: "swamp_test_key" };
 
-/** A lookup whose whoami reports `entries` and counts visibility reads. */
 function fakeLookup(options: {
   entries?: unknown;
   authenticated?: boolean;
@@ -1551,7 +1523,6 @@ Deno.test("extensionQuality: an attested private extension on a self-hosted forg
   });
 });
 
-/** The real lookup wiring, reading swamp-club through a mocked fetch. */
 async function realLookupStanding(
   cacheRoot: string,
   extension: Record<string, unknown> | null,
@@ -1639,16 +1610,14 @@ Deno.test("ExtensionApiClient.getExtension: the caller's signal reaches fetch", 
   }
 });
 
-// ── secret-unsafe-docs (swamp-club#3757) ──────────────────────────────
-
 const LEAKY_README = [
-  "# Test Extension", // 1
-  "", // 2
-  "```bash", // 3
-  'swamp vault put my-vault api-token "abc123"', // 4
-  "swamp model create @testuser/test-ext e \\", // 5
-  "  --global-arg 'apiToken=vault://my-vault/api-token'", // 6
-  "```", // 7
+  "# Test Extension",
+  "",
+  "```bash",
+  'swamp vault put my-vault api-token "abc123"',
+  "swamp model create @testuser/test-ext e \\",
+  "  --global-arg 'apiToken=vault://my-vault/api-token'",
+  "```",
   "",
 ].join("\n");
 
@@ -1744,14 +1713,14 @@ Deno.test("extensionQuality: the parsed manifest description is checked, reporte
     await Deno.writeTextFile(
       manifestPath,
       [
-        "manifestVersion: 1", // 1
-        'name: "@testuser/test-ext"', // 2
-        "description: |", // 3
-        "  Echoes input.", // 4
-        "", // 5
-        "      --global-arg 'apiToken=vault://v/k'", // 6
-        "models:", // 7
-        "  - echo.ts", // 8
+        "manifestVersion: 1",
+        'name: "@testuser/test-ext"',
+        "description: |",
+        "  Echoes input.",
+        "",
+        "      --global-arg 'apiToken=vault://v/k'",
+        "models:",
+        "  - echo.ts",
         "",
       ].join("\n"),
     );

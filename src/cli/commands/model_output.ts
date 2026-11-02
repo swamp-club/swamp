@@ -44,7 +44,6 @@ import {
   modelOutputDataCommand,
 } from "./model_output_data.ts";
 
-/** The subcommands of `model output`, in registration order. */
 export interface ModelOutputChildren {
   readonly get: ReturnType<typeof createModelOutputGetCommand>;
   readonly search: ReturnType<typeof createModelOutputSearchCommand>;
@@ -52,13 +51,11 @@ export interface ModelOutputChildren {
   readonly data: ReturnType<typeof createModelOutputDataCommand>;
 }
 
-/** The preferred spelling: `swamp behavior output`. */
 export const BEHAVIOR_OUTPUT_SYNTAX: CommandSyntax = {
   invocation: "swamp behavior output",
   surface: "behavior",
 };
 
-/** The legacy spelling: `swamp model output`. */
 export const MODEL_OUTPUT_SYNTAX: CommandSyntax = {
   invocation: "swamp model output",
   surface: "model",
@@ -66,9 +63,8 @@ export const MODEL_OUTPUT_SYNTAX: CommandSyntax = {
 };
 
 /**
- * Builds the `output` group for one CLI surface. Children not passed are
- * built fresh from `syntax`; Cliffy reparents a command attached under a
- * second parent, so two surfaces must never share an instance.
+ * Cliffy reparents a command attached under a second parent, so two surfaces
+ * must never share an instance.
  */
 export function createModelOutputCommand(
   syntax: CommandSyntax,

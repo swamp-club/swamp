@@ -17,9 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// These tests are the only automated behaviour coverage this script has:
-// `scripts/` is excluded from `deno fmt` and `deno lint` in deno.json, and
-// `deno task check` only type-checks it.
 
 import {
   assertEquals,
@@ -31,7 +28,6 @@ import {
   parsePinnedDenoVersion,
 } from "./download_deno.ts";
 
-/** Captures console.warn output for the duration of `run`. */
 function captureWarnings(run: () => void): string[] {
   const warnings: string[] = [];
   const original = console.warn;

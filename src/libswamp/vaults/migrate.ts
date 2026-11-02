@@ -58,7 +58,6 @@ import { leftoverSecretsError } from "./create.ts";
 
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
 
-/** Data returned by the preview step. */
 export interface VaultMigratePreview {
   vaultName: string;
   currentType: string;
@@ -68,7 +67,6 @@ export interface VaultMigratePreview {
   secretCount: number;
 }
 
-/** Data emitted on successful migration. */
 export interface VaultMigrateData {
   vaultName: string;
   previousType: string;
@@ -84,30 +82,25 @@ export type VaultMigrateEvent =
   | { kind: "completed"; data: VaultMigrateData }
   | { kind: "error"; error: SwampError };
 
-/** Input for the vault migrate operation. */
 export interface VaultMigrateInput {
   vaultName: string;
   targetType: string;
   targetConfig?: Record<string, unknown>;
   repoDir: string;
   /**
-   * Accept a local_encryption target config that names its own key source.
-   * Only a caller that already owns the host sets this: the local CLI.
-   * Without it, such fields are refused unless they match the server
-   * defaults, which are always applied (swamp-club#2690).
+   * accepts a local_encryption target config that names its own key source;
+   * only the local CLI, which owns the host, sets this. Otherwise such fields
+   * are refused unless they match the server defaults
    */
   trustKeySource?: boolean;
 }
 
-/** Dependencies for the vault migrate operation. */
 export interface VaultMigrateDeps {
   findVaultConfig: (name: string) => Promise<VaultConfig | null>;
-  /** Loads a lazily-indexed type if needed and says whether it is known. */
   isVaultTypeLoaded: (type: string) => Promise<boolean>;
   /**
-   * The config fields the registry publishes for an extension type that is
-   * not installed yet, so the CLI can ask for the missing ones before the
-   * install (swamp-club#3003).
+   * the config fields the registry publishes for an extension type not
+   * installed yet, so the CLI can ask for the missing ones before the install
    */
   findRegistryConfigFields: RegistryConfigFieldsLookup;
   resolveExtensionVaultType: (type: string) => Promise<void>;
@@ -118,9 +111,8 @@ export interface VaultMigrateDeps {
     config: Record<string, unknown>,
   ) => VaultProvider;
   /**
-   * The storage directory a local_encryption vault of this name and config
+   * the storage directory a local_encryption vault of this name and config
    * would read, when an earlier vault left a key or secrets there
-   * (swamp-club#3614).
    */
   findLeftoverSecrets: (
     name: string,
@@ -133,16 +125,14 @@ export interface VaultMigrateDeps {
 }
 
 /**
- * Where createVaultMigrateDeps reads and writes vault configs: a vaults dir
- * for its own repository, or a repository to use instead. Serve passes its
- * shared repository, whose mark hook signals the saved and deleted configs.
- * The two are exclusive, since a repository already fixes its vaults dir.
+ * serve passes its shared repository, whose mark hook signals saved and deleted
+ * configs; the two options are exclusive because a repository already fixes its
+ * vaults dir
  */
 type VaultMigrateDepsOptions =
   | { vaultsDir?: string; repo?: never }
   | { repo: YamlVaultConfigRepository; vaultsDir?: never };
 
-/** Wires real infrastructure into VaultMigrateDeps. */
 export async function createVaultMigrateDeps(
   repoDir: string,
   options?: VaultMigrateDepsOptions,
@@ -183,16 +173,12 @@ export async function createVaultMigrateDeps(
   };
 }
 
-/**
- * Resolves provider-specific configuration for built-in vault types.
- */
 function resolveBuiltInProviderConfig(
   vaultType: string,
 ): Record<string, unknown> {
   return isLocalEncryptionType(vaultType) ? defaultLocalEncryptionConfig() : {};
 }
 
-/** How to try the migration again once the config is complete. */
 function migrateRerunHint(vaultName: string, targetType: string): RerunHint {
   return (example, missing) =>
     missing.length > 0
@@ -202,7 +188,6 @@ function migrateRerunHint(vaultName: string, targetType: string): RerunHint {
       : "Re-run with a corrected --config.";
 }
 
-/** Gathers preview info for the vault migrate operation. */
 export async function vaultMigratePreview(
   ctx: LibSwampContext,
   deps: VaultMigrateDeps,
@@ -218,7 +203,6 @@ export async function vaultMigratePreview(
     );
   }
 
-  // Reject same-type migrations
   if (config.type.toLowerCase() === input.targetType.toLowerCase()) {
     throw validationFailed(
       `Vault '${input.vaultName}' is already using type '${config.type}'. ` +
@@ -226,7 +210,6 @@ export async function vaultMigratePreview(
     );
   }
 
-  // Check for renamed types
   const renamed = RENAMED_VAULT_TYPES[input.targetType.toLowerCase()];
   if (renamed) {
     throw validationFailed(
@@ -236,7 +219,6 @@ export async function vaultMigratePreview(
 
   const rerunHint = migrateRerunHint(input.vaultName, input.targetType);
 
-  // Resolve and validate target type
   await deps.resolveExtensionVaultType(input.targetType);
   const targetTypeInfo = deps.getVaultTypeInfo(input.targetType);
   if (!targetTypeInfo) {
@@ -247,7 +229,6 @@ export async function vaultMigratePreview(
     );
   }
 
-  // Validate target config
   const targetConfig = resolveTargetConfig(
     input.targetType,
     input.targetConfig,
@@ -258,7 +239,6 @@ export async function vaultMigratePreview(
     rerunHint,
   );
 
-  // Verify we can create a provider for the target type (catches config issues early)
   deps.createProvider(
     input.targetType,
     input.vaultName,
@@ -268,11 +248,9 @@ export async function vaultMigratePreview(
   const leftover = await findLeftoverTarget(deps, input, targetConfig);
   if (leftover) throw leftover;
 
-  // Get current type info
   const currentTypeInfo = deps.getVaultTypeInfo(config.type);
   const currentTypeName = currentTypeInfo?.name ?? config.type;
 
-  // Count secrets in source vault
   const vaultService = await deps.loadSourceVaultService();
   const keys = await vaultService.list(input.vaultName);
 
@@ -287,9 +265,9 @@ export async function vaultMigratePreview(
 }
 
 /**
- * The refusal for a migration into local_encryption whose storage directory
- * already holds an earlier vault's key or secrets: the copied secrets would
- * land beside them under the old key (swamp-club#3614).
+ * refuses a migration into local_encryption whose storage directory already
+ * holds an earlier vault's key or secrets: the copied secrets would land beside
+ * them under the old key
  */
 async function findLeftoverTarget(
   deps: VaultMigrateDeps,
@@ -308,7 +286,6 @@ async function findLeftoverTarget(
   );
 }
 
-/** Resolves and validates target config for the migration. */
 function resolveTargetConfig(
   targetType: string,
   providedConfig: Record<string, unknown> | undefined,
@@ -359,7 +336,6 @@ function resolveTargetConfig(
   return resolveBuiltInProviderConfig(targetType);
 }
 
-/** Migrates a vault to a new backend type in-place. */
 export async function* vaultMigrate(
   ctx: LibSwampContext,
   deps: VaultMigrateDeps,
@@ -373,7 +349,6 @@ export async function* vaultMigrate(
         ctx.logger
           .debug`Migrating vault: ${input.vaultName} to ${input.targetType}`;
 
-        // Load source vault config
         const sourceConfig = await deps.findVaultConfig(input.vaultName);
         if (!sourceConfig) {
           yield {
@@ -399,7 +374,6 @@ export async function* vaultMigrate(
 
         const rerunHint = migrateRerunHint(input.vaultName, input.targetType);
 
-        // Resolve target config
         await deps.resolveExtensionVaultType(input.targetType);
         const targetTypeInfo = deps.getVaultTypeInfo(input.targetType);
         if (!targetTypeInfo) {
@@ -428,14 +402,12 @@ export async function* vaultMigrate(
           return;
         }
 
-        // Create target provider
         const targetProvider = deps.createProvider(
           input.targetType,
           input.vaultName,
           withRuntimeBaseDir(input.targetType, targetConfig, input.repoDir),
         );
 
-        // Load source vault service and copy secrets
         const vaultService = await deps.loadSourceVaultService();
         const keys = await vaultService.list(input.vaultName);
 

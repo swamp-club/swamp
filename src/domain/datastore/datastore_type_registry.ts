@@ -20,33 +20,16 @@
 import type { z } from "zod";
 import type { DatastoreProvider } from "./datastore_provider.ts";
 
-/**
- * Information about a registered datastore type.
- */
 export interface DatastoreTypeInfo {
-  /** The type identifier (e.g., "filesystem", "s3", or "@myorg/custom-store") */
   type: string;
-  /** Human-readable name */
   name: string;
-  /** Description of the datastore type */
   description: string;
-  /** Zod schema for validating datastore config (user-defined types only) */
   configSchema?: z.ZodTypeAny;
-  /** Factory function to create a datastore provider (user-defined types only) */
   createProvider?: (config: Record<string, unknown>) => DatastoreProvider;
-  /** Whether this is a built-in datastore type */
   isBuiltIn: boolean;
-  /**
-   * The source file the type's bundle was loaded from (user-defined types
-   * only), so the extension that ships it can be found (swamp-club#3567).
-   */
   sourcePath?: string;
 }
 
-/**
- * Metadata for a lazily-indexed datastore type. The type is known to exist
- * (from the bundle catalog) but its bundle has not been imported yet.
- */
 export interface LazyDatastoreEntry {
   type: string;
   bundlePath: string;
@@ -54,15 +37,6 @@ export interface LazyDatastoreEntry {
   version: string;
 }
 
-/**
- * Registry of available datastore types (built-in and user-defined).
- * Map-backed singleton that allows registration and lookup by type identifier.
- *
- * Supports lazy loading of user extensions via {@link setLoader} and
- * {@link ensureLoaded}. With per-bundle lazy loading, the registry also
- * tracks "lazy entries" — types that are known to exist (from the bundle
- * catalog) but whose bundles have not been imported yet.
- */
 export class DatastoreTypeRegistry {
   private readonly types = new Map<string, DatastoreTypeInfo>();
   private readonly lazyTypes = new Map<string, LazyDatastoreEntry>();
@@ -72,33 +46,24 @@ export class DatastoreTypeRegistry {
   private typeLoadPromises = new Map<string, Promise<void>>();
   private typeLoader: ((type: string) => Promise<void>) | null = null;
 
-  /** Configures the lazy loader for user datastore extensions. */
   setLoader(loader: () => Promise<void>): void {
     this.extensionLoader = loader;
   }
 
-  /** Configures the per-type loader for on-demand bundle imports. */
   setTypeLoader(loader: (type: string) => Promise<void>): void {
     this.typeLoader = loader;
   }
 
-  /**
-   * Registers a lazy datastore entry — a type known to exist from the bundle
-   * catalog but not yet imported. Does nothing if the type is already
-   * registered (either fully loaded or lazy).
-   */
   registerLazy(entry: LazyDatastoreEntry): void {
     const key = entry.type.toLowerCase();
     if (this.types.has(key) || this.lazyTypes.has(key)) return;
     this.lazyTypes.set(key, entry);
   }
 
-  /** Returns true if a type is registered as lazy (not yet imported). */
   isLazy(type: string): boolean {
     return this.lazyTypes.has(type.toLowerCase());
   }
 
-  /** Ensures user datastore extensions have been loaded. */
   async ensureLoaded(): Promise<void> {
     if (this.extensionsLoaded) return;
     if (!this.extensionLoader) return;
@@ -111,21 +76,11 @@ export class DatastoreTypeRegistry {
     await this.extensionLoadPromise;
   }
 
-  /**
-   * Clears the extension-loaded flag so the next call to
-   * {@link ensureLoaded} re-runs the configured loader. Used by commands
-   * that re-scan extensions at runtime (e.g. `swamp doctor extensions`).
-   */
   resetLoadedFlag(): void {
     this.extensionsLoaded = false;
     this.extensionLoadPromise = null;
   }
 
-  /**
-   * Test-only: removes the configured loaders and clears the loaded state,
-   * so a test that installs loaders leaves the process-global registry as
-   * it found it. Does not clear already-registered types.
-   */
   clearLoadersForTesting(): void {
     this.extensionLoader = null;
     this.typeLoader = null;
@@ -133,10 +88,6 @@ export class DatastoreTypeRegistry {
     this.extensionLoadPromise = null;
   }
 
-  /**
-   * Surgically removes a single type from the registry so it can be
-   * re-registered with updated metadata after a bundle upgrade.
-   */
   invalidateType(type: string): void {
     const key = type.toLowerCase();
     this.types.delete(key);
@@ -144,11 +95,6 @@ export class DatastoreTypeRegistry {
     this.typeLoadPromises.delete(key);
   }
 
-  /**
-   * Ensures a specific datastore type's bundle has been imported.
-   * If the type is lazy, invokes the type loader to import just that bundle.
-   * Concurrent callers for the same type share the same promise.
-   */
   async ensureTypeLoaded(type: string): Promise<void> {
     const key = type.toLowerCase();
 
@@ -164,9 +110,9 @@ export class DatastoreTypeRegistry {
     if (!promise) {
       const loader = this.typeLoader;
       promise = loader(key).then(() => {
-        // A loader that skipped a stale or broken bundle never promoted
-        // the type; drop the lazy entry so later lookups report it as
-        // unknown instead of retrying (swamp-club#2490).
+        // a loader that skipped a stale or broken bundle never promoted the
+        // type; drop the lazy entry so later lookups report it unknown instead
+        // of retrying
         if (!this.types.has(key)) {
           this.lazyTypes.delete(key);
         }
@@ -180,10 +126,6 @@ export class DatastoreTypeRegistry {
     await promise;
   }
 
-  /**
-   * Promotes a lazy entry to a fully loaded type.
-   * Called by the type loader after importing a bundle.
-   */
   promoteFromLazy(info: DatastoreTypeInfo): void {
     const key = info.type.toLowerCase();
     this.lazyTypes.delete(key);
@@ -192,9 +134,6 @@ export class DatastoreTypeRegistry {
     }
   }
 
-  /**
-   * Registers a datastore type. Throws if the type is already registered.
-   */
   register(info: DatastoreTypeInfo): void {
     const key = info.type.toLowerCase();
     if (this.types.has(key)) {
@@ -203,35 +142,22 @@ export class DatastoreTypeRegistry {
     this.types.set(key, info);
   }
 
-  /**
-   * Gets a datastore type by its identifier. Returns undefined for lazy types.
-   */
   get(type: string): DatastoreTypeInfo | undefined {
     return this.types.get(type.toLowerCase());
   }
 
-  /**
-   * Returns all fully loaded datastore types.
-   */
   getAll(): DatastoreTypeInfo[] {
     return Array.from(this.types.values());
   }
 
-  /**
-   * Returns all lazy datastore entries (not yet imported).
-   */
   getAllLazy(): LazyDatastoreEntry[] {
     return Array.from(this.lazyTypes.values());
   }
 
-  /**
-   * Checks if a datastore type is registered (either fully loaded or lazy).
-   */
   has(type: string): boolean {
     const key = type.toLowerCase();
     return this.types.has(key) || this.lazyTypes.has(key);
   }
 }
 
-/** Global datastore type registry singleton. */
 export const datastoreTypeRegistry = new DatastoreTypeRegistry();

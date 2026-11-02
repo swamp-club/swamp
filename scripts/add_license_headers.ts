@@ -63,7 +63,6 @@ function isSkipped(repoRelativePath: string): boolean {
 export async function collectFiles(root = ROOT): Promise<string[]> {
   const files: string[] = [];
 
-  // Walk src/, integration/, scripts/, packages/
   for (const dir of ["src", "integration", "scripts", "packages"]) {
     const dirPath = join(root, dir);
     try {
@@ -83,7 +82,6 @@ export async function collectFiles(root = ROOT): Promise<string[]> {
     }
   }
 
-  // Root-level .ts/.tsx files
   for await (const entry of Deno.readDir(root)) {
     if (
       entry.isFile &&
@@ -99,12 +97,10 @@ export async function collectFiles(root = ROOT): Promise<string[]> {
 async function addHeader(filePath: string): Promise<boolean> {
   const content = await Deno.readTextFile(filePath);
 
-  // Skip if header already present (may be after a shebang line)
   if (content.includes(HEADER_MARKER)) {
     return false;
   }
 
-  // Handle shebang lines
   let newContent: string;
   if (content.startsWith("#!")) {
     const newlineIdx = content.indexOf("\n");

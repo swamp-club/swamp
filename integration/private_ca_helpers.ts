@@ -19,7 +19,6 @@
 
 import { join } from "@std/path";
 
-/** Returns true if `openssl` is available on PATH. */
 export async function hasOpenssl(): Promise<boolean> {
   try {
     const { success } = await new Deno.Command("openssl", {
@@ -33,7 +32,6 @@ export async function hasOpenssl(): Promise<boolean> {
   }
 }
 
-/** Generates a private CA and a localhost leaf cert signed by it. */
 export async function generateCertChain(dir: string): Promise<{
   caPath: string;
   fullchainPath: string;
@@ -74,10 +72,9 @@ export async function generateCertChain(dir: string): Promise<{
     "1",
     "-subj",
     "/CN=Test Private Root CA",
-    // Without an explicit basicConstraints extension LibreSSL (the system
-    // openssl on macOS) emits a v1 certificate, which rustls rejects while
-    // parsing the chain as UnsupportedCertVersion before trust is ever
-    // evaluated. OpenSSL 3.x adds this by default; LibreSSL does not.
+    // without an explicit basicConstraints, LibreSSL (macOS openssl) emits a v1
+    // certificate, which rustls rejects as UnsupportedCertVersion before trust
+    // is evaluated
     "-addext",
     "basicConstraints=critical,CA:TRUE",
     "-addext",

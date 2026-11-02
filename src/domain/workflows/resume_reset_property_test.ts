@@ -55,9 +55,7 @@ type TerminalStatus = "succeeded" | "failed" | "skipped";
 interface GeneratedStep {
   name: string;
   forEach: boolean;
-  /** Index of an earlier step in the same job this step depends on. */
   dependsOn: number | undefined;
-  /** One status per record: per iteration for a forEach step. */
   statuses: TerminalStatus[];
 }
 
@@ -150,7 +148,6 @@ function buildWorkflow(jobs: GeneratedJob[]): Workflow {
   });
 }
 
-/** A finished run with every forEach step expanded to one record per item. */
 function buildFailedRun(workflow: Workflow, jobs: GeneratedJob[]): WorkflowRun {
   const run = WorkflowRun.create(workflow);
   run.start();
@@ -285,16 +282,10 @@ Deno.test("planFailedRunResume: always refuses a renamed plain step in the job i
 
 interface SuspendedCase {
   jobs: GeneratedJob[];
-  /** The job suspended at a gate: earlier jobs finished, later ones pending. */
   gateJob: number;
-  /** Steps of the gate job before this index finished; the rest are pending. */
   gateStep: number;
 }
 
-/**
- * Jobs from {@link arbJobs}, sometimes with a step name repeated in another
- * job (names are unique only within a job), and where the run suspended.
- */
 const arbSuspendedCase: fc.Arbitrary<SuspendedCase> = fc
   .tuple(
     arbJobs,
@@ -320,11 +311,6 @@ const arbSuspendedCase: fc.Arbitrary<SuspendedCase> = fc
     };
   });
 
-/**
- * A run suspended in job `gateJob`: earlier jobs succeeded, that job's steps
- * before `gateStep` succeeded and the rest are pending, and later jobs are
- * pending. A job expands its forEach steps when it starts.
- */
 function buildSuspendedRun(workflow: Workflow, c: SuspendedCase): WorkflowRun {
   const run = WorkflowRun.create(workflow);
   run.start();
@@ -347,7 +333,6 @@ function buildSuspendedRun(workflow: Workflow, c: SuspendedCase): WorkflowRun {
   return run;
 }
 
-/** Steps with unfinished records: from the gate on, and in later jobs. */
 function unfinishedSteps(c: SuspendedCase): { job: number; name: string }[] {
   return c.jobs.flatMap((job, i) =>
     i < c.gateJob ? [] : job.steps
@@ -356,7 +341,6 @@ function unfinishedSteps(c: SuspendedCase): { job: number; name: string }[] {
   );
 }
 
-/** `jobs` with every step-level dependency dropped, so edits stay valid. */
 function independent(jobs: GeneratedJob[]): GeneratedJob[] {
   return jobs.map((j) => ({
     ...j,

@@ -18,20 +18,6 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 
-/**
- * What history compaction costs (swamp-club#3258): the time one batch holds
- * the write transaction for several batch sizes, the WAL it writes against
- * appending the same commits (what Litestream replicates), `commits.db`'s
- * size over cycles of appends and compactions, and a fresh checkout loading
- * the compacted base against replaying the whole history. Run with:
- *
- * ```
- * deno run -A scripts/bench_commit_compaction.ts
- * ```
- *
- * The bench resets the WAL (`wal_checkpoint(TRUNCATE)`) from a connection of
- * its own before each WAL measurement; the store itself never checkpoints.
- */
 
 import { join } from "@std/path";
 import { DatabaseSync } from "node:sqlite";
@@ -51,11 +37,6 @@ import { SqliteReadModel } from "../src/infrastructure/datastore_v3/sqlite_read_
 const COMMITS = 11_000;
 const NAMES = 50;
 
-/**
- * Commit `seq` of a model partition, as `bench_commit_store.ts` builds it:
- * a new version of one of 50 names (about 200 inline bytes and its
- * data-version), and every tenth also deletes the name's previous version.
- */
 async function benchCommit(seq: number): Promise<Commit> {
   const name = `name-${seq % NAMES}`;
   const version = Math.floor(seq / NAMES) + 1;
@@ -67,11 +48,6 @@ async function benchCommit(seq: number): Promise<Commit> {
   return modelCommit(seq, ops, { fence: 1 });
 }
 
-/**
- * Commit `seq` of a churning partition, the history compaction is for: it
- * saves a new version of one of 50 names and deletes that name's previous
- * version, so the live state stays at 50 versions however long the history.
- */
 async function churnCommit(seq: number): Promise<Commit> {
   const name = `name-${seq % NAMES}`;
   const version = Math.floor(seq / NAMES) + 1;
@@ -100,7 +76,6 @@ async function history(
   await store.close();
 }
 
-/** Empties the WAL from a connection of the bench's own. */
 function resetWal(path: string): void {
   const db = new DatabaseSync(path);
   db.exec("PRAGMA wal_checkpoint(TRUNCATE)");
@@ -150,7 +125,6 @@ for (
   const source = sources[shape];
   const path = join(dir, `batch-${shape}-${batchSize}.db`);
   await Deno.copyFile(source, path);
-  // WAL of appending `batchSize` commits, on a store of its own.
   const appendPath = join(dir, `append-${shape}-${batchSize}.db`);
   await history(appendPath, 1, 1);
   resetWal(appendPath);
@@ -198,7 +172,6 @@ console.log("|---|---|---|---|---|");
     await history(kept, seq + 1, seq + 2000, churnCommit);
     seq += 2000;
     const store = SqliteCommitStore.open(compacted);
-    // Keep the newest 500 commits, as a retention would.
     const status = await store.compactionStatus({
       commits: 500,
       since: "9999-12-31T00:00:00.000Z",

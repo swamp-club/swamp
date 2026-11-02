@@ -17,12 +17,9 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// A named `swamp model cancel` selects tracker rows by definition id. A row
-// an older swamp registered has none (swamp-club#3244), so it is attributed
-// from what its run left on disk: a workflow step's `running` method-run
-// record, or the per-model lock a direct run holds. These tests wire the real
-// run tracker, output repository and model lock together, since the unit
-// tests only build rows and evidence in memory.
+// a named model cancel selects tracker rows by definition id; rows an older
+// swamp registered have none, so they are attributed from what the run left on
+// disk: a running method-run record or the model lock
 
 import { assertEquals } from "@std/assert";
 import { join } from "@std/path";
@@ -54,12 +51,10 @@ const OTHER_PID = 2147483647;
 interface Fixture {
   tracker: RunTrackerStore;
   outputRepo: OutputRepository;
-  /** The running rows a cancel of `definitionId` selects, by id. */
   select(definitionId: string): Promise<{
     runs: string[];
     unattributed: string[];
   }>;
-  /** Clears a row's definition id, as a swamp before swamp-club#3244 left it. */
   forgetDefinition(runId: string): void;
   lockOf(definitionId: string): ReturnType<typeof createModelLock>;
 }
@@ -121,7 +116,6 @@ async function withRepo(
   }
 }
 
-/** A direct method run's row: registered, with no record until it ends. */
 function registerRun(
   { tracker }: Fixture,
   definitionId: string,
@@ -139,7 +133,6 @@ function registerRun(
   return id;
 }
 
-/** A workflow step's method run: its record saved `running`, then its row. */
 async function registerStepRun(
   fixture: Fixture,
   definitionId: string,

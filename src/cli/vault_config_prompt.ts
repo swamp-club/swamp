@@ -17,11 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Asks the user for the required config fields a vault type needs and the
- * command line did not supply, instead of failing (swamp-club#3003).
- */
-
 import {
   findMissingRequiredFields,
   isSecretLikeFieldName,
@@ -50,7 +45,6 @@ export function canPromptForConfig(
   }
 }
 
-/** The I/O a prompt session uses; tests inject all three. */
 export interface ConfigPromptIO {
   prompt: (message: string) => Promise<string>;
   /** Reads without echo, for a field that looks like a credential. */
@@ -68,14 +62,9 @@ const defaultIO: ConfigPromptIO = {
 };
 
 /**
- * Prompts for each required string field the config leaves out and
- * returns the answers. A short lead-in says why the questions appear and
- * that Enter leaves a field unset; a required field that is not a string
- * is named as one to pass with --config instead. A field whose name looks
- * like a credential is read without echo, and a note says where the
- * answer ends up. An empty answer is not recorded, so the type's schema
- * still names whatever stays missing.
- * Field names and descriptions are already sanitized by the domain module.
+ * a required field that is not a string is named as one to pass with --config;
+ * a credential-looking field is read without echo; an empty answer is not
+ * recorded so the type's schema still names whatever stays missing
  */
 export async function promptForMissingConfigFields(
   vaultType: string,

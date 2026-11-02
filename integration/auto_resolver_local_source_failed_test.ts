@@ -30,12 +30,6 @@ import { ExtensionRepository } from "../src/infrastructure/persistence/extension
 import { LockfileRepository } from "../src/infrastructure/persistence/lockfile_repository.ts";
 import type { DenoRuntime } from "../src/domain/runtime/deno_runtime.ts";
 
-// Regression guard for swamp-club issue 1672: when a local source
-// extension fails to index (BundleBuildFailed or ValidationFailed),
-// the auto-resolver must emit "local_source_failed" — not the
-// misleading "collective_not_trusted" — when the type matches the
-// failed source's content.
-
 const stubDenoRuntime: DenoRuntime = {
   ensureDeno: () => Promise.resolve("/usr/bin/false"),
   getDenoEnv: () => Deno.env.toObject(),

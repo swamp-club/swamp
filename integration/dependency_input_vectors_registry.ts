@@ -18,26 +18,19 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * The registries the dependency input vectors resolve against, offline: one
- * localhost server on a free port is the npm registry Deno reads
- * (`NPM_CONFIG_REGISTRY`), the JSR registry (`JSR_URL`) and the host of URL
- * imports, and {@link VectorRegistry.fetcher} answers swamp's own registry,
- * download and OSV lookups from the same packages, as the dependency audit
- * makes them. Every package is built in memory, so its integrity is known
- * and a vector's lockfile can name it through a placeholder
- * ({@link VectorRegistry.substitute}).
+ * one localhost server on a free port stands in for the npm registry, the JSR
+ * registry and the host of URL imports; packages are built in memory so
+ * integrity is known and a lockfile can name it through placeholders
  */
 
 import { TarStream } from "@std/tar/tar-stream";
 
-/** An npm package version the registry serves. */
 interface NpmVersion {
   name: string;
   version: string;
   code: string;
 }
 
-/** A JSR package version the registry serves: one `mod.ts`. */
 interface JsrVersion {
   scope: string;
   name: string;
@@ -82,10 +75,8 @@ const JSR_PACKAGES: readonly JsrVersion[] = [
 
 const JSR_LATEST: Record<string, string> = { "@vec/lib": "1.1.0" };
 
-/** The module a URL import fetches. */
 const URL_MODULE = "export const remote = 1;\n";
 
-/** The npm-style tarball of one package version, gzipped. */
 async function npmTarball(
   pkg: NpmVersion,
 ): Promise<Uint8Array<ArrayBuffer>> {
@@ -136,11 +127,6 @@ function encodeBase64(bytes: Uint8Array): string {
   return btoa(String.fromCharCode(...bytes));
 }
 
-/**
- * npm's metadata for `name`, as Deno reads it from the server (`forSwamp`
- * false: each version's tarball and integrity) or as the dependency audit
- * reads it from registry.npmjs.org; undefined for a package not served.
- */
 function npmPackument(
   name: string,
   forSwamp: boolean,
@@ -177,7 +163,6 @@ function npmPackument(
   };
 }
 
-/** JSR's package metadata for `@scope/name`; undefined when not served. */
 function jsrMeta(scopedName: string) {
   const versions = JSR_PACKAGES.filter((p) =>
     `@${p.scope}/${p.name}` === scopedName
@@ -195,10 +180,6 @@ function jsrMeta(scopedName: string) {
   };
 }
 
-/**
- * swamp's registry, download and OSV lookups, answered from the vectors'
- * packages: the fetcher the dependency audit is given.
- */
 export function vectorFetcher(): (
   input: string | URL | Request,
 ) => Promise<Response> {
@@ -229,27 +210,20 @@ export function vectorFetcher(): (
   };
 }
 
-/** The running registries and what a vector's files may name of them. */
 export interface VectorRegistry {
-  /** `http://127.0.0.1:<port>`, with no trailing slash. */
   origin: string;
-  /** The environment that points Deno at the registries. */
   env: Record<string, string>;
-  /** swamp's registry lookups, answered from the same packages. */
   fetcher: ReturnType<typeof vectorFetcher>;
   /**
-   * `text` with each placeholder replaced: `{{ORIGIN}}`, `{{INTEGRITY
-   * <name>@<version>}}` (an npm tarball's sha512 integrity) and
-   * `{{JSR_INTEGRITY @<scope>/<name>@<version>}}` (a JSR version
-   * manifest's sha256, as deno.lock records it).
+   * replaces `{{ORIGIN}}`, `{{INTEGRITY <name>@<version>}}` (an npm tarball's
+   * sha512) and `{{JSR_INTEGRITY @<scope>/<name>@<version>}}` (the manifest
+   * sha256 deno.lock records)
    */
   substitute(text: string): string;
-  /** `text` with the origin written back as `{{ORIGIN}}`. */
   generalize(text: string): string;
   shutdown(): Promise<void>;
 }
 
-/** Starts the registries; `shutdown` stops them. */
 export async function startVectorRegistry(): Promise<VectorRegistry> {
   const tarballs = new Map<string, Uint8Array<ArrayBuffer>>();
   const integrity = new Map<string, string>();

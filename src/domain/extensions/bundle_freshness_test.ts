@@ -31,9 +31,6 @@ import {
 } from "./bundle_freshness.ts";
 import type { ExtensionTypeRow } from "../../infrastructure/persistence/extension_catalog_store.ts";
 
-// -- Test fixture -------------------------------------------------------
-
-/** A lookup with no recorded modules: fingerprints walk relative imports. */
 const noRecordedModules: SourceModuleLookup = {
   findSourceModules: () => undefined,
 };
@@ -101,8 +98,6 @@ const discoverTsFiles = async (dir: string): Promise<string[]> => {
   return out.sort();
 };
 
-// -- computeSourceFingerprint -------------------------------------------
-
 Deno.test("computeSourceFingerprint: produces a 64-char hex sha-256", async () => {
   const dir = await Deno.makeTempDir({ prefix: "swamp_bf_fp_hex_" });
   try {
@@ -144,7 +139,6 @@ Deno.test("computeSourceFingerprint: changes when content changes", async () => 
 });
 
 Deno.test("computeSourceFingerprint: changes when content changes even with preserved mtime", async () => {
-  // This is the #125 scenario — editor atomic-rename + mtime restore.
   const dir = await Deno.makeTempDir({ prefix: "swamp_bf_fp_mtime_" });
   try {
     const file = join(dir, "a.ts");
@@ -187,11 +181,6 @@ Deno.test("computeSourceFingerprint: tracks transitive dependency changes", asyn
 });
 
 Deno.test("computeSourceFingerprint: ignores non-local (npm/jsr) imports", async () => {
-  // Fingerprint should be content-based on local sources only —
-  // changing the user's npm import string but keeping local deps the
-  // same should NOT change the fingerprint other than through the
-  // entry file's own bytes (which did change). So we instead compare
-  // two files with identical bytes but different npm-only semantics.
   const dir = await Deno.makeTempDir({ prefix: "swamp_bf_fp_npm_" });
   try {
     const entry = join(dir, "entry.ts");
@@ -199,7 +188,6 @@ Deno.test("computeSourceFingerprint: ignores non-local (npm/jsr) imports", async
     await Deno.writeTextFile(entry, src);
     const first = await computeSourceFingerprint(entry, dir, noRecordedModules);
 
-    // Rewrite with identical bytes — fingerprint must match.
     await Deno.writeTextFile(entry, src);
     const second = await computeSourceFingerprint(
       entry,
@@ -230,8 +218,6 @@ Deno.test("computeSourceFingerprint: different files in same dir produce differe
     await Deno.remove(dir, { recursive: true });
   }
 });
-
-// -- findStaleFiles -----------------------------------------------------
 
 Deno.test("findStaleFiles: empty catalog → every file is stale", async () => {
   const dir = await Deno.makeTempDir({ prefix: "swamp_bf_stale_empty_" });
@@ -418,7 +404,6 @@ Deno.test("findStaleFiles: kinds filter scopes both the staleness check and dele
     prefix: "swamp_bf_stale_kinds_vault_",
   });
   try {
-    // Current on-disk: report dir has one file, vault dir has one file.
     const reportFile = join(reportDir, "my_report.ts");
     const vaultFile = join(vaultDir, "my_vault.ts");
     await Deno.writeTextFile(reportFile, "export const d = 1;");
@@ -435,8 +420,6 @@ Deno.test("findStaleFiles: kinds filter scopes both the staleness check and dele
       noRecordedModules,
     );
 
-    // Catalog has rows for BOTH kinds, plus a stale report row whose
-    // source file has been deleted from disk.
     const catalog = new FakeCatalog();
     catalog.add({
       source_path: reportFile,
@@ -472,9 +455,6 @@ Deno.test("findStaleFiles: kinds filter scopes both the staleness check and dele
       source_fingerprint: vaultFp,
     });
 
-    // Scan report dir with kinds: ["report"] — only report rows are
-    // compared, and only report rows are deleted. The vault row for
-    // a file living outside reportDir must NOT be deleted.
     const stale = await findStaleFiles({
       modelsDir: reportDir,
       catalog,
@@ -493,10 +473,8 @@ Deno.test("findStaleFiles: kinds filter scopes both the staleness check and dele
       kind: r.kind,
     })).sort((a, b) => a.path.localeCompare(b.path));
 
-    // The stale report row (gone.ts) must be deleted.
-    // The vault row (in a dir outside the scan) must survive — this is
-    // the cross-kind isolation guarantee that lets sibling loaders
-    // share the catalog without stepping on each other.
+    // the vault row outside the scan must survive: sibling loaders share the
+    // catalog and must not delete each other's rows
     assertEquals(
       remaining.some((r) => r.kind === "report" && r.path === reportFile),
       true,
@@ -521,7 +499,7 @@ Deno.test("findStaleFiles: kinds filter scopes both the staleness check and dele
 Deno.test("findStaleFiles: missing source dir is silently skipped", async () => {
   const dir = await Deno.makeTempDir({ prefix: "swamp_bf_stale_missing_" });
   try {
-    await Deno.remove(dir, { recursive: true }); // remove before scan
+    await Deno.remove(dir, { recursive: true });
 
     const catalog = new FakeCatalog();
     const stale = await findStaleFiles({
@@ -532,18 +510,9 @@ Deno.test("findStaleFiles: missing source dir is silently skipped", async () => 
     });
     assertEquals(stale, []);
   } catch (err) {
-    // Cleanup already happened — swallow.
     if (!(err instanceof Deno.errors.NotFound)) throw err;
   }
 });
-
-// -- swamp-club#212: bundle-existence gate -----------------------------
-// findStaleFiles previously decided freshness purely from source content
-// fingerprint. If the cached bundle file at bundle_path was deleted out
-// from under us (manual rm, partial GC, failed previous bundle attempt)
-// while source content stayed unchanged, the catalog row was reported
-// fresh and a downstream importBundleByPath ENOENT'd. The gate now also
-// checks that the bundle file physically exists.
 
 Deno.test("findStaleFiles: matching fingerprint + missing bundle → stale (#212)", async () => {
   const dir = await Deno.makeTempDir({ prefix: "swamp_bf_212_missing_" });
@@ -579,10 +548,8 @@ Deno.test("findStaleFiles: matching fingerprint + missing bundle → stale (#212
 });
 
 Deno.test("findStaleFiles: matching fingerprint + missing bundle + state=ValidationFailed → not stale (#212 vs #209)", async () => {
-  // ValidationFailed rows must skip the bundle-existence check —
-  // rebundling them is the inverse of the loop swamp-club#209 sealed.
-  // The reader migrated from `validation_failed` to `state` per W1a
-  // (issue swamp-club#211); fixture follows.
+  // ValidationFailed rows skip the bundle-existence check; rebundling them
+  // would undo what that state seals
   const dir = await Deno.makeTempDir({ prefix: "swamp_bf_212_validfail_" });
   try {
     const file = join(dir, "broken.ts");
@@ -616,12 +583,9 @@ Deno.test("findStaleFiles: matching fingerprint + missing bundle + state=Validat
 });
 
 Deno.test("findStaleFiles: matching fingerprint + state=BundleBuildFailed → stale (issue #424)", async () => {
-  // A transient bundle-build failure (e.g. npm deps unreachable on a cold
-  // cache at first load) must not be pinned as a fingerprint-matched cache
-  // hit. Before #424, such a row (empty bundle_path, fingerprint unchanged)
-  // slipped past the staleness gate and was never re-bundled, so a serve
-  // daemon stayed permanently broken across restarts. It must now be stale so
-  // the next scan re-attempts the bundle.
+  // a transient bundle-build failure (empty bundle_path, unchanged fingerprint)
+  // must be stale so the next scan retries, or a serve daemon stays broken
+  // across restarts
   const dir = await Deno.makeTempDir({ prefix: "swamp_bf_424_buildfail_" });
   try {
     const file = join(dir, "needs_npm.ts");
@@ -690,8 +654,8 @@ Deno.test("findStaleFiles: matching fingerprint + bundle exists → not stale (#
 });
 
 Deno.test("findStaleFiles: empty bundle_path → bundle-existence check skipped (#212)", async () => {
-  // Legacy/test rows without a bundle_path must not regress to
-  // permanently-stale just because the new gate has nothing to stat.
+  // rows without a bundle_path have nothing to stat, so they must not become
+  // permanently stale
   const dir = await Deno.makeTempDir({ prefix: "swamp_bf_212_empty_path_" });
   try {
     const file = join(dir, "a.ts");
@@ -723,13 +687,9 @@ Deno.test("findStaleFiles: empty bundle_path → bundle-existence check skipped 
   }
 });
 
-// -- Issue #208: total fingerprint --------------------------------------
-// `swamp model type search` regressed to ~8s because broken transitive
-// deps caused computeSourceFingerprint to throw, which findStaleFiles
-// caught as "permanently stale" and re-attempted bundling on every
-// invocation. The fix makes computeSourceFingerprint total: an
-// unreadable dep produces a stable sentinel entry instead of throwing,
-// so a stable broken state yields a stable fingerprint.
+// computeSourceFingerprint is total: an unreadable dep yields a stable sentinel
+// entry instead of throwing, so a stable broken state gives a stable
+// fingerprint
 
 Deno.test("computeSourceFingerprint: broken transitive symlink does not throw", async () => {
   const dir = await Deno.makeTempDir({ prefix: "swamp_bf_fp_broken_dep_" });
@@ -746,7 +706,6 @@ Deno.test("computeSourceFingerprint: broken transitive symlink does not throw", 
     assertEquals(fp.length, 64);
     assertEquals(/^[0-9a-f]{64}$/.test(fp), true);
 
-    // Stable across repeated calls.
     const again = await computeSourceFingerprint(entry, dir, noRecordedModules);
     assertEquals(fp, again);
   } finally {
@@ -770,8 +729,6 @@ Deno.test("computeSourceFingerprint: absence of dep is captured in fingerprint",
       noRecordedModules,
     );
 
-    // Replace the readable dep with a broken symlink. Same path, same
-    // import — different readability state. Fingerprint must differ.
     await Deno.remove(dep);
     await Deno.symlink("/nonexistent/path/dep.ts", dep, { type: "file" });
     const oneBroken = await computeSourceFingerprint(
@@ -791,12 +748,9 @@ Deno.test("computeSourceFingerprint: absence of dep is captured in fingerprint",
 });
 
 Deno.test("computeSourceFingerprint: MISSING sentinel cannot collide with a real hash", () => {
-  // The sentinel is substituted for unreadable deps in the
-  // {relPath}:{hash} entry list. A real sha-256 hex hash is exactly 64
-  // hex chars. "MISSING" is 7 chars and contains non-hex letters, so
-  // no real hash can produce the same per-file entry as a sentinel.
-  // Without this invariant a broken-dep file could spoof a healthy
-  // fingerprint.
+  // MISSING is not 64 hex chars, so no real sha-256 hash can produce the same
+  // per-file entry as the sentinel; otherwise a broken-dep file could spoof a
+  // healthy fingerprint
   assertEquals(/^[0-9a-f]{64}$/.test("MISSING"), false);
 });
 
@@ -889,7 +843,6 @@ Deno.test("computeSourceFingerprint: restoring a broken dep changes the fingerpr
       noRecordedModules,
     );
 
-    // Restore the dep as a real file with content.
     await Deno.remove(dep);
     await Deno.writeTextFile(dep, "export const x = 42;");
     const restored = await computeSourceFingerprint(
@@ -907,8 +860,6 @@ Deno.test("computeSourceFingerprint: restoring a broken dep changes the fingerpr
     await Deno.remove(dir, { recursive: true });
   }
 });
-
-// -- swamp-club#2490: removed and typeless rows -------------------------
 
 function catalogRow(
   overrides: Partial<ExtensionTypeRow> & { source_path: string },
@@ -1015,32 +966,27 @@ Deno.test("scanCatalogFreshness: typeless lists seen Indexed primary-kind rows t
     }
 
     const catalog = new FakeCatalog();
-    // Included: Indexed, primary kind, empty type, fresh.
     catalog.add(catalogRow({
       source_path: paths["indexed.ts"],
       source_fingerprint: fps["indexed.ts"],
       state: "Indexed",
     }));
-    // Included: a row without a state reads as Indexed.
     catalog.add(catalogRow({
       source_path: paths["legacy.ts"],
       kind: "vault",
       source_fingerprint: fps["legacy.ts"],
     }));
-    // Excluded: kind "extension" rows never claim a type.
     catalog.add(catalogRow({
       source_path: paths["extension.ts"],
       kind: "extension",
       source_fingerprint: fps["extension.ts"],
       state: "Indexed",
     }));
-    // Excluded: already stale via fingerprint mismatch.
     catalog.add(catalogRow({
       source_path: paths["mismatch.ts"],
       source_fingerprint: "does-not-match",
       state: "Indexed",
     }));
-    // Excluded: non-Indexed states.
     catalog.add(catalogRow({
       source_path: paths["validation_failed.ts"],
       source_fingerprint: fps["validation_failed.ts"],
@@ -1051,7 +997,6 @@ Deno.test("scanCatalogFreshness: typeless lists seen Indexed primary-kind rows t
       source_fingerprint: fps["bundled.ts"],
       state: "Bundled",
     }));
-    // Excluded: claims a type.
     catalog.add(catalogRow({
       source_path: paths["typed.ts"],
       type_normalized: "@user/typed",
@@ -1107,9 +1052,6 @@ Deno.test("normalizeFreshnessPath: folds case and separators only on Windows", (
   assertEquals(normalizeFreshnessPath(input), expected);
 });
 
-// -- Recorded source modules (swamp-club#3385) ---------------------------
-
-/** A lookup that answers from a fixed map of recorded modules. */
 function recordedModules(
   entries: Record<string, readonly string[]>,
 ): SourceModuleLookup {
@@ -1194,10 +1136,6 @@ Deno.test("computeSourceFingerprint: recording the walked modules keeps the walk
   }
 });
 
-/**
- * Scans one source whose row's fingerprint matches, with `repoDir` set
- * unless `withoutRepoDir`, and returns whether the scan found it stale.
- */
 async function scanOneMatchingSource(args: {
   pulled?: boolean;
   recorded?: boolean;

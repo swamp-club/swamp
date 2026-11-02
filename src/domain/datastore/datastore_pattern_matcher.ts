@@ -18,23 +18,10 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * Gitignore-style pattern matcher for datastore exclude patterns.
- *
- * Supports:
- * - `*` matches anything except `/`
- * - `**` matches everything including `/`
- * - `?` matches any single character except `/`
- * - `[...]` character classes
- * - `!` prefix negates a pattern (re-includes previously excluded files)
- * - Patterns are evaluated top-to-bottom, later patterns override earlier ones
+ * patterns are evaluated top to bottom, later ones override earlier ones, and a
+ * ! prefix re-includes files an earlier pattern excluded
  */
 
-/**
- * Converts a gitignore-style glob pattern to a RegExp.
- *
- * @param pattern - The glob pattern (without `!` prefix)
- * @returns A RegExp that matches the pattern
- */
 export function globToRegExp(pattern: string): RegExp {
   let regexStr = "";
   let i = 0;
@@ -44,9 +31,7 @@ export function globToRegExp(pattern: string): RegExp {
 
     if (char === "*") {
       if (pattern[i + 1] === "*") {
-        // ** matches everything including /
         if (pattern[i + 2] === "/") {
-          // **/ matches zero or more directories
           regexStr += "(?:.+/)?";
           i += 3;
         } else {
@@ -54,7 +39,6 @@ export function globToRegExp(pattern: string): RegExp {
           i += 2;
         }
       } else {
-        // * matches anything except /
         regexStr += "[^/]*";
         i++;
       }
@@ -62,10 +46,8 @@ export function globToRegExp(pattern: string): RegExp {
       regexStr += "[^/]";
       i++;
     } else if (char === "[") {
-      // Character class - pass through until closing ]
       const closeBracket = pattern.indexOf("]", i + 1);
       if (closeBracket === -1) {
-        // No closing bracket, treat as literal
         regexStr += "\\[";
         i++;
       } else {
@@ -77,7 +59,6 @@ export function globToRegExp(pattern: string): RegExp {
       char === "{" || char === "}" || char === "(" || char === ")" ||
       char === "|" || char === "\\"
     ) {
-      // Escape regex special characters
       regexStr += "\\" + char;
       i++;
     } else {
@@ -94,9 +75,6 @@ interface CompiledPattern {
   negated: boolean;
 }
 
-/**
- * Compiles an array of gitignore-style patterns into optimized matchers.
- */
 export function compilePatterns(patterns: string[]): CompiledPattern[] {
   return patterns
     .filter((p) => p.trim() !== "" && !p.startsWith("#"))
@@ -108,16 +86,6 @@ export function compilePatterns(patterns: string[]): CompiledPattern[] {
     });
 }
 
-/**
- * Checks if a relative path is excluded by the given patterns.
- *
- * Patterns are evaluated top-to-bottom. A `!` prefix negates (re-includes)
- * a previously excluded path. The last matching pattern wins.
- *
- * @param relativePath - Path relative to the datastore root (e.g., "telemetry/data.json")
- * @param excludePatterns - Array of gitignore-style patterns
- * @returns true if the path should be excluded from the datastore
- */
 export function isExcluded(
   relativePath: string,
   excludePatterns: string[],
@@ -126,15 +94,10 @@ export function isExcluded(
   return isExcludedCompiled(relativePath, compiled);
 }
 
-/**
- * Checks exclusion using pre-compiled patterns for better performance
- * when checking many paths against the same pattern set.
- */
 export function isExcludedCompiled(
   relativePath: string,
   compiled: CompiledPattern[],
 ): boolean {
-  // Normalize: remove leading slash
   const normalized = relativePath.startsWith("/")
     ? relativePath.slice(1)
     : relativePath;

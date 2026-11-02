@@ -54,13 +54,9 @@ import { serveDashboardRoute } from "../dashboard_assets.ts";
 import type { WorkspaceHub } from "../local/workspace_hub.ts";
 import { START_PING_TOKEN_HEADER } from "../../infrastructure/process/start_instance_probe.ts";
 
-/** How long each end condition waits. Injected so tests can shorten them. */
 export interface StartServerTimeouts {
-  /** After launch, with no page connected (allows reloads). */
   readonly afterLaunchIdleMs: number;
-  /** Before launch, with no page connected. */
   readonly beforeLaunchIdleMs: number;
-  /** After a copy-command fallback, while the page is still connected. */
   readonly copyFallbackMs: number;
 }
 
@@ -70,19 +66,11 @@ export const DEFAULT_START_SERVER_TIMEOUTS: StartServerTimeouts = {
   copyFallbackMs: 30 * 60_000,
 };
 
-/** Why the start server stopped on its own. */
 export type StartServerEnd =
   | { readonly kind: "launched"; readonly displayName: string }
   | { readonly kind: "paused" };
 
-/**
- * How the server takes and gives back a workspace. The CLI implements it
- * with the workspace's file lock and this process's record in
- * `.swamp/start/servers/<pid>.json`; tests pass {@link NO_CLAIMS}. Several
- * `swamp start` processes may serve one workspace at once.
- */
 export interface StartWorkspaceClaims {
-  /** Runs `open` while holding the workspace, then records this server. */
   claim<T>(
     name: string,
     workspacePath: string,
@@ -102,39 +90,26 @@ export interface StartServerOptions {
   readonly token: string;
   readonly distDir: string;
   readonly claims?: StartWorkspaceClaims;
-  /** Told each time the page opens a workspace. */
   readonly onWorkspaceOpened?: (
     workspacePath: string,
     created: boolean,
   ) => void;
   readonly timeouts?: StartServerTimeouts;
-  /**
-   * The local dashboard's workspace routes (`/w/<workspace>/...` and the
-   * workspace list). A dashboard tab keeps the server up like the start
-   * page does.
-   */
   readonly hub?: WorkspaceHub;
   /**
-   * Serve the start page and its `start.*` socket (default true).
-   * `swamp dashboard` turns it off, so its token reaches only the hub and
-   * can never add, create or open a `swamp start` workspace.
+   * swamp dashboard turns it off so its token reaches only the hub and can
+   * never add, create or open a swamp start workspace
    */
   readonly startPage?: boolean;
 }
 
 export interface StartServerHandle {
   readonly port: number;
-  /** Resolves when an end condition is met. */
   readonly ended: Promise<StartServerEnd>;
-  /**
-   * Opens (creating if needed) the named workspace, as the page would. A
-   * new one is created in `location.parent` when given.
-   */
   openWorkspace(
     name: string,
     location?: StartWorkspaceLocationInput,
   ): Promise<StartStatus>;
-  /** The workspace being served, or null before one is chosen. */
   workspacePath(): string | null;
   shutdown(): Promise<void>;
 }
@@ -234,7 +209,6 @@ type StartRequest = z.infer<typeof RequestSchema>;
 
 const SUBPROTOCOL_PREFIX = "bearer.";
 
-/** The bearer token a WebSocket upgrade offers in its subprotocol list. */
 function offeredToken(req: Request): string | null {
   const header = req.headers.get("sec-websocket-protocol");
   if (!header) return null;
@@ -247,7 +221,6 @@ function offeredToken(req: Request): string | null {
   return null;
 }
 
-/** A request the server refused, with the code the page reads. */
 export class StartServerError extends Error {
   constructor(
     readonly code: string,
@@ -273,11 +246,6 @@ async function lastStatus(
   throw new StartServerError("internal", "No status was produced.");
 }
 
-/**
- * Runs a launch-like stream (launch, resume, open agent), passing each
- * progress event to `forward`. Answers the final status and whether the
- * `launched` event says the window opened.
- */
 async function launchStatus(
   events: AsyncIterable<StartLaunchEvent>,
   forward: (event: StartLaunchEvent) => void,
@@ -303,7 +271,6 @@ async function launchStatus(
   return { status, opened };
 }
 
-/** A `start.signin` request waiting on the shared sign-in flow. */
 interface SignInSubscriber {
   readonly socket: WebSocket;
   readonly id: string;
@@ -311,18 +278,14 @@ interface SignInSubscriber {
 
 interface SignInFlow {
   readonly subscribers: Set<SignInSubscriber>;
-  /** The last device code, replayed to a request that joins late. */
   verification?: StartSignInEvent;
   done?: Promise<void>;
 }
 
 /**
- * The loopback server behind `swamp start`. It serves the dashboard bundle,
- * a token-checked `/start/ping` for other `swamp start` processes, and one
- * WebSocket carrying only the `start.*` messages. It binds 127.0.0.1 on an
- * ephemeral port, rejects any Host other than its own (DNS rebinding),
- * checks the Origin of the upgrade, and requires the one-time token as a
- * `bearer.` subprotocol.
+ * binds 127.0.0.1 on an ephemeral port, rejects any Host other than its own
+ * (DNS rebinding), checks the Origin of the upgrade, and requires the one-time
+ * token as a `bearer.` subprotocol
  */
 export function startStartServer(
   options: StartServerOptions,
@@ -360,7 +323,6 @@ export function startStartServer(
     }
   };
 
-  // End conditions.
   const opened = new Set<WebSocket>();
   let finished = false;
   let copyFallback = false;
@@ -407,13 +369,8 @@ export function startStartServer(
   // launched screen; a task launched by an earlier run shows on the home,
   // so the page never re-sends its brief.
   const launchedHere = new Set<string>();
-  // The task the page has open in the bound workspace, or null while a new
-  // task is written. It lives here, not on disk: no task is special.
   let selectedTask: string | null = null;
-  // The task that was open when "New task" was chosen, for Cancel.
   let previousTask: string | null = null;
-  // "home": the workspace's home, every task and the open one's summary.
-  // "flow": the open task's own step (task, agent, trust, launched).
   let view: "home" | "flow" = "flow";
   const present = (status: StartStatus): StartStatus => {
     if (status.workspacePath === null) return status;
@@ -430,10 +387,6 @@ export function startStartServer(
       : named;
   };
 
-  /**
-   * The status of the bound workspace and its open task. A task that has
-   * gone (its record deleted) is dropped from the selection.
-   */
   const readStatus = async (path: string): Promise<StartStatus> => {
     try {
       return await lastStatus(
@@ -454,7 +407,6 @@ export function startStartServer(
     }
   };
 
-  /** The open task's id; the commands that change a task need one. */
   const requireTask = (): string => {
     if (selectedTask === null) {
       throw new StartServerError("no_task", "Write the task first.");
@@ -472,14 +424,12 @@ export function startStartServer(
     return bound.path;
   };
 
-  /** Refuses the request unless this machine holds a sign-in (no network). */
   const requireSignedIn = async (): Promise<void> => {
     if ((await deps.checkSignedIn(false)).kind !== "signed_in") {
       throw new StartServerError("not_signed_in", "Sign in first.");
     }
   };
 
-  /** Queues work that needs a sign-in. */
   const signedIn = <T>(work: () => Promise<T>): Promise<T> =>
     enqueue(async () => {
       await requireSignedIn();
@@ -496,7 +446,6 @@ export function startStartServer(
         new StartServerError("stopping", "swamp start is stopping."),
       );
     }
-    // A second pick shares an open dialog only when it asks the same thing.
     if (picking !== null && pickingPurpose !== purpose) {
       return Promise.reject(
         new StartServerError(
@@ -526,7 +475,6 @@ export function startStartServer(
     return picking;
   };
 
-  /** Queues work on the bound workspace, read when the work runs. */
   const inWorkspace = <T>(work: (path: string) => Promise<T>): Promise<T> =>
     signedIn(() => work(requireWorkspace()));
 
@@ -568,11 +516,6 @@ export function startStartServer(
     return tracked;
   };
 
-  /**
-   * Drops the last launch when the page moves to another workspace or back
-   * to the picker, so the run doesn't end as "launched" for a workspace the
-   * page has left.
-   */
   const forgetLaunch = () => {
     launchedName = undefined;
     copyFallback = false;
@@ -587,7 +530,6 @@ export function startStartServer(
     }
   };
 
-  /** Opens a workspace; runs inside the queue. */
   const openWorkspaceNow = async (
     name: string,
     location: StartWorkspaceLocationInput = {},
@@ -633,8 +575,6 @@ export function startStartServer(
     }
     const previous = bound;
     bound = { path, name };
-    // The newest task opens on the home; a workspace with none starts on a
-    // new task.
     selectedTask = status.taskId ?? null;
     previousTask = null;
     view = selectedTask !== null ? "home" : "flow";
@@ -744,7 +684,6 @@ export function startStartServer(
       send({ type: request.type, id: request.id, payload });
     const forward = (event: StartLaunchEvent) =>
       send({ type: request.type, id: request.id, event });
-    /** Runs one status-answering command on the bound workspace. */
     const statusOp = async (
       events: (path: string) => AsyncIterable<StartStatusEvent>,
       before?: () => void,
@@ -807,7 +746,6 @@ export function startStartServer(
               }),
             );
             if (creating) {
-              // A new task: the run no longer ends as the last one's launch.
               copyFallback = false;
               launchedName = undefined;
               reevaluate();
@@ -860,7 +798,6 @@ export function startStartServer(
           ),
         });
       case "start.tasks.show":
-        // The workspace's home; with no task open, the newest one.
         return respond(
           await inWorkspace(async (path) => {
             if (selectedTask === null) {
@@ -874,8 +811,6 @@ export function startStartServer(
           }),
         );
       case "start.task.open":
-        // Opening a task changes nothing on disk: a launched one shows on
-        // the home, any other at its own step.
         return respond(
           await inWorkspace(async (path) => {
             const status = await lastStatus(
@@ -896,7 +831,6 @@ export function startStartServer(
             previousTask = selectedTask;
             selectedTask = null;
             view = "flow";
-            // The page has moved past the copy-command screen.
             copyFallback = false;
             reevaluate();
             return present(await readStatus(path));
@@ -984,10 +918,9 @@ export function startStartServer(
           ),
         );
       case "start.folder.pick":
-        // Not queued: the dialog waits on the user for as long as they
-        // like, and it reads and changes nothing on the server, so it must
-        // not hold up other requests. A second request while one is open
-        // shares it rather than opening a second dialog.
+        // not queued: the dialog waits on the user as long as they like and
+        // changes nothing on the server, so it must not hold up other requests;
+        // a second request while one is open shares it
         return respond(
           await pickFolder(request.payload?.purpose ?? "import"),
         );
@@ -1031,7 +964,6 @@ export function startStartServer(
           }
         }
       }
-      // Only a socket that opened was counted.
       if (opened.delete(socket)) reevaluate();
     };
     socket.onmessage = (message) => {

@@ -22,7 +22,6 @@ import { hasBareImport } from "./extension_project.ts";
 import { scanImportSites } from "./import_sites.ts";
 import { isBareSpecifier } from "./specifier.ts";
 
-/** The bare names `source` imports, unique, in source order. */
 function bareImports(source: string): string[] {
   return [
     ...new Set(
@@ -194,8 +193,6 @@ export { foo } from "../shared.ts";
   assertEquals(hasBareImport(source), false);
 });
 
-// --- extractBareSpecifierNames unit tests ---
-
 Deno.test("bareImports: returns bare specifier names", () => {
   assertEquals(
     bareImports('import { z } from "zod";'),
@@ -289,8 +286,6 @@ Deno.test("bareImports: handles re-exports", () => {
   );
 });
 
-// --- comment stripping regression tests (swamp-club#602) ---
-
 Deno.test("bareImports: ignores quoted phrases in single-line comments", () => {
   const source = `import { z } from "npm:zod@4";
 
@@ -331,8 +326,6 @@ export function get() { return fetch(url); }
 `;
   assertEquals(bareImports(source), []);
 });
-
-// --- string-literal false-positive regression tests (swamp-club#657) ---
 
 Deno.test("bareImports: ignores from-pattern in template literal", () => {
   const source = `export function getAdvice(mode: string): string {
@@ -416,11 +409,7 @@ export function check() {
   assertEquals(hasBareImport(source), false);
 });
 
-// --- generated-code false-positive regression tests (swamp-club#1490) ---
-
 Deno.test("bareImports: ignores an interpolated specifier in generated code", () => {
-  // The reported shape: an eval script built as a template literal, whose
-  // second import resolves to a valid npm: specifier only at runtime.
   const source = `export function buildScript(pkg: string): string {
   return \`
 import * as modeling from "npm:@jscad/modeling@2.12.0";
@@ -509,7 +498,6 @@ Deno.test("scanImportSites: an unterminated template does not parse", () => {
   const source = `const broken = \`unterminated
 import { z } from "zod";
 `;
-  // Not read as text: push refuses the module, the loader reads no imports.
   assertEquals(scanImportSites(source), null);
 });
 

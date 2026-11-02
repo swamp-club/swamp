@@ -43,7 +43,6 @@ Deno.test("isSupervisorFor: the marker and exactly this database, whatever the b
     ),
     true,
   );
-  // Another database whose path ends with this one's.
   assertEquals(
     isSupervisorFor(
       `swamp ${SUPERVISOR_MARKER} --db /x${DB} --private-root /p`,

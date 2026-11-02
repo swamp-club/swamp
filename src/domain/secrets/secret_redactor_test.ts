@@ -64,7 +64,6 @@ Deno.test("SecretRedactor", async (t) => {
   await t.step("JSON-escaped variants are redacted", () => {
     const redactor = new SecretRedactor();
     redactor.addSecret('value with "quotes" inside');
-    // The JSON-escaped version should also be redacted
     assertEquals(
       redactor.redact('data: value with \\"quotes\\" inside end'),
       "data: *** end",
@@ -149,7 +148,6 @@ Deno.test("SecretRedactor.maskSentinelsOf: masks every sentinel the run issued b
   const registry = new SecretBagRegistry();
   const redactor = new SecretRedactor();
   redactor.maskSentinelsOf(registry);
-  // An empty registry masks nothing yet.
   assertEquals(redactor.hasSecrets, false);
   const bag = new VaultSecretBag(registry);
   const vault = bag.addSecret({ vaultName: "v", key: "k" }, "loc");
@@ -160,7 +158,6 @@ Deno.test("SecretRedactor.maskSentinelsOf: masks every sentinel the run issued b
     redactor.redact(`a ${vault} b ${data} c ${other}`),
     `a *** b *** c ${other}`,
   );
-  // Values and sentinels are masked together.
   redactor.addSecret("hunter2-long");
   assertEquals(redactor.redact(`${vault}=hunter2-long`), "***=***");
   assertEquals(redactor.redact("nothing here"), "nothing here");

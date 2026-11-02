@@ -38,11 +38,8 @@ import { ChunkStore } from "./chunk_store.ts";
 import type { CommitStore } from "./commit_store.ts";
 
 const HOUR = 60 * 60 * 1000;
-/** The collector's now in every test. */
 const NOW = new Date("2026-10-11T12:00:00.000Z");
-/** Older than the default grace period. */
 const OLD = new Date(NOW.getTime() - DEFAULT_CHUNK_GRACE_MS - HOUR);
-/** Within the default grace period. */
 const FRESH = new Date(NOW.getTime() - HOUR);
 
 function sha256Hex(bytes: Uint8Array): string {
@@ -53,15 +50,10 @@ function bytesOf(text: string): Uint8Array {
   return new TextEncoder().encode(text);
 }
 
-/**
- * `storage/1` in memory with a `lastModified` per chunk, set by `put` and
- * `touch` from `clock`. `onListed` runs after the listing yields a chunk.
- */
 class AgedStorage implements DatastoreStorage {
   readonly contract = "storage/1" as const;
   readonly chunks = new Map<string, { bytes: Uint8Array; at: Date }>();
   readonly deleted: string[] = [];
-  /** Each listing, read and delete, in order. */
   readonly events: string[] = [];
   clock = () => NOW;
   onListed: (sha256: string) => Promise<void> | void = () => {};
@@ -70,7 +62,6 @@ class AgedStorage implements DatastoreStorage {
     return { maxChunkBytes: 1024, touch: true };
   }
 
-  /** Stores `bytes` under their digest, last modified at `at`. */
   seed(namespace: string, text: string, at: Date): string {
     const bytes = bytesOf(text);
     const sha256 = sha256Hex(bytes);
@@ -78,7 +69,6 @@ class AgedStorage implements DatastoreStorage {
     return sha256;
   }
 
-  /** Stores `bytes` under a key they do not hash to. */
   seedDamaged(namespace: string, sha256: string, at: Date): void {
     this.chunks.set(`${namespace}/${sha256}`, { bytes: bytesOf("rot"), at });
   }
@@ -154,10 +144,9 @@ class AgedStorage implements DatastoreStorage {
 }
 
 /**
- * {@link AgedStorage} that moves chunks aside and syncs their directories,
- * as the filesystem storage does (swamp-club#3617). `beforeMove` runs
- * before a chunk is moved aside, `beforeRead` before its moved-aside bytes
- * are read.
+ * AgedStorage that moves chunks aside and syncs their directories, as the
+ * filesystem storage does; beforeMove runs before a chunk is moved aside,
+ * beforeRead before its moved-aside bytes are read
  */
 class QuarantineStorage extends AgedStorage
   implements ChunkQuarantine, ChunkDirectorySync {
@@ -218,10 +207,6 @@ class QuarantineStorage extends AgedStorage
   }
 }
 
-/**
- * The commit log's chunk index, by commit namespace. `afterLookup` runs
- * after each lookup has computed its answer, before the collector sees it.
- */
 class FakeRefs implements Pick<CommitStore, "referencedChunks"> {
   readonly refs = new Map<string, Set<string>>();
   readonly lookups: { namespace: string; count: number }[] = [];
@@ -302,7 +287,6 @@ Deno.test('ChunkCollector.collect: the unnamespaced datastore sweeps _default ag
   assertEquals(report.namespace, "_default");
   assertEquals(storage.stored("_default"), [named]);
   assertEquals(storage.stored("acme"), [other]);
-  // The batch's check, then the re-check of what it deleted.
   assertEquals(refs.lookups.map((l) => l.namespace), ["", ""]);
 });
 
@@ -316,7 +300,6 @@ Deno.test("ChunkCollector.collect: checks references and deletes a batch at a ti
 
   assertEquals(report.deleted, total);
   assertEquals(storage.stored("acme"), []);
-  // Each batch is checked, then what it deleted is checked again.
   assertEquals(refs.lookups.map((l) => l.count), [
     CHUNK_COLLECTION_BATCH,
     CHUNK_COLLECTION_BATCH,
@@ -449,7 +432,6 @@ Deno.test("ChunkCollector.collect: a sweep aborted between deletes still re-chec
     collector(storage, refs).collect(ACME, { signal: controller.signal })
   );
 
-  // The first chunk was deleted and put back; the second was never reached.
   assertEquals(storage.stored("acme"), [first, second].sort());
   assertEquals(storage.deleted.length, 1);
 });
@@ -464,7 +446,6 @@ Deno.test("ChunkCollector.collect: candidates past the read budget are kept, nev
     signal,
   });
 
-  // 10 + 10 leaves 5 of the budget, so a third candidate is read too.
   assertEquals([report.deleted, report.keptOverBudget], [3, 2]);
   assertEquals(storage.stored("acme").length, 2);
   const none = await collector(storage, refs).collect(ACME, {
@@ -599,7 +580,7 @@ Deno.test("ChunkCollector.collect: a damaged chunk is moved aside, hashed again 
   assertEquals(storage.deleted, [rotten]);
   assertEquals(storage.syncs, [], "nothing put back, nothing synced");
   assertEquals(report.damaged, [{ sha256: rotten, referenced: false }]);
-  // The report's shape is unchanged (datastore gc's json keys).
+  // the report keeps the key set that datastore gc's json output exposes
   assertEquals(Object.keys(report).sort(), [
     "damaged",
     "deleted",
@@ -649,7 +630,6 @@ Deno.test("ChunkCollector.collect: verifying starts at verifyFrom, then wraps ro
   const refs = new FakeRefs();
   const hashes: string[] = [];
   for (let i = 0; i < 12; i++) {
-    // Ten bytes each.
     hashes.push(
       storage.seed("acme", `chunk-${String(i).padStart(4, "0")}`, FRESH),
     );
@@ -665,7 +645,6 @@ Deno.test("ChunkCollector.collect: verifying starts at verifyFrom, then wraps ro
   const after = hashes.filter((sha256) => sha256 >= from);
   const before = hashes.filter((sha256) => sha256 < from);
 
-  // A budget for the chunks from the prefix on only.
   await collector(storage, refs).collect(ACME, {
     verifyBytes: after.length * 10,
     verifyFrom: from,
@@ -674,7 +653,6 @@ Deno.test("ChunkCollector.collect: verifying starts at verifyFrom, then wraps ro
   assertEquals(read, after);
   assertEquals(storage.events.filter((e) => e === "list").length, 2);
 
-  // A budget for every chunk: the rest follow, from a second listing.
   read.length = 0;
   storage.events.length = 0;
   const report = await collector(storage, refs).collect(ACME, {
@@ -709,7 +687,6 @@ Deno.test("ChunkCollector.collect: verifies chunks only until the byte budget is
     verifyBytes: 25,
     signal,
   });
-  // 10 + 10 leaves 5 of the budget, so the third chunk is read too.
   assertEquals(some.verified, 3);
 });
 
@@ -806,7 +783,6 @@ Deno.test("ChunkCollector.collect: marks the sweep in progress with a heartbeat 
     end: () => Promise.resolve(void calls.push("end")),
   };
   await collector(storage, refs, { sweep }).collect(ACME, { signal });
-  // Begun first, ended last, and a heartbeat for each of the two batches.
   assertEquals(calls[0], "begin");
   assertEquals(calls.at(-1), "end");
   assertEquals(calls.filter((call) => call === "heartbeat").length >= 2, true);
@@ -928,7 +904,6 @@ Deno.test("ChunkCollector.collect: each batch runs inside the sweep's batch, fro
       },
     },
   }).collect(ACME, { signal });
-  // The reference check, the delete, and the re-check after it.
   assertEquals(events, [
     "lookup in batch",
     "delete in batch",

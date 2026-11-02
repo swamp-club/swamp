@@ -26,7 +26,6 @@ import {
 
 const SOURCES = ["inline", "sidecar", "generated"];
 
-/** Entries that look like the registry's, with some fields wrong. */
 const entryArb = fc.record({
   rule: fc.oneof(fc.string(), fc.constant(null), fc.integer()),
   file: fc.oneof(fc.string(), fc.constant(null)),

@@ -31,17 +31,12 @@ import type {
 import { withSpan } from "../infrastructure/tracing/mod.ts";
 import { withCapturedSpans } from "../infrastructure/tracing/span_test_helpers.ts";
 
-/**
- * In-memory spool that behaves like the real one: entries stay readable
- * until they are marked, and marking removes them.
- */
 class FakeRepository implements TelemetryRepository {
   entries: TelemetryEntry[] = [];
   quarantined: TelemetryEntry[] = [];
   prunedFlushedBefore: Date | null = null;
   prunedQuarantinedBefore: Date | null = null;
   deleteAllCalled = false;
-  /** Ids whose markFlushed reports failure, leaving them on disk. */
   unmarkableIds = new Set<string>();
 
   save(entry: TelemetryEntry): Promise<void> {
@@ -89,7 +84,6 @@ class FakeRepository implements TelemetryRepository {
   }
 }
 
-/** Sender that can be told to reject specific entries. */
 class FakeSender implements TelemetrySender {
   sent: string[][] = [];
   rejectIds = new Set<string>();
@@ -108,7 +102,6 @@ class FakeSender implements TelemetrySender {
     return Promise.resolve({ ok: true });
   }
 
-  /** Total individual entries sent, counting re-sends. */
   totalSent(): number {
     return this.sent.reduce((sum, batch) => sum + batch.length, 0);
   }
@@ -173,7 +166,6 @@ Deno.test("DaemonTelemetryFlushService: drains a backlog larger than one batch",
 });
 
 Deno.test("DaemonTelemetryFlushService: stop() performs a final flush", async () => {
-  // A draining daemon must not strand the runs it just finished.
   const repo = new FakeRepository();
   const sender = new FakeSender();
   repo.entries.push(entry("last-run"));
@@ -194,16 +186,12 @@ Deno.test("DaemonTelemetryFlushService: a send failure is swallowed and entries 
 
   await build(repo, sender).stop();
 
-  // Not thrown, and not lost: the entry is still there to retry.
   assertEquals(repo.entries.length, 1);
 });
 
 Deno.test("DaemonTelemetryFlushService: an entry that cannot be marked is not re-sent", async () => {
-  // markFlushed failing (a file lock, a read-only spool) leaves the entry on
-  // disk, so findUnflushed keeps returning it. Without the skip set this
-  // becomes a duplicate event every single tick, forever — permanent
-  // inflation of the counts this whole change exists to make correct.
-  // Asserted by counting sends across several flushes, not just one.
+  // markFlushed failing leaves the entry on disk, so without the skip set it
+  // would be re-sent every tick; counts sends across several flushes
   const repo = new FakeRepository();
   const sender = new FakeSender();
   repo.entries.push(entry("stuck"));
@@ -218,12 +206,9 @@ Deno.test("DaemonTelemetryFlushService: an entry that cannot be marked is not re
 });
 
 Deno.test("DaemonTelemetryFlushService: a poison entry is quarantined and the queue advances", async () => {
-  // findUnflushed returns the oldest entries first and a batch is only marked
-  // after the whole batch sends, so one permanently-rejected entry blocks
-  // every newer entry behind it. The daemon would keep flushing on schedule
-  // and still deliver nothing. This asserts PROGRESS — that the healthy
-  // entries behind the poison one actually ship — because head-of-line
-  // blocking throws no error and would otherwise look like success.
+  // one permanently rejected entry would block every newer entry behind it;
+  // asserts the healthy entries ship, since head-of-line blocking throws no
+  // error
   const repo = new FakeRepository();
   const sender = new FakeSender();
   repo.entries.push(entry("poison"));
@@ -233,7 +218,6 @@ Deno.test("DaemonTelemetryFlushService: a poison entry is quarantined and the qu
 
   const service = build(repo, sender);
 
-  // Enough passes to exhaust the isolation threshold, then drain.
   for (let i = 0; i < 10; i++) await service.stop();
 
   assertEquals(repo.quarantined.map((e) => e.id), ["poison"]);
@@ -243,9 +227,8 @@ Deno.test("DaemonTelemetryFlushService: a poison entry is quarantined and the qu
 });
 
 Deno.test("DaemonTelemetryFlushService: never applies the hard retention cap", async () => {
-  // The daemon prunes delivered and quarantined entries only. Applying the
-  // hard cap would destroy undelivered telemetry that is still perfectly
-  // sendable — the exact loss this issue exists to prevent.
+  // the daemon prunes only delivered and quarantined entries; the hard cap
+  // would destroy undelivered telemetry that is still sendable
   const repo = new FakeRepository();
   const sender = new FakeSender();
   const service = build(repo, sender);
@@ -256,10 +239,8 @@ Deno.test("DaemonTelemetryFlushService: never applies the hard retention cap", a
 });
 
 Deno.test("DaemonTelemetryFlushService: stop() awaits an in-flight timer drain before its own", async () => {
-  // Reproduces the race from swamp-club#1604: a timer-triggered drain is
-  // in progress when stop() is called. Without the fix, stop()'s #drain()
-  // returns immediately (guarded out) and stop() resolves while the drain
-  // is still running — shutdown proceeds before telemetry is delivered.
+  // a timer-triggered drain is in progress when stop() is called; stop() must
+  // wait for it rather than resolve while it still runs
   const repo = new FakeRepository();
   const sender = new FakeSender();
 
@@ -290,7 +271,6 @@ Deno.test("DaemonTelemetryFlushService: stop() awaits an in-flight timer drain b
 
   repo.entries.push(entry("during-drain"));
 
-  // stop() must NOT resolve while the in-flight drain is blocked.
   let stopDone = false;
   const stopPromise = service.stop().then(() => {
     stopDone = true;
@@ -348,7 +328,6 @@ Deno.test("DaemonTelemetryFlushService: a tick runs with no active span when sta
       try {
         await waitFor(() => seen.length >= 2, "two flush ticks");
       } finally {
-        // stop() runs a final drain under the caller's span; it is not a tick.
         recording = false;
         await service.stop();
       }

@@ -81,7 +81,6 @@ Deno.test("JsonTelemetryRepository.save creates directory structure and file", a
     const dirInfo = await Deno.stat(telemetryDir);
     assertEquals(dirInfo.isDirectory, true);
 
-    // Check that file was created
     const files: string[] = [];
     for await (const f of Deno.readDir(telemetryDir)) {
       files.push(f.name);
@@ -111,13 +110,11 @@ Deno.test("JsonTelemetryRepository.save creates correctly named file", async () 
 });
 
 Deno.test("JsonTelemetryRepository.save never throws on errors", async () => {
-  // Use a path that cannot be written to (non-existent parent of non-writable dir)
   const repo = new JsonTelemetryRepository(
     "/nonexistent/path/that/cannot/exist",
   );
   const entry = createTestEntry();
 
-  // Should not throw
   await repo.save(entry);
 });
 
@@ -138,7 +135,6 @@ Deno.test("JsonTelemetryRepository.findByDate returns entries for specific date"
 Deno.test("JsonTelemetryRepository.findByDate returns empty array if no files exist", async () => {
   await withTempDir(async (dir) => {
     const repo = new JsonTelemetryRepository(dir);
-    // Create the telemetry directory but don't add any files
     await Deno.mkdir(join(dir, ".swamp", "telemetry"), { recursive: true });
 
     const entries = await repo.findByDate(new Date("2024-01-01"));
@@ -161,14 +157,12 @@ Deno.test("JsonTelemetryRepository.findByDate skips unparseable JSON files", asy
     const telemetryDir = join(dir, ".swamp", "telemetry");
     await Deno.mkdir(telemetryDir, { recursive: true });
 
-    // Create a valid entry
     const validEntry = createTestEntry({
       id: "valid-entry-uuid",
       date: new Date("2024-04-15T10:00:00Z"),
     });
     await repo.save(validEntry);
 
-    // Create an invalid JSON file
     const invalidFilename = "telemetry-2024-04-15-invalid-entry-uuid.json";
     await Deno.writeTextFile(
       join(telemetryDir, invalidFilename),
@@ -215,7 +209,6 @@ Deno.test("JsonTelemetryRepository.findByDateRange includes both boundary dates"
   await withTempDir(async (dir) => {
     const repo = new JsonTelemetryRepository(dir);
 
-    // Use noon UTC to avoid timezone edge cases with file naming
     const startEntry = createTestEntry({
       id: "start-entry-uuid",
       date: new Date("2024-06-01T12:00:00Z"),
@@ -243,7 +236,6 @@ Deno.test("JsonTelemetryRepository.deleteOlderThan deletes flushed files older t
   await withTempDir(async (dir) => {
     const repo = new JsonTelemetryRepository(dir);
 
-    // Create an old flushed entry and a recent entry
     const oldEntry = createTestEntry({
       id: "old-entry-uuid",
       date: new Date("2024-01-01T10:00:00Z"),
@@ -257,11 +249,9 @@ Deno.test("JsonTelemetryRepository.deleteOlderThan deletes flushed files older t
     await repo.save(recentEntry);
     await repo.markFlushed(oldEntry, true);
 
-    // Delete flushed entries older than June 1st
     const deletedCount = await repo.deleteOlderThan(new Date("2024-06-01"));
     assertEquals(deletedCount, 1);
 
-    // Verify recent entry remains
     const recentEntries = await repo.findByDate(new Date("2024-06-15"));
     assertEquals(recentEntries.length, 1);
   });
@@ -271,12 +261,10 @@ Deno.test("JsonTelemetryRepository.deleteOlderThan keeps files on/after cutoff d
   await withTempDir(async (dir) => {
     const repo = new JsonTelemetryRepository(dir);
 
-    // Create entry on the cutoff date
     const cutoffEntry = createTestEntry({
       id: "cutoff-entry-uuid",
       date: new Date("2024-07-01T10:00:00Z"),
     });
-    // Create entry after the cutoff date
     const afterEntry = createTestEntry({
       id: "after-entry-uuid",
       date: new Date("2024-07-02T10:00:00Z"),
@@ -285,11 +273,9 @@ Deno.test("JsonTelemetryRepository.deleteOlderThan keeps files on/after cutoff d
     await repo.save(cutoffEntry);
     await repo.save(afterEntry);
 
-    // Delete entries older than July 1st - should keep both
     const deletedCount = await repo.deleteOlderThan(new Date("2024-07-01"));
     assertEquals(deletedCount, 0);
 
-    // Verify both entries still exist
     const cutoffEntries = await repo.findByDate(new Date("2024-07-01"));
     assertEquals(cutoffEntries.length, 1);
 
@@ -309,11 +295,9 @@ Deno.test("JsonTelemetryRepository.deleteOlderThan skips unflushed entries", asy
 
     await repo.save(oldUnflushed);
 
-    // deleteOlderThan should skip unflushed entries
     const deletedCount = await repo.deleteOlderThan(new Date("2024-06-01"));
     assertEquals(deletedCount, 0);
 
-    // Unflushed entry should still exist
     const remaining = await repo.findUnflushed(25);
     assertEquals(remaining.length, 1);
     assertEquals(remaining[0].id, "old-unflushed-uuid");
@@ -323,7 +307,6 @@ Deno.test("JsonTelemetryRepository.deleteOlderThan skips unflushed entries", asy
 Deno.test("JsonTelemetryRepository.deleteOlderThan returns 0 if directory doesn't exist", async () => {
   await withTempDir(async (dir) => {
     const repo = new JsonTelemetryRepository(dir);
-    // Don't create any files or directories
 
     const deletedCount = await repo.deleteOlderThan(new Date("2024-06-01"));
     assertEquals(deletedCount, 0);
@@ -334,7 +317,6 @@ Deno.test("JsonTelemetryRepository.findUnflushed returns only unflushed entries"
   await withTempDir(async (dir) => {
     const repo = new JsonTelemetryRepository(dir);
 
-    // Create two entries
     const entry1 = createTestEntry({
       id: "unflushed-uuid-1",
       date: new Date("2024-03-10T10:00:00Z"),
@@ -346,7 +328,6 @@ Deno.test("JsonTelemetryRepository.findUnflushed returns only unflushed entries"
     await repo.save(entry1);
     await repo.save(entry2);
 
-    // Mark entry1 as flushed with keepFlushed so .flushed.json remains
     await repo.markFlushed(entry1, true);
 
     const unflushed = await repo.findUnflushed(25);
@@ -367,7 +348,6 @@ Deno.test("JsonTelemetryRepository.findUnflushed returns oldest first", async ()
       id: "older-uuid",
       date: new Date("2024-03-10T10:00:00Z"),
     });
-    // Save in reverse order to test sorting
     await repo.save(newer);
     await repo.save(older);
 
@@ -392,7 +372,6 @@ Deno.test("JsonTelemetryRepository.findUnflushed respects limit", async () => {
 
     const unflushed = await repo.findUnflushed(3);
     assertEquals(unflushed.length, 3);
-    // Should be the 3 oldest
     assertEquals(unflushed[0].id, "limit-uuid-0");
     assertEquals(unflushed[1].id, "limit-uuid-1");
     assertEquals(unflushed[2].id, "limit-uuid-2");
@@ -422,7 +401,6 @@ Deno.test("JsonTelemetryRepository.findUnflushed with an endpoint returns entrie
     assertEquals(forA.map((e) => e.id), ["stamped-a", "legacy"]);
     assertEquals(forA[0].endpoint, "https://a.example");
 
-    // Without an endpoint the repository does not filter.
     const all = await repo.findUnflushed(25);
     assertEquals(all.length, 3);
   });
@@ -510,7 +488,6 @@ Deno.test("JsonTelemetryRepository.markFlushed does not throw on non-existent fi
       id: "nonexistent-uuid",
       date: new Date("2024-03-10T10:00:00Z"),
     });
-    // Should not throw
     await repo.markFlushed(entry);
   });
 });
@@ -527,7 +504,6 @@ Deno.test("JsonTelemetryRepository.markFlushed reports success and failure", asy
     await repo.save(entry);
 
     assertEquals(await repo.markFlushed(entry), true);
-    // Already gone — the second attempt cannot mark anything.
     assertEquals(await repo.markFlushed(entry), false);
   });
 });
@@ -595,8 +571,6 @@ Deno.test("JsonTelemetryRepository.deleteQuarantinedOlderThan removes only aged 
     const telemetryDir = join(dir, ".swamp", "telemetry");
     const files: string[] = [];
     for await (const f of Deno.readDir(telemetryDir)) files.push(f.name);
-    // The aged quarantined entry is gone; the recent one and the untouched
-    // unflushed entry both survive.
     assertEquals(
       files.includes("telemetry-2024-01-01-old-uuid.quarantined.json"),
       false,
@@ -633,14 +607,11 @@ Deno.test("JsonTelemetryRepository.deleteOlderThan preserves unflushed entries w
     await repo.save(flushedEntry);
     await repo.save(recentEntry);
 
-    // Mark one as flushed with keepFlushed to create .flushed.json
     await repo.markFlushed(flushedEntry, true);
 
-    // deleteOlderThan only removes flushed entries
     const deletedCount = await repo.deleteOlderThan(new Date("2024-06-01"));
     assertEquals(deletedCount, 1);
 
-    // Unflushed old entry and recent entry should remain
     const telemetryDir = join(dir, ".swamp", "telemetry");
     const files: string[] = [];
     for await (const f of Deno.readDir(telemetryDir)) {
@@ -675,11 +646,9 @@ Deno.test("JsonTelemetryRepository.deleteAllOlderThan removes both flushed and u
     await repo.save(recentEntry);
     await repo.markFlushed(flushedEntry, true);
 
-    // deleteAllOlderThan removes everything regardless of flush status
     const deletedCount = await repo.deleteAllOlderThan(new Date("2024-06-01"));
     assertEquals(deletedCount, 2);
 
-    // Only recent entry should remain
     const telemetryDir = join(dir, ".swamp", "telemetry");
     const files: string[] = [];
     for await (const f of Deno.readDir(telemetryDir)) {
@@ -694,17 +663,14 @@ Deno.test("JsonTelemetryRepository.findByDateRange uses UTC dates to match filen
   await withTempDir(async (dir) => {
     const repo = new JsonTelemetryRepository(dir);
 
-    // Entry saved at 00:30 UTC on May 1st — file is named telemetry-2024-05-01-*.json
-    // In UTC+1 (e.g. Ireland), local time is 01:30 on May 1st. Before the fix,
-    // setHours(0,0,0,0) would produce midnight local = April 30 23:00 UTC,
-    // so toISOString() would yield "2024-04-30" and miss this file.
+    // saved at 00:30 UTC: a local-time midnight in UTC+1 would name the
+    // previous day's file and miss this one
     const entry = createTestEntry({
       id: "utc-edge-uuid",
       date: new Date("2024-05-01T00:30:00Z"),
     });
     await repo.save(entry);
 
-    // Query range that should include May 1st
     const entries = await repo.findByDateRange(
       new Date("2024-05-01T00:30:00Z"),
       new Date("2024-05-01T23:30:00Z"),
@@ -755,9 +721,8 @@ Deno.test("JsonTelemetryRepository round-trips invocationContext (with detected 
 });
 
 Deno.test("JsonTelemetryRepository round-trips invocationContext (legacy opt-out)", async () => {
-  // configuredAiTools=[] is distinct from undefined and must survive intact
-  // — the repo previously normalised legacy `tool: none` to an empty tools
-  // array, and the breakdown queries depend on that signal.
+  // configuredAiTools=[] is distinct from undefined and must survive intact;
+  // the breakdown queries depend on that signal
   await withTempDir(async (dir) => {
     const repo = new JsonTelemetryRepository(dir);
     const entry = TelemetryEntry.create({
@@ -832,9 +797,6 @@ Deno.test("JsonTelemetryRepository round-trips parentInvocationId and workflowCo
 });
 
 Deno.test("JsonTelemetryRepository decodes legacy entries without parentInvocationId or workflowContext", async () => {
-  // Backward-compat: a fixture written before the new fields existed
-  // must round-trip through findByDate without error and surface
-  // undefined for the missing fields.
   await withTempDir(async (dir) => {
     const repo = new JsonTelemetryRepository(dir);
     const entry = TelemetryEntry.create({
@@ -852,7 +814,6 @@ Deno.test("JsonTelemetryRepository decodes legacy entries without parentInvocati
       swampVersion: "1.0.0",
       denoVersion: "1.40.0",
       platform: "linux",
-      // intentionally no parentInvocationId / workflowContext
     });
 
     await repo.save(entry);

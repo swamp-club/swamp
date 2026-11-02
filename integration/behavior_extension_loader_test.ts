@@ -17,11 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// Loading behavior-spelled extensions (swamp-club#3338): export const
-// behavior is loaded exactly as export const model, extensions/behaviors/
-// loads beside extensions/models/ at the same local tier, and a pulled
-// extension whose bundle keeps export const behavior loads like any other.
-
 import {
   assert,
   assertEquals,
@@ -51,7 +46,6 @@ const testDenoRuntime: DenoRuntime = {
   getDenoEnv: () => Deno.env.toObject(),
 };
 
-/** A model source spelled with `exportName`, whose `run` records `marker`. */
 function modelSource(
   exportName: "model" | "behavior",
   type: string,
@@ -244,7 +238,6 @@ Deno.test("loader: a model file that also exports an unrelated behavior binding 
     const type = uniqueType("unrelated");
     await Deno.writeTextFile(
       join(modelsDir, "m.ts"),
-      // A config object that happens to have a type, but no methods.
       'export const behavior = { type: "backoff", retries: 3 };\n' +
         modelSource("model", type),
     );
@@ -261,9 +254,8 @@ Deno.test("loader: a model file that also exports an unrelated behavior binding 
 });
 
 Deno.test("loader: a helper file whose only export is an unrelated behavior config is skipped as before", async () => {
-  // Before the alias, a file with no model export was a helper: skipped,
-  // never reported as failed. A lone `behavior = { type: ... }` without
-  // methods must stay that way.
+  // a lone behavior config without methods is a helper file: skipped, never
+  // reported as failed
   await withRepo(async ({ modelsDir, loader }) => {
     const type = uniqueType("beside-helper");
     await Deno.writeTextFile(
@@ -313,7 +305,6 @@ Deno.test("loader: a malformed type in one file does not abort the duplicate che
       'export const model = { type: "  ", version: "2026.01.01.1", methods: {} };\n',
     );
     try {
-      // The load reaches the files instead of throwing from the check.
       await loader.load(modelsDir, {
         localDirs: [behaviorsDir],
         skipAlreadyRegistered: true,
@@ -360,11 +351,6 @@ Deno.test({
   },
 });
 
-/**
- * A pulled extension as an install lays it out: the archive's models/
- * sources under the pulled root and its bundle, exported as the author
- * wrote it, in the bundle cache.
- */
 async function writePulled(
   repoDir: string,
   bundle: string,

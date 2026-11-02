@@ -17,12 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Use-case sync characterization, access, token, worker and datastore rows
- * (swamp-club#2860). See `usecase_sync_fixtures.ts` for how each row runs
- * and what is observed.
- */
-
 import "../src/domain/models/models.ts";
 import { assertEquals } from "@std/assert";
 import { queryGrants } from "../src/cli/commands/access_grant.ts";
@@ -52,7 +46,6 @@ const json = (repos: RowRepos) => ["--repo-dir", repos.repoA, "--json"];
 
 const HOUR_MS = 60 * 60_000;
 
-/** Creates an allow grant through the CLI and returns its id. */
 async function createGrant(repos: RowRepos): Promise<string> {
   await runCli({
     args: [
@@ -79,8 +72,8 @@ async function createGrant(repos: RowRepos): Promise<string> {
 }
 
 /**
- * The control-plane vault the token rows store into. The CLI creates it
- * itself; serve creates it at startup, so a serve row creates it first.
+ * the CLI creates the control-plane vault itself but serve creates it at
+ * startup, so a serve row creates it first
  */
 async function controlPlaneVaultForServe(
   repos: RowRepos,
@@ -91,10 +84,6 @@ async function controlPlaneVaultForServe(
   }
 }
 
-/**
- * A disconnected worker last seen a day ago, saved as the worker model's
- * state data, so a one-minute grace period prunes it.
- */
 async function staleWorker(repos: RowRepos): Promise<void> {
   const definition = Definition.create({
     name: "worker-w1",
@@ -147,10 +136,7 @@ const ROWS: AnyRow[] = [
   row({
     name: "access grant create",
     rootUnit: { cli: true },
-    // Recorded before the CLI adopted a root unit (swamp-club#3033).
     syncOrder: { cli: ["push"] },
-    // CLI bulk mark outside any use case, staged through the command's root
-    // unit (swamp-club#3033).
     outsideUseCase: { cli: ["markDirty(bulk)"] },
     cli: (repos) => ({
       args: [
@@ -166,53 +152,35 @@ const ROWS: AnyRow[] = [
         ...json(repos),
       ],
     }),
-    // No serve handler: a serve client creates a grant by running the
-    // grant model's `create` method (`model.method.run`), which is a method
-    // run, not this use case.
     serve: null,
   }),
   row({
     name: "access grant revoke",
     rootUnit: { cli: true },
-    // Recorded before the CLI adopted a root unit (swamp-club#3033).
     syncOrder: { cli: ["pull", "prepare", "commit", "release"] },
     seed: createGrant,
     cli: (repos, grantId) => ({
       args: ["access", "grant", "revoke", grantId, ...json(repos)],
     }),
-    // No serve handler: revoking over serve is a `model.method.run` of the
-    // grant model's `revoke` method.
     serve: null,
   }),
   row({
     name: "access group create",
     rootUnit: { cli: true },
-    // Recorded before the CLI adopted a root unit (swamp-club#3033).
     syncOrder: { cli: ["push"] },
-    // CLI bulk mark outside any use case, staged through the command's root
-    // unit (swamp-club#3033).
     outsideUseCase: { cli: ["markDirty(bulk)"] },
     cli: (repos) => ({
       args: ["access", "group", "create", "ops", ...json(repos)],
     }),
-    // No serve handler: a group is created over serve with
-    // `model.method.run` on the group model.
     serve: null,
   }),
   row({
     name: "access token mint",
-    // The CLI and serve each run in a root unit of work
-    // (swamp-club#3033, swamp-club#3034); each syncOrder was recorded
-    // before its composition adopted the root.
     rootUnit: { cli: true, serve: true },
-    // The pull and the push both run under the token's name lock, whose
-    // release is the CLI's `release` (swamp-club#2482).
     syncOrder: {
       cli: ["pull", "push", "release"],
       serve: ["pull", "push", "release"],
     },
-    // CLI bulk mark outside any use case, staged through the command's root
-    // unit (swamp-club#3033).
     outsideUseCase: { cli: ["markDirty(bulk)"] },
     seed: controlPlaneVaultForServe,
     cli: (repos) => ({
@@ -238,12 +206,7 @@ const ROWS: AnyRow[] = [
   }),
   row({
     name: "access token revoke",
-    // The CLI and serve each run in a root unit of work
-    // (swamp-club#3033, swamp-club#3034); each syncOrder was recorded
-    // before its composition adopted the root.
     rootUnit: { cli: true, serve: true },
-    // Serve pulls under the token's name lock before it writes
-    // (swamp-club#2482).
     syncOrder: {
       cli: ["pull", "prepare", "commit", "release"],
       serve: ["pull", "push", "release"],
@@ -269,7 +232,6 @@ const ROWS: AnyRow[] = [
   row({
     name: "access token rotate",
     rootUnit: { cli: true },
-    // Recorded before the CLI adopted a root unit (swamp-club#3033).
     syncOrder: { cli: ["pull", "prepare", "commit", "release"] },
     seed: async (repos) => {
       await runCli({
@@ -287,18 +249,12 @@ const ROWS: AnyRow[] = [
     cli: (repos) => ({
       args: ["access", "token", "rotate", "tok1", ...json(repos)],
     }),
-    // The serve side of this use case belongs to swamp-club#3034.
     serve: null,
   }),
   row({
     name: "worker token create",
-    // The CLI and serve each run in a root unit of work
-    // (swamp-club#3033, swamp-club#3034); each syncOrder was recorded
-    // before its composition adopted the root.
     rootUnit: { cli: true, serve: true },
     syncOrder: { cli: ["push"], serve: ["push", "release"] },
-    // CLI bulk mark outside any use case, staged through the command's root
-    // unit (swamp-club#3033).
     outsideUseCase: { cli: ["markDirty(bulk)"] },
     seed: controlPlaneVaultForServe,
     cli: (repos) => ({
@@ -319,16 +275,11 @@ const ROWS: AnyRow[] = [
   }),
   row({
     name: "worker token revoke",
-    // The CLI and serve each run in a root unit of work
-    // (swamp-club#3033, swamp-club#3034); each syncOrder was recorded
-    // before its composition adopted the root.
     rootUnit: { cli: true, serve: true },
     syncOrder: {
       cli: ["pull", "push", "prepare", "commit", "release"],
       serve: ["push", "release"],
     },
-    // CLI bulk mark outside any use case, staged through the command's root
-    // unit (swamp-club#3033).
     outsideUseCase: { cli: ["markDirty(bulk)"] },
     seed: async (repos) => {
       await runCli({
@@ -350,9 +301,6 @@ const ROWS: AnyRow[] = [
   }),
   row({
     name: "worker prune",
-    // The CLI and serve each run in a root unit of work
-    // (swamp-club#3033, swamp-club#3034); each syncOrder was recorded
-    // before its composition adopted the root.
     rootUnit: { cli: true, serve: true },
     syncOrder: { cli: ["push"], serve: ["push", "release"] },
     seed: staleWorker,
@@ -374,13 +322,7 @@ const ROWS: AnyRow[] = [
   row({
     name: "datastore config migrate",
     rootUnit: { cli: true },
-    // Recorded before the CLI adopted a root unit (swamp-club#3033). The
-    // config pull, then the migrated files' checkpoint push, then the
-    // sentinel's push (swamp-club#2621, swamp-club#3117).
     syncOrder: { cli: ["pull", "push", "push"] },
-    // CLI bulk mark outside any use case, staged through the command's root
-    // unit (swamp-club#3033), and the sentinel's mark, staged after the
-    // migrated files are pushed (swamp-club#3117).
     outsideUseCase: {
       cli: [
         "markDirty(bulk)",
@@ -396,8 +338,6 @@ const ROWS: AnyRow[] = [
     cli: (repos) => ({
       args: ["datastore", "config", "migrate", ...json(repos)],
     }),
-    // No serve handler: migrating a repo to managed config is a CLI-only
-    // operation.
     serve: null,
     verify: async (repos) => {
       assertEquals(await managedConfigMarked(repos), true);
@@ -412,7 +352,6 @@ const ROWS: AnyRow[] = [
     cli: (repos) => ({
       args: ["datastore", "config", "migrate", ...json(repos)],
     }),
-    // No serve handler, as above.
     serve: null,
     verify: async (repos) => {
       assertEquals(await managedConfigMarked(repos), false);
@@ -421,10 +360,8 @@ const ROWS: AnyRow[] = [
 ];
 
 /**
- * Today's behaviour, one entry per row. Every divergence and gap noted
- * below was deliberately left unfixed: datastore refactor phase 2 moves
- * unit-of-work ownership into the use cases and is expected to change these
- * rows, and should update this table as it does.
+ * pins current behaviour per row, divergences and gaps included; update the
+ * table when unit-of-work ownership moves into the use cases
  */
 const EXPECTED: Record<string, PinnedRow> = {
   "access token rotate": {
@@ -465,9 +402,6 @@ const EXPECTED: Record<string, PinnedRow> = {
     serve: null,
   },
   "access grant create": {
-    // A first create has no definition to lock, so the command adds a bare
-    // markDirty after the method's path marks and pushes the whole cache.
-    // Datastore refactor phase 2 is expected to change this.
     cli: {
       "ops": [
         "markDirty auto-definitions/swamp/grant/grant-<suffix>.yaml",
@@ -494,14 +428,9 @@ const EXPECTED: Record<string, PinnedRow> = {
         "changed": [],
       },
     },
-    // No serve handler: over serve a grant is created by running the grant
-    // model's create method (model.method.run), a method run rather than
-    // this use case.
     serve: null,
   },
   "access grant revoke": {
-    // The grant's definition exists, so the model-lock flush pushes two-phase;
-    // no bare mark.
     cli: {
       "ops": [
         "pull[0]",
@@ -524,13 +453,9 @@ const EXPECTED: Record<string, PinnedRow> = {
         "changed": ["data/swamp/grant/<id>/grant-main/latest"],
       },
     },
-    // No serve handler: revoking over serve is a model.method.run of the
-    // grant model's revoke method.
     serve: null,
   },
   "access group create": {
-    // As access grant create: path marks, then a bare markDirty. Datastore
-    // refactor phase 2 is expected to change this.
     cli: {
       "ops": [
         "markDirty auto-definitions/swamp/group/ops.yaml",
@@ -557,17 +482,11 @@ const EXPECTED: Record<string, PinnedRow> = {
         "changed": [],
       },
     },
-    // No serve handler: a group is created over serve with model.method.run
-    // on the group model.
     serve: null,
   },
   "access token mint": {
-    // DIVERGENCE: the CLI adds a bare markDirty after the method's six path
-    // marks (access_token_mint.ts); serve pushes the same six paths without
-    // it. Datastore refactor phase 2 is expected to change this.
     cli: {
       "ops": [
-        // Pulled under the token's name lock (swamp-club#2482).
         "pull[0]",
         "markDirty auto-definitions/swamp/server-token/tok1.yaml",
         "markDirty auto-definitions/swamp/server-token/tok1.yaml",
@@ -605,7 +524,6 @@ const EXPECTED: Record<string, PinnedRow> = {
     },
     serve: {
       "ops": [
-        // Pulled under the token's name lock (swamp-club#2482).
         "pull[0]",
         "markDirty auto-definitions/swamp/server-token/tok1.yaml",
         "markDirty auto-definitions/swamp/server-token/tok1.yaml",
@@ -642,8 +560,6 @@ const EXPECTED: Record<string, PinnedRow> = {
     },
   },
   "access token revoke": {
-    // The CLI's lock flush pushes two-phase; serve pushes once. Datastore
-    // refactor phase 2 is expected to change this.
     cli: {
       "ops": [
         "pull[0]",
@@ -680,7 +596,6 @@ const EXPECTED: Record<string, PinnedRow> = {
     },
     serve: {
       "ops": [
-        // Pulled under the token's name lock (swamp-club#2482).
         "pull[0]",
         "markDirty definitions-evaluated/swamp/server-token/tok1.yaml",
         "markDirty definitions-evaluated/swamp/server-token/tok1.yaml",
@@ -714,9 +629,6 @@ const EXPECTED: Record<string, PinnedRow> = {
     },
   },
   "worker token create": {
-    // DIVERGENCE: a bare markDirty after the path marks
-    // (worker_token_create.ts); serve has none. Datastore refactor phase 2 is
-    // expected to change this.
     cli: {
       "ops": [
         "markDirty auto-definitions/swamp/enrollment-token/wt1.yaml",
@@ -790,9 +702,6 @@ const EXPECTED: Record<string, PinnedRow> = {
     },
   },
   "worker token revoke": {
-    // The CLI pushes twice: a bare-mark push from the command, then the model-
-    // lock flush's empty two-phase push. Serve pushes once. Datastore refactor
-    // phase 2 is expected to change this.
     cli: {
       "ops": [
         "pull[0]",
@@ -863,8 +772,6 @@ const EXPECTED: Record<string, PinnedRow> = {
     },
   },
   "worker prune": {
-    // The deletions' own marks drive the push, so the CLI deletes the pruned
-    // worker's state from the remote, as serve does (swamp-club#2513).
     cli: {
       "ops": [
         "markDirty data/swamp/worker/<id>/state-main/1",
@@ -907,11 +814,6 @@ const EXPECTED: Record<string, PinnedRow> = {
     },
   },
   "datastore config migrate": {
-    // The config tier is pulled first, so a migration another repo
-    // published is seen (swamp-club#2621). A bare markDirty uploads the
-    // migrated config; the marker file is written and pushed only after
-    // that push (swamp-club#3117). Datastore refactor phase 2 is expected to
-    // change this.
     cli: {
       "ops": [
         "pull[0]",
@@ -929,18 +831,15 @@ const EXPECTED: Record<string, PinnedRow> = {
         "changed": [],
       },
     },
-    // No serve handler: migrating a repo to managed config is CLI-only.
     serve: null,
   },
   "datastore config migrate (no configRefresh)": {
-    // Refused before anything is written or synced.
     cli: {
       "ops": [],
       "remote": { "added": [], "removed": [], "changed": [] },
       "error":
         'The datastore extension "@test/remote-<id>" does not support managed config sync yet. Update the extension to the latest version that supports the configRefresh capability before migrating.\n\nRefusing to migrate \u2014 a partial migration would leave config in the datastore that other instances cannot pull.',
     },
-    // No serve handler: CLI-only, as above.
     serve: null,
   },
 };

@@ -17,9 +17,8 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// The legacy unit of work is a pure pass-through to the mark hook: datastore
-// rework Phase 1 relies on it sending exactly the marks repositories send
-// today, in the same order and with the same arguments.
+// the legacy unit of work is a pure pass-through to the mark hook, sending the
+// same marks in the same order with the same arguments
 
 import { assertEquals, assertRejects, assertStrictEquals } from "@std/assert";
 import fc from "fast-check";
@@ -42,7 +41,6 @@ const arbChange: fc.Arbitrary<StagedChange> = fc.oneof(
   })),
 );
 
-/** The argument the mark hook receives for a change today. */
 function directMark(change: StagedChange): string | undefined {
   return change.kind === "bulk" ? undefined : change.path;
 }
@@ -102,7 +100,6 @@ Deno.test("createLegacyUnitOfWork: a hook rejection stops staging at exactly tha
 Deno.test("createLegacyUnitOfWork: across nested children, hook calls equal direct calls and the root records them all in order", async () => {
   await fc.assert(
     fc.asyncProperty(
-      // Each change is staged at a depth: 0 is the root, n its nth descendant.
       fc.array(fc.tuple(arbChange, fc.integer({ min: 0, max: 3 })), {
         maxLength: 30,
       }),

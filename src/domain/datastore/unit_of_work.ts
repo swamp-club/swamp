@@ -17,49 +17,12 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * The unit of work: the set of changes one business operation makes to the
- * datastore, and the point at which they become durable and visible to
- * other machines.
- *
- * The datastore rework (swamp-club#2865) moves swamp from "write a file,
- * mark it dirty, push later" to "commit the operation's changes through a
- * unit of work". It lands in phases:
- *
- * - **Phase 1.** Repositories stage each change into a unit of work before
- *   they write. The legacy adapter
- *   (`src/infrastructure/persistence/legacy_unit_of_work.ts`) turns every
- *   staged change into exactly the `markDirty` call the repository makes
- *   today, so behaviour does not change.
- * - **Phase 2.** Use cases open a unit of work per operation and commit it.
- *   Each CLI command or serve request runs in one root unit that pushes once
- *   when it ends; the use cases' units nest inside it as children that roll
- *   their changes up and never push. CLI commands and serve handlers stop
- *   marking and pushing themselves.
- * - **Phase 3.** A second adapter commits the staged changes to the datastore
- *   commit log. Each adapter binds the units it builds to the repository
- *   context they serve through {@link UnitOfWorkBinding} (swamp-club#3240).
- *
- * @module
- */
-
 import type { MarkDirtyHook } from "./datastore_sync_service.ts";
 import { UserError } from "../errors.ts";
 
 /**
- * One change a repository is about to make in the datastore.
- *
- * - `write`: the absolute path of a file or directory about to be created or
- *   changed; it exists after the operation.
- * - `remove`: the absolute path of a file or directory about to be removed;
- *   it is gone after the operation.
- * - `bulk`: a change that cannot be attributed to one path. `reason` is a
- *   short fixed string naming the operation (e.g. `"rename tombstone"`),
- *   for diagnostics only.
- *
- * Paths are absolute, as repositories hold them. Turning them into
- * cache-relative paths stays in the composition root's mark hook, so the
- * conversion rules live in one place.
+ * paths are absolute, as repositories hold them; conversion to cache-relative
+ * stays in the composition root's mark hook so the rules live in one place
  */
 export type StagedChange =
   | { readonly kind: "write"; readonly path: string }
@@ -67,101 +30,52 @@ export type StagedChange =
   | { readonly kind: "bulk"; readonly reason: string };
 
 /**
- * Collects the changes one business operation makes to the datastore and
- * decides when they become durable and visible to others.
- *
- * A unit of work lives for one operation. It is never kept for the life of
- * a process, so the list of staged changes is bounded by that operation.
- * It ends once, through {@link UnitOfWork.commit} or
- * {@link UnitOfWork.abandon}. Once ended it is spent: staging or ending it
- * again is a programming error, and a caller whose commit failed opens a new
- * unit of work.
+ * lives for one operation and ends once through commit or abandon; once spent,
+ * staging or ending again is a programming error, and a caller whose commit
+ * failed opens a new unit
  */
 export interface UnitOfWork {
   /**
-   * Records a change. Called before the write begins, so a crash mid-write
-   * still leaves the change recorded (`DatastoreSyncService.markDirty`
-   * rule 1). The change is recorded even when forwarding it rejects: the
-   * operation attempted it.
-   *
-   * Changes are ordered by when `stage` is called. Await each call before
-   * the write it announces and before staging the next change: the order of
-   * bulk and per-path changes is part of the contract.
+   * called before the write begins so a crash mid-write still leaves the change
+   * recorded; await each call before its write and the next stage, since order
+   * is part of the contract
    */
   stage(change: StagedChange): Promise<void>;
   /**
-   * Makes the staged changes durable and visible to others, once. It waits
-   * for any `stage` still in flight first, so no change is left behind. The
-   * unit is spent as soon as `commit` is called, whether or not it succeeds.
-   * Call it once the operation's writes have finished: it does not wait for
-   * a write that follows a resolved `stage`.
+   * waits for in-flight stage calls; the unit is spent once called, success or
+   * not; call after the operation's writes finish, as it does not wait for a
+   * write after a resolved stage
    */
   commit(): Promise<void>;
-  /**
-   * Ends the unit without completing the operation: the staged changes are
-   * not committed. Like {@link UnitOfWork.commit}, it waits for any `stage`
-   * still in flight and spends the unit as soon as it is called, whether or
-   * not it succeeds. What an adapter does downstream with changes it has
-   * already forwarded is the adapter's to document.
-   */
   abandon(): Promise<void>;
-  /**
-   * The changes staged so far, in staging order. A snapshot: later stage
-   * calls, and changes the caller makes to its own objects, do not alter it.
-   */
   staged(): readonly StagedChange[];
 }
 
 /**
- * How a unit of work claims the repository context it serves: decisions 2
- * and 3 of "v3 domain model" in `design/enablers/datastores.md`
- * (swamp-club#3240).
- *
- * A repository context is known by its mark hook: every repository a
- * context builds shares that one function. A repository stages into the
- * ambient unit of work only when the unit is bound to its own hook
- * (`signalChange` in `src/infrastructure/persistence/unit_of_work_scope.ts`).
- * Each adapter binds the units it builds: the legacy adapter, and the v3
- * commit-log adapter. Identity decides, so a unit bound to a wrapper of a
- * hook never takes that hook's changes.
- *
- * A context on a v3 datastore has no fallback for a write made outside
- * every unit bound to it: its hook is marked with {@link requireUnit}, and
- * such a write is refused rather than marked.
+ * identity decides: a unit bound to a wrapper of a hook never takes that hook's
+ * changes; a v3 context refuses a write outside every bound unit rather than
+ * marking it
  */
 export interface UnitOfWorkBinding {
-  /**
-   * Records that `uow` serves the repository context behind `markDirty`.
-   * Throws when `uow` is already bound to another hook.
-   */
   bind(uow: UnitOfWork, markDirty: MarkDirtyHook): void;
-  /** The hook `uow` is bound to, or undefined when it is bound to none. */
   boundHook(uow: UnitOfWork): MarkDirtyHook | undefined;
   /**
-   * Marks the context behind `markDirty` as one whose writes must run in a
-   * unit bound to it: a v3 datastore's. Never undone.
+   * marks a context whose writes must run in a unit bound to it, a v3
+   * datastore's; never undone
    */
   requireUnit(markDirty: MarkDirtyHook): void;
-  /** Whether {@link requireUnit} marked `markDirty`. */
   requiresUnit(markDirty: MarkDirtyHook): boolean;
 }
 
 /**
- * A unit's end that could not record its outcome, so changes it gave up may
- * still be committed (swamp-club#3586). A caller ending a unit after another
- * failure logs most errors of the end and rethrows the failure; this one it
- * rethrows instead, rebuilt by {@link during} to carry that failure, since
- * the caller must not be told only that the operation failed.
+ * an end that could not record its outcome, so given-up changes may still be
+ * committed; the caller rethrows it rebuilt to carry the operation's failure
+ * instead of logging it
  */
 export abstract class UnrecordedEndError extends UserError {
-  /** This error, carrying `failure`, the error the operation ended with. */
   abstract during(failure: unknown): UnrecordedEndError;
 }
 
-/**
- * Throws `endError` rebuilt to carry `failure` when it is an
- * {@link UnrecordedEndError}; otherwise returns, and the caller logs it.
- */
 export function rethrowUnrecordedEnd(
   endError: unknown,
   failure: unknown,

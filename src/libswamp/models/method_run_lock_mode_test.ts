@@ -175,8 +175,6 @@ Deno.test("isMethodMutating: returns true for unknown method on known model", as
   }
 });
 
-// --- methodRunLockMode (swamp-club#3934) ---
-
 const V2_REMOTE: CustomDatastoreConfig = {
   type: "@test/remote",
   config: {},

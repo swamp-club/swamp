@@ -40,19 +40,11 @@ const logger = getLogger(["swamp", "persistence", "repo-marker"]);
 /** Unknown-key warnings already logged, so a marker read many times warns once. */
 const warnedUnknownKeys = new Set<string>();
 
-/**
- * The `garbageCollection` block: retention per kind of history and whether
- * it is applied automatically (see `RetentionPolicy`).
- */
 export type GarbageCollectionConfig = RetentionConfig;
 
 /**
- * Data structure for the .swamp.yaml marker file.
- *
- * `tools` is the canonical field listing every AI tool the repo is enrolled
- * for. `tool` is the legacy single-tool field, kept here only so the read
- * normalizer can recognise it; it is never populated on returned markers and
- * never written by `write()`.
+ * tools is canonical; tool is the legacy field kept only so the read normalizer
+ * can recognise it, never populated on returned markers or written
  */
 export interface RepoMarkerData {
   swampVersion: string;
@@ -69,7 +61,6 @@ export interface RepoMarkerData {
   telemetryDisabled?: boolean;
   telemetryKeepFlushed?: boolean;
   tools?: string[];
-  /** @deprecated legacy single-tool field; promoted to `tools` on read. */
   tool?: AiTool;
   logLevel?: string;
   gitignoreManaged?: boolean;
@@ -84,11 +75,8 @@ export interface RepoMarkerData {
 }
 
 /**
- * Promotes the legacy `tool` field to `tools` and strips the legacy field.
- * `tools` wins when both are present. The legacy `tool: none` sentinel maps
- * to the canonical `tools: []` (no tools enrolled), not `tools: ["none"]` —
- * the former matches a fresh `--tool none` init and keeps the round-trip
- * idempotent.
+ * legacy tool: none maps to tools: [], matching a fresh --tool none init and
+ * keeping the round-trip idempotent
  */
 function normalizeMarker(data: RepoMarkerData): RepoMarkerData {
   if (data.tools === undefined && data.tool !== undefined) {
@@ -98,11 +86,6 @@ function normalizeMarker(data: RepoMarkerData): RepoMarkerData {
   return data;
 }
 
-/**
- * Rejects the removed `defaultDriver`/`defaultDriverConfig` fields with an
- * actionable error instead of silently ignoring them (see
- * design/enablers/remote-execution.md).
- */
 function rejectRemovedDriverFields(data: RepoMarkerData, path: string): void {
   for (const field of ["defaultDriver", "defaultDriverConfig"]) {
     if (field in data) {
@@ -129,10 +112,8 @@ function validateGarbageCollection(
       [path],
     );
   }
-  // Keys recognised since swamp-club#3473 were silently ignored before, so a
-  // bad value in one is warned about rather than refused. The block itself
-  // is left as written: RetentionPolicy drops or holds such values, and a
-  // command that rewrites `.swamp.yaml` saves the user's block unchanged.
+  // a bad value in these keys is warned about rather than refused; the block is
+  // left as written so a rewrite of .swamp.yaml saves it unchanged
   for (const entry of ignored) {
     warnOnce(
       path,
@@ -147,10 +128,8 @@ function validateGarbageCollection(
 }
 
 /**
- * Logs a marker warning once per process, however often the file is read.
- * The CLI reads the marker before logging is configured (to find the log
- * level), and a warning logged then reaches no sink: it only counts as
- * shown once logging is configured, so a later read logs it.
+ * the CLI reads the marker before logging is configured and a warning then
+ * reaches no sink, so it counts as shown only once logging is configured
  */
 function warnOnce(path: string, message: string): void {
   const key = `${path}\0${message}`;
@@ -160,20 +139,11 @@ function warnOnce(path: string, message: string): void {
   logger.warn`${path}: ${message}`;
 }
 
-/**
- * Repository for reading and writing the .swamp.yaml marker file.
- */
 export class RepoMarkerRepository {
-  /**
-   * Gets the path to the marker file for a given repository.
-   */
   getMarkerPath(repoPath: RepoPath): string {
     return swampMarkerPath(repoPath.value);
   }
 
-  /**
-   * Checks if a marker file exists at the given repository path.
-   */
   async exists(repoPath: RepoPath): Promise<boolean> {
     const path = this.getMarkerPath(repoPath);
     try {
@@ -187,14 +157,6 @@ export class RepoMarkerRepository {
     }
   }
 
-  /**
-   * Reads the marker file from the given repository path.
-   * Returns null if the file does not exist.
-   *
-   * Normalises the legacy single-tool shape (`tool: <name>`) into the
-   * canonical `tools: [<name>]` array and strips the legacy field so
-   * downstream callers only ever see `tools`.
-   */
   async read(repoPath: RepoPath): Promise<RepoMarkerData | null> {
     const path = this.getMarkerPath(repoPath);
     try {
@@ -212,15 +174,8 @@ export class RepoMarkerRepository {
     }
   }
 
-  /**
-   * Writes the marker file to the given repository path.
-   *
-   * Strips the legacy `tool` field so the on-disk shape only ever
-   * contains the canonical `tools` array.
-   */
   async write(repoPath: RepoPath, data: RepoMarkerData): Promise<void> {
     const path = this.getMarkerPath(repoPath);
-    // Remove undefined values since YAML can't stringify them
     const cleanData = JSON.parse(JSON.stringify(data));
     delete cleanData.tool;
     const content = stringifyYaml(cleanData as Record<string, unknown>, {
@@ -229,9 +184,6 @@ export class RepoMarkerRepository {
     await atomicWriteTextFile(path, content);
   }
 
-  /**
-   * Creates a new marker data object for initialization.
-   */
   createInitMarker(version: SwampVersion): RepoMarkerData {
     return {
       swampVersion: version.toString(),
@@ -240,9 +192,6 @@ export class RepoMarkerRepository {
     };
   }
 
-  /**
-   * Creates an updated marker data object for upgrade.
-   */
   createUpgradeMarker(
     existing: RepoMarkerData,
     newVersion: SwampVersion,

@@ -51,13 +51,11 @@ import type { ModelMethodDescribeResponse } from "../../serve/protocol.ts";
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
 
-/** The preferred spelling: `swamp behavior describe`. */
 export const BEHAVIOR_DESCRIBE_SYNTAX: CommandSyntax = {
   invocation: "swamp behavior describe",
   surface: "behavior",
 };
 
-/** The legacy spelling: `swamp model method describe`. */
 export const MODEL_METHOD_DESCRIBE_SYNTAX: CommandSyntax = {
   invocation: "swamp model method describe",
   surface: "model",

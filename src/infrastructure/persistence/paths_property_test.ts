@@ -32,19 +32,16 @@ import { canonicalizePathFor } from "./canonicalize_path.ts";
 import { assertPathEquals } from "./path_test_helpers.ts";
 
 /**
- * Path components: ASCII, unicode, spaces, dots, dashes. Excluded from the
- * generator because they are outside the documented domain of a single
- * component: path separators ("/", "\") and NUL (never valid inside a
- * component), and ":" (drive-relative semantics on Windows would make the
- * string a different kind of path, not a component).
+ * excluded as outside a single component's domain: separators, NUL, and ":"
+ * (drive-relative on Windows, so a different kind of path)
  */
 const COMPONENT_CHARS = [
   ..."abcXYZ 0189._-".split(""),
-  "\u00e9", // é
-  "\u00df", // ß
-  "\u03bb", // λ
-  "\u65e5", // 日
-  "\u{1f40a}", // 🐊 (surrogate pair)
+  "\u00e9",
+  "\u00df",
+  "\u03bb",
+  "\u65e5",
+  "\u{1f40a}",
 ];
 
 const arbComponent = fc.stringOf(fc.constantFrom(...COMPONENT_CHARS), {
@@ -52,15 +49,11 @@ const arbComponent = fc.stringOf(fc.constantFrom(...COMPONENT_CHARS), {
   maxLength: 8,
 });
 
-/** Plain ASCII components for repo roots (and for domains where "." / ".."
- * normalization is out of scope). */
 const arbAsciiName = fc.stringOf(
   fc.constantFrom(..."abcdefgh01".split("")),
   { minLength: 1, maxLength: 6 },
 );
 
-/** Absolute repo roots built from ASCII segments. Drive-less absolute paths
- * ("/a/b") are absolute on every platform @std/path supports. */
 const arbRoot = fc
   .array(arbAsciiName, { minLength: 1, maxLength: 3 })
   .map((parts) => join("/", ...parts));
@@ -140,7 +133,6 @@ Deno.test("bundleNamespace: stable 8-hex-char hash, invariant under repo-root re
       (rootA, rootB, components) => {
         const hash = bundleNamespace(join(rootA, ...components), rootA);
         assertMatch(hash, /^[0-9a-f]{8}$/);
-        // Deterministic for the same inputs.
         assertEquals(bundleNamespace(join(rootA, ...components), rootA), hash);
         // The hash keys on the RELATIVE path, so relocating the repo root
         // (e.g. /var vs /private/var symlink resolution) keeps it stable.
@@ -189,8 +181,6 @@ Deno.test("assertContainedPath: rejects every escaping, absolute, or NUL-carryin
         const rel = (() => {
           switch (kind) {
             case "upward":
-              // Enough ".." to climb past the boundary (and any drive prefix
-              // resolve() adds on Windows), then a disjoint-alphabet name.
               return [
                 ...Array(rootParts.length + extraUps + 1).fill(".."),
                 name,
@@ -218,8 +208,6 @@ Deno.test("assertContainedPath: rejects every escaping, absolute, or NUL-carryin
 });
 
 Deno.test("assertContainedPath: never accepts a path that lexically escapes the boundary", () => {
-  // Fuzz over arbitrary segment mixes (".." included): whenever the guard
-  // accepts, joining under the boundary must stay under the boundary.
   fc.assert(
     fc.property(
       arbRoot,
@@ -262,7 +250,6 @@ Deno.test("canonicalizePathFor: idempotent on both platforms for any string", ()
           assert(!once.includes("\\"));
           assertEquals(once, once.toLowerCase());
         } else {
-          // POSIX canonicalization is documented as the identity.
           assertEquals(once, path);
         }
       },

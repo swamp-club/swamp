@@ -17,12 +17,8 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// Adversarial opt-out test (swamp-club#1158): with an OTLP endpoint set but
-// OTEL_LOGS_EXPORTER=none, an operator who wants traces-only must get ZERO log
-// exports. Drives the real wiring (initializeLogging) with the network stubbed
-// and asserts no POST to /v1/logs is ever made, even though a log is emitted.
-//
-// Runs in its own process so initializeLogging()'s guard is fresh.
+// with an OTLP endpoint set but OTEL_LOGS_EXPORTER=none, an operator who wants
+// traces only must get zero log exports
 
 import { assertEquals } from "@std/assert";
 import {

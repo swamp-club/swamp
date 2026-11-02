@@ -30,7 +30,6 @@ import {
 } from "./forwarded_content_authorization.ts";
 import type { ConnectionContext } from "./handlers/shared.ts";
 
-/** Deps whose datastore records every chunk read, and holds no records. */
 function deps(possessed: boolean): {
   deps: ForwardedContentDeps;
   reads: string[];
@@ -99,7 +98,6 @@ Deno.test("ForwardedContentAuthority: content in a chunk the caller does not pos
   ]);
   assert(refusal !== undefined);
   assert(refusal.message.includes("neither carries nor may read"));
-  // Nothing about the content: it was never read.
   assertEquals(reads, []);
 });
 

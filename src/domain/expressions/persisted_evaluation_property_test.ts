@@ -31,11 +31,6 @@ import {
 
 const VAULT_REFERENCE = "${{ vault.get('v', 'k') }}";
 
-/**
- * One argument: its name, whether its schema marks it sensitive, and a value
- * that is literal text, a vault reference, or a number. Only a literal under
- * a sensitive schema is masked.
- */
 const arbField = fc.record({
   name: fc.stringMatching(/^[a-z][a-z0-9]{0,5}$/),
   sensitive: fc.boolean(),

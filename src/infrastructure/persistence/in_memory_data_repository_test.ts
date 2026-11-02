@@ -278,7 +278,6 @@ Deno.test("allocateVersion: creates temp file and finalizeVersion reads it into 
   );
   assertEquals(content, TEST_CONTENT);
 
-  // Temp file should be cleaned up
   await assertRejects(
     () => Deno.stat(alloc.contentPath),
     Deno.errors.NotFound,
@@ -500,8 +499,6 @@ Deno.test("collectGarbage: dryRun reports excess without deleting", async () => 
   );
   assertEquals(versions, [1, 2, 3, 4, 5]);
 });
-
-// --- Budget enforcement ---
 
 Deno.test("save: rejects when content exceeds budget", async () => {
   const { repo } = createRepo(32);
@@ -734,7 +731,6 @@ Deno.test("findByTaggedName: returns a name whose latest version is a deletion m
   assertEquals(await repo.findByTaggedName("test-model", "old-name"), []);
 });
 
-/** Saves an observation, then a restatement of version 1 above it. */
 async function saveObservationsAndRestatement(
   repo: InMemoryUnifiedDataRepository,
   garbageCollection: number,

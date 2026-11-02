@@ -80,7 +80,6 @@ Deno.test("LogDatastoreSyncRenderer: syncing outputs initial message per mode", 
       };
       assertEquals(logs[0], expected[mode]);
 
-      // Clean up timer to avoid leaking
       handlers.completed({
         kind: "completed",
         data: { mode, filesPulled: 0, filesPushed: 0, errors: [] },
@@ -101,7 +100,7 @@ Deno.test("LogDatastoreSyncRenderer: completed clears activity timer without lea
     data: { mode: "pull", filesPulled: 10 },
   });
 
-  // Wait longer than the activity interval to verify no leaked timer fires
+  // wait past the activity interval so a leaked timer would fire
   const logs: string[] = [];
   const originalLog = console.log;
   console.log = (msg: string) => logs.push(msg);

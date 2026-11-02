@@ -29,9 +29,8 @@ import {
 const MAX_DESCRIPTION_WIDTH = 80;
 
 /**
- * Reduces a registry description — often multi-line README-style markdown —
- * to its first non-blank line, capped so the Installing line stays a single
- * status line (swamp-club#3013).
+ * first non-blank line of the description, capped so the Installing line stays
+ * a single status line
  */
 function summarizeDescription(description: string | undefined): string {
   const firstLine = (description ?? "")
@@ -366,7 +365,6 @@ export function renderAutoResolveNetworkError(
   }
 }
 
-/** Why a waiting process gave up on the install lock, in words. */
 export function installBusyMessage(
   extension: string,
   holder: InstallLockHolder | null,

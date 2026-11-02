@@ -19,24 +19,13 @@
 
 import { z } from "zod";
 
-/**
- * Metadata about fetched swamp source code.
- * Stored as .swamp-source-meta.json in the source directory.
- */
 export interface SourceMetadata {
-  /** Version tag or branch name (e.g., "v1.2.3" or "main") */
   version: string;
-  /** Absolute path to the extracted source directory */
   path: string;
-  /** Number of files in the extracted source */
   fileCount: number;
-  /** ISO timestamp when the source was fetched */
   fetchedAt: string;
 }
 
-/**
- * Zod schema for validating SourceMetadata from JSON.
- */
 export const SourceMetadataSchema = z.object({
   version: z.string(),
   path: z.string(),

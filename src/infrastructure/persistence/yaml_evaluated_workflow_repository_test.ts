@@ -232,7 +232,6 @@ Deno.test("YamlEvaluatedWorkflowRepository: clear calls markDirty with directory
       }],
     });
 
-    // Each mutation marks before it and again after it (swamp-club#2421).
     await repo.save(workflow, undefined);
     assertEquals(calls.length, 2);
 
@@ -288,7 +287,6 @@ Deno.test("YamlEvaluatedWorkflowRepository: deleteForRun marks the run directory
   const tempDir = await Deno.makeTempDir();
   try {
     const calls: Array<string | undefined> = [];
-    // Whether the run directory existed at each of its marks.
     const existedWhenMarked: boolean[] = [];
     const runId = crypto.randomUUID();
     const runDir = join(
@@ -319,11 +317,8 @@ Deno.test("YamlEvaluatedWorkflowRepository: deleteForRun marks the run directory
     await repo.deleteForRun(runId);
 
     assertEquals(calls.slice(-2), [runDir, runDir]);
-    // Present before the removal, gone at the mark after it
-    // (swamp-club#2421).
     assertEquals(existedWhenMarked, [true, false]);
     assertEquals(await repo.listRunSnapshots(), []);
-    // A missing snapshot is ignored.
     await repo.deleteForRun(runId);
   } finally {
     await Deno.remove(tempDir, { recursive: true });
@@ -356,7 +351,6 @@ Deno.test("YamlEvaluatedWorkflowRepository: snapshot methods reject run IDs that
       );
     }
 
-    // Nothing outside a single run directory was touched.
     assertEquals((await repo.listRunSnapshots()).map((s) => s.runId), [
       keptRunId,
     ]);
@@ -492,7 +486,6 @@ Deno.test("YamlEvaluatedWorkflowRepository: the inputs a cache was evaluated wit
     assertEquals(cached?.inheritedExpressions, new Set(["${{ env.SOURCE }}"]));
     assertEquals(cached?.workflow.inputs, workflow.inputs);
 
-    // Withheld for a sensitive value: the marker, and no inputs.
     await new YamlEvaluatedWorkflowRepository(tempDir).save(
       workflow,
       undefined,
@@ -508,7 +501,6 @@ Deno.test("YamlEvaluatedWorkflowRepository: the inputs a cache was evaluated wit
     assertEquals(omitted?.evaluatedInputsProvenance, undefined);
     assertEquals(omitted?.inheritedExpressions, new Set());
 
-    // A cache written before evaluation inputs were recorded has neither.
     await new YamlEvaluatedWorkflowRepository(tempDir).save(
       workflow,
       undefined,
@@ -545,7 +537,6 @@ Deno.test("save: the persisted-coordinate map round-trips as an optional field, 
         cached.persistedProvenance.toData(),
       persisted.toData(),
     );
-    // Without one, the field is absent: an older cache reads as before.
     await repo.save(referencingWorkflow(), undefined, new Set(), [], [
       REFERENCE,
     ]);

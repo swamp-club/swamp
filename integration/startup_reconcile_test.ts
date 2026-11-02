@@ -17,18 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Integration tests for the startup catalog reconcile (swamp-club#2702).
- *
- * When the extension catalog is rebuilt from scratch, the startup reconcile
- * re-indexes every pulled extension. Two pulled extensions that provide the
- * same type used to fail I-Repo-1, roll the whole reconcile back and fail
- * every command, including the `doctor extensions --repair` and
- * `extension rm` that fix the state. These tests run
- * `configureStartupExtensions` in-process on a temp repo, with the real
- * reconcile, repository, catalog and model loader.
- */
-
 import { assertEquals, assertStringIncludes } from "@std/assert";
 import { configure, type LogRecord, reset } from "@logtape/logtape";
 import { ensureDir } from "@std/fs";
@@ -59,8 +47,6 @@ import { RepoPath } from "../src/domain/repo/repo_path.ts";
 
 import "../src/domain/models/models.ts";
 
-/** A model of `type` whose one method is named `method`, so a test can
- *  tell which provider the registry loaded. */
 const MODEL_CODE = (type: string, method: string) => `
 import { z } from "npm:zod@4";
 
@@ -134,8 +120,6 @@ async function withRepo(fn: (fixture: Fixture) => Promise<void>) {
   }
 }
 
-/** Writes a pulled extension providing `type` and returns the lockfile
- *  `files` for it, relative to the repo. */
 async function writePulled(
   fixture: Fixture,
   name: string,
@@ -169,7 +153,6 @@ async function writeLockfile(
   await Deno.writeTextFile(fixture.lockfilePath, JSON.stringify(map));
 }
 
-/** Two pulled providers of one type, first listed first in the lockfile. */
 async function writeTwoProviders(fixture: Fixture) {
   const first = `${fixture.scope}/first`;
   const second = `${fixture.scope}/second`;
@@ -180,8 +163,6 @@ async function writeTwoProviders(fixture: Fixture) {
   return { first, second };
 }
 
-/** Runs startup, then `during` while it is live, capturing swamp logs at
- *  `lowestLevel` and above for the whole span. */
 async function startup(
   fixture: Fixture,
   during: () => Promise<void> = () => Promise.resolve(),
@@ -220,8 +201,6 @@ async function startup(
   );
 }
 
-/** Loads the model registry fresh and returns the method names of the
- *  model it resolved for the shared type. */
 async function loadedMethods(fixture: Fixture): Promise<string[]> {
   modelRegistry.invalidateType(fixture.type);
   modelRegistry.resetLoadedFlag();
@@ -325,10 +304,6 @@ Deno.test("configureStartupExtensions: removing the provider that kept the type 
   });
 });
 
-// ── deferCatalog (swamp-club#3139) ──────────────────────────────────────────
-
-/** The catalog's files (the database, its WAL and shared-memory index) as
- *  `name size:mtime`, sorted. Empty when no catalog exists. */
 async function catalogFiles(fixture: Fixture): Promise<string[]> {
   const files: string[] = [];
   const swampDir = join(fixture.repoDir, ".swamp");

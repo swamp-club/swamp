@@ -17,16 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * What serve tells a caller of a wait's key (swamp-club#3214): the key of a
- * nested run's open wait in a suspension, the wait that holds a key a step
- * was refused, and the signals held for the next wait of a key. Each names
- * another workflow's run, so each goes only to a reader of that workflow.
- * Runs and listings go through `handleMessage`, the real dispatch path, as a
- * token-mode caller, against a real repository whose wait records live in
- * the filesystem control-plane store.
- */
-
 import { assert, assertEquals } from "@std/assert";
 import { dirname, join } from "@std/path";
 import "../src/domain/models/models.ts";
@@ -67,7 +57,6 @@ const SCHEMA = {
 };
 
 const KEY = "release-key";
-/** More keys, so one workflow ID can hold several pending signals. */
 const AUDIT_KEY = "audit-key";
 const HOTFIX_KEY = "hotfix-key";
 
@@ -75,7 +64,6 @@ function unique(prefix: string): string {
   return `${prefix}-${crypto.randomUUID().slice(0, 8)}`;
 }
 
-/** A workflow whose step `review` waits for a signal by {@link KEY}. */
 function keyedChild(): Workflow {
   return Workflow.create({
     name: unique("child"),
@@ -93,7 +81,6 @@ function keyedChild(): Workflow {
   });
 }
 
-/** A workflow whose one step runs `child` as a nested workflow. */
 function calling(child: Workflow): Workflow {
   return Workflow.create({
     name: unique("parent"),
@@ -111,7 +98,6 @@ function calling(child: Workflow): Workflow {
   });
 }
 
-/** A parent and the keyed child it calls, both saved. */
 async function savePair(
   repo: ServeRepo,
 ): Promise<{ parent: Workflow; child: Workflow }> {
@@ -122,7 +108,6 @@ async function savePair(
   return { parent, child };
 }
 
-/** Runs `workflow` through serve as the caller `ctx` authorizes. */
 async function runAs(
   ctx: ConnectionContext,
   workflow: Workflow,
@@ -136,7 +121,6 @@ async function runAs(
   return frames;
 }
 
-/** The run events a client was sent, in order. */
 function eventsOf(frames: Frame[]): SerializedEvent[] {
   return frames.filter((f) => f.type === "event").map((f) =>
     f.event as SerializedEvent
@@ -149,7 +133,6 @@ function suspendedOf(frames: Frame[]): SerializedEvent {
   return suspended;
 }
 
-/** The `step_failed` event of the child's waiting step. */
 function keyRefusalOf(frames: Frame[]): SerializedEvent {
   const failed = eventsOf(frames).find((e) =>
     e.kind === "step_failed" && e.stepId === "review"
@@ -159,10 +142,6 @@ function keyRefusalOf(frames: Frame[]): SerializedEvent {
   return failed;
 }
 
-/**
- * An event as a second client attached to the same run is sent it: through
- * the per-client transform serve streams a buffered event with.
- */
 async function asSeenBy(
   ctx: ConnectionContext,
   event: SerializedEvent,
@@ -177,7 +156,6 @@ async function asSeenBy(
   return await redact(event);
 }
 
-/** Grants to read and run `parent`, and with `child`, to read it too. */
 function readerOf(
   repo: ServeRepo,
   parent: Workflow,
@@ -210,15 +188,11 @@ Deno.test({
       assertEquals(waits[0].stepId, "review");
       assertEquals(waits[0].key, KEY);
 
-      // A parent-only reader of its own run gets neither the entry nor its
-      // key, anywhere in the stream.
       const parentOnly = readerOf(repo, hidden.parent);
       const frames = await runAs(parentOnly, hidden.parent);
       assertEquals("nestedSignalWaits" in suspendedOf(frames), false);
       assertEquals(JSON.stringify(frames).includes(KEY), false);
 
-      // A parent-only reader attached to the reader's run is sent the same
-      // suspension without them, and the buffered event is left as it was.
       const before = structuredClone(suspended);
       const seen = await asSeenBy(
         readerOf(repo, shown.parent),
@@ -245,8 +219,6 @@ Deno.test({
         Record<string, string>
       >)[0];
 
-      // A second run of the child, through the parent, is refused the key:
-      // a reader of the child is told which wait holds it.
       const refused = keyRefusalOf(await runAs(reader, parent));
       assertEquals(refused.waitKeyHolder, {
         workflowId: child.id,
@@ -257,21 +229,18 @@ Deno.test({
         waitId: holder.waitId,
       });
 
-      // A parent-only reader is refused alike and told nothing of the holder.
       const parentOnly = readerOf(repo, parent);
       const frames = await runAs(parentOnly, parent);
       const bare = keyRefusalOf(frames);
       assertEquals("waitKeyHolder" in bare, false);
       assertEquals(JSON.stringify(frames).includes(holder.runId), false);
 
-      // Nor when attached to the reader's run.
       const before = structuredClone(refused);
       const seen = await asSeenBy(parentOnly, refused);
       assertEquals("waitKeyHolder" in seen, false);
       assertEquals(seen.error, "wait_key_held");
       assertEquals(refused, before);
 
-      // A run of the child itself, by a reader of the child, names it too.
       const direct = keyRefusalOf(
         await runAs(
           ctxWith(repo, [workflowGrant(["run", "read"], child.name)]),
@@ -283,7 +252,6 @@ Deno.test({
   },
 });
 
-/** A workflow whose keyed waits each take a signal before they open. */
 function early(id?: string): Workflow {
   return Workflow.create({
     ...(id !== undefined ? { id } : {}),
@@ -330,7 +298,6 @@ async function copyOf(repo: ServeRepo, original: Workflow): Promise<string> {
   return name;
 }
 
-/** Holds a signal by key through serve, as a sender allowed on any workflow. */
 async function holdThroughServe(
   repo: ServeRepo,
   workflow: string,
@@ -352,7 +319,6 @@ async function holdThroughServe(
   );
   assertEquals(errorFrame(frames), undefined, JSON.stringify(frames));
   const reply = frames.find((f) => f.type === "workflow.signal");
-  // A signal-only sender is told it was accepted, not that it is held.
   const accepted = reply?.payload?.accepted as
     | { signal: { id: string } }
     | undefined;
@@ -360,10 +326,6 @@ async function holdThroughServe(
   return accepted.signal.id;
 }
 
-/**
- * Holds a signal by key as the local command does: with no authorization,
- * so the held signal names no workflow it was authorized for.
- */
 async function holdLocally(
   repo: ServeRepo,
   workflow: string,
@@ -388,7 +350,6 @@ async function holdLocally(
   throw new Error("the signal was not held");
 }
 
-/** The receipts of the pending signals `ctx` is listed, with their workflow. */
 async function pendingFor(
   ctx: ConnectionContext,
 ): Promise<Array<[string, string, string]>> {
@@ -426,7 +387,6 @@ Deno.test({
         [copy, original.name].sort(),
       );
 
-      // Sent through serve, each signal is bound to the workflow it named.
       const toOriginal = await holdThroughServe(repo, original.name, KEY);
       const toCopy = await holdThroughServe(repo, copy, AUDIT_KEY);
       // Sent through the local command, it is bound to none: it is listed
@@ -456,7 +416,6 @@ Deno.test({
         ].sort() as Array<[string, string, string]>,
       );
       assertEquals(JSON.stringify(everything).includes(localShared), false);
-      // A reader of no workflow these name is listed none.
       assertEquals(await pendingAs(unique("nothing")), []);
     });
   },

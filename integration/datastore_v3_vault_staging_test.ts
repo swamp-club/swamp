@@ -17,18 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * The v3 gate for the vault config repository (swamp-club#3257). The real
- * repository runs on v3 inside a commit-log root, with managed config
- * registered at the namespace root's `config` directory, solo and
- * namespaced. Its writes stage #3256's definition changes with kind
- * `vault`; the unit commits them to a real `commits.db` and filesystem
- * `storage/1`, and a read model catches up into a second directory, whose
- * vault configs (bytes) must equal what the repository wrote. No commit
- * carries a secret or an absolute path, and a repo-local vault config
- * (what repo init writes) stages nothing.
- */
-
 import { assert, assertEquals, assertRejects } from "@std/assert";
 import { ensureDir } from "@std/fs";
 import { join } from "@std/path";
@@ -67,7 +55,6 @@ await initializeLogging({});
 
 const SECRET = "s3cr3t-value-never-committed";
 
-/** One v3 repository context's vault config repository. */
 class VaultWriter {
   readonly dir: string;
   readonly root: string;
@@ -113,7 +100,6 @@ class VaultWriter {
     );
   }
 
-  /** Catches the read model up; its vault configs must equal the writer's. */
   async assertMatches(): Promise<void> {
     await catchUp(this.env);
     assertEquals(
@@ -135,7 +121,6 @@ async function catchUp(env: V3Env): Promise<void> {
   }
 }
 
-/** Every committed put's content, decoded, in feed order. */
 async function committedContents(env: V3Env): Promise<string[]> {
   const contents: string[] = [];
   for (const change of await env.store.changesSince(0, 10_000)) {
@@ -169,7 +154,6 @@ function vault(
   return VaultConfig.create(crypto.randomUUID(), name, type, config);
 }
 
-/** The same vault (same id) under another name, type or config. */
 function changed(
   from: VaultConfig,
   changes: Partial<ReturnType<VaultConfig["toData"]>>,
@@ -185,7 +169,6 @@ for (const namespace of ["", "infra"]) {
       const writer = new VaultWriter(env, namespace);
       const repo = writer.vaults();
 
-      // Create, edit, and an unchanged save, which stages nothing.
       const prod = vault("prod");
       await writer.run(() => repo.save(prod));
       const edited = changed(prod, { config: { auto_generate: false } });
@@ -195,7 +178,6 @@ for (const namespace of ["", "infra"]) {
       assertEquals((await feedPartitions(env)).length, before);
       await writer.assertMatches();
 
-      // A rename: the new name's partition first, then the old name's.
       const renamed = changed(edited, { name: "production" });
       await writer.run(() => repo.save(renamed));
       assertEquals((await feedPartitions(env)).slice(before), [
@@ -204,8 +186,6 @@ for (const namespace of ["", "infra"]) {
       ]);
       await writer.assertMatches();
 
-      // A migration to another type: a create at the new type's path, then
-      // the old file's removal, both in the vault name's partition.
       const migrated = changed(renamed, {
         type: "@test/other-vault",
         config: {},
@@ -221,7 +201,6 @@ for (const namespace of ["", "infra"]) {
       await writer.run(() => repo.save(defaults));
       await writer.assertMatches();
 
-      // Delete.
       await writer.run(async () => {
         await repo.delete(migrated);
         await repo.delete(defaults);
@@ -249,7 +228,6 @@ Deno.test("v3 vault staging: a secret stored through the vault provider, and a r
       });
       await provider.put("token", SECRET);
       assertEquals(await provider.get("token"), SECRET);
-      // Repo init's default vault, in the repository's own vaults/.
       await new YamlVaultConfigRepository(
         writer.dir,
         undefined,
@@ -328,12 +306,10 @@ Deno.test({
         await repo.delete(prod);
       };
 
-      // v2: no hook, and a legacy unit over a hook.
       await writes(undefined)();
       const { markDirty, uow } = recordingUnitOfWork();
       await runInUnitOfWork(uow, writes(markDirty));
 
-      // v3 reads the replaced file first, so the same edit fails on it.
       await assertRejects(
         () => writer.run(writes(writer.hook)),
         Deno.errors.PermissionDenied,

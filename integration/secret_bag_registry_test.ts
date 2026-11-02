@@ -17,11 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// One sentinel registry per run (typed-secrets Section 3.2,
-// swamp-club#3558): a sentinel the run-start pass issues resolves from any
-// later step's bag of that run, and from a child workflow's bags after its
-// own rehoming, with the persisted form derived from the registry's entries.
-
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import { join } from "@std/path";
 import { walk } from "@std/fs";
@@ -83,7 +78,6 @@ async function withRepo(fn: (repoDir: string) => Promise<void>): Promise<void> {
   }
 }
 
-/** Registers a per-run model type whose `write` method stores a sensitive token. */
 function registerWriter(): ModelType {
   const type = ModelType.create(`test/secret-writer-${crypto.randomUUID()}`);
   modelRegistry.register({
@@ -118,12 +112,6 @@ function registerWriter(): ModelType {
   return type;
 }
 
-/**
- * A step running a saved shell behavior that prints `<LABEL>_OK` when `word`
- * expands to the secret, checked by length and prefix so the secret itself
- * is never authored text. The command is a task input, so the run-start
- * pass evaluates it and the overlay carries its sentinels.
- */
 async function checkStep(
   repoDir: string,
   name: string,
@@ -156,7 +144,6 @@ async function checkStep(
   });
 }
 
-/** Runs `workflow` in process with the given run record, and returns its status. */
 async function runWorkflow(
   repoDir: string,
   workflow: Workflow,
@@ -193,7 +180,6 @@ async function runWorkflow(
   }
 }
 
-/** The persisted stdout of every shell result whose text names `step`. */
 async function shellStdout(repoDir: string, step: string): Promise<string> {
   const outputs: string[] = [];
   for await (
@@ -214,7 +200,6 @@ async function shellStdout(repoDir: string, step: string): Promise<string> {
   return outputs.join("\n");
 }
 
-/** Writes the sensitive record a consumer workflow reads at run start. */
 async function writeRecord(repoDir: string): Promise<void> {
   const type = registerWriter();
   await new YamlDefinitionRepository(repoDir).save(
@@ -235,7 +220,6 @@ async function writeRecord(repoDir: string): Promise<void> {
   assertEquals(await runWorkflow(repoDir, writer), "succeeded");
 }
 
-/** The distinct prefixes of the sentinels a registry holds. */
 function prefixesOf(values: RunSensitiveValues): Set<string> {
   return new Set(
     [...values.sentinels.all()].map((entry) => {
@@ -251,10 +235,9 @@ Deno.test(
   async () => {
     await withRepo(async (repoDir) => {
       await writeRecord(repoDir);
-      // The value crosses into the child as a workflow input, so the child's
-      // run-start pass evaluates `inputs.token` for both steps and issues
-      // one sentinel for it into the workflow bag; each step rehomes it.
-      // (A data read in a task input is deferred to the step pass.)
+      // the value crosses into the child as a workflow input, so its run-start
+      // pass issues one sentinel into the workflow bag and each step rehomes
+      // it; a data read in a task input is deferred to the step pass
       const child = Workflow.create({
         name: "consumer-flow",
         inputs: {
@@ -317,8 +300,6 @@ Deno.test(
         assertEquals(entry.encoding, "raw");
         assertEquals(values.sourceOf(SECRET), undefined);
       }
-      // A bag of a later pass resolves any sentinel the run issued, with no
-      // rehoming.
       const bag = new VaultSecretBag(values.sentinels);
       assertEquals(bag.isEmpty, true);
       const later = await new SecretLoader(() =>
@@ -331,8 +312,6 @@ Deno.test(
         assertEquals(later.resolveRaw(`<${entry.sentinel}>`), `<${SECRET}>`);
       }
 
-      // The child's evaluated-workflow cache holds the entries' references,
-      // derived from the sentinels the overlay carries, never the value.
       const cached = await new YamlEvaluatedWorkflowRepository(repoDir)
         .findByNameWithProvenance(child.name);
       assert(cached);
@@ -407,7 +386,6 @@ Deno.test(
       assertStringIncludes(stdout, "CHILD_OK");
       assertEquals(VaultSecretBag.SENTINEL_PATTERN.test(stdout), false);
 
-      // The child retains the parent's reference; a delivery view resolves it.
       const entries = [...values.sentinels.all()];
       assertEquals(
         entries.length,

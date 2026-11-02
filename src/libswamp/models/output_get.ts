@@ -44,9 +44,6 @@ import {
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
 import { withReapedHint } from "../retention/reaped.ts";
 import type { RetentionWatermarkRepository } from "../../domain/retention/retention_watermark.ts";
-/**
- * Data structure for provenance information.
- */
 export interface ProvenanceData {
   definitionHash: string;
   modelVersion: string;
@@ -57,9 +54,6 @@ export interface ProvenanceData {
   bundleFingerprint?: string;
 }
 
-/**
- * Data structure for a data artifact reference.
- */
 export interface DataArtifactRefData {
   dataId: string;
   name: string;
@@ -67,24 +61,15 @@ export interface DataArtifactRefData {
   tags: Record<string, string>;
 }
 
-/**
- * Data structure for artifacts information.
- */
 export interface ArtifactsData {
   dataArtifacts: DataArtifactRefData[];
 }
 
-/**
- * Data structure for error information.
- */
 export interface ErrorData {
   message: string;
   stack?: string;
 }
 
-/**
- * Data structure for the model output get output.
- */
 export interface ModelOutputGetData {
   id: string;
   definitionId: string;
@@ -101,7 +86,6 @@ export interface ModelOutputGetData {
   error?: ErrorData;
 }
 
-/** Minimal output shape for the generator. */
 export interface OutputInfo {
   id: string;
   definitionId: string;
@@ -116,7 +100,6 @@ export interface OutputInfo {
   error?: ErrorData;
 }
 
-/** Global output with type info. */
 export interface GlobalOutputInfo {
   output: OutputInfo;
   type: ModelType;
@@ -127,7 +110,6 @@ export type ModelOutputGetEvent =
   | { kind: "completed"; data: ModelOutputGetData }
   | { kind: "error"; error: SwampError };
 
-/** Dependencies for the model output get operation. */
 export interface ModelOutputGetDeps extends OutputReferenceDeps<OutputInfo> {
   findOutputsByDefinition: (
     type: ModelType,
@@ -139,14 +121,12 @@ export interface ModelOutputGetDeps extends OutputReferenceDeps<OutputInfo> {
   ) => Promise<Definition | null>;
   modelTypes: () => ModelType[];
   /**
-   * Where retention records how far it has reaped. With it an output that is
-   * not found says that outputs before the cutoff have been reaped
-   * (swamp-club#3473).
+   * where retention records how far it has reaped; with it, a not-found output
+   * says outputs before the cutoff have been reaped
    */
   retentionWatermarks?: RetentionWatermarkRepository;
 }
 
-/** Options for {@link modelOutputGet}. */
 export interface ModelOutputGetOptions {
   /**
    * The argument, already resolved with resolveOutputReference. The read acts
@@ -155,15 +135,14 @@ export interface ModelOutputGetOptions {
   reference?: OutputReference<OutputInfo>;
 }
 
-/** Wires real infrastructure into ModelOutputGetDeps. */
 export async function createModelOutputGetDeps(
   repoDir: string,
   datastoreResolver?: DatastorePathResolver,
   injectedDefinitionRepo?: YamlDefinitionRepository,
   /**
-   * The repository context's lookup, so an output record the v3 read model
-   * could not materialise fails a lookup loudly and is named by a listing
-   * that leaves it out (swamp-club#3617).
+   * the repository context's lookup, so an output record the v3 read model
+   * could not materialise fails a lookup loudly and is named by a listing that
+   * leaves it out
    */
   unreadableContent?: UnreadableContentLookup,
 ): Promise<ModelOutputGetDeps> {
@@ -212,7 +191,6 @@ export async function createModelOutputGetDeps(
   };
 }
 
-/** Retrieves model output details by output ID or model name. */
 export async function* modelOutputGet(
   _ctx: LibSwampContext,
   deps: ModelOutputGetDeps,

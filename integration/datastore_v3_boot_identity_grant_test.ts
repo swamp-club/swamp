@@ -18,12 +18,9 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * The v3 read model names the Linux boot under the permissions the released
- * binary is compiled with (swamp-club#3418). Deno refuses any read under
- * `/proc` without `--allow-all`, which `scripts/compile.ts` does not grant;
- * with no boot named, a Linux checkout synced every file it caught up.
- * The grant is read from the compile script, so a change to it is tested
- * here too.
+ * Deno refuses any read under /proc without --allow-all, which compile.ts does
+ * not grant; the grant is read from the compile script so a change to it is
+ * tested here
  */
 
 import { assert, assertEquals } from "@std/assert";
@@ -36,7 +33,6 @@ const COMPILE_SCRIPT = join(
   "compile.ts",
 );
 
-/** The `--allow-*` flags `scripts/compile.ts` compiles the binary with. */
 function compiledGrant(): Deno.PermissionOptionsObject {
   const source = Deno.readTextFileSync(COMPILE_SCRIPT);
   const names = [...source.matchAll(/"--allow-([a-z]+)"/g)].map((m) => m[1]);

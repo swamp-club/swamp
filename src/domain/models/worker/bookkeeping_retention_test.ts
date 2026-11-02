@@ -135,7 +135,6 @@ Deno.test("isReapableDispatch: waiting dispatch is never reapable, however old",
     ),
     false,
   );
-  // A waiting record carrying a stray endedAt is still live.
   assertEquals(
     isReapableDispatch(
       dispatch({ state: "waiting" }),

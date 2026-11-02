@@ -17,15 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Builders shared by the v3 domain model's and commit store's tests, and a
- * reference model of the partition rules with random command sequences to
- * drive it: the oracle for the partition's and the commit store's property
- * tests. Test-only.
- *
- * @module
- */
-
 import type {
   DatastoreStorage,
   StoredChunk,
@@ -54,26 +45,22 @@ export const MODEL_ID = "6f1c2a3b-4d5e-4f60-8a7b-9c0d1e2f3a4b";
 export const DATA_ID = "0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d";
 export const MODEL_TYPE = ModelType.create("@swamp/aws-ec2");
 
-/** The partition of the fixture model. */
 export function modelPartition(): PartitionKey {
   return partitionOf({ kind: "model", type: MODEL_TYPE, id: MODEL_ID });
 }
 
-/** An intent on the fixture model. */
 export function modelIntent(
   fields: Record<string, unknown> & { kind: Intent["kind"] },
 ): Intent {
   return createIntent({ ...fields, model: modelRef(MODEL_TYPE, MODEL_ID) });
 }
 
-/** The cache-layout key of a fixture data version's content. */
 export function dataKey(name: string, version: number): RecordKey {
   return RecordKey.create(
     `data/${MODEL_TYPE.normalized}/${MODEL_ID}/${name}/${version}/raw`,
   );
 }
 
-/** Valid metadata for a fixture data version. */
 export function metadata(name: string, version: number): unknown {
   return {
     name,
@@ -88,7 +75,6 @@ export function metadata(name: string, version: number): unknown {
   };
 }
 
-/** Base64 of a UTF-8 string. */
 export function base64(text: string): string {
   let binary = "";
   for (const byte of new TextEncoder().encode(text)) {
@@ -97,7 +83,6 @@ export function base64(text: string): string {
   return btoa(binary);
 }
 
-/** The lowercase hex SHA-256 of a UTF-8 string. */
 export async function sha256Of(text: string): Promise<string> {
   const digest = new Uint8Array(
     await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text)),
@@ -105,10 +90,6 @@ export async function sha256Of(text: string): Promise<string> {
   return Array.from(digest, (b) => b.toString(16).padStart(2, "0")).join("");
 }
 
-/**
- * A put of a fixture data version's content, inlined: a save, or with
- * `kind` `data.append` an append to a live version.
- */
 export function savePut(
   name: string,
   version: number,
@@ -124,7 +105,6 @@ export function savePut(
   });
 }
 
-/** A put of a fixture data version whose content is stored as chunks. */
 export function blobPut(
   name: string,
   version: number,
@@ -137,7 +117,6 @@ export function blobPut(
   });
 }
 
-/** The data-version op that records a fixture version. */
 export function versionOp(name: string, version: number): DataVersionOp {
   return dataVersionOp({
     key: RecordKey.create(
@@ -147,7 +126,6 @@ export function versionOp(name: string, version: number): DataVersionOp {
   });
 }
 
-/** A versioned delete of a fixture data version's content. */
 export function deleteVersion(
   name: string,
   version: number,
@@ -160,7 +138,6 @@ export function deleteVersion(
   });
 }
 
-/** A commit on the fixture model's partition. */
 export function modelCommit(
   seq: number,
   ops: readonly Op[],
@@ -178,10 +155,6 @@ export function modelCommit(
   });
 }
 
-/**
- * A `storage/1` double held in memory, recording the calls the chunk store
- * makes. `touch: false` leaves `touch` unimplemented.
- */
 export class MemoryStorage implements DatastoreStorage {
   readonly contract = "storage/1" as const;
   readonly chunks = new Map<string, Uint8Array>();
@@ -253,13 +226,11 @@ export class MemoryStorage implements DatastoreStorage {
     return Promise.resolve();
   }
 
-  /** How many put calls the chunk store made. */
   puts(): number {
     return this.calls.filter((c) => c.startsWith("put ")).length;
   }
 }
 
-/** Reads a stream to the end and joins its chunks. */
 export async function readAll(
   stream: ReadableStream<Uint8Array>,
 ): Promise<Uint8Array> {
@@ -274,7 +245,6 @@ export async function readAll(
   return joined;
 }
 
-/** A stream yielding `bytes` in pieces of the given sizes, then the rest. */
 export function streamOf(
   bytes: Uint8Array,
   pieceSizes: readonly number[] = [],
@@ -290,22 +260,18 @@ export function streamOf(
   return ReadableStream.from(pieces);
 }
 
-// The partition reference model.
-
 export const NAMES = ["a", "b"] as const;
 const CONTENTS = ["x", "y", "z"] as const;
 
 const arbName = fc.constantFrom(...NAMES);
 const arbVersion = fc.integer({ min: 1, max: 6 });
 
-/** One op, described without building it. */
 export const arbOpSpec = fc.oneof(
   fc.record({
     kind: fc.constant("put" as const),
     name: arbName,
     version: arbVersion,
     content: fc.constantFrom(...CONTENTS),
-    /** A `data.append` put, which lets a live version be re-recorded. */
     append: fc.boolean(),
     expect: fc.oneof(
       fc.constant(undefined),
@@ -333,14 +299,11 @@ export const arbOpSpec = fc.oneof(
 
 export type OpSpec = typeof arbOpSpec extends fc.Arbitrary<infer T> ? T : never;
 
-/** One append, described relative to the partition's state when it runs. */
 export const arbCommand = fc.record({
-  /** 0: the next seq; otherwise an offset from it (a gap or a stale seq). */
   seqOffset: fc.oneof(
     { weight: 4, arbitrary: fc.constant(0) },
     { weight: 1, arbitrary: fc.integer({ min: -2, max: 2 }) },
   ),
-  /** Reuse an earlier commit's txnId instead of a fresh one. */
   reuseTxn: fc.oneof(
     { weight: 5, arbitrary: fc.constant(undefined) },
     { weight: 1, arbitrary: fc.nat() },
@@ -353,9 +316,9 @@ export type Command = typeof arbCommand extends fc.Arbitrary<infer T> ? T
   : never;
 
 /**
- * Three commands that record a version, remove it and record it again
- * (swamp-club#3532), sometimes with an append put: random commands alone
- * almost never line those up.
+ * three commands that record a version, remove it and record it again,
+ * sometimes with an append put: random commands alone almost never line those
+ * up
  */
 export const arbReuse: fc.Arbitrary<Command[]> = fc.record({
   name: arbName,
@@ -395,7 +358,6 @@ export const arbReuse: fc.Arbitrary<Command[]> = fc.record({
   ];
 });
 
-/** Random commands with reuse scenarios mixed in. */
 export const arbCommands = (maxLength: number): fc.Arbitrary<Command[]> =>
   fc.array(
     fc.oneof(
@@ -405,7 +367,6 @@ export const arbCommands = (maxLength: number): fc.Arbitrary<Command[]> =>
     { minLength: 1, maxLength },
   ).map((chunks) => chunks.flat());
 
-/** The tombstoned key of a version-less delete: the name's latest marker. */
 function latestKey(name: string): RecordKey {
   return RecordKey.create(`data/model/${name}/latest`);
 }
@@ -451,11 +412,9 @@ export async function buildOp(spec: OpSpec): Promise<Op> {
   }
 }
 
-/** The reference model's state: plain data, written straight from the rules. */
 export interface Model {
   seq: number;
   fence: number | undefined;
-  /** A model lease's fence, counted apart from the writer's (swamp-club#4121). */
   leaseFence: number | undefined;
   txnIds: string[];
   records: Record<string, string>;
@@ -562,7 +521,6 @@ export async function modelAppend(
   return { model: next, result: { kind: "appended", seq: commit.seq } };
 }
 
-/** The partition's observable state, in the reference model's shape. */
 export function observe(partition: Partition) {
   return {
     seq: partition.seq,
@@ -616,7 +574,6 @@ export function expected(model: Model) {
   };
 }
 
-/** The reference model of a partition with no commits. */
 export function emptyModel(): Model {
   return {
     seq: 0,
@@ -630,11 +587,9 @@ export function emptyModel(): Model {
   };
 }
 
-/** A workflow id and a run id for {@link sampleIntent}. */
 export const SAMPLE_WORKFLOW_ID = "9a8b7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d";
 export const SAMPLE_RUN_ID = "0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d";
 
-/** One valid intent of each kind. */
 export function sampleIntent(kind: Intent["kind"]): Intent {
   const control: Record<string, string> = {
     grant: "@swamp/grant",

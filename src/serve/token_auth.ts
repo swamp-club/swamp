@@ -60,16 +60,13 @@ export interface TokenAuthAuditContext {
   readonly sourceIp?: string;
   readonly requestId?: string;
   readonly ingress?: string;
-  /** Known user names by id, for the event's username fallback. */
   readonly resolvedUserNames?: Readonly<Record<string, string>>;
-  /** Told the user name an OAuth-minted token records for its user. */
   readonly onUsernamesResolved?: UsernamesResolved;
 }
 
 /**
- * The token has no definition or no record. A distinct type, so a caller can
- * tell a deleted token from a datastore failure whose message happens to say
- * "does not exist".
+ * a distinct type, so a caller can tell a deleted token from a datastore
+ * failure whose message happens to say does not exist
  */
 export class ServerTokenNotFoundError extends Error {
   constructor(name: string) {
@@ -79,10 +76,8 @@ export class ServerTokenNotFoundError extends Error {
 }
 
 /**
- * Reads a server token's lifecycle record from the repository. Both
- * authentication at upgrade and the revalidation of open sessions read through
- * here, so the two paths always agree on what a token's state is. A token whose
- * definition or record is gone throws {@link ServerTokenNotFoundError}.
+ * upgrade authentication and open-session revalidation both read here, so they
+ * always agree on a token's state
  */
 export async function readServerTokenRecord(
   repoContext: RepositoryContext,
@@ -124,11 +119,6 @@ export async function createServerTokenAuthDeps(
   };
 }
 
-/**
- * Splits a presented server token of the form `<name>.<secret>`.
- * The name half addresses the token aggregate; the secret half is compared
- * against the vault-stored plaintext.
- */
 export function splitServerToken(
   presented: string,
 ): { name: string; secret: string } | null {
@@ -235,7 +225,6 @@ export type ServerTokenAuthResult =
     principalId: string;
     collectives: readonly string[];
     groups: readonly string[];
-    /** Name of the token that authenticated. */
     tokenName: string;
     /**
      * The token record's `createdAt`. Rotation rewrites it, so it identifies
@@ -243,14 +232,13 @@ export type ServerTokenAuthResult =
      */
     tokenCreatedAt: string;
     /**
-     * Who the OAuth provider said the user was at login. Absent on tokens
-     * minted any other way (swamp-club#3076).
+     * who the OAuth provider said the user was at login; absent on tokens
+     * minted any other way
      */
     oauthIdentity?: ActorIdentity;
   }
   | { ok: false; error: string; reason: TokenAuthRejectionReason };
 
-/** A browser-session reference to one exact server-token mint. */
 export interface DashboardSessionTokenBinding {
   readonly tokenName: string;
   readonly tokenCreatedAt: string;
@@ -272,7 +260,6 @@ export function classifyRedeemError(message: string): TokenAuthRejectionReason {
   return "unknown";
 }
 
-/** Whether a rejected session's backing token can never authenticate again. */
 export function shouldInvalidateDashboardSession(
   reason: TokenAuthRejectionReason,
 ): boolean {
@@ -281,9 +268,8 @@ export function shouldInvalidateDashboardSession(
 }
 
 /**
- * Validates a presented `<name>.<secret>` server token directly against its
- * lifecycle resource. Authentication is read-only; explicit model `redeem`
- * calls retain their `lastUsedAt` update behavior.
+ * authentication is read-only; explicit model redeem calls keep their
+ * lastUsedAt update
  */
 const MAX_TOKEN_LENGTH = 512;
 
@@ -319,15 +305,14 @@ export async function authenticateServerToken(
     validateServerToken(token, split.name, presented, nowMs);
     const secret = await deps.readSecret(token.vaultName, token.secretKey);
     validateServerToken(token, split.name, presented, nowMs, secret);
-    // The presented secret is the vault's; it must also be the one this
-    // record was minted with, or the credential would authenticate as another
-    // mint's principal (swamp-club#2482).
+    // the presented secret is the vault's; it must also be the one this record
+    // was minted with, or the credential would authenticate as another mint's
+    // principal
     await verifyServerTokenSecret(token, secret);
 
-    // Every caller parses the principal after a successful authentication;
-    // a stored principal that does not parse (minted before mint validated
-    // it, or hand-edited) must be a rejection, not a crash (swamp-club#2383).
-    // A service principal never authenticates, whatever the stored record says.
+    // every caller parses the principal after authentication, so a stored
+    // principal that does not parse (hand-edited, or minted before validation)
+    // is a rejection, not a crash. A service principal never authenticates
     let principal: Principal;
     try {
       principal = parsePrincipal(token.principalId);
@@ -439,9 +424,8 @@ export async function authenticateDashboardSession(
 }
 
 /**
- * Tells the audit context the user name an OAuth login recorded on the token,
- * so a token minted by a login on another replica, or before this serve
- * started, names its user everywhere this serve names a caller.
+ * a token minted by a login on another replica, or before this serve started,
+ * then names its user everywhere this serve names a caller
  */
 function rememberTokenUsername(
   auditContext: TokenAuthAuditContext | undefined,

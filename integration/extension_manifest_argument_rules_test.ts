@@ -17,16 +17,9 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// Architectural fitness test: every command that takes a manifest argument
-// resolves it through `resolveManifestArgument` (swamp-club#3018).
-//
-// `extension push`, `quality` and `fmt` must agree on what a manifest
-// argument means: a file or a directory, relative to the current directory
-// first, then `--extensions-dir`, then the repo dir. Before #3018 each
-// command also re-resolved the raw argument against the repo dir for its
-// own lookups, so the three drifted. This test pins the set of commands
-// that call `resolveExtensionFiles` and requires each of them to go through
-// the shared helper and never to resolve the raw argument on its own.
+// push, quality and fmt must agree on what a manifest argument means, so each
+// resolves it through resolveManifestArgument and never re-resolves the raw
+// argument against the repo dir
 
 import { join } from "@std/path";
 import { assertEquals } from "@std/assert";
@@ -38,7 +31,6 @@ import {
 
 const COMMANDS_DIR = join(import.meta.dirname!, "..", "src", "cli", "commands");
 
-/** Commands that resolve extension files from a manifest argument. */
 const MANIFEST_COMMANDS = [
   "src/cli/commands/extension_fmt.ts",
   "src/cli/commands/extension_push.ts",
@@ -89,10 +81,8 @@ Deno.test("manifest-argument rules: each manifest command resolves its argument 
 });
 
 /**
- * Each manifest command's first consumer of the resolved files. Resolution
- * validates every manifest entry (a directory in additionalFiles, binaries or
- * include is a validation error, swamp-club#3119), so it must run first for
- * the three commands to give one answer.
+ * resolution validates every manifest entry, so it must run before the first
+ * consumer of the resolved files for the three commands to give one answer
  */
 const FIRST_CONSUMER: Record<string, string> = {
   "src/cli/commands/extension_fmt.ts": "extensionFmt(",

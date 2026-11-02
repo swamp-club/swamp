@@ -107,14 +107,9 @@ import { isStagingEntryName } from "./install_journal.ts";
 import { markErrorPaths } from "../errors.ts";
 
 /**
- * Build the dynamic import() URL for a bundle file, keyed on the bundle's
- * content. The ES module registry keys modules by URL and never evicts
- * them, so identical bundle bytes must map to one URL: re-importing an
- * unchanged bundle (e.g. on serve hot-reload) then reuses the cached
- * module instead of retaining a new copy, while a changed bundle gets a
- * new URL and its new code executes (swamp-club#1140, swamp-club#2340).
- *
- * `bundleJs` must be exactly the text on disk at `bundlePath`.
+ * the ES module registry never evicts modules, so identical bundle bytes map to
+ * one URL: an unchanged bundle reuses the cached module, a changed one gets a
+ * new URL; bundleJs must be the on-disk text
  */
 export async function bundleImportUrl(
   bundlePath: string,
@@ -131,25 +126,11 @@ export async function bundleImportUrl(
   return `${toFileUrl(bundlePath).href}?${params}`;
 }
 
-/**
- * Extract the extension name from an absolute path within the
- * pulled-extensions directory. Returns undefined for paths outside
- * pulled-extensions (user-authored or built-in models).
- *
- * Path format: .../.swamp/pulled-extensions/@scope/name/<kind>/...
- * For scoped: @scope/name. For unscoped: name.
- */
-/** A row that holds a usable type for its source. */
 function isIndexedRow(row: ExtensionTypeRow): boolean {
   return (row.state ?? "Indexed") !== "Tombstoned" &&
     row.type_normalized.length > 0;
 }
 
-/**
- * Indexed catalog rows whose source path is outside the loader's spelling
- * of the repo root, keyed by symlink-resolved path. Built on the first
- * lookup of a cold catalog pass and shared across its directories.
- */
 interface OtherSpellingRows {
   rows?: Map<string, ExtensionTypeRow>;
 }
@@ -211,10 +192,8 @@ export function extractExtensionNameFromPath(
 }
 
 /**
- * Row states of a source that exists but could not be bundled, validated
- * or read. Unlike `CATALOG_FAILURE_STATES`, this includes
- * `ValidationFailed` and leaves out `OrphanedBundleOnly`, whose source is
- * gone.
+ * unlike CATALOG_FAILURE_STATES this includes ValidationFailed and leaves out
+ * OrphanedBundleOnly, whose source is gone
  */
 const LOCAL_OVERRIDE_FAILURE_STATES: ReadonlySet<string> = new Set([
   "ValidationFailed",
@@ -222,11 +201,7 @@ const LOCAL_OVERRIDE_FAILURE_STATES: ReadonlySet<string> = new Set([
   "EntryPointUnreadable",
 ]);
 
-/**
- * The directories whose test files the loader discovers: every additional
- * directory (mounted sources, pulled extensions) except the local ones,
- * which are scanned like the primary directory, without test files.
- */
+/** local directories are scanned like the primary directory, without test files */
 function testFileDirsOf(
   additionalDirs: readonly string[] | undefined,
   localDirs: readonly string[],
@@ -235,39 +210,30 @@ function testFileDirsOf(
   return new Set((additionalDirs ?? []).filter((d) => !local.has(d)));
 }
 
-/** The lookup for a loader with no catalog: no source has recorded modules. */
 const NO_RECORDED_SOURCE_MODULES: SourceModuleLookup = {
   findSourceModules: () => undefined,
 };
 
-/** One source a {@link ExtensionLoader.refreshStaleSources} pass rebundled. */
 export interface RefreshedSource {
   sourcePath: string;
-  /** The type the source's row claimed before the pass. */
   previousType?: string;
-  /** The type the source registers now. */
   type?: string;
-  /** The type the source's add-on extends, before or after the pass. */
   extendsType?: string;
 }
 
-/** One source whose rebundle, import or validation failed in the pass. */
 export interface FailedRefreshSource {
   sourcePath: string;
   previousType?: string;
-  /** The type the source's add-on extended before the pass. */
   extendsType?: string;
   error: string;
 }
 
-/** A catalog row the pass dropped because its source is gone. */
 export interface RemovedRefreshSource {
   sourcePath: string;
   kind?: string;
   type?: string;
 }
 
-/** What one {@link ExtensionLoader.refreshStaleSources} pass changed. */
 export interface SourceRefreshChanges {
   rebundled: RefreshedSource[];
   failed: FailedRefreshSource[];
@@ -277,31 +243,21 @@ export interface SourceRefreshChanges {
 export class ExtensionLoader {
   private readonly denoRuntime: DenoRuntime;
   private readonly repoDir: string | null;
-  /** Symlink-resolved canonical repo root, resolved on first use. */
   private realRepoDir?: string;
-  /**
-   * Both spellings of each mounted directory, as configured and
-   * symlink-resolved, each ending in `/`, in source order. Resolved on
-   * first use.
-   */
   private mountPrefixes?: readonly (readonly string[])[];
   private readonly datastoreResolver?: DatastorePathResolver;
   private readonly repository?: ExtensionRepository;
   private readonly adapter: KindAdapter;
   private readonly logger;
   /**
-   * When set, indexing learns a bundle's type by probing it in isolation
-   * and registers the type lazy, so nothing a source does at import runs
-   * in this isolate until the type is used (swamp-club#3374). Without one
-   * the loader imports in-process: the full-load path, and the one unit
-   * tests use.
+   * when set, indexing probes a bundle in isolation and registers its type
+   * lazy, so nothing a source does at import runs in this isolate until used;
+   * without it the loader imports in-process
    */
   private readonly bundleProber: BundleProber | undefined;
   /**
-   * Reads the module graph a source is bundled from, so its fingerprint
-   * covers every local module the bundle includes (swamp-club#3385).
-   * Without one, the relative imports within the kind's directory stand
-   * in.
+   * lets a fingerprint cover every local module the bundle includes; without
+   * one, the relative imports within the kind's directory stand in
    */
   private readonly moduleGraphReader: ModuleGraphReaderFactory | undefined;
 
@@ -328,15 +284,13 @@ export class ExtensionLoader {
     this.appliedSourceRows = this.localSourceRows();
   }
 
-  /** The catalog's recorded source modules, or none without a catalog. */
   private sourceModules(): SourceModuleLookup {
     return this.repository?.getCatalogStore() ?? NO_RECORDED_SOURCE_MODULES;
   }
 
   /**
-   * The source a type is registered from, as it stands now, so a
-   * long-lived process can tell when the source changed under it
-   * (swamp-club#3594). Undefined when the files cannot be read.
+   * lets a long-lived process tell when the source changed under it; undefined
+   * when the files cannot be read
    */
   private async sourceSnapshot(
     absolutePath: string,
@@ -350,19 +304,9 @@ export class ExtensionLoader {
   }
 
   /**
-   * Records the local modules `absolutePath` was just bundled from, so its
-   * fingerprint covers each of them wherever it lives and however it is
-   * imported (swamp-club#3385). The module graph names them all; when it
-   * cannot be read, the relative imports within `boundaryDir` stand in.
-   *
-   * A graph that could not be read is retried once: the fallback is
-   * recorded graph pending, so the next warm scan finds the source stale,
-   * unless this bundle was that retry (`graphRetry`), in which case the
-   * fallback is kept (swamp-club#3487). A graph over
-   * {@link MAX_SOURCE_MODULES} is not retried. A catalog error does not
-   * fail the good bundle it follows: the recorded list, which may name
-   * modules the source no longer imports, is forgotten instead, so the
-   * next warm scan rebuilds it. Only a failure to forget it is thrown.
+   * an unreadable graph is retried once (the fallback marks the source stale
+   * for the next warm scan unless this bundle was the retry); a catalog error
+   * forgets the recorded list instead of failing the good bundle
    */
   private async recordSourceModules(
     absolutePath: string,
@@ -421,10 +365,8 @@ export class ExtensionLoader {
   }
 
   /**
-   * The lockfile the bundle of a source under `denoConfigPath` reads, as a
-   * module its fingerprint covers, so a lock that is created, updated or
-   * pulled rebuilds the bundle against it. Recorded before it exists: a
-   * missing module hashes to a placeholder until it appears.
+   * recorded before it exists: a missing lock hashes to a placeholder, so a
+   * lock that is created, updated or pulled rebuilds the bundle
    */
   private async lockPathFor(denoConfigPath: string): Promise<string[]> {
     const project = { denoConfigPath };
@@ -434,9 +376,8 @@ export class ExtensionLoader {
   }
 
   /**
-   * After a failed bundle, records the relative imports within
-   * `boundaryDir` for a source with no recorded modules, so the warm scan
-   * does not treat it as unrecorded and retry it on every command.
+   * so the warm scan does not treat the source as unrecorded and retry it on
+   * every command
    */
   private async recordFallbackSourceModules(
     absolutePath: string,
@@ -461,9 +402,9 @@ export class ExtensionLoader {
   }
 
   /**
-   * Discovered files without the kind's export are helper modules imported
-   * by entry points (e.g. `models/foo/lib/*.ts`). Skipping them is expected,
-   * so the message says what the file is rather than implying a failure.
+   * files without the kind's export are helper modules; skipping them is
+   * expected, so the message says what the file is rather than implying a
+   * failure
    */
   private logHelperModuleSkip(file: string): void {
     const kind = this.adapter.kind;
@@ -472,9 +413,8 @@ export class ExtensionLoader {
   }
 
   /**
-   * Reusing a pulled extension's existing bundle is the normal fast path,
-   * not a failure, so it is logged at debug. A failed rebundle is already
-   * reported by `bundleWithCache` itself.
+   * reusing a pulled extension's bundle is the normal fast path, logged at
+   * debug; a failed rebundle is reported by bundleWithCache
    */
   private logTrustedPulledBundle(bundled: BundleResult, file: string): void {
     if (bundled.fromCache && bundled.cacheReason === "trusted-pulled") {
@@ -483,9 +423,8 @@ export class ExtensionLoader {
   }
 
   /**
-   * Returns true when the caller listed this source as already handled.
-   * The check runs before the source is read, so a skipped file costs no
-   * read, bundle or import (swamp-club#2355).
+   * checked before the source is read, so a skipped file costs no read, bundle
+   * or import
    */
   private isSkippedSource(
     baseDir: string,
@@ -502,13 +441,9 @@ export class ExtensionLoader {
   }
 
   /**
-   * Refuses a type that `dir` and one of `localDirs` both declare, such as
-   * one model defined in `extensions/models/` and again in
-   * `extensions/behaviors/` (swamp-club#3338). Both are local, so neither
-   * outranks the other: the catalog would keep the one with the smaller
-   * path and drop the other silently. Types are read from source text, as
-   * the catalog's own type extraction does; a local directory that is
-   * missing or empty costs one directory read.
+   * both directories are local so neither outranks the other: the catalog would
+   * keep the smaller path and silently drop the other; types are read from
+   * source text like the catalog's extraction
    */
   private async assertNoLocalTypeCollisions(
     dir: string,
@@ -585,17 +520,14 @@ export class ExtensionLoader {
       skipAlreadyRegistered?: boolean;
       additionalDirs?: string[];
       /**
-       * Further local directories of the same tier as `dir`, scanned right
-       * after it and, like it, without test files: the behaviors directory
-       * beside the models directory (swamp-club#3338). A type both `dir`
-       * and one of these declare is refused.
+       * scanned right after dir, without test files; a type both dir and one of
+       * these declare is refused
        */
       localDirs?: string[];
       indexOnly?: boolean;
       /**
-       * Canonical absolute source paths to skip without reading, bundling
-       * or importing them. The caller must only pass sources whose types
-       * are already registered: no type check runs for these paths.
+       * the caller must pass only sources whose types are already registered:
+       * no type check runs for these paths
        */
       skipSourcePaths?: ReadonlySet<string>;
     },
@@ -690,8 +622,8 @@ export class ExtensionLoader {
           continue;
         }
 
-        // Taken before bundling, so an edit landing meanwhile reads as a
-        // change rather than as the code that was loaded (swamp-club#3594).
+        // taken before bundling, so an edit landing meanwhile reads as a change
+        // rather than as the code that was loaded
         const snapshot = await this.sourceSnapshot(absolutePath);
         const bundled = await this.bundleWithCache(
           absolutePath,
@@ -812,8 +744,8 @@ export class ExtensionLoader {
     }
 
     if (this.adapter.processSecondaryExport) {
-      // Attach the likely winner first; the outcome does not depend on this
-      // order (swamp-club#2562).
+      // attach the likely winner first; the outcome does not depend on this
+      // order
       const ranked = secondaryFiles
         .map((f) => ({
           ...f,
@@ -822,7 +754,6 @@ export class ExtensionLoader {
         .sort((a, b) =>
           compareExtensionPrecedence(a.contributor, b.contributor)
         );
-      // Extension files in one package often share helper modules.
       const fingerprintCache = createFreshnessCache();
       for (const { file, module, baseDir, contributor } of ranked) {
         let fingerprint: string | undefined;
@@ -861,7 +792,6 @@ export class ExtensionLoader {
     dir: string,
     options?: {
       additionalDirs?: string[];
-      /** As for {@link load}: further local directories of `dir`'s tier. */
       localDirs?: string[];
       indexOnly?: boolean;
     },
@@ -889,8 +819,8 @@ export class ExtensionLoader {
 
     const localDirs = options?.localDirs ?? [];
     await this.assertNoLocalTypeCollisions(dir, localDirs);
-    // Every directory past `dir`, local ones first; only the non-local ones
-    // contribute test files, as before local directories existed.
+    // every directory past dir, local ones first; only the non-local ones
+    // contribute test files
     const extraDirs = localDirs.length > 0
       ? [...localDirs, ...(options?.additionalDirs ?? [])]
       : options?.additionalDirs;
@@ -1023,9 +953,8 @@ export class ExtensionLoader {
       extraDirs,
       testFileDirs,
     );
-    // The same unseen-row removal the warm path applies, so rows the
-    // scan no longer reaches (an old pulled root, an extension that is
-    // no longer installed) do not outlive a cold pass (swamp-club#2490).
+    // the same unseen-row removal as the warm path, so rows the scan does not
+    // reach do not outlive a cold pass
     const seen = await collectSeenSources(
       [dir, ...(extraDirs ?? [])],
       (d) => this.discoverFiles(d, "", testFileDirs.has(d)),
@@ -1058,25 +987,14 @@ export class ExtensionLoader {
   }
 
   /**
-   * Re-runs {@link buildIndex}'s warm pass over the same source dirs, for a
-   * long-lived process whose sources may have changed since it loaded them
-   * (swamp-club#3284). It never invalidates the catalog: with no populated
-   * catalog it does nothing and returns null.
-   *
-   * Unlike startup it does not warn about broken rows: a long-lived
-   * process refreshes before every run, and would repeat the warning each
-   * time.
-   *
-   * It does not replace a definition that is already registered: a stale
-   * source of a registered type only gets its catalog row and bundle
-   * updated. The returned changes say which sources moved, so the caller
-   * can swap their types.
+   * never invalidates the catalog and does not warn about broken rows, which
+   * every run would repeat; a registered definition is not replaced, only the
+   * stale source's row and bundle are updated
    */
   async refreshStaleSources(
     dir: string,
     options?: {
       additionalDirs?: string[];
-      /** As for {@link buildIndex}: further local directories of `dir`'s tier. */
       localDirs?: string[];
     },
   ): Promise<SourceRefreshChanges | null> {
@@ -1106,7 +1024,6 @@ export class ExtensionLoader {
         changes,
       );
     } finally {
-      // As for buildIndex: no probe outlives the pass that asked for it.
       await this.bundleProber?.release();
     }
     this.includePreviouslyIndexedChanges(changes);
@@ -1185,17 +1102,13 @@ export class ExtensionLoader {
     this.appliedSourceRows = current;
   }
 
-  /** True when the source lives under one of the repo's pulled roots. */
   isPulledSourcePath(sourcePath: string): boolean {
     return this.contributorFor(sourcePath).pulled;
   }
 
   /**
-   * Registers, as lazy, every catalog type not yet registered, as the end
-   * of an index pass does. For a caller that invalidated types after
-   * {@link refreshStaleSources} and wants them back from their new rows.
-   * Broken rows are skipped without the startup warning, which a refresh
-   * on every run would repeat.
+   * broken rows are skipped without the startup warning, which a refresh on
+   * every run would repeat
    */
   registerFromCatalog(): void {
     this.registerLazyFromCatalog(
@@ -1333,11 +1246,9 @@ export class ExtensionLoader {
             extensions[extIdx] = failResult.extension;
             repository.saveAll([failResult.extension]);
           } else if (error instanceof ProbeFailedError) {
-            // A source no aggregate knows yet has no row, so it would be
-            // stale, and probed to its timeout, on every command. The
-            // row pins the failure to this fingerprint (swamp-club#3374).
-            // No aggregate owns it, like the rows a successful rebundle
-            // writes here; the repository derives its owner on load.
+            // a source no aggregate knows has no row, so it would be stale and
+            // probed to its timeout on every command; the row pins the failure
+            // to this fingerprint and has no owner, derived on load
             const stat = await Deno.stat(absolutePath).catch(() => null);
             catalog.upsert({
               type_normalized: "",
@@ -1375,10 +1286,9 @@ export class ExtensionLoader {
       catalog.markTypelessHealDone(this.adapter.catalogKinds[0]);
     }
 
-    // A probed pass imports nothing here: a lazy base type attaches its
-    // extensions when it is loaded, and one that is already registered
-    // attaches them through the registry's extension attacher on first
-    // use (swamp-club#2846, swamp-club#3374).
+    // a probed pass imports nothing here: a lazy base type attaches its
+    // extensions when loaded, and a registered one attaches them through the
+    // registry's attacher on first use
     if (this.adapter.attachPendingExtensionsForType && !this.bundleProber) {
       for (const type of typesNeedingExtensionAttach) {
         await this.adapter.attachPendingExtensionsForType(
@@ -1429,13 +1339,9 @@ export class ExtensionLoader {
       );
     }
 
-    // A row whose source is gone must never be imported: its bundle, if
-    // any, is old code, and rebuilding a missing bundle fails with ENOENT
-    // (swamp-club#2490). Drop such rows until a live one turns up; with
-    // none left, return so the registry reports the type as not found.
-    // Bounded by the rows claiming the type, so a delete that silently
-    // fails cannot loop forever. They are counted only once a source is
-    // missing, so the common case adds no SQLite read to a lazy load.
+    // a row whose source is gone is never imported: drop such rows until a live
+    // one turns up, bounded by the rows claiming the type so a failed delete
+    // cannot loop; counted only when a source is missing
     let remaining: number | undefined;
     while (!this.sourceExistsOnDisk(entry.source_path)) {
       remaining ??= catalog.findAllByType(typeNormalized, kind).length + 1;
@@ -1470,8 +1376,8 @@ export class ExtensionLoader {
         );
       for (const { ext, contributor } of extensions) {
         if (this.adapter.importAndExtendBundle) {
-          // One extension that fails to import must not take down its base
-          // type or the extensions after it (swamp-club#2557).
+          // one extension that fails to import must not take down its base type
+          // or the extensions after it
           try {
             await this.adapter.importAndExtendBundle(
               ext,
@@ -1503,11 +1409,8 @@ export class ExtensionLoader {
   }
 
   /**
-   * Ranks an extension source for member-collision resolution
-   * (swamp-club#2562). Pulled means under one of this repo's
-   * pulled-extension roots; the rule needs only the repo root, so every
-   * loader instance — cold start, hot load, serve reload — ranks a file
-   * the same way.
+   * pulled means under this repo's pulled-extension roots; the rule needs only
+   * the repo root, so every loader instance ranks a file the same way
    */
   private contributorFor(sourcePath: string): ExtensionContributor {
     const canonical = canonicalizePath(sourcePath);
@@ -1524,11 +1427,6 @@ export class ExtensionLoader {
       : { sourcePath: real, pulled, mountIndex };
   }
 
-  /**
-   * The position of the `.swamp-sources.yaml` mount a source lives under,
-   * matching either spelling of the source against either spelling of the
-   * mount, or -1 when it lives under none (swamp-club#2563).
-   */
   private mountIndexOf(canonical: string, real: string): number {
     this.mountPrefixes ??= (this.repository?.mountedSourceDirs ?? []).map(
       (dir) => {
@@ -1543,11 +1441,6 @@ export class ExtensionLoader {
     );
   }
 
-  /**
-   * A source is pulled when either spelling of it sits under either
-   * spelling of the repo root's pulled roots. Mirrors the realpath fallback
-   * in {@link extractExtensionNameFromPath}.
-   */
   private isPulledSource(canonical: string, real: string): boolean {
     const repoDir = this.repoDir!;
     const roots = [canonicalizePath(repoDir)];
@@ -1560,10 +1453,8 @@ export class ExtensionLoader {
   }
 
   /**
-   * Bundles one source and reads the type it declares, without writing to
-   * the catalog. `checkBundle`, when given, sees a freshly built bundle
-   * before it is imported or probed, and may throw to stop it running; a
-   * bundle reused from disk is not passed to it.
+   * checkBundle sees a freshly built bundle before it is imported or probed and
+   * may throw to stop it; a reused on-disk bundle is not passed to it
    */
   public async bundleAndIndexOne(args: {
     absolutePath: string;
@@ -1686,8 +1577,8 @@ export class ExtensionLoader {
   ): Promise<void> {
     if (this.adapter.isFullyLoaded(entry.type_normalized)) return;
 
-    // Taken before the import, so an edit landing meanwhile reads as a
-    // change rather than as the code that was loaded (swamp-club#3594).
+    // taken before the import, so an edit landing meanwhile reads as a change
+    // rather than as the code that was loaded
     const snapshot = await this.sourceSnapshot(entry.source_path);
     const module = await this.importBundleByPath({
       bundlePath: entry.bundle_path,
@@ -1739,7 +1630,6 @@ export class ExtensionLoader {
     return await import(await this.bundleImportTargetByPath(paths));
   }
 
-  /** The URL to `import()` for an existing bundle file. */
   private async bundleImportTargetByPath(
     paths: {
       bundlePath: string;
@@ -1769,11 +1659,9 @@ export class ExtensionLoader {
   }
 
   /**
-   * Bundles `absolutePath` without writing its project's lockfile, as push,
-   * quality and fmt read it (swamp-club#3869): `--frozen` against the lock
-   * the project has, `--no-lock` when it has none. A stale lock does not
-   * stop the extension loading: it warns and bundles with `--no-lock`,
-   * leaving the lock for the author to update.
+   * bundles without writing the lockfile: --frozen against the lock the project
+   * has, --no-lock when none; a stale lock warns and bundles --no-lock, leaving
+   * the lock for the author to update
    */
   private async bundleLocal(
     absolutePath: string,
@@ -1809,7 +1697,7 @@ export class ExtensionLoader {
     paths: { bundlePath: string; sourcePath: string },
   ): Promise<string> {
     const denoPath = await this.denoRuntime.ensureDeno();
-    // Pulled source reads no Deno config (swamp-club#3970).
+    // pulled source reads no Deno config
     const pulled = this.isPulledBoundary(paths.sourcePath);
     let denoConfigPath: string | undefined;
     if (this.adapter.resolveDenoConfig && !pulled) {
@@ -1832,10 +1720,8 @@ export class ExtensionLoader {
   }
 
   /**
-   * True when another live row already claims `typeNormalized` and wins
-   * it over `sourcePath`: local outranks pulled, a pulled row that already
-   * holds the type keeps it against another pulled row, and two locals
-   * fall back to the smaller path.
+   * local outranks pulled, a pulled row already holding the type keeps it
+   * against another pulled row, and two locals fall back to the smaller path
    */
   private isOutrankedForType(
     catalog: ExtensionCatalogStore,
@@ -1856,14 +1742,9 @@ export class ExtensionLoader {
   }
 
   /**
-   * Settles every type conflict the loader's own catalog writes can
-   * leave: pulled-vs-pulled first, keeping the earliest-indexed row, then
-   * conflicts with source-mounted rows (local beats mounted, an earlier
-   * mount beats a later one, swamp-club#2563), then pulled-vs-local, where
-   * local wins. In that order a local override always ends up the only
-   * claimant, however many pulled rows were typed the same
-   * (swamp-club#2490). Two different pulled extensions claiming one type
-   * are reported, since that choice is made silently here.
+   * order matters: pulled-vs-pulled (earliest-indexed wins), then
+   * source-mounted, then pulled-vs-local, so a local override ends up the only
+   * claimant; two different pulled claimants are reported
    */
   private settleTypeConflicts(catalog: ExtensionCatalogStore): void {
     if (!this.repoDir) return;
@@ -1880,27 +1761,9 @@ export class ExtensionLoader {
   }
 
   /**
-   * Restores the type of Indexed rows that claim none (swamp-club#2490).
-   * A row's type is cleared while another row claims it; once that row is
-   * gone the type is never re-derived, because the row's fingerprint still
-   * matches. Each row's EXISTING bundle is imported to learn its exported
-   * type (this works for wrapped exports, which source-text extraction
-   * misses), and the type is written back only when no row claims it,
-   * for at most one row per type, chosen by
-   * {@link compareExtensionPrecedence}: a local row before a
-   * source-mounted one before a pulled one, then the smallest canonical
-   * path, the Extension aggregate's I2 tie-break. The one exception: when
-   * every row claiming the type is a source-mounted row the chosen row
-   * outranks, the type moves to the chosen row (swamp-club#2563).
-   *
-   * Catalog-only: nothing is registered here, so a pulled row can never
-   * take a type from a local override in the registry, and a failure
-   * leaves the row as it was.
-   *
-   * Callers skip the heal, leaving its marker unset, while
-   * {@link hasLiveLocalFailure} holds: a failed row claims no type, so a
-   * broken local override would otherwise hand its type to the pulled
-   * row it shadows.
+   * restores a type cleared while another row claimed it, by importing the
+   * existing bundle, for one row per type by precedence; catalog-only, so a
+   * pulled row never takes a type from a local override
    */
   private async healTypelessRows(
     catalog: ExtensionCatalogStore,
@@ -1957,9 +1820,9 @@ export class ExtensionLoader {
       // a different candidate.
       catalog.runInTransaction(() => {
         const holders = catalog.findAllByType(typeNormalized, kind);
-        // A local override that an older binary indexed typeless while a
-        // source-mounted row held its type takes the type back
-        // (swamp-club#2563). Any other holder keeps it.
+        // a local override that an older binary indexed typeless while a
+        // source-mounted row held its type takes the type back; any other
+        // holder keeps it
         const winnerContributor = this.contributorFor(winner);
         const displaced = holders.filter((row) => {
           const holder = this.contributorFor(row.source_path);
@@ -1976,10 +1839,8 @@ export class ExtensionLoader {
   }
 
   /**
-   * True when a local row of this kind is in a failed state and its source
-   * still exists. Its type is unknown — failed rows claim none — so it may
-   * be the override of any typeless pulled row, and the typeless-row heal
-   * must wait until it is fixed or removed (swamp-club#2490).
+   * failed rows claim no type, so a live local failure may be the override of
+   * any typeless pulled row; the heal must wait until it is fixed or removed
    */
   private hasLiveLocalFailure(catalog: ExtensionCatalogStore): boolean {
     const failed = catalog.findByKind(this.adapter.catalogKinds[0]).find((
@@ -2101,18 +1962,9 @@ export class ExtensionLoader {
           cache,
         ).catch(() => undefined);
 
-        // Startup reconcile indexes sources by importing their bundles, so
-        // a row it wrote holds the export's real type — including exports
-        // the static extractor cannot read, such as a wrapped
-        // `export const extension = withOptions(definition)`. Keep an
-        // up-to-date row's type instead of re-deriving it from source text
-        // (swamp-club#2562). The bundle location can still have moved (a
-        // layout or datastore change), so refresh that. The row may have
-        // been written under another spelling of the repo root (`/tmp/r`
-        // vs `/private/tmp/r` on macOS), which changes the source-dirs
-        // fingerprint and forces this rebuild (swamp-club#2570). An exact
-        // row without a usable type (tombstoned, or cleared by origin
-        // conflict resolution) does not hide one under the other spelling.
+        // reconcile indexes by importing bundles, so an up-to-date row holds
+        // the real type, even for exports static extraction cannot read: keep
+        // it and refresh only the bundle location
         const sourcePath = canonicalizePath(absolutePath);
         const exact = catalog.findBySourcePath(absolutePath);
         const existing = exact !== undefined && isIndexedRow(exact)
@@ -2128,9 +1980,8 @@ export class ExtensionLoader {
           existing.source_fingerprint === sourceFingerprint
         ) {
           if (existing.source_path !== sourcePath) {
-            // Move the row to this spelling, as the next warm scan would
-            // when it drops rows for paths it no longer sees. Moving it
-            // keeps one row per file, so no second row claims its type.
+            // move the row to this spelling, as the next warm scan would; one
+            // row per file means no second row claims its type
             const moved = {
               ...existing,
               source_path: sourcePath,
@@ -2158,18 +2009,14 @@ export class ExtensionLoader {
 
         const extracted = this.adapter.extractTypeFromSource(source);
         if (!extracted) {
-          // A stale indexed row is refreshed by the next stale-file scan,
-          // which imports the bundle; only warn when nothing indexed it.
-          // A file whose export text is only inside a string or comment,
-          // such as a test fixture, is not an entry point
-          // (swamp-club#2876).
+          // a stale indexed row is refreshed by the next stale-file scan, so
+          // warn only when nothing indexed it; export text only inside a string
+          // or comment, as in a test fixture, is not an entry point
           if (!indexed && declaresExport(source, this.adapter.exportRegex)) {
             emitTypeExtractionFailure(absolutePath, this.adapter.kind);
           }
           continue;
         }
-        // As before, a file whose fingerprint cannot be computed is not
-        // indexed from source text.
         if (sourceFingerprint === undefined) continue;
 
         catalog.upsert({
@@ -2190,11 +2037,9 @@ export class ExtensionLoader {
   }
 
   /**
-   * The indexed row for `sourcePath` written under another spelling of the
-   * same file, matched on the symlink-resolved path in either direction.
-   * Rows under the loader's own spelling of the repo root are left out:
-   * the exact lookup already covers them, so a catalog with no other
-   * spelling costs no realpath calls.
+   * rows under the loader's own spelling of the repo root are left out, since
+   * the exact lookup covers them; a catalog with no other spelling costs no
+   * realpath calls
    */
   private findRowUnderOtherSpelling(
     catalog: ExtensionCatalogStore,
@@ -2231,9 +2076,9 @@ export class ExtensionLoader {
       outranked?: TypelessRow;
     }
   > {
-    // A graph-pending source is stale for its one retry. Use the retry up
-    // before anything that can return or throw, so a source that leaves
-    // by any path is not stale again for it (swamp-club#3487).
+    // a graph-pending source is stale for its one retry; use the retry up
+    // before anything that can return or throw, so a source leaving by any path
+    // is not stale again for it
     const graphRetry = catalog.takeSourceGraphPending(absolutePath);
     const source = await Deno.readTextFile(absolutePath);
     if (!this.adapter.exportRegex.test(source)) {
@@ -2249,10 +2094,9 @@ export class ExtensionLoader {
       }
       return {};
     }
-    // A source with no row is stale on every scan. When an import at this
-    // fingerprint already found no export (a test fixture whose export text
-    // is only inside a string), bundling and importing it again would find
-    // nothing, on every command (swamp-club#2876).
+    // a source with no row is stale on every scan; when an import at this
+    // fingerprint already found no export, bundling again would find nothing on
+    // every command
     if (catalog.findBySourcePath(absolutePath) === undefined) {
       const fingerprint = await computeSourceFingerprint(
         absolutePath,
@@ -2266,8 +2110,8 @@ export class ExtensionLoader {
       }
     }
 
-    // Taken before bundling, so an edit landing meanwhile reads as a
-    // change rather than as the code that was loaded (swamp-club#3594).
+    // taken before bundling, so an edit landing meanwhile reads as a change
+    // rather than as the code that was loaded
     const snapshot = await this.sourceSnapshot(absolutePath, catalog);
     const bundled = await this.bundleWithCache(
       absolutePath,
@@ -2346,9 +2190,9 @@ export class ExtensionLoader {
       }
       const validated = parsed.data as Record<string, unknown>;
       const typeNormalized = this.adapter.normalizeType(validated);
-      // Never write a type another row outranks this one for: two pulled
-      // rows sharing a type would make every later save fail I-Repo-1
-      // before the settle step runs (swamp-club#2490).
+      // never write a type another row outranks this one for: two pulled rows
+      // sharing a type would fail every later save on I-Repo-1 before the
+      // settle step runs
       const outranked = this.isOutrankedForType(
         catalog,
         typeNormalized,
@@ -2460,11 +2304,9 @@ export class ExtensionLoader {
   }
 
   /**
-   * The probing counterpart of the in-process half of
-   * {@link rebundleAndUpdateCatalog}: the same catalog writes, from a probe
-   * result. Nothing is registered here — the type becomes a lazy entry
-   * when buildIndex registers from the catalog, and is imported into this
-   * isolate only when it is used.
+   * the probing counterpart of the in-process half of rebundleAndUpdateCatalog:
+   * same catalog writes from a probe result; nothing is registered here, the
+   * type becomes a lazy entry at buildIndex
    */
   private async probeAndUpdateCatalog(
     prober: BundleProber,
@@ -2595,8 +2437,8 @@ export class ExtensionLoader {
     const bundleDir = this.resolveBundlePath();
     if (!bundleDir) return;
     try {
-      // Every entry but install staging, which belongs to an install in
-      // flight or to its crash recovery (swamp-club#2723).
+      // every entry but install staging, which belongs to an install in flight
+      // or to its crash recovery
       for await (const entry of Deno.readDir(bundleDir)) {
         if (isStagingEntryName(entry.name)) continue;
         try {
@@ -2617,10 +2459,6 @@ export class ExtensionLoader {
     }
   }
 
-  /**
-   * Where the bundle of `relativePath` under `baseDir` lives, or "" without
-   * a repo dir.
-   */
   getBundlePath(relativePath: string, baseDir: string): string {
     if (!this.repoDir) return "";
     return this.resolveBundlePath(
@@ -2629,10 +2467,6 @@ export class ExtensionLoader {
     );
   }
 
-  /**
-   * True when `boundaryDir` (or a source path) sits under one of the repo's
-   * pulled-extension roots, so its source is a pulled extension's.
-   */
   private isPulledBoundary(boundaryDir: string): boolean {
     if (!this.repoDir) return false;
     const resolvedBoundary = resolve(boundaryDir);
@@ -2650,11 +2484,8 @@ export class ExtensionLoader {
   }
 
   /**
-   * True when the catalog row for `absolutePath` indexes the bundle at
-   * `bundlePath` at the source's current fingerprint, by the tests the warm
-   * scan applies. Startup reconcile writes such a row before the first full
-   * load of a kind, so that load reuses its bundle instead of building the
-   * same one again.
+   * startup reconcile writes such a row before the first full load of a kind,
+   * so that load reuses its bundle instead of building it again
    */
   private async isFreshIndexedBundle(
     absolutePath: string,
@@ -2690,12 +2521,7 @@ export class ExtensionLoader {
     boundaryDir: string,
     options?: {
       trustPulledCache?: boolean;
-      /** This bundle is the one retry of a graph-pending source. */
       graphRetry?: boolean;
-      /**
-       * Reuse a local source's bundle that its catalog row already
-       * indexes at the source's current fingerprint.
-       */
       reuseFreshIndexed?: boolean;
     },
   ): Promise<BundleResult> {
@@ -2749,7 +2575,7 @@ export class ExtensionLoader {
               .debug`Using discovered deno config for ${relativePath}: ${denoConfigPath}`;
           }
         }
-        // Pulled source never reads a Deno config (swamp-club#3970).
+        // pulled source never reads a Deno config
         js = await this.bundleLocal(
           absolutePath,
           denoPath,
@@ -2826,10 +2652,6 @@ export class ExtensionLoader {
     return { js, fromCache: false };
   }
 
-  /**
-   * The URL to `import()` for a bundle: the file in the bundle cache when
-   * it is there, otherwise the bundle text itself as a data URL.
-   */
   private async bundleImportTarget(
     js: string,
     relativePath: string,
@@ -2893,9 +2715,8 @@ export class ExtensionLoader {
   }
 
   /**
-   * Probes a bundle and maps a failed probe onto the errors an in-process
-   * import and validation would have thrown, so callers record the same
-   * source states.
+   * a failed probe maps onto the errors an in-process import and validation
+   * would throw, so callers record the same source states
    */
   private async probeBundle(
     prober: BundleProber,

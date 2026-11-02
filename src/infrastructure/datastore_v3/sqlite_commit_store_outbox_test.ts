@@ -17,11 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * What the commit store gives the commit outbox (swamp-club#3490): head
- * identities, landed txnIds, and the pruning of compacted txnIds.
- */
-
 import { assertEquals } from "@std/assert";
 import { join } from "@std/path";
 import { DatabaseSync } from "node:sqlite";
@@ -59,7 +54,6 @@ async function withStore(
   }
 }
 
-/** Commit `seq` of the fixture model, made `days` after T0. */
 async function save(seq: number, days = seq) {
   return modelCommit(seq, [await savePut("x", seq)], {
     at: new Date(T0 + days * DAY).toISOString(),
@@ -90,14 +84,11 @@ Deno.test("SqliteCommitStore.headIdentity: the head's txnId, stored, compacted, 
       seq: 3,
       txnId: "txn-3",
     });
-    // Every commit folded: the head's txnId comes from compacted_txns.
     await store.compactHistory(3);
     assertEquals(await store.headIdentity("", partition), {
       seq: 3,
       txnId: "txn-3",
     });
-    // Another partition's commit becomes the point, and the head's txnId is
-    // pruned: only its seq is known.
     await store.append(
       modelCommit(1, [await runPut("r")], {
         partition: runPartition(),
@@ -132,8 +123,6 @@ Deno.test("SqliteCommitStore.compactHistory: prunes compacted txnIds made before
     const report = await store.compactHistory(3, {
       pruneTxnsBefore: new Date(T0 + 10 * DAY),
     });
-    // Commits 1 to 3 were made on days 1 to 3, all before the cutoff; the
-    // point's own (3) stays.
     assertEquals(report.prunedTxns, 2);
     assertEquals(txnRows(path), ["txn-3"]);
     assertEquals(
@@ -148,8 +137,6 @@ Deno.test("SqliteCommitStore.compactHistory: prunes compacted txnIds made before
       }),
       "match",
     );
-    // Commit 3 is no longer the point; commit 4, made on day 4, is newer
-    // than the cutoff; commit 5 is the point.
     await store.compactHistory(5, {
       pruneTxnsBefore: new Date(T0 + 3.5 * DAY),
     });
@@ -171,7 +158,6 @@ Deno.test("SqliteCommitStore: a schema 4 store migrates, and its compacted txnId
     for (let seq = 1; seq <= 3; seq++) await store.append(await save(seq));
     await store.compactHistory(2);
     await store.close();
-    // Back to what schema 4 held.
     const db = new DatabaseSync(path);
     db.exec("DROP TABLE compacted_txn_times");
     db.exec("DROP TABLE compaction_point_commit");
@@ -193,11 +179,8 @@ Deno.test("SqliteCommitStore: a schema 4 store migrates, and its compacted txnId
       migrated.close();
       assertEquals(times.length, 2);
       for (const { committed_at } of times) {
-        // Old commits, but timed from the migration: a retry still finds them.
         assertEquals(Math.abs(committed_at - Date.now()) < 60_000, true);
       }
-      // With no point commit recorded, pruning past them all keeps nothing
-      // it cannot judge: the next batch records the point first.
       const report = await reopened.compactHistory(3, {
         pruneTxnsBefore: new Date(Date.now() + DAY),
       });

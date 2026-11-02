@@ -110,13 +110,9 @@ export async function validateCaCertFile(rawPath: string): Promise<string> {
 }
 
 /**
- * Refuses, before anything is written, every value `swamp worker connect`
- * would refuse when the service starts — otherwise the service restarts
- * on the same error forever. Labels are checked in the comma-joined form
- * the service reads back from SWAMP_WORKER_LABELS. Returns the --label
- * values the service will read as different labels than `worker connect`
- * would (a comma inside a value starts another label), so the caller can
- * warn about them.
+ * refuses up front every value worker connect would refuse at service start,
+ * which would restart forever; labels are checked comma-joined as the service
+ * reads them; values split differently are returned
  */
 export function validateWorkerDaemonOptions(
   url: string,
@@ -173,11 +169,9 @@ export function captureExtraHeaders(
 }
 
 /**
- * The environment every worker daemon starts with, before its options. A
- * system-mode service runs as another user with another HOME, so it is
- * pointed at the enabling user's config dir — where the swamp-club
- * credential and cached proof the auth gate needs live — as serve daemons
- * already are. No secret is written into the service definition.
+ * a system-mode service runs as another user with another HOME, so it is
+ * pointed at the enabling user's config dir, where the credential and cached
+ * proof for the auth gate live; no secret is written into the definition
  */
 export function workerDaemonBaseEnv(): Record<string, string> {
   return { SWAMP_CONFIG_DIR: resolve(getSwampConfigDir()) };

@@ -18,14 +18,9 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * A directory listed where the manifest takes files fails extension file
- * resolution with a validation error naming the entry (swamp-club#3119).
- * `extension quality`, `push` and `fmt` all resolve first, with these same
- * options, so they give this one answer before any hashing; that ordering
- * is pinned in extension_manifest_argument_rules_test.ts.
- *
- * The layout is the issue's CI layout: the repo is initialised inside the
- * extension directory and the manifest sits at its root.
+ * a directory listed where the manifest takes files fails resolution with a
+ * validation error naming the entry; quality, push and fmt resolve first, so
+ * all give this answer before any hashing
  */
 
 import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
@@ -107,7 +102,6 @@ for (const { field, entry, expected } of cases) {
         }),
       );
 
-      // The three commands' call, with no --extensions-dir.
       const { repoContext } = await requireInitializedRepoReadOnly({
         repoDir,
         outputMode: "log",

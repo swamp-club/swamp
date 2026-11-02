@@ -20,9 +20,8 @@
 import type { GrantFileEntry, ParsedGrantFileEntry } from "./grant_file.ts";
 
 /**
- * Parsed grant-file entries as the reconciler takes them, for tests whose
- * files name no `username:` subject. Throws on one, since only resolution
- * may turn a username into a principal subject.
+ * throws on a username subject, since only resolution may turn a username into
+ * a principal subject
  */
 export function principalEntries(
   entries: readonly ParsedGrantFileEntry[],

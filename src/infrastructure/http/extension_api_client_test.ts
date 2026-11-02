@@ -30,7 +30,6 @@ import { UserError } from "../../domain/errors.ts";
 import { RegistryUnavailableError } from "../../domain/extensions/registry_unavailable_error.ts";
 import { MAX_EXTENSION_ARCHIVE_BYTES } from "../../domain/extensions/extension_archive_limits.ts";
 
-/** Backoff waits resolve at once, so retries never slow the suite. */
 const noSleep = () => Promise.resolve();
 
 for (
@@ -81,7 +80,6 @@ for (
   });
 }
 
-/** Confirms a push against a registry whose response carries `warnings`. */
 async function confirmWithWarnings(warnings: unknown) {
   const server = Deno.serve({ port: 0, onListen: () => {} }, async (req) => {
     const body = await req.json();
@@ -198,7 +196,6 @@ Deno.test("ExtensionApiClient.confirmPush: does not count dropped entries as omi
 
 Deno.test("ExtensionApiClient constructor stores server URL", () => {
   const client = new ExtensionApiClient("https://example.com");
-  // Just verify it constructs without error
   assertEquals(typeof client, "object");
 });
 
@@ -269,7 +266,6 @@ Deno.test("ExtensionApiClient.checkResponse strips HTML error pages", async () =
     UserError,
   );
   assertStringIncludes(error.message, "unexpected HTML response");
-  // Should NOT contain raw HTML
   assertEquals(error.message.includes("<!DOCTYPE"), false);
   await server.shutdown();
 });
@@ -326,7 +322,6 @@ Deno.test("ExtensionApiClient.downloadArchive throws UserError on connection fai
 });
 
 Deno.test("ExtensionApiClient.uploadArchive throws UserError on failure", async () => {
-  // Non-existent URL
   const error = await assertRejects(
     () => {
       const client = new ExtensionApiClient("http://localhost:1", {}, {
@@ -1082,8 +1077,6 @@ Deno.test("ExtensionApiClient: does not retry a rate-limited POST", async () => 
   }
 });
 
-// ── Identity header injection ─────────────────────────────────────────
-
 Deno.test("ExtensionApiClient sends both identity headers when constructed with bearerToken and distinctId", async () => {
   const captured: Record<string, string | null> = {};
   const server = Deno.serve({ port: 0, onListen: () => {} }, (req) => {
@@ -1190,10 +1183,9 @@ Deno.test("ExtensionApiClient sends constructor bearer when no caller Authorizat
 });
 
 Deno.test("ExtensionApiClient lets caller-supplied x-api-key coexist with constructor identity", async () => {
-  // Half (b) of the precedence contract: per-method `apiKey` paths
-  // (push/yank/etc.) set their own `x-api-key` header. Constructor
-  // identity adds Authorization Bearer + Swamp-Distinct-Id, but the
-  // caller's `x-api-key` is preserved unchanged.
+  // per-method apiKey paths set their own x-api-key; constructor identity adds
+  // Authorization Bearer and Swamp-Distinct-Id, and the caller's x-api-key is
+  // preserved unchanged
   const captured: Record<string, string | null> = {};
   const server = Deno.serve({ port: 0, onListen: () => {} }, (req) => {
     captured.authorization = req.headers.get("authorization");
@@ -1225,10 +1217,9 @@ Deno.test("ExtensionApiClient lets caller-supplied x-api-key coexist with constr
 });
 
 Deno.test("ExtensionApiClient.downloadArchive does NOT send identity headers to the S3 presigned URL", async () => {
-  // Locks in the S3 hop contract: identity headers attach to the
-  // swamp-club /download call, but the subsequent fetch of the
-  // presigned URL must be bare. Sending identity to S3 breaks the
-  // presigned signature and leaks the bearer to S3 access logs.
+  // identity headers attach to the swamp-club /download call, but the presigned
+  // S3 fetch must be bare: identity breaks the signature and leaks the bearer
+  // to S3 access logs
   const swampClubHeaders: Record<string, string | null> = {};
   const s3Headers: Record<string, string | null> = {};
 
@@ -1247,7 +1238,6 @@ Deno.test("ExtensionApiClient.downloadArchive does NOT send identity headers to 
     (req) => {
       swampClubHeaders.authorization = req.headers.get("authorization");
       swampClubHeaders.distinctId = req.headers.get("swamp-distinct-id");
-      // /download returns 302 with Location pointing at the presigned URL.
       return new Response(null, {
         status: 302,
         headers: { location: s3Url },
@@ -1262,13 +1252,11 @@ Deno.test("ExtensionApiClient.downloadArchive does NOT send identity headers to 
     );
     const bytes = await client.downloadArchive("@test/ext", "2026.01.01.1");
     assertEquals(bytes.length, 4);
-    // swamp-club hop carries identity.
     assertEquals(
       swampClubHeaders.authorization,
       "Bearer swamp_secret-key",
     );
     assertEquals(swampClubHeaders.distinctId, "device-leak-canary");
-    // S3 hop is bare — no identity, no token leak.
     assertEquals(s3Headers.authorization, null);
     assertEquals(s3Headers.distinctId, null);
   } finally {
@@ -1349,10 +1337,6 @@ Deno.test("ExtensionApiClient.checkResponse includes URL in error message", asyn
   await server.shutdown();
 });
 
-/**
- * Serves the registry download redirect and the archive body it points to,
- * as the real registry + object store do.
- */
 function serveArchive(body: () => BodyInit): Deno.HttpServer<Deno.NetAddr> {
   return Deno.serve({ port: 0, onListen: () => {} }, (req) => {
     if (new URL(req.url).pathname.endsWith("/download")) {
@@ -1550,7 +1534,6 @@ Deno.test("ExtensionApiClient.getLatestVersionDetail: a version with none, or a 
   }
 });
 
-/** The message a registry call fails with when it answers `body`. */
 async function refusalMessage(
   status: number,
   body: Record<string, unknown>,
@@ -1625,7 +1608,6 @@ Deno.test("ExtensionApiClient.checkResponse truncates a long reason by code poin
   );
 });
 
-/** The versions a listing returns when the registry answers `versions`. */
 async function listedVersions(versions: unknown[]) {
   const server = Deno.serve(
     { port: 0, onListen: () => {} },
@@ -1688,7 +1670,6 @@ Deno.test("ExtensionApiClient.listVersions: truncates a long yank reason by code
   );
 });
 
-/** A client whose every request is answered by `fetch`, with no real waits. */
 function clientAnswering(fetch: () => Promise<Response>): ExtensionApiClient {
   return new ExtensionApiClient("http://registry.test", {}, {
     sleep: () => Promise.resolve(),
@@ -1845,7 +1826,6 @@ Deno.test("ExtensionApiClient.getLatestVersionDetail carries the version's licen
   }
 });
 
-/** A fetcher that answers each request with the next step, recording requests. */
 function scriptedFetch(
   steps: ((url: string, init?: RequestInit) => Response | Error)[],
 ) {
@@ -1864,7 +1844,6 @@ function scriptedFetch(
 const SIGNED_URL =
   "https://storage.test/bucket/ext.tgz?X-Goog-Signature=topsecret";
 
-/** Answers the download-URL lookup with a redirect to {@link SIGNED_URL}. */
 const redirectToSignedUrl = () =>
   new Response(null, { status: 302, headers: { location: SIGNED_URL } });
 

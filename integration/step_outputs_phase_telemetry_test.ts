@@ -17,14 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * swamp-club#4002: run-detail output resolution exports its phases through
- * the real OTLP exporter, with parentage, value types and outcomes intact.
- * Wires a real repo, serve's definition index, policy authorization and the
- * real `workflow.history.get` handler; spans are exported over HTTP to a
- * port-0 collector (design/enablers/serve-phase-telemetry.md).
- */
-
 import { assert, assertEquals } from "@std/assert";
 import { dirname } from "@std/path";
 import { context, trace } from "@opentelemetry/api";
@@ -89,10 +81,6 @@ interface OtlpRequest {
   resourceSpans: { scopeSpans: { spans: OtlpSpan[] }[] }[];
 }
 
-/**
- * Runs `fn` with spans exported over HTTP by {@link FetchOtlpExporter} to a
- * port-0 collector, and hands back every span it received.
- */
 async function withExportedSpans(
   fn: () => Promise<void>,
 ): Promise<OtlpSpan[]> {
@@ -141,7 +129,6 @@ async function withExportedSpans(
 const MODEL_TYPE = ModelType.create("command/shell");
 const WRITER_ID = crypto.randomUUID();
 const SECRETS_ID = crypto.randomUUID();
-/** Markers that must never reach an exported attribute. */
 const CONTENT_MARKER = "content-marker-4002";
 const SECRET_MARKER = "secret-marker-4002";
 
@@ -180,22 +167,11 @@ function resource(name: string, modelId: string, modelName: string) {
 interface Fixture {
   dir: string;
   repoContext: RepositoryContext;
-  /** Reads of definition files through the index, listing and lookups. */
   reads: { count: number; onRead?: (count: number) => void };
-  /**
-   * When set, a directory's definition files are read only once this many
-   * checks have stat'ed it, so overlapping requests share its listing.
-   */
   holdReadsUntilStats?: number;
   ctx: ConnectionContext;
 }
 
-/**
- * A repo whose `history-wf` run has a step that wrote resources owned by
- * `writer` (readable) and `secrets` (not), some missing or unparseable, a
- * step that ran `child-wf`, and a step whose child run is gone. The
- * principal may read both workflows and `writer`'s data.
- */
 async function withFixture(
   options: { unrelated?: number; extraOutputs?: number },
   fn: (fixture: Fixture) => Promise<void>,
@@ -410,7 +386,6 @@ interface Frame {
   error?: { code: string };
 }
 
-/** One `workflow.history.get` under its own root span. */
 async function historyGet(
   fixture: Fixture,
   controller = new AbortController(),
@@ -445,7 +420,6 @@ function str(span: OtlpSpan, key: string): string | undefined {
   return attribute(span, key)?.stringValue;
 }
 
-/** A counter: exported as an OTLP integer. */
 function int(span: OtlpSpan, key: string): number | undefined {
   const value = attribute(span, key);
   if (value === undefined) return undefined;
@@ -453,7 +427,6 @@ function int(span: OtlpSpan, key: string): number | undefined {
   return Number(value.intValue);
 }
 
-/** A duration or work total: exported as an OTLP number. */
 function ms(span: OtlpSpan, key: string): number {
   const value = attribute(span, key);
   const n = value?.doubleValue ??
@@ -462,7 +435,6 @@ function ms(span: OtlpSpan, key: string): number {
   return n;
 }
 
-/** Spans of each request, by its root span, in export order. */
 function requests(spans: OtlpSpan[]): OtlpSpan[][] {
   return spans.filter((s) => s.name === "test.history_request").map((root) =>
     spans.filter((s) => s.traceId === root.traceId)
@@ -484,7 +456,6 @@ function stepOutputs(frame: Frame, step: string) {
     .outputs;
 }
 
-/** The definition files the fixture saves: writer, secrets and unrelated. */
 const definitionFiles = (unrelated: number) => 2 + unrelated;
 
 Deno.test("step_outputs phases: a request exports catalog_open, output_walk and owner_index through OTLP with parentage, counts and value types", async () => {
@@ -550,7 +521,6 @@ Deno.test("step_outputs phases: a request exports catalog_open, output_walk and 
         authorize_allowed: 5,
         authorize_denied: 1,
         authorize_errors: 0,
-        // A read that returned content; parsing is counted apart.
         reads_succeeded: 4,
         reads_missing: 1,
         reads_failed: 0,
@@ -559,7 +529,6 @@ Deno.test("step_outputs phases: a request exports catalog_open, output_walk and 
         child_run_lookups: 2,
         child_runs_unique: 2,
         child_runs_missing: 1,
-        // Six decisions over two owners.
         owner_lookups: 6,
         owner_lookups_reused: 4,
       },
@@ -577,7 +546,6 @@ Deno.test("step_outputs phases: a request exports catalog_open, output_walk and 
     ) {
       ms(walk, `swamp.diagnostic.${work}_work_ms`);
     }
-    // The existing counters keep their meaning.
     assertEquals(int(resolve, "step_outputs.resources_read"), 5);
     assertEquals(int(resolve, "step_outputs.resources_denied"), 1);
     assertEquals(int(resolve, "step_outputs.child_runs_read"), 2);
@@ -622,7 +590,6 @@ Deno.test("step_outputs phases: a request exports catalog_open, output_walk and 
       }
     }
 
-    // The next request finds the index warm.
     const again = await withExportedSpans(async () => {
       await historyGet(fixture);
     });
@@ -651,7 +618,6 @@ Deno.test("step_outputs phases: two requests sharing one owner index listing par
     const validates = traces.map((t) =>
       only(t, "swamp.serve.definition_index.validate")
     );
-    // Each file was parsed by exactly one request.
     assertEquals(
       indexes.reduce(
         (sum, span) =>
@@ -671,7 +637,6 @@ Deno.test("step_outputs phases: two requests sharing one owner index listing par
         validates[i].links?.map((l) => [l.traceId, l.spanId]),
         [[other.traceId, other.spanId]],
       );
-      // The joined listing stays under the request that ran it.
       assertEquals(validates[i].traceId, traces[i][0].traceId);
     }
   });
@@ -723,7 +688,6 @@ Deno.test("step_outputs phases: a request cancelled before it starts and one who
     const frames: Frame[] = [];
     const spans = await withExportedSpans(async () => {
       frames.push(await historyGet(fixture, cancelled));
-      // Warm the index, then fail the first owner read of the next request.
       frames.push(await historyGet(fixture));
       failing.armed = true;
       frames.push(await historyGet(fixture));

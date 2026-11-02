@@ -270,21 +270,18 @@ Deno.test("claimWaitKey: the step that holds the key through an open wait is tol
   const store = new InMemorySignalWaitStore();
   const asked = request();
   const holder = await acquire(store, asked);
-  // The same step of the same run asks again with a new wait id.
   const again = await claimWaitKey(
     store,
     { ...asked, waitId: crypto.randomUUID() },
     NOW,
   );
   assertEquals(again, { kind: "own", claim: holder });
-  // Another step of the same run is not the holder.
   const sibling = await claimWaitKey(
     store,
     { ...asked, waitId: crypto.randomUUID(), stepName: "other" },
     NOW,
   );
   assertEquals(sibling.kind, "held");
-  // Once that wait is settled the step claims anew, like anyone else.
   await store.settle(cancelled(holder));
   assertEquals((await acquire(store, asked)).generation, 2);
 });
@@ -363,7 +360,6 @@ Deno.test("releaseKeyClaims: a highest claim is superseded by a release before i
   assertEquals(done, { removed: 1, released: 1 });
   const records = await store.listKeyRecords();
   assertEquals(records.map((r) => [r.kind, r.generation]), [["release", 2]]);
-  // With the outcome gone too, the key still reads as free.
   await store.removeOutcome(holder.waitId);
   assertEquals((await acquire(store)).generation, 3);
 });
@@ -392,7 +388,6 @@ Deno.test("releaseKeyClaims: a release a later claim superseded is removed, and 
   const second = await acquire(store);
   assertEquals(second.generation, 3);
 
-  // Nothing is selected; the pass still drops the superseded release.
   assertEquals(await releaseKeyClaims(store, () => false, NOW), {
     removed: 1,
     released: 0,
@@ -424,8 +419,6 @@ Deno.test("releaseKeyClaims: a key whose highest record cannot be read is left a
   });
   assertEquals(store.keyRecords.size, 2);
 });
-
-// A claim whose wait was never registered, or whose records went without it.
 
 const AGED = new Date(NOW.getTime() + WAIT_KEY_UNREGISTERED_GRACE_MS + 1);
 
@@ -543,7 +536,6 @@ Deno.test("findKeyHolder: a holder past its deadline is still named, and nothing
     claim,
   });
   assertEquals(store.outcomes.size, 0);
-  // A claimant at that time settles it, and the key then reads as free.
   await claimWaitKey(store, request(), PAST_DEADLINE);
   assertEquals(store.outcomes.has(claim.waitId), true);
 });
@@ -665,7 +657,6 @@ Deno.test("findSettledKeyHolder: names the wait that last held a key only while 
     undefined,
   );
 
-  // An open holder is not a settled one.
   const claim = await acquire(store);
   assertEquals(
     await findSettledKeyHolder(store, WORKFLOW, claim.key),
@@ -681,7 +672,6 @@ Deno.test("findSettledKeyHolder: names the wait that last held a key only while 
     kind: "free",
   });
 
-  // Once the claim is released with its run, nothing is said of it.
   await releaseKeyClaims(store, () => true, NOW);
   assertEquals(
     await findSettledKeyHolder(store, WORKFLOW, claim.key),
@@ -698,8 +688,6 @@ Deno.test("findSettledKeyHolder: a workflow id or a key no record can be kept un
   }
 });
 
-// Early facts on a claim (swamp-club#3212).
-
 Deno.test("claimWaitKey: a step with acceptEarly records the slot it reads and the earliest receipt it takes", async () => {
   const store = new InMemorySignalWaitStore();
   const first = await claimWaitKey(store, request({ acceptEarly: 10 }), NOW);
@@ -709,7 +697,6 @@ Deno.test("claimWaitKey: a step with acceptEarly records the slot it reads and t
     overRelease: false,
     from: "2025-12-31T23:59:50.000Z",
   });
-  // Without acceptEarly a claim records none.
   const plain = new InMemorySignalWaitStore();
   const none = await claimWaitKey(plain, request(), NOW);
   assert(none.kind === "acquired");
@@ -757,7 +744,6 @@ Deno.test("decodeWaitKeyRecord: a claim whose early facts name another generatio
     kind: "found",
     record: claim,
   });
-  // Altered to read the slot of another claim.
   const altered = { ...claim, early: { ...claim.early!, generation: 7 } };
   assertEquals(decodeWaitKeyRecord(encodeWaitKeyRecord(altered), claim), {
     kind: "unreadable",

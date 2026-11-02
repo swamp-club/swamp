@@ -18,13 +18,9 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * Flags that never take a value. Code that reads raw CLI arguments before
- * Cliffy parses them (telemetry extraction, unknown-command hints) uses this
- * set to know that the token after one of these flags is a command word or a
- * positional, not the flag's value. Without it, `swamp --log model get x`
- * would read `model` as the value of `--log`, and `--skip-checks create
- * my-def` would shift a definition name into the method slot
- * (swamp-club#3265).
+ * flags that never take a value; code reading raw args before Cliffy parses them
+ * uses this to know the next token is a command word or positional, not the
+ * flag's value (else `swamp --log model get x` reads model as --log's value).
  */
 export const BOOLEAN_FLAGS: ReadonlySet<string> = new Set([
   "--json",
@@ -52,14 +48,12 @@ export const BOOLEAN_FLAGS: ReadonlySet<string> = new Set([
   "--prune",
   "--streaming",
   "--last-evaluated",
-  // Boolean flags of a method run.
   "--skip-checks",
   "--skip-reports",
   "--stdin",
   "--literal-inputs",
 ]);
 
-/** Whether `option` is a flag that never takes a value. */
 export function isBooleanFlag(option: string): boolean {
   return BOOLEAN_FLAGS.has(option);
 }

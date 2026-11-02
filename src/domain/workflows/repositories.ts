@@ -22,180 +22,77 @@ import type { WorkflowId, WorkflowRunId } from "./workflow_id.ts";
 import type { Workflow } from "./workflow.ts";
 import type { WorkflowRun } from "./workflow_run.ts";
 
-/**
- * Repository interface for Workflow aggregate persistence.
- */
 export interface WorkflowRepository {
-  /**
-   * Finds a workflow by ID.
-   */
   findById(id: WorkflowId): Promise<Workflow | null>;
 
-  /**
-   * Finds a workflow by name.
-   */
   findByName(name: string): Promise<Workflow | null>;
 
-  /**
-   * Finds all workflows.
-   */
   findAll(): Promise<Workflow[]>;
 
   /**
-   * Every workflow that declares `id`: exactly those {@link findAll} returns
-   * with that ID. IDs are not unique, as a copied file keeps its ID, so
-   * there can be more than one. Optional: a repository that can answer
-   * without building every workflow implements it, and a caller falls back
-   * to filtering `findAll`.
+   * ids are not unique, as a copied file keeps its id, so there can be more
+   * than one. Optional: callers fall back to filtering findAll
    */
   findAllById?(id: WorkflowId): Promise<Workflow[]>;
 
-  /**
-   * The listing of every workflow {@link findAll} returns, in the same
-   * order (swamp-club#3443). Optional: a repository that can answer without
-   * building every workflow implements it, and a caller falls back to
-   * listing `findAll` (`listWorkflows`).
-   */
   findAllListings?(): Promise<WorkflowListing[]>;
 
-  /**
-   * The file {@link save} would write `workflow` to. Optional: a repository
-   * that writes files implements it, so a caller can tell whether a save
-   * would replace a file it did not mean to (swamp-club#4107).
-   */
   getWritePath?(workflow: Workflow): string;
 
   /**
-   * A view of this repository for one short-lived reader, such as a serve
-   * request, whose lookups may be answered from what the view already read
-   * instead of reading again (swamp-club#3779). It promises reuse only, not
-   * a consistent point in time: part of it may stay live. Optional: a
-   * caller falls back to the repository itself. Create one per reader and
-   * drop it with the reader, so later readers see later changes.
+   * promises reuse only, not a consistent point in time. Create one per reader
+   * and drop it with the reader, so later readers see later changes
    */
   memoizedView?(): WorkflowRepository;
 
-  /**
-   * Saves a workflow.
-   */
   save(workflow: Workflow): Promise<void>;
 
-  /**
-   * Deletes a workflow.
-   */
   delete(id: WorkflowId, name?: string): Promise<void>;
 
-  /**
-   * Generates a new workflow ID.
-   */
   nextId(): WorkflowId;
 
-  /**
-   * Gets the file path for a workflow.
-   */
   getPath(id: WorkflowId): string;
 }
 
-/**
- * Repository interface for WorkflowRun aggregate persistence.
- */
 export interface WorkflowRunRepository {
-  /**
-   * Finds a workflow run by ID.
-   */
   findById(
     workflowId: WorkflowId,
     runId: WorkflowRunId,
   ): Promise<WorkflowRun | null>;
 
-  /**
-   * Finds all runs for a workflow.
-   */
   findAllByWorkflowId(workflowId: WorkflowId): Promise<WorkflowRun[]>;
 
-  /**
-   * Finds the most recent run for a workflow.
-   */
   findLatestByWorkflowId(workflowId: WorkflowId): Promise<WorkflowRun | null>;
 
-  /**
-   * Finds all workflow runs across all workflows.
-   */
   findAllGlobal(): Promise<{ run: WorkflowRun; workflowId: WorkflowId }[]>;
 
-  /**
-   * Finds all workflow runs across all workflows whose `startedAt` is at or
-   * after the given cutoff. Prefer this over `findAllGlobal()` when the caller
-   * has a time bound; implementations may short-circuit the underlying scan and
-   * skip work that `findAllGlobal()` would do unconditionally.
-   *
-   * Runs with no `startedAt` are excluded.
-   */
   findAllGlobalSince(
     cutoff: Date,
   ): Promise<{ run: WorkflowRun; workflowId: WorkflowId }[]>;
 
-  /**
-   * Finds all workflow runs across all workflows whose status matches one of
-   * the given values. When `since` is provided, only runs with
-   * `startedAt >= since` are included.
-   *
-   * Implementations use the per-workflow runs index to filter by status
-   * without hydrating full aggregates, then load only matching runs via
-   * `findById`. Falls back to a lightweight summary scan when no index
-   * exists.
-   */
   findGlobalByStatus(
     status: string | string[],
     since?: Date,
   ): Promise<{ run: WorkflowRun; workflowId: WorkflowId }[]>;
 
   /**
-   * Whether a member can forward this repository's run records, so what a
-   * record says is that member's report (swamp-club#4245). A record's fields
-   * then never stand in for a link a child does not hold.
+   * a member can forward this repository's run records, so what a record says
+   * is that member's report and its fields never stand in for a link a child
+   * does not hold
    */
   recordsAreForwarded?: boolean;
 
-  /**
-   * Brings whatever status index {@link findGlobalByStatus} filters by in
-   * line with the run records, for a caller that must not miss a run the
-   * index has wrong. Reads only records that changed since they were
-   * indexed. Absent on implementations that keep no index.
-   */
   verifyIndexes?(): Promise<void>;
 
-  /**
-   * Saves a workflow run.
-   */
   save(workflowId: WorkflowId, run: WorkflowRun): Promise<void>;
 
-  /**
-   * Generates a new workflow run ID.
-   */
   nextId(): WorkflowRunId;
 
-  /**
-   * Gets the file path for a workflow run.
-   */
   getPath(workflowId: WorkflowId, runId: WorkflowRunId): string;
 
-  /**
-   * Deletes all runs for a workflow.
-   */
   deleteAllByWorkflowId(workflowId: WorkflowId): Promise<number>;
 
-  /**
-   * Deletes all terminal runs (succeeded/failed/cancelled) older than the
-   * cutoff. Running and suspended runs are never deleted regardless of age.
-   * Returns the number of runs deleted and, when the implementation tracks
-   * them, the IDs of the runs deleted (or that would be deleted on a dry run).
-   *
-   * With `limit`, stops once that many runs are deleted (or would be, on a
-   * dry run) and reports `more: true` when another collectible run remains;
-   * a later call continues where this one stopped. Implementations that do
-   * not batch may omit `more`.
-   */
+  /** running and suspended runs are never deleted regardless of age */
   deleteOlderThan(
     cutoff: Date,
     options?: { dryRun?: boolean; limit?: number },
@@ -209,9 +106,6 @@ export interface WorkflowRunRepository {
   >;
 }
 
-/**
- * A per-run snapshot of the evaluated workflow, written at run start.
- */
 export interface RunSnapshotInfo {
   runId: string;
   modifiedAt: Date;
@@ -219,22 +113,11 @@ export interface RunSnapshotInfo {
 }
 
 /**
- * Repository interface for per-run evaluated-workflow snapshots.
- *
- * A snapshot is removed when its run is garbage-collected or its workflow is
- * deleted. With an `evaluatedSnapshots` retention shorter than the run's, the
- * snapshot of a finished (succeeded/failed/cancelled) run is removed earlier;
  * a snapshot of a run that has not finished is kept, since cancel, reject and
- * orphan settlement read it.
+ * orphan settlement read it
  */
 export interface RunSnapshotRepository {
-  /**
-   * Lists every stored per-run snapshot.
-   */
   listRunSnapshots(): Promise<RunSnapshotInfo[]>;
 
-  /**
-   * Deletes the snapshot for a run. Missing snapshots are ignored.
-   */
   deleteForRun(runId: string): Promise<void>;
 }

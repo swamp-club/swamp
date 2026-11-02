@@ -43,9 +43,6 @@ import { behaviorNotFound, notFound } from "../errors.ts";
 import type { ReportSearchEvent, StoredReportSummary } from "./report_views.ts";
 
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
-/**
- * Input for the report search operation.
- */
 export interface ReportSearchInput {
   query?: string;
   model?: string;
@@ -55,11 +52,7 @@ export interface ReportSearchInput {
   labels?: string[];
 }
 
-/**
- * Dependencies for the report search operation.
- */
 export interface ReportSearchDeps {
-  /** Every stored report, or one owner's; see {@link FindStoredReports}. */
   findReportData: FindStoredReports;
   lookupDefinition: (
     idOrName: string,
@@ -77,7 +70,6 @@ export interface ReportSearchDeps {
   getReport: (name: string) => Promise<ReportDefinition | undefined>;
 }
 
-/** Wires real infrastructure into ReportSearchDeps. */
 export async function createReportSearchDeps(
   repoDir: string,
   datastoreResolver?: DatastorePathResolver,
@@ -124,18 +116,11 @@ export async function createReportSearchDeps(
   };
 }
 
-/**
- * Checks whether a Data artifact is a markdown report entry
- * (skip the paired JSON artifacts).
- */
 function isReportMarkdown(data: Data): boolean {
   return data.tags.type === "report" &&
     data.contentType === "text/markdown";
 }
 
-/**
- * Searches stored report data across all models and workflows.
- */
 export async function* reportSearch(
   _ctx: LibSwampContext,
   deps: ReportSearchDeps,
@@ -147,7 +132,6 @@ export async function* reportSearch(
     (async function* () {
       yield { kind: "resolving" };
 
-      // --- Collect candidate report data entries ---
       let candidates: Array<{
         data: Data;
         modelType: ModelType;
@@ -182,28 +166,23 @@ export async function* reportSearch(
         candidates = await deps.findReportData();
       }
 
-      // Filter to report markdown entries
       candidates = candidates.filter((c) => isReportMarkdown(c.data));
 
-      // Apply scope filter
       if (input.scope) {
         candidates = candidates.filter(
           (c) => c.data.tags.reportScope === input.scope,
         );
       }
 
-      // Apply report type filter — exact match on the report type name. Runs
-      // before the label filter to shrink the candidate set ahead of the
-      // per-candidate definition lookups the label filter performs. Compares
-      // against the reportName tag directly (no fallback to data.name), so
-      // entries missing the tag are excluded.
+      // exact match on the reportName tag, with no fallback to data.name, so
+      // entries missing the tag are excluded; runs before the label filter to
+      // shrink the candidate set ahead of its per-candidate definition lookups
       if (input.type) {
         candidates = candidates.filter(
           (c) => c.data.tags.reportName === input.type,
         );
       }
 
-      // Apply label filter — only include reports whose definition has all requested labels
       if (input.labels && input.labels.length > 0) {
         const filtered: typeof candidates = [];
         for (const c of candidates) {
@@ -218,7 +197,6 @@ export async function* reportSearch(
         candidates = filtered;
       }
 
-      // Apply text query filter
       if (input.query) {
         const q = input.query.toLowerCase();
         candidates = candidates.filter((c) => {
@@ -230,19 +208,16 @@ export async function* reportSearch(
         });
       }
 
-      // Sort by createdAt descending
       candidates.sort(
         (a, b) => b.data.createdAt.getTime() - a.data.createdAt.getTime(),
       );
 
-      // --- Build summary results ---
       const reports: StoredReportSummary[] = [];
 
       for (const { data, modelType, modelId } of candidates) {
         const reportName = data.tags.reportName ?? data.name;
         const reportScope = data.tags.reportScope ?? "unknown";
 
-        // Resolve model name
         let modelName = modelId;
         if (modelType.normalized === "workflow") {
           const wf = await deps.findWorkflowById(modelId);
@@ -252,7 +227,6 @@ export async function* reportSearch(
           if (def) modelName = def.name;
         }
 
-        // Resolve workflow name for workflow-scoped reports
         let workflowName: string | undefined;
         if (modelType.normalized === "workflow") {
           const wf = await deps.findWorkflowById(modelId);

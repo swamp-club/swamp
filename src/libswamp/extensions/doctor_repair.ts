@@ -49,27 +49,12 @@ export interface RepairDeps {
   readonly apply: boolean;
 }
 
-/**
- * Computes and optionally executes repair operations based on the
- * aggregate state report. Handles three categories:
- *
- * - Catalog rows in Tombstoned state (no transitions out; safe to prune).
- * - Catalog rows whose source_path doesn't exist on disk (stale rows
- *   from prior container sessions with a different mount path).
- * - Bundle files not referenced by any catalog row.
- * - Pulled extensions with BundleBuildFailed or ValidationFailed sources
- *   (re-pulled from registry to restore pre-built bundles).
- *
- * OrphanedBundleOnly rows are pruned together with their associated
- * bundle file in a single pass to maintain idempotence.
- */
 export async function repairExtensions(
   deps: RepairDeps,
 ): Promise<RepairReport> {
   const operations: RepairOperation[] = [];
   const report = deps.aggregateReport;
 
-  // Phase 1: Identify cleanup-eligible catalog rows.
   const rowsToPrune: string[] = [];
   const orphanedBundlePaths: string[] = [];
   for (const detail of report.sourceDetails) {
@@ -99,9 +84,8 @@ export async function repairExtensions(
     }
   }
 
-  // Phase 1b: Identify non-Tombstoned rows whose source_path doesn't
-  // exist on disk. These accumulate when the same repo is used from a
-  // container with a different mount path (e.g. /workspace vs /Users).
+  // these accumulate when the same repo is used from a container with a
+  // different mount path
   const unreachableRows: string[] = [];
   for (const orphan of report.catalogOrphans) {
     unreachableRows.push(orphan.sourcePath);
@@ -113,7 +97,6 @@ export async function repairExtensions(
     });
   }
 
-  // Phase 2: Identify orphaned bundle files.
   const filesToEvict: string[] = [];
   for (const orphan of report.bundleOrphans) {
     filesToEvict.push(orphan.absolutePath);
@@ -124,7 +107,6 @@ export async function repairExtensions(
     });
   }
 
-  // Phase 3: Identify pulled extensions with broken bundles.
   const extensionsToRepull = new Set<string>();
   for (const agg of report.aggregates) {
     if (agg.origin !== "pulled") continue;

@@ -40,7 +40,6 @@ import {
 
 const KEY = "data/test/model/m1/cursor/1/raw";
 
-/** A source holding one unreadable record, recording what it was asked. */
 function sourceWith(namespace: string, recordKey: string) {
   const asked: [string, string][] = [];
   const source: UnreadableRecordSource = {
@@ -141,7 +140,6 @@ Deno.test("unreadableContentLookup: a checkout spelled through a symlink matches
     const link = join(dir, "link");
     await Deno.symlink(real, link, { type: "dir" });
     const { source } = sourceWith("", KEY);
-    // The content file is missing; only its ancestors exist.
     assert(
       await unreadableContentLookup(link, source)(
         join(swampPath(real), ...KEY.split("/")),
@@ -160,7 +158,6 @@ Deno.test("unreadableContentLookup: a checkout spelled through a symlink matches
   });
 });
 
-/** A source listing `records` by key prefix, recording what it was asked. */
 function listingSource(records: readonly UnreadableRecord[]) {
   const asked: [string, string][] = [];
   const source: UnreadableRecordSource = {
@@ -214,7 +211,6 @@ Deno.test("unreadableContentLookup.under: lists a directory's records as the sol
     ]);
     assertEquals(asked, [["", "team/outputs/t"], ["team", "outputs/t"]]);
 
-    // A directory outside the checkout asks nothing.
     asked.length = 0;
     assertEquals(await under(join(dir, "elsewhere")), []);
     assertEquals(asked, []);
@@ -228,7 +224,6 @@ Deno.test("unreadableContentLookup.under: a checkout spelled through a symlink l
     const link = join(dir, "link");
     await Deno.symlink(real, link, { type: "dir" });
     const { source } = listingSource([recordAt("", "workflow-runs/w/r.yaml")]);
-    // The directory itself is missing: every run of it is unreadable.
     const runsDir = join(swampPath(real), "workflow-runs");
     const listed = await unreadableContentLookup(link, source).under!(runsDir);
     assertEquals(listed.map((e) => e.path), [join(runsDir, "w", "r.yaml")]);

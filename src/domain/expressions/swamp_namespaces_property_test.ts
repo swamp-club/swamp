@@ -49,7 +49,6 @@ const FOREIGN_ROOTS = ["github", "secrets", "matrix", "host", "value"];
 const KNOWN_ROOTS = [...KNOWN_FOREIGN_ROOTS];
 const MEMBERS = ["sha", "version", "region", "name", "outputs"];
 
-/** A member-access chain rooted at a swamp or foreign identifier. */
 const arbReference = fc
   .tuple(
     fc.constantFrom(...SWAMP_ROOTS, ...FOREIGN_ROOTS),
@@ -57,7 +56,6 @@ const arbReference = fc
   )
   .map(([root, members]) => [root, ...members].join("."));
 
-/** `inputs` read whole or with a computed key, which names no single input. */
 const arbOpaqueInputs = fc.constantFrom(
   "inputs",
   "size(inputs)",
@@ -65,7 +63,6 @@ const arbOpaqueInputs = fc.constantFrom(
   "inputs['a' + self.name]",
 );
 
-/** One to three references joined with operators, plus literals. */
 const arbExpression = fc
   .array(
     fc.oneof(
@@ -82,7 +79,6 @@ const arbExpression = fc
     fc.constantFrom(" + ", " == ", " && ").map((op) => terms.join(op))
   );
 
-/** Any scope an evaluation could present. */
 const arbScope: fc.Arbitrary<SwampScope> = fc
   .tuple(
     fc.subarray(SWAMP_ROOTS),
@@ -133,7 +129,6 @@ Deno.test("isForeignExpression: never true for text cut short inside a string", 
   );
 });
 
-/** A dot-less bare token: a literal vault or secret name. */
 const arbBareName = fc.stringMatching(/^[A-Za-z_][A-Za-z0-9_-]{0,11}$/);
 
 Deno.test("isSwampExpression: a bare-token vault.get classifies as its quoted form does", () => {
@@ -196,7 +191,6 @@ Deno.test("misspeltSwampNamespace: catches a dropped or doubled letter in every 
         const typo = drop
           ? root.slice(0, i) + root.slice(i + 1)
           : root.slice(0, i) + root[i] + root.slice(i);
-        // A typo that spells another namespace (none today) is swamp's own.
         fc.pre(!SWAMP_ROOTS.includes(typo) && typo.length > 0);
         assert(misspeltSwampNamespace(`${typo}.x`) !== undefined, typo);
       },
@@ -240,11 +234,6 @@ Deno.test("known foreign roots: none is a swamp namespace or nearly spells one",
   }
 });
 
-/**
- * A member chain on a known foreign root whose names may hold hyphens, with
- * the parts around each hyphen drawn from swamp roots, digit-led words and
- * plain words: `needs.build-vault.result`, `matrix.node-18x`.
- */
 const arbHyphenatedChain = fc.tuple(
   fc.constantFrom(...KNOWN_FOREIGN_ROOTS),
   fc.array(

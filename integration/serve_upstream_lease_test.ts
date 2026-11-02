@@ -17,22 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Fenced model leases in team mode (swamp-club#4121), end to end: serve in
- * a Worker, checkouts writing through it as commands do.
- *
- * - A run-only caller (no `read` on the behavior's data) saves above the
- *   floor its lease carries, so `version-live` never comes back.
- * - A lease serve stops renewing (a revoked grant) lapses, and the lapse
- *   fires the signal that cancels the run under it.
- * - An explicit lease (`swamp model lease acquire`) holds the behavior
- *   across commands: a command in the checkout uses it, and another
- *   caller's write waits for it.
- * - A command whose renewal of the checkout's lease meets a serve blip
- *   still names the lease, and a lease serve no longer holds does not
- *   refuse its commit (swamp-club#4167).
- */
-
 import "../src/domain/models/models.ts";
 import {
   assert,
@@ -82,17 +66,12 @@ await initializeLogging({});
 
 const DATA_ID = "0b6c4bb4-9d61-4f0c-9a43-6f0c1f7b2a41";
 
-/** Bob may run web and write its data, but never read its data. */
 const BOB_RUN_ONLY: readonly GrantSpec[] = [
   ...MEMBER,
   { user: "bob", actions: ["read", "run"], kind: "model", pattern: "web" },
   { user: "bob", actions: ["write"], kind: "data", pattern: "web" },
 ];
 
-/**
- * One locked save of `out` on web in `client`, as `model method run` takes
- * the lock: resolves with the version it saved, or throws.
- */
 async function lockedSave(
   scratch: Scratch,
   serve: Serve,
@@ -206,8 +185,6 @@ Deno.test({
             try {
               assert(locks.leaseLost !== undefined);
               assertEquals(locks.leaseLost.aborted, false);
-              // The grant that let alice hold the lock is revoked: the next
-              // renewal is refused, and the lease lapses.
               await serve.setGrants([]);
               await waitFor(
                 () => locks.leaseLost!.aborted,
@@ -273,7 +250,6 @@ Deno.test({
       });
       assertEquals(taken.existing, false);
 
-      // Another command of alice's checkout uses the lease, and leaves it.
       assertEquals(
         await lockedSave(scratch, serve, alice, "alice-token", "alice"),
         1,
@@ -286,7 +262,6 @@ Deno.test({
       assertEquals(recorded.map((lease) => lease.leaseId), [
         taken.lease.leaseId,
       ]);
-      // Every save landed under the lease's fence.
       const fenced = (await serve.log()).filter((entry) =>
         entry.leaseFence === taken.lease.fence
       );
@@ -311,7 +286,6 @@ Deno.test({
       );
       assertEquals(lockless, 3);
 
-      // Bob cannot take the lock while alice's lease holds it.
       await withClientEnv(
         scratch,
         serveEnv(serve, "bob-token"),
@@ -423,10 +397,6 @@ Deno.test({
   },
 });
 
-/**
- * Runs `fn` while the first lease renewal (`PUT locks/{leaseId}`) this
- * process sends fails as a serve blip would (swamp-club#4167).
- */
 async function withRenewalBlip<T>(fn: () => Promise<T>): Promise<T> {
   const realFetch = globalThis.fetch;
   let blips = 0;
@@ -446,7 +416,6 @@ async function withRenewalBlip<T>(fn: () => Promise<T>): Promise<T> {
   }
 }
 
-/** A lease command in `client`: `fn` gets the checkout's v3 root. */
 async function inLeaseCommand<T>(
   scratch: Scratch,
   serve: Serve,
@@ -469,7 +438,6 @@ async function inLeaseCommand<T>(
   );
 }
 
-/** Takes an explicit lease on `lockKey` in the checkout at `root`. */
 async function takeExplicitLease(root: string, lockKey: string) {
   const client = serveUpstreamAt(root)!.client();
   try {
@@ -486,10 +454,6 @@ async function takeExplicitLease(root: string, lockKey: string) {
   }
 }
 
-/**
- * One lockless save of `out` on web in `client`, as a read-kind method
- * saves, in a fresh process whose renewal of the checkout's leases blips.
- */
 async function locklessSaveThroughBlip(
   scratch: Scratch,
   serve: Serve,
@@ -598,7 +562,6 @@ Deno.test({
       );
       assertEquals((await serve.log()).at(-1)?.leaseFence, undefined);
 
-      // Bob's live lease still refuses alice's unleased resend.
       await inLeaseCommand(
         scratch,
         serve,

@@ -221,7 +221,6 @@ Deno.test("resolveManifestArgument: rejects a TypeScript or JavaScript file", as
   });
 });
 
-/** A repo under `real/`, reached through `link` → `real`. */
 async function withLinkedRepo(
   fn: (paths: { real: string; link: string }) => Promise<void>,
 ): Promise<void> {
@@ -244,7 +243,6 @@ Deno.test("respellUnderRepoDir: a path under another spelling of the repo is re-
       ),
       join(link, "extensions", "models", "x", "manifest.yaml"),
     );
-    // And the other way round.
     assertEquals(
       await respellUnderRepoDir(
         join(link, "extensions", "models", "x", "manifest.yaml"),

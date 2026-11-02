@@ -644,22 +644,15 @@ import {
   TOKEN_SECRETS_KEY_RECORD,
 } from "../../serve/token_key_exposure.ts";
 
-/**
- * How long the push of the runs boot or reconciliation settled may take
- * (swamp-club#3958). Boot waits for it before serving, so it is bounded.
- */
+/** boot waits for this push before serving, so it is bounded. */
 const SETTLED_RUN_PUSH_TIMEOUT_MS = 30_000;
 
 /**
- * The most serve's shutdown waits for a v3 sidecar probe or replacement in
- * flight, within what its deadline has left (swamp-club#3961).
+ * the most serve's shutdown waits for a v3 sidecar probe or replacement in
+ * flight, within what its deadline has left.
  */
 const V3_UPKEEP_STOP_BOUND_MS = 5_000;
 
-/**
- * How long a reconciliation pass waits to bring one run record of a dead
- * instance from the datastore (swamp-club#3958).
- */
 const RUN_RECORD_REFRESH_TIMEOUT_MS = 10_000;
 
 const DISPATCH_ENV_ALLOW_HELP =
@@ -673,13 +666,9 @@ const DISPATCH_ENV_ALLOW_HELP =
 type AnyOptions = any;
 
 /**
- * Runs every HTTP request, WebSocket upgrades included, outside every
- * ambient store a run enters (swamp-club#2676, swamp-club#3125). Deno can
- * leave the async context of the last code that ran current when it calls a
- * serve handler (a first-time dynamic `import()` inside a run does), so
- * without this a request — and every message on a connection it upgrades —
- * could inherit another run's vault scope, unit of work, held locks, trace
- * frames or extension lock leases.
+ * runs each request outside any ambient run store: Deno can leave a handler in
+ * the async context of the last code that ran, so a request could inherit
+ * another run's vault scope, locks or leases
  */
 export function unscopedHttpHandler<A extends Deno.Addr>(
   handler: Deno.ServeHandler<A>,
@@ -702,15 +691,7 @@ export interface CancelResult {
   executionType: ExecutionType;
   executionId: string;
   message?: string;
-  /**
-   * Nested runs a cancelled run waited on and that were left unfinished
-   * (swamp-club#2736).
-   */
   detachedNestedRuns?: DetachedNestedRunData[];
-  /**
-   * Nested runs cancelled with the run, and running ones asked to stop
-   * (swamp-club#2867).
-   */
   cancelledNestedRuns?: CascadedNestedRunData[];
   stopRequestedNestedRuns?: CascadedNestedRunData[];
 }
@@ -720,36 +701,20 @@ export interface CancelDeps {
   activeRunRegistry?: ActiveRunRegistry;
   scheduledCancelByRunId?: (id: string) => boolean;
   webhookCancelByRunId?: (id: string) => boolean;
-  /** Recorded as the cancelled run's `cancel_reason`. */
   reason?: string;
-  /**
-   * Cancels a persisted suspended workflow run no process here is driving.
-   * Tried only for a workflow-run that no registry holds.
-   */
   cancelSuspended?: (id: string) => Promise<SuspendedRunCancelResult>;
-  /**
-   * Cancels the nested runs a workflow run waited on, for a run this
-   * instance was driving and that the abort ended (swamp-club#2867).
-   */
   cascadeEnded?: (id: string) => Promise<Partial<NestedCascadeResult>>;
 }
 
 export interface CancelAuthorizationRequest {
   principal: Principal;
-  /** Who the OAuth provider said the caller is, when their token says. */
   loginIdentity?: ActorIdentity;
   collectives: readonly string[];
   groups: readonly string[];
   sourceIp: string;
-  /** The run to cancel; absent for a bulk cancel. */
   execution?: { type: ExecutionType; id: string };
 }
 
-/**
- * Checks that an authenticated caller of the HTTP cancel endpoint holds
- * `admin`. Returns the 403 response to send, after auditing the refusal as
- * `denied`, or undefined when the cancel may go ahead.
- */
 export function authorizeCancelRequest(
   ctx: Pick<
     ConnectionContext,
@@ -979,11 +944,6 @@ export interface CancelAllDeps {
   webhookCancelAll?: (reason: string) => number;
 }
 
-/**
- * Aborts every run this instance holds that matches `typeFilter`, for the bulk
- * cancel route. Scheduled and webhook runs are workflow runs. Returns the
- * number of runs aborted.
- */
 export function cancelAllExecutions(
   deps: CancelAllDeps,
   typeFilter: ExecutionType | undefined,
@@ -1000,19 +960,12 @@ export function cancelAllExecutions(
   return count;
 }
 
-/** The largest body a single-run cancel request may send. */
 export const MAX_CANCEL_BODY_BYTES = 8 * 1024;
 
 export type CancelRequestReason =
   | { ok: true; reason?: string }
   | { ok: false; status: 400 | 413; message: string };
 
-/**
- * Reads the optional reason from a single-run cancel request. An empty body
- * gives no reason, so clients that post nothing keep working; otherwise the
- * body must be a JSON object whose `reason`, if present, is a string of at most
- * {@link MAX_CANCEL_REASON_LENGTH} characters. An empty reason counts as none.
- */
 export async function readCancelRequestReason(
   req: Request,
 ): Promise<CancelRequestReason> {
@@ -1054,11 +1007,6 @@ export async function readCancelRequestReason(
   return reason === "" ? { ok: true } : { ok: true, reason };
 }
 
-/**
- * Reads a bulk cancel request body, at most {@link MAX_CANCEL_BODY_BYTES}
- * (swamp-club#3862). A body that is not a JSON object filters nothing, as it
- * always has.
- */
 export async function readBulkCancelBody(
   req: Request,
 ): Promise<
@@ -1085,10 +1033,8 @@ export async function readBulkCancelBody(
 }
 
 /**
- * The body of a successful single-run cancel response. A workflow run also
- * gets the `cancel_reason` serve applied. A method run records the reason
- * itself, once the abort stops it (`cancelCause`), so reporting one here would
- * claim a record that may not exist yet.
+ * a method run records its own cancel reason once the abort stops it, so only a
+ * workflow run reports `cancel_reason` here
  */
 export function cancelSuccessBody(
   result: CancelResult,
@@ -1113,16 +1059,11 @@ export function cancelSuccessBody(
   };
 }
 
-/**
- * The body of the unauthenticated `/` and `/health` liveness routes. It names
- * no schedule, webhook or setting: the dashboard and `/api/v1/health` show
- * those to a caller who may read them (swamp-club#3842).
- */
+/** unauthenticated liveness body; it names no schedule, webhook or setting */
 export function legacyHealthBody(): { status: "ok"; version: "1" } {
   return { status: "ok", version: "1" };
 }
 
-/** The nested-run lists of a persisted cancel, each defaulting to empty. */
 function nestedOf(
   cancelled: Partial<NestedCascadeResult>,
 ): NestedCascadeResult {
@@ -1135,10 +1076,8 @@ function nestedOf(
 
 const LOOPBACK_HOSTS = new Set(["127.0.0.1", "localhost", "::1"]);
 
-/** Up to this much random delay is added to each reconciliation tick. */
 const RECONCILIATION_JITTER_MS = 500;
 
-/** How long one health collection serves every reader: the stream minimum. */
 const HEALTH_SNAPSHOT_MAX_AGE_MS = 1_000;
 
 /**
@@ -1204,12 +1143,6 @@ function forwardedHeaderValue(req: Request, name: string): string | null {
   return value && value.length > 0 ? value : null;
 }
 
-/**
- * Requires mutation of a dashboard cookie session to come from the exact
- * public origin serving the request. Trusted proxies provide the public scheme
- * and authority; configured trusted hosts also support TLS-terminating proxies
- * that preserve neither forwarding header.
- */
 export function validateDashboardSessionOrigin(
   req: Request,
   tlsEnabled: boolean,
@@ -1291,14 +1224,8 @@ function isTrustedDashboardOrigin(
 }
 
 /**
- * Builds the environment baked into the service definition written by
- * `swamp serve daemon enable`.
- *
- * Pins both the data dir and the config dir, resolved in the enabling
- * user's environment. Pinning only SWAMP_HOME would move the config dir to
- * `$SWAMP_HOME/config`, hiding the credentials `swamp auth login` wrote and
- * crash-looping token and oauth daemons. Both paths are made absolute here
- * because the service runs with the repository as its working directory.
+ * pins both data and config dirs: pinning only SWAMP_HOME would move the config
+ * dir and hide the login credentials, crash-looping token and oauth daemons
  */
 export function buildServeDaemonEnv(): Record<string, string> {
   return {
@@ -1316,7 +1243,6 @@ const CLUB_API_KEY_FILE_DESCRIPTION =
   "used for headless OAuth registration, username lookup, instance " +
   "registration and heartbeat; overrides SWAMP_API_KEY_FILE and SWAMP_API_KEY";
 
-/** Reads `--ca-cert`'s PEM file, naming it when it cannot be read. */
 async function readServeCaCert(path: string): Promise<string> {
   try {
     return await Deno.readTextFile(path);
@@ -1545,11 +1471,6 @@ export function collectServeExtraArgs(options: AnyOptions): string[] {
   return args;
 }
 
-/**
- * Reads a TLS file whose path resolveServeTlsPaths already made absolute, and
- * names that path when it cannot be read, since it may differ from the
- * relative one the operator configured.
- */
 export async function readTlsFile(
   kind: "certificate" | "private key",
   path: string,
@@ -1570,15 +1491,6 @@ export async function readTlsFile(
   }
 }
 
-/**
- * Runs serve's startup checks on the options a `swamp serve daemon enable`
- * unit will start with, so enable refuses arguments that would make the unit
- * fail on every start. Options are resolved as the daemon process sees them:
- * explicit flags are the ones written into the unit, env vars come from the
- * unit environment alone (never the enabling shell), and a relative --config
- * resolves against the repository, as loadServeConfig resolves it for the
- * daemon itself (resolveServePath).
- */
 export function validateServeDaemonArgs(
   options: AnyOptions,
   repoDir: string,
@@ -1616,11 +1528,8 @@ export function validateServeDaemonArgs(
 }
 
 /**
- * The root control-plane prefixes a namespaced serve copies into its
- * namespace at boot. Datastore-wide records, the v3 writer lease
- * (`writer/`) and the format marker (`datastore-format`), are never among
- * them: there is one of each per datastore, whatever the namespace
- * (swamp-club#3364).
+ * the writer lease and format marker are datastore-wide, one per datastore, so
+ * never copied into a namespace
  */
 export const ROOT_CONTROL_PLANE_IMPORT_PREFIXES: readonly string[] = [
   "token-secrets/",
@@ -1631,10 +1540,6 @@ export const ROOT_CONTROL_PLANE_IMPORT_PREFIXES: readonly string[] = [
   "claims/",
 ];
 
-/**
- * Whether serve's bind host names nothing another host can reach: a
- * wildcard or a loopback address, in any spelling (swamp-club#4096).
- */
 export function isUnreachableBindHost(host: string): boolean {
   const bare = host.replace(/^\[|\]$/g, "").toLowerCase();
   return bare === "0.0.0.0" || bare === "::" || bare === "localhost" ||
@@ -1643,26 +1548,14 @@ export function isUnreachableBindHost(host: string): boolean {
     /^(0+:){7}0*[01]$/.test(bare);
 }
 
-/** Shutdown drain deadline when `--shutdown-drain-timeout` is unset. */
 const DEFAULT_SHUTDOWN_DRAIN_TIMEOUT_MS = 30_000;
 
-/**
- * Parses `--shutdown-drain-timeout` into milliseconds. Unset keeps the 30s
- * default; `0` (with or without a unit) means abort in-flight runs at once.
- */
 export function parseShutdownDrainTimeout(raw: string | undefined): number {
   if (raw === undefined) return DEFAULT_SHUTDOWN_DRAIN_TIMEOUT_MS;
   if (/^0+(ms|mo|[smhdwy])?$/i.test(raw.trim())) return 0;
   return parseTimerDuration(raw, "--shutdown-drain-timeout");
 }
 
-/**
- * Parses `--datastore-poll-interval` into milliseconds, or `undefined` when
- * unset so each poller keeps its own default. `parseTimeout` only returns
- * whole seconds, which makes 1s the floor; millisecond input gets its own
- * error because `parseTimeout`'s generic format error would not name the
- * flag.
- */
 export function parseDatastorePollInterval(
   raw: string | undefined,
 ): number | undefined {
@@ -1675,11 +1568,6 @@ export function parseDatastorePollInterval(
   return parseTimerDuration(raw, "--datastore-poll-interval");
 }
 
-/**
- * Parses `--continuation-sweep-interval` into milliseconds. Unset gives the
- * default; `0` disables the sweep. Whole seconds or larger units, as
- * `--datastore-poll-interval`.
- */
 export function parseContinuationSweepInterval(
   raw: string | undefined,
 ): number {
@@ -1693,12 +1581,6 @@ export function parseContinuationSweepInterval(
   return parseTimerDuration(raw, "--continuation-sweep-interval");
 }
 
-/**
- * Parses `--max-signal-wait-timeout` into seconds: the longest timeout a
- * `wait_for_signal` step may ask for on this server. Unset gives
- * `undefined`, which leaves the task schema's one year as the only limit;
- * a value above that is refused, since no wait could use it.
- */
 export function parseMaxSignalWaitTimeout(
   raw: string | undefined,
 ): number | undefined {
@@ -1726,20 +1608,10 @@ export function shouldWarnGroupRefreshIgnored(
 }
 
 export interface TokenGcSettings {
-  /** How often the server token GC sweeps; 0 when it is disabled. */
   readonly intervalMs: number;
-  /** How long an expired token is kept before it is collected. */
   readonly gracePeriodMs: number;
 }
 
-/**
- * Parses `--token-gc-interval` and `--token-gc-grace-period`, falling back to
- * the defaults when unset. An interval of `0` disables the GC; a grace period
- * of `0` collects expired tokens as soon as they expire. Like
- * `--datastore-poll-interval`, both take whole seconds or larger units, and
- * the interval is capped at the maximum safe timer duration because it
- * drives a timer.
- */
 export function parseTokenGcSettings(
   interval: string | undefined,
   gracePeriod: string | undefined,
@@ -1771,18 +1643,16 @@ function parseTokenGcDuration(
     : parseTimeout(raw, flagName);
 }
 
-/** Startup settings parsed from the merged serve options. */
 export interface ServeStartupSettings {
   authConfig: ServeAuthConfig;
   /**
-   * The normalized address clients reach this serve at, when given: serve
-   * writes a claimed v3 datastore only when it is the owner's
-   * (swamp-club#4063).
+   * address clients reach this serve at; serve writes a claimed v3 datastore
+   * only when it is the owner's
    */
   ownerAddress?: string;
   /**
-   * This node's own address, as its team's other nodes reach it, when given:
-   * the leader record names it so followers can forward (swamp-club#4120).
+   * this node's address as its team's other nodes reach it; the leader record
+   * names it so followers can forward
    */
   advertiseAddress?: string;
   tlsEnabled: boolean;
@@ -1795,7 +1665,6 @@ export interface ServeStartupSettings {
   hydrationTimeoutMs: number;
   datastorePollIntervalMs?: number;
   continuationSweepIntervalMs: number;
-  /** Unset when no maximum was configured. */
   maxSignalWaitTimeoutSeconds?: number;
   tokenGcSettings: TokenGcSettings;
   maxConcurrentRuns?: number;
@@ -1806,12 +1675,6 @@ export interface ServeStartupSettings {
   grantReloadMode: "manual" | "auto";
 }
 
-/**
- * Runs the startup checks that depend only on the merged serve options and
- * returns the parsed settings. It does no I/O, so `swamp serve daemon enable`
- * runs the same checks before it writes a unit that would otherwise fail on
- * every start.
- */
 export function resolveServeStartupSettings(
   merged: MergedServeOptions,
 ): ServeStartupSettings {
@@ -2438,11 +2301,6 @@ const reloadCommand = new Command()
     logger.info`Sent SIGHUP to serve process ${pid}`;
   });
 
-/**
- * Reads the external token secrets key the way serve would at startup and
- * reports whether it is usable. Returns undefined when serve.yaml has no
- * token-secrets block. The key itself is never returned or printed.
- */
 async function checkTokenSecretsKey(
   ref: TokenSecretsKeyRef | undefined,
   repoDir: string,
@@ -2467,7 +2325,6 @@ async function checkTokenSecretsKey(
   }
 }
 
-/** Grant-file errors as indented lines, one per error, for a refusal. */
 function formatGrantFileErrorLines(errors: readonly GrantFileError[]): string {
   return errors.map((e) => {
     const loc = e.entryIndex !== undefined
@@ -2571,12 +2428,9 @@ const checkConfigCommand = new Command()
       parseExplicitFlags(Deno.args),
     );
 
-    // Restriction entries that cannot match, judged without loading the
-    // model registry so this command stays read-only and offline: a bare
-    // type is checked against the built-in types only, and serve checks it
-    // against every registered type at startup (swamp-club#3132). An entry
-    // that names no type stops serve starting, and would stop
-    // buildServeAuthConfig below, so it is reported first.
+    // judged without loading the model registry so this stays read-only and
+    // offline: a bare type is checked against built-in types only, serve checks
+    // all registered types at startup
     const restrictionFindings = findIneffectiveRestrictions({
       restrictedModelTypes: merged.restrictedModelTypes,
       restrictedCommands: merged.restrictedCommands,
@@ -2586,9 +2440,8 @@ const checkConfigCommand = new Command()
     const restrictionWarnings = restrictionFindings.filter((finding) =>
       finding.reason !== "no-type"
     );
-    // The grant files serve would read, judged as serve startup judges them
-    // (swamp-club#3130). Stored grants live in the datastore, which this
-    // command never contacts; serve reports their spellings at startup.
+    // judged as serve startup judges them; stored grants live in the datastore,
+    // which this command never contacts
     const checkedGrantFiles = await readServeGrantFiles(repoDir, {
       grantsFile: merged.grantsFile,
       grantsDir: merged.grantsDir,
@@ -2597,8 +2450,8 @@ const checkConfigCommand = new Command()
     });
     const grantCheck = checkServeGrantFiles(checkedGrantFiles);
     const checkedMode = merged.authMode ?? "none";
-    // username: subjects are judged as startup judges them: rejected outside
-    // OAuth mode, looked up below in it (swamp-club#3123).
+    // username subjects are rejected outside OAuth mode and looked up in it, as
+    // startup does
     const grantErrors = [...grantCheck.errors];
     if (checkedMode !== "oauth") {
       const issues = await checkServeGrantFileUsernames(
@@ -3133,9 +2986,8 @@ export const serveCommand = new Command()
     // step's prompts, so aborting a run must reach every process it started
     // even when serve runs in the foreground.
     setProcessGroupIsolation("always");
-    // The same remote callers choose run arguments and inputs, so a refusal
-    // stops at the first failing element rather than growing with what they
-    // sent (swamp-club#3862).
+    // remote callers also choose run arguments and inputs, so a refusal stops
+    // at the first failing element
     setProcessArgumentParsePolicy("untrusted");
     const isJson = ctx.outputMode === "json";
     if (!isJson) {
@@ -3143,8 +2995,6 @@ export const serveCommand = new Command()
     }
     warnIfRunningAsInit();
 
-    // Load config file and merge with CLI flags (four-level priority:
-    // CLI flag > env var > config file > default)
     const configFile = loadServeConfig(
       options.config as string | undefined,
       repoDir,
@@ -3286,10 +3136,9 @@ export const serveCommand = new Command()
         h.length > 0
       )
       : undefined;
-    // A node that advertises itself to a team trusts the team's own names
-    // too (swamp-club#4120): the address its clients use, which a forwarded
-    // browser session's Origin names, and its advertised address, which a
-    // follower forwarding to it puts in Host.
+    // a node advertising itself to a team also trusts its client-facing address
+    // (a forwarded session's Origin) and its advertised address (a follower's
+    // Host)
     const teamHosts = advertiseAddress === undefined
       ? []
       : [ownerAddress, advertiseAddress]
@@ -3348,46 +3197,34 @@ export const serveCommand = new Command()
       outputMode: ctx.outputMode,
       // Serve outlives any other writer: once it is done, serve writes again.
       retakeLostV3Lease: true,
-      // Team mode (swamp-club#4096): a node that finds another serve
-      // holding the lease follows it, and leads once that lease expires.
+      // team mode: a node that finds another serve holding the lease follows
+      // it, and leads once that lease expires
       followV3Lease: true,
-      // Serve writes a claimed datastore as its owner, when its address is
-      // the owner's (swamp-club#4063).
+      // serve writes a claimed datastore as its owner, when its address is the
+      // owner's
       v3OwnerCheck: { as: "serve", address: ownerAddress },
     });
-    // Serve applies retention on its own timer; its shutdown runs no
-    // end-of-command pass (swamp-club#3473).
     takeRetentionCandidate();
 
-    // One gate per serve process, shared by the pollers, the WebSocket
-    // mutation handlers and the device-auth mint path so a pull can never
-    // land between a local delete and its push (swamp-club#2247). Only
-    // meaningful with a sync service — without one nothing syncs.
+    // one gate per serve process, shared by pollers, WebSocket mutation
+    // handlers and the device-auth mint path, so a pull never lands between a
+    // local delete and its push
     const syncGate = syncService ? createSyncGate() : undefined;
 
     const datastoreEngine = resolverEngine(repoDatastoreResolver);
 
-    // A v3 datastore's location: the filesystem datastore, or a bucket
-    // datastore's local root (swamp-club#3534).
     const v3Location = datastoreEngine === "v3"
       ? await v3DatastoreConfigOf(resolvedRepoDir, datastoreConfig)
       : undefined;
-    // A v3 datastore is maintained by its writer: serve compacts history and
-    // sweeps chunks while it runs (swamp-club#3279).
     const v3Maintenance = v3Location !== undefined
       ? new V3MaintenanceTimer(v3DatastoreFor(resolvedRepoDir, v3Location))
       : undefined;
-    // Only the leader writes, so only the leader maintains (swamp-club#4096).
+    // only the leader writes, so only the leader maintains
     const v3Follows = v3Role === "follower";
-    // Serve's role in team mode on a v3 datastore, set once the control
-    // plane it shares is known (swamp-club#4096).
     let serveLeadership: ServeLeadership | undefined;
-    // A follower's leader feed: its first catch-up holds /ready
-    // (swamp-club#4254).
     let serveFollowerFeed: FollowerFeed | undefined;
-    // The leader's timers a follower starts once it first leads
-    // (swamp-club#4096). A leader that loses the lead shuts down, which
-    // stops them.
+    // the leader's timers a follower starts once it first leads; a leader that
+    // loses the lead shuts down, which stops them
     const leaderStarts: Array<() => void> = [];
     // Set once the leader's work first starts, at boot or on a promotion
     // whenever it comes, so a start registered after it is never queued.
@@ -3403,15 +3240,10 @@ export const serveCommand = new Command()
         ? serveLeadership.role === "follower"
         : v3Follows;
     if (!v3Follows) v3Maintenance?.start();
-    // The chunks each caller uploaded through the datastore API, so a later
-    // commit may name them (swamp-club#3915).
     const datastoreApiLedger = new UploadLedger();
-    // The model and workflow-run locks serve holds for the CLI's serve
-    // upstream: serve's own locks, so client work and serve's runs exclude
-    // each other (swamp-club#3985). Released at shutdown.
-    // On a v3 datastore its explicit leases are also kept in the shared
-    // control plane, under this leader's writer fence, so a new leader
-    // adopts them (swamp-club#4195).
+    // serve's own model and workflow-run locks for the CLI's serve upstream, so
+    // client work and serve runs exclude each other; on v3 the leases live in
+    // the control plane under the writer fence so a new leader adopts them
     const datastoreApiLocks = new DatastoreLockLeases({
       ...(v3Location !== undefined
         ? {
@@ -3434,17 +3266,15 @@ export const serveCommand = new Command()
             : await createWorkflowRunLock(datastoreConfig, target.runId),
         ),
     });
-    // Serve's own runs take a behavior's lock only once no lease kept on it
-    // is still being adopted (swamp-club#4195): they lock apart from the
-    // lease API, which adoption already holds back.
+    // serve's own runs take a behavior's lock only once no kept lease on it is
+    // still being adopted
     if (v3Location !== undefined) {
       setOwnLockGate((lockKey, maxWaitMs) =>
         datastoreApiLocks.whenAdopted(lockKey, maxWaitMs)
       );
     }
-    // Takes over the explicit leases the leader before this node kept
-    // (swamp-club#4195). A lease whose partition recorded a later fence was
-    // superseded and is not adopted.
+    // takes over the explicit leases the previous leader kept; a lease whose
+    // partition recorded a later fence was superseded and is not adopted
     const adoptKeptLeases = async (location: V3DatastoreConfig) => {
       await datastoreApiLocks.adopt({
         leaseFenceOf: async (target) =>
@@ -3455,15 +3285,9 @@ export const serveCommand = new Command()
           )).leaseFence,
       });
     };
-    // Its Litestream sidecar, kept while serve holds the lease; nothing
-    // while the datastore does not replicate (swamp-club#3416). A follower
-    // starts it once it leads (swamp-club#4096): the first hold sets up the
-    // sidecar the upkeep keeps.
     let v3Replication = v3Location !== undefined && !v3Follows
       ? startV3ReplicationUpkeep(resolvedRepoDir, v3Location)
       : undefined;
-    // A write request answers once its commits are replicated; nothing waits
-    // while the datastore does not replicate (swamp-club#3489).
     const confirmReplicated = v3Location !== undefined &&
         v3ReplicatesAt(v3Location.path)
       ? ((path: string) => () => confirmV3Replicated(path))(v3Location.path)
@@ -3486,9 +3310,6 @@ export const serveCommand = new Command()
     }
     const extensionLockfilePath = managedLockfilePath;
 
-    // Remote-execution control plane: capability verbs, worker enrollment,
-    // and the dispatch/lease registries shared with the HTTP data plane.
-    // See design/enablers/remote-execution.md.
     const dispatchRegistry = new DispatchRegistry();
     const capabilityService = new CapabilityService({
       repoDir: resolvedRepoDir,
@@ -3505,9 +3326,6 @@ export const serveCommand = new Command()
       dispatchEnvAllow,
     });
     const verifyOnEnroll = merged.verifyOnEnroll;
-    // The pass a worker without a credential enrolls on, kept fresh for as
-    // long as this serve runs (design/surfaces/auth-gate.md, "Remote
-    // workers").
     const gateSession = currentAuthGateSession();
     const gatePassKeeper = gateSession
       ? createGatePassKeeper(
@@ -3579,8 +3397,8 @@ export const serveCommand = new Command()
     const dataPlane = new DataPlane({
       repoDir: resolvedRepoDir,
       repoContext,
-      // The same default vault as run deps, so a worker's sensitive write
-      // lands in the vault the pre-run check approved (swamp-club#2676).
+      // same default vault as run deps, so a worker's sensitive write lands in
+      // the vault the pre-run check approved
       createVaultService: () =>
         VaultService.fromRepository(resolvedRepoDir, {
           defaultVaultName: repoMarker?.defaultVault,
@@ -3597,13 +3415,9 @@ export const serveCommand = new Command()
       dataPlane.writtenVersions(dispatchId, DISPATCH_WRITES_SETTLE_TIMEOUT_MS)
     );
 
-    // When managedConfig is active, pull the config and auto-definitions
-    // prefixes from the datastore BEFORE loading extensions. config/ is
-    // needed so extension loaders can scan managed dirs; auto-definitions/
-    // is needed so model resolution finds definitions created by prior
-    // serve instances (enrollment tokens, server tokens, grants). The
-    // repository context was created before this pull, so its pulled
-    // workflow dirs are re-enumerated here (swamp-club#2434).
+    // pull config/ and auto-definitions/ before loading extensions: loaders
+    // scan managed dirs, and model resolution needs definitions prior serve
+    // instances created
     if (repoMarker?.datastore?.managedConfig && syncService) {
       await pullManagedConfigAtBoot({
         syncService,
@@ -3624,9 +3438,6 @@ export const serveCommand = new Command()
         undefined
       )
       : undefined;
-    // The pulled types that lockfile version registers, so a reload can
-    // unregister an extension removed since (swamp-club#2742). Recorded
-    // again once the registries have loaded, below.
     const recordPulledTypes = () =>
       seedPulledTypeSnapshot(resolvedRepoDir, extensionLockfilePath)
         .catch((error: unknown) => {
@@ -3637,10 +3448,9 @@ export const serveCommand = new Command()
         });
     await recordPulledTypes();
 
-    // Re-enumerates pulled extension workflow dirs and, once the scheduler
-    // exists, rescans schedules. Shared by `serve reload` and the config
-    // poller so an extension the poller pulls in registers its workflows
-    // without a manual reload. `rescan` is bound after the scheduler starts.
+    // shared by serve reload and the config poller so a polled-in extension
+    // registers its workflows without a manual reload; rescan is bound after
+    // the scheduler starts
     const scheduledWorkflows: { rescan?: () => Promise<void> } = {};
     const extWorkflowRepo = repoContext.extensionWorkflowRepo;
     const reloadExtensionWorkflows = extWorkflowRepo
@@ -3655,8 +3465,6 @@ export const serveCommand = new Command()
       }
       : undefined;
 
-    // Index extension registries so types are discoverable at startup.
-    // Bundles are imported on demand when workflow steps target them.
     await Promise.all([
       modelRegistry.ensureLoaded(),
       vaultTypeRegistry.ensureLoaded(),
@@ -3664,19 +3472,14 @@ export const serveCommand = new Command()
       reportRegistry.ensureLoaded(),
       webhookTypeRegistry.ensureLoaded(),
     ]);
-    // On an extension-backed datastore the catalog repair ran in that load,
-    // after the baseline record: add what it catalogued.
     await recordPulledTypes();
-    // The first check of local models for edits records what they look
-    // like now, so the first run does not pay for it (swamp-club#3284).
+    // the first check of local models records their current state so the first
+    // run does not pay for it
     await refreshLocalModelsForRun();
-    // An auto-install takes its turn with that refresh and hot-reload, so a
+    // an auto-install takes its turn with that refresh and hot-reload, so a
     // run's refresh never rebundles a half-installed extension
-    // (swamp-club#3911).
     getAutoResolver()?.setInstallScheduler(withExtensionMutation);
 
-    // Restriction entries that cannot match restrict nothing; say so now
-    // that the model registry is indexed (swamp-club#3129).
     if (authConfig.mode !== "none") {
       const findings = findIneffectiveRestrictions({
         restrictedModelTypes: merged.restrictedModelTypes,
@@ -3689,10 +3492,6 @@ export const serveCommand = new Command()
       }
     }
 
-    // Probe deployment stack and resolve durability mode.
-    // A v3 bucket datastore's serve keeps its control plane in the bucket
-    // (swamp-club#4096), so it is durable across instance replacement as a
-    // v2 one with a control plane is.
     const datastoreClass: DatastoreClassification =
       isCustomDatastoreConfig(datastoreConfig)
         ? {
@@ -3779,11 +3578,9 @@ export const serveCommand = new Command()
       );
     }
 
-    // The migrations move files on disk, outside any repository, so mark
-    // each moved file by path and push once. A bare markDirty() would turn
-    // the push into a walk of the whole cache (swamp-club#2415). Marking
-    // the destination directories instead would delete, remotely, any
-    // definition a partial startup pull left missing locally.
+    // mark each migrated file by path and push once: a bare markDirty() would
+    // walk the whole cache, and marking destination directories would delete
+    // remotely any definition a partial startup pull left missing
     const migratedPaths = [
       ...migrationResult.movedPaths,
       ...tokenMigrationResult.movedPaths,
@@ -3799,8 +3596,6 @@ export const serveCommand = new Command()
     }
 
     const caps = syncService?.capabilities?.();
-    // A v3 datastore's serve keeps its control plane in the datastore, so
-    // every serve node of it shares one (swamp-club#4096).
     const hasRemoteControlPlane = !!(caps?.controlPlane &&
       syncService?.controlPlaneStore) || v3Location !== undefined;
 
@@ -3866,22 +3661,13 @@ export const serveCommand = new Command()
     const serveNamespace = isCustomDatastoreConfig(datastoreConfig)
       ? datastoreConfig.namespace
       : undefined;
-    // Whether the run records this instance reads are current as it boots:
-    // always on a filesystem datastore, and on a synced one only when the
-    // boot hydration below pulled without failing (swamp-club#3108).
-    // A v3 datastore's context caught up from its commit log at open.
     let runRecordsCurrentAtBoot = !isCustomDatastoreConfig(datastoreConfig) ||
       v3Location !== undefined;
     const MIGRATION_SENTINEL = "migration/root-import-complete";
     if (hasRemoteControlPlane && syncService) {
-      // Migration: if a namespace is configured, read root control-plane
-      // records before the main sync service is namespace-bound. The
-      // extension's controlPlaneStore() methods call ensureBound(), which
-      // irrevocably binds the sync service's namespace on first use. Using
-      // the main sync service here would bind it to undefined (root),
-      // causing all subsequent namespace-aware pullChanged/pushChanged
-      // calls to fail with a namespace mismatch. A separate short-lived
-      // sync service isolates the root reads from the main service.
+      // Read root records with a separate short-lived sync service:
+      // ensureBound() binds a namespace irrevocably, so the main service must
+      // not bind to root.
       const rootRecords = new Map<string, Uint8Array>();
       const rootReadErrors: Array<{ prefix: string; error: Error }> = [];
       if (serveNamespace && isCustomDatastoreConfig(datastoreConfig)) {
@@ -3914,9 +3700,9 @@ export const serveCommand = new Command()
         }
       }
 
-      // A managedConfig instance has no state but its datastore, so it
-      // retries a failed hydration and then refuses to start rather than
-      // serve from a partial cache (swamp-club#3180).
+      // a managedConfig instance has no state but its datastore, so it retries
+      // a failed hydration then refuses to start rather than serve from a
+      // partial cache
       const hydrationSignal = () => AbortSignal.timeout(hydrationTimeoutMs);
       const hydration = await hydrateLocalCache({
         syncService,
@@ -3989,9 +3775,6 @@ export const serveCommand = new Command()
       }
     }
 
-    // Watches the managedConfig tier: pulls config/ when a sync service
-    // exists, and reloads extensions when the tier lockfile's hash changes —
-    // a peer's pull, update, rm or pin, or a CLI write on this host.
     if (repoMarker?.datastore?.managedConfig) {
       const extensionDiscoverer = createExtensionDiscoverer({
         lockfilePath: extensionLockfilePath,
@@ -4036,20 +3819,17 @@ export const serveCommand = new Command()
         },
         namespace: serveNamespace,
       });
-      // On a v3 datastore the commits serve sees also ask for the check at
-      // once (swamp-club#4120); the interval retries a reload that failed.
       configPoller.start();
     }
 
-    // Create the control-plane store AFTER namespace binding (which happens
-    // in hydrateLocalCache's pullChanged call). The extension's ensureBound()
-    // evaluates controlPrefixPath() lazily — after binding, it resolves to
-    // {namespace}/_control/ instead of the root _control/.
+    // create the control-plane store after namespace binding: ensureBound()
+    // resolves controlPrefixPath lazily to {namespace}/_control/ instead of the
+    // root
     let controlPlaneStore: ControlPlaneStore;
     if (v3Location !== undefined) {
-      // Shared by every serve node of the datastore (swamp-club#4096). What
-      // the checkout kept before team mode moves in once, so an upgrade
-      // keeps server tokens and dashboard sessions.
+      // shared by every serve node of the datastore; what the checkout kept
+      // before team mode moves in once, so an upgrade keeps server tokens and
+      // dashboard sessions
       const shared = v3ServeControlPlaneAt(v3Location);
       await importCheckoutControlPlane(
         new FileSystemControlPlaneStore(swampPath(resolvedRepoDir)),
@@ -4059,9 +3839,8 @@ export const serveCommand = new Command()
       logger.info(
         "Control-plane store: the v3 datastore, shared by its serve nodes",
       );
-      // A node that leads from boot adopts the explicit leases kept before
-      // it before it listens (swamp-club#4195); a follower adopts them when
-      // it takes the lead.
+      // a node that leads from boot adopts the explicit leases kept before it
+      // before it listens; a follower adopts them when it takes the lead
       if (!v3Follows) await adoptKeptLeases(v3Location);
     } else if (hasRemoteControlPlane && syncService?.controlPlaneStore) {
       controlPlaneStore = syncService.controlPlaneStore();
@@ -4073,8 +3852,6 @@ export const serveCommand = new Command()
       logger.info("Control-plane store: local filesystem fallback");
     }
 
-    // The namespace is bound by now, so wait records use the datastore's
-    // store as it is instead of binding it again on first use.
     const signalWaitSupport = resolveSignalWaitSupport(
       datastoreConfig,
       syncService,
@@ -4086,8 +3863,8 @@ export const serveCommand = new Command()
         v3: v3Location,
       },
     );
-    // Only serve's own evaluations run with --last-evaluated on a v3
-    // datastore, which team members' clients forward to (swamp-club#3922).
+    // only serve's own evaluations run with --last-evaluated on a v3 datastore,
+    // which team members' clients forward to
     if (v3Location !== undefined) {
       repoContext.takesForwardedRunRecords = true;
       repoContext.workflowRunRepo.recordsAreForwarded = true;
@@ -4111,13 +3888,9 @@ export const serveCommand = new Command()
         : signalWaitSupport,
     );
 
-    // Initialize the encrypted control-plane vault provider for serve-internal
-    // secrets (OAuth credentials, per-login token secrets). This replaces
-    // secrets in the user's vault (which is a poor fit for external backends
-    // like AWS SM) with an encrypted control-plane store that supports
-    // immediate deletion and has no per-secret cost.
-    // With a serve.yaml `token-secrets` block the key comes from that vault
-    // and never from the datastore; serve refuses to start if it can't be read.
+    // serve-internal secrets live in an encrypted control-plane vault; with a
+    // serve.yaml token-secrets block the key comes from that vault, never the
+    // datastore, and serve refuses to start if it cannot be read
     const { initializeControlPlaneVault } = await import(
       "../../domain/vaults/control_plane_vault_init.ts"
     );
@@ -4137,8 +3910,6 @@ export const serveCommand = new Command()
         },
       );
 
-    // The team's peer key (swamp-club#4120): followers present it to read
-    // the leader's whole commit feed, and nothing else.
     const teamPeerKey = v3Location !== undefined
       ? new TeamPeerKey(tokenSecretsProvider)
       : undefined;
@@ -4148,10 +3919,9 @@ export const serveCommand = new Command()
       hasRemoteControlPlane,
     });
 
-    // Team mode keeps the token secrets in the datastore: with the default
-    // co-located key, read access to it decrypts every one (swamp-club#4096),
-    // and read and write access signs a leader record followers forward
-    // callers' credentials to (swamp-club#4120). A warning, never a refusal.
+    // team mode keeps token secrets in the datastore: a co-located key lets
+    // read access decrypt every secret and write access sign a leader record
+    // that followers forward credentials to; warn, never refuse
     if (v3Location !== undefined) {
       const warning = coLocatedTokenKeyWarning(
         await controlPlaneStore.get(TOKEN_SECRETS_KEY_RECORD).catch(() => null),
@@ -4188,11 +3958,9 @@ export const serveCommand = new Command()
         128,
       );
 
-    // Read before the OAuth block so a username a grant file names for the
-    // first time gets a lookup token as a new admin name does
-    // (swamp-club#3123). No literal reader: the policy snapshot loader
-    // reports each grant's type spellings once it is reconciled, so reading
-    // them here as well would warn twice (swamp-club#3130).
+    // read before the OAuth block so a username a grant file names first gets a
+    // lookup token; no literal reader here, since the policy snapshot loader
+    // reports type spellings and a second read would warn twice
     const grantFiles = await readServeGrantFiles(resolvedRepoDir, {
       grantsFile: merged.grantsFile,
       grantsDir: merged.grantsDir,
@@ -4538,8 +4306,6 @@ export const serveCommand = new Command()
         }
       }
       for (const u of resolution.unresolved) {
-        // A fresh 404 or an entry that is not a plain username carries a
-        // reason; a recorded 404 does not.
         if (u.kind === "admin") {
           if (u.reason !== undefined) {
             logger
@@ -4592,11 +4358,9 @@ export const serveCommand = new Command()
         authConfig.allowedUsers.length,
         ...resolution.allowedUsers,
       );
-      // Names earlier OAuth logins recorded on their tokens come first, so a
-      // token without one (minted before logins recorded it, or by an admin)
-      // names a user who has logged in. Names resolved from the
-      // configuration just now replace them. The names only label callers,
-      // so a failed read warns rather than stopping serve.
+      // names recorded on earlier OAuth logins come first so a token minted
+      // without one names a user who has logged in; freshly resolved names
+      // replace them; a failed read only warns since names just label callers
       try {
         const tokenRecords = await repoContext.dataQueryService.query(
           `modelType == "${SERVER_TOKEN_MODEL_TYPE.normalized}" && name == "token-main"`,
@@ -4661,8 +4425,6 @@ export const serveCommand = new Command()
       false,
       repoContext.markDirty,
     );
-    // Both stores record what they write, so startup and the grants
-    // auto-reload can push their grant writes as access.reload does.
     const grantWrites = createGrantWriteTracking(
       repoContext.definitionRepo,
       autoDefRepo,
@@ -4679,7 +4441,6 @@ export const serveCommand = new Command()
     const grantFileErrors = collectErrors(grantFiles.repo);
 
     if (grantFileErrors.length > 0) {
-      // Named as grants/<name>, as swamp serve check-config names them.
       throw new UserError(
         `Grant file validation failed — refusing to start:\n${
           formatGrantFileErrorLines(
@@ -4799,9 +4560,8 @@ export const serveCommand = new Command()
       }
     }
 
-    // Every source loaded, or startup refused above. The resolver records
-    // what it looked up before answering, so a name first seen missing stays
-    // recorded although startup refuses here (swamp-club#3123).
+    // the resolver records what it looked up before answering, so a name first
+    // seen missing stays recorded although startup refuses here
     const grantUsernameResolution = await resolveGrantFileUsernames(
       parsedGrantSources,
       grantUsernameResolver,
@@ -4826,10 +4586,9 @@ export const serveCommand = new Command()
     }
     Object.assign(resolvedUserNames, grantUsernameResolution.usernamesBySub);
 
-    // The grant config's commits, published before this node serves as
-    // leader: a follower restores the published head, and one restored
-    // without them loads a policy with no grants (swamp-club#4207). The wait
-    // is bounded; commits it did not confirm ship with the next sync.
+    // publish the grant config commits before serving as leader: a follower
+    // restoring the published head without them loads a policy with no grants;
+    // the wait is bounded and unconfirmed commits ship with the next sync
     const publishGrantConfig = async (): Promise<void> => {
       if (confirmReplicated === undefined) return;
       const timeoutMs = resolveLockTimeoutMs();
@@ -4855,15 +4614,9 @@ export const serveCommand = new Command()
       }
     };
 
-    // One unit under the exclusive sync gate: ConfigPoller is already
-    // pulling, and a pull landing between these writes and their push can
-    // undo them (swamp-club#2247, swamp-club#2405). Unlike the definition
-    // migration push above, a failed push here only warns: the local policy
-    // is already right, and reconcile collapses any duplicate grants a peer
-    // creates because it could not see these (swamp-club#2822).
-    // Only the leader writes, so a follower applies no grant config: the
-    // node that leads applies its own, at boot or when it takes the lead
-    // (swamp-club#4096).
+    // one unit under the exclusive sync gate: a pull landing between these
+    // writes and their push can undo them; a failed push only warns, since
+    // local policy is right; only the leader applies grant config
     const applyGrantConfig = async (): Promise<void> => {
       const { materializeResult, fileReconcileResult } =
         await commitGrantWrites(
@@ -4918,9 +4671,9 @@ export const serveCommand = new Command()
       },
       readConditionTypeLiterals,
     );
-    // Created before the boot load: on a filesystem datastore it fingerprints
-    // the access data first, so a peer write landing after the load still
-    // reads as a change on the first cycle (swamp-club#3371).
+    // created before the boot load so on a filesystem datastore it fingerprints
+    // the access data first, and a peer write landing after the load still
+    // reads as a change
     accessDataPoller = await createAccessDataPoller({
       syncService,
       syncGate,
@@ -4953,9 +4706,8 @@ export const serveCommand = new Command()
         : "Tag policy: a write grant also permits changing tags",
     );
 
-    // Built on a v3 datastore whatever the reload mode: a node taking the
-    // lead reconciles the grant sources as they are then through it, not
-    // as they were at its boot (swamp-club#4096).
+    // built on a v3 datastore whatever the reload mode: a node taking the lead
+    // reconciles the grant sources as they are then, not as at its boot
     let grantsDirectoryPoller: GrantsDirectoryPoller | null = null;
     if (grantReloadMode === "auto" || v3Location !== undefined) {
       grantsDirectoryPoller = new GrantsDirectoryPoller({
@@ -4968,10 +4720,9 @@ export const serveCommand = new Command()
           Object.assign(resolvedUserNames, usernamesBySub),
         fileGrantStore: grantWrites.fileGrantStore,
         policySnapshotLoader,
-        // A node without the lease writes nothing: the change is retried
-        // at its next poll, and applied once it leads (swamp-club#4096). By
-        // the lease, not the role, which still reads follower while a node
-        // takes the lead.
+        // a node without the lease writes nothing; the change is retried at its
+        // next poll. checked by lease, not role, which still reads follower
+        // while a node takes the lead
         commitReconcile: async (reconcile) => {
           if (
             v3Location !== undefined &&
@@ -4984,8 +4735,6 @@ export const serveCommand = new Command()
       });
       if (grantReloadMode === "auto") await grantsDirectoryPoller.start();
     }
-    // What a node applies when it takes the lead: its admins, and the grant
-    // sources as they are now.
     const applyGrantConfigAtLead = async (): Promise<void> => {
       await commitGrantWrites(async () => {
         await materializeAdmins(
@@ -5018,8 +4767,8 @@ export const serveCommand = new Command()
       maxPerPrincipal: maxRunsPerPrincipal,
       maxRunDurationMs,
     });
-    // Closed by shutdown for the runs it interrupts, so an executor that
-    // outlived the abort grace cannot save over them (swamp-club#4101).
+    // closed by shutdown for the runs it interrupts, so an executor that
+    // outlived the abort grace cannot save over them
     const runWriteFence = new ServeRunWriteFence();
 
     if (detachRuns) {
@@ -5029,21 +4778,18 @@ export const serveCommand = new Command()
     }
 
     const instanceId = crypto.randomUUID();
-    // This node's address in the leader record: the advertised address when
-    // given (swamp-club#4120); otherwise the listener's, except that a
-    // wildcard or loopback bind address names nothing another host can
-    // reach, so it is left out, and an IPv6 literal is bracketed, as a URL
-    // needs it (swamp-club#4096).
+    // the advertised address when given; otherwise the listener's, left out
+    // when a wildcard or loopback bind names nothing another host can reach,
+    // with an IPv6 literal bracketed for the URL
     const leaderAddress = advertiseAddress ??
       (isUnreachableBindHost(host)
         ? undefined
         : `${tlsEnabled ? "https" : "http"}://${
           host.includes(":") && !host.startsWith("[") ? `[${host}]` : host
         }:${port}`);
-    // A node that took the lease at boot records itself as the leader before
-    // it listens or settles anything: a stalled former leader judges its
-    // peers by the record, and would otherwise count this node gone by the
-    // runs it takes (swamp-club#4096). ServeLeadership writes it again.
+    // a node that took the lease at boot records itself as leader before
+    // listening: a stalled former leader judges peers by the record and would
+    // otherwise count this node gone
     if (v3Location !== undefined && !v3Follows) {
       const fence = v3WriterFence(v3Location.path);
       if (fence !== undefined) {
@@ -5054,8 +4800,6 @@ export const serveCommand = new Command()
             ...(leaderAddress !== undefined ? { address: leaderAddress } : {}),
             since: new Date().toISOString(),
           };
-          // Signed with the team's peer key, so followers forward to its
-          // address (swamp-club#4120).
           const proof = await teamPeerKey?.prove(record).catch((error) => {
             logger
               .warn`Signing this serve node's leader record failed; followers forward nothing to it until it is signed: ${error}`;
@@ -5072,11 +4816,9 @@ export const serveCommand = new Command()
         }
       }
     }
-    // A resume through this server takes its continuation claims as this
-    // instance, in the store its heartbeat is written to, so a peer can
-    // tell a claim of a live instance from one a dead instance left.
-    // A synced datastore with no shared control-plane store gets none: the
-    // fallback store is this host's own disk, where no peer would look.
+    // A resume takes its continuation claims as this instance so peers can tell
+    // live from dead claims; a synced datastore without a shared store gets
+    // none.
     repoContext.continuationClaims =
       isAtomicControlPlaneStore(controlPlaneStore) &&
         (hasRemoteControlPlane || !isCustomDatastoreConfig(datastoreConfig) ||
@@ -5085,11 +4827,9 @@ export const serveCommand = new Command()
           staleMs: staleTtlMs ?? DEFAULT_STALE_TTL_MS,
         })
         : undefined;
-    // On a synced datastore this instance resumes a run from its own copy
-    // of it. Where the remote can be read without replacing that copy, a
-    // run serve continues by itself is compared with the remote first.
-    // A repository that keeps its run records out of the datastore has one
-    // copy of each, and nothing to compare.
+    // on a synced datastore a resume uses this instance's own copy, so a run
+    // serve continues itself is compared with the remote first where the remote
+    // can be read without replacing the copy
     const runRecordsSynced = isCustomDatastoreConfig(datastoreConfig) &&
       v3Location === undefined &&
       runsLiveInDatastore(
@@ -5138,8 +4878,6 @@ export const serveCommand = new Command()
       }
     }
 
-    // Migrate existing vault-backed token secrets to the encrypted
-    // control-plane store. Runs before auth middleware accepts tokens.
     if (authConfig.mode === "oauth") {
       const {
         createTokenMigrationLockDeps,
@@ -5227,10 +4965,6 @@ export const serveCommand = new Command()
     let retentionGcService: RetentionGcService | undefined;
     let serverTokenGcService: ServerTokenGcService | undefined;
     let continuationSweepService: ContinuationSweepService | undefined;
-    // Fills the run index cache in the background once serve is listening,
-    // so the dashboard's first requests find it warm or wait on the load
-    // already in flight; shutdown stops it (swamp-club#3443) without waiting
-    // for that load (swamp-club#3468).
     const runIndexWarmup = new RunIndexWarmup({
       listWorkflowIds: async () =>
         (await listWorkflows(repoContext.workflowRepo)).map((w) => w.id),
@@ -5248,8 +4982,6 @@ export const serveCommand = new Command()
     });
 
     logger.info("Boot: reaping stale runs via tracker");
-    // Reap stale runs via the SQLite tracker (heartbeat + PID liveness).
-    // This handles both model-method and workflow runs registered with the tracker.
     const runTracker = RunTrackerStore.fromSwampDir(
       swampPath(resolvedRepoDir),
     );
@@ -5279,19 +5011,15 @@ export const serveCommand = new Command()
     }
 
     logger.info("Boot: reconciling workflow run state");
-    // Reconcile YAML-persisted workflow run state with tracker verdicts.
-    // The tracker is the liveness authority; the YAML entity is the run record.
-    // Legacy runs (pre-tracker) fall back to PID liveness checking.
-    // Whatever their age: a run can wait at a gate for longer than any
-    // window and be left running by a resume (swamp-club#2518).
+    // the tracker is the liveness authority and the YAML entity is the run
+    // record; legacy runs fall back to PID liveness; runs are reconciled
+    // whatever their age since a run can wait at a gate longer than any window
     const runningRuns = await repoContext.workflowRunRepo.findGlobalByStatus(
       "running",
     );
-    // On a synced datastore, the runs boot and reconciliation settle are
-    // pushed, so the datastore does not keep them running until some other
-    // write pushes (swamp-club#3958).
-    // One deadline bounds the gate wait and the push together; a push that
-    // gets the gate past it is skipped.
+    // settled runs are pushed so the datastore does not keep them running; one
+    // deadline bounds the gate wait and the push together, and a push that gets
+    // the gate past it is skipped
     const pushSettledRuns = syncService
       ? async () => {
         await runBoundedSync(
@@ -5306,10 +5034,9 @@ export const serveCommand = new Command()
         );
       }
       : undefined;
-    // A dead instance's run records, which this cache holds only if it
-    // hydrated after they started, brought from the datastore before
-    // reconciliation settles them. The refresh writes into the cache, so it
-    // takes the pull lane, as a step-start pull does.
+    // a dead instance's run records are brought from the datastore before
+    // reconciliation settles them; the refresh writes into the cache, so it
+    // takes the pull lane
     const syncedCachePath = isCustomDatastoreConfig(datastoreConfig)
       ? datastoreConfig.cachePath
       : undefined;
@@ -5339,17 +5066,13 @@ export const serveCommand = new Command()
         );
       }
       : undefined;
-    // A scheduled run's active-run record names its workflow only by name.
     const resolveWorkflowId = async (name: string) =>
       (await repoContext.workflowRepo.findByName(name))?.id;
-    // The interrupted runs the previous serve in this checkout could not
-    // push at its shutdown, pushed once here.
     const unpushedMarkerPath = swampPath(
       resolvedRepoDir,
       UNPUSHED_INTERRUPTS_FILE,
     );
     let unpushedAtBoot: UnpushedInterrupts = { present: false };
-    // On v3 the boot reap's commit is what lands them (swamp-club#3961).
     const commitsSettledRuns = commitsThroughCommitLog(repoContext);
     if (pushSettledRuns || commitsSettledRuns) {
       try {
@@ -5374,14 +5097,9 @@ export const serveCommand = new Command()
         runningRuns.push(marked);
       }
     }
-    // The boot reap and the method-run settle below run in root units of
-    // work, so their saves stage into a root instead of reaching the hook
-    // through signalChange's fallback (swamp-club#3056). The reap's root
-    // pushes what it interrupted, and what the marker names; the method-run
-    // settle pushes nothing, as before.
-    // Only the leader writes, so a follower settles nothing at boot; a
-    // node settles what others left each time it takes the lead
-    // (swamp-club#4096).
+    // the boot reap and method-run settle run in root units so saves stage into
+    // a root, not signalChange's fallback; only the leader settles at boot, and
+    // a new leader settles what others left
     const settleLeftRuns = async (
       runningRuns: Awaited<
         ReturnType<typeof repoContext.workflowRunRepo.findGlobalByStatus>
@@ -5423,18 +5141,18 @@ export const serveCommand = new Command()
             },
             isProcessGone,
             instanceId,
-            // In team mode only the leader runs work: a run any other instance
-            // left running is dead, whatever its heartbeat says, since its
-            // commits are fenced (swamp-club#4096).
+            // in team mode only the leader runs work, so a run any other
+            // instance left running is dead whatever its heartbeat says, since
+            // its commits are fenced
             v3Location !== undefined
               ? teamModeRunLiveness(instanceId, controlPlaneStore).isAlive
               : hasRemoteControlPlane
               ? async (id) => {
                 const data = await controlPlaneStore.get(`heartbeats/${id}`);
                 if (data === null) return false;
-                // An instance that stopped without pushing its interrupted
-                // runs leaves a stopped record (swamp-club#3958). A merely
-                // stale one is left to reconciliation, as before.
+                // an instance that stopped without pushing its interrupted runs
+                // leaves a stopped record; a merely stale one is left to
+                // reconciliation
                 const record = InstanceHeartbeatService.parseRecord(data);
                 return record === null ||
                   !InstanceHeartbeatService.isStopped(record);
@@ -5453,11 +5171,9 @@ export const serveCommand = new Command()
         );
       }
 
-      // Method runs a dead owner left running on this host, such as the steps
-      // of a run the previous serve process was driving when it died. A row is
-      // judged on host and pid, not instance id: this serve's instance id is
-      // new, so the rows of the process it replaces carry another one.
-      // Best-effort: a row left unsettled is kept for `run doctor --fix`.
+      // method runs a dead owner left running on this host, judged on host and
+      // pid not instance id, since this serve's id is new; best-effort, an
+      // unsettled row is left for the doctor
       try {
         const settledMethodRuns = await runInRootUnitOfWork(
           repoContext,
@@ -5504,18 +5220,15 @@ export const serveCommand = new Command()
       datastoreConfig,
     );
     const gcMutex = new GcMutex();
-    // Traced dashboard reads record the event-loop lag seen while they ran,
-    // to tell a blocked loop from slow I/O (swamp-club#3741).
     const eventLoopLag = new EventLoopLagMonitor();
-    // Authorizing what a request reads finds the owning definitions here,
-    // not by scanning every definition per request (swamp-club#3968).
+    // authorizing what a request reads finds the owning definitions here, not
+    // by scanning every definition per request
     const definitionIndex = new DefinitionIdIndex(repoContext.definitionRepo);
-    // A direct-type workflow step looks its definition name up across every
-    // type, and a new name used to walk every definition twice
-    // (swamp-club#4037); only that lookup reads the index.
+    // a direct-type workflow step looks its definition name up across every
+    // type; only that lookup reads the index
     repoContext.definitionRepo.useNameIndex(definitionIndex);
-    // A follower's route to its team's leader (swamp-club#4120): writes it
-    // takes pass on through it with the caller's own credentials.
+    // a follower's route to its team's leader: writes it takes pass on through
+    // it with the caller's own credentials
     const leaderLink = v3Location === undefined ? undefined : new LeaderLink({
       leader: () => connectionCtx.followerGate?.leader(),
       trustProxy,
@@ -5524,8 +5237,6 @@ export const serveCommand = new Command()
         ? { caCerts: [await readServeCaCert(merged.caCert)] }
         : {}),
     });
-    // Changes serve refused for a grant their author lacks, kept for an admin
-    // in the shared control plane (swamp-club#4195).
     const datastoreQuarantine = new ControlPlaneQuarantineStore(
       controlPlaneStore,
     );
@@ -5555,8 +5266,6 @@ export const serveCommand = new Command()
         runWriteFence,
         ...(confirmReplicated !== undefined && { confirmReplicated }),
         ...(replicationMark !== undefined && { replicationMark }),
-        // A v3 datastore commits when a request's root ends: its replies
-        // wait for that (swamp-club#3759).
         ...(v3Location !== undefined && { holdRepliesUntilCommitted: true }),
         workerGateway,
         policySnapshotLoader,
@@ -5583,8 +5292,8 @@ export const serveCommand = new Command()
           ? join(datastoreResolver.resolvePath("config"), "models")
           : undefined,
         ...(leaderLink !== undefined ? { leaderLink } : {}),
-        // A node that booted following refuses writes from the first request
-        // it takes, before its leadership names the leader (swamp-club#4096).
+        // a node that booted following refuses writes from the first request it
+        // takes, before its leadership names the leader
         ...(v3Follows
           ? {
             followerGate: {
@@ -5595,11 +5304,7 @@ export const serveCommand = new Command()
           }
           : {}),
       };
-    // Every pending signal a wait takes on this server is audited, whether
-    // the step, a signaller or the sweep took it (swamp-club#3213).
     auditTakenSignals(connectionCtx);
-    // The protected secret load route records metadata-only events through
-    // the same emitter, once one is configured.
     dataPlane.setAudit(() => {
       const emitter = connectionCtx.auditEmitter;
       if (emitter === undefined || connectionCtx.instanceId === undefined) {
@@ -5619,7 +5324,6 @@ export const serveCommand = new Command()
 
     const ac = new AbortController();
 
-    // ── Audit Pipeline ───────────────────────────────────────────────
     const auditConfig = parseAuditConfig(configFile);
     if (auditConfig) {
       const auditStoresWithConfig: {
@@ -5646,9 +5350,8 @@ export const serveCommand = new Command()
             ".swamp",
             `audit-cache-${entry.target}`,
           );
-          // A dedicated audit datastore is a datastore too: refuse one marked
+          // a dedicated audit datastore is a datastore too: refuse one marked
           // with a format this binary cannot read before writing to it
-          // (swamp-club#3189).
           await ensureSupportedDatastoreFormat(resolvedRepoDir, {
             type: entry.type,
             config: resolvedConfig,
@@ -6156,8 +5859,8 @@ export const serveCommand = new Command()
       triggerOverrides = new Map(Object.entries(merged.triggerOverrides));
     }
 
-    // Scheduled and webhook runs have no client behind them; they run as
-    // built-in service principals and are authorized per run (#2464).
+    // scheduled and webhook runs have no client behind them; they run as
+    // built-in service principals and are authorized per run
     const triggerAuthorizer = createTriggerAuthorizer({
       authMode: authConfig.mode,
       policySnapshotLoader,
@@ -6196,8 +5899,6 @@ export const serveCommand = new Command()
               syncGate,
               triggerSource: "schedule",
               initiatedBy: input.initiatedBy,
-              // A fresh scope per run of the scheduler principal
-              // (swamp-club#2676).
               vaultAccess: serviceRunVaultScope(
                 runVaultScopeContext(connectionCtx),
                 SCHEDULER_PRINCIPAL,
@@ -6267,9 +5968,9 @@ export const serveCommand = new Command()
         ),
         cronFireDedup: controlPlaneStore?.putIfAbsent
           ? async (workflowId, fireTime) => {
-            // Only the leader runs a fire; a follower leaves its slot to it,
-            // as does a leader whose lease was just taken over and has not
-            // ticked since (swamp-club#4096).
+            // only the leader runs a fire; a follower leaves its slot to it, as
+            // does a leader whose lease was just taken over and has not ticked
+            // since
             if (
               isFollowing() ||
               (v3Location !== undefined &&
@@ -6318,8 +6019,6 @@ export const serveCommand = new Command()
               break;
             case "schedule_skipped":
               if (event.paused) {
-                // A deliberate skip (swamp-club#3522): the journal says why
-                // the run is missing.
                 if (event.paused.reason === undefined) {
                   logger.info(
                     "Skipped scheduled workflow {name}: paused",
@@ -6383,10 +6082,9 @@ export const serveCommand = new Command()
     };
     connectionCtx.workflowReloader = reloadExtensionWorkflows;
 
-    // A --hot-reload serve reloads itself after its own extension pull,
-    // update, install or rm (swamp-club#3594). Same scope as the config
-    // poller's reload: serve.yaml is not re-read, so a pull never applies
-    // unrelated pending config edits.
+    // a hot-reload serve reloads itself after its own extension changes, with
+    // the same scope as the config poller: serve.yaml is not re-read, so
+    // unrelated pending config edits never apply
     if (merged.hotReload) {
       const changeDiscoverer = createExtensionDiscoverer({
         lockfilePath: extensionLockfilePath,
@@ -6399,7 +6097,6 @@ export const serveCommand = new Command()
         });
     }
 
-    // Parse group refresh interval and construct service
     let collectiveRefreshService:
       | import("../../serve/collective_refresh_service.ts").CollectiveRefreshService
       | null = null;
@@ -6474,8 +6171,8 @@ export const serveCommand = new Command()
         },
         getAccessToken: (token) => lookupOAuthAccessToken(vaultService, token),
         updateTokenCollectives: async (tokenName, collectives, groups) => {
-          // The leader's refresh writes it; a follower still updates its own
-          // connections (swamp-club#4096).
+          // the leader's refresh writes it; a follower still updates its own
+          // connections
           if (isFollowing()) return;
           const { createResourceWriter } = await import(
             "../../domain/models/data_writer.ts"
@@ -6504,9 +6201,8 @@ export const serveCommand = new Command()
           const parsed = ServerTokenSchema.safeParse(record[0].attributes);
           if (!parsed.success) return;
           const updated = { ...parsed.data, collectives, groups };
-          // In a root unit of work with no push, so the write stages into
-          // it instead of reaching the hook through signalChange's fallback
-          // (swamp-club#3056). Nothing pushes here, as before.
+          // root unit of work with no push, so the write stages into it instead
+          // of reaching the hook through signalChange's fallback
           await runInRootUnitOfWork(
             repoContext,
             { flush: undefined },
@@ -6551,9 +6247,8 @@ export const serveCommand = new Command()
             state: "revoked" as const,
             revokedAt: new Date().toISOString(),
           };
-          // In a root unit of work with no push, so the write stages into
-          // it instead of reaching the hook through signalChange's fallback
-          // (swamp-club#3056). Nothing pushes here, as before.
+          // root unit of work with no push, so the write stages into it instead
+          // of reaching the hook through signalChange's fallback
           await runInRootUnitOfWork(
             repoContext,
             { flush: undefined },
@@ -6623,8 +6318,6 @@ export const serveCommand = new Command()
       clubHeartbeatService.start();
     }
 
-    // Parse and initialize webhook endpoints — resolve secrets (including
-    // @vault= references) now that the vault type registry is loaded.
     let webhookService: WebhookService | null = null;
     const webhookSourceIsCliFlags = webhookFlags.length > 0;
     const hasWebhooks = webhookSourceIsCliFlags ||
@@ -6817,8 +6510,8 @@ export const serveCommand = new Command()
       scheduleEnabled: enableSchedule,
       webhookProvider: webhookService ?? null,
       remoteOnly: merged.remoteOnly,
-      // Retention config and watermarks, read at most once a minute: the
-      // watermarks may live on a remote control plane (swamp-club#3473).
+      // read at most once a minute: the watermarks may live on a remote control
+      // plane
       retentionProvider: createRetentionHealthProvider({
         readConfig: async () =>
           (await new RepoMarkerRepository().read(
@@ -6826,8 +6519,8 @@ export const serveCommand = new Command()
           ))?.garbageCollection,
         watermarks: repoContext.retentionWatermarks,
       }),
-      // Any valid token may read health, so one collection (component
-      // probes included) serves every reader and stream tick for a second.
+      // any valid token may read health, so one collection serves every reader
+      // and stream tick for a second
       snapshotMaxAgeMs: HEALTH_SNAPSHOT_MAX_AGE_MS,
       onHealthTransition: (previous, current) => {
         emitSystemAuditEvent(
@@ -6857,7 +6550,6 @@ export const serveCommand = new Command()
       onUsernamesResolved: rememberTokenUsernames,
     };
 
-    // Dashboard static file serving
     const dashboardEnabled = merged.dashboard;
     const dashboardDistDir = dashboardEnabled ? DASHBOARD_DIST_DIR : null;
 
@@ -6949,8 +6641,8 @@ export const serveCommand = new Command()
         },
       },
       unscopedHttpHandler(traceHttpRequests(async (req, info) => {
-        // A request a team follower forwarded carries the team's peer token
-        // (swamp-club#4148): the follower is then a trusted proxy for it.
+        // a request a team follower forwarded carries the team's peer token,
+        // making the follower a trusted proxy for it
         const resolvedClientAddress = requestClientAddress(
           req.headers,
           info.remoteAddr.hostname,
@@ -6959,7 +6651,6 @@ export const serveCommand = new Command()
         );
         const clientAddress = () => resolvedClientAddress;
 
-        // WebSocket upgrade (check first — upgrade requests are also GETs)
         const upgrade = req.headers.get("upgrade") ?? "";
         // Once the client address is taken, the team's peer token goes no
         // further: no webhook payload, hook or record downstream sees it.
@@ -6991,12 +6682,8 @@ export const serveCommand = new Command()
 
           if (authConfig.mode !== "none") {
             const extracted = extractWebSocketToken(req);
-            // A team peer's feed socket (swamp-club#4120): the peer key, not a
-            // token, so it is checked here and gets no principal. It may only
-            // read the commit feed. Checked before the IP burst, so a
-            // follower's feed reconnects never spend it; a peer token that
-            // fails counts against it and the per-credential limit, as any
-            // failed token does (swamp-club#4148).
+            // A team peer's feed socket authenticates with the peer key, only
+            // reads the commit feed, and is checked before the IP burst.
             if (extracted !== null && isPeerToken(extracted.token)) {
               if (
                 teamPeerKey === undefined ||
@@ -7212,8 +6899,6 @@ export const serveCommand = new Command()
               resolveConnectionCompression(req.url),
             );
             socket.addEventListener("close", () => removeConnection(socket));
-            // A follower reaches the leader as this caller, with the
-            // caller's own credential (swamp-club#4120).
             if (forwardCredential !== undefined) {
               rememberForwardCredential(socket, forwardCredential);
             }
@@ -7244,9 +6929,8 @@ export const serveCommand = new Command()
           return response;
         }
 
-        // Remote-execution data plane (bearer-authenticated worker routes).
-        // A follower passes it on to the leader, which holds the workers'
-        // session credentials and authenticates them (swamp-club#4120).
+        // a follower passes the worker data plane on to the leader, which holds
+        // the workers' session credentials and authenticates them
         if (
           leaderLink !== undefined && isFollowing() &&
           leaderLink.address() !== undefined && isDataPlaneRequest(req)
@@ -7260,7 +6944,6 @@ export const serveCommand = new Command()
         const dataPlaneResponse = await dataPlane.handle(req, clientAddress());
         if (dataPlaneResponse) return dataPlaneResponse;
 
-        // Webhook endpoints (POST only, checked before health)
         if (webhookService && req.method === "POST") {
           const webhookResponse = await webhookService.handleRequest(
             req,
@@ -7287,8 +6970,6 @@ export const serveCommand = new Command()
           });
         }
 
-        // Datastore API: team mode's commits, chunks and catch-up
-        // (authenticated; authorized per op on its intent, swamp-club#3915)
         const datastoreRoute = matchDatastoreRoute(apiUrl.pathname);
         if (datastoreRoute !== undefined) {
           return await handleDatastoreRequest(
@@ -7302,8 +6983,6 @@ export const serveCommand = new Command()
                 : undefined,
               ledger: datastoreApiLedger,
               locks: datastoreApiLocks,
-              // Changes refused for a grant their author lacks, kept in
-              // the shared control plane for an admin (swamp-club#4195).
               ...(v3Location !== undefined
                 ? { quarantine: datastoreQuarantine }
                 : {}),
@@ -7320,7 +6999,6 @@ export const serveCommand = new Command()
           );
         }
 
-        // Cancel endpoint (authenticated + authorized)
         if (req.method === "POST") {
           const url = apiUrl;
           const cancelMatch = url.pathname.match(
@@ -7335,7 +7013,6 @@ export const serveCommand = new Command()
               ?.split(",")[0]?.trim() ??
               info.remoteAddr.hostname)
             : info.remoteAddr.hostname;
-          // Signal endpoint (authenticated; authorized on the wait's workflow)
           const signalRoute = matchSignalRoute(url.pathname);
           if (signalRoute !== undefined) {
             return await handleSignalHttpRequest(
@@ -7440,11 +7117,9 @@ export const serveCommand = new Command()
                 message: "Content-Type must be application/json",
               }, { status: 415 });
             }
-            // A follower passes a cancel on to the leader, where the run
-            // is, with the caller's own credentials (swamp-club#4120), once
-            // the caller is authenticated; refused with a retryable 503 when
-            // no leader can be reached (swamp-club#4096). Inside the cancel
-            // route only: any other POST is not this route's.
+            // a follower passes a cancel to the leader, where the run is, with
+            // the caller's own credentials once authenticated; a retryable 503
+            // when no leader is reachable. only within the cancel route
             const cancelForwarded = followerHttpForward(
               "workflow.cancel",
               req,
@@ -7594,8 +7269,6 @@ export const serveCommand = new Command()
           }
         }
 
-        // Health snapshot endpoints (any valid token; the snapshot is
-        // narrowed to what the token may read)
         if (req.method === "GET") {
           const url = new URL(req.url);
           if (url.pathname === "/api/v1/health") {
@@ -7649,7 +7322,6 @@ export const serveCommand = new Command()
             });
           }
 
-          // Cluster instances endpoint (authenticated + authorized)
           if (url.pathname === "/api/v1/cluster/instances") {
             const auth = await authenticateAdmin(
               req,
@@ -7670,7 +7342,6 @@ export const serveCommand = new Command()
             return Response.json({ instances });
           }
 
-          // Serve config endpoint (authenticated + authorized)
           if (url.pathname === "/api/v1/serve/config") {
             const auth = await authenticateAdmin(
               req,
@@ -7684,7 +7355,6 @@ export const serveCommand = new Command()
             });
           }
 
-          // Internal runs endpoint (opt-in, authenticated + authorized)
           if (url.pathname === "/internal/runs") {
             if (!enableInternalApi) {
               return new Response("Not found", { status: 404 });
@@ -7727,7 +7397,6 @@ export const serveCommand = new Command()
           }
         }
 
-        // Browser dashboard sessions and OAuth device authorization.
         const authPath = new URL(req.url).pathname;
         const isDeviceAuthRequest = authPath === "/auth/device" ||
           authPath === "/auth/device/token";
@@ -7905,7 +7574,6 @@ export const serveCommand = new Command()
           if (deviceAuthResponse) return deviceAuthResponse;
         }
 
-        // Auth discovery (unauthenticated — mode is not sensitive)
         if (
           req.method === "GET" && new URL(req.url).pathname === "/auth/info"
         ) {
@@ -7940,7 +7608,6 @@ export const serveCommand = new Command()
           });
         }
 
-        // Health check endpoint
         if (req.method === "GET") {
           const url = new URL(req.url);
           if (url.pathname === "/" || url.pathname === "/health") {
@@ -7948,7 +7615,6 @@ export const serveCommand = new Command()
           }
         }
 
-        // Dashboard SPA
         if (dashboardDistDir) {
           const dashboardResponse = await serveDashboardRoute(
             dashboardDistDir,
@@ -7961,7 +7627,6 @@ export const serveCommand = new Command()
       })),
     );
 
-    // Hot-reload: PID file + SIGHUP handler
     const hotReload = merged.hotReload;
     const pidPath = hotReload ? swampPath(resolvedRepoDir, "serve.pid") : null;
 
@@ -8045,14 +7710,13 @@ export const serveCommand = new Command()
       });
     }
 
-    // Handle SIGINT/SIGTERM for graceful shutdown
     const shutdown = async () => {
       if (shuttingDown) return;
       shuttingDown = true;
       isReady = false;
-      // Stopped first, so it lets go of its load in flight instead of
-      // competing with the drain; waited on after the drain, which no
-      // longer waits for that load to end (swamp-club#3468).
+      // stopped first so it lets go of its load in flight instead of competing
+      // with the drain; waited on after the drain, which does not wait for that
+      // load
       runIndexWarmup.stop();
       eventLoopLag.stop();
       if (isJson) {
@@ -8066,9 +7730,9 @@ export const serveCommand = new Command()
         logger.info`Shutting down, aborting in-flight runs immediately...`;
       }
       const drainStarted = Date.now();
-      // Every stage after the drain that waits on the datastore's storage
-      // takes its bound from this one deadline, so a slow bucket cannot hold
-      // shutdown past the drain timeout plus about 25 s (swamp-club#3961).
+      // every later stage that waits on datastore storage takes its bound from
+      // this one deadline, so a slow bucket cannot hold shutdown past the drain
+      // timeout plus a fixed margin
       const shutdownDeadline = ShutdownDeadline.forShutdown(
         drainStarted,
         shutdownDrainTimeoutMs,
@@ -8085,12 +7749,11 @@ export const serveCommand = new Command()
           }
         },
       });
-      // A run still registered past the abort grace may still be writing:
-      // on v3 the next command must recover what it leaves uncommitted
-      // (swamp-club#3299).
+      // a run still registered past the abort grace may still be writing, so on
+      // v3 the next command must recover what it leaves uncommitted
       if ((activeRunRegistry?.size ?? 0) > 0) keepV3WriterMarkers();
-      // Before the pollers stop: the push of the interrupted runs takes the
-      // shared sync gate, as a run's post-run push does (swamp-club#3252).
+      // before the pollers stop: the push of the interrupted runs takes the
+      // shared sync gate, as a run's post-run push does
       const interruptResult = await interruptShutdownRuns(remaining, {
         repoContext,
         syncService,
@@ -8107,7 +7770,6 @@ export const serveCommand = new Command()
           logger.info`Interrupted workflow run ${runId} (server shutdown)`;
         },
       });
-      // The datastore may still hold these runs running (swamp-club#3958).
       const unpushedRunIds = interruptResult.unpushed ?? [];
       if (isJson && unpushedRunIds.length > 0) {
         console.log(JSON.stringify({
@@ -8177,16 +7839,15 @@ export const serveCommand = new Command()
       }
       await policySnapshotLoader.dispose();
       await v3Maintenance?.stop();
-      // No sidecar replacement runs past here (swamp-club#3416), and the
-      // closing sync and the lease release get what the shutdown deadline
-      // has left when each starts (swamp-club#3961).
+      // no sidecar replacement runs past here; the closing sync and lease
+      // release get what the shutdown deadline has left when each starts
       await v3Replication?.stop({
         waitMs: shutdownDeadline.remaining(V3_UPKEEP_STOP_BOUND_MS),
       });
       setV3ClosingDeadline(shutdownDeadline);
-      // Final telemetry flush, after runs have drained so their entries are
-      // included. Must happen BEFORE ac.abort(), which releases
-      // `await server.finished` and with it the CLI's own teardown flush.
+      // final telemetry flush after runs drain so their entries are included;
+      // must come before ac.abort(), which releases server.finished and the
+      // CLI's own teardown flush
       if (telemetryFlushService) {
         await telemetryFlushService.stop();
       }
@@ -8240,9 +7901,9 @@ export const serveCommand = new Command()
       }
     }
 
-    // On a v3 datastore only the leader runs work (swamp-club#4096): a peer
-    // that still records active runs is gone however fresh its heartbeat,
-    // since its commits are fenced. A peer with none, a follower, is left.
+    // on a v3 datastore only the leader runs work: a peer that still records
+    // active runs is gone however fresh its heartbeat, since its commits are
+    // fenced; a follower with none is left
     const isPeerGone = v3Location !== undefined
       ? teamModeRunLiveness(
         instanceId,
@@ -8279,9 +7940,8 @@ export const serveCommand = new Command()
     };
     if (hasRemoteControlPlane && !v3Follows) await reconcileRemoteAtLead();
 
-    // Interrupted workflow rows whose record is no longer running, such as a
-    // row reaped while its owner went on to finish the run, would otherwise
-    // be kept by retention for good (swamp-club#2917).
+    // interrupted workflow rows whose record is not running would otherwise be
+    // kept by retention for good
     const settledRows = await settleInterruptedWorkflowRows(
       runTracker,
       runRecordFinder(repoContext.workflowRunRepo, repoContext.workflowRepo),
@@ -8338,10 +7998,9 @@ export const serveCommand = new Command()
       let knownPeerIds: Set<string> | null = null;
       const runReconciliationTick = async () => {
         try {
-          // A follower settles nothing: only the leader commits
-          // (swamp-club#4096). Nor does a leader whose lease was taken over
-          // and has not ticked since: it would judge the new leader gone by
-          // its active runs, and those control-plane deletes are unfenced.
+          // A follower settles nothing, nor does a leader whose lease was taken
+          // over and has not ticked since: it would misjudge the new leader
+          // gone.
           const reaped = isFollowing() ||
               (v3Location !== undefined &&
                 !holdsCurrentV3WriterLease(v3Location.path))
@@ -8432,10 +8091,9 @@ export const serveCommand = new Command()
       logger.info("Continuous reconciliation timer started");
     }
 
-    // Team mode on a v3 datastore (swamp-club#4096): the node holding the
-    // writer lease leads; the others follow, and take the lead once its
-    // lease expires. A node that takes the lead starts the leader's timers
-    // and settles what the nodes before it left.
+    // team mode on a v3 datastore: the node holding the writer lease leads, the
+    // others follow and take the lead once its lease expires; a new leader
+    // starts the leader timers and settles what others left
     if (v3Location !== undefined) {
       const location = v3Location;
       // The boot already did a leader's work for a node that took the
@@ -8448,10 +8106,9 @@ export const serveCommand = new Command()
           logger.warn`Taking the lead: ${what} failed: ${error}`;
         }
       };
-      // In place of v2's pollers, every commit this node sees, its own and
-      // the leader's feed, keeps the catalog, the access policy and the
-      // extensions current. A follower answers a commit only once its
-      // effects are applied (swamp-club#4207).
+      // every commit this node sees, its own and the leader's feed, keeps the
+      // catalog, access policy and extensions current; a follower answers a
+      // commit only once its effects are applied
       const feedSource = v3CommitFeedSource(resolvedRepoDir, location);
       const followerPolicy = wireFollowerPolicy({
         source: feedSource,
@@ -8460,8 +8117,6 @@ export const serveCommand = new Command()
         checkConfig: () => configPoller?.pollNow(),
         isFollower: () => connectionCtx.followerGate?.role === "follower",
       });
-      // The serve-side commit feed (swamp-club#4120): what a subscriber
-      // reads, here and from this node's followers.
       connectionCtx.commitFeed = followerPolicy.commitFeed;
       serveCommitEffects = followerPolicy.effects;
       serveCommitEffects.start();
@@ -8485,8 +8140,8 @@ export const serveCommand = new Command()
         connectionCtx.feedBarrier = followerPolicy.barrier(() =>
           followerFeed.barrier()
         );
-        // A read from a caller whose copy is past this one's waits on it
-        // before it is refused as behind (swamp-club#4254).
+        // a read from a caller whose copy is past this one's waits on it before
+        // it is refused as behind
         connectionCtx.followerCatchUp = () => followerFeed.caughtUp();
         serveFollowerFeed = followerFeed;
       }
@@ -8558,13 +8213,9 @@ export const serveCommand = new Command()
             applyGrantConfigAtLead,
           );
         },
-        // A node that lost the lead stops, as a shutdown does: it takes no
-        // more work, its queued webhook runs stay pending for the leader to
-        // replay, its timers stop, and it exits 75 for its supervisor to
-        // start it again as a fresh follower. No state of its time as leader
-        // carries into following (swamp-club#4096).
-        // ServeLeadership runs it outside its tick, so the shutdown's
-        // stop() of the leadership does not wait on it.
+        // a node that lost the lead stops as a shutdown does, leaving queued
+        // webhook runs pending for the leader and exiting 75 so its supervisor
+        // restarts it as a follower; runs outside the leadership tick
         onLostLead: async () => {
           Deno.exitCode = 75;
           await shutdown();
@@ -8617,11 +8268,9 @@ export const serveCommand = new Command()
       Deno.unrefTimer(reaperTimer);
     }
 
-    // Telemetry flush loop. A daemon reaches the CLI's teardown flush only at
-    // process exit, so without this everything it spools sits unsent for the
-    // life of the process. Absent context = telemetry disabled for this run
-    // (--no-telemetry, marker opt-out, user-level opt-out); serve then stays
-    // as silent as it has always been.
+    // a daemon reaches the CLI's teardown flush only at process exit, so this
+    // loop flushes meanwhile; no context means telemetry is disabled for this
+    // run
     const telemetryContext = getActiveTelemetryContext();
     if (telemetryContext) {
       const distinctId = telemetryContext.userId ?? telemetryContext.repoId;
@@ -8640,11 +8289,9 @@ export const serveCommand = new Command()
           },
         );
         telemetryFlushService.start();
-        // Log the identity the daemon will report under. A serve process
-        // running with a different HOME than the operator's shell resolves a
-        // different user identity, and its runs then credit an account nobody
-        // is looking at — indistinguishable at the UI from not reporting at
-        // all. The token is never logged, only whether one was found.
+        // log the identity the daemon reports under: a different HOME resolves
+        // a different user and credits an account nobody watches. the token is
+        // never logged, only whether one was found
         const authenticated = telemetryContext.authToken !== null;
         logger.info(
           "Telemetry: flushing to {endpoint} as {identity} (authenticated: {authenticated})",
@@ -8681,7 +8328,6 @@ export const serveCommand = new Command()
       logger.info("Telemetry: disabled for this process");
     }
 
-    // Worker GC — prunes disconnected worker records and stale token bindings
     {
       const libCtx = libSwampContextForRepo(repoContext);
       const listDeps = createWorkerListDeps(
@@ -8829,9 +8475,8 @@ export const serveCommand = new Command()
       workerGcService.start();
     }
 
-    // Retention (swamp-club#3473): applies `.swamp.yaml` garbageCollection
-    // hourly when `automatic` is on. The policy is read every tick, so turning
-    // it on or off needs no restart; with it off a tick reads one file.
+    // applies garbageCollection hourly when automatic is on; the policy is read
+    // every tick so toggling it needs no restart
     retentionGcService = new RetentionGcService({
       intervalMs: DEFAULT_RETENTION_GC_INTERVAL_MS,
       initialDelayMs: DEFAULT_RETENTION_GC_INITIAL_DELAY_MS,
@@ -8914,11 +8559,9 @@ export const serveCommand = new Command()
     });
     startWhenLeading(() => retentionGcService!.start());
 
-    // Server token GC — deletes revoked tokens, and expired ones past the
-    // grace period, in every auth mode. In OAuth mode it starts after token
-    // secret migration, so every token's secret is already where the GC
-    // looks; other modes run no migration, and the GC also clears a legacy
-    // token's secret from the vault its record names.
+    // runs in every auth mode; in OAuth mode it starts after token secret
+    // migration so every secret is where the GC looks, and elsewhere it also
+    // clears a legacy token's secret from the vault its record names
     if (tokenGcSettings.intervalMs === 0) {
       logger.info("Server token GC disabled (token GC interval is 0)");
       if (merged.tokenGcGracePeriod !== undefined) {
@@ -8963,10 +8606,9 @@ export const serveCommand = new Command()
       startWhenLeading(() => serverTokenGcService!.start());
     }
 
-    // Continuation sweep: continues suspended runs that need no further
-    // decision (swamp-club#3108). It starts last, once the heartbeat is
-    // written and boot reconciliation has settled the runs a dead instance
-    // left running.
+    // continuation sweep: continues suspended runs that need no further
+    // decision; it starts last, once the heartbeat is written and boot
+    // reconciliation has settled runs a dead instance left running
     const sweepStart = decideContinuationSweepStart({
       intervalMs: continuationSweepIntervalMs,
       syncedDatastore: isCustomDatastoreConfig(datastoreConfig) &&
@@ -8990,9 +8632,9 @@ export const serveCommand = new Command()
     } else {
       const synced = isCustomDatastoreConfig(datastoreConfig) &&
         v3Location === undefined;
-      // After boot this instance's run records fall behind a synced
-      // datastore, and nothing in a record says so. Later passes run only
-      // where each run can be compared with the remote before it resumes.
+      // after boot this instance's run records fall behind a synced datastore
+      // and nothing in a record says so, so later passes run only where each
+      // run can be compared with the remote first
       const bootPassOnly = runRecordsSynced && !repoContext.runRecordCurrency;
       if (bootPassOnly) {
         logger.info(
@@ -9005,10 +8647,9 @@ export const serveCommand = new Command()
         intervalMs: continuationSweepIntervalMs,
         bootPassOnly,
         sweep: async ({ boot, isStopping, signal }) => {
-          // A follower resumes nothing: the resumed steps would run, and
-          // their commits be refused (swamp-club#4096).
-          // By the lease, not the role: a node taking the lead runs its
-          // first pass while its role still reads follower (swamp-club#4096).
+          // A follower resumes nothing, since its commits would be refused;
+          // checked by lease, not role, because a node taking the lead still
+          // reads follower.
           if (
             v3Location !== undefined
               ? !holdsCurrentV3WriterLease(v3Location.path)
@@ -9030,9 +8671,9 @@ export const serveCommand = new Command()
       startWhenLeading(() => continuationSweepService!.start());
     }
 
-    // A node that starts as a follower goes into rotation only once its copy
-    // holds its leader's head, bounded (swamp-club#4254): restored from the
-    // bucket after a takeover, it can trail the members' copies.
+    // a node starting as a follower enters rotation only once its copy holds
+    // its leader's head, bounded: restored from the bucket after a takeover, it
+    // can trail the members' copies
     const followerFeedAtBoot = serveFollowerFeed;
     if (
       followerFeedAtBoot !== undefined && serveLeadership?.role === "follower"

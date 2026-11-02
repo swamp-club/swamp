@@ -20,8 +20,6 @@
 import { assertEquals } from "@std/assert";
 import { deriveExtensionIdentity } from "./derive_extension_identity.ts";
 
-// --- Pulled extensions: name only, version intentionally empty -------------
-
 Deno.test("deriveExtensionIdentity: pulled extension at /repo/.swamp/pulled-extensions/<name>/models/...", () => {
   assertEquals(
     deriveExtensionIdentity(
@@ -33,9 +31,9 @@ Deno.test("deriveExtensionIdentity: pulled extension at /repo/.swamp/pulled-exte
 });
 
 Deno.test("deriveExtensionIdentity: pulled extension under the managed .swamp/config/pulled-extensions root", () => {
-  // managedConfig repos extract to `.swamp/config/pulled-extensions/`
-  // (swamp-club#2490). Rows there must derive the same identity as the
-  // legacy root, or `extension rm` never finds them.
+  // managedConfig repos extract to .swamp/config/pulled-extensions/; rows there
+  // must derive the same identity as the legacy root, or extension rm never
+  // finds them
   assertEquals(
     deriveExtensionIdentity(
       "/repo/.swamp/config/pulled-extensions/@swamp/aws/cur/models/report_definition.ts",
@@ -143,7 +141,6 @@ Deno.test("deriveExtensionIdentity: known names resolve names containing a kind 
     deriveExtensionIdentity(sp, "/repo", ["@org/foo", "@org/foo/webhooks"]),
     { name: "@org/foo/webhooks", version: "" },
   );
-  // Unrelated known names fall back to the kind-segment heuristic.
   assertEquals(
     deriveExtensionIdentity(sp, "/repo", ["@org/foobar"]),
     { name: "@org/foo", version: "" },
@@ -151,8 +148,8 @@ Deno.test("deriveExtensionIdentity: known names resolve names containing a kind 
 });
 
 Deno.test("deriveExtensionIdentity: pulled extension with no kind segment returns null", () => {
-  // .swamp/pulled-extensions/no-kind-segment/file.ts — corrupt layout
-  // (no kind subdir). Migration drops; W1b repository skip-and-DELETEs.
+  // corrupt layout with no kind subdir: no identity can be derived, so the
+  // result is null
   assertEquals(
     deriveExtensionIdentity(
       "/repo/.swamp/pulled-extensions/no-kind-segment/file.ts",
@@ -172,8 +169,6 @@ Deno.test("deriveExtensionIdentity: pulled extension with kind at root (zero-len
   );
 });
 
-// --- Local extensions: synthetic @local/<repo-name> at version 0.0.0 -------
-
 Deno.test("deriveExtensionIdentity: local extension under extensions/models/", () => {
   assertEquals(
     deriveExtensionIdentity(
@@ -185,7 +180,6 @@ Deno.test("deriveExtensionIdentity: local extension under extensions/models/", (
 });
 
 Deno.test("deriveExtensionIdentity: local extension under extensions/vaults/", () => {
-  // Same synthetic aggregate for every kind under extensions/.
   assertEquals(
     deriveExtensionIdentity(
       "/path/to/myrepo/extensions/vaults/v.ts",
@@ -196,8 +190,6 @@ Deno.test("deriveExtensionIdentity: local extension under extensions/vaults/", (
 });
 
 Deno.test("deriveExtensionIdentity: local extension uses basename of repoRoot for synthetic name", () => {
-  // The architect-pinned synthetic name uses basename(repoRoot).
-  // Multi-segment repoRoots collapse to their last segment.
   assertEquals(
     deriveExtensionIdentity(
       "/Users/stack72/code/systeminit/swamp/extensions/models/echo.ts",
@@ -206,16 +198,6 @@ Deno.test("deriveExtensionIdentity: local extension uses basename of repoRoot fo
     { name: "@local/swamp", version: "0.0.0" },
   );
 });
-
-// --- Source-mounted extensions ---------------------------------------------
-//
-// `swamp extension source add <externalDir>` registers an external
-// directory as an extension source. Catalog rows for those extensions
-// have absolute paths outside `repoRoot`. They roll up into the same
-// `@local/<basename(repoRoot)>` aggregate per the design doc:
-// "@local/<repo-name> covers every Source under every
-// extensions/<kind>/ tree" for the repo, regardless of whether the
-// source dir is inside the repo or mounted from outside.
 
 Deno.test("deriveExtensionIdentity: source-mounted extension outside repoRoot resolves to @local/<repo>", () => {
   assertEquals(
@@ -228,9 +210,8 @@ Deno.test("deriveExtensionIdentity: source-mounted extension outside repoRoot re
 });
 
 Deno.test("deriveExtensionIdentity: source-mounted under /tmp/ resolves to @local/<repo>", () => {
-  // The actual layout produced by swamp-uat's source-mount tests
-  // (Deno.makeTempDir() places the source dir under /var/folders or
-  // /tmp). Pin the contract so a future change can't regress it.
+  // Deno.makeTempDir places a source dir under /var/folders or /tmp, outside
+  // repoRoot, as swamp-uat's source-mount tests do
   assertEquals(
     deriveExtensionIdentity(
       "/tmp/swamp-uat-srcmount-srcdir/extensions/models/echo.ts",
@@ -253,11 +234,7 @@ Deno.test("deriveExtensionIdentity: source-mounted in a sibling repo's tree stil
   );
 });
 
-// --- Path-prefix safety ---------------------------------------------------
-
 Deno.test("deriveExtensionIdentity: path under `extensions-archive/` does NOT match (not the literal `extensions/` segment)", () => {
-  // The matcher requires the exact path segment `extensions`;
-  // `extensions-archive` is a different segment.
   assertEquals(
     deriveExtensionIdentity(
       "/repo/extensions-archive/old.ts",
@@ -284,13 +261,9 @@ Deno.test("deriveExtensionIdentity: empty source path returns null", () => {
   assertEquals(deriveExtensionIdentity("", "/repo"), null);
 });
 
-// --- Regression: relative repoRoot "." (swamp-club#273) ---------------------
-
 Deno.test("deriveExtensionIdentity: relative repoRoot '.' fails to match absolute pulled paths", () => {
-  // Bug 3 regression pin: when repoRoot is ".", the pulled prefix
-  // "./.swamp/pulled-extensions/" does not match absolute source paths.
-  // The fix is in resolveRepoDir (always returns absolute); this test
-  // pins the behavior so a future regression is caught.
+  // repoRoot '.' must not match absolute pulled paths; resolveRepoDir always
+  // returns an absolute path, and this pins that behavior
   assertEquals(
     deriveExtensionIdentity(
       "/repo/.swamp/pulled-extensions/@scope/foo/models/x.ts",
@@ -310,11 +283,9 @@ Deno.test("deriveExtensionIdentity: absolute repoRoot correctly matches pulled p
   );
 });
 
-// --- Windows canonical form (lowercase + forward slashes) ------------------
-
 Deno.test("deriveExtensionIdentity: Windows canonical form (lowercase + forward slashes) for pulled", () => {
-  // The migration canonicalizes source_path before backfill (sub-step 4
-  // of W1a step 2); this test pins that we accept the canonical form.
+  // the migration canonicalizes source_path before backfill, so the canonical
+  // form must be accepted
   assertEquals(
     deriveExtensionIdentity(
       "c:/users/foo/repo/.swamp/pulled-extensions/@scope/foo/models/x.ts",
@@ -343,8 +314,6 @@ Deno.test("deriveExtensionIdentity: Windows backslash paths return null (callers
     null,
   );
 });
-
-// --- extensions/behaviors/, the behavior spelling (swamp-club#3338) -------
 
 Deno.test("deriveExtensionIdentity: local extension under extensions/behaviors/", () => {
   assertEquals(
@@ -375,8 +344,8 @@ Deno.test("deriveExtensionIdentity: a pulled name containing behaviors is not sp
     ),
     { name: "behaviors", version: "" },
   );
-  // A pulled tree has no behaviors kind directory: without a kind segment
-  // the layout is unrecognised, as before.
+  // a pulled tree has no behaviors kind directory, so without a kind segment
+  // the layout is unrecognised
   assertEquals(
     deriveExtensionIdentity(
       "/repo/.swamp/pulled-extensions/@org/x/behaviors/y.ts",

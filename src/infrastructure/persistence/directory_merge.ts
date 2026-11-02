@@ -37,7 +37,7 @@ export async function findFileCollisions(
   ): Promise<void> => {
     for await (const entry of Deno.readDir(src)) {
       if (isStagingEntryName(entry.name)) continue;
-      // The catalog is repo-local, never merged (swamp-club#3316).
+      // the catalog is repo-local, never merged
       if (!relPrefix && isCatalogFileName(entry.name)) continue;
       const srcPath = join(src, entry.name);
       const dstPath = join(dst, entry.name);
@@ -79,10 +79,9 @@ export async function mergeDirInto(
   ): Promise<number> => {
     let moved = 0;
     for await (const entry of Deno.readDir(src)) {
-      // Install staging stays where its journal says it is, for crash
-      // recovery (swamp-club#2723).
+      // install staging stays where its journal says it is, for crash recovery
       if (isStagingEntryName(entry.name)) continue;
-      // The catalog is repo-local and stays where it is (swamp-club#3316).
+      // the catalog is repo-local and stays where it is
       if (!relPrefix && isCatalogFileName(entry.name)) continue;
       const srcPath = join(src, entry.name);
       const dstPath = join(dst, entry.name);
@@ -130,7 +129,6 @@ export async function mergeDirInto(
   return { moved, skipped: skippedPaths.length, skippedPaths };
 }
 
-/** Counts a directory's top-level catalog files and its other entries. */
 export async function dirContents(dir: string): Promise<DirContents> {
   let catalogFiles = 0;
   let otherEntries = 0;
@@ -153,11 +151,6 @@ async function canonicalPath(path: string): Promise<string> {
   }
 }
 
-/**
- * Deletes the catalog files at the top level of `dir`, then `dir` itself if
- * that leaves it empty, and returns the number of files deleted. Does nothing
- * when `dir` is `liveCatalogDir`, the directory holding the catalog in use.
- */
 export async function removeCatalogFiles(
   dir: string,
   liveCatalogDir: string,

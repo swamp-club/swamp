@@ -18,14 +18,8 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * Reads another namespace's content on a v3 datastore (swamp-club#3691).
- *
- * The read model materialises every namespace of the datastore into the
- * checkout, each under its own cache root (`.swamp/` for the solo namespace,
- * `.swamp/<namespace>` for any other), so a row of another namespace is read
- * from that namespace's cache root, never from the reader's own layout.
- *
- * @module
+ * a row of another namespace is read from that namespace's cache root, never
+ * from the reader's own layout
  */
 
 import { isAbsolute, join, relative, SEPARATOR } from "@std/path";
@@ -36,34 +30,16 @@ import { RecordKey } from "../../domain/datastore_v3/record_key.ts";
 import { datastoreKeyFilter, v3CacheRoot } from "./v3_datastore.ts";
 import { readModelStateDir, refusedKeyReason } from "./record_path_guard.ts";
 
-/** The checkout's layout a {@link v3ForeignContentFetcher} reads under. */
 export interface V3ForeignContentLayout {
-  /** The checkout's own namespace; empty or absent for a solo checkout. */
   readonly namespace?: string;
-  /** The checkout's configured `directories` and `exclude`. */
   readonly directories?: readonly string[];
   readonly exclude?: readonly string[];
 }
 
 /**
- * The foreign content fetcher of the v3 checkout at `repoDir`: it reads
- * `relPath` under the cache root of `namespace` in the checkout. It reads
- * the solo namespace too, so it is marked `readsSoloNamespace`.
- *
- * It returns null, reading nothing, for:
- * - a reserved namespace name, whose directory is swamp's own, or a
- *   namespace that is not one path segment;
- * - a key the read model never materialises (`refusedKeyReason`), or one of
- *   the solo namespace or this checkout's own namespace that this checkout's
- *   `directories` and `exclude` leave out: its cache root shares `.swamp/`
- *   with the checkout's local files, so such a file is never the
- *   namespace's;
- * - a path that resolves, through symlinks, outside the namespace's cache
- *   root, or that does not exist.
- *
- * `unreadableContent` is consulted before the file is read, so a record the
- * read model could not materialise throws its error instead of reading as
- * absent or as a stale file.
+ * null for a reserved namespace, a key the read model never materialises or
+ * this checkout's filter leaves out (its cache root shares .swamp/ with local
+ * files), or a path outside the cache root
  */
 export function v3ForeignContentFetcher(
   repoDir: string,
@@ -113,16 +89,11 @@ export function v3ForeignContentFetcher(
   return Object.assign(read, { readsSoloNamespace: true });
 }
 
-/**
- * Whether `segment` is one path component that stays where it is put: not
- * empty, not `.` or `..`, and holding no separator or NUL.
- */
 function isSafePathSegment(segment: string): boolean {
   return segment !== "" && segment !== "." && segment !== ".." &&
     !/[/\\\0]/.test(segment);
 }
 
-/** `path` with its symlinks resolved, or null when it does not exist. */
 async function realPathOrNull(path: string): Promise<string | null> {
   try {
     return await Deno.realPath(path);
@@ -132,7 +103,6 @@ async function realPathOrNull(path: string): Promise<string | null> {
   }
 }
 
-/** Whether `path` is strictly inside `root`; both already resolved. */
 function isInside(root: string, path: string): boolean {
   const rel = relative(root, path);
   return rel !== "" && rel !== ".." && !rel.startsWith(`..${SEPARATOR}`) &&

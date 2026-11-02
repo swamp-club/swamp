@@ -20,23 +20,20 @@
 import type { Data } from "../data/data.ts";
 import type { ModelType } from "../models/model_type.ts";
 
-/** One stored report's data and the owner it is stored under. */
 export interface StoredReportData {
   data: Data;
   modelType: ModelType;
   modelId: string;
 }
 
-/** The one owner, a model or a workflow, whose stored reports to find. */
 export interface StoredReportOwner {
   type: ModelType;
   modelId: string;
 }
 
 /**
- * The latest version of each stored report markdown, of one owner when
- * `owner` names it. It may return other data, which its callers drop, but
- * must return every report (swamp-club#4075).
+ * may return data of other owners, which callers drop, but must return every
+ * report
  */
 export type FindStoredReports = (
   owner?: StoredReportOwner,

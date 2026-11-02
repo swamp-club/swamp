@@ -17,11 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Value object representing a bash command captured by the
- * PostToolUse or PostToolUseFailure hook.
- * Stored in .swamp/audit/commands-YYYY-MM-DD.jsonl.
- */
 export interface BashCommandEntry {
   readonly timestamp: string;
   readonly sessionId?: string;
@@ -29,13 +24,9 @@ export interface BashCommandEntry {
   readonly cwd: string;
   /** Exit code, present only for failed commands (PostToolUseFailure) */
   readonly exitCode?: number;
-  /** Error message, present only for failed commands (PostToolUseFailure) */
   readonly error?: string;
 }
 
-/**
- * Data transfer object for BashCommandEntry (serialized to JSONL).
- */
 export interface BashCommandEntryData {
   timestamp: string;
   sessionId?: string;
@@ -45,9 +36,6 @@ export interface BashCommandEntryData {
   error?: string;
 }
 
-/**
- * Creates a BashCommandEntry from hook input.
- */
 export function createBashCommandEntry(
   sessionId: string | undefined,
   command: string,
@@ -65,9 +53,6 @@ export function createBashCommandEntry(
   return entry;
 }
 
-/**
- * Reconstructs a BashCommandEntry from persisted data.
- */
 export function bashCommandEntryFromData(
   data: BashCommandEntryData,
 ): BashCommandEntry {
@@ -82,9 +67,6 @@ export function bashCommandEntryFromData(
   return entry;
 }
 
-/**
- * Converts a BashCommandEntry to its data representation for persistence.
- */
 export function bashCommandEntryToData(
   entry: BashCommandEntry,
 ): BashCommandEntryData {

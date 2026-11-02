@@ -24,9 +24,7 @@ import { UserError } from "../../domain/errors.ts";
 Deno.test("createDatastoreMigrateIndexRenderer: log mode handles completed", () => {
   const renderer = createDatastoreMigrateIndexRenderer("log");
   const handlers = renderer.handlers();
-  // migrating should not throw
   handlers.migrating({ kind: "migrating" });
-  // completed should not throw
   handlers.completed({
     kind: "completed",
     data: { version: 2, partitions: ["a", "b"], commitSeq: 1 },

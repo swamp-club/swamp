@@ -27,39 +27,30 @@ export interface RunTrackerRepository {
   complete(runId: string, status: ActiveRunStatus, reason?: string): void;
 
   /**
-   * Records that the run record behind an `interrupted` workflow or method
-   * row has been settled, so retention may purge the row. Until then the row
-   * is kept: it is the only evidence that the run's owner died, and `workflow
-   * recover` and `run doctor` need it to settle a record still `running`.
-   * No-op unless the row is `interrupted` and not yet settled.
+   * marks an interrupted row's run record settled so retention may purge it;
+   * until then the row is the only evidence the owner died, which recover and
+   * doctor need. No-op unless interrupted and unsettled.
    */
   markSettled(runId: string, reason: string): void;
 
   /**
-   * Puts a workflow row its owner completed back to `running`, when the
-   * owner's final run record was not committed (swamp-club#3587), so the
-   * dead-owner settling finds the run once the owner is gone. Only a row
-   * owned by `pid` on `hostname` that ended completed, failed, cancelled or
-   * suspended. Returns whether a row was put back.
+   * puts a row its owner completed back to running when the final run record
+   * was not committed, so dead-owner settling finds the run. Only rows owned by
+   * pid on hostname; returns whether one was put back.
    */
   reopenCompleted(runId: string, pid: number, hostname: string): boolean;
 
   /**
-   * Records `reason` on a row its owner already completed as cancelled
-   * without one, as when a cancelled owner saves its own outcome before the
-   * cancel command completes the row. Leaves a row that has a reason, or that
-   * ended any other way, alone.
+   * records reason on a row its owner completed as cancelled without one, as
+   * when the owner saves its outcome before the cancel command completes the
+   * row; other rows are left alone
    */
   recordCancelReason(runId: string, reason: string): void;
 
   /**
-   * Hands a run's row to the process resuming it: a suspended, failed, or
-   * interrupted row becomes running with the resuming pid, hostname and serve
-   * instance id (none for a local resume) and a fresh heartbeat. Running,
-   * succeeded, and cancelled rows are left alone. Interrupted is accepted
-   * because `workflow recover` sets the run record back to suspended while
-   * its row stays interrupted. Returns whether a row was handed over; false
-   * when the row is missing, for example purged after retention.
+   * hands a suspended, failed or interrupted row to the resuming process as
+   * running with a fresh heartbeat. Interrupted counts because recover resets
+   * the record but not the row. False if the row is gone.
    */
   reactivate(
     runId: string,

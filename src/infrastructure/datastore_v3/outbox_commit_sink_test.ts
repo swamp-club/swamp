@@ -140,7 +140,6 @@ Deno.test("createOutboxCommitSink: a settle or discard that fails is owed, and r
     fail = false;
     await sink.retryOwedRemovals();
     assertEquals(await outbox.hasEntries(), false);
-    // The owed discard's failure was reported, so the retry is durable.
     assertEquals(calls, ["settle:1", "discard:1", "discard:2"]);
   });
 });

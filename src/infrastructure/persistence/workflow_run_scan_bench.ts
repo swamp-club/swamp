@@ -17,24 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * The workflow-run scans serve runs per request (swamp-club#4076):
- * `findAllGlobalSince`, behind `summarise`, over repositories of growing size
- * spread across 50 workflows, 2% of whose runs started inside a 7-day window;
- * and `findGlobalByStatus("suspended")`, behind `workflow.waits`, which finds
- * the 1% of runs that are suspended. Each size is read with the records'
- * mtimes at their completion, with every mtime fresh (as after a v3
- * read-model replay), and fresh under event-loop contention from four tasks
- * that each await a stat and then hold the loop for 0.25 ms. Run with:
- *
- *   deno bench --allow-all src/infrastructure/persistence/workflow_run_scan_bench.ts
- *   deno bench --allow-all src/infrastructure/persistence/workflow_run_scan_bench.ts -- 10000,50000
- *
- * Files stat'ed and read per iteration are printed when the run ends: with
- * every run index in step, a since scan should stat none and read only the
- * in-window runs, whatever the repository size or the files' mtimes.
- */
-
 import { stringify as stringifyYaml } from "@std/yaml";
 import { ensureDir } from "@std/fs";
 import { dirname, join } from "@std/path";
@@ -75,10 +57,6 @@ const workflow = Workflow.create({
 });
 const template = WorkflowRun.create(workflow).toPersistedData();
 
-/**
- * A repository of `size` runs over {@link WORKFLOWS} workflows, their mtimes
- * at completion or now, with every workflow's run index built.
- */
 async function seed(
   size: number,
   fresh: boolean,
@@ -118,7 +96,6 @@ async function seed(
     const mtime = fresh ? new Date(now) : completedAt;
     await Deno.utime(path, mtime, mtime);
   }
-  // A status scan builds every workflow's run index from its records.
   await repo.findGlobalByStatus("suspended");
   return repo;
 }
@@ -141,7 +118,6 @@ let counting: { stats: number; reads: number; runs: number } | undefined;
   return readTextFile(path, options);
 };
 
-/** Holds the event loop as other in-flight requests would, until stopped. */
 function contend(): () => Promise<void> {
   let running = true;
   const contenders = Array.from({ length: CONTENDERS }, async () => {

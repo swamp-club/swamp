@@ -22,30 +22,23 @@ import type { DetectableAiTool } from "../telemetry/agent_harness_detection.ts";
 import { isBriefFile } from "./brief.ts";
 import { StartTask } from "./start_task.ts";
 
-/** How a harness's own folder-trust question is handled. */
 export type TrustMode = "dialog" | "passed" | "unknown";
 
-/** How the agent's window was opened. */
 export type LaunchMethod =
   | "macos_terminal"
   | "windows_terminal"
   | "linux_terminal"
   | "copy_command";
 
-/** The step a task has reached. */
 export type StartStep = "task" | "agent" | "trust" | "launched";
 
-/** The record of the latest launch. */
 export interface StartLaunchRecord {
   readonly method: LaunchMethod;
   readonly at: string;
-  /** The copy-paste fallback command. */
   readonly command: string;
-  /** Whether a window was actually opened. */
   readonly opened: boolean;
 }
 
-/** The persisted shape of a {@link StartSession}. */
 export interface StartSessionData {
   readonly id: string;
   readonly workspacePath: string;
@@ -53,21 +46,13 @@ export interface StartSessionData {
   readonly step: StartStep;
   readonly task?: string;
   readonly harness?: DetectableAiTool;
-  /**
-   * Every tool to set the workspace up for on launch, the harness included:
-   * the `--tool x --tool y` of `swamp repo init`.
-   */
   readonly tools?: readonly DetectableAiTool[];
   readonly trustConfirmedAt?: string;
   readonly launch?: StartLaunchRecord;
-  /**
-   * The task's brief, relative to the workspace (`tasks/<date>-<slug>.md`).
-   * Assigned once, when the task is first saved, and never changed.
-   */
+  /** assigned once, when the task is first saved, and never changed */
   readonly briefFile?: string;
 }
 
-/** Thrown when a command is not allowed from the task's current step. */
 export class StartTransitionError extends UserError {
   constructor(command: string, step: StartStep) {
     super(`Can't ${command} at the "${step}" step. Reload the page.`);
@@ -76,12 +61,8 @@ export class StartTransitionError extends UserError {
 }
 
 /**
- * One automation task of a workspace and its pass through the `swamp start`
- * flow: the task text, the agent chosen for it, and its launches. A
- * workspace holds any number of them; none is special.
- *
- * Sign-in is deliberately not part of the aggregate: it is checked live on
- * every status read and before every launch.
+ * sign-in is deliberately not part of the aggregate: it is checked live on
+ * every status read and before every launch
  */
 export class StartSession {
   private constructor(private data: StartSessionData) {}
@@ -100,11 +81,8 @@ export class StartSession {
   }
 
   /**
-   * Rebuilds a session from stored data, enforcing the invariants the
-   * commands keep: every step past `task` has a task, `trust` and
-   * `launched` have a harness, and `launched` has a launch record.
-   *
-   * @throws {UserError} When the data breaks one of them.
+   * enforces the invariants: every step past task has a task, trust and
+   * launched have a harness, and launched has a launch record
    */
   static fromData(data: StartSessionData): StartSession {
     if (data.task !== undefined) StartTask.create(data.task);
@@ -150,7 +128,6 @@ export class StartSession {
     return this.data.harness;
   }
 
-  /** The tools chosen for this task; the harness alone when none were. */
   get tools(): readonly DetectableAiTool[] {
     if (this.data.tools) return this.data.tools;
     return this.data.harness ? [this.data.harness] : [];
@@ -176,11 +153,6 @@ export class StartSession {
     return this.data.briefFile;
   }
 
-  /**
-   * Gives the task its brief path. A task keeps the first one it is given.
-   *
-   * @throws {UserError} When the path isn't a `tasks/<name>.md` file.
-   */
   assignBriefFile(briefFile: string): void {
     if (this.data.briefFile !== undefined) return;
     if (!isBriefFile(briefFile)) {
@@ -192,7 +164,6 @@ export class StartSession {
     this.data = { ...this.data, briefFile };
   }
 
-  /** Sets the task and moves to the agent step, keeping any chosen harness. */
   saveTask(task: StartTask): void {
     this.require("save the task", ["task", "agent", "trust"]);
     this.data = {
@@ -202,10 +173,6 @@ export class StartSession {
     };
   }
 
-  /**
-   * Picks the harness that opens and, optionally, other tools to set the
-   * workspace up for. The harness is always one of the tools.
-   */
   chooseHarness(
     harness: DetectableAiTool,
     extraTools: readonly DetectableAiTool[] = [],
@@ -228,7 +195,6 @@ export class StartSession {
     };
   }
 
-  /** Records trust and a launch; from `launched` it means "Launch again". */
   confirmTrustAndRecordLaunch(
     launch: Omit<StartLaunchRecord, "at">,
     now: Date,
@@ -246,7 +212,6 @@ export class StartSession {
     };
   }
 
-  /** Throws unless a launch from the current step would be accepted. */
   assertCanLaunch(): void {
     this.require("launch", ["trust", "launched"]);
     if (this.data.task === undefined || this.data.harness === undefined) {

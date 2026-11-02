@@ -33,101 +33,48 @@ import {
 import type { ReviewFinding } from "./extension_review_rules.ts";
 
 /**
- * Declared acceptances: an author's judgement that one warning-level finding
- * is acceptable, written where the finding is and reviewed in the diff.
- *
- * A site-scoped finding (one line in one file) is accepted by a comment on
- * that line, or on the line directly above, with an optional reason after a
- * colon:
- *
- *     secretName: z.string(), // swamp-quality-ignore credentials-sensitive-field
- *     secretRef: z.string(), // swamp-quality-ignore credentials-sensitive-field: reference to a Secret, not a secret
- *
- * A file-scoped finding (testing-completeness) is accepted by the same
- * comment anywhere in the file. Markdown files take an HTML comment on the
- * line above (`<!-- swamp-quality-ignore ipv4-address-literals -->`).
- * Extension-scoped findings, and site findings in files with no comment
- * form (`.txt`), are accepted by an entry in the `quality.yaml` sidecar
- * beside the manifest (see `extension_quality_sidecar.ts`).
- *
- * An acceptance names one finding by (file, rule, line). It never widens: a
- * rule-wide or file-wide acceptance of a site-scoped rule is not expressible,
- * an error-level rule has no acceptance form, and a directive that matches
- * nothing is itself a warning (`stale-acceptance`). A directive that is
- * malformed or names a rule that cannot be accepted is a blocking finding
- * (`invalid-acceptance`).
- *
- * In source, the parser reads directives from the comments Babel finds, so
- * the keyword inside a string, template or regex literal is never a
- * directive; a source file that does not parse has every directive reported
- * invalid. Markdown is read line by line. The review rules strip comments
- * before matching, and the long-line and base64 safety checks scan every
- * line as written; `deno-command` reads the syntax tree, but scans lines as
- * written in a file that does not parse. A directive's reason, when given,
- * may not contain `Deno.Command(` or a base64 run, so a directive cannot
- * trigger the rule it accepts and nothing can hide behind one. Only the
- * long-line count discounts the directive's own text.
+ * an acceptance names one finding by file, rule and line and never widens; a
+ * reason may not carry Deno.Command( or a base64 run, so a directive cannot
+ * trigger the rule it accepts
  */
 
-/** The directive keyword, in the spirit of `deno-lint-ignore`. */
 export const ACCEPTANCE_DIRECTIVE = "swamp-quality-ignore";
 
-/** The longest reason a directive or sidecar entry may carry. */
 export const MAX_ACCEPTANCE_REASON_LENGTH = 200;
 
-/** The most directives one file may carry. */
 export const MAX_DIRECTIVES_PER_FILE = 50;
 
-/** Rule id grammar: lowercase words joined by hyphens. */
 const RULE_ID_PATTERN = /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/;
 
-/** What an acceptance names. */
 export type AcceptanceTarget =
-  /** One line of one file: a site-scoped finding. */
   | { kind: "line"; file: string; line: number }
-  /** Every finding of the rule in one file: a file-scoped rule, or a sidecar entry for a `.txt` file. */
   | { kind: "file"; file: string }
-  /** Every finding of the rule in the extension: an extension-scoped rule. */
   | { kind: "extension" };
 
-/** Where an acceptance was declared. */
 export type AcceptanceSource = "inline" | "sidecar" | "generated";
 
-/** A declared acceptance, parsed from a comment or a sidecar entry. */
 export interface AcceptanceDirective {
   ruleId: string;
-  /** Why the author accepts the finding; absent when they gave none. */
   reason?: string;
   target: AcceptanceTarget;
   source: AcceptanceSource;
-  /**
-   * For an inline directive, the file and 1-based line the comment sits on;
-   * for a sidecar entry, the sidecar path and the entry's index.
-   */
   declaredAt: { file: string; line: number };
 }
 
-/** A directive the parser could not accept, with why. */
 export interface InvalidAcceptance {
-  /** Where the directive sits. */
   file: string;
   line: number;
-  /** The directive text as written, for the error message. */
   text: string;
-  /** Why it is invalid. */
   problem: string;
 }
 
-/** Result of parsing one file's directives. */
 export interface ParsedDirectives {
   directives: AcceptanceDirective[];
   invalid: InvalidAcceptance[];
 }
 
-/** The comment form a file kind takes, or none. */
 export type CommentForm = "line" | "html" | "none";
 
-/** The comment form for a file, by extension. */
 export function commentFormFor(file: string): CommentForm {
   switch (extname(file).toLowerCase()) {
     case ".ts":
@@ -142,12 +89,6 @@ export function commentFormFor(file: string): CommentForm {
   }
 }
 
-/**
- * Validates a rule id and optional reason against the catalog and the caps, for an
- * acceptance declared in a comment, in a sidecar entry with no file (an
- * extension-scoped rule), or in a sidecar entry naming a file (a site or
- * file-scoped rule in a file with no comment form).
- */
 export function validateAcceptance(
   ruleId: string,
   reason: string | undefined,
@@ -189,10 +130,6 @@ export function validateAcceptance(
   return undefined;
 }
 
-/**
- * Parses the acceptance directives in one file. `file` is the path the
- * findings carry (absolute), so targets compare equal to findings.
- */
 export function parseAcceptanceDirectives(
   content: string,
   file: string,
@@ -315,16 +252,12 @@ export function parseAcceptanceDirectives(
   return { directives, invalid };
 }
 
-/** A run the safety analyzer reads as base64. */
 const BASE64_RUN = /[A-Za-z0-9+/=]{100,}/;
 
 /**
- * Why a reason may not appear in a source comment. The safety analyzer
- * scans source lines as written for long lines and base64 runs, and for
- * `Deno.Command(` in a file that does not parse, so the reason must not
- * carry anything those line checks would match. A quote is harmless: the
- * directive is read from a comment the parser found, so its text can never
- * end a string.
+ * the reason must not carry what the line checks match (long lines, base64,
+ * Deno.Command( in an unparsed file); a quote is harmless since the parser
+ * found the comment
  */
 function reasonProblemInSource(reason: string): string | undefined {
   if (reason.includes("Deno.Command(")) {
@@ -337,12 +270,9 @@ function reasonProblemInSource(reason: string): string | undefined {
 }
 
 /**
- * The 1-based number of the line a standalone directive at index `i`
- * targets: the first following line that is not another standalone
- * directive (stacked directives all target the same line), allowing one
- * blank line in between, which a formatter puts after an HTML comment
- * block. Falls back to the next line when nothing qualifies, which then
- * reads as stale.
+ * stacked directives target the same line, allowing one blank line between as a
+ * formatter puts after an HTML comment; falls back to the next line, which
+ * reads as stale
  */
 function nextTargetLine(
   lines: string[],
@@ -365,33 +295,21 @@ function nextTargetLine(
   return i + 2;
 }
 
-/**
- * A directive comment on one line, as 0-based column offsets on that line:
- * the `//` or `<!--` before the keyword, the keyword, and where the comment
- * ends. Every comment that carries the keyword after an opener is a site,
- * valid or not, so an invalid directive in a stack still counts as one.
- */
 interface DirectiveSite {
   openerAt: number;
   at: number;
   end: number;
-  /** A `//` directive inside a block comment that closes on the same line. */
   inBlock?: true;
 }
 
-/** The directive sites of one file, by 1-based line in line order. */
 interface FileDirectiveSites {
   sites: Map<number, DirectiveSite>;
-  /** False for a source file that does not parse; its sites are a text scan. */
   parsed: boolean;
 }
 
 /**
- * Where the directives sit in one file. Source is read from the comments
- * Babel finds, so the keyword inside a string, template or regex literal is
- * never a directive and a quote in a comment cannot hide one. Markdown is
- * read line by line outside fenced code blocks, where the keyword must
- * follow `<!--`.
+ * source is read from Babel comments, so the keyword in a string, template or
+ * regex is never a directive; markdown is read outside fenced code blocks
  */
 function directiveSitesOf(
   content: string,
@@ -412,10 +330,6 @@ function directiveSitesOf(
   return { sites: sourceSites(content, parsed.comments), parsed: true };
 }
 
-/**
- * Parses source as a module with the syntax its extension needs (the
- * shared extension source parse), or returns null when it does not parse.
- */
 function parseSource(
   content: string,
   file: string,
@@ -428,12 +342,9 @@ function parseSource(
 }
 
 /**
- * The directive sites among a parsed file's comments: the first comment on
- * a line whose text holds the keyword directly after a `//`, its own or a
- * later one (`// note // swamp-quality-ignore <rule-id>`). A block comment
- * spanning lines (a JSDoc example) is documentation. Lines are counted by
- * `\n` alone, and a line comment ends where Babel ends it, so a `\r` or a
- * U+2028 after it is not part of the directive.
+ * a multi-line block comment is documentation; lines count by \n alone and a
+ * line comment ends where Babel ends it, so a \r or U+2028 after it is not part
+ * of the directive
  */
 function sourceSites(
   content: string,
@@ -463,11 +374,6 @@ function sourceSites(
   return sites;
 }
 
-/**
- * The directive sites of a Markdown file: lines outside fenced code blocks
- * where the keyword follows `<!--`. Text that documents a directive in a
- * fence is not one.
- */
 function markdownSites(lines: string[]): Map<number, DirectiveSite> {
   const sites = new Map<number, DirectiveSite>();
   let fenced = false;
@@ -488,10 +394,6 @@ function markdownSites(lines: string[]): Map<number, DirectiveSite> {
   return sites;
 }
 
-/**
- * The first keyword in `text` that directly follows `opener`, with only
- * whitespace between, as offsets into `text`.
- */
 function keywordAfterOpener(
   text: string,
   opener: string,
@@ -512,7 +414,6 @@ function keywordAfterOpener(
   return undefined;
 }
 
-/** True when the 1-based line is nothing but a directive comment. */
 function isStandaloneSite(
   lines: string[],
   sites: ReadonlyMap<number, DirectiveSite>,
@@ -523,21 +424,15 @@ function isStandaloneSite(
     lines[lineNumber - 1].slice(0, site.openerAt).trim().length === 0;
 }
 
-/** Where an acceptance directive sits on its line, as `[start, end)` column offsets. */
 export interface DirectiveSpan {
   start: number;
   end: number;
 }
 
 /**
- * The span of each acceptance directive in a file, by 1-based line. This is
- * the one definition of where a directive sits: the parser reads the
- * directives at these places, and the safety analyzer drops exactly this
- * text before the long-line count and the Markdown content rules, so a
- * directive never triggers the rule it accepts and the keyword inside a
- * string literal is still scanned. A source file that does not parse has
- * none, since none of its directives are read. A Markdown span holding a
- * quote is left out, as it always was.
+ * the one definition of where a directive sits: the parser reads it here and
+ * the safety analyzer drops exactly this text before the long-line count, so a
+ * directive never triggers the rule it accepts
  */
 export function directiveSpans(
   content: string,
@@ -562,7 +457,6 @@ export function directiveSpans(
   return spans;
 }
 
-/** The line with the directive `span` (from {@link directiveSpans}) removed. */
 export function withoutDirective(
   line: string,
   span: DirectiveSpan | undefined,
@@ -571,33 +465,25 @@ export function withoutDirective(
   return line.slice(0, span.start) + line.slice(span.end);
 }
 
-/** The identity a finding carries; both finding types satisfy it. */
 export interface AcceptableFinding {
   ruleId: string;
   file: string;
   line?: number;
 }
 
-/** A finding together with the acceptance that covers it. */
 export interface AcceptedFinding<T extends AcceptableFinding> {
   finding: T;
-  /** The acceptance's reason; absent when the author gave none. */
   reason?: string;
   source: AcceptanceSource;
   declaredAt: { file: string; line: number };
 }
 
-/** The partitions {@link applyAcceptances} produces. */
 export interface AppliedAcceptances<T extends AcceptableFinding> {
-  /** Findings no acceptance covers; they stay in the gate. */
   remaining: T[];
-  /** Findings an acceptance covers, with the reason when one was given. */
   accepted: AcceptedFinding<T>[];
-  /** Inline and sidecar acceptances that matched no finding. */
   stale: AcceptanceDirective[];
 }
 
-/** True when the directive names the finding. */
 function covers(
   directive: AcceptanceDirective,
   finding: AcceptableFinding,
@@ -615,12 +501,8 @@ function covers(
 }
 
 /**
- * Applies declared acceptances to findings. Pure: a finding moves to
- * `accepted` only when a directive names it, every other finding is kept
- * unchanged in `remaining`, and the two together are exactly the input. A
- * directive that names nothing is returned as `stale`, except a `generated`
- * declaration, which is a statement about the package rather than about one
- * finding.
+ * a generated declaration is never returned as stale: it is about the package,
+ * not one finding
  */
 export function applyAcceptances<T extends AcceptableFinding>(
   findings: T[],
@@ -653,7 +535,6 @@ export function applyAcceptances<T extends AcceptableFinding>(
 
 const ACCEPTANCE_DIMENSION = "Declared acceptances";
 
-/** The blocking finding for a directive that cannot be accepted. */
 export function invalidAcceptanceFinding(
   issue: InvalidAcceptance,
 ): ReviewFinding {
@@ -667,7 +548,6 @@ export function invalidAcceptanceFinding(
   };
 }
 
-/** The warning for a directive that names no finding. */
 export function staleAcceptanceFinding(
   directive: AcceptanceDirective,
 ): ReviewFinding {
@@ -688,72 +568,43 @@ export function staleAcceptanceFinding(
   };
 }
 
-// ── Structured acceptances ────────────────────────────────────────────
-
-/** Where a comment acceptance goes relative to its `line`. */
 export const ACCEPTANCE_POSITIONS = [
-  /** On a new line inserted directly above `line`. */
   "line-above",
-  /** On a new line inserted at the top of the file (after a shebang); `line` is 1. */
   "file-header",
 ] as const;
 
-/** Where a comment acceptance goes relative to its `line`. */
 export type AcceptancePosition = typeof ACCEPTANCE_POSITIONS[number];
 
-/** One entry for the `accept` list of `quality.yaml`. */
 export interface SidecarAcceptanceEntry {
   rule: string;
-  /** Relative to the manifest's directory with forward slashes; absent for an extension-scoped rule. */
   file?: string;
-  /** The one line of `file` the entry accepts: a Markdown line inside a fenced code block. */
   line?: number;
 }
 
-/**
- * The edit that declares one finding acceptable, described so an agent can
- * apply it without parsing prose: a comment to insert at a position in a
- * file, or one entry to add to the `accept` list of the quality sidecar.
- * Neither carries a reason; the author adds one only when it helps a
- * reviewer.
- */
 export type Acceptance =
   | {
     form: "comment";
-    /** The absolute path of the file to edit. */
     file: string;
-    /** The 1-based line `position` is relative to. */
     line: number;
     position: AcceptancePosition;
-    /**
-     * The whole line to insert, indented like the line it goes above, e.g.
-     * `    // swamp-quality-ignore deno-command`. A `file-header` comment
-     * goes after a `#!` shebang when the file starts with one.
-     */
     text: string;
   }
   | {
     form: "sidecar";
-    /** The absolute path of `quality.yaml` beside the manifest, which may not exist yet. */
     file: string;
-    /** The entry to add to its `accept` list. */
     entry: SidecarAcceptanceEntry;
   };
 
-/** The sidecar's file name; `QUALITY_SIDECAR_FILENAME` in `extension_quality_sidecar.ts`, which imports this module. */
+/**
+ * mirrors QUALITY_SIDECAR_FILENAME in extension_quality_sidecar.ts, which
+ * imports this module
+ */
 const SIDECAR_FILENAME = "quality.yaml";
 
 function escapesDir(rel: string): boolean {
   return rel === ".." || rel.startsWith(".." + SEPARATOR) || isAbsolute(rel);
 }
 
-/**
- * A finding's file relative to the manifest's directory, with forward
- * slashes, for the summaries. A file elsewhere in the repository (a vault
- * beside a `extensions/models/manifest.yaml`) is a `../` path when
- * `repoDir` is given; a file outside the repository (the adversarial-review
- * report in the review dir) keeps its absolute path.
- */
 export function fileRelativeToManifest(
   manifestDir: string,
   file: string,
@@ -769,17 +620,12 @@ export function fileRelativeToManifest(
 }
 
 /**
- * The warned lines of one file that a comment acceptance can go above, each
- * with its indentation, which the inserted comment copies so the file stays
- * formatted. A line is absent when it begins inside a multi-line string,
- * template literal or block comment in source, or inside a fenced block in
- * Markdown, where a comment would be ignored as documentation or, in a
- * string, change what the program does; every line is absent from a source
- * file that does not parse, since none can be vouched for.
+ * a line is absent when it begins inside a multi-line string, template, block
+ * comment or markdown fence, where a comment is ignored or changes the program;
+ * all are absent when the file does not parse
  */
 export type CommentSites = Record<number, string>;
 
-/** The {@link CommentSites} of `lines` in one file with a comment form. */
 export function commentSites(
   content: string,
   file: string,
@@ -788,7 +634,6 @@ export function commentSites(
   const text = content.split("\n");
   const barriers = new Set<number>();
   const form = commentFormFor(file);
-  // A source file's directive sites, from the parse that finds its barriers.
   let directives: Map<number, DirectiveSite> | undefined;
   if (form === "html") {
     let fenced = false;
@@ -840,12 +685,9 @@ export function commentSites(
 }
 
 /**
- * True when a `//` directive inserted above `line` of a parsed source file
- * is one the parser reads and aims at that line, decided from the file's
- * one parse. Above a line no token or comment spans, the inserted line is
- * a line comment of its own; it aims at `line` unless `line` is itself a
- * standalone directive, which a stack skips, and it is read unless the
- * directives before it already reach the cap.
+ * an inserted line comment aims at line unless line is itself a standalone
+ * directive, which a stack skips; it is read unless earlier directives already
+ * reach the cap
  */
 function sourceReadsDirectiveAbove(
   text: string[],
@@ -859,10 +701,8 @@ function sourceReadsDirectiveAbove(
 }
 
 /**
- * True when a directive inserted above `line` of a Markdown file is one the
- * parser reads and aims at that line. The parser's fence and comment
- * handling can disagree with the barriers, and an offered acceptance must
- * take effect.
+ * the parser's fence and comment handling can disagree with the barriers, and
+ * an offered acceptance must take effect
  */
 function parserReadsDirectiveAbove(
   text: string[],
@@ -886,14 +726,9 @@ function parserReadsDirectiveAbove(
 }
 
 /**
- * The acceptance that declares `finding` acceptable, or undefined when it
- * has none: a rule with no acceptance form, a collapsed finding standing for
- * several files (each file takes its own), a site finding with no line, a
- * file with no comment form outside the manifest's directory, which the
- * sidecar cannot name, or a source line a comment cannot go above (absent
- * from the file's {@link CommentSites} in `sites`). A Markdown line no
- * comment can go above, inside a fenced code block, takes a sidecar entry
- * naming the line. `finding.file` is the absolute path findings carry.
+ * a markdown line no comment can go above, inside a fenced block, takes a
+ * sidecar entry naming the line; a collapsed finding standing for several files
+ * has none
  */
 export function acceptanceFor(
   finding: AcceptableFinding,

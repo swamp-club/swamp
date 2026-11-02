@@ -17,29 +17,12 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * A serve node that starts as a follower in team mode reports `/ready` only
- * once its copy first holds the head its leader names (swamp-club#4254). A
- * node restarted after a takeover restores its copy from the bucket, which
- * can trail the leader; in rotation before its feed catches it up, it would
- * answer members from behind their copies. The wait is bounded, so a slow
- * restore cannot hold the node out of rotation for long, and it ends as
- * soon as the node takes the lead or begins to shut down.
- *
- * @module
- */
-
-/** The longest a follower's readiness waits for its first catch-up. */
 export const FOLLOWER_READY_WAIT_MS = 30_000;
 
-/** How long between tries while the leader feed is not yet live. */
 export const FOLLOWER_READY_RETRY_MS = 250;
 
-/** What {@link awaitFirstFollowerCatchUp} needs. */
 export interface FirstFollowerCatchUpDeps {
-  /** Whether the copy holds the leader's head, after a bounded wait. */
   caughtUp(): Promise<boolean>;
-  /** Whether to stop waiting: the node leads, or it is shutting down. */
   ended(): boolean;
   readonly boundMs?: number;
   readonly retryMs?: number;
@@ -47,10 +30,8 @@ export interface FirstFollowerCatchUpDeps {
   readonly pause?: (ms: number) => Promise<void>;
 }
 
-/** How the wait for a follower's first catch-up ended. */
 export type FirstFollowerCatchUp = "caught-up" | "ended" | "timed-out";
 
-/** See the module documentation. */
 export async function awaitFirstFollowerCatchUp(
   deps: FirstFollowerCatchUpDeps,
 ): Promise<FirstFollowerCatchUp> {

@@ -19,19 +19,12 @@
 
 import type { Step } from "./step.ts";
 
-/**
- * Result of evaluating a manual-approval deadline for a suspended step.
- */
 export interface ApprovalTimeout {
-  /** Whether the approval window has elapsed (`now > suspendedAt + timeout`). */
   expired: boolean;
-  /** Seconds the step has been waiting for approval. */
   elapsedSeconds: number;
-  /** The configured timeout, in seconds. */
   timeoutSeconds: number;
 }
 
-/** The parts of a step run that say which timeout its gate has. */
 export interface GateStepRun {
   readonly stepName: string;
   readonly approvalTimeout?: number;
@@ -39,14 +32,9 @@ export interface GateStepRun {
 }
 
 /**
- * The timeout, in seconds, of the gate a step run waits on, or `undefined`
- * when the gate has no deadline.
- *
- * The step run holds the timeout its gate was requested with, and that one
- * wins: the deadline of a waiting gate does not move when the workflow is
- * edited. A run record written before the step run held it (swamp-club#3218)
- * is answered by the definition: the step of the run's name, or, for a step
- * expanded by forEach, the step it was expanded from.
+ * the step run's own timeout wins, so a waiting gate's deadline does not move
+ * when the workflow is edited; an older record falls back to the definition
+ * step, or the step a forEach expanded from
  */
 export function gateTimeoutSeconds(
   step: GateStepRun | undefined,
@@ -63,17 +51,8 @@ export function gateTimeoutSeconds(
 }
 
 /**
- * Evaluates the manual-approval deadline for a suspended step.
- *
- * Returns `undefined` when the step has no approval deadline to enforce —
- * either its gate has no timeout (see `gateTimeoutSeconds`) or it never
- * recorded a start time. In those cases the approval never expires on its
- * own.
- *
- * This is the single source of truth for the deadline check, shared by
- * `workflow approve` (which rejects expired approvals) and
- * `workflow approvals` (which filters them out of the actionable listing) so
- * both apply the identical `now > suspendedAt + timeout` rule.
+ * single source of truth for the deadline check, shared by workflow approve and
+ * approvals so both apply the same now > suspendedAt + timeout rule
  */
 export function evaluateApprovalTimeout(
   startedAt: Date | undefined,

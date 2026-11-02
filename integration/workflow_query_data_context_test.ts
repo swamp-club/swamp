@@ -17,11 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// Integration test for the full queryData chain on the workflow path:
-// buildMethodContext -> InProcessExecutor -> derived queryData ->
-// real DataQueryService -> real CatalogStore. A regression in any of these
-// layers would surface here. See lab issue #35.
-
 import { assertEquals, assertExists } from "@std/assert";
 import { ensureDir } from "@std/fs";
 import { join } from "@std/path";
@@ -57,8 +52,6 @@ async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
     await fn(dir);
   } finally {
     if (Deno.build.os === "windows") {
-      // Best-effort: EBUSY can fire when V8 hasn't GC'd native
-      // sqlite handles yet. Temp dir is ephemeral, OS reclaims.
       await Deno.remove(dir, { recursive: true }).catch(() => {});
     } else {
       await Deno.remove(dir, { recursive: true });
@@ -92,7 +85,6 @@ Deno.test("queryData chain: factory + executor derive working queryData from dat
   await withTempDir(async (repoDir) => {
     await setupRepoDir(repoDir);
 
-    // Real infrastructure: catalog store, data repo, query service.
     const catalogStore = new CatalogStore(
       join(repoDir, ".swamp", "data", "_catalog.db"),
     );
@@ -105,7 +97,6 @@ Deno.test("queryData chain: factory + executor derive working queryData from dat
       const definitionRepo = new YamlDefinitionRepository(repoDir);
       const dataQueryService = new DataQueryService(catalogStore, dataRepo);
 
-      // Seed one data record the query should match.
       const seedModel = Definition.create({
         name: "seed_source",
         type: TEST_MODEL_TYPE.normalized,
@@ -129,7 +120,6 @@ Deno.test("queryData chain: factory + executor derive working queryData from dat
         new TextEncoder().encode(JSON.stringify({ sentinel: "expected" })),
       );
 
-      // Build a minimal execution target: one method that calls queryData.
       const definition = Definition.create({
         name: "query-ctx-model",
         type: TEST_MODEL_TYPE.normalized,
@@ -147,7 +137,6 @@ Deno.test("queryData chain: factory + executor derive working queryData from dat
         methods: { run: method },
       };
 
-      // Exercises the fix: context.queryData must exist and return seeded rows.
       let queryResult: DataRecord[] | unknown[] | undefined;
       const executor: MethodExecutor = {
         execute: async (_def, _m, context) => {
@@ -215,11 +204,6 @@ Deno.test("queryData chain: factory + executor derive working queryData from dat
   });
 });
 
-// Lab issue #237: jobName was always empty in CEL data query results because
-// workflow tag overrides never carried `job` and data_writer never mapped it
-// onto OwnerDefinition. This test pins down the read-path contract that all
-// three provenance fields (workflowName, jobName, stepName) are queryable
-// via top-level CEL identifiers when populated on OwnerDefinition.
 Deno.test("data query: workflowName, jobName, stepName CEL fields resolve from ownerDefinition", async () => {
   await withTempDir(async (repoDir) => {
     await setupRepoDir(repoDir);

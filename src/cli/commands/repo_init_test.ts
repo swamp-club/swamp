@@ -23,7 +23,6 @@ import { resolveToolFlag, ToolNameType } from "./repo_init.ts";
 import { UserError } from "../../domain/errors.ts";
 import { VALID_AI_TOOLS } from "../ai_tool_parser.ts";
 
-// Initialize logging for tests
 await initializeLogging({});
 
 Deno.test("repoCommand module loads", async () => {

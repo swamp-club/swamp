@@ -20,25 +20,13 @@
 import { z } from "zod";
 import { schemaTransformsValues } from "./zod_type_coercion.ts";
 
-/**
- * Metadata a model type attaches to a schema field with `.meta({...})`, read
- * back from `z.globalRegistry`.
- */
 export type FieldMetadata = Record<string, unknown>;
 
-/**
- * A schema field whose metadata matched, with its dot-separated path.
- */
 export interface FieldWithMetadata {
-  /** Dot-separated path to the field (e.g., "credentials.apiKey") */
   path: string;
-  /** The metadata that matched */
   meta: FieldMetadata;
 }
 
-/**
- * Internal Zod v4 definition structure for schema introspection.
- */
 interface ZodDef {
   type: string;
   innerType?: z.ZodTypeAny;
@@ -58,38 +46,24 @@ interface ZodDef {
   in?: z.ZodTypeAny;
   out?: z.ZodTypeAny;
   values?: unknown[];
-  /** The checks the schema runs once its own parse has passed. */
   checks?: { _zod?: { def?: ZodCheckDef } }[];
-  /** A node-level error map, as `z.object({...}, { error })` sets it. */
   error?: unknown;
-  /** A codec's transform; a plain pipe has none. */
   transform?: unknown;
 }
 
-/** The definition of a check a schema runs after its own parse. */
 interface ZodCheckDef {
   check?: string;
-  /** Set by `.refine()`, whose function only answers yes or no. */
   fn?: unknown;
 }
 
-/**
- * Gets the internal definition from a Zod schema.
- */
 function getSchemaDef(schema: z.ZodTypeAny): ZodDef {
   return (schema as unknown as { _def: ZodDef })._def;
 }
 
-/**
- * Gets the definition type string from a Zod schema.
- */
 function getSchemaType(schema: z.ZodTypeAny): string {
   return getSchemaDef(schema)?.type ?? "";
 }
 
-/**
- * Unwraps optional, nullable, default, and effects wrappers to get the underlying schema.
- */
 function unwrapSchema(schema: z.ZodTypeAny): z.ZodTypeAny {
   const schemaType = getSchemaType(schema);
   const def = getSchemaDef(schema);
@@ -104,22 +78,15 @@ function unwrapSchema(schema: z.ZodTypeAny): z.ZodTypeAny {
   return schema;
 }
 
-/**
- * Finds the metadata on a field that satisfies `matches`, checking the schema
- * at multiple levels (before and after unwrapping). Handles both
- * `.meta().optional()` and `.optional().meta()` orderings.
- */
 export function findFieldMetadata(
   schema: z.ZodTypeAny,
   matches: (meta: FieldMetadata) => boolean,
 ): FieldMetadata | undefined {
-  // Check metadata on the outer schema (handles `.optional().meta()`)
   const outerMeta = z.globalRegistry.get(schema) as FieldMetadata | undefined;
   if (outerMeta && matches(outerMeta)) {
     return outerMeta;
   }
 
-  // Check at each unwrap level (handles `.meta().optional()`)
   let current = schema;
   while (true) {
     const schemaType = getSchemaType(current);
@@ -150,22 +117,6 @@ export function findFieldMetadata(
   return undefined;
 }
 
-/**
- * Extracts every field of a Zod object schema whose metadata satisfies
- * `matches`.
- *
- * Walks the schema's object shape recursively. Fields nested inside
- * non-object schemas (records, arrays, unions) are not visited, and a schema
- * wrapped in `.transform()` is not unwrapped, so metadata must sit on the
- * field itself. To reach those fields, walk a value with
- * {@link findValuesWithMetadata}, or read the schema alone with
- * {@link collectFieldMetadata}.
- *
- * @param schema - A Zod schema (typically an object schema)
- * @param matches - Decides whether a field's metadata marks it
- * @param prefix - Path prefix for nested fields (used in recursion)
- * @returns The matching fields with their metadata
- */
 export function extractFieldsWithMetadata(
   schema: z.ZodTypeAny,
   matches: (meta: FieldMetadata) => boolean,
@@ -193,7 +144,6 @@ export function extractFieldsWithMetadata(
       results.push({ path: fieldPath, meta });
     }
 
-    // Recurse into nested objects
     const unwrappedField = unwrapSchema(fieldSchema);
     if (getSchemaType(unwrappedField) === "object") {
       results.push(
@@ -205,41 +155,20 @@ export function extractFieldsWithMetadata(
   return results;
 }
 
-/**
- * A value found under a schema node whose metadata matched, with its path.
- */
 export interface ValueWithMetadata {
-  /**
-   * Path to the value (e.g., "credentials.apiKey", "users[0].password",
-   * `accounts["eu.west"].token`)
-   */
   path: string;
-  /**
-   * The same place as `path`, as the object keys and array indexes that lead
-   * to it from the root value.
-   */
   keys: (string | number)[];
-  /** The value found at that path */
   value: unknown;
-  /** The metadata that matched */
   meta: FieldMetadata;
   /**
-   * Set when the value is reported conservatively, as an input a pipeline's
-   * transform may carry into a marked output, or as what a reshaping node
-   * delivered whole, rather than as a value a schema node marks itself
-   * (swamp-club#3681).
+   * set when the value is reported conservatively (a pipeline input that may
+   * reach a marked output, or a reshaping node's whole value) rather than
+   * marked by a schema node itself
    */
   rawInput?: true;
-  /**
-   * Whether the value sits inside an array element, tuple item or record
-   * value, and so occurs once per element rather than once per schema. Also
-   * set for a value reported whole because it does not have the shape of the
-   * container its schema declares.
-   */
   perElement: boolean;
 }
 
-/** Wrapper schema types that hold the wrapped schema in `innerType`. */
 const INNER_TYPE_WRAPPERS = new Set([
   "optional",
   "nullable",
@@ -258,11 +187,9 @@ const UNPRINTABLE =
   /[\u007f-\u009f\u2028\u2029\u200e\u200f\u202a-\u202e\u2066-\u2069]/g;
 
 /**
- * Appends a key to a path. A key made of letters, digits, `_` and `-` is
- * joined with a dot; any other key is written as a quoted, escaped index
- * (`accounts["eu.west"]`), so a path names exactly one place in a value, a
- * `[0]` segment is always an array index, and no control or bidirectional
- * character from a key reaches the terminal.
+ * a key of letters, digits, _ and - joins with a dot; any other is a quoted,
+ * escaped index, so a path names one place and no control or bidi character
+ * reaches the terminal
  */
 function appendKey(path: string, key: string): string {
   if (!/^[A-Za-z0-9_-]+$/.test(key)) {
@@ -277,11 +204,6 @@ function appendKey(path: string, key: string): string {
   return path ? `${path}.${key}` : key;
 }
 
-/**
- * Returns the schema one wrapper level down, or undefined when `schema` is
- * not a wrapper. A pipe yields the side that describes the input value: the
- * source of a `.transform()`, the target of a `z.preprocess()`.
- */
 function innerSchema(schema: z.ZodTypeAny): z.ZodTypeAny | undefined {
   const schemaType = getSchemaType(schema);
   const def = getSchemaDef(schema);
@@ -305,9 +227,9 @@ function innerSchema(schema: z.ZodTypeAny): z.ZodTypeAny | undefined {
 }
 
 /**
- * Reads a schema's registered metadata. A schema this Zod did not build (one
- * from an extension's own Zod v3, say) has none, and the registry throws on
- * it, so it is answered as having no metadata.
+ * a schema this Zod did not build (e.g. an extension's own Zod v3) has no
+ * registry entry and the registry throws on it, so it counts as having no
+ * metadata
  */
 function readMetadata(schema: z.ZodTypeAny): FieldMetadata | undefined {
   if (!(schema as { _zod?: unknown })?._zod) {
@@ -323,10 +245,9 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 }
 
 /**
- * Follows wrappers down to the schema that describes the value itself.
- * Returns undefined when a `z.preprocess()` is on the way: its function can
- * turn the stored value into any shape, so the schema behind it says nothing
- * about the value as stored.
+ * returns undefined when a z.preprocess() is on the way: its function can turn
+ * the stored value into any shape, so the schema behind it says nothing about
+ * the stored value
  */
 function coreSchema(schema: z.ZodTypeAny): z.ZodTypeAny | undefined {
   let current = schema;
@@ -353,19 +274,12 @@ const SCALAR_TYPES = [
   "template_literal",
 ];
 
-/** Schema types that accept only an absent value, or no value at all. */
 const ABSENT_TYPES = ["null", "undefined", "void", "never"];
 
 /**
- * Reports whether a value has the kind a union member describes: an object
- * for an object or record, an array for an array or tuple, a scalar for a
- * scalar. A number, boolean or bigint fits only a scalar member of its own
- * type, or a literal or enum that lists it; a string fits every scalar
- * member. A member that accepts only an absent value (`z.null()`,
- * `z.undefined()`, `z.void()`, `z.never()`) fits nothing, since the walk
- * never brings an absent value to a union. A member of any other type, a
- * coerced scalar, or one behind a `z.preprocess()`, is taken to fit every
- * value.
+ * a scalar fits a scalar member of its own type, and a string fits any scalar
+ * member; absent-only members fit nothing; any other member type, coerced or
+ * preprocessed, is assumed to fit
  */
 function fitsShape(member: z.ZodTypeAny, value: unknown): boolean {
   const core = coreSchema(member);
@@ -374,8 +288,6 @@ function fitsShape(member: z.ZodTypeAny, value: unknown): boolean {
   }
   const memberType = getSchemaType(core);
   const def = getSchemaDef(core);
-  // `z.coerce.string()`, `z.coerce.date()` and the like accept any value by
-  // converting it.
   if (def?.coerce === true) {
     return true;
   }
@@ -416,11 +328,6 @@ function fitsShape(member: z.ZodTypeAny, value: unknown): boolean {
   return true;
 }
 
-/**
- * Returns the literal values an object member requires for its keys: for
- * `z.object({ kind: z.literal("token") })`, `kind` mapped to `["token"]`.
- * Empty for a member that is not a plain object schema.
- */
 function literalTags(member: z.ZodTypeAny): Map<string, unknown[]> {
   const tags = new Map<string, unknown[]>();
   const memberSchema = unwrapSchema(member);
@@ -441,14 +348,9 @@ function literalTags(member: z.ZodTypeAny): Map<string, unknown[]> {
 }
 
 /**
- * Picks the members of a union a value can belong to, without running any
- * member's validation. Two kinds of member are dropped, both certain to
- * reject the value: one of another kind (see {@link fitsShape}), and an
- * object member requiring a literal for a key where the value holds a
- * literal that a different member requires there (the value is tagged as
- * that other member). Every other case keeps the member, so a field one
- * member marks is never missed because another member also accepts the
- * value. When nothing is left, every member is kept.
+ * drops only members certain to reject the value (wrong kind, or a different
+ * literal tag), so a field any plausible member marks is never missed; if none
+ * remain, keeps all
  */
 function unionMembers(def: ZodDef, value: unknown): z.ZodTypeAny[] {
   const all = def.options ?? [];
@@ -476,20 +378,13 @@ function unionMembers(def: ZodDef, value: unknown): z.ZodTypeAny[] {
   return untagged.length > 0 ? untagged : options;
 }
 
-/** State carried through one {@link findValuesWithMetadata} walk. */
 interface ValueWalk {
   matches: (meta: FieldMetadata) => boolean;
   /** Cache inputs precede transforms, whose output keys may differ completely. */
   rawInputs?: boolean;
-  /** Report metadata on the root schema's own chain, for the root value. */
   reportRoot?: boolean;
-  /**
-   * The value is what a parse delivered: what a reshaping node (see
-   * {@link reshapes}) holds is what its code made, under any key.
-   */
   transformed?: boolean;
   found: ValueWithMetadata[];
-  /** Paths already in `found`, each with its index there. */
   foundPaths: Map<string, number>;
   /**
    * Paths each schema has already been walked at. Overlapping union members
@@ -497,19 +392,14 @@ interface ValueWalk {
    * again would double the work at every level of a recursive schema.
    */
   visited: Map<z.ZodTypeAny, Set<string>>;
-  /** Containers on the way down to the current value, to stop on a cycle. */
   ancestors: Set<object>;
-  /** Answers already given by {@link matchWithin}; null for no match. */
   within: Map<z.ZodTypeAny, FieldMetadata | null>;
 }
 
 /**
- * Adds a found value to the walk. Union and intersection members and both
- * sides of a pipe revisit one value, and a path names one place in it, so a
- * path seen before is that same value and is reported once. With
- * `rawInputs`, a raw-input report there gives way to an exact one: what a
- * schema node marks itself is never only potentially marked, whichever side
- * of a pipe or member the walk reached first (swamp-club#3751).
+ * a path names one place, so a path seen before is reported once; under
+ * rawInputs an exact report replaces a raw-input one, whichever side of a pipe
+ * or member was reached first
  */
 function record(walk: ValueWalk, entry: ValueWithMetadata): void {
   const index = walk.foundPaths.get(entry.path);
@@ -523,11 +413,6 @@ function record(walk: ValueWalk, entry: ValueWithMetadata): void {
   }
 }
 
-/**
- * Returns the first matching metadata on `schema` or on any schema reachable
- * from it, reading the schema alone. Used where a value cannot be walked
- * against its schema, to learn whether that schema marks anything at all.
- */
 function matchWithin(
   walk: ValueWalk,
   schema: z.ZodTypeAny,
@@ -634,8 +519,6 @@ function visitValue(
       return;
     }
     if (getSchemaType(current) === "pipe") {
-      // `a.pipe(b)`: `b` describes the same value once `a` has accepted it,
-      // so what `b` marks is marked here too.
       const pipe = getSchemaDef(current);
       // Only code on the input side can carry an input into a marked output
       // under another key. A pipe without any describes one value on both
@@ -802,10 +685,9 @@ function visitValue(
 }
 
 /**
- * Whether a node's own code may deliver a value of any shape: a
- * `.transform()` or codec makes the output, an `.overwrite()` check replaces
- * it, and a `.catch()` substitutes it on failure. A `z.preprocess()` is not
- * one: what it delivers conforms to the schema behind it.
+ * whether a node's own code may deliver a value of any shape: transform, codec,
+ * overwrite check or catch; a z.preprocess() does not, as its output conforms
+ * to the schema behind it
  */
 function reshapes(node: z.ZodTypeAny): boolean {
   const def = getSchemaDef(node);
@@ -823,12 +705,9 @@ function reshapes(node: z.ZodTypeAny): boolean {
 }
 
 /**
- * Whether a pipe may hand its output a value of another shape than its
- * input: a `z.preprocess()` or `.transform()` anywhere on its input side, a
- * codec's own transform, or a node on the input side's chain that
- * {@link reshapes} the value. Without one, both sides describe the same
- * value, so what the output marks sits at the same position in the input.
- * An input side it cannot read is answered as one that may reshape.
+ * true when a pipe's input side may reshape the value (preprocess, transform,
+ * codec or reshaping node), or cannot be read; otherwise both sides describe
+ * one value at the same position
  */
 function pipeMayReshape(
   pipe: z.ZodTypeAny,
@@ -838,7 +717,6 @@ function pipeMayReshape(
     schemaTransformsValues(input) || chainReshapes(input);
 }
 
-/** Whether any node on a chain of wrappers {@link reshapes} the value. */
 function chainReshapes(node: z.ZodTypeAny): boolean {
   const seen = new Set<z.ZodTypeAny>();
   for (
@@ -855,47 +733,9 @@ function chainReshapes(node: z.ZodTypeAny): boolean {
 }
 
 /**
- * Finds every value in `value` that sits under a schema node whose metadata
- * satisfies `matches`.
- *
- * Unlike {@link extractFieldsWithMetadata}, which reads the schema alone and
- * stops at anything that is not an object, this walks the schema and a
- * concrete value together, so it also reaches fields inside array elements
- * and tuple items (`users[0].password`), record values (`labels.team`),
- * `.catchall()` keys, union members and intersections, and through
- * `.transform()`, `.readonly()` and `z.lazy()` wrappers, and on both sides of
- * a `.pipe()`. It reads the value as stored: a `z.preprocess()` that turns a
- * string into a container is not run, so fields inside that string are not
- * reached. A matching node is reported once, and its children are still
- * visited. A value that is not the object or array its schema declares is
- * reported whole when that schema marks anything inside it. Metadata on the
- * root schema itself is not reported, unless `reportRoot` asks for it: the
- * root value is then reported whole when the root schema, or a wrapper or
- * pipe side on its own chain, matches.
- * With `rawInputs`, a pipeline with matching output metadata whose input
- * side holds code that may reshape the value reports its input
- * conservatively instead: its preprocessor or transform may rename fields.
- * At the root each input key is reported so a caller can replace it. The
- * positions either side of such a pipe marks in the input are still
- * reported exactly, and an exact report replaces a raw-input one at the same
- * path. A pipe with no such code is read exactly, as without `rawInputs`.
- * With `transformed`, the value is read as a parse delivered it: a
- * `.transform()`, codec, `.overwrite()` or `.catch()` that reaches matching
- * metadata reports the whole value it delivered, flagged `rawInput`, since
- * its code may have moved a marked value under any key, and a union or
- * intersection with such a member does the same (swamp-club#3681). No
- * transform or validator is executed in any mode.
- *
- * The walk follows the value, so it visits at most what the value holds and
- * ends on a recursive schema; a value that contains itself is not entered
- * twice. Each path names one place in the value: a key holding anything but
- * letters, digits, `_` and `-` is written quoted (`accounts["eu.west"]`), so
- * it cannot be mistaken for nesting or for an array index.
- *
- * @param schema - A Zod schema (typically an object schema)
- * @param value - The value the schema describes
- * @param matches - Decides whether a node's metadata marks it
- * @returns The matching values with their paths and metadata, in visit order
+ * walks schema and value together, reaching arrays, records, unions and pipes;
+ * reads the value as stored and runs no transform or validator; each path names
+ * one place; root metadata only with reportRoot
  */
 export function findValuesWithMetadata(
   schema: z.ZodTypeAny,
@@ -923,29 +763,15 @@ export function findValuesWithMetadata(
 }
 
 /**
- * The paths of the fields in `schema` whose metadata, read across the whole
- * wrapper chain of the field (`.meta().optional()` and `.optional().meta()`
- * alike, and both sides of a `.pipe()`), satisfies `matches`, reading the
- * schema alone. Unlike {@link extractFieldsWithMetadata} it enters arrays,
- * tuples, records, unions, intersections and lazy schemas: an array element
- * or tuple rest is written `[]`, a tuple item `[<i>]`, a record value or
- * `.catchall()` key `[*]`, and a union or intersection member keeps the path
- * of the field it describes and continues its chain, so metadata on the
- * union and on a member are read together. A schema two fields share is read
- * once per distinct chain it is reached with, under the first path; a schema
- * that contains itself is entered once per path. Metadata on the root schema
- * itself is not reported.
- *
- * @param schema - A Zod schema (typically an object schema)
- * @param matches - Decides from a field's metadata, outermost wrapper first
- * @returns The matching field paths, in visit order
+ * reads the schema alone: array elements are [], tuple items [i], record values
+ * and catchall [*]; a shared schema is read once per distinct chain; root
+ * metadata is not reported
  */
 export function findFieldsWhere(
   schema: z.ZodTypeAny,
   matches: (metadata: readonly FieldMetadata[]) => boolean,
 ): string[] {
   const found: string[] = [];
-  /** The schemas on the way down to the current one, to stop on a cycle. */
   const ancestors = new Set<z.ZodTypeAny>();
   /**
    * The chains each schema was already read under. A schema two fields
@@ -1045,32 +871,14 @@ export function findFieldsWhere(
   return found;
 }
 
-/**
- * Metadata a schema node carries, and where in a value that node sits.
- */
 export interface MetadataOccurrence {
-  /** The metadata that matched */
   meta: FieldMetadata;
-  /**
-   * Whether the node sits inside an array element, tuple item, record value
-   * or `.catchall()` key, and so occurs once per element of a value rather
-   * than once per schema.
-   */
   perElement: boolean;
 }
 
 /**
- * Collects the matching metadata on every schema reachable from `schema`,
- * reading the schema alone. It reaches every place
- * {@link findValuesWithMetadata} can report — object fields, array elements,
- * tuple items, record values, `.catchall()` keys, union members,
- * intersections, both sides of a `.pipe()`, and wrapped and `z.lazy()`
- * schemas — and, like that walk, leaves out metadata on the root schema and
- * its wrappers. Each metadata is returned once per `perElement` answer.
- *
- * @param schema - A Zod schema (typically an object schema)
- * @param matches - Decides whether a node's metadata marks it
- * @returns The matching metadata, in first-seen order
+ * reads the schema alone and reaches every place findValuesWithMetadata can
+ * report; like it, leaves out metadata on the root schema and its wrappers
  */
 export function collectFieldMetadata(
   schema: z.ZodTypeAny,
@@ -1117,7 +925,6 @@ export function collectFieldMetadata(
       continue;
     }
     const children: typeof pending = [];
-    // The same place in a value: wrappers, union members, intersections.
     for (
       const child of [
         def.innerType,
@@ -1132,11 +939,9 @@ export function collectFieldMetadata(
     ) {
       if (child) children.push({ schema: child, perElement, atRoot });
     }
-    // A place once per object: the declared fields.
     for (const child of Object.values(def.shape ?? {})) {
       if (child) children.push({ schema: child, perElement, atRoot: false });
     }
-    // A place once per element.
     for (
       const child of [
         def.catchall,
@@ -1168,14 +973,9 @@ const heldAnswers = new WeakMap<
 >();
 
 /**
- * Reports whether `schema`, or any schema reachable from it, carries metadata
- * that satisfies `matches`. It reads the schema alone, and covers every place
- * {@link findValuesWithMetadata} can report, so a false answer means that
- * walk would find nothing in any value.
- *
- * The answer is kept per `matches` function and schema: pass the same
- * function each time, and expect metadata registered on a schema after its
- * first lookup to go unseen.
+ * a false answer means findValuesWithMetadata finds nothing in any value; the
+ * answer is cached per matches function and schema, so metadata registered
+ * after the first lookup goes unseen
  */
 export function schemaHoldsMetadata(
   schema: z.ZodTypeAny,
@@ -1203,13 +1003,11 @@ export function schemaHoldsMetadata(
   return held;
 }
 
-/** What a schema's own code, around the fields `matches` marks, can reach. */
 export interface CodeAroundMetadata {
   /**
-   * A custom check, a node-level error map or a pipe sits on a node that
-   * encloses a marked field, or on a union or intersection member beside
-   * one. It receives the marked value, so a message it writes may spell it,
-   * and an issue it adds may sit at any path.
+   * a custom check, node-level error map or pipe on a node enclosing a marked
+   * field, or beside one in a union, receives the marked value, so its message
+   * may spell it
    */
   messages: boolean;
   /**
@@ -1219,22 +1017,13 @@ export interface CodeAroundMetadata {
   issues: boolean;
 }
 
-/**
- * Answers of {@link codeAroundMetadata}, per `matches` function and schema.
- */
 const codeAnswers = new WeakMap<
   (meta: FieldMetadata) => boolean,
   WeakMap<z.ZodTypeAny, CodeAroundMetadata>
 >();
 
-/** The nodes that describe one value at a node's position, and the cores. */
 interface Chain {
-  /**
-   * The node, its wrappers down to the core, both sides of a pipe, and at
-   * a union or intersection every member's chain.
-   */
   nodes: z.ZodTypeAny[];
-  /** The schemas whose children are reached through a value step. */
   cores: z.ZodTypeAny[];
 }
 
@@ -1274,7 +1063,6 @@ function chainOf(node: z.ZodTypeAny): Chain {
   return chain;
 }
 
-/** The schemas a value step below `core` leads to. */
 function valueChildren(core: z.ZodTypeAny): z.ZodTypeAny[] {
   const def = getSchemaDef(core);
   switch (def?.type) {
@@ -1297,11 +1085,9 @@ function valueChildren(core: z.ZodTypeAny): z.ZodTypeAny[] {
 }
 
 /**
- * Whether a node's own code receives the value and may write a message about
- * it: a custom check (`.refine()`, `superRefine()`, `.check()`), a node-level
- * error map, or a pipe. A string message is stored as a function, so a
- * static message cannot be told from one that reads the input. A built-in
- * check reports at the node's own position only, and is not counted.
+ * a string message is stored as a function, so a static message cannot be told
+ * from one that reads the input; built-in checks report only at the node's own
+ * position and are not counted
  */
 function writesMessages(node: z.ZodTypeAny): boolean {
   const def = getSchemaDef(node);
@@ -1310,9 +1096,8 @@ function writesMessages(node: z.ZodTypeAny): boolean {
 }
 
 /**
- * Whether a node's own code may add an issue of any code, with any fields and
- * any input: a `superRefine()` or `.check()`, or a pipe. A `.refine()` only
- * answers yes or no, and sets a message.
+ * superRefine, check or a pipe may add an issue of any code, fields and input;
+ * a refine only answers yes or no and sets a message
  */
 function addsIssues(node: z.ZodTypeAny): boolean {
   const def = getSchemaDef(node);
@@ -1324,13 +1109,9 @@ function addsIssues(node: z.ZodTypeAny): boolean {
 }
 
 /**
- * Reports what the schema's own code can reach around the fields whose
- * metadata satisfies `matches`, reading the schema alone (swamp-club#3681).
- * The chain at each position is read whole (`.optional().refine()` keeps the
- * refinement on the wrapper), and a union or intersection member counts for
- * what every other member's subtree marks, since it receives the same value.
- * A `z.lazy()` schema is entered once. The answer is kept per `matches`
- * function and schema, as {@link schemaHoldsMetadata} keeps its own.
+ * a union or intersection member counts for what every other member's subtree
+ * marks, since it receives the same value; the answer is cached per matches
+ * function and schema
  */
 export function codeAroundMetadata(
   schema: z.ZodTypeAny,
@@ -1346,7 +1127,6 @@ export function codeAroundMetadata(
     return known;
   }
   const found: CodeAroundMetadata = { messages: false, issues: false };
-  /** Whether each node's chain or subtree holds a match; null while read. */
   const holds = new Map<z.ZodTypeAny, boolean | null>();
   const visit = (node: z.ZodTypeAny): boolean => {
     const seen = holds.get(node);

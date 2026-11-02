@@ -39,68 +39,40 @@ import { buildMethodReportContext } from "../reports/report_context.ts";
 import { BUILTIN_METHOD_REPORTS } from "../reports/builtin/mod.ts";
 import type { WorkflowExecutionEvent } from "./execution_events.ts";
 
-/**
- * Inputs for running per-step reports after a method execution.
- *
- * The runner uses `status` to discriminate between the success path
- * (method + model scope reports) and the failure path (method scope
- * only, errors swallowed). Both return the artifacts the reports produced.
- */
 export interface MethodReportArgs {
-  /** Whether the method execution succeeded or failed. */
   status: "succeeded" | "failed";
   /** Error message; required when status === "failed". */
   errorMessage?: string;
-  /**
-   * Data handles produced by the method. On failure, the handles the
-   * method persisted before it threw (empty when it wrote nothing).
-   */
   dataHandles: DataHandle[];
 
-  // --- Identity ---
   modelType: ModelType;
   modelDef: ModelDefinition;
   evaluatedDefinition: Definition;
   /** Original (pre-evaluation) definition, only used for reportSelection. */
   originalDefinition: Definition;
   methodName: string;
-  /** The step's recorded provenance, from its ModelOutput. */
   provenance: ExecutionProvenance;
 
-  // --- Report context inputs ---
   reportGlobalArgs: Record<string, unknown>;
   reportMethodArgs: Record<string, unknown>;
   reportFilterOptions: ReportFilterOptions;
-  /** Vary suffix derived from forEach variable, when applicable. */
   reportVarySuffix?: string;
 
-  // --- Wiring ---
   repoDir: string;
   swampSha?: string;
   runLogger: Logger;
   unifiedDataRepo: UnifiedDataRepository;
   definitionRepository: DefinitionRepository;
 
-  /** Event sink for report_started / report_completed / report_failed. */
   emitEvent?: (event: WorkflowExecutionEvent) => void;
-  /** Job and step ids carried into emitted events. */
   jobName: string;
   stepName: string;
 }
 
 /**
- * Runs per-step reports and returns the data artifacts they produced.
- *
- * - status="succeeded": runs method + model scope reports. Returns the
- *   aggregated artifacts they produced. Caller appends these to its own
- *   output / savedArtifacts state.
- * - status="failed": runs method-scope reports only so consumers see a
- *   structured error. Internal try/catch ensures report errors do NOT
- *   mask the original execution error. Returns the artifacts persisted
- *   before any such error, so the caller records them on the failed step.
- *
- * Imperative call site (not event-driven) preserves event ordering
- * relative to step_completed / step_failed.
+ * on failure only method-scope reports run, and an internal try/catch keeps
+ * report errors from masking the original execution error; imperative call site
+ * preserves event ordering
  */
 export class MethodReportRunner {
   async runFor(args: MethodReportArgs): Promise<DataArtifactRef[]> {
@@ -154,7 +126,6 @@ export class MethodReportRunner {
       },
     );
 
-    // Method scope
     await executeReports(
       reportRegistry,
       methodContext,
@@ -234,7 +205,6 @@ export class MethodReportRunner {
         },
       );
 
-      // Method scope only on failure (no model-scope on failure path).
       await executeReports(
         reportRegistry,
         failedMethodContext,
@@ -264,11 +234,6 @@ export class MethodReportRunner {
   }
 }
 
-/**
- * Builds report callbacks that forward report lifecycle events and
- * collect the data artifacts each report persisted — including the
- * fallback error artifacts of a report that failed — into `collected`.
- */
 function collectingCallbacks(
   args: MethodReportArgs,
   collected: DataArtifactRef[],

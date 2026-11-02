@@ -18,29 +18,13 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * Installs promptfoo for the skill evals without its optional dependencies.
- *
- * promptfoo lists about 900 MB of provider SDKs (Claude agent SDK, Codex SDK,
- * AWS, Azure, Playwright, ...) as optional dependencies. The evals only use the
- * anthropic:messages, openai: and google: providers, which load without them,
- * so the install omits optional dependencies. The one optional package the
- * evals need is libsql's native binding for the host platform: `promptfoo
- * eval` stores results through libsql and exits without it. That binding is
- * installed on its own, at the installed libsql's version.
- *
- * Both installs resolve from the committed package-lock.json, which pins the
- * whole dependency tree and is what scripts/audit_deps.ts audits. They pass
- * `--no-save` so npm never rewrites it: a plain `npm install` on macOS
- * rewrites the platform-specific optional entries, which would leave every
- * local eval run with a modified lockfile. We use `npm install` rather than
- * `npm ci` because `npm ci` refuses a lockfile that lacks the host's
- * platform-specific optional entries (like @img/sharp-darwin-x64), and the
- * lockfile is generated on one platform while the evals run on several.
+ * optional dependencies are omitted except libsql's host binding, which promptfoo
+ * eval needs. --no-save stops npm rewriting the lockfile; npm install not npm ci,
+ * as ci refuses a lockfile lacking the host's platform-specific entries
  */
 
 import { join } from "@std/path";
 
-/** The parts of `Deno.build` that pick libsql's native binding. */
 export interface HostBuild {
   os: string;
   arch: string;
@@ -58,10 +42,6 @@ const LIBSQL_ARCH: Record<string, string> = {
   aarch64: "arm64",
 };
 
-/**
- * Returns the name of libsql's native binding package for `build`, such as
- * `@libsql/linux-x64-gnu`, or undefined for a platform with no known binding.
- */
 export function libsqlBindingPackage(build: HostBuild): string | undefined {
   const os = LIBSQL_OS[build.os];
   const arch = LIBSQL_ARCH[build.arch];
@@ -77,13 +57,10 @@ export function libsqlBindingPackage(build: HostBuild): string | undefined {
 }
 
 export interface NpmInstallOptions {
-  /** npm cache directory; npm's default cache when omitted. */
   cacheDir?: string;
-  /** Packages to add on top of the locked tree. */
   packages?: string[];
 }
 
-/** Builds the arguments for an `npm install` of the promptfoo dependencies. */
 export function npmInstallArgs(options: NpmInstallOptions = {}): string[] {
   const args = [
     "install",
@@ -122,10 +99,8 @@ interface LibsqlManifest {
 }
 
 /**
- * Installs promptfoo into `configDir/node_modules` without optional
- * dependencies, then adds libsql's binding for the host platform. In GitHub
- * Actions both installs use a temporary npm cache that is deleted afterwards,
- * so the runner does not keep the downloaded tarballs on disk.
+ * in GitHub Actions both installs use a temporary npm cache deleted afterwards,
+ * so the runner keeps no tarballs
  */
 export async function installPromptfooDeps(configDir: string): Promise<void> {
   const cacheDir = Deno.env.get("GITHUB_ACTIONS") === "true"

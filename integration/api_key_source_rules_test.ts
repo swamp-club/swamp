@@ -17,19 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// Architectural fitness test: the collective API key has one source.
-//
-// The key can come from `--club-api-key-file`, SWAMP_API_KEY_FILE or
-// SWAMP_API_KEY, and `src/infrastructure/persistence/api_key_source.ts` is
-// the only place that knows the order. A file that reads SWAMP_API_KEY on its
-// own misses a key that comes from a file. That was the gap swamp-club#2790
-// closed: serve read SWAMP_API_KEY itself, so no other source could reach its
-// OAuth client registration or club heartbeat.
-//
-// The rule looks for the variable names as whole string literals, so a read
-// through `Deno.env.get`, a lookup table or a local constant is caught alike,
-// while prose that mentions the names in messages and comments is not.
-
 import { assertEquals } from "@std/assert";
 import { relative } from "@std/path";
 import {
@@ -39,9 +26,7 @@ import {
   toPosixPath,
 } from "./arch_fitness_helpers.ts";
 
-/** Files allowed to name the key's env vars, and why each one is there. */
 const PINNED_KEY_ENV_READERS = [
-  // The single resolver: flag override, key file, then env value.
   "src/infrastructure/persistence/api_key_source.ts",
 ];
 

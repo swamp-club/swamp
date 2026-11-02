@@ -18,65 +18,31 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * Per-tool synthetic hook payload fixtures for the `recording-smoke-test`
- * preflight check.
- *
- * These fixtures are the canonical source of truth for what we believe each
- * upstream tool emits at runtime. The corresponding normalizer in
- * `../hook_input.ts` accepts them today — when an upstream tool ships a
- * breaking change, this file is where the delta surfaces.
- *
- * The `synthetic_payloads_test.ts` companion test round-trips every fixture
- * through the normalizer and asserts a well-formed `NormalizedHookInput`,
- * turning these fixtures into a compile-time contract against the
- * normalizers.
- *
- * Upstream contract references:
- * - Claude Code:
- *   https://docs.anthropic.com/en/docs/claude-code/hooks#posttooluse
- * - Cursor:
- *   https://docs.cursor.com/en/agent/hooks
- * - Kiro CLI:
- *   https://docs.kiro.ai/cli/hooks (kiro-cli emits snake_case on stdin)
- * - Kiro IDE:
- *   https://docs.kiro.ai/ide/hooks (Kiro IDE emits camelCase via USER_PROMPT)
- * - OpenCode:
- *   https://opencode.ai/docs/plugins (plugin emits normalized JSON on stdin)
- * - Copilot:
- *   https://docs.github.com/en/copilot/reference/hooks-reference
+ * canonical fixtures of what each upstream tool emits; a round-trip test
+ * through the normalizers makes them a contract, so an upstream breaking change
+ * surfaces here
  */
 
 import { DIAGNOSTIC_COMMAND_PREFIX } from "../audit_service.ts";
 
-/**
- * Sentinel command prefix used to identify rows written by the doctor
- * smoke-test. Imported from `audit_service.ts` — the same constant the
- * audit timeline filters on, so writer and reader can never drift.
- */
 export const DOCTOR_SMOKE_TEST_COMMAND_PREFIX = DIAGNOSTIC_COMMAND_PREFIX;
 
 /**
- * Sentinel sessionId used by the smoke-test fixtures where the normalizer
- * propagates `session_id` (Claude, OpenCode). Kiro and Cursor normalizers
- * discard session IDs, so we cannot rely on sessionId filtering across all
- * tools — the command-prefix sentinel is the cross-tool marker.
+ * Kiro and Cursor normalizers discard session ids, so sessionId filtering
+ * cannot work across all tools; the command-prefix sentinel is the cross-tool
+ * marker
  */
 export const DOCTOR_SMOKE_TEST_SESSION_ID = "swamp-doctor-smoke-test";
 
-/** A synthetic payload ready to feed `swamp audit record --from-hook`. */
 export interface SyntheticPayload {
-  /** Serialized JSON body to pipe to stdin of `swamp audit record`. */
   stdin: string;
-  /** Environment variables to set on the subprocess (Kiro IDE only). */
   env: Record<string, string>;
-  /** Expected command string the normalizer will extract and persist. */
   expectedCommand: string;
 }
 
 /**
- * Builds a synthetic payload for the given tool. Caller supplies a `nonce`
- * so concurrent doctor invocations don't observe each other's rows — the
- * nonce becomes part of the command string the smoke-test greps for.
+ * the nonce becomes part of the command string the smoke test greps for, so
+ * concurrent doctor runs do not observe each other's rows
  */
 export function syntheticPayloadFor(
   tool: string,

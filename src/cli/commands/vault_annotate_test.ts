@@ -82,7 +82,6 @@ Deno.test("buildVaultAnnotateInput: labels become a key-value map the server acc
     removeLabels: undefined,
     clear: false,
   });
-  // The --server path sends this input as the vault.annotate payload.
   assertEquals(
     typeof validateServerRequest({
       type: "vault.annotate",

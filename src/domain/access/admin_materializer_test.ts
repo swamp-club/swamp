@@ -226,9 +226,8 @@ Deno.test("materializeAdmins: re-activates grant after add-remove-re-add cycle",
 });
 
 Deno.test("materializeAdmins: runtime source:method grants are untouched", async () => {
-  // Source:method grants are filtered out by queryConfigGrants,
-  // so the materializer never sees them. Verify it only creates
-  // the requested admin grant and doesn't touch other instances.
+  // source:method grants are filtered out by queryConfigGrants, so the
+  // materializer never sees them; it must create only the requested admin grant
   const store = createMockStore();
 
   const result = await materializeAdmins("token", ["user:adam"], store);
@@ -380,7 +379,6 @@ Deno.test("migrateGrantDefinitions: skips files that already exist at destinatio
 
     assertEquals(result.moved, 1);
     assertEquals(result.skipped, 1);
-    // The skipped file was not written, so only the moved one is reported.
     assertEquals(result.movedPaths, [join(destDir, "def-456.yaml")]);
 
     const destExisting = await Deno.readTextFile(
@@ -420,8 +418,7 @@ async function adminInstanceName(principal: string): Promise<string> {
 }
 
 Deno.test("materializeAdmins: revokes every active copy of a removed admin", async () => {
-  // Two serve instances on one datastore each created a copy
-  // (swamp-club#2822).
+  // two serve instances on one datastore each created a copy
   const instanceName = await adminInstanceName("user:adam");
   const store = createMockStore(new Map(), {
     duplicates: new Map([[instanceName, [
@@ -491,7 +488,6 @@ Deno.test("materializeAdmins: reactivates only the definition-backed copy of sev
   assertEquals(store.writtenByModelId.has("model-a"), false);
 });
 
-/** A data repository holding two grants, one whose content read fails. */
 function repoWithUnreadableGrant(): UnifiedDataRepository {
   const data = Data.create({
     name: "grant-main",

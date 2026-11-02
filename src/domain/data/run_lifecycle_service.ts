@@ -30,10 +30,8 @@ export const DEFAULT_WORKFLOW_RUN_RETENTION_DAYS = 30;
 export const DEFAULT_OUTPUT_RETENTION_DAYS = 30;
 
 /**
- * Minimum age before a snapshot with no run record counts as an orphan,
- * whatever the retention. A snapshot is written before its run record's
- * first save, so a very short `--older-than` must not sweep a starting run's
- * snapshot.
+ * a snapshot is written before its run record's first save, so a very short
+ * --older-than must not sweep a starting run's snapshot
  */
 export const MIN_ORPHAN_SNAPSHOT_AGE_MS = 60 * 60 * 1000;
 
@@ -46,8 +44,8 @@ export interface RunGcResult {
   snapshotBytesReclaimed: number;
   dryRun: boolean;
   /**
-   * True when the run or output collection stopped at its `limit` with more
-   * left to collect; a later call continues where this one stopped.
+   * true when collection stopped at its limit; a later call continues where
+   * this one stopped
    */
   more: boolean;
 }
@@ -83,9 +81,7 @@ export interface RunLifecycleService {
     workflowRunRetentionDays: number;
     outputRetentionDays: number;
     dryRun: boolean;
-    /** Most runs, and most outputs, one call collects. */
     limit?: number;
-    /** How long a finished run's evaluated snapshot is kept. */
     snapshotRetentionDays?: number;
   }): Promise<RunGcResult>;
 }
@@ -97,17 +93,15 @@ export class DefaultRunLifecycleService implements RunLifecycleService {
     private readonly runSnapshotRepo: RunSnapshotRepository,
     private readonly listRunIds: () => Promise<ReadonlySet<string>>,
     /**
-     * Removes the signal wait records of the runs a collection deleted, so
-     * an outcome never outlives its run (swamp-club#3093). Absent where the
-     * datastore holds no wait records.
+     * removes signal wait records of deleted runs so an outcome never outlives
+     * its run; absent where the datastore holds none
      */
     private readonly collectWaitRecords?: (
       deletedRunIds: readonly string[],
     ) => Promise<void>,
     /**
-     * The IDs of the stored runs that have finished (succeeded, failed or
-     * cancelled). Read only when a snapshot retention is given; absent, no
-     * snapshot of an existing run is removed before its run.
+     * read only when a snapshot retention is given; absent, no snapshot of an
+     * existing run is removed before its run
      */
     private readonly listTerminalRunIds?: () => Promise<
       ReadonlyMap<string, number | undefined>
@@ -136,17 +130,9 @@ export class DefaultRunLifecycleService implements RunLifecycleService {
   }
 
   /**
-   * Collects per-run evaluated-workflow snapshots. A snapshot is collected
-   * when its run was just garbage-collected (`deletedRunIds`), or when no run
-   * record exists for it and it is older than both the retention cutoff and
-   * {@link MIN_ORPHAN_SNAPSHOT_AGE_MS}. The age guard matters: a snapshot is
-   * written before its run record's first save, so a snapshot with no run
-   * record may belong to a run that is starting.
-   *
-   * With `snapshotRetentionDays`, the snapshot of an existing run is also
-   * collected once it is older than that retention, but only when the run
-   * has finished (succeeded, failed or cancelled): cancel, reject and orphan
-   * settlement read the snapshot of a run that has not.
+   * the age guard protects a starting run, whose snapshot predates its run
+   * record; an existing run's snapshot expires only once the run finished,
+   * since cancel, reject and orphan settlement read it
    */
   async gcRunSnapshots(options: {
     retentionDays: number;
@@ -201,11 +187,8 @@ export class DefaultRunLifecycleService implements RunLifecycleService {
   }
 
   /**
-   * One batch of run retention (swamp-club#3473): removes up to `limit`
-   * finished runs older than `cutoff`, with the snapshots and signal wait
-   * records of exactly those runs. Orphaned and expired snapshots are left
-   * to {@link gcRunSnapshots}, which lists every snapshot and so runs once
-   * per pass rather than once per batch.
+   * orphaned and expired snapshots are left to gcRunSnapshots, which lists
+   * every snapshot and so runs once per pass, not once per batch
    */
   async gcWorkflowRunBatch(options: {
     cutoff: Date;

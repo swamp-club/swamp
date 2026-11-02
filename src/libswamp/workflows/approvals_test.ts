@@ -289,7 +289,6 @@ Deno.test("workflowApprovals: lists a gate past its timeout as expired, not pend
 });
 
 Deno.test("workflowApprovals: lists a forEach-expanded gate past its timeout as expired, not pending", async () => {
-  // The definition has no step named as the expanded step run is.
   const wf = makeWorkflow({ stepType: "manual_approval", timeout: 60 });
   const suspendedAt = new Date(Date.now() - 120_000);
   const run = makeRun({
@@ -563,7 +562,6 @@ Deno.test("workflowApprovals: records the definitions load and the approval coun
       startedAt: new Date(Date.now() - 120_000),
       approvalTimeout: 60,
     }),
-    // Suspended on something other than an approval gate.
     makeRun({ id: "run-no-gate", stepStatus: "succeeded" }),
     makeRun({ id: "run-running", status: "running" }),
   ];

@@ -20,7 +20,6 @@
 import { assertEquals } from "@std/assert";
 import { getTerminalDimensions } from "./useTerminalSize.ts";
 
-/** A console-size probe that fails, as it does when no console is attached. */
 const noConsole = () => {
   throw new TypeError("The handle is invalid.");
 };

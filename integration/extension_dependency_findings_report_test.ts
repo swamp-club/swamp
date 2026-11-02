@@ -27,12 +27,6 @@ import {
 } from "../src/presentation/renderers/extension_findings_report.ts";
 import type { Logger } from "@logtape/logtape";
 
-/**
- * A yanked JSR dependency, end to end through the audit and the findings
- * report that closes push, dry run and quality: the warning and the
- * summary's fix line both name the version to move to (swamp-club#3677).
- */
-
 const META = {
   scope: "std",
   name: "assert",

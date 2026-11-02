@@ -178,8 +178,6 @@ Deno.test("Integration: filtered events not delivered to webhook sink", async ()
   assertEquals(events[0].category, "auth");
 });
 
-// ── Webhook sink transport tests ─────────────────────────────────────
-
 interface CapturedRequest {
   body: string;
   headers: Record<string, string>;
@@ -311,8 +309,6 @@ Deno.test("WebhookSink: close flushes remaining events", async () => {
     await mock.close();
   }
 });
-
-// ── Syslog sink transport tests ──────────────────────────────────────
 
 Deno.test("SyslogSink: sends messages to TCP server", async () => {
   const received: string[] = [];

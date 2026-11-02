@@ -64,35 +64,23 @@ export type ExtensionUpdateEvent =
     kind: "completed";
     data: ExtensionUpdateResult;
     mode: "check" | "update";
-    /** Mirrors {@link ExtensionUpdateInput.fallbackLockfile}. */
     fallbackLockfile?: boolean;
   }
   | { kind: "error"; error: SwampError };
 
-/** Input for the extension update operation. */
 export interface ExtensionUpdateInput {
-  /** Specific extension to update, or undefined for all. */
   extensionName?: string;
-  /** When true, only check for updates without pulling. */
   checkOnly: boolean;
   /**
-   * True when the lockfile is the in-repo fallback because the datastore
-   * could not be resolved, so the results may not match the datastore's
-   * lockfile (swamp-club#2483). Carried on the completed event so both
-   * output modes can say so.
+   * true when the lockfile is the in-repo fallback because the datastore could
+   * not be resolved, so results may not match the datastore's lockfile; carried
+   * on the completed event so both output modes can say so.
    */
   fallbackLockfile?: boolean;
 }
 
-/** Dependencies for the extension update operation. */
 export interface ExtensionUpdateDeps {
-  /**
-   * Lockfile repository — the snapshot of installed extensions to
-   * evaluate for updates. Captures upstream_extensions.json at
-   * construction.
-   */
   lockfileRepository: LockfileRepository;
-  /** Get extension info from registry (latest version in channel). */
   getExtension: (
     name: string,
     channel?: string,
@@ -105,10 +93,8 @@ export interface ExtensionUpdateDeps {
     } | null
   >;
   /**
-   * Install/update a specific extension to a version. Returns the
-   * `InstallResult` so the update path can surface the pruned orphan
-   * list to the user, or `undefined` when the install short-circuited
-   * (alreadyPulled in the same call chain). Errors propagate as throws.
+   * undefined when the install short-circuited (alreadyPulled in the same call
+   * chain); errors propagate as throws.
    */
   installExtension: (
     name: string,
@@ -117,7 +103,6 @@ export interface ExtensionUpdateDeps {
   ) => Promise<InstallResult | undefined>;
 }
 
-/** Wires real infrastructure into ExtensionUpdateDeps. */
 export async function createExtensionUpdateDeps(options: {
   lockfilePath: string;
   serverUrl?: string;
@@ -168,7 +153,6 @@ export async function createExtensionUpdateDeps(options: {
   };
 }
 
-/** Checks for and optionally applies extension updates. */
 export async function* extensionUpdate(
   ctx: LibSwampContext,
   deps: ExtensionUpdateDeps,
@@ -180,8 +164,7 @@ export async function* extensionUpdate(
     (async function* () {
       ctx.logger.debug`Executing extension update`;
 
-      // Choose targets from the datastore's lockfile, not a stale cache
-      // (swamp-club#2838).
+      // choose targets from the datastore's lockfile, not a stale cache.
       await refreshManagedLockfile(deps.lockfileRepository);
       const upstream = deps.lockfileRepository.getAllEntries();
       const installedNames = Object.keys(upstream);
@@ -197,7 +180,6 @@ export async function* extensionUpdate(
         return;
       }
 
-      // Validate specific extension exists
       let targetNames: string[];
       if (input.extensionName) {
         if (!upstream[input.extensionName]) {
@@ -215,7 +197,6 @@ export async function* extensionUpdate(
         targetNames = installedNames;
       }
 
-      // Check each extension for updates
       const statuses: ExtensionUpdateStatus[] = [];
       for (const name of targetNames) {
         yield { kind: "checking", name };
@@ -249,7 +230,6 @@ export async function* extensionUpdate(
         );
       }
 
-      // Check-only mode
       if (input.checkOnly) {
         yield {
           kind: "completed",
@@ -260,7 +240,6 @@ export async function* extensionUpdate(
         return;
       }
 
-      // Update mode
       const finalStatuses: ExtensionUpdateStatus[] = [];
       let unpublished: ManagedLockfileUnpublishedError | undefined;
       for (const s of statuses) {
@@ -281,9 +260,8 @@ export async function* extensionUpdate(
                 upstream[s.name]?.channel,
               );
             } catch (error) {
-              // Updated and recorded; only the datastore publish failed.
-              // Count it as updated and raise the error after the report
-              // (swamp-club#2838).
+              // updated and recorded; only the datastore publish failed. Count
+              // it as updated and raise the error after the report.
               if (!(error instanceof ManagedLockfileUnpublishedError)) {
                 throw error;
               }

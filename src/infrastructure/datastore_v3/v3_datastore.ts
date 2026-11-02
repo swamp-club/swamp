@@ -17,23 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Opens a v3 datastore for one checkout (swamp-club#3279): the commit store
- * at the datastore path, the chunk store beside it, and the checkout's read
- * model and catalog. It also builds the commit-log engine a repository
- * context commits through.
- *
- * A filesystem v3 datastore holds only its format marker, `commits.db`,
- * `_blobs/` and `_control/`. Every record lives in the checkout that
- * materialised it: the writer's repositories write it while they stage the
- * change, and every other checkout's read model writes it when it catches
- * up. So the cache root of namespace `ns` is `.swamp/` (solo) or
- * `.swamp/<ns>`, the layout `DefaultDatastorePathResolver` already gives a
- * repo-local datastore.
- *
- * @module
- */
-
 import { DatabaseSync } from "node:sqlite";
 import { ensureDirSync } from "@std/fs";
 import { createHash } from "node:crypto";
@@ -203,9 +186,8 @@ import {
 export { V3_LOCAL_COPIES_DIR };
 
 /**
- * Thrown when a read-only command stages a change on a v3 datastore
- * (swamp-club#3279). It holds no writer lock, so the change must not be
- * committed; a read-only command that writes is a bug to fix.
+ * a read-only command holds no writer lock, so a change it stages must not be
+ * committed
  */
 export class ReadOnlyV3WriteError extends Error {
   constructor(readonly key: string) {
@@ -218,13 +200,9 @@ export class ReadOnlyV3WriteError extends Error {
 }
 
 /**
- * Which of `hashes` the stored commits, the compacted base or the pending
- * commits of `namespace` name, released chunks never counting: the chunks
- * the checkout-copy guard stores again (swamp-club#3617). The outbox is
- * asked first: a writer prepares a commit in the outbox, appends it to
- * commits.db, then settles its entry, so asking commits.db first could
- * read it before the append and the outbox after the settle, and miss a
- * commit that named the chunk throughout.
+ * ask the outbox first: a writer appends to commits.db then settles its outbox
+ * entry, so the reverse order could miss a commit that named the chunk
+ * throughout
  */
 export async function referencedChunksOf(
   commitStore: Pick<CommitStore, "referencedChunks">,
@@ -246,16 +224,10 @@ export async function referencedChunksOf(
   return names;
 }
 
-/** The commit store's file at the root of a filesystem v3 datastore. */
 export const COMMITS_DB_FILE = "commits.db";
 
-/**
- * The commit outbox's file (swamp-club#3490), beside whichever `commits.db`
- * a checkout uses: the datastore's, or while replicating its own copy's.
- */
 export const COMMIT_OUTBOX_FILE = "commits-outbox.db";
 
-/** The commit outbox beside the `commits.db` at `commitsDbPath`. */
 export function v3OutboxPath(commitsDbPath: string): string {
   return join(dirname(commitsDbPath), COMMIT_OUTBOX_FILE);
 }
@@ -263,20 +235,15 @@ export function v3OutboxPath(commitsDbPath: string): string {
 const logger = getSwampLogger(["datastore", "v3"]);
 
 /**
- * The most bytes read of a compacted version's file for an offline rebase
- * (swamp-club#4195): one larger is not restated, and its time not read.
+ * a compacted version's file larger than this is not restated for an offline
+ * rebase, and its time not read
  */
 const COMPACTED_VERSION_MAX_BYTES = 64 * 1024 * 1024;
 
 /**
- * The `commits.db` the checkout at `repoDir` uses for the v3 datastore at
- * `datastorePath`. Without replication, the datastore's own, shared by
- * every checkout. While the internal replica setting names a replica
- * (swamp-club#3482), the checkout's own copy under `.swamp/`, keyed by the
- * datastore's canonical path: each copy is restored from the replica and
- * its writer replicates it, as each machine's copy is on a bucket. A v3
- * datastore on a bucket (swamp-club#3534) has only copies: its local root
- * is the copy's directory.
+ * without replication, the datastore's own commits.db shared by every checkout;
+ * with a replica or on a bucket, the checkout's own copy under .swamp/ keyed by
+ * the datastore's canonical path
  */
 export function v3CommitsDbPath(
   datastorePath: string,
@@ -299,21 +266,17 @@ export function v3CommitsDbPath(
 }
 
 /**
- * The datastore's own `commits.db`, which every checkout shares while
- * replication is off. While it is on, only the first writer reads it, to
- * seed its copy as the first lineage (swamp-club#3491).
+ * every checkout shares it while replication is off; while on, only the first
+ * writer reads it, to seed its copy as the first lineage
  */
 export function v3SharedCommitsDbPath(datastorePath: string): string {
   return join(datastorePath, COMMITS_DB_FILE);
 }
 
 /**
- * The `commits.db` a filesystem v3 datastore's chunks are ordered before
- * (swamp-club#3737): its own, when only this machine's disk makes a commit
- * durable. Undefined, every chunk sync is a full one: on a bucket the
- * chunks are not on the filesystem, and while replicating Litestream ships
- * the commit to the replica before an ordering barrier has put its chunks
- * on the disk, so a power loss could leave the replica naming a lost chunk.
+ * undefined on a bucket or while replicating, so every chunk sync is full:
+ * Litestream can ship a commit before its chunks are on disk, and a power loss
+ * could leave the replica naming a lost chunk
  */
 export function v3ChunksOrderedBefore(
   datastorePath: string,
@@ -325,9 +288,9 @@ export function v3ChunksOrderedBefore(
 }
 
 /**
- * `path` with symlinks resolved, through its nearest existing parent when it
- * does not exist yet, so the key is the same before and after it is created
- * (`/tmp/x` and `/private/tmp/x` on macOS).
+ * resolves symlinks via the nearest existing parent when path is missing, so
+ * the key is the same before and after creation (/tmp/x and /private/tmp/x on
+ * macOS)
  */
 function canonicalPath(path: string): string {
   try {
@@ -340,78 +303,52 @@ function canonicalPath(path: string): string {
   }
 }
 
-/** The cache root of namespace `namespace` in a checkout. */
 export function v3CacheRoot(repoDir: string, namespace: string): string {
   return namespace === "" ? swampPath(repoDir) : swampPath(repoDir, namespace);
 }
 
-/** What {@link openV3Datastore} takes. */
 export interface OpenV3DatastoreOptions {
-  /** The checkout. */
   readonly repoDir: string;
-  /** The filesystem datastore root, where the marker and `commits.db` are. */
   readonly datastorePath: string;
-  /** The datastore namespace slug; empty or absent for a solo datastore. */
   readonly namespace?: string;
-  /** This process's identity on every commit it writes. */
   readonly writer?: CommitWriter;
   /**
-   * The repository's configured `directories` and `exclude`: a record key
-   * outside the one or matching the other stays in the checkout and is never
-   * committed, as v2 never syncs it (swamp-club#3279).
+   * a record key outside directories or matching exclude stays in the checkout
+   * and is never committed, as v2 never syncs it
    */
   readonly directories?: readonly string[];
   readonly exclude?: readonly string[];
   /**
-   * The fence of this process's writer lease, or undefined while it holds
-   * none (swamp-club#3359). Every commit a unit makes names the fence the
-   * lease held when the unit opened.
+   * every commit a unit makes names the fence the lease held when the unit
+   * opened
    */
   readonly writerFence?: () => number | undefined;
   /**
-   * Throws when this process's writer lease was taken over or released;
-   * checked before each commit is appended.
+   * throws when the writer lease was taken over or released; checked before
+   * each commit is appended
    */
   readonly assertWriterCurrent?: () => void;
   /**
-   * Throws unless this checkout's copy of `commits.db` was made current
-   * under the writer lease this process holds (swamp-club#3482): checked
-   * before chunk collection, which deletes chunks no commit in the copy
-   * names.
+   * checked before chunk collection, which deletes chunks no commit in the copy
+   * names
    */
   readonly assertCopyCurrent?: () => void;
   /**
-   * Throws unless chunks may be collected from this checkout's copy
-   * (swamp-club#3491): while replicating, only when no lineage but the
-   * copy's current one can still be restored. Awaited after
-   * `assertCopyCurrent`.
+   * while replicating, chunks are collected only when no lineage but the copy's
+   * current one can still be restored; awaited after assertCopyCurrent
    */
   readonly assertCollectable?: () => Promise<void>;
-  /**
-   * The clock compaction and chunk collection read "now" from; the wall
-   * clock by default. Tests pass one to age history without sleeping.
-   */
   readonly clock?: () => Date;
 }
 
-/** What {@link V3Datastore.compactBefore} did. */
 export interface CutoffCompaction {
-  /**
-   * Commits written before this instant are folded: the earlier of the
-   * cutoff and the policy's safety window (`compactionBound`).
-   */
+  /** the earlier of the cutoff and the policy's safety window */
   readonly bound: Date;
-  /** The compaction point after it: the last cursor folded. */
   readonly compactedThrough: number;
-  /** What was folded, or undefined when nothing older than `bound` was stored. */
   readonly report: CompactionReport | undefined;
 }
 
-/**
- * Whether a record key belongs to the datastore under the given layout: its
- * first segment is a datastore directory, and no exclude pattern matches it.
- * The same rule `DefaultDatastorePathResolver.resolvePath` applies on v2.
- */
+/** the same rule DefaultDatastorePathResolver.resolvePath applies on v2 */
 export function datastoreKeyFilter(
   directories: readonly string[] | undefined,
   exclude: readonly string[] | undefined,
@@ -431,18 +368,12 @@ export function datastoreKeyFilter(
   };
 }
 
-/** Error code for {@link V3CheckoutFilterChangedError}. */
 export const V3_CHECKOUT_FILTER_CHANGED_CODE =
   "datastore_v3_directories_changed";
 
 /**
- * The checkout filter inputs a v3 checkout's projection is built with
- * (swamp-club#3691), as stored: the configured directories (order and
- * duplicates aside; `null` for the default set, whether omitted or listed,
- * so a swamp that changes the default does not refuse its own checkouts)
- * and the exclude patterns. Without a `!` pattern every match excludes, so
- * order and duplicates do not matter and are dropped; with one, the last
- * match wins, so the patterns keep their order and a reordering is refused.
+ * null stands for the default directories; exclude order matters only with a !
+ * pattern (last match wins), so it is kept then and sorted away otherwise
  */
 function checkoutFilterInputs(
   directories: readonly string[] | undefined,
@@ -468,10 +399,6 @@ function checkoutFilterInputs(
   });
 }
 
-/**
- * The subdirectories a checkout built with the stored filter `inputs` keeps
- * local: the default datastore subdirectories its directories leave out.
- */
 function localSubdirsOf(inputs: string): string[] {
   try {
     const parsed = JSON.parse(inputs) as { directories: string[] | null };
@@ -485,7 +412,6 @@ function localSubdirsOf(inputs: string): string[] {
   }
 }
 
-/** Stored checkout filter inputs as a reader sees them. */
 function describeCheckoutFilter(inputs: string): string {
   try {
     const parsed = JSON.parse(inputs) as {
@@ -504,10 +430,9 @@ function describeCheckoutFilter(inputs: string): string {
 }
 
 /**
- * Thrown when a v3 checkout is opened with other directories or exclude
- * patterns than its projection was built with (swamp-club#3691). The read
- * model never projects the keys the filter keeps local, and a rebuild would
- * lose the checkout's ownership of its files, so there is no re-projection.
+ * the read model never projects keys the filter keeps local, and a rebuild
+ * would lose the checkout's ownership of its files, so there is no
+ * re-projection
  */
 export class V3CheckoutFilterChangedError extends UserError {
   constructor(repoDir: string, projected: string, current: string) {
@@ -536,13 +461,8 @@ export class V3CheckoutFilterChangedError extends UserError {
 }
 
 /**
- * Refuses a checkout whose filter changed since its projection was built,
- * and records the filter of one that has none recorded (a projection from
- * before swamp-club#3691). Runs before anything of the datastore is
- * opened, so a refusal leaves nothing open and nothing written but the
- * state's own schema.
- *
- * @throws V3CheckoutFilterChangedError when the filter changed
+ * runs before anything of the datastore is opened, so a refusal leaves nothing
+ * open and nothing written but the state's own schema
  */
 function assertCheckoutFilterUnchanged(
   repoDir: string,
@@ -567,12 +487,6 @@ function assertCheckoutFilterUnchanged(
   }
 }
 
-/**
- * Why the v3 checkout at `repoDir` refuses to open with `directories` and
- * `exclude` ({@link V3CheckoutFilterChangedError}), or undefined when it
- * opens (`doctor datastores`). Reads its state without opening the
- * datastore, and records nothing.
- */
 export function v3CheckoutFilterRefusal(
   repoDir: string,
   directories: readonly string[] | undefined,
@@ -609,184 +523,100 @@ export function v3CheckoutFilterRefusal(
     : new V3CheckoutFilterChangedError(repoDir, projected, current).message;
 }
 
-/** What {@link V3Datastore.collectChunks} verifies before it sweeps. */
 export interface V3ChunkVerify {
-  /** How many bytes of chunks to read and check. */
   readonly bytes: number;
-  /** The shard prefix to start from; a random one unless given (tests). */
   readonly from?: string;
 }
 
-/** A random two-hex-digit shard prefix, where a verify pass starts. */
 function randomShardPrefix(): string {
   const [byte] = crypto.getRandomValues(new Uint8Array(1));
   return byte.toString(16).padStart(2, "0");
 }
 
-/** One checkout's handle on a v3 datastore. */
 export interface V3Datastore {
   readonly datastorePath: string;
-  /** The `commits.db` this handle opened: {@link v3CommitsDbPath}. */
   readonly commitsDbPath: string;
   readonly commitStore: SqliteCommitStore;
-  /** The commit outbox beside the commit store (swamp-club#3490). */
   readonly outbox: SqliteCommitOutbox;
-  /**
-   * The chunk storage: the datastore's own `_blobs/` on a filesystem, the
-   * provider's `storage()` on a bucket (swamp-club#3534).
-   */
   readonly storage: DatastoreStorage;
   readonly chunkStore: ChunkStore;
   readonly readModel: SqliteReadModel;
-  /** The checkout's v3 catalog, shared by the read model and the repositories. */
   readonly catalogStore: CatalogStore;
   readonly namespace: string;
   readonly writer: CommitWriter;
-  /** Applies every commit this checkout has not applied yet. */
   catchUp(signal?: AbortSignal): Promise<void>;
   /**
-   * For a checkout whose upstream is serve (swamp-club#3985), and only
-   * then: brings its copy up to serve's log before a write, refusing the
-   * write when serve cannot be reached. With `mayGoOffline`, the writer
-   * hold's catch-up at a command's start, a copy that has read serve's feed
-   * puts the checkout in offline mode instead (swamp-club#4195); once it
-   * is, every later catch-up of the command reads the copy as it is.
+   * with mayGoOffline, a copy that has read serve's feed puts the checkout
+   * offline at the writer hold's catch-up; later catch-ups of the command then
+   * read the copy as it is
    */
   catchUpForWrite?(
     signal?: AbortSignal,
     options?: { readonly mayGoOffline?: boolean },
   ): Promise<void>;
-  /**
-   * For a checkout whose upstream is serve, and only then: the commit store
-   * outbox recovery lands entries through, which forwards them to serve.
-   */
   readonly serveUpstreamStore?: ServeUpstreamCommitStore;
-  /**
-   * For a checkout whose upstream is serve, and only then: what the outbox
-   * recovery flushes the work queued offline through (swamp-club#4195).
-   */
   readonly offlineFlushPort?: OfflineFlushPort;
-  /**
-   * The id of the serve copy this handle reads, when its upstream is serve
-   * (swamp-club#4049): a copy started afresh at the same root has another.
-   */
   readonly serveCopyId?: string;
   /**
-   * For a reader of a checkout another process writes (swamp-club#3803):
-   * nothing while the read model is complete; otherwise waits up to
-   * `lockWaitMs` for the catch-up in progress and catches up if the read
-   * model is still incomplete. See {@link SqliteReadModel.catchUpUnlessComplete}.
+   * nothing while the read model is complete; otherwise waits up to lockWaitMs
+   * for the catch-up in progress, then catches up itself if still incomplete
    */
   catchUpUnlessComplete(lockWaitMs: number): Promise<void>;
   /**
-   * Records that this process took the writer lease at `fence`: notes the
-   * fence in the outbox, raises the commit store's writer fence and records
-   * the fence in the outbox's chain (swamp-club#3490, swamp-club#3586). The
-   * two files share no transaction; the note lets the next record tell this
-   * copy's own fence from another copy's when the record is lost. Every
-   * lease taken on this copy goes through it.
-   *
-   * @throws WriterFencedError when the store has seen a higher fence
+   * the outbox note and the store fence share no transaction; the note lets the
+   * next record tell this copy's fence from another copy's if the record is
+   * lost
    */
   raiseWriterFence(fence: number): Promise<void>;
-  /** The commit store's writer fence: the floor for the next lease. */
   writerFence(): number | undefined;
-  /**
-   * Rebuilds this checkout from the commit log after a writer ended without
-   * tearing down, removing the files it wrote since `since` (epoch
-   * milliseconds) that no commit owns (swamp-club#3299). Resolves with their
-   * record keys. Run it only while this process holds the writer lock.
-   */
+  /** run only while this process holds the writer lock */
   recoverInterruptedWriter(
     since: number,
     signal?: AbortSignal,
   ): Promise<string[]>;
-  /**
-   * The work this checkout's units dropped and have not recovered
-   * (swamp-club#3553): a refused commit, an abandon or a failed end left the
-   * files their repositories wrote. `openUnits` counts the checkout's units
-   * open now. Undefined when nothing was dropped.
-   */
   droppedWork():
     | { readonly since: number; readonly openUnits: number }
     | undefined;
   /**
-   * Rebuilds this checkout from the commit log with the swamp-club#3299
-   * recovery, removing the files dropped work left, once no unit of the
-   * checkout is open; roots wait while it runs. Resolves `clean` when
-   * nothing was dropped, `busy` when a unit is open (nothing is done),
-   * `recovered` otherwise. Run it only while this process holds a current
-   * writer lease.
+   * run only while this process holds a current writer lease; roots wait while
+   * it runs
    */
   recoverDroppedWork(
     signal?: AbortSignal,
   ): Promise<"clean" | "busy" | "recovered">;
-  /** Forgets the dropped work: the writer marker leaves it to the next command. */
   forgetDroppedWork(): void;
-  /**
-   * The commit-log engine for a repository context whose hook is
-   * `markDirty`; `runRepo` gives the context's workflow run repository,
-   * which settles refused run records.
-   */
   engineFor(
     markDirty: MarkDirtyHook,
     runRepo: () => WorkflowRunRepository,
     options?: {
-      /**
-       * A read-only command's context: it never holds the writer lock, so
-       * any change staged through it is refused with
-       * {@link ReadOnlyV3WriteError} rather than committed.
-       */
       readonly readOnly?: boolean;
     },
   ): CommitLogEngine;
   /**
-   * Appends a commit a client built (swamp-club#3915) through this handle's
-   * sink, so it queues behind this process's own commits to the partition,
-   * with this handle's writer, fence and namespace. Its content must already
-   * be stored.
-   *
-   * @throws StaleSeqError when the partition's head is not the commit's
-   *   expected seq
+   * queues behind this process's own commits to the partition; the content must
+   * already be stored
    */
   appendForwarded(forwarded: ForwardedCommit): Promise<void>;
-  /**
-   * Sweeps this datastore's unreferenced chunks in this checkout's namespace
-   * past the default grace period (`swamp datastore gc`). Run it only while
-   * this process holds the writer lock. With `verify`, first reads and
-   * checks up to `verify.bytes` of chunks from a random shard prefix
-   * (serve's maintenance timer, swamp-club#3617).
-   */
+  /** run only while this process holds the writer lock */
   collectChunks(
     signal: AbortSignal,
     verify?: V3ChunkVerify,
   ): Promise<ChunkCollectionReport>;
   /**
-   * Folds history the default policy no longer retains into the compacted
-   * base, when enough has built up; resolves with what was folded, or
-   * undefined when nothing was due. Run it only while this process holds the
-   * writer lock: compaction is the single writer's (swamp-club#3258).
+   * run only while this process holds the writer lock: compaction is the single
+   * writer's
    */
   compactIfDue(signal: AbortSignal): Promise<CompactionReport | undefined>;
   /**
-   * Folds every commit written before `cutoff` into the compacted base,
-   * however few (swamp-club#3473): retention's deletes leave the content
-   * they removed in history until it is folded. Never folds a commit newer
-   * than `cutoff`, nor one inside the default policy's last day
-   * (`retainMs`): the bound is the earlier of the two. A
-   * remove is folded, and the chunks its content held released, only once
-   * the remove itself is older than the bound; a chunk sweep then deletes
-   * them past its grace period. Run it only while this process holds the
-   * writer lock: like {@link compactIfDue} it passes the writer's fence.
+   * never folds a commit inside the default policy's last day; a remove is
+   * folded, and its chunks released, only once older than the bound. Run only
+   * while this process holds the writer lock
    */
   compactBefore(cutoff: Date, signal: AbortSignal): Promise<CutoffCompaction>;
-  /** How much history the commit log stores, for `datastore status`. */
   describe(): Promise<{ storedCommits: number; compactedThrough: number }>;
-  /** Aborts in-flight commits and closes the stores. */
   close(): Promise<void>;
 }
 
-/** The writer identity of this process: one CLI invocation or one serve. */
 export function processCommitWriter(): CommitWriter {
   return {
     host: Deno.hostname(),
@@ -796,32 +626,24 @@ export function processCommitWriter(): CommitWriter {
 }
 
 /**
- * Each checkout's open units and the dropped work it holds, by read-model
- * state directory (swamp-club#3553): every handle on a checkout shares its
- * files and catalog, and the recovery rebuilds them all.
+ * every handle on a checkout shares its files and catalog, and the recovery
+ * rebuilds them all
  */
 interface CheckoutUnits {
   open: number;
-  /** The earliest open time of a root whose unit dropped work. */
   droppedSince?: number;
   /**
-   * Moves with every drop recorded (swamp-club#3586), so a recovery clears
-   * only what was dropped before it started.
+   * moves with every drop recorded, so a recovery clears only what was dropped
+   * before it started
    */
   droppedGeneration: number;
-  /**
-   * The data version directories the dropped units created, by namespace
-   * (swamp-club#3736): their recovery sweeps them whatever the mtimes.
-   */
+  /** their recovery sweeps them whatever the mtimes */
   droppedDirs: Map<string, Set<string>>;
-  /** The recovery running now, which new roots wait for. */
   recovering?: Promise<unknown>;
   /**
-   * The txnIds of the commits this process's units sent to serve
-   * (swamp-club#4249), from a serve-mode checkout: while a unit is open, a
-   * catch-up leaves their files as this process wrote them. Each is
-   * forgotten once the read model has applied its commit, so only commits
-   * not applied yet are kept, however long the command runs.
+   * while a unit is open, a catch-up leaves their files as this process wrote
+   * them; each is forgotten once the read model applied its commit, so only
+   * unapplied ones are kept
    */
   readonly sent: Set<string>;
 }
@@ -829,53 +651,41 @@ interface CheckoutUnits {
 const checkoutUnits = new Map<string, CheckoutUnits>();
 
 /**
- * The chunk sweep batch running on each outbox's copy in this process, by
- * outbox path (swamp-club#3586). A sweep runs only under the writer lease,
- * so a writer that may overlap one is in the same process.
+ * a sweep runs only under the writer lease, so a writer that may overlap one is
+ * in the same process
  */
 const sweepBatches = new Map<string, Promise<void>>();
 
-/** Resolves once the sweep batch running on the outbox at `path` is done. */
 function sweepBatchAt(path: string): Promise<void> {
   return sweepBatches.get(path) ?? Promise.resolve();
 }
 
 /**
- * Whether this process has warned that serve was unreachable and a read
- * used the checkout's copy as it was (swamp-club#3985): once per command.
+ * warned once per command that serve was unreachable and a read used the
+ * checkout's copy as it was
  */
 let staleReadWarned = false;
 
-/** Test seam: lets the next unreachable read warn again. */
 export function resetStaleReadWarningForTesting(): void {
   staleReadWarned = false;
 }
 
-/** Faults a test wraps around what {@link openV3Datastore} opens next. */
 export interface V3DatastoreFaults {
-  /** Wraps the chunk storage, as an unreachable bucket would fail it. */
   readonly wrapStorage?: (storage: DatastoreStorage) => DatastoreStorage;
-  /** Wraps the commit sink, so a commit can fail where it appends. */
   readonly wrapSink?: (sink: OutboxCommitSink) => OutboxCommitSink;
 }
 
 let faultsForTesting: V3DatastoreFaults | undefined;
 
-/**
- * Test seam: wraps the chunk storage and commit sink of every datastore
- * opened from now on; undefined restores the real ones.
- */
 export function setV3DatastoreFaultsForTesting(
   faults: V3DatastoreFaults | undefined,
 ): void {
   faultsForTesting = faults;
 }
 
-/** Error code for {@link DroppedWorkRecoveryRunningError}. */
 export const DROPPED_WORK_RECOVERY_RUNNING_CODE =
   "datastore_v3_dropped_work_recovery_running";
 
-/** Thrown for a root opened while the checkout's dropped work is recovered. */
 export class DroppedWorkRecoveryRunningError extends UserError {
   constructor() {
     super(
@@ -902,10 +712,6 @@ function checkoutUnitsFor(stateDir: string): CheckoutUnits {
   return units;
 }
 
-/**
- * The refusal of an offline commit the rules do not let queue
- * (swamp-club#4195): a definition's, or a behavior's held by no lease.
- */
 function offlineRefusalFor(partition: PartitionKey): Error {
   const identity = partition.identity;
   if (identity.kind === "model") {
@@ -917,7 +723,6 @@ function offlineRefusalFor(partition: PartitionKey): Error {
   return new OfflineConfigEditError(offlineSubjectOf(partition));
 }
 
-/** How an offline refusal names what `partition` holds, as a user knows it. */
 export function offlineSubjectOf(partition: PartitionKey): string {
   const identity = partition.identity;
   switch (identity.kind) {
@@ -936,14 +741,6 @@ export function offlineSubjectOf(partition: PartitionKey): string {
   }
 }
 
-/**
- * Opens the v3 datastore at `options.datastorePath` for the checkout at
- * `options.repoDir`. Creates `commits.db` when absent (setup created the
- * marker first) and the checkout's read-model state directory.
- *
- * @throws V3CheckoutFilterChangedError when the checkout's directories or
- *   exclude patterns changed since its projection was built
- */
 export function openV3Datastore(options: OpenV3DatastoreOptions): V3Datastore {
   // SQLite cannot open a database through a symlinked directory here, so the
   // stores open on canonical paths: a checkout or datastore reached through
@@ -952,22 +749,21 @@ export function openV3Datastore(options: OpenV3DatastoreOptions): V3Datastore {
   const repoDir = Deno.realPathSync(options.repoDir);
   const datastorePath = Deno.realPathSync(options.datastorePath);
   const namespace = options.namespace ?? "";
-  // Before anything else opens: the read model must never catch up, load
-  // or recover under another filter than it projected with
-  // (swamp-club#3691).
+  // before anything else opens: the read model must never catch up, load or
+  // recover under another filter than it projected with
   assertCheckoutFilterUnchanged(repoDir, options.directories, options.exclude);
   const writer = options.writer ?? processCommitWriter();
-  // Its outbox entries belong to units of this process (swamp-club#3490).
+  // its outbox entries belong to units of this process
   registerOwnCommitWriter(writer);
   const admits = datastoreKeyFilter(options.directories, options.exclude);
   const commitsDbPath = v3CommitsDbPath(datastorePath, repoDir);
   ensureDirSync(dirname(commitsDbPath));
-  // A checkout whose upstream is serve keeps a follower copy of serve's
-  // log (swamp-club#3985): serve leaves out the commits it may not read.
+  // a checkout whose upstream is serve keeps a follower copy of serve's log;
+  // serve leaves out the commits it may not read
   const serve = serveUpstreamAt(datastorePath);
-  // Opened before the copy's files: the copy id it records is then never
-  // older than the files this handle reads, so a reset by another command
-  // fences this one's catch-up writes (swamp-club#4089).
+  // opened before the copy's files: the copy id it records is never older than
+  // the files this handle reads, so a reset by another command fences this
+  // one's catch-up writes
   const serveState = serve !== undefined
     ? ServeUpstreamState.open(
       join(dirname(commitsDbPath), SERVE_UPSTREAM_STATE_FILE),
@@ -978,16 +774,13 @@ export function openV3Datastore(options: OpenV3DatastoreOptions): V3Datastore {
     ...(serve !== undefined ? { follower: true } : {}),
   });
   const outbox = new SqliteCommitOutbox(v3OutboxPath(commitsDbPath), {
-    // Recovery judges whether this process still runs by it
-    // (swamp-club#3564).
+    // recovery judges whether this process still runs by it
     writerProcess: async () => (await localProcess()).identity,
   });
   const bucket = v3BucketBindingAt(datastorePath);
-  // Serve's client, opened once per handle and closed with it.
   const serveClient = serve?.client();
-  // A filesystem datastore's storage also sweeps its stale temp files; a
-  // provider's storage has none to sweep. A serve-mode checkout's is its
-  // chunk cache, with serve behind it (swamp-club#3985).
+  // a filesystem datastore's storage also sweeps stale temp files; a provider's
+  // has none. A serve-mode checkout's is its chunk cache, with serve behind it
   const fsStorage = bucket !== undefined
     ? undefined
     : serveClient !== undefined
@@ -1015,38 +808,30 @@ export function openV3Datastore(options: OpenV3DatastoreOptions): V3Datastore {
     cacheRoot: (ns) => v3CacheRoot(repoDir, ns),
     stateDir,
     catalog: new V3Catalog(catalogStore),
-    // Never written onto this checkout's local tier (swamp-club#3691).
+    // never written onto this checkout's local tier
     checkout: { namespace, admits },
-    // The checkout-copy guard stores again the chunks stored commits, the
+    // the checkout-copy guard stores again the chunks that stored commits, the
     // compacted base or pending commits name, never released ones
-    // (swamp-club#3617).
     referencedChunks: (ns, hashes) =>
       referencedChunksOf(commitStore, outbox, ns, hashes),
     ...(serve !== undefined ? { follower: true } : {}),
-    // A run record another writer changed leaves its entry in the run index
-    // of its workflow behind; the entry is dropped, and the next read
-    // repairs it (swamp-club#3985). Only the checkout's own namespace is
-    // indexed.
+    // a run record another writer changed leaves a stale entry in its
+    // workflow's run index; the entry is dropped and the next read repairs it.
+    // Only the own namespace is indexed
     recordsChanged: (ns, keys) =>
       ns === namespace ? dropRunIndexEntries(repoDir, keys) : Promise.resolve(),
-    // What a user's edit of a managed-config record started from
-    // (swamp-club#4097).
     writerInstance: writer.instance,
-    // A commit this process sent, met while one of its units is open
-    // (swamp-club#4249). A unit that drops its work forgets the commits it
-    // sent (swamp-club#4257), and a recovery's replay never asks.
+    // a commit this process sent, met while one of its units is open; a unit
+    // that drops its work forgets the commits it sent, and a recovery's replay
+    // never asks
     holdsOwnWork: (commit) => units.open > 0 && units.sent.has(commit.txnId),
     ownWorkApplied: (commit) => {
       units.sent.delete(commit.txnId);
     },
   });
-  // One sink for every engine on this handle: units serialize appends to a
-  // partition per sink, so contexts that share the handle queue behind each
-  // other. It refuses a commit, and its preparation, once the process's
-  // writer lease is lost, and keeps each commit in the outbox until it
-  // landed (swamp-club#3490).
-  // Bounds every commit's content uploads for the process's lifetime; close
-  // aborts what is still in flight.
+  // one sink for every engine on this handle, so contexts sharing it queue
+  // appends behind each other; it refuses commits once the writer lease is lost
+  // and keeps each in the outbox until landed
   const lifetime = new AbortController();
   if (serveClient !== undefined && serveState !== undefined) {
     serveClient.checkLog(
@@ -1075,8 +860,8 @@ export function openV3Datastore(options: OpenV3DatastoreOptions): V3Datastore {
       leaseOf: (partition) => heldServeLeaseOf(serve!.root, partition),
       dropUnconfirmedLease: (partition, leaseId) =>
         dropUnconfirmedServeLease(serve!.root, partition, leaseId),
-      // Offline (swamp-club#4195), commits queue where the rules allow:
-      // the backstop for any entry point that skipped the command's check.
+      // offline, commits queue where the rules allow: the backstop for any
+      // entry point that skipped the command's check
       offline: () => {
         if (serveOfflineAt(options.datastorePath) === undefined) {
           return undefined;
@@ -1110,8 +895,7 @@ export function openV3Datastore(options: OpenV3DatastoreOptions): V3Datastore {
       },
     })
     : undefined;
-  // The flush of what the checkout queued offline (swamp-club#4195): run by
-  // the outbox recovery under the writer hold, once serve is reachable.
+  // run by the outbox recovery under the writer hold, once serve is reachable
   const offlineFlushPort: OfflineFlushPort | undefined =
     serveSink !== undefined && serveCatchUp !== undefined
       ? {
@@ -1128,8 +912,8 @@ export function openV3Datastore(options: OpenV3DatastoreOptions): V3Datastore {
             try {
               page = await commitStore.readPartition(ns, partition, from, 500);
             } catch (error) {
-              // What was compacted is not read: those versions' times are
-              // unknown to the rebase.
+              // what was compacted is not read: those versions' times are
+              // unknown to the rebase
               if (
                 error instanceof CommitsCompactedError &&
                 error.compactedSeq !== undefined && error.compactedSeq >= from
@@ -1181,7 +965,7 @@ export function openV3Datastore(options: OpenV3DatastoreOptions): V3Datastore {
           outbox.landedOfflineTxnIds(ns, partition.toString()),
         landedCarry: (ns, partition) =>
           outbox.landedOfflineCarry(ns, partition.toString()),
-        // Kept by serve for an admin to accept (swamp-club#4195).
+        // kept by serve for an admin to accept
         ...(serveClient !== undefined
           ? {
             quarantined: createQuarantineDeposit({
@@ -1253,9 +1037,8 @@ export function openV3Datastore(options: OpenV3DatastoreOptions): V3Datastore {
         : {}),
     });
   const faultedSink = faultsForTesting?.wrapSink?.(baseSink) ?? baseSink;
-  // Noted before it is sent: serve's feed can bring the commit to a
-  // catch-up before its reply does (swamp-club#4249). One that never lands
-  // never comes back in the feed.
+  // noted before it is sent: serve's feed can bring the commit to a catch-up
+  // before its reply does. One that never lands never comes back in the feed
   const sink: OutboxCommitSink = serveSink === undefined ? faultedSink : {
     ...faultedSink,
     append: (commit) => {
@@ -1264,11 +1047,9 @@ export function openV3Datastore(options: OpenV3DatastoreOptions): V3Datastore {
     },
   };
   /**
-   * Brings the follower copy up to serve's log before the read model
-   * catches up from it. A read that cannot reach serve goes on with what
-   * the copy holds and says so; a write is refused (swamp-club#3985).
+   * a read that cannot reach serve goes on with what the copy holds and says
+   * so; a write is refused
    */
-  /** Whether this handle recorded its contact with serve yet. */
   let contactRecorded = false;
   const catchUpFromServe = async (
     signal: AbortSignal,
@@ -1276,8 +1057,8 @@ export function openV3Datastore(options: OpenV3DatastoreOptions): V3Datastore {
     mayGoOffline = false,
   ): Promise<void> => {
     if (serveCatchUp === undefined) return;
-    // Offline for the rest of the command (swamp-club#4195): the copy is
-    // read as it is, and nothing waits on a serve it could not reach.
+    // offline for the rest of the command: the copy is read as it is, and
+    // nothing waits on a serve it could not reach
     if (serveOfflineAt(options.datastorePath) !== undefined) return;
     try {
       await serveCatchUp.catchUp(signal);
@@ -1332,8 +1113,7 @@ export function openV3Datastore(options: OpenV3DatastoreOptions): V3Datastore {
             : String(error.cause);
           logger
             .warn`Could not reach serve at ${error.serveUrl}, so this reads the datastore as this checkout last saw it, which may be out of date: ${reason}`;
-          // The logger is silent in json mode: said there as a notice, as
-          // a writing command says it works offline (swamp-club#4195).
+          // the logger is silent in json mode, so say it there as a notice
           const contact = serveState?.lastContact();
           emitServeOfflineNotice({
             notice: "datastore_offline",
@@ -1356,8 +1136,8 @@ export function openV3Datastore(options: OpenV3DatastoreOptions): V3Datastore {
       units.open--;
     },
     dropped: (openedAt, versionDirs, sentTxnIds) => {
-      // Its files may hold later writes that never committed over the
-      // commits it sent: a catch-up puts those commits back (swamp-club#4257).
+      // its files may hold later writes that never committed over the commits
+      // it sent: a catch-up puts those commits back
       for (const txnId of sentTxnIds) units.sent.delete(txnId);
       units.droppedSince = Math.min(units.droppedSince ?? openedAt, openedAt);
       units.droppedGeneration++;
@@ -1370,7 +1150,6 @@ export function openV3Datastore(options: OpenV3DatastoreOptions): V3Datastore {
       for (const dir of versionDirs) dirs.add(dir);
     },
   };
-  // The read model's bases, for a user's edit (swamp-club#4097).
   const configEditBases: ConfigEditBases = {
     baseOf: (ns, partition, key) =>
       readModel.configBase(ns, PartitionKey.parse(partition), key),
@@ -1383,10 +1162,6 @@ export function openV3Datastore(options: OpenV3DatastoreOptions): V3Datastore {
   let closed = false;
   const clock = options.clock ?? (() => new Date());
 
-  /**
-   * Compacts what the default policy no longer retains at `now`, before
-   * `before` when given; undefined when nothing was due.
-   */
   const compact = async (
     signal: AbortSignal,
     now: Date,
@@ -1543,8 +1318,8 @@ export function openV3Datastore(options: OpenV3DatastoreOptions): V3Datastore {
             partition,
             key,
           ),
-        // A serve-mode commit records when it ran and serve's clock then,
-        // so one queued offline is judged by when it ran (swamp-club#4195).
+        // a serve-mode commit records when it ran and serve's clock then, so
+        // one queued offline is judged by when it ran
         ...(serveClient !== undefined && serveState !== undefined
           ? {
             clockOffsetMs: () =>
@@ -1557,11 +1332,9 @@ export function openV3Datastore(options: OpenV3DatastoreOptions): V3Datastore {
       return {
         openUnit(): UnitOfWork {
           const parent = currentUnitOfWork();
-          // A root opening while dropped work is recovered would write into
-          // a checkout the recovery is rewriting; it cannot wait, being
-          // synchronous, so it is refused (swamp-club#3586). The recovery
-          // runs at teardown, so only a straggler meets this. A child rolls
-          // up into a root that is open, so no recovery is running.
+          // a root opened during recovery would write into a checkout being
+          // rewritten; it cannot wait, being synchronous, so it is refused. A
+          // child joins an open root, so none runs then
           if (
             units.recovering !== undefined &&
             commitLogParentFor(markDirty, parent) === undefined
@@ -1637,10 +1410,9 @@ export function openV3Datastore(options: OpenV3DatastoreOptions): V3Datastore {
           rootOptions: CommitLogRootRunOptions<T>,
           fn: (root: CommitLogRootView) => Promise<T>,
         ): Promise<T> {
-          // A recovery of dropped work rewrites the checkout: no root opens
-          // while it runs (swamp-club#3553). The root counts as open from
-          // the call, so no recovery starts while it waits; its unit opens
-          // synchronously once the count is handed over.
+          // recovery rewrites the checkout, so no root opens while it runs; the
+          // root counts as open from the call, so no recovery starts while it
+          // waits
           units.open++;
           try {
             await units.recovering?.catch(() => {});
@@ -1670,8 +1442,8 @@ export function openV3Datastore(options: OpenV3DatastoreOptions): V3Datastore {
       await options.assertCollectable?.();
       const sweeper = crypto.randomUUID();
       return await new ChunkCollector({
-        // A chunk an outbox entry names is about to be committed, or was
-        // by a writer that died before its check (swamp-club#3490).
+        // a chunk an outbox entry names is about to be committed, or was by a
+        // writer that died before its check
         commitStore: {
           async referencedChunks(ns, hashes, releasedSince) {
             const names = await commitStore.referencedChunks(
@@ -1692,7 +1464,7 @@ export function openV3Datastore(options: OpenV3DatastoreOptions): V3Datastore {
           begin: () => outbox.beginSweep(sweeper, Date.now()),
           heartbeat: () => outbox.heartbeatSweep(sweeper, Date.now()),
           end: () => outbox.endSweep(sweeper),
-          // Writers that may overlap a batch wait for it (swamp-club#3586).
+          // writers that may overlap a batch wait for it
           async batch(run) {
             const done = run();
             const settled = done.then(() => {}, () => {});
@@ -1757,18 +1529,9 @@ export function openV3Datastore(options: OpenV3DatastoreOptions): V3Datastore {
 }
 
 /**
- * Whether `datastorePath` holds only a fresh v3 skeleton (swamp-club#3279):
- * a format-3 marker, a `commits.db` with no commits and an empty `_blobs/`
- * (any of the last two may be missing), and nothing else. What a setup that
- * stopped after writing the marker leaves; a re-run of setup takes it.
- *
- * A setup that stopped before its marker reached the disk may have lost it
- * (swamp-club#3617): a missing or blank marker is taken only under a
- * stricter check, so that no datastore with history passes for a skeleton:
- * a `commits.db` that is a regular file holding a v3 commit log with no
- * partition heads and a compaction point of 0, or only what setup's open
- * leaves before the schema is written (no pages, or WAL mode and no
- * schema), and no replication or Litestream state.
+ * what a setup that stopped after writing the marker leaves; a missing or blank
+ * marker is taken only under a stricter check, so no datastore with history
+ * passes for a skeleton
  */
 export async function isFreshV3Skeleton(
   datastorePath: string,
@@ -1779,11 +1542,10 @@ export async function isFreshV3Skeleton(
     `${COMMITS_DB_FILE}-wal`,
     `${COMMITS_DB_FILE}-shm`,
     "_blobs",
-    // A writer's Litestream sidecar state (swamp-club#3416), present only
-    // when replication is on.
+    // a writer's Litestream sidecar state, present only when replication is on
     replicationDirName(COMMITS_DB_FILE),
     litestreamStateDirName(COMMITS_DB_FILE),
-    // The commit outbox (swamp-club#3490), while it holds no entries.
+    // the commit outbox, while it holds no entries
     COMMIT_OUTBOX_FILE,
     `${COMMIT_OUTBOX_FILE}-wal`,
     `${COMMIT_OUTBOX_FILE}-shm`,
@@ -1861,11 +1623,8 @@ export async function isFreshV3Skeleton(
 }
 
 /**
- * The namespaces that hold commits in the v3 datastore at `datastorePath`
- * (swamp-club#3301), as the checkout at `repoDir` sees it, sorted, the
- * unnamespaced "" left out. Empty when there is no `commits.db` yet. The
- * database is opened read-only, so this never creates, migrates or locks it
- * and runs beside a writer.
+ * opened read-only, so it never creates, migrates or locks the database and
+ * runs beside a writer
  */
 export function listV3Namespaces(
   datastorePath: string,
@@ -1881,7 +1640,6 @@ export function listV3Namespaces(
   return queryNamespaces(new DatabaseSync(path, { readOnly: true }));
 }
 
-/** The non-empty namespaces of the partition heads in `db`, which it closes. */
 function queryNamespaces(db: DatabaseSync): string[] {
   try {
     // A reader can meet a writer's lock while the WAL index is rebuilt.
@@ -1899,38 +1657,24 @@ function queryNamespaces(db: DatabaseSync): string[] {
 }
 
 /**
- * Creates an empty v3 datastore at `datastorePath` (swamp-club#3279): the
- * format marker first, then `commits.db` and `_blobs/`. A crash part-way
- * leaves either an unmarked empty directory or a fresh skeleton
- * ({@link isFreshV3Skeleton}); a re-run of setup takes either, and here
- * completes a skeleton without writing its marker again, or writes the
- * marker a crash lost (swamp-club#3617).
- *
- * The marker is durable before `commits.db` exists (swamp-club#3617): the
- * parent of each directory this creates is synced first, the marker write
- * syncs the datastore directory, and only then is `commits.db` created.
+ * the marker is durable before commits.db exists: each created directory's
+ * parent is synced first, the marker write syncs the datastore directory, and
+ * only then is commits.db created
  */
 export async function initializeV3Datastore(
   datastorePath: string,
   writtenBy: string,
   options: {
-    /** How a directory is synced (tests). */
     readonly syncDirectory?: (dir: string) => Promise<void>;
-    /** How a blank marker is moved aside to remove it (tests). */
     readonly rename?: (from: string, to: string) => Promise<void>;
     /**
-     * Use the v3 marker another creator wrote first instead of refusing it
-     * (swamp-club#4253): for a copy swamp creates by itself, which two
-     * commands may create at once. Never for `swamp datastore setup`. It is
-     * the marker state the caller saw when it decided to create the copy:
-     * when that was `absent`, a v3 marker found from then on is another
-     * creator's, however far that creator has got; a marker the caller saw
-     * is refused as before.
+     * for a copy swamp creates by itself, which two commands may create at
+     * once: a v3 marker found after markerSeen was absent is another creator's.
+     * Never for datastore setup
      */
     readonly adoptConcurrentMarker?: {
       readonly markerSeen: "absent" | "blank" | "other";
     };
-    /** The hard-link call of the marker write (tests). */
     readonly link?: (from: string, to: string) => Promise<void>;
   } = {},
 ): Promise<void> {
@@ -1977,8 +1721,8 @@ export async function initializeV3Datastore(
       await syncDir(datastorePath);
     }
   }
-  // While replicating, each checkout keeps its own copy (swamp-club#3482):
-  // the datastore holds no commits.db.
+  // while replicating, each checkout keeps its own copy, so the datastore holds
+  // no commits.db
   if (v3ReplicaFor(datastorePath) === undefined) {
     const store = SqliteCommitStore.open(
       join(datastorePath, COMMITS_DB_FILE),
@@ -1989,22 +1733,13 @@ export async function initializeV3Datastore(
 }
 
 /**
- * Restores the format marker of the filesystem v3 datastore at
- * `datastorePath` that a crash lost (swamp-club#3617), for
- * `swamp doctor datastores --repair -y` in a repository whose config says
- * format 3. `commits.db` must be a regular file holding a v3 commit log at
- * a schema this swamp reads; it is opened read-write, without changing its
- * schema, so SQLite recovers a write-ahead log a crash left. A blank marker
- * is replaced. A valid v3 marker, there already or written meanwhile by
- * another restore, counts as restored. Resolves with the marker's path.
- *
- * @throws UserError when the datastore is not one whose marker can be
- *   restored, or something else is at the marker path
+ * commits.db must be a regular file holding a v3 commit log at a schema this
+ * swamp reads; it is opened read-write without changing its schema, so SQLite
+ * recovers a write-ahead log a crash left
  */
 export async function restoreV3FormatMarker(
   datastorePath: string,
   writtenBy: string,
-  /** The marker writer's seams, and how a blank marker is moved aside (tests). */
   options: Parameters<typeof writeDatastoreFormatMarker>[2] & {
     readonly rename?: (from: string, to: string) => Promise<void>;
   } = {},
@@ -2076,12 +1811,9 @@ export async function restoreV3FormatMarker(
 }
 
 /**
- * Removes the blank marker of the datastore at `datastorePath`, which a
- * check found blank (swamp-club#3617). Another setup or restore may have
- * replaced it with a valid marker since, so it is first moved aside, and
- * deleted only if what was moved is still blank; anything else is put back
- * and left for the marker write that follows to find. Gone already is
- * fine: another process removed it.
+ * another setup or restore may have replaced the blank marker, so move it aside
+ * and delete it only if still blank; anything else is put back for the marker
+ * write to find
  */
 async function removeBlankMarker(
   datastorePath: string,
@@ -2117,11 +1849,6 @@ async function removeBlankMarker(
   await Deno.remove(aside);
 }
 
-/**
- * What is at a filesystem datastore's format marker path: a marker that
- * says format 3 (`v3`), none (`absent`), a blank file a crash left
- * (`blank`, swamp-club#3617), or anything else (`other`).
- */
 export async function v3MarkerState(
   datastorePath: string,
 ): Promise<"v3" | "absent" | "blank" | "other"> {
@@ -2148,29 +1875,20 @@ export async function v3MarkerState(
   }
 }
 
-/** What a `commits.db` file says about its history (swamp-club#3617). */
 interface CommitLogFacts {
-  /** `PRAGMA user_version`: 0 for a file no schema was written to. */
   readonly schemaVersion: number;
-  /** Rows in `partition_heads`; undefined when there is no such table. */
   readonly partitionHeads: number | undefined;
-  /** The compaction point; 0 when there is none. */
   readonly compactionPoint: number;
   /**
-   * Whether the file holds only what opening a new `commits.db` leaves
-   * before its schema transaction commits: no schema at `user_version` 0,
-   * and no pages or WAL mode. An unrelated SQLite file is neither.
+   * only what opening a new commits.db leaves before its schema transaction
+   * commits; an unrelated SQLite file is neither
    */
   readonly unschemaed: boolean;
 }
 
 /**
- * Reads {@link CommitLogFacts} from the `commits.db` file at `path`, which
- * must exist. It is opened read-write, so SQLite recovers a write-ahead log
- * a crash left, which a read-only open refuses to do, and its schema is
- * never changed.
- *
- * @throws when the file is not an SQLite database
+ * opened read-write so SQLite recovers a write-ahead log a crash left, which a
+ * read-only open refuses to do; its schema is never changed
  */
 function readCommitLogFacts(path: string): CommitLogFacts {
   const db = new DatabaseSync(path);
@@ -2209,10 +1927,6 @@ function readCommitLogFacts(path: string): CommitLogFacts {
   }
 }
 
-/**
- * The directories from `dir` up that do not exist yet, deepest first: the
- * ones `mkdir` with `recursive` creates.
- */
 async function absentDirectories(dir: string): Promise<string[]> {
   const missing: string[] = [];
   for (let current = resolve(dir);; current = dirname(current)) {
@@ -2228,10 +1942,8 @@ async function absentDirectories(dir: string): Promise<string[]> {
 }
 
 /**
- * Runs a catch-up, reporting one the storage cut off as
- * {@link ReadModelCatchUpUnreachableError}: it changed nothing past what it
- * applied, and the next one finishes it (swamp-club#3802). A reader that
- * finishes another process's catch-up (swamp-club#3803) fails the same way.
+ * a catch-up the storage cut off changed nothing past what it applied, and the
+ * next one finishes it
  */
 export async function unreachableAsCatchUpError<T>(
   catchUp: () => Promise<T>,

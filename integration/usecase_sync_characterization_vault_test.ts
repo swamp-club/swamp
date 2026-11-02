@@ -17,11 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Use-case sync characterization, vault rows (swamp-club#2860). See
- * `usecase_sync_fixtures.ts` for how each row runs and what is observed.
- */
-
 import "../src/domain/models/models.ts";
 import { parse, stringify } from "@std/yaml";
 import { VaultConfig } from "../src/domain/vaults/vault_config.ts";
@@ -44,14 +39,12 @@ await initializeLogging({});
 
 const json = (repos: RowRepos) => ["--repo-dir", repos.repoA, "--json"];
 
-/** Creates local_encryption vault `v1` the way a user would. */
 async function createVault(repos: RowRepos): Promise<void> {
   await runCli({
     args: ["vault", "create", "local_encryption", "v1", ...json(repos)],
   });
 }
 
-/** Vault `v1`'s on-disk YAML with read auditing switched on. */
 async function editedVaultYaml(repos: RowRepos): Promise<string> {
   await createVault(repos);
   const vault = await repos.a.repoContext.vaultConfigRepo.findByName("v1");
@@ -68,15 +61,10 @@ function vaultCreateRow(managedConfig: boolean): AnyRow {
   return row({
     name: `vault create${managedConfig ? " (managedConfig)" : ""}`,
     rootUnit: { cli: true, serve: true },
-    // Recorded before the CLI (swamp-club#3033) and serve (swamp-club#3035)
-    // adopted a root unit.
     syncOrder: {
       cli: managedConfig ? ["push"] : [],
       serve: ["push", "release"],
     },
-    // With managedConfig the CLI stages a bulk mark through the command's
-    // root unit after the use case (runManagedConfigMutation, swamp-club#3033),
-    // and the root pushes it.
     outsideUseCase: managedConfig ? { cli: ["markDirty(bulk)"] } : undefined,
     options: { managedConfig },
     cli: (repos) => ({
@@ -93,15 +81,10 @@ function vaultEditRow(managedConfig: boolean): AnyRow {
   return row({
     name: `vault edit${managedConfig ? " (managedConfig)" : ""}`,
     rootUnit: { cli: true, serve: true },
-    // Recorded before the CLI (swamp-club#3033) and serve (swamp-club#3035)
-    // adopted a root unit.
     syncOrder: {
       cli: managedConfig ? ["push"] : [],
       serve: ["push", "release"],
     },
-    // With managedConfig the CLI stages a bulk mark through the command's
-    // root unit after the use case (runManagedConfigMutation, swamp-club#3033),
-    // and the root pushes it.
     outsideUseCase: managedConfig ? { cli: ["markDirty(bulk)"] } : undefined,
     options: { managedConfig },
     seed: editedVaultYaml,
@@ -127,15 +110,10 @@ function vaultMigrateRow(
   return row({
     name: `vault migrate${managedConfig ? " (managedConfig)" : ""}`,
     rootUnit: { cli: true, serve: true },
-    // Recorded before the CLI (swamp-club#3033) and serve (swamp-club#3035)
-    // adopted a root unit.
     syncOrder: {
       cli: managedConfig ? ["push"] : [],
       serve: ["push", "release"],
     },
-    // With managedConfig the CLI stages a bulk mark through the command's
-    // root unit after the use case (runManagedConfigMutation, swamp-club#3033),
-    // and the root pushes it.
     outsideUseCase: managedConfig ? { cli: ["markDirty(bulk)"] } : undefined,
     options: { managedConfig },
     seed: async (repos) => {
@@ -192,7 +170,7 @@ function vaultRemoveRow(managedConfig: boolean): AnyRow {
     cli: (repos) => ({
       args: ["vault", "remove", "v1", "--yes", ...json(repos)],
     }),
-    // Serve has no vault.remove (swamp-club#3597).
+    // serve has no vault.remove
     serve: null,
     verify: async (repos) => {
       const vault = await repos.a.repoContext.vaultConfigRepo.findByName("v1");
@@ -201,7 +179,6 @@ function vaultRemoveRow(managedConfig: boolean): AnyRow {
   });
 }
 
-/** The in-memory source type `vault migrate` moves away from, per run. */
 let migrateSourceType = "";
 
 const ROWS: AnyRow[] = [
@@ -243,14 +220,11 @@ const ROWS: AnyRow[] = [
 ];
 
 /**
- * Today's behaviour, one entry per row. Every divergence and gap noted
- * below was deliberately left unfixed: datastore refactor phase 2 moves
- * unit-of-work ownership into the use cases and is expected to change these
- * rows, and should update this table as it does.
+ * pins current behaviour per row, divergences and gaps included; update the
+ * table when unit-of-work ownership moves into the use cases
  */
 const EXPECTED: Record<string, PinnedRow> = {
   "vault remove": {
-    // Repo-local without managedConfig: nothing is marked or pushed.
     cli: { "ops": [], "remote": { "added": [], "removed": [], "changed": [] } },
     serve: null,
   },
@@ -272,20 +246,13 @@ const EXPECTED: Record<string, PinnedRow> = {
     serve: null,
   },
   "vault create": {
-    // Vault configs are repo-local without managedConfig: nothing is marked or
-    // pushed.
     cli: { "ops": [], "remote": { "added": [], "removed": [], "changed": [] } },
-    // The handler's path mark is dropped by the hook (the file is outside the
-    // cache), and the push is empty. Datastore refactor phase 2 is expected to
-    // change this.
     serve: {
       "ops": ["push[0]"],
       "remote": { "added": [], "removed": [], "changed": [] },
     },
   },
   "vault create (managedConfig)": {
-    // DIVERGENCE: a bare markDirty from the CLI, a path mark from serve.
-    // Datastore refactor phase 2 is expected to change this.
     cli: {
       "ops": ["markDirty(bulk)", "push[1]"],
       "remote": {
@@ -308,18 +275,13 @@ const EXPECTED: Record<string, PinnedRow> = {
     },
   },
   "vault edit": {
-    // Repo-local without managedConfig: nothing is marked or pushed.
     cli: { "ops": [], "remote": { "added": [], "removed": [], "changed": [] } },
-    // An empty push after the write. Datastore refactor phase 2 is expected to
-    // change this.
     serve: {
       "ops": ["push[0]"],
       "remote": { "added": [], "removed": [], "changed": [] },
     },
   },
   "vault edit (managedConfig)": {
-    // DIVERGENCE: a bare markDirty from the CLI, a path mark from serve.
-    // Datastore refactor phase 2 is expected to change this.
     cli: {
       "ops": ["markDirty(bulk)", "push[1]"],
       "remote": {
@@ -345,39 +307,31 @@ const EXPECTED: Record<string, PinnedRow> = {
     // A local_encryption vault keeps its secrets outside the datastore, so
     // neither composition syncs anything.
     cli: { "ops": [], "remote": { "added": [], "removed": [], "changed": [] } },
-    // No ops. Note serve's vault.put is the one write in connection.ts that is
-    // not wrapped in withSyncGate. Datastore refactor phase 2 is expected to
-    // change this.
+    // no ops; serve's vault.put is the one write in connection.ts not wrapped
+    // in withSyncGate
     serve: {
       "ops": [],
       "remote": { "added": [], "removed": [], "changed": [] },
     },
   },
   "vault delete": {
-    // Secrets live outside the datastore: nothing to sync.
     cli: { "ops": [], "remote": { "added": [], "removed": [], "changed": [] } },
-    // Serve's vault.delete takes the sync gate but never pushes. Datastore
-    // refactor phase 2 is expected to change this.
     serve: {
       "ops": [],
       "remote": { "added": [], "removed": [], "changed": [] },
     },
   },
   "vault migrate": {
-    // Repo-local without managedConfig: nothing is marked or pushed.
     cli: { "ops": [], "remote": { "added": [], "removed": [], "changed": [] } },
-    // An empty push after the write. Datastore refactor phase 2 is expected to
-    // change this.
     serve: {
       "ops": ["push[0]"],
       "remote": { "added": [], "removed": [], "changed": [] },
     },
   },
   "vault migrate (managedConfig)": {
-    // DIVERGENCE: the CLI's bare mark makes its push a walk that deletes
-    // nothing, so the source vault's config stays on the remote and a peer
-    // still sees the old vault. Serve marks both paths and deletes it.
-    // Datastore refactor phase 2 is expected to change this.
+    // divergence: the CLI's bare mark makes its push a walk that deletes
+    // nothing, so a peer still sees the old vault; serve marks both paths and
+    // deletes it
     cli: {
       "ops": ["markDirty(bulk)", "push[1]"],
       "remote": {

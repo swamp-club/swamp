@@ -20,19 +20,15 @@
 import type { HarnessLaunchSpec } from "./harness.ts";
 import type { LaunchMethod } from "./start_session.ts";
 
-/** What happened when Swamp tried to open the agent's window. */
 export interface LaunchOutcome {
   readonly method: LaunchMethod;
-  /** False when no window could be opened and the user must paste `command`. */
   readonly opened: boolean;
-  /** The copy-paste fallback, always filled in. */
   readonly command: string;
 }
 
 /**
- * Writes the launcher script and opens a new terminal window running it.
- * Implementations never throw for "no window possible": they return the
- * `copy_command` outcome instead.
+ * implementations never throw for "no window possible": they return the
+ * copy_command outcome
  */
 export interface TerminalLauncher {
   open(spec: HarnessLaunchSpec, workspacePath: string): Promise<LaunchOutcome>;

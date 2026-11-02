@@ -39,7 +39,6 @@ import type {
   SpecifierSpan,
 } from "./extension_source_graph.ts";
 
-/** The archive directory each content kind's sources are copied under. */
 export type SourceArchiveKind =
   | "models"
   | "vaults"
@@ -47,19 +46,15 @@ export type SourceArchiveKind =
   | "reports"
   | "webhooks";
 
-/** The modules one content kind reaches, and the directory its archive paths are relative to. */
 export interface SourceArchiveKindInput {
   kind: SourceArchiveKind;
-  /** Absolute path of the kind's directory (its archive directory's source). */
   dir: string;
   /**
-   * Further directories whose files the kind also packs at
-   * `<kind>/<path relative to that directory>` — the models directory of a
-   * `behaviors:` manifest (swamp-club#3338). Mirroring and `_shared/` stay
-   * relative to `dir`.
+   * further directories whose files the kind also packs at <kind>/<path
+   * relative to it>, such as the models directory of a behaviors: manifest;
+   * mirroring and _shared/ stay relative to dir
    */
   extraDirs?: readonly string[];
-  /** Absolute paths of every local module the kind's entry points reach, entry points included. */
   modules: readonly string[];
 }
 
@@ -67,25 +62,19 @@ export interface PlanSourceArchiveInput {
   /** Kinds in a fixed order; the first kind to place a shared module decides its path. */
   kinds: readonly SourceArchiveKindInput[];
   graph: SourceModuleGraph;
-  /** Anchor for `_shared/` paths: the extensions root the content hash is relative to. */
   extensionsRoot: string;
-  /** Directories every module must lie inside (the repository and the extensions root). */
   allowedRoots: readonly string[];
 }
 
-/** Replace the specifier inside `span` with `to`. */
 export interface SpecifierRewrite {
   span: SpecifierSpan;
   from: string;
   to: string;
 }
 
-/** One file in the archive's source copy. */
 export interface SourceArchiveEntry {
   sourcePath: string;
-  /** Forward-slash path under `extension/`. */
   archivePath: string;
-  /** Empty when the file is copied byte for byte. */
   rewrites: SpecifierRewrite[];
 }
 
@@ -93,18 +82,15 @@ export interface SourceArchivePlan {
   entries: SourceArchiveEntry[];
 }
 
-/** Archive directory for shared modules no mirrored path can hold. */
 export const SHARED_ARCHIVE_DIR = "_shared";
 
 /** Stands in for a `..` segment under {@link SHARED_ARCHIVE_DIR}; the registry rejects `..` in archive paths. */
 const UP_SEGMENT = "_up";
 
 /**
- * Top-level archive names a mirrored shared module may not take: push writes
- * them itself, pull installs them as a kind's sources or bundles, they are
- * reserved for shared modules, or (`drivers`, `driver-bundles`) push wrote
- * them before driver support was removed (swamp-club#1924) and pull ignores
- * them.
+ * names a mirrored shared module may not take: push writes them, pull installs
+ * them as a kind's sources or bundles, they are reserved for shared modules, or
+ * (drivers, driver-bundles) pull ignores them
  */
 const RESERVED_ROOT_NAMES: ReadonlySet<string> = new Set([
   "manifest.yaml",
@@ -129,11 +115,8 @@ const RESERVED_ROOT_NAMES: ReadonlySet<string> = new Set([
 ]);
 
 /**
- * Whether `name`, a top-level entry of the archive's `extension/` directory,
- * is one push writes or ignores itself rather than a shared module it
- * mirrored there. Pull installs every other top-level entry, and
- * `_shared/`, as shared source (swamp-club#3384), so push and pull read the
- * same names.
+ * pull installs every other top-level entry, and _shared/, as shared source, so
+ * push and pull read the same names
  */
 export function isReservedArchiveRootName(name: string): boolean {
   return RESERVED_ROOT_NAMES.has(name);
@@ -143,7 +126,6 @@ function toForwardSlashes(p: string): string {
   return SEPARATOR === "\\" ? p.replaceAll("\\", "/") : p;
 }
 
-/** `path` relative to `dir` with forward slashes, or undefined when `path` is on another root. */
 function relativeForward(dir: string, path: string): string | undefined {
   const rel = relative(dir, path);
   if (isAbsolute(rel)) return undefined;
@@ -224,25 +206,9 @@ function assertContained(
 }
 
 /**
- * Plans the archive's source copy: an archive path for every local module
- * each kind reaches, and the specifier rewrites that keep every local import
- * resolving inside the archive.
- *
- * - A module inside its kind's directory keeps the path it has always had,
- *   `<kind>/<path relative to the kind directory>`; each kind gets its own
- *   copy, as before.
- * - A module outside it that lies inside another kind's directory uses that
- *   kind's copy (a report importing `../models/_lib/x.ts` reaches
- *   `models/_lib/x.ts` unchanged).
- * - Any other module outside it is placed once: at its mirrored path at the archive
- *   root when it is one level above the kind directory (`../lib/x.ts` ->
- *   `lib/x.ts`), else under `_shared/` by its path from the extensions root.
- * - An import whose specifier, read from the importer's archive path, does
- *   not reach the target's archive path is rewritten. Files whose imports all
- *   resolve as written are copied byte for byte.
- *
- * Throws a UserError when a module lies outside every allowed root or two
- * different files would share an archive path.
+ * in-kind modules keep <kind>/<relative path>; others reuse another kind's
+ * copy, else are placed once at a mirrored root path or under _shared/; imports
+ * are rewritten to resolve inside the archive
  */
 export function planSourceArchive(
   input: PlanSourceArchiveInput,
@@ -252,9 +218,7 @@ export function planSourceArchive(
     if (!importerOf.has(e.target)) importerOf.set(e.target, e.importer);
   }
 
-  // In-kind copies, per kind: module path -> archive path.
   const inKind = new Map<SourceArchiveKind, Map<string, string>>();
-  // Shared placements, once per module.
   const shared = new Map<string, string>();
   const occupant = new Map<string, string>();
   const claim = (archivePath: string, sourcePath: string) => {
@@ -383,9 +347,8 @@ export function planSourceArchive(
 }
 
 /**
- * Applies specifier rewrites to a module's text. Spans are zero-based lines
- * and code-point columns, quotes included; each must cover the quoted
- * specifier it names, or this throws rather than corrupt the file.
+ * each span must cover the quoted specifier it names, or this throws rather
+ * than corrupt the file
  */
 export function applySpecifierRewrites(
   text: string,
@@ -434,21 +397,15 @@ const REWRITABLE_TARGET_RE = /^(?:npm|jsr|node|https?):/;
  */
 const UNSAFE_TARGET_RE = /["'`\\\r\n\u2028\u2029]|\$\{/;
 
-/**
- * Whether bare specifier text is one push rewrites at all: a package
- * specifier never holds whitespace, `;` or parentheses (swamp-club#3637).
- */
+/** a package specifier never holds whitespace, ; or parentheses */
 function isRewritableSpecifierText(specifier: string): boolean {
   return isBareSpecifier(specifier) && !/[\s;()]/.test(specifier);
 }
 
 /**
- * The specifier a rewrite ships for an import-map target: the target as
- * written, except that a zod target the host shares (zod 4 at its root or
- * `/v4`, the same namespace) ships as `npm:zod@4`. Zod is never bundled or
- * audited — every swamp shares its own zod 4 — and `npm:zod@4` is the
- * spelling every swamp version, older ones included, recognises when it
- * rebundles a pulled source.
+ * a zod target the host shares ships as npm:zod@4: zod is never bundled or
+ * audited, and every swamp version recognises that spelling when it rebundles a
+ * pulled source
  */
 function shippedTarget(target: string): string {
   return target.startsWith("npm:zod") && isZod4Specifier(target)
@@ -456,37 +413,21 @@ function shippedTarget(target: string): string {
     : target;
 }
 
-/** How push ships the bare imports one module writes. */
 export interface BareImportPlan {
-  /** The rewrites {@link bareImportRewrites} applies. */
   rewrites: SpecifierRewrite[];
   /**
-   * The bare imports that ship as written, sorted and unique: Deno does not
-   * resolve them, their target is not one push writes, or the parser cannot
-   * read the module, so its sites cannot be confirmed. The bare-specifiers
-   * finding names these.
+   * sorted and unique: Deno does not resolve them, their target is not one push
+   * writes, or the parser cannot read the module; the bare-specifiers finding
+   * names these
    */
   shippedAsWritten: string[];
-  /** Imports whose target could end or escape its string literal. */
   unsafe: { specifier: string; target: string }[];
 }
 
 /**
- * How push ships each bare import `source` writes (swamp-club#3637): those
- * `resolver` resolves from `sourcePath` — as Deno resolves them, through the
- * config's imports, an `importMap` file or the scope covering the module
- * (swamp-club#3612) — to an `npm:`, `jsr:`, `node:` or `http(s):`
- * specifier are rewritten to it, as Deno writes it (a zod 4 target as
- * `npm:zod@4`, see {@link shippedTarget}); a `key/` target written
- * `npm:/name@v/` is written `npm:name@v/`, which Deno reads the same and the
- * registry's specifier parser reads at all. One the map resolves to a local
- * path is a local module edge {@link planSourceArchive} places. Every other
- * bare import ships as written.
- *
- * Sites are the module's parsed import specifiers (see
- * {@link scanImportSites}), so text in a comment, string, template or regex
- * literal is never rewritten. A module that does not parse plans nothing:
- * push refuses it before it plans any rewrite.
+ * bare imports resolving to npm:, jsr:, node: or http(s): are rewritten as Deno
+ * writes them; local targets are placed by planSourceArchive; the rest ship as
+ * written; unparsable modules plan nothing
  */
 export function planBareImports(
   source: string,
@@ -526,10 +467,9 @@ export function planBareImports(
 }
 
 /**
- * The rewrites {@link planBareImports} plans for `source`. Throws a
- * UserError when a target the source uses holds text that could end or
- * escape its string literal: the gates read the source on disk, so the
- * archived copy must hold no code they did not see.
+ * throws a UserError when a target holds text that could end or escape its
+ * string literal: the gates read the source on disk, so the archived copy must
+ * hold no code they did not see
  */
 export function bareImportRewrites(
   source: string,
@@ -557,16 +497,14 @@ export function bareImportRewrites(
   return plan.rewrites;
 }
 
-/** A target the module graph resolves to a local file, which the plan places. */
 function isLocalTarget(target: string): boolean {
   return target.startsWith("./") || target.startsWith("../") ||
     target.startsWith("/") || target.startsWith("file:");
 }
 
 /**
- * The plan's rewrites for a module plus its bare-import rewrites, sorted by
- * span. A bare rewrite at a span the plan already rewrites is dropped: the
- * project config resolved it to a local module, and the plan placed it.
+ * a bare rewrite at a span the plan already rewrites is dropped: the project
+ * config resolved it to a local module and the plan placed it
  */
 export function mergeSpecifierRewrites(
   planRewrites: readonly SpecifierRewrite[],

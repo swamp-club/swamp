@@ -53,21 +53,14 @@ import {
   detachedNestedRunsOf,
 } from "./nested_runs.ts";
 
-/** A nested run the cascade cancelled, or asked to stop. */
 export interface CascadedNestedRunData {
   workflowId: string;
   workflowName: string;
   runId: string;
-  /** The parent step that waited on it. */
   jobName: string;
   stepName: string;
 }
 
-/**
- * What became of the nested runs an ended run waited on (swamp-club#2867):
- * the ones cancelled with it, the running ones asked to stop, and the ones
- * left unfinished, each with the command that cancels it.
- */
 export interface NestedCascadeResult {
   cancelledNestedRuns: CascadedNestedRunData[];
   stopRequestedNestedRuns: CascadedNestedRunData[];
@@ -86,7 +79,6 @@ export type NestedCascade = (
 export interface NestedCascadeDeps {
   workflowRepo: Pick<WorkflowRepository, "findById">;
   runRepo: Pick<WorkflowRunRepository, "findById" | "save">;
-  /** Claims each child while it is cancelled. */
   runClaims: WorkflowRunClaims;
   findEvaluatedWorkflow: EvaluatedWorkflowLookup;
   /**
@@ -106,10 +98,6 @@ export interface NestedCascadeDeps {
    * whose record is behind may have been approved by a peer, so it is left.
    */
   runRecordCurrency?: RunRecordCurrency;
-  /**
-   * Fetches the record of a child this host does not have, before the child
-   * is read.
-   */
   fetchMissing?: (
     run: { workflowId: string; runId: string },
   ) => Promise<void>;
@@ -118,14 +106,9 @@ export interface NestedCascadeDeps {
    * or null when the child is already being driven or decided.
    */
   reserveChild?: (runId: string) => (() => void) | null;
-  /**
-   * Asks the process driving a running child to stop it, without waiting.
-   * Returns false when nothing here drives the child.
-   */
   requestStop?: (child: WorkflowRun, reason: string) => boolean;
 }
 
-/** A cascade result with nothing in it, to merge others into. */
 export function emptyNestedCascade(): NestedCascadeResult {
   return {
     cancelledNestedRuns: [],
@@ -134,7 +117,6 @@ export function emptyNestedCascade(): NestedCascadeResult {
   };
 }
 
-/** Appends every list of `from` to the same list of `into`. */
 export function mergeNestedCascade(
   into: NestedCascadeResult,
   from: NestedCascadeResult,
@@ -169,12 +151,9 @@ function left(
 }
 
 /**
- * Builds the cascade over `deps`. It follows only a link both runs agree on
- * (the parent's step names the child and the child names that step), settles
- * a suspended child under the child's own claim, and recurses into the runs
- * that child waited on. A child it cannot or may not settle is left as it
- * was and reported; one child's failure never stops the rest, and nothing
- * here changes the ended parent.
+ * follows only a link both runs agree on and settles a suspended child under
+ * its own claim; a child it cannot or may not settle is left and reported, one
+ * child's failure never stops the rest, and the ended parent is never changed
  */
 export function createNestedCascade(deps: NestedCascadeDeps): NestedCascade {
   const link = new NestedRunLink(deps);
@@ -183,7 +162,6 @@ export function createNestedCascade(deps: NestedCascadeDeps): NestedCascade {
     deps.runTracker !== undefined && deps.liveness !== undefined &&
     suspendedRunOwnerStillRuns(child, deps.runTracker, deps.liveness);
 
-  /** Cancels the child as read now, under its claim. Null when left. */
   const settle = async (
     parent: WorkflowRun,
     detached: DetachedNestedRunRef,
@@ -251,10 +229,9 @@ export function createNestedCascade(deps: NestedCascadeDeps): NestedCascade {
           stepName: detached.stepName,
           link: { kind: "valid", ref: detached.child },
         });
-        // A child that no longer exists needs no cancel.
         if (resolved.kind === "missing") continue;
-        // A run that does not link back is not this parent's to cancel. It
-        // is reported while unfinished, as it was before the cascade.
+        // a run that does not link back is not this parent's to cancel; it is
+        // reported while unfinished
         if (resolved.kind === "broken") {
           const other = await deps.runRepo.findById(
             createWorkflowId(detached.child.workflowId),
@@ -265,7 +242,6 @@ export function createNestedCascade(deps: NestedCascadeDeps): NestedCascade {
           }
           continue;
         }
-        // Unreadable: it may still be unfinished, so it is reported.
         if (resolved.kind === "unreadable") {
           result.detachedNestedRuns.push(left(detached, child));
           continue;
@@ -311,10 +287,6 @@ export function createNestedCascade(deps: NestedCascadeDeps): NestedCascade {
   return (endedParent) => cascade(endedParent, 1);
 }
 
-/**
- * The nested runs an ended run waited on, after the cascade when one is
- * given, else as they were left.
- */
 export async function settleNestedRunsOf(
   deps: { runRepo: Pick<WorkflowRunRepository, "findById"> },
   cascade: NestedCascade | undefined,
@@ -327,7 +299,6 @@ export async function settleNestedRunsOf(
   };
 }
 
-/** The non-empty lists of a cascade result, for an event or a JSON body. */
 export function nestedCascadeFields(
   result: NestedCascadeResult,
 ): Partial<NestedCascadeResult> {

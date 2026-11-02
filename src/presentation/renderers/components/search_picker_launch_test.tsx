@@ -48,7 +48,6 @@ Deno.test({
       ),
     ]);
 
-    // Should resolve to undefined (from the .catch path), not timeout
     assertEquals(result !== "timeout", true);
   },
 });

@@ -66,7 +66,6 @@ const DATA = `data/${MODEL_TYPE.normalized}/${MODEL_ID}`;
 /** A content check that allows every put: these tests decide base access. */
 const PASSES: ContentAuthority = { check: () => Promise.resolve(undefined) };
 
-/** {@link authorizeCommit} with every put's content allowed. */
 function authorizeBase(
   partition: Parameters<typeof authorizeCommit>[0],
   ops: readonly Op[],
@@ -77,7 +76,6 @@ function authorizeBase(
 }
 const OTHER_ID = "11111111-2222-4333-8444-555555555555";
 
-/** A resolver over fixed aggregates; every lookup is recorded. */
 class FakeResolver implements AggregateResourceResolver {
   readonly owners = new Map<string, KeyOwnership>();
   readonly restricted = new Set<string>();
@@ -109,7 +107,6 @@ class FakeResolver implements AggregateResourceResolver {
   }
 }
 
-/** An authority that allows exactly the (action, kind:name) pairs given. */
 class FakeAuthority implements CallerAuthority {
   readonly asked: {
     action: Action;
@@ -187,7 +184,6 @@ Deno.test("checkCommitBindings: an intent of another partition is refused", asyn
 });
 
 Deno.test("checkCommitBindings: a key outside the intent's aggregate is refused", async () => {
-  // A data save on one behavior writing a grant's data.
   const ops = [
     await putOp({
       intent: modelIntent({ kind: "data.save", name: "vpc", version: 1 }),
@@ -218,13 +214,11 @@ Deno.test("checkCommitBindings: an intent riding an op kind it may not ride is r
 
 Deno.test("checkCommitBindings: a data-version op with no put of its version is refused", async () => {
   const ops = await save();
-  // The version op alone, its puts dropped.
   assertRefused(
     checkCommitBindings(modelPartition(), [ops[2]]),
     "data-version-unpaired",
     0,
   );
-  // A version op whose metadata names another version than its key.
   const lying = dataVersionOp({
     key: RecordKey.create(`${DATA}/vpc/1/metadata.yaml`),
     metadata: metadata("vpc", 2),
@@ -288,13 +282,12 @@ Deno.test("authorizeCommit: a data save needs run on the behavior, by name, as a
     "forbidden",
     0,
   );
-  // Run alone is enough: a forwarded write needs no admin (swamp-club#3922).
+  // run alone is enough: a forwarded write needs no admin
   const allowed = new FakeAuthority(["run model:web"]);
   assert(
     (await authorizeBase(modelPartition(), await save(), resolver, allowed))
       .ok,
   );
-  // Both puts share one intent, so the caller is asked once.
   assertEquals(allowed.asked.length, 1);
 });
 
@@ -441,7 +434,6 @@ Deno.test("readAccessOf: data reads are data reads, and control-plane records ne
   assertEquals(await readAccessOf(lockfile as Op, resolver), undefined);
 });
 
-/** A put or tombstone of `intent` at a key its aggregate owns. */
 async function opFor(intent: Intent): Promise<PutOp | TombstoneOp | undefined> {
   const key = keyFor(intent);
   for (const kind of ["put", "tombstone"] as const) {
@@ -533,7 +525,6 @@ Deno.test("authorizeCommit: a rename-from naming another definition as its count
   const key = "config/workflows/workflow-victim.yaml";
   const resolver = new FakeResolver();
   resolver.owners.set(key, { owner: victim.toString(), present: true });
-  // Tombstoning the victim's file under a rename-from of `mine`.
   const tombstone = tombstoneOp({
     intent: createIntent({
       kind: "definition.rename-from",
@@ -819,7 +810,6 @@ Deno.test("baseRecordReadAccessOf: decides a compacted record by its partition a
     "read data:web",
     "read model:web",
   ]);
-  // Another behavior's data key in this partition is not this one's data.
   assertEquals(
     (await decided(
       model,
@@ -852,9 +842,8 @@ Deno.test("baseRecordReadAccessOf: decides a compacted record by its partition a
     ["read workflow:deploy"],
   );
 
-  // A definition's config partition decides each record by the type its
-  // key names, so same-named definitions sharing it are told apart
-  // (swamp-club#3938).
+  // a definition's config partition decides each record by the type its key
+  // names, so same-named definitions sharing it are told apart
   const shared = partitionOf({
     kind: "config",
     definitionKind: "model",

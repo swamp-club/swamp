@@ -104,8 +104,6 @@ Deno.test("accessGroupListRenderer json: outputs JSON array", () => {
   assertStringIncludes(parsed[0].name, "release-managers");
 });
 
-// ── IdP group renderer tests ─────────────────────────────────────────
-
 function makeIdpEntry(
   overrides: Partial<AccessGroupIdpEntry> = {},
 ): AccessGroupIdpEntry {

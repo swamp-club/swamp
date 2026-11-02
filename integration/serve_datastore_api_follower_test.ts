@@ -17,13 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * The datastore API on a serve follower in team mode (swamp-club#4096): a
- * write is refused with a retryable 503 that names the leader, a read is
- * answered from the follower's copy while it is fresh, and nothing is told
- * to a caller that did not authenticate.
- */
-
 import { assertEquals } from "@std/assert";
 import { SERVE_FOLLOWER_BEHIND_CODE } from "../src/domain/datastore_v3/serve_leader.ts";
 import type { FollowerGate } from "../src/serve/follower_requests.ts";
@@ -170,7 +163,6 @@ Deno.test({
       ) => change.cursor);
       assertEquals(cursors.every((cursor) => cursor <= applied), true);
       assertEquals(cursors.includes(applied), true);
-      // Caught up: the next page resumes where it stopped.
       const rest = await getJson(
         `${server.url}/changes?cursor=${applied}`,
         "alice-token",
@@ -181,7 +173,6 @@ Deno.test({
   },
 });
 
-/** Lands commits `from + 1` to `to` on `web`, as the leader's feed would. */
 async function landCommits(
   server: Server,
   from: number,
@@ -204,7 +195,6 @@ async function landCommits(
   }
 }
 
-/** A partition read as the member's copy sends it, with its reply headers. */
 async function readHeld(
   server: Server,
   query: string,
@@ -236,19 +226,16 @@ Deno.test({
         waits++;
         return Promise.resolve("catching-up" as const);
       };
-      // The member's head-commit check: it holds seq 2, this copy seq 1.
       const refused = await readHeld(server, "after=1&limit=1&held=2");
       assertEquals(refused.status, 503);
       assertEquals(refused.json.code, SERVE_FOLLOWER_BEHIND_CODE);
       assertEquals(refused.json.leader, undefined);
       assertEquals(refused.retryAfter, "1");
       assertEquals(waits, 1);
-      // No further than the copy: answered without waiting.
       const level = await readHeld(server, "after=0&limit=1&held=1");
       assertEquals(level.status, 200);
       assertEquals(level.json.head, 1);
       assertEquals(waits, 1);
-      // A caller that names no held seq is answered as before.
       const old = await readHeld(server, "after=1");
       assertEquals(old.status, 200);
       assertEquals(old.json.head, 1);
@@ -278,7 +265,6 @@ Deno.test({
   fn: async () => {
     await withServer(writer(), async (server) => {
       await landCommits(server, 0, 1);
-      // The feed brings in the commit the caller holds while it waits.
       server.ctx.followerCatchUp = async () => {
         server.ctx.followerGate = undefined;
         await landCommits(server, 1, 2);

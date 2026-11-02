@@ -46,20 +46,12 @@ import {
   withAcceptance,
 } from "./extension_findings_report.ts";
 
-/** Per-run inputs for the stream handlers. */
 export interface ExtensionQualityHandlerOptions {
-  /** The manifest's directory; the sidecar and declared acceptances are relative to it. */
   manifestDir: string;
-  /** The repository directory; log paths under it print relative to `cwd`. */
   repoDir?: string;
-  /** The directory the author ran the command in; log paths print openable from it. Defaults to the process cwd. */
   cwd?: string;
 }
 
-/**
- * The details a failed run carries, surfaced before the error so the
- * author sees which acceptance or file is at fault, as push does.
- */
 function errorDetails(error: SwampError): {
   reviewRuleErrors?: ReviewFinding[];
   safetyErrors?: SafetyIssue[];
@@ -87,10 +79,6 @@ function fileAndLine(finding: { file: string; line?: number }): string {
     : finding.file;
 }
 
-/**
- * One line per detail a failed gate carries (the same details push prints
- * when it throws), indented under the gate's message.
- */
 function gateFailureDetailLines(failure: LocalGateFailure): string[] {
   const details = failure.details as Record<string, unknown> | undefined;
   const lines: string[] = [];
@@ -127,11 +115,6 @@ function gateFailureDetailLines(failure: LocalGateFailure): string[] {
   return lines;
 }
 
-/**
- * Why a completed run still fails: a gate that would stop a push, an
- * extension whose bare imports the registry cannot resolve, or source
- * deno doc could not analyse. Undefined when none holds.
- */
 function qualityFailureMessage(data: ExtensionQualityData): string | undefined {
   const reasons: string[] = [];
   if (data.gateFailures.length > 0) {
@@ -162,7 +145,6 @@ function formatDownloads(n: number): string {
   return String(n);
 }
 
-/** Each audited dependency, or that there were none, under the dependency-trust row. */
 function logAuditedDependencies(
   logger: Logger,
   result: DependencyTrustResult,
@@ -186,7 +168,6 @@ function logAuditedDependencies(
     if (dep.reason) parts.push(`not audited: ${dep.reason}`);
     const detail = parts.length > 0 ? ` — ${parts.join(", ")}` : "";
     if (dep.importedAs !== undefined) {
-      // The bare import the source wrote, as JSON's importedAs.
       logger
         .info`      ${mark} ${dep.name}@${dep.version} (as ${dep.importedAs})${detail}`;
     } else {
@@ -210,7 +191,6 @@ function factorMark(status: FactorStatus): string {
   }
 }
 
-/** Renderer interface that also reports pass/fail to the CLI. */
 export interface ExtensionQualityRenderer
   extends Renderer<ExtensionQualityEvent> {
   passed(): boolean;

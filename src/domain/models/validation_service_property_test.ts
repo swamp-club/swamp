@@ -25,17 +25,12 @@ import {
   formatExpressionPathErrors,
 } from "./validation_service.ts";
 
-/** Remedies are drawn from these, so each is easy to count in the output. */
 const REMEDIES = [
   "REMEDY-ALPHA applies to every error of one form.",
   "REMEDY-BRAVO applies to every error of another form.",
   "REMEDY-CHARLIE applies to every error of a third form.",
 ];
 
-/**
- * Non-empty single-line text with no surrounding whitespace that cannot
- * contain a remedy sentinel.
- */
 const arbLine = fc
   .string({ minLength: 1, maxLength: 30 })
   .map((s) => s.replace(/[\r\n\u2028\u2029]/g, " ").replace(/REMEDY/g, "x"))

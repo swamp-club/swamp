@@ -27,8 +27,6 @@ Deno.test("bundleLocationEquals: identical path + fingerprint are equal", () => 
 });
 
 Deno.test("bundleLocationEquals: same path different fingerprint are unequal", () => {
-  // Same bundle file location, different content — the fingerprint
-  // distinguishes a stale bundle from a fresh one.
   const a = makeBundleLocation("/repo/.swamp/bundles/foo.js", "abc123");
   const b = makeBundleLocation("/repo/.swamp/bundles/foo.js", "def456");
   assertFalse(bundleLocationEquals(a, b));

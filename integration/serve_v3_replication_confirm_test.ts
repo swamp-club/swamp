@@ -17,15 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Serve's write confirmation against a real Litestream sidecar and a file
- * replica (swamp-club#3489, Phase 4D3): a write request's replies are held
- * by `confirmRequest` until `confirmV3Replicated` has synced and published
- * a head covering its commits, and concurrent requests share syncs. The
- * crash-and-takeover case is in `datastore_v3_litestream_restore_test.ts`,
- * which runs machines as workers.
- */
-
 import { assert, assertEquals } from "@std/assert";
 import { join } from "@std/path";
 import {
@@ -47,7 +38,6 @@ import {
 
 const ignore = SIDECAR_TESTS_IGNORED;
 
-/** The highest high-water mark any published head covers, read in place. */
 function publishedCursor(env: ReplicationEnv): number {
   let highest = -1;
   const lineages = join(env.datastorePath, "_control", "lineage");
@@ -70,22 +60,17 @@ function publishedCursor(env: ReplicationEnv): number {
   return highest;
 }
 
-/** A reply as the client got it, with what was replicated at that moment. */
 interface Reply {
   readonly message: ServerMessage;
-  /** The request's own last commit, or -1 when it committed nothing. */
   readonly committed: number;
-  /** The highest published head when the reply went out. */
   readonly published: number;
 }
 
-/** Each write request's own last commit, by request id. */
 const ownCommits = new Map<string, number>();
 
 /**
- * A socket that records, as each reply goes out, how far the checkout has
- * committed and how far the published heads reach: synchronously, so a
- * later sync cannot make a reply look covered after the fact.
+ * records synchronously, as each reply goes out, how far commits and published
+ * heads reach, so a later sync cannot make a reply look covered after the fact
  */
 function observingSocket(env: ReplicationEnv) {
   const replies: Reply[] = [];
@@ -102,7 +87,6 @@ function observingSocket(env: ReplicationEnv) {
   return { socket, replies };
 }
 
-/** Serve's context as serve.ts builds it while replication is on. */
 function confirmingCtx(env: ReplicationEnv) {
   return {
     confirmReplicated: () => confirmV3Replicated(env.datastorePath),
@@ -110,7 +94,6 @@ function confirmingCtx(env: ReplicationEnv) {
   };
 }
 
-/** A write request: commits, then replies inside its handler, as serve's do. */
 function writeRequest(
   env: ReplicationEnv,
   socket: WebSocket,
@@ -128,7 +111,6 @@ function writeRequest(
   });
 }
 
-/** Counts the sidecar syncs and can fail the next ones. */
 function countingControl() {
   const state = { syncs: 0, failNext: 0 };
   return {

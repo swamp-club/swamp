@@ -18,14 +18,9 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * The AI coding tool a swamp repo is enrolled for. Materialised in
- * .swamp.yaml under `tools` and surfaced to telemetry, audit, skills
- * resolution, and doctor checks.
- *
- * `none` is a marker-file sentinel meaning "explicitly opted out of tool
- * integration." The legacy single-tool field `tool: none` normalises to the
- * canonical `tools: []`; the union value is preserved for read-side
- * compatibility but is never written.
+ * none is a marker sentinel for explicitly opted out; the legacy tool: none
+ * normalises to tools: [], and the value is kept for read-side compatibility
+ * but never written
  */
 export type AiTool =
   | "amp"

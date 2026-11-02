@@ -17,11 +17,9 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// Serve for serve_upstream_test.ts (swamp-club#3985): the datastore API test
-// server over a real v3 repository, in a Worker of its own, so the client
-// checkouts the test opens in the main thread can end their commands
-// (closeV3Datastores, the serve-upstream registry resets) as the CLI does
-// without closing serve's handle or releasing its writer lease.
+// serve's datastore API test server in its own Worker, so client checkouts in
+// the main thread can end their commands without closing serve's handle or
+// releasing its writer lease
 
 import "../src/domain/models/models.ts";
 import { acquireModelLocks } from "../src/cli/repo_context.ts";
@@ -36,9 +34,7 @@ import { withServer } from "./serve_datastore_api_harness.ts";
 import { grant } from "./serve_request_harness.ts";
 import { PolicySnapshot } from "../src/domain/access/policy_snapshot.ts";
 
-/** One grant, as the test spells it across the worker boundary. */
 export interface GrantSpec {
-  /** The user the grant is for; the harness's caller (alice) when absent. */
   readonly user?: string;
   readonly actions: readonly string[];
   readonly kind: string;
@@ -49,32 +45,13 @@ export type ServeWorkerRequest =
   | {
     readonly kind: "start";
     readonly grants: readonly GrantSpec[];
-    /** Behaviors serve's repo holds besides `web`, by name. */
     readonly models?: readonly string[];
-    /** Serve's datastore holds the repository's config (`managedConfig`). */
     readonly managedConfig?: boolean;
   }
   | { readonly kind: "log" }
-  /**
-   * Replaces the grants serve enforces, as a reload of its access data
-   * does (swamp-club#4089).
-   */
   | { readonly kind: "grants"; readonly grants: readonly GrantSpec[] }
-  /**
-   * Replaces serve's restricted behavior types, as a restart with another
-   * `--restricted-model-types` does (swamp-club#4089).
-   */
   | { readonly kind: "restrict"; readonly types: readonly string[] }
-  /**
-   * Compacts serve's whole log (swamp-club#4006), and with `claim` has
-   * serve claim its datastore first, as `swamp datastore claim` does.
-   */
   | { readonly kind: "compact"; readonly claim?: boolean }
-  /**
-   * Serve's own work: `count` saves of a version of `dataName` on behavior
-   * `web`, one after another, each under serve's lock on it as serve's
-   * method runs take it.
-   */
   | {
     readonly kind: "write";
     readonly dataName: string;
@@ -83,26 +60,21 @@ export type ServeWorkerRequest =
   }
   | { readonly kind: "stop" };
 
-/** One commit of serve's log, as the test reads it. */
 export interface ServeLogEntry {
   readonly partition: string;
   readonly seq: number;
   readonly txnId: string;
   readonly principal: string | undefined;
   readonly keys: readonly string[];
-  /** The fence of the lease op serve stamped, if any (swamp-club#4121). */
   readonly leaseFence?: number;
 }
 
 export type ServeWorkerMessage =
-  /** The module is evaluated and its handler set: requests may be sent. */
   | { readonly kind: "loaded" }
   | {
     readonly kind: "ready";
-    /** Serve's origin, as `SWAMP_SERVE_URL` names it. */
     readonly origin: string;
     readonly modelType: string;
-    /** The behaviors serve's repo holds, by name: their ids. */
     readonly models: Readonly<Record<string, string>>;
     readonly serveRepo: string;
   }
@@ -181,7 +153,6 @@ async function start(
         models[name] = model.id;
       }
       log = async () => {
-        // The commits after the compaction point: those before are folded.
         const changes = await server.v3.commitStore.changesSince(
           await server.v3.commitStore.compactionPoint(),
           100_000,

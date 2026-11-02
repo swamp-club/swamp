@@ -120,6 +120,5 @@ Deno.test("tagsChanged: a value, an added key or a removed key is a change", () 
   assertEquals(tagsChanged({ team: "a" }, { team: "b" }), true);
   assertEquals(tagsChanged({ team: "a" }, { team: "a", env: "x" }), true);
   assertEquals(tagsChanged({ team: "a", env: "x" }, { team: "a" }), true);
-  // Same key count, different keys.
   assertEquals(tagsChanged({ team: "a" }, { owner: "a" }), true);
 });

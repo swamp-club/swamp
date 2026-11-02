@@ -162,7 +162,6 @@ Deno.test("sourceList: non-standard layout (content pre-scan) shows resolvedKind
 Deno.test("sourceList: resolvedKinds is sorted by EXTENSION_KINDS declaration order", async () => {
   await withRepo(async (repo) => {
     const src = join(repo, "multi");
-    // Create in reverse declaration order to force sorting.
     for (const k of ["workflows", "reports", "vaults", "models"]) {
       await Deno.mkdir(join(src, "extensions", k), { recursive: true });
     }

@@ -21,12 +21,6 @@ import { UserError } from "../errors.ts";
 import { VaultAccessDeniedError } from "./run_vault_access.ts";
 import type { SecretReference } from "./secret_bag_registry.ts";
 
-/**
- * A vault.get() reference names a key its vault does not hold, as the
- * vault's existence check answers it. The message names the vault, the key
- * and where the reference is written, never a value, in the shape every
- * reference error takes: `<what failed> (at <path>): <reason>`.
- */
 export class SecretReferenceUnavailableError extends UserError {
   constructor(
     readonly reference: SecretReference,
@@ -42,12 +36,9 @@ export class SecretReferenceUnavailableError extends UserError {
 }
 
 /**
- * `readResource` refused a stored record whose sensitive-fields tag the
- * writer could not have produced (`SensitiveFieldsTagInvalidError`, the
- * strict reading in `src/domain/models/data_writer.ts`), rather than guess
- * which fields hold references (design/enablers/typed-secrets.md Section
- * 6.1). The message names the record and repeats the reading's reason, which
- * never includes the tag's text.
+ * readResource refuses a record whose sensitive-fields tag the writer could not
+ * have produced, rather than guess which fields hold references; the message
+ * never includes the tag's text
  */
 export class ResourceSensitiveFieldsInvalidError extends UserError {
   constructor(readonly instanceName: string, cause: Error) {
@@ -61,11 +52,8 @@ export class ResourceSensitiveFieldsInvalidError extends UserError {
 }
 
 /**
- * The error a vault reference fails with, `context` saying which reference
- * and where it is written (`<what failed> (at <path>)`): a refusal by the
- * run's vault access keeps its `vault_access_denied` code, and any other
- * error keeps its text, on one line, as the eager read reported it. A
- * missing key is already its own.
+ * a vault access refusal keeps its vault_access_denied code; any other error
+ * keeps its text on one line; a missing key is already its own error
  */
 export function secretReferenceError(context: string, error: unknown): Error {
   if (error instanceof SecretReferenceUnavailableError) return error;

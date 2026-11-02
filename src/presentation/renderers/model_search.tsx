@@ -52,9 +52,6 @@ import {
 const INDENT_2 = "  ";
 const INDENT_4 = "    ";
 
-/**
- * Filters models by a query string (case-insensitive match on name, type, or id).
- */
 export function filterModels(
   models: ModelSearchItem[],
   query: string,
@@ -69,9 +66,6 @@ export function filterModels(
   );
 }
 
-/**
- * Callback type for fetching model detail data for the preview pane.
- */
 export type ModelPreviewFetcher = (
   item: ModelSearchItem,
 ) => Promise<ModelGetData>;
@@ -204,15 +198,6 @@ export function modelSearchPickerLabels(
   };
 }
 
-/**
- * Creates a model search renderer for the given output mode.
- *
- * @param mode - Output mode (log for interactive, json for machine-readable).
- * @param fetchPreview - Optional callback to fetch model detail for the preview
- *   pane. When provided, the picker shows full method/argument detail. When
- *   omitted, only the model name and type are shown in the preview.
- * @param surface - The CLI spelling, which names the picker's items.
- */
 export function createModelSearchRenderer(
   mode: OutputMode,
   fetchPreview?: ModelPreviewFetcher,
@@ -236,11 +221,6 @@ export function createModelSearchRenderer(
   }
 }
 
-// ---------------------------------------------------------------------------
-// Rendering callbacks for the SearchPicker
-// ---------------------------------------------------------------------------
-
-/** Single-line result for the results list. */
 function renderModelResultLine(item: ModelSearchItem): React.ReactElement {
   return (
     <Text>
@@ -249,10 +229,6 @@ function renderModelResultLine(item: ModelSearchItem): React.ReactElement {
   );
 }
 
-/**
- * Renders preview content for a model. Shows immediate metadata from the search
- * item, and when detail is available, shows methods with argument signatures.
- */
 function renderModelPreview(
   item: ModelSearchItem,
   detail: ModelGetData | undefined,
@@ -261,7 +237,6 @@ function renderModelPreview(
 ): React.ReactElement {
   const innerWidth = Math.max(10, width - 1);
   if (!detail) {
-    // Immediate content from the search item
     return (
       <Box flexDirection="column" marginLeft={1} width={innerWidth}>
         <Text bold wrap="truncate-end">{item.name}</Text>
@@ -270,7 +245,6 @@ function renderModelPreview(
     );
   }
 
-  // Full detail from fetchPreview
   const lines: React.ReactElement[] = [
     <Text key="name" bold wrap="truncate-end">{detail.name}</Text>,
     <Text key="type" dimColor wrap="truncate-end">type: {detail.type}</Text>,
@@ -293,7 +267,6 @@ function renderModelPreview(
         </Text>,
       );
 
-      // Inline method arguments
       const s = method.arguments as {
         properties?: Record<
           string,
@@ -336,10 +309,6 @@ function renderModelPreview(
   );
 }
 
-/**
- * Produces plain-text scrollback output for a selected model.
- * Reuses the same formatMethodLines/formatSchemaAttributes from model_get.ts.
- */
 function renderModelScrollback(
   item: ModelSearchItem,
   detail: ModelGetData | undefined,
@@ -373,5 +342,4 @@ function renderModelScrollback(
   return lines.join("\n");
 }
 
-// Re-export PickerResult for use by the command handler
 export type { PickerResult };

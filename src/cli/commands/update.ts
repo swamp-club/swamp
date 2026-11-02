@@ -91,19 +91,13 @@ async function dirExists(path: string): Promise<boolean> {
 }
 
 /**
- * The log line `swamp update` prints after syncing global skills to `dir`.
- * The directories belong to the AI agents, so they stay under the user's
- * home directory even when SWAMP_HOME moves swamp's own files elsewhere
- * (swamp-club#3813).
+ * the directories belong to the AI agents, so they stay under the user's home
+ * even when SWAMP_HOME moves swamp's own files
  */
 export function globalSkillSyncLine(dir: string): string {
   return `Synced global skills to the agent skill directory ${dir}`;
 }
 
-/**
- * The closing note explaining that SWAMP_HOME does not move agent skill
- * directories, or null when there is nothing to explain.
- */
 export function globalSkillSyncNote(
   syncedCount: number,
   swampHomeSet: boolean,
@@ -712,8 +706,8 @@ export const updateCommand = new Command()
           }`;
         }
 
-        // launchd can refuse to start the replaced binary until its
-        // autoupdate job is registered again (swamp-club#3007).
+        // launchd can refuse to start the replaced binary until its autoupdate
+        // job is registered again
         if (renderer.newVersion) {
           const refresh = await refreshAutoupdateSchedulerIfOwed(
             createAutoupdateRefreshDeps(),

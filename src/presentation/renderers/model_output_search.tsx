@@ -38,9 +38,6 @@ import { carryModelWording } from "../../domain/behavior_wording.ts";
 import { renderInteractivePicker } from "./components/search_picker.tsx";
 import type { CommandSurface } from "../command_surface.ts";
 
-/**
- * Filters outputs by a query string.
- */
 function filterOutputs(
   outputs: ModelOutputSearchItem[],
   query: string,
@@ -83,9 +80,6 @@ function formatDuration(ms: number): string {
   return `${minutes}m ${seconds}s`;
 }
 
-/**
- * Callback type for fetching output detail data for the preview pane.
- */
 export type OutputPreviewFetcher = (
   item: ModelOutputSearchItem,
 ) => Promise<ModelOutputGetData>;
@@ -120,18 +114,15 @@ class JsonModelOutputSearchRenderer implements ModelOutputSearchRenderer {
   }
 }
 
-/** What the interactive picker calls its items and itself. */
 export interface OutputSearchPickerLabels {
   readonly itemLabel: string;
   readonly commandName: string | undefined;
 }
 
 /**
- * The picker labels for `command` (`output search` or `history search`) on
- * `surface` (swamp-club#3409). Both legacy pickers, and `behavior output
- * search`, keep the labels they always had: items called "outputs" and the
- * default title built from them ("outputs search"). `behavior history
- * search` lists method runs, so it calls them runs under its own name.
+ * both legacy pickers and behavior output search keep the labels they always
+ * had: items called outputs under the default title. Behavior history search
+ * lists method runs, so it calls them runs under its own name.
  */
 export function outputSearchPickerLabels(
   surface: CommandSurface,
@@ -195,15 +186,6 @@ class InkModelOutputSearchRenderer implements ModelOutputSearchRenderer {
   }
 }
 
-/**
- * Creates an output search renderer for the given output mode.
- *
- * @param mode - Output mode (log for interactive, json for machine-readable).
- * @param fetchPreview - Optional callback to fetch output detail for the
- *   preview pane.
- * @param labels - What the interactive picker calls its items and itself;
- *   defaults to the legacy labels. JSON output does not use them.
- */
 export function createModelOutputSearchRenderer(
   mode: OutputMode,
   fetchPreview?: OutputPreviewFetcher,
@@ -233,11 +215,6 @@ export function createModelOutputSearchRenderer(
   }
 }
 
-// ---------------------------------------------------------------------------
-// Rendering callbacks for the SearchPicker
-// ---------------------------------------------------------------------------
-
-/** Single-line result for the results list. */
 function renderOutputResultLine(
   item: ModelOutputSearchItem,
 ): React.ReactElement {
@@ -256,7 +233,6 @@ function renderOutputResultLine(
   );
 }
 
-/** Renders preview content for a model output. */
 function renderOutputPreview(
   item: ModelOutputSearchItem,
   detail: ModelOutputGetData | undefined,
@@ -265,7 +241,6 @@ function renderOutputPreview(
 ): React.ReactElement {
   const innerWidth = Math.max(10, width - 1);
   if (!detail) {
-    // Immediate content from the search item
     const displayName = item.modelName ?? item.definitionId;
     const lines: React.ReactElement[] = [
       <Text key="name" bold wrap="truncate-end">{displayName}</Text>,
@@ -299,7 +274,6 @@ function renderOutputPreview(
     );
   }
 
-  // Full detail from fetchPreview
   const displayName = detail.modelName ?? detail.definitionId;
   const lines: React.ReactElement[] = [
     <Text key="name" bold wrap="truncate-end">{displayName}</Text>,
@@ -334,7 +308,6 @@ function renderOutputPreview(
     </Text>,
   );
 
-  // Provenance section
   lines.push(<Text key="prov-gap" />);
   lines.push(
     <Text key="prov-hdr" color="cyan" bold wrap="truncate-end">
@@ -371,7 +344,6 @@ function renderOutputPreview(
     );
   }
 
-  // Artifacts section
   if (detail.artifacts && detail.artifacts.dataArtifacts.length > 0) {
     lines.push(<Text key="art-gap" />);
     lines.push(
@@ -388,7 +360,6 @@ function renderOutputPreview(
     }
   }
 
-  // Error section
   if (detail.error) {
     lines.push(<Text key="err-gap" />);
     lines.push(
@@ -408,7 +379,6 @@ function renderOutputPreview(
   );
 }
 
-/** Produces plain-text scrollback output for a selected model output. */
 function renderOutputScrollback(
   item: ModelOutputSearchItem,
   detail: ModelOutputGetData | undefined,

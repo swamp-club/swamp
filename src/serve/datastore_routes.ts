@@ -17,16 +17,8 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * The routes of serve's datastore API (swamp-club#3915), apart from their
- * handler so the request tracer can name them without importing it.
- *
- * @module
- */
-
 const ROUTE_PREFIX = "/api/v1/datastore/";
 
-/** A datastore API route, with its path segments decoded. */
 export type DatastoreRoute =
   | { readonly kind: "has"; readonly namespace: string }
   | {
@@ -65,9 +57,8 @@ export type DatastoreRoute =
   };
 
 /**
- * The datastore route a path is, or undefined. Segments are decoded once:
- * a partition key's own `%2F` reaches the route as `%252F` and decodes to
- * the canonical key.
+ * segments are decoded once: a partition key's own %2F reaches the route as
+ * %252F and decodes to the canonical key
  */
 export function matchDatastoreRoute(
   pathname: string,
@@ -123,7 +114,6 @@ export function matchDatastoreRoute(
   return undefined;
 }
 
-/** The route template a datastore path is reported under in spans. */
 export function datastoreRouteTemplate(route: DatastoreRoute): string {
   switch (route.kind) {
     case "has":

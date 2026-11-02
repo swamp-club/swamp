@@ -18,13 +18,9 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * Delivers a signal to a wait for a caller of `swamp serve`.
- *
- * The WebSocket `workflow.signal` request and the HTTP signal route both
- * call this, so a signal is authorized, delivered, answered and audited the
- * same way whichever way it arrived. It decides who the caller is and what
- * they may learn; whether the wait accepts the signal is decided by
- * `workflowSignal`, the one acceptance use case.
+ * the WebSocket and HTTP signal routes both call this so a signal is
+ * authorized, delivered, answered and audited the same way; it decides who the
+ * caller is and what they learn, workflowSignal decides acceptance
  */
 
 import { consumeStream } from "../libswamp/stream.ts";
@@ -94,34 +90,25 @@ const logger = getSwampLogger(["serve", "signal"]);
  */
 export const RUN_RECORD_HYDRATE_TIMEOUT_MS = 30_000;
 
-/**
- * How a caller names the wait: by its ID, or by a workflow and a key one of
- * its `wait_for_signal` steps declares (swamp-club#3211).
- */
 export type SignalDeliveryAddress =
   | { readonly waitId: string }
   | {
-    /** The workflow's name or ID, as sent. */
     readonly workflow: string;
     readonly key: string;
   };
 
-/** A signal as a caller sent it. The address and the payload are untrusted. */
 export type SignalDeliveryRequest = SignalDeliveryAddress & {
-  /** Identifies the request in audit events. */
   readonly requestId: string;
   readonly payload: unknown;
   /**
-   * False for a caller that cannot read a `pending` answer: a signal by key
-   * that finds no open wait is then refused `no_open_wait` and never held,
-   * whatever the step declares (swamp-club#3212). Defaults to true.
+   * false for a caller that cannot read a pending answer: a key signal with no
+   * open wait is refused no_open_wait and never held. Defaults to true.
    */
   readonly holdEarly?: boolean;
   /**
-   * False for a caller that cannot read an `accepted` answer
-   * (swamp-club#3213). Where that is the only answer the caller may be
-   * given, the signal is then refused `upgrade_required` before any wait is
-   * looked for. Defaults to true.
+   * false for a caller that cannot read an accepted answer: where that is the
+   * only answer allowed, the signal is refused upgrade_required before any wait
+   * is looked for. Defaults to true.
    */
   readonly acceptsReceipt?: boolean;
   /**
@@ -131,19 +118,15 @@ export type SignalDeliveryRequest = SignalDeliveryAddress & {
   readonly idempotencyKey?: string;
 };
 
-/** What the transport that carries a signal is told along the way. */
 export interface SignalDeliveryHooks {
   /**
-   * Called with the canonical name of the workflow a key address names, as
-   * soon as it resolves and whatever is then decided: the transport audits
-   * the request under it, so the request's audit events and the denial's
-   * name one resource when the workflow was named by its ID. It is never
-   * sent to the caller.
+   * the canonical workflow name, as soon as a key address resolves and whatever
+   * is then decided, so the transport audits the request and the denial under
+   * one resource. Never sent to the caller.
    */
   readonly onWorkflowResolved?: (name: string) => void;
 }
 
-/** A refusal other than "not found" or a refused payload. */
 export type SignalRefusalStatus =
   | "no_open_wait"
   | "expired"
@@ -153,16 +136,14 @@ export type SignalRefusalStatus =
   | "unreadable"
   | "unsupported";
 
-/** How a signal was answered. Everything in it may be sent to the caller. */
 export type SignalDeliveryResult =
   | {
     readonly status: "delivered";
     readonly data: WorkflowSignalResponseData;
     /**
-     * The run the wait belongs to, for the server's own use: it is never
-     * sent to the caller, who is told the run only in `data` and only when
-     * they may read the workflow. `recordAvailable` is false when this
-     * instance has no record of the run.
+     * for the server's own use, never sent to the caller, who learns the run
+     * only in data and only when they may read the workflow. recordAvailable is
+     * false when this instance has no record of the run
      */
     readonly run: {
       readonly workflowId: string;
@@ -171,8 +152,8 @@ export type SignalDeliveryResult =
     };
   }
   /**
-   * By key: held as the key's pending signal (swamp-club#3212). No wait or
-   * run took it, so no run is continued.
+   * by key: held as the key's pending signal. No wait or run took it, so no run
+   * is continued.
    */
   | {
     readonly status: "pending";
@@ -184,35 +165,21 @@ export type SignalDeliveryResult =
     readonly workflow: { readonly id: string; readonly name: string };
   }
   /**
-   * By key, for a caller who may not read the workflow, on a key whose step
-   * sets `acceptEarly` (swamp-club#3213): the receipt alone, whether a wait
-   * took the signal or it is held, so the answer does not say whether a run
-   * is waiting.
+   * by key, for a caller who may not read the workflow, on a step with
+   * acceptEarly: the receipt alone whether a wait took the signal or it is
+   * held, so the answer does not reveal if a run is waiting
    */
   | {
     readonly status: "accepted";
     readonly data: WorkflowSignalAcceptedResponseData;
-    /** For the server's own use, as on a `pending` answer. */
     readonly workflow: { readonly id: string; readonly name: string };
-    /**
-     * The run of the wait that took the signal, when one did. For the
-     * server's own use, as on a `delivered` answer.
-     */
     readonly run?: {
       readonly workflowId: string;
       readonly runId: string;
       readonly recordAvailable: boolean;
     };
   }
-  /**
-   * The only answer the caller may be given is `accepted`, and their client
-   * cannot read one. Nothing was delivered or stored.
-   */
   | { readonly status: "upgrade_required"; readonly message: string }
-  /**
-   * An unknown wait ID, an unknown workflow, a key the workflow does not
-   * declare, or a wait the caller may not signal.
-   */
   | { readonly status: "not_found"; readonly message: string }
   | {
     readonly status: "invalid_payload";
@@ -222,30 +189,22 @@ export type SignalDeliveryResult =
   | {
     readonly status: SignalRefusalStatus;
     readonly message: string;
-    /** The earlier signal, for a caller who may read the workflow. */
     readonly receipt?: SignalReceipt;
-    /**
-     * With `already_pending`: until when the earlier signal is held, and
-     * what was recorded about it for a caller who may read the workflow.
-     */
     readonly pending?: {
       readonly heldUntil: string;
       readonly receipt?: PendingSignalReceipt;
     };
     /**
-     * With `no_open_wait`: the wait that last held the key and how it was
-     * settled, so a sender who retries can tell a signal that landed from a
-     * run that has not reached its wait. Its receipt is for a caller who may
-     * read the workflow.
+     * with no_open_wait: the wait that last held the key and how it settled, so
+     * a retrying sender can tell a landed signal from a run that has not
+     * reached its wait. Its receipt is for callers who may read it
      */
     readonly lastWait?: SignalLastWait;
   }
   | { readonly status: "failed"; readonly message: string };
 
-/** The one answer for a wait the caller cannot be told about. */
 export const SIGNAL_WAIT_NOT_FOUND_MESSAGE = "Signal wait not found";
 
-/** What a caller who may not read the workflow is told of each refusal. */
 const GENERIC_REFUSAL: Record<SignalRefusalStatus, string> = {
   no_open_wait:
     "No open wait holds that key, so the signal was not delivered and nothing was stored.",
@@ -260,12 +219,9 @@ const GENERIC_REFUSAL: Record<SignalRefusalStatus, string> = {
 };
 
 /**
- * What a caller who may not read the workflow is told of the wait that last
- * held a key, after the fixed `no_open_wait` sentence. It says how the wait
- * was settled and when, which `lastWait` already tells them, and never by
- * which signal. A client that shows only the message, as the CLI does, can
- * then set the time against its own attempt: the same refusal reaches a
- * sender whose signal landed and one who is early for the next run.
+ * how and when the last wait settled, never by which signal, so a client
+ * showing only the message can set the time against its own attempt: the same
+ * refusal reaches a sender who landed and one who is early
  */
 function genericLastWait(last: SignalLastWait): string {
   switch (last.settledAs) {
@@ -279,20 +235,18 @@ function genericLastWait(last: SignalLastWait): string {
 }
 
 /**
- * The command a refusal suggests for listing the open waits. The server does
- * not know the address a client reached it by, so that is left to fill in.
+ * the server does not know the address a client reached it by, so that is left
+ * to fill in
  */
 const SERVER_WAITS_COMMAND = "swamp workflow waits --server <server>";
 
 /**
- * What a client that cannot read an `accepted` answer is told. The same
- * sentence whether or not a wait is open: it is decided before one is
- * looked for.
+ * the same sentence whether or not a wait is open: it is decided before one is
+ * looked for
  */
 export const SIGNAL_UPGRADE_REQUIRED_MESSAGE =
   "This server answers a signal for that key with a receipt this client cannot read, so the signal was not delivered and nothing was stored. Upgrade swamp here and send it again.";
 
-/** The receipt as an `accepted` answer carries it: never the wait. */
 function acceptedData(
   signal: {
     id: string;
@@ -320,7 +274,6 @@ const NOT_FOUND: SignalDeliveryResult = {
   message: SIGNAL_WAIT_NOT_FOUND_MESSAGE,
 };
 
-/** True when `payload` serialises to more than a wait accepts. */
 function payloadTooLarge(payload: unknown): boolean {
   let serialized: string | undefined;
   try {
@@ -332,10 +285,6 @@ function payloadTooLarge(payload: unknown): boolean {
     new TextEncoder().encode(serialized).length > SIGNAL_PAYLOAD_MAX_BYTES;
 }
 
-/**
- * The workflows a wait belongs to, as resources to authorize. Empty when the
- * wait cannot be tied to a workflow, which refuses the caller.
- */
 async function ownersOf(
   ctx: ConnectionContext,
   wait: SignalWaitSubject,
@@ -355,36 +304,16 @@ async function ownersOf(
   return resolution.status === "found" ? [resolution.resource] : [];
 }
 
-/**
- * The workflow a key address names, once the caller is known to be allowed
- * to signal it. The use case is handed exactly this workflow.
- */
 interface AuthorizedKeyTarget {
   readonly id: string;
   readonly name: string;
-  /** Whether the caller may also read the workflow. */
   readonly readable: boolean;
 }
 
 /**
- * Authorizes a signal addressed by key on the workflow the request names,
- * before any claim, registration or key declaration is read. The workflow
- * is resolved first, as every request that names a workflow is: selectors
- * match names and conditions read tags, so a deny by name must reach a
- * request by ID, and a rule on tags must see the tags. A string that
- * matches nothing is authorized as sent, so a refusal is audited with it.
- *
- * Key claims are kept per workflow ID, and IDs are not unique: a copied file
- * keeps its ID. So the caller needs `signal` on every workflow that shares
- * the named one's ID, not only on the one they named. Otherwise a caller
- * allowed on a copy would learn from `no_open_wait` against `not_found`
- * whether the original has an open wait under the key. The wait a key
- * resolves to is authorized again where it is placed, which also covers a
- * workflow renamed since the wait was opened.
- *
- * Returns the answer for a caller who goes no further: `not_found` for one
- * who may not signal the workflow and for a workflow that does not exist,
- * alike.
+ * caller needs signal on every workflow sharing the named one's ID, since key
+ * claims are per ID and copies share it; otherwise no_open_wait versus
+ * not_found would reveal whether the original has an open wait
  */
 async function authorizeKeyTarget(
   ctx: ConnectionContext,
@@ -454,34 +383,9 @@ async function authorizeKeyTarget(
 }
 
 /**
- * Delivers `request` for `caller`. The caller needs `signal` on every
- * workflow the wait belongs to; without it, or for a wait that does not
- * exist, the answer is `not_found` and nothing else. The workflow, run and
- * step, the run's state and an earlier signal's receipt are given only to a
- * caller who may also `read` those workflows.
- *
- * A signal addressed by workflow and key (swamp-club#3211) is authorized
- * twice. First on the workflow the request names and every workflow that
- * shares its ID, before anything about the key is read: a caller who may
- * not signal them, a workflow that does not exist and a key the workflow
- * does not declare are all `not_found`. Then,
- * as a signal by ID is, on every workflow the wait the key resolved to
- * belongs to: workflow IDs are not unique and key claims are kept per ID,
- * so a caller allowed on a copy must not reach the original's wait. A
- * declared key no open wait holds is `no_open_wait`, to a caller who may
- * signal the workflow.
- *
- * On a key whose step sets `acceptEarly`, a caller who may not read the
- * workflow they named is answered `accepted`, with the receipt alone
- * (swamp-club#3213). Whether that is so is decided once, from the authorized
- * workflow's definition and before any wait is looked for, and it holds for
- * every answer to the request: a signal a wait took and one that is held
- * read the same, a refusal names no time and no earlier wait, and the signal
- * is held whatever `holdEarly` says.
- *
- * Nothing is written but the wait's outcome record: no run is saved, no
- * claim or reservation is taken and nothing is pushed. Continuing the run
- * is the caller's next step (see {@link continueAfterSignal}).
+ * needs signal on every workflow the wait belongs to, else not_found; details
+ * go only to callers who may also read. A key address is authorized twice,
+ * before and after resolving. Only the outcome is written.
  */
 export async function deliverSignalForCaller(
   ctx: ConnectionContext,
@@ -502,8 +406,6 @@ export async function deliverSignalForCaller(
     };
   }
 
-  // What is logged of the address: the wait ID, or the workflow by key. The
-  // key is logged only once it is known to be in the form of one.
   let named = waitId !== undefined ? `wait ${waitId}` : "a key";
   let keyTarget: AuthorizedKeyTarget | undefined;
   if (!("waitId" in request)) {
@@ -864,9 +766,8 @@ function emitDelivered(
 }
 
 /**
- * Audits a signal held as a key's pending signal, with its receipt and
- * never its payload. The key is the one the workflow declares: the use case
- * holds a signal only under a declared key.
+ * the receipt and never the payload; the key is the one the workflow declares,
+ * since the use case holds a signal only under a declared key
  */
 function emitHeld(
   ctx: ConnectionContext,
@@ -901,14 +802,9 @@ function emitHeld(
 }
 
 /**
- * Has every pending signal a wait takes through this server's wait store
- * audited as `workflow.signal.taken`, with the receipt ID, the key, the
- * wait and the run, and never the payload (swamp-club#3213). The step that
- * opens its wait, a signaller that finds the key claimed and the
- * continuation sweep all take through the one store, so each is recorded
- * whoever made it. No request made the take, so it is a system event. Two
- * instances that take one signal at the same moment both record it; the
- * receipt ID says they are one take.
+ * audits each pending signal a wait takes as workflow.signal.taken, never with
+ * the payload, as a system event since no request made the take. Two instances
+ * taking one signal both record it; same receipt ID
  */
 export function auditTakenSignals(ctx: ConnectionContext): void {
   const waits = ctx.repoContext.signalWaits;
@@ -922,12 +818,9 @@ export function auditTakenSignals(ctx: ConnectionContext): void {
 }
 
 /**
- * Tries to continue the run a delivered signal belongs to, now that one
- * more of its waits is settled (swamp-club#3108). The WebSocket handler
- * calls it after sending its reply; the HTTP route before building its own,
- * which waits only for the launch, not for the run. Never throws: the
- * signal is stored, and the continuation sweep retries whatever is not
- * launched here.
+ * never throws: the signal is stored and the continuation sweep retries
+ * whatever is not launched here. The HTTP route calls it before building its
+ * reply and waits only for the launch.
  */
 export async function continueAfterSignal(
   ctx: ConnectionContext,
@@ -963,12 +856,9 @@ export async function continueAfterSignal(
 }
 
 /**
- * Fetches the record of a run this instance does not have, from a datastore
- * whose run records are synced. Only a record that is missing is fetched:
- * one that is here may hold a change not pushed yet, which a download would
- * overwrite. Taken under the sync gate, so no handler's delete of the run
- * is between its removal and its push, and bounded, so a stalled download
- * does not hold the gate: the sweep continues a run this gives up on.
+ * fetch only a missing record: a local one may hold an unpushed change a
+ * download would overwrite. Taken under the sync gate and bounded so a stall
+ * does not hold it; the sweep continues a run given up on
  */
 async function hydrateMissingRun(
   ctx: ConnectionContext,

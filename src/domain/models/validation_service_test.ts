@@ -39,9 +39,6 @@ import {
 import type { DefinitionRepository } from "../definitions/repositories.ts";
 import { ModelType } from "./model_type.ts";
 
-/**
- * Test model with globalArguments schema for expression path validation tests.
- */
 const TestGlobalArgsSchema = z.object({
   message: z.string(),
 });
@@ -79,9 +76,6 @@ const myVpc = Definition.create({
   globalArguments: { message: "hello" },
 });
 
-/**
- * Creates a mock definition repository for testing expression path validation.
- */
 function createMockDefinitionRepo(
   models: { name: string; type: string; definition: Definition }[],
 ): DefinitionRepository {
@@ -112,8 +106,6 @@ function createMockDefinitionRepo(
     getPath: () => "",
   };
 }
-
-// ValidationResult value object tests
 
 Deno.test("ValidationResult.pass creates passing result", () => {
   const result = ValidationResult.pass("Test validation");
@@ -162,8 +154,6 @@ Deno.test("ValidationResult.equals returns false for different errors", () => {
   assertEquals(result1.equals(result2), false);
 });
 
-// DefaultModelValidationService tests
-
 Deno.test("validateModel with valid definition returns passing results", async () => {
   const service = new DefaultModelValidationService();
   const definition = Definition.create({
@@ -194,7 +184,7 @@ Deno.test("validateModel with invalid method arguments returns failing result", 
   const definition = Definition.create({
     name: "test-definition",
     globalArguments: { wrongAttribute: "hello" },
-    methods: { write: { arguments: { wrongAttribute: "hello" } } }, // Missing required 'message'
+    methods: { write: { arguments: { wrongAttribute: "hello" } } },
   });
 
   const { results } = await service.validateModel(definition, testExprModel);
@@ -212,7 +202,7 @@ Deno.test("validateModel with empty message passes when schema allows it", async
   const definition = Definition.create({
     name: "test-definition",
     globalArguments: { message: "" },
-    methods: { write: { arguments: { message: "" } } }, // Empty message is allowed by z.string()
+    methods: { write: { arguments: { message: "" } } },
   });
 
   const { results } = await service.validateModel(definition, testExprModel);
@@ -229,7 +219,6 @@ Deno.test("validateModel runs validations in parallel", async () => {
     methods: { write: { arguments: { message: "hello" } } },
   });
 
-  // Run multiple times to verify parallel execution doesn't cause issues
   const promises = Array.from(
     { length: 10 },
     () => service.validateModel(definition, testExprModel),
@@ -242,8 +231,6 @@ Deno.test("validateModel runs validations in parallel", async () => {
     assertEquals(outcome.results.every((r) => r.passed), true);
   }
 });
-
-// Expression path validation tests
 
 Deno.test("validateModel with expression paths passes for valid path", async () => {
   const service = new DefaultModelValidationService();
@@ -431,7 +418,6 @@ Deno.test("validateModel with expression paths provides typo suggestion", async 
   const definition = Definition.create({
     name: "test-definition",
     globalArguments: {
-      // "mesage" is a typo for "message"
       message: "${{ model.target-model.input.globalArguments.mesage }}",
     },
   });
@@ -465,11 +451,8 @@ Deno.test("validateModel without definitionRepo skips expression validation", as
     },
   });
 
-  // No definitionRepo provided - expression validation should be skipped
   const { results } = await service.validateModel(definition, testExprModel);
 
-  // Should only have definition schema, type version, global arguments,
-  // method arguments, check selection and tags
   assertEquals(results.length, 6);
   assertEquals(results.every((r) => r.name !== "Expression paths"), true);
 });
@@ -494,8 +477,6 @@ Deno.test("validateModel with no expressions passes validation", async () => {
   const exprResult = results.find((r) => r.name === "Expression paths");
   assertEquals(exprResult?.passed, true);
 });
-
-// Template-like text: malformed swamp expressions vs another service's syntax
 
 /**
  * A model type whose `message` global argument and `write` method's `run`
@@ -656,7 +637,6 @@ Deno.test("validateModel detects malformed expression with single braces", async
   const definition = Definition.create({
     name: "test-definition",
     globalArguments: {
-      // Single braces - should be ${{ ... }}
       message: "${model.my-vpc.resource.attributes.VpcId}",
     },
   });
@@ -810,8 +790,6 @@ Deno.test("validateModel passes {{...}} inside a ${{ }} string, declared or not 
 });
 
 Deno.test("validateModel treats a literal() joined to an unknown root like the root alone", async () => {
-  // A root swamp does not own makes the text another service's, with or
-  // without a literal() beside it, so it is reported rather than accepted.
   for (
     const message of ["${{ typo.name }}", "${{ literal('x') + typo.name }}"]
   ) {
@@ -827,8 +805,6 @@ Deno.test("validateModel treats a literal() joined to an unknown root like the r
 });
 
 Deno.test("validateModel reads no reference from text passed through literal()", async () => {
-  // {{self.nope}} would fail as a self reference to a missing field if it
-  // were read as code.
   const { expressionPaths } = await validateWith(testExprModel, {
     name: "test-definition",
     globalArguments: {
@@ -982,8 +958,6 @@ Deno.test("validateModel schema-checks global arguments holding foreign ${{ }} t
 });
 
 Deno.test("validateModel does not pass swamp inputs read whole or with a computed key as foreign", async () => {
-  // Validated as it was before foreign ${{ }} text was recognised: the env
-  // reference is accepted, and size(inputs) names nothing validate checks.
   const computed = await validateWith(testExprModel, {
     name: "test-definition",
     globalArguments: { message: "${{ inputs[env.STAGE] }}" },
@@ -1065,7 +1039,6 @@ Deno.test("validateModel detects incomplete model reference like my-vpc.VpcId", 
   const definition = Definition.create({
     name: "test-definition",
     globalArguments: {
-      // Missing "model." prefix and ".resource.attributes" path
       message: "${{my-vpc.VpcId}}",
     },
   });
@@ -1092,7 +1065,6 @@ Deno.test("validateModel detects simple identifier expression", async () => {
   const definition = Definition.create({
     name: "test-definition",
     globalArguments: {
-      // Just a model name without any path
       message: "${{ my-vpc }}",
     },
   });
@@ -1112,8 +1084,6 @@ Deno.test("validateModel detects simple identifier expression", async () => {
   assertEquals(exprResult?.passed, false);
   assertStringIncludes(exprResult?.error ?? "", "my-vpc");
 });
-
-// Data path reference tests
 
 Deno.test("validateModel with resource path passes for valid DataRecord field", async () => {
   const service = new DefaultModelValidationService();
@@ -1148,8 +1118,6 @@ Deno.test("validateModel with resource path passes for valid DataRecord field", 
   assertEquals(exprResult?.passed, true);
 });
 
-// Invalid path segment tests
-
 Deno.test("validateModel fails for missing .attributes segment", async () => {
   const service = new DefaultModelValidationService();
   const targetDefinition = Definition.create({
@@ -1159,7 +1127,6 @@ Deno.test("validateModel fails for missing .attributes segment", async () => {
   const definition = Definition.create({
     name: "test-definition",
     globalArguments: {
-      // Missing .attributes - directly accessing .message
       message: "${{ model.target-model.input.message }}",
     },
   });
@@ -1181,7 +1148,6 @@ Deno.test("validateModel fails for missing .attributes segment", async () => {
 
   const exprResult = results.find((r) => r.name === "Expression paths");
   assertEquals(exprResult?.passed, false);
-  // Should mention that "message" is not valid, expecting "attributes"
   assertStringIncludes(exprResult?.error ?? "", "message");
 });
 
@@ -1194,7 +1160,6 @@ Deno.test("validateModel fails for invalid field in resource DataRecord access",
   const definition = Definition.create({
     name: "test-definition",
     globalArguments: {
-      // "attribute" is not a valid DataRecord field, should be "attributes"
       message:
         "${{ model.target-model.resource.message.message.attribute.message }}",
     },
@@ -1318,8 +1283,6 @@ Deno.test("validateModel fails for invalid field in resource DataRecord access",
   assertStringIncludes(exprResult?.error ?? "", "badfield");
 });
 
-// Mixed expression tests
-
 Deno.test("validateModel validates multiple model references in same expression", async () => {
   const service = new DefaultModelValidationService();
   const model1 = Definition.create({
@@ -1363,7 +1326,6 @@ Deno.test("validateModel fails when one of multiple model references is invalid"
   const definition = Definition.create({
     name: "test-definition",
     globalArguments: {
-      // model-1 is valid, model-2 doesn't exist
       message:
         "${{ model.model-1.input.globalArguments.message + model.model-2.input.globalArguments.message }}",
     },
@@ -1419,14 +1381,11 @@ Deno.test("validateModel validates mixed model and self references", async () =>
   assertEquals(exprResult?.passed, true);
 });
 
-// Edge case: valid ${{ }} without references (CEL literals)
-
 Deno.test("validateModel passes for CEL literal expressions", async () => {
   const service = new DefaultModelValidationService();
   const definition = Definition.create({
     name: "test-definition",
     globalArguments: {
-      // Valid CEL literal - should not be flagged as invalid
       message: "${{ 'hello world' }}",
     },
   });
@@ -1467,8 +1426,6 @@ Deno.test("validateModel passes for CEL numeric expressions", async () => {
   const exprResult = results.find((r) => r.name === "Expression paths");
   assertEquals(exprResult?.passed, true);
 });
-
-// file.contents() and data function expression tests
 
 Deno.test("validateModel passes for file.contents expression", async () => {
   const service = new DefaultModelValidationService();
@@ -1516,19 +1473,12 @@ Deno.test("validateModel passes for data.latest expression", async () => {
   assertEquals(exprResult?.passed, true);
 });
 
-// Regression test for issue #89: cross-model expression validation must
-// await ensureTypeLoaded before calling modelRegistry.get(), otherwise
-// lazy-registered types (catalog-known but not yet imported) cause the
-// validator to emit a misleading "Unknown model type" error even though
-// the type is registered and works at execution time. Introduced by PR
+// cross-model validation must await ensureTypeLoaded before modelRegistry.get,
+// or lazy-registered types get a misleading unknown model type error
 // #1063 (lazy per-bundle loading); the execution path was wired up but
-// the validation path was missed.
 Deno.test("validateModel loads lazy types before resolving cross-model references", async () => {
-  // Unique type string avoids collision with other tests sharing the
-  // global modelRegistry singleton; the finally block removes it again so
-  // the test also holds under --repeats. defineModel is intentionally NOT
-  // used here because it would eagerly register the type and defeat the
-  // whole point of simulating the lazy state.
+  // unique type string and cleanup keep this safe under --repeats; defineModel
+  // would register the type eagerly and defeat the simulated lazy state
   const LAZY_TYPE = "@test/issue-89-lazy-regression";
   const LAZY_MODEL_TYPE = ModelType.create(LAZY_TYPE);
   const lazyModel: ModelDefinition = {
@@ -1602,8 +1552,6 @@ Deno.test("validateModel loads lazy types before resolving cross-model reference
     modelRegistry.invalidateType(LAZY_TYPE);
   }
 });
-
-// ---------- Check Validation Tests ----------
 
 import type { CheckValidationContext } from "./validation_service.ts";
 import type { UnifiedDataRepository } from "../data/repositories.ts";
@@ -1713,7 +1661,6 @@ Deno.test("validateModel with no checks returns existing validations only", asyn
     createCheckContext(),
   );
 
-  // testExprModel has no checks, so no Check: results
   assertEquals(results.filter((r) => r.name.startsWith("Check:")).length, 0);
 });
 
@@ -1831,7 +1778,6 @@ Deno.test("validateModel check method filtering", async () => {
     globalArguments: { message: "hello" },
   });
 
-  // always-fail has appliesTo: ["create"], so filtering by "delete" should skip it
   const { results } = await service.validateModel(
     definition,
     testModelWithChecks,
@@ -1853,7 +1799,6 @@ Deno.test("validateModel no checkContext provided skips checks", async () => {
     globalArguments: { message: "hello" },
   });
 
-  // No checkContext — checks should not run
   const { results } = await service.validateModel(
     definition,
     testModelWithChecks,
@@ -1862,8 +1807,6 @@ Deno.test("validateModel no checkContext provided skips checks", async () => {
   const checkResults = results.filter((r) => r.name.startsWith("Check:"));
   assertEquals(checkResults.length, 0);
 });
-
-// ---------- Vault Expression Resolution in Checks ----------
 
 Deno.test("validateModel: checks receive resolved globalArgs when resolveRuntimeExpressions provided", async () => {
   const service = new DefaultModelValidationService();
@@ -1955,7 +1898,6 @@ Deno.test("validateModel: checks receive raw globalArgs when resolveRuntimeExpre
     createCheckContext(),
   );
 
-  // Without resolver, checks see the raw expression (existing behavior)
   assertEquals(capturedGlobalArgs?.password, vaultExpr);
 });
 
@@ -2001,7 +1943,6 @@ Deno.test("validateModel: vault resolution failure degrades gracefully to raw gl
     }),
   );
 
-  // Resolution failed — checks fall back to raw expression
   assertEquals(capturedGlobalArgs?.password, vaultExpr);
 });
 
@@ -2055,11 +1996,8 @@ Deno.test("validateModel: resolved globalArgs also appear in unresolvedMethodArg
     }),
   );
 
-  // Resolved value should pass through filteredGlobalArgs into unresolvedMethodArgs
   assertEquals(capturedUnresolvedMethodArgs?.password, "resolved-secret");
 });
-
-// ---------- Check Selection Validation Tests ----------
 
 Deno.test("validateModel: a missing required check reads in behavior words, with the model spelling for swamp model", async () => {
   const service = new DefaultModelValidationService();
@@ -2210,7 +2148,6 @@ Deno.test("validateModel definition-level skip excludes check from validate run"
   const checkNames = results.filter((r) => r.name.startsWith("Check:")).map((
     r,
   ) => r.name);
-  // always-fail is skipped by definition, always-pass should run
   assertEquals(checkNames.includes("Check: always-pass"), true);
   assertEquals(checkNames.includes("Check: always-fail"), false);
 });
@@ -2223,7 +2160,6 @@ Deno.test("validateModel check selection on model without checks", async () => {
     checks: { require: ["nonexistent"] },
   });
 
-  // testExprModel has no checks defined
   const { results } = await service.validateModel(
     definition,
     testExprModel,
@@ -2245,11 +2181,10 @@ Deno.test("validateModel runs checks with appliesTo even when no method specifie
     definition,
     testModelWithChecks,
     undefined,
-    createCheckContext(), // no method specified
+    createCheckContext(),
   );
 
   const checkResults = results.filter((r) => r.name.startsWith("Check:"));
-  // Both checks run: always-pass succeeds, always-fail (with appliesTo) also runs
   assertEquals(checkResults.length, 2);
   const passResult = checkResults.find((r) => r.name === "Check: always-pass");
   const failResult = checkResults.find((r) => r.name === "Check: always-fail");
@@ -2264,7 +2199,6 @@ Deno.test("validateModel skips checks with appliesTo when --method specifies a d
     globalArguments: { message: "hello" },
   });
 
-  // always-fail has appliesTo: ["create"], so --method delete should skip it
   const { results } = await service.validateModel(
     definition,
     testModelWithChecks,
@@ -2273,7 +2207,6 @@ Deno.test("validateModel skips checks with appliesTo when --method specifies a d
   );
 
   const checkResults = results.filter((r) => r.name.startsWith("Check:"));
-  // always-pass has no appliesTo → runs; always-fail has appliesTo: ["create"] → skipped for "delete"
   assertEquals(checkResults.length, 1);
   assertEquals(checkResults[0].name, "Check: always-pass");
   assertEquals(checkResults[0].passed, true);
@@ -2321,7 +2254,7 @@ Deno.test("validateModel warns when appliesTo references nonexistent method", as
     checks: {
       "typo-check": {
         description: "Has a typo in appliesTo",
-        appliesTo: ["creat"], // typo — "create" is the real method
+        appliesTo: ["creat"],
         execute: () => Promise.resolve({ pass: true }),
       },
     },
@@ -2366,8 +2299,6 @@ Deno.test("validateModel warns when appliesTo is empty array", async () => {
   assertStringIncludes(selResult?.error ?? "", "empty appliesTo");
   assertStringIncludes(selResult?.error ?? "", "will never run");
 });
-
-// ---------- Strict schema validation tests ----------
 
 Deno.test("validateModel rejects unknown global argument key", async () => {
   const service = new DefaultModelValidationService();
@@ -2565,15 +2496,6 @@ Deno.test("validateModel: check receives unresolvedMethodArgs with method argume
   assertEquals(capturedArgs?.spec, "19090:localhost:22");
 });
 
-// Regression tests for issue #2295: every accessor the CEL data namespace
-// exposes must be accepted in a model global argument. The validator's
-// allow-list was hand-written and fell behind the namespace, so `data.query`
-// and `data.findBySpec` were rejected in global arguments long after they
-// worked everywhere else — the reporter hit this and worked around it by
-// writing a list as one resource and reading it back with `data.latest`.
-//
-// The table is driven from DATA_NAMESPACE_ACCESSORS rather than listing names,
-// so an accessor added to the namespace without a case here is impossible.
 Deno.test("validateModel accepts every data namespace accessor in a global argument", async () => {
   const callFor: Record<string, string> = {
     version: "data.version('my-model', 'output', 1)",
@@ -2616,7 +2538,6 @@ Deno.test("validateModel accepts every data namespace accessor in a global argum
 });
 
 Deno.test("validateModel still rejects a global argument referencing nothing valid", async () => {
-  // In swamp's own data namespace, so not another templating system's text.
   const definition = Definition.create({
     name: "test-definition",
     globalArguments: { message: "${{ data.nope('my-model') }}" },
@@ -2636,10 +2557,9 @@ Deno.test("validateModel still rejects a global argument referencing nothing val
 });
 
 Deno.test("validateModel reports a malformed typeVersion as a failed validation", async () => {
-  // The Definition schema types typeVersion as a plain optional string so a
-  // malformed value survives for `model get` to name, which means the schema
-  // check passes it. This item is what turns it into something a user can see
-  // before a run fails (swamp-club#2412).
+  // the Definition schema types typeVersion as a plain optional string so a
+  // malformed value survives for model get to name; this check makes it visible
+  // before a run fails
   const service = new DefaultModelValidationService();
   const definition = Definition.create({
     name: "test-definition",
@@ -2660,10 +2580,8 @@ Deno.test("validateModel reports a malformed typeVersion as a failed validation"
 });
 
 Deno.test("validateModel accepts a definition that records no typeVersion", async () => {
-  // Absence is a legitimate state for a hand-written definition — it records
-  // that nobody stated which version the arguments were authored for. The
-  // upgrade service declines to migrate it rather than guessing, which is not
-  // a validation failure.
+  // absence is legitimate for a hand-written definition: the upgrade service
+  // declines to migrate it rather than guess, which is not a validation failure
   const service = new DefaultModelValidationService();
   const definition = Definition.create({
     name: "test-definition",
@@ -2759,8 +2677,6 @@ Deno.test("validateModel enforces an object-level globalArguments refinement (sw
   assertStringIncludes(invalid?.error ?? "", "apiKey or token required");
   assertEquals((await resultFor({ token: "t" }))?.passed, true);
 });
-
-// Upgrade chain in validation (swamp-club#3196)
 
 /**
  * A model type whose one upgrade renames the `host` global argument to
@@ -2917,8 +2833,6 @@ Deno.test("validateModel: checks arguments as written when an upgrade throws on 
     },
   );
 
-  // As before the upgrade ran in validation: a field holding a swamp
-  // expression skips the schema check until the run evaluates it.
   assertEquals(globalArguments?.passed, true);
 });
 
@@ -3178,8 +3092,8 @@ Deno.test("validateModel: Global arguments does not schema-check the raw text of
 });
 
 Deno.test("validateModel: Expression paths still accepts every expression that is one vault.get call end to end", async () => {
-  // Forms the check accepted before swamp-club#3360 and must keep accepting,
-  // whether or not the classifier can parse them.
+  // forms the check accepted before and must keep accepting, whether or not the
+  // classifier can parse them
   for (
     const message of [
       "${{ vault.get(`t`, `KEY`) }}",
@@ -3315,7 +3229,6 @@ Deno.test("validateModel: refuseLiteralSensitiveGlobals passes a vault.get sensi
 
 Deno.test("validateModel: a literal sensitive global passes without refuseLiteralSensitiveGlobals (swamp-club#3555)", async () => {
   const service = new DefaultModelValidationService();
-  // A copy holding a run's real values, which may be plaintext read through data.
   const definition = Definition.create({
     name: "real-values",
     globalArguments: { token: "Pl41n-s3cret" },
@@ -3503,7 +3416,6 @@ Deno.test("findLiteralSensitiveGlobals: does not refuse an old key the current v
       }),
     },
   );
-  // v1's token was a public client id; the upgrade moves it to clientId.
   const definition = Definition.create({
     name: "stale-client-id",
     typeVersion: "2026.01.01.1",
@@ -3517,8 +3429,6 @@ Deno.test("findLiteralSensitiveGlobals: does not refuse an old key the current v
     [],
   );
 });
-
-// Reserved tags (swamp-club#3635)
 
 Deno.test("validateModel: Tags fails on a reserved key in the definition's tags, without its value", async () => {
   const service = new DefaultModelValidationService();
@@ -3541,7 +3451,6 @@ Deno.test("validateModel: Tags fails on a reserved key in the definition's tags,
     "from the model definition's tags is reserved",
   );
   assertEquals((tags?.error ?? "").includes('["message"]'), false);
-  // The other checks still report.
   assertEquals(
     results.filter((r) => r.name !== "Tags").every((r) => r.passed),
     true,
@@ -3634,8 +3543,6 @@ Deno.test("validateModel: Tags passes for lookalike keys", async () => {
 
   assertEquals(results.find((r) => r.name === "Tags")?.passed, true);
 });
-
-// ---------- Typed secrets (3.5): Secret usage and check delivery ----------
 
 const secretUsageModel: ModelDefinition = {
   type: ModelType.create("test/secret-usage"),
@@ -3886,9 +3793,6 @@ Deno.test("validateModel: with no applicable check nothing is delivered", async 
   assertEquals(results.some((r) => r.name.startsWith("Check:")), false);
 });
 
-// Validation scoped to a method (swamp-club#3726)
-
-/** A model type with three methods, for validation scoped to one of them. */
 const threeMethodModel: ModelDefinition = {
   type: ModelType.create("test/method-scope"),
   version: "2026.02.09.1",
@@ -3902,13 +3806,6 @@ const threeMethodModel: ModelDefinition = {
   ),
 };
 
-/**
- * A definition whose `run` method is sound while `other` holds an
- * unresolvable model reference, a malformed swamp expression and another
- * service's template text, `broken` an argument its schema refuses, and
- * `extra`, a method the type does not define, another unresolvable
- * reference.
- */
 const scopedDefinitionProps = (
   run: Record<string, unknown> = { message: "hello" },
   globalArguments: Record<string, unknown> = { message: "hello" },
@@ -4149,10 +4046,6 @@ Deno.test("validateModel: a schema that throws while parsing a sensitive argumen
   assertStringIncludes(reported?.error ?? "", "key rejected: plain-value");
 });
 
-/**
- * A type whose global arguments carry a default, a coerced number and a
- * transform, with a check that records what it receives.
- */
 function parsingModel(
   seen: { globalArgs?: Record<string, unknown>; unresolved?: unknown },
   overrides: Partial<ModelDefinition> = {},
@@ -4320,8 +4213,6 @@ Deno.test("validateModel: pre-flight checks receive defaults of the upgraded glo
     region: "AP-SOUTH-1",
   });
 });
-
-// ── Serve's untrusted argument policy (swamp-club#3862) ─────────────────
 
 const listArgsModel: ModelDefinition = defineModel({
   type: ModelType.create("test/untrusted-list-args"),

@@ -21,10 +21,8 @@ import { assertEquals } from "@std/assert";
 import type { Command } from "@cliffy/command";
 import { initializeLogging } from "../../infrastructure/logging/logger.ts";
 
-// Import models barrel to trigger self-registration
 import "../../domain/models/models.ts";
 
-// Initialize logging for tests
 await initializeLogging({});
 
 Deno.test("modelTypeCommand module loads", async () => {

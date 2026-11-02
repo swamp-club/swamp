@@ -20,10 +20,8 @@
 import type { Workflow } from "./workflow.ts";
 
 /**
- * Computes a deterministic fingerprint of an evaluated workflow by hashing
- * a normalized JSON representation. Non-deterministic fields (the workflow
- * UUID) are excluded so the fingerprint is stable across re-evaluations
- * of the same definition.
+ * non-deterministic fields (the workflow UUID) are excluded so the fingerprint
+ * is stable across re-evaluations of the same definition
  */
 export async function computeWorkflowFingerprint(
   workflow: Workflow,

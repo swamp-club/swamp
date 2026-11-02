@@ -19,23 +19,14 @@
 
 import type { DataLifecycle } from "./data_metadata.ts";
 
-/**
- * Record returned by data access functions.
- * Represents a single version of a named data item with parsed content.
- *
- * Used by:
- * - CEL expression data functions (data.version, data.latest, etc.)
- * - DataAccessService for cross-model data reads
- * - context.readModelData() in execute functions
- */
 export interface DataRecord {
   id: string;
   name: string;
   version: number;
   isLatest: boolean;
   createdAt: string;
-  // Provenance namespace (giga-swamp Phase 2). Identifies which repo produced
-  // this data within a shared datastore. Empty string ('') in solo mode.
+  // which repo produced this data within a shared datastore; empty string in
+  // solo mode
   namespace: string;
   attributes: Record<string, unknown>;
   tags: Record<string, string>;
@@ -46,22 +37,19 @@ export interface DataRecord {
   dataType: string;
   contentType: string;
   lifetime: string;
-  // Version retention policy: a number for a count policy, a duration
-  // string otherwise. Empty string when unknown (a foreign row pulled from
-  // a catalog export written before the field existed).
+  // a count for a count policy, a duration string otherwise; empty when unknown
+  // (a foreign row from a catalog export written before the field existed)
   garbageCollection: number | string;
-  // "deleted" for a deletion marker, "active" otherwise. Empty string when
-  // unknown (a foreign row pulled from a catalog export written before the
-  // field existed).
+  // deleted for a deletion marker, active otherwise; empty when unknown (a
+  // foreign row from an older catalog export)
   lifecycle: DataLifecycle | "";
   ownerType: string;
   streaming: boolean;
   size: number;
   content: unknown;
-  // Local filesystem path of this version's stored content. Set only for
-  // records resolved by the CEL data.* functions when the file is on this
-  // host's disk; empty string otherwise (foreign namespace, ephemeral data,
-  // content not present locally, and every non-CEL caller).
+  // local path of this version's content, set only by the CEL data.* functions
+  // when the file is on this host; empty otherwise (foreign namespace,
+  // ephemeral, not present locally, non-CEL callers)
   path: string;
 
   // Provenance fields — promoted from tags/ownerDefinition to first-class.
@@ -74,11 +62,6 @@ export interface DataRecord {
   source: string;
 }
 
-/**
- * File metadata record for CEL expressions and ExpressionContext.
- * Eagerly loaded into the model context when a step writes a file
- * artifact, so downstream steps' CEL can reference its path/size/etc.
- */
 export interface FileDataRecord {
   id: string;
   version: number;

@@ -31,10 +31,8 @@ import { getTerminalColumns } from "../output/terminal_size.ts";
 const logger = getSwampLogger(["extension", "list"]);
 
 /**
- * The channel tag after a version. The channel the version is published on
- * leads, with the followed channel added when it differs, so a beta pulled
- * by exact version reads "[beta, following stable]". With no published
- * channel recorded, only a non-stable followed channel is shown.
+ * the published channel leads, with the followed channel added when it differs;
+ * with no published channel recorded, only a non-stable followed channel shows
  */
 function channelTag(
   ext: Pick<ExtensionListEntry, "channel" | "publishedChannel">,
@@ -48,14 +46,8 @@ function channelTag(
 }
 
 /**
- * Presentation-layer extension entry that may carry freshness data.
- *
- * Extends the libswamp ExtensionListEntry with optional fields populated
- * by the CLI-layer freshness composer. When `updateStatus` is undefined,
- * enrichment was skipped (TTY-off default or --no-check-updates) and
- * the renderer falls back to the bare list display. When
- * `updateStatus === "unknown_offline"` enrichment was attempted but the
- * registry call failed; `latestVersion` is null in that case.
+ * undefined updateStatus means enrichment was skipped and the bare list shows;
+ * unknown_offline means the registry call failed and latestVersion is null
  */
 export interface EnrichedExtensionListEntry extends ExtensionListEntry {
   latestVersion?: string | null;
@@ -188,8 +180,6 @@ class JsonExtensionListRenderer
   }
 }
 
-/** Event type carrying enriched entries; identical shape to ExtensionListEvent
- *  with EnrichedExtensionListEntry replacing ExtensionListEntry. */
 export type EnrichedExtensionListEvent =
   | { kind: "resolving" }
   | { kind: "completed"; data: { extensions: EnrichedExtensionListEntry[] } }

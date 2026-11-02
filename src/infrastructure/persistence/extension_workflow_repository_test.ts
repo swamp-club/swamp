@@ -51,7 +51,6 @@ async function withTempDir(
   }
 }
 
-/** Runs fn with warnings from the repository captured, returning them. */
 async function captureWarnings(fn: () => Promise<void>): Promise<string[]> {
   const records: LogRecord[] = [];
   await configure({
@@ -168,14 +167,12 @@ Deno.test("ExtensionWorkflowRepository returns empty for non-existent directory"
 
 Deno.test("ExtensionWorkflowRepository skips broken YAML files", async () => {
   await withTempDir(async (dir) => {
-    // Write a valid workflow
     const validData = createWorkflowYaml("valid-workflow");
     await Deno.writeTextFile(
       join(dir, "valid.yaml"),
       stringifyYaml(validData),
     );
 
-    // Write an invalid YAML file
     await Deno.writeTextFile(
       join(dir, "broken.yaml"),
       "this is: not: valid: yaml: [",
@@ -399,7 +396,6 @@ Deno.test("ExtensionWorkflowRepository warns again when a broken workflow's erro
 Deno.test("ExtensionWorkflowRepository updateAdditionalDirs: discovers workflows from newly added dirs", async () => {
   await withTempDir(async (baseDir) => {
     await withTempDir(async (additionalDir) => {
-      // Base dir has one workflow
       const baseWorkflow = createWorkflowYaml("base-workflow");
       await Deno.writeTextFile(
         join(baseDir, "base.yaml"),
@@ -411,14 +407,12 @@ Deno.test("ExtensionWorkflowRepository updateAdditionalDirs: discovers workflows
       assertEquals(workflows.length, 1);
       assertEquals(workflows[0].name, "base-workflow");
 
-      // Additional dir has another workflow
       const additionalWorkflow = createWorkflowYaml("additional-workflow");
       await Deno.writeTextFile(
         join(additionalDir, "additional.yaml"),
         stringifyYaml(additionalWorkflow),
       );
 
-      // Update dirs to include the additional directory
       repo.updateAdditionalDirs([additionalDir]);
       workflows = await repo.findAll();
       assertEquals(workflows.length, 2);
@@ -439,11 +433,9 @@ Deno.test("ExtensionWorkflowRepository updateAdditionalDirs: preserves base dir"
 
     const repo = new ExtensionWorkflowRepository(baseDir, ["/nonexistent"]);
 
-    // Replace additional dirs with empty list
     repo.updateAdditionalDirs([]);
     const workflows = await repo.findAll();
 
-    // Base dir workflow is still found
     assertEquals(workflows.length, 1);
     assertEquals(workflows[0].name, "base-workflow");
   });
@@ -471,7 +463,6 @@ Deno.test("ExtensionWorkflowRepository updateAdditionalDirs: replaces previous a
           ["workflow-a"],
         );
 
-        // Replace dirA with dirB
         repo.updateAdditionalDirs([dirB]);
         workflows = await repo.findAll();
         assertEquals(
@@ -597,7 +588,6 @@ Deno.test({
   },
 });
 
-/** An ExtensionWorkflowRepository that counts its full walks. */
 class CountingExtensionWorkflowRepository extends ExtensionWorkflowRepository {
   walks = 0;
 

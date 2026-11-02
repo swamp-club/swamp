@@ -17,68 +17,47 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * The v3 commit envelope (swamp-club#3233): one transaction on one
- * partition.
- *
- * @module
- */
-
 import { intentPartition } from "./intent.ts";
 import { isOp, type Op, opFromJSON, type OpJSON, requireFence } from "./op.ts";
 import { PartitionKey } from "./partition_key.ts";
 
 /**
- * The most ops one commit may carry, besides the one lease op serve may
- * stamp on it (swamp-club#4121): a writer fills a commit to this limit
- * before it knows whether serve will add one. The commit store may revisit
- * it.
+ * besides the one lease op serve may stamp on a commit: a writer fills a commit
+ * to this limit before it knows whether serve will add one
  */
 export const MAX_COMMIT_OPS = 10_000;
 
-/** The most ops a commit may carry with serve's lease op among them. */
 const MAX_OPS_WITH_LEASE = MAX_COMMIT_OPS + 1;
 
-/** The longest namespace, txnId, writer field or principal accepted. */
 const MAX_FIELD_LENGTH = 1024;
 
 const ISO_INSTANT = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z$/;
 
-/** The process that wrote a commit. */
 export interface CommitWriter {
   readonly host: string;
   readonly pid: number;
-  /** The writing instance's id: one CLI invocation or one serve process. */
   readonly instance: string;
 }
 
-/** What {@link Commit.create} takes. */
 export interface CommitProps {
   readonly seq: number;
   readonly partition: PartitionKey;
-  /** The datastore namespace; empty for an unnamespaced datastore. */
   readonly namespace: string;
   /** The outbox entry id. A retry carries the same one, so it lands once. */
   readonly txnId: string;
   readonly writer: CommitWriter;
-  /** When the writer ran the operation, by its own clock. */
   readonly executedAt?: string;
-  /** The writer's clock offset from the single writer's, when known. */
   readonly clockOffsetMs?: number;
-  /** Who the commit acts for. Set by serve only. */
   readonly principal?: string;
   /**
-   * The writer's fence: the writer lease's in solo mode, the leader
-   * lease's in team mode (swamp-club#3234). Once a partition has seen a fence
-   * it refuses a commit without one.
+   * the writer lease's in solo mode, the leader lease's in team mode; once a
+   * partition has seen a fence it refuses a commit without one
    */
   readonly fence?: number;
-  /** When the single writer accepted the commit. */
   readonly at: string;
   readonly ops: readonly Op[];
 }
 
-/** The serialized form of a {@link Commit}. */
 export interface CommitJSON {
   readonly v: 3;
   readonly seq: number;
@@ -94,11 +73,6 @@ export interface CommitJSON {
   readonly ops: readonly OpJSON[];
 }
 
-/**
- * One transaction on one partition: its ops apply together or not at all
- * (`Partition.append`). Immutable; built by {@link Commit.create} or
- * {@link Commit.fromJSON}.
- */
 export class Commit {
   readonly v = 3 as const;
 
@@ -116,14 +90,6 @@ export class Commit {
     readonly ops: readonly Op[],
   ) {}
 
-  /**
-   * Checks the envelope. Throws when `seq` is not a positive integer, a
-   * string field is empty or too long, a timestamp is not an ISO instant in
-   * UTC, the fence is not a non-negative integer, there are no ops or more
-   * than {@link MAX_COMMIT_OPS}, an op was not built by the op factories, a
-   * put's or tombstone's intent belongs to another partition, or a
-   * data-version op is in a partition that is not a model's.
-   */
   static create(props: CommitProps): Commit {
     if (!Number.isSafeInteger(props.seq) || props.seq < 1) {
       throw new Error(`Commit seq must be a positive integer: ${props.seq}`);
@@ -201,8 +167,8 @@ export class Commit {
   }
 
   /**
-   * Parses the serialized form. Async because each put's inline digest is
-   * recomputed from its bytes rather than read from the input.
+   * async because each put's inline digest is recomputed from its bytes, not
+   * read from the input
    */
   static async fromJSON(value: unknown): Promise<Commit> {
     if (typeof value !== "object" || value === null || Array.isArray(value)) {
@@ -278,8 +244,8 @@ export class Commit {
   }
 
   /**
-   * The chunks this commit's puts name, each once: chunk garbage collection
-   * must keep every one of them for as long as the commit is stored.
+   * chunk garbage collection must keep every one of them for as long as the
+   * commit is stored
    */
   chunkRefs(): readonly string[] {
     const hashes = new Set<string>();
@@ -290,7 +256,6 @@ export class Commit {
     return [...hashes];
   }
 
-  /** Commits are equal when their serialized forms are. */
   equals(other: Commit): boolean {
     return JSON.stringify(this.toJSON()) === JSON.stringify(other.toJSON());
   }

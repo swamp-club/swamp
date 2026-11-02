@@ -17,12 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Value object representing a pinned deno runtime version.
- *
- * Immutable, compared by value. Used to track which deno version
- * is embedded in the compiled binary and whether re-extraction is needed.
- */
 export class DenoVersion {
   readonly value: string;
 
@@ -30,12 +24,6 @@ export class DenoVersion {
     this.value = value;
   }
 
-  /**
-   * Creates a DenoVersion from a version string (e.g., "2.6.5").
-   *
-   * @param version - Semver version string
-   * @throws Error if version string is empty
-   */
   static create(version: string): DenoVersion {
     const trimmed = version.trim();
     if (!trimmed) {
@@ -44,10 +32,6 @@ export class DenoVersion {
     return new DenoVersion(trimmed);
   }
 
-  /**
-   * Parses the version from `deno --version` output.
-   * Extracts the version from the first line: "deno X.Y.Z (...)"
-   */
   static fromVersionOutput(output: string): DenoVersion {
     const match = output.match(/^deno\s+(\S+)/);
     if (!match) {

@@ -96,7 +96,6 @@ Deno.test("COMPACTED_TXN_RETENTION_MS: outlasts the retry bound plus the lease's
     COMPACTED_TXN_RETENTION_MS >
       OUTBOX_RETRY_BOUND_MS + WRITER_LEASE_CLOCK_SKEW_MS,
   );
-  // Days, not hours.
   assert(OUTBOX_RETRY_BOUND_MS >= 24 * 60 * 60 * 1000);
 });
 
@@ -360,7 +359,6 @@ Deno.test("planOutboxRecovery: an entry queued offline or kept after a rejection
   assertEquals(plan.sends, []);
   assertEquals(plan.offline, [stale, expired]);
   assertEquals(plan.held, [rejected, quarantined]);
-  // One that landed, offline or kept, settles.
   const landed = planOutboxRecovery([stale, rejected], {
     ...judge(),
     landed: (candidate) => candidate === rejected,

@@ -17,20 +17,9 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// Architectural fitness test: each CI review gate reads the verdict for the
-// commit under review.
-//
-// swamp-club#3425 / #3422: Claude Code refuses a Bash command whose quoted
-// argument has a line starting with `#`, so a reviewer told to post a `##`
-// heading in `--body "..."` retried until a bold-heading variant got through.
-// The gates matched only `^(## )?<Heading>`, skipped the bold review, and read
-// an older review on another commit instead — blocking a passing PR, or
-// letting an older pass stand in for a newer failure.
-//
-// The gates now match the heading with or without markdown emphasis, keep
-// only the review for the head commit, and fail when that review is missing.
-// The prompts post the body on stdin through a quoted heredoc, which the
-// permission check allows. These rules pin that shape.
+// gates match the heading with or without markdown emphasis, keep only the
+// review for the head commit, and fail when it is missing; prompts post the
+// body on stdin via a quoted heredoc
 
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import { dirname, fromFileUrl, join } from "@std/path";
@@ -57,7 +46,6 @@ interface Gate {
   heading: string;
   file: string;
   steps: Step[];
-  /** Name of the step that runs the reviewer. */
   reviewStep: string;
 }
 
@@ -101,10 +89,6 @@ function stepNamed(gate: Gate, name: string): Step {
   return step;
 }
 
-/**
- * Every jq `test("...")` pattern in a file that names the heading, decoded
- * from its jq string literal so the RegExp is the one jq runs.
- */
 function headingPatterns(text: string, heading: string): RegExp[] {
   const literals = text.match(/test\(("(?:[^"\\]|\\.)*")\)/g) ?? [];
   return literals

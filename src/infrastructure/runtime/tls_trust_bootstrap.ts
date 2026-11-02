@@ -18,23 +18,9 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * TLS trust bootstrap — runs `configureTlsTrust` as an import side effect.
- *
- * This module MUST be the first import in `main.ts`. Deno builds and caches its
- * rustls root store on the first TLS handshake in the process, after which
- * changes to `DENO_TLS_CA_STORE` / `DENO_CERT` have no effect. ES modules
- * evaluate depth-first in source order, so the first import is fully evaluated
- * before any later import's module body. Heavy dependencies pulled in by other
- * imports (the AWS SDK, OpenTelemetry, etc.) can trigger that first handshake at
- * module-evaluation time — i.e. before any statement in `main.ts`'s body. A
- * function call in the body therefore runs too late.
- *
- * Performing the configuration here, as the side effect of the first-evaluated
- * import, guarantees the trust environment is in place before any other module
- * is evaluated and before the first TLS connection is made.
- *
- * Keep this module's import graph minimal — it must not transitively import
- * anything that opens a TLS connection at evaluation time.
+ * must be the first import in main.ts: Deno caches its root store on the first
+ * TLS handshake, which heavy imports can trigger at evaluation, so a call in
+ * the body runs too late; keep this import graph minimal
  */
 
 import { configureTlsTrust } from "./tls_trust.ts";

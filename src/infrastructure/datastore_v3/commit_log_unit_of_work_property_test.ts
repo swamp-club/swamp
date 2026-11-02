@@ -41,12 +41,10 @@ import {
   WORKFLOW_ID,
 } from "./commit_log_test_helpers.ts";
 
-/** An in-memory chunk storage with small chunks, so content spans several. */
 function memory(): MemoryStorage {
   return new MemoryStorage({ maxChunkBytes: 32 * 1024 });
 }
 
-/** Three partitions: two models and one workflow run. */
 const TARGETS = ["model-a", "model-b", "run"] as const;
 type Target = typeof TARGETS[number];
 
@@ -61,7 +59,6 @@ function partitionFor(target: Target): PartitionKey {
   });
 }
 
-/** A tombstone on `target`, its key unique to its position in the run. */
 function opFor(target: Target, index: number): Op {
   const key = RecordKey.create(`probe/${target}/${index}`);
   if (target === "run") {
@@ -84,7 +81,6 @@ function opFor(target: Target, index: number): Op {
   });
 }
 
-/** One step: stage a change on a target, or checkpoint. */
 const arbStep = fc.oneof(
   { weight: 5, arbitrary: fc.constantFrom(...TARGETS) },
   { weight: 1, arbitrary: fc.constant("checkpoint" as const) },
@@ -99,7 +95,6 @@ Deno.test("commit-log unit property: every staged op lands once, in staging orde
         unitOptions(sink, memory()),
       );
       const expected = new Map<string, string[]>();
-      /** The partitions each flush touches, in first-touched order. */
       const flushes: Target[][] = [[]];
       for (const [index, step] of steps.entries()) {
         if (step === "checkpoint") {
@@ -118,7 +113,6 @@ Deno.test("commit-log unit property: every staged op lands once, in staging orde
       }
       await uow.commit();
 
-      // Every op lands once, in staging order within its partition.
       for (const [partition, keys] of expected) {
         const landed = sink.landed
           .filter((commit) => commit.partition.toString() === partition)
@@ -129,15 +123,12 @@ Deno.test("commit-log unit property: every staged op lands once, in staging orde
           );
         assertEquals(landed, keys);
       }
-      // Seqs have no gaps.
       for (const partition of expected.keys()) {
         const seqs = sink.landed
           .filter((commit) => commit.partition.toString() === partition)
           .map((commit) => commit.seq);
         assertEquals(seqs, seqs.map((_, i) => i + 1));
       }
-      // Each flush appends its non-run partitions in first-touched order,
-      // then the run partition.
       const order = flushes
         .filter((touched) => touched.length > 0)
         .flatMap((touched) => [

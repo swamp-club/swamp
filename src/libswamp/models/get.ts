@@ -44,9 +44,6 @@ import {
 } from "../types/schema_helpers.ts";
 
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
-/**
- * Data structure for the model get output.
- */
 export interface ModelGetData {
   id: string;
   name: string;
@@ -57,16 +54,12 @@ export interface ModelGetData {
   globalArguments: Record<string, unknown>;
   autoCreated?: boolean;
   /**
-   * The model type version this definition's global arguments were authored or
-   * migrated for, as recorded in the definition itself. Absent when the
-   * definition records none, in which case the upgrade chain does not run
-   * against it (swamp-club#2412). This previously reported the *registered*
-   * model version, which hid staleness entirely (swamp-club#900).
+   * the type version this definition's global arguments were authored or
+   * migrated for, as recorded in the definition; absent when it records none,
+   * in which case the upgrade chain does not run
    */
   typeVersion?: string;
-  /** The version of the model type currently registered from the bundle. */
   currentTypeVersion?: string;
-  /** How `typeVersion` relates to `currentTypeVersion`. */
   staleness?: StalenessState;
   globalArgumentsSchema?: object;
   methods?: MethodDescribeData[];
@@ -87,11 +80,8 @@ type ModelGetLookupResult = {
   autoCreated?: boolean;
 } | null;
 
-/** Dependencies for the model get operation. */
 export interface ModelGetDeps {
-  /** Looks up by name, then by exact id. */
   lookupDefinition: (idOrName: string) => Promise<ModelGetLookupResult>;
-  /** Looks up by exact id only; required for a `byId` request. */
   lookupDefinitionById?: (
     id: string,
     expectedName?: string,
@@ -101,7 +91,6 @@ export interface ModelGetDeps {
   ) => ModelDefinition | undefined | Promise<ModelDefinition | undefined>;
 }
 
-/** Wires real infrastructure into ModelGetDeps. */
 export async function createModelGetDeps(
   definitionRepo: YamlDefinitionRepository,
 ): Promise<ModelGetDeps> {
@@ -130,7 +119,6 @@ export async function createModelGetDeps(
   };
 }
 
-/** Retrieves model definition details. */
 export async function* modelGet(
   _ctx: LibSwampContext,
   deps: ModelGetDeps,
@@ -159,11 +147,9 @@ export async function* modelGet(
       const { definition, type: modelType, autoCreated } = result;
       const modelDef = await deps.getModelDef(modelType);
 
-      // Redact global arguments marked `{ sensitive: true }` before they enter
-      // the read model, so every output mode (log, json) and every consumer of
-      // ModelGetData — including `model search` — inherits the redaction. When
-      // the model type is unavailable the schema is unknown, so values pass
-      // through unredacted (matching the report path's behavior).
+      // redact sensitive global arguments before they enter the read model so
+      // every output mode and consumer inherits it; when the model type is
+      // unavailable the schema is unknown and values pass through unredacted
       const globalArguments = modelDef?.globalArguments
         ? redactSensitiveValues(
           modelDef.globalArguments,

@@ -251,7 +251,6 @@ Deno.test("revoke: preserves methods field", async () => {
   assertEquals(revoked.state, "revoked");
 });
 
-/** Runs `fn` with the test logger's warnings captured, as messages. */
 async function capturingWarnings(fn: () => Promise<void>): Promise<string[]> {
   const records: LogRecord[] = [];
   await configure({

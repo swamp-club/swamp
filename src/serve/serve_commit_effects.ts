@@ -18,34 +18,9 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * Keeping serve's in-memory state current from the commits it sees, on a v3
- * datastore (swamp-club#4120), in place of v2's pollers.
- *
- * Every commit that lands in this node's copy, its own or the leader's
- * through the commit feed, is classified by what it changes
- * ({@link commitEffectOf}): a definition or runtime record rebuilds the
- * catalog, a grant, group, token or worker reloads the access policy, and
- * the config or the extension lockfile asks the config check to run. A
- * leader's own writes keep its catalog and policy current as they land, so
- * on the leader only the config check runs: a lockfile a forwarded commit
- * changed is seen without an interval. When
- * the copy was replaced (a lineage restore, a compaction past what was
- * read), the individual commits are not seen, so everything is refreshed.
- *
- * A follower's copy moves before its read model catches up, and the policy
- * and catalog read the read model. So a follower applies effects only when
- * told its copy is caught up ({@link ServeCommitEffects.poke}), and only of
- * the commits its read model has applied: a reload any sooner reads the files
- * as they were, and no later commit would correct it.
- *
- * Serve's reads on a follower page no further than the commits whose
- * effects were applied ({@link ServeCommitEffects.appliedCursor}), so every
- * page is filtered under a policy that covers it (swamp-club#4207). Effects
- * a pass could not apply stay pending for the next poke, and a reload that
- * failed leaves the policy unknown until one succeeds: a follower refuses
- * reads meanwhile ({@link ServeCommitEffects.policyKnown}).
- *
- * @module
+ * a follower applies commit effects only for commits its read model has
+ * applied, since policy and catalog read it; a failed policy reload leaves the
+ * policy unknown and the follower refuses reads
  */
 
 import {
@@ -58,21 +33,16 @@ import { getSwampLogger } from "../infrastructure/logging/logger.ts";
 
 const logger = getSwampLogger(["serve", "commit-effects"]);
 
-/** The most commits one pass reads. */
 const PAGE = 1000;
 
-/** What {@link ServeCommitEffects} needs. */
 export interface ServeCommitEffectsDeps {
   readonly source: Pick<V3CommitFeedSource, "datastore" | "onMoved">;
   catalogInvalidate(): void;
   reloadPolicy(): Promise<unknown>;
-  /** Runs the config and extension lockfile check. */
   checkConfig(): void;
-  /** Whether this node follows: only a follower applies every effect. */
   isFollower(): boolean;
 }
 
-/** Every effect, for a refresh that saw no individual commits. */
 const EVERY_EFFECT: ReadonlySet<CommitEffect> = new Set([
   "config",
   "lockfile",
@@ -80,21 +50,16 @@ const EVERY_EFFECT: ReadonlySet<CommitEffect> = new Set([
   "runtime",
 ]);
 
-/** See the module documentation. */
 export class ServeCommitEffects {
   readonly #deps: ServeCommitEffectsDeps;
-  /** The last cursor a pass read. */
   #cursor: number;
-  /** The last cursor whose effects were applied. */
   #applied: number;
-  /** Effects read and not yet applied. */
   readonly #pending = new Set<CommitEffect>();
   #policyKnown = true;
   readonly #appliedListeners = new Set<() => void>();
   #running: Promise<void> | undefined;
   #again = false;
   #replaced = false;
-  /** A follower's copy was replaced; its read model has not caught up yet. */
   #replacedUnread = false;
   #off: (() => void) | undefined;
 
@@ -118,7 +83,6 @@ export class ServeCommitEffects {
     });
   }
 
-  /** Stops watching, and waits for a pass in flight. */
   async stop(): Promise<void> {
     this.#off?.();
     this.#off = undefined;
@@ -126,11 +90,9 @@ export class ServeCommitEffects {
   }
 
   /**
-   * Looks for new commits now: the copy and its read model are caught up.
-   * The feed and the tick's refresh call this after catching the copy up.
-   * A follower's effects wait for it, and on a datastore that does not
-   * replicate the follower opens the leader's own `commits.db`, so the
-   * leader's commits move no head in this process.
+   * called once the copy and its read model are caught up; a follower's effects
+   * wait for it. Without replication the follower opens the leader's
+   * commits.db, so leader commits move no head here.
    */
   poke(): void {
     if (this.#replacedUnread) {
@@ -141,29 +103,22 @@ export class ServeCommitEffects {
   }
 
   /**
-   * The last cursor whose effects were applied: on a follower, the last
-   * commit serve may page to, since its policy and catalog hold everything
-   * up to it.
+   * on a follower, the last commit serve may page to: its policy and catalog
+   * hold everything up to it
    */
   appliedCursor(): number {
     return this.#applied;
   }
 
-  /**
-   * Whether this node's policy can answer reads: false while a reload that
-   * access commits asked for has not succeeded.
-   */
   policyKnown(): boolean {
     return this.#policyKnown;
   }
 
-  /** Calls `listener` whenever {@link appliedCursor} moves. */
   onApplied(listener: () => void): () => void {
     this.#appliedListeners.add(listener);
     return () => this.#appliedListeners.delete(listener);
   }
 
-  /** Settles once no pass is running. */
   async settled(): Promise<void> {
     // A pass ending starts the one a poke queued meanwhile.
     while (this.#running !== undefined) await this.#running;

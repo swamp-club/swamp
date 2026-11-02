@@ -36,8 +36,6 @@ import {
   SWAMP_OWNED_DIR_NAMES,
 } from "../datastore/datastore_config.ts";
 
-// --- createNamespace validation ---
-
 Deno.test("createNamespace: accepts valid lowercase slug", () => {
   assertEquals(createNamespace("infra") as string, "infra");
 });
@@ -151,8 +149,6 @@ Deno.test("createNamespace: throws on colon", () => {
   );
 });
 
-// --- SOLO_NAMESPACE ---
-
 Deno.test("SOLO_NAMESPACE: is empty string", () => {
   assertEquals(SOLO_NAMESPACE as string, "");
 });
@@ -161,13 +157,9 @@ Deno.test("SOLO_NAMESPACE: isEmptyNamespace returns true", () => {
   assertEquals(isEmptyNamespace(SOLO_NAMESPACE), true);
 });
 
-// --- isEmptyNamespace ---
-
 Deno.test("isEmptyNamespace: returns false for non-empty namespace", () => {
   assertEquals(isEmptyNamespace(createNamespace("infra")), false);
 });
-
-// --- Equality ---
 
 Deno.test("createNamespace: equal slugs produce identical values", () => {
   const a = createNamespace("infra");
@@ -180,8 +172,6 @@ Deno.test("createNamespace: different slugs are not equal", () => {
   const b = createNamespace("security");
   assertEquals(a === b, false);
 });
-
-// --- parseNamespacedModelName ---
 
 Deno.test("parseNamespacedModelName: returns undefined namespace when no colon", () => {
   const result = parseNamespacedModelName("scanner");
@@ -234,8 +224,6 @@ Deno.test("parseNamespacedModelName: plain model name with no special chars", ()
   assertEquals(result, { namespace: undefined, modelName: "my-model" });
 });
 
-// --- formatNamespacedModelName ---
-
 Deno.test("formatNamespacedModelName: returns bare name when namespace undefined", () => {
   assertEquals(formatNamespacedModelName(undefined, "scanner"), "scanner");
 });
@@ -256,8 +244,6 @@ Deno.test("formatNamespacedModelName: round-trips with parseNamespacedModelName"
   const parsed = parseNamespacedModelName(formatted);
   assertEquals(parsed, { namespace: "infra", modelName: "@swamp/echo" });
 });
-
-// --- reserved names ---
 
 Deno.test("RESERVED_NAMESPACE_NAMES: is every name swamp uses in .swamp/", () => {
   assertEquals(
@@ -359,8 +345,6 @@ Deno.test("namespaceCollidesWithLayout: a name reserved for swamp's own .swamp/ 
   }
   assertEquals(namespaceCollidesWithLayout("data", []), true);
 });
-
-// --- isForeignToReader ---
 
 Deno.test("isForeignToReader: a row of the reader's namespace is its own", () => {
   for (const readsSoloNamespace of [false, true]) {

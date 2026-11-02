@@ -174,7 +174,6 @@ Deno.test("wait key: over any order of claims, settlements and collections one w
           ended.push(open);
           open = undefined;
         } else if (step.op === "collect" && ended.length > 0) {
-          // A run that ended is deleted: its claim goes, then its outcome.
           const [gone] = ended.splice(step.pick % ended.length, 1);
           await releaseKeyClaims(store, (c) => c.runId === gone.runId, NOW);
           await store.removeOutcome(gone.waitId);

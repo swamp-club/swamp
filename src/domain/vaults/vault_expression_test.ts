@@ -32,7 +32,6 @@ Deno.test("Direct Vault Service Error Messages", async (t) => {
         Error,
       );
 
-      // Test the detailed error message format
       assertStringIncludes(
         error.message,
         "Vault 'production' not found. No vaults are configured.",
@@ -61,7 +60,6 @@ Deno.test("Direct Vault Service Error Messages", async (t) => {
     async () => {
       const vaultService = new VaultService();
 
-      // Test with a different vault name to ensure it's dynamic
       const error = await assertRejects(
         () => vaultService.get("my-custom-vault", "secret-key"),
         Error,

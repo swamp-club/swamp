@@ -18,23 +18,9 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * The supervisor of a v3 writer's Litestream sidecar (swamp-club#3416): the
- * process that outlives a write command, runs Litestream as its child, and
- * stops it once the sidecar has been idle for its timeout.
- *
- * - It holds `supervisor.lock` exclusively for its whole life, so a command
- *   learns whether a sidecar runs by trying that lock, and the kernel drops
- *   it when the supervisor dies. Only the holder writes `presence.json`.
- * - It exits only once it holds `use.lock` exclusively after the idle
- *   timeout, so it never stops Litestream during a command that uses it.
- * - Litestream runs in the supervisor's process group (the supervisor is
- *   launched detached), so killing the group stops both, recorded or not.
- *
- * Launched by `LitestreamReplicator` with {@link supervisorArgs}, and entered
- * from `main.ts` before the CLI runs, or from
- * `replication_supervisor_entry.ts` when run from source.
- *
- * @module
+ * holds supervisor.lock for its whole life as the liveness signal; exits only
+ * holding use.lock exclusively; Litestream shares its process group, so killing
+ * the group stops both
  */
 
 import { shouldIdleExit } from "../../../domain/datastore_v3/litestream_replication.ts";
@@ -66,45 +52,29 @@ import {
   parseLitestreamReplicaType,
 } from "./sidecar_env.ts";
 
-/** What a supervisor is started with. */
 export interface SupervisorOptions {
-  /** The canonical `commits.db`. */
   readonly commitsDb: string;
-  /** The per-user root of the config and socket. */
   readonly privateRoot: string;
-  /** The lineage the config replicates, recorded in `presence.json`. */
   readonly lineageFence: number;
   readonly replicaPath: string;
   /**
-   * The kind of replica, which narrows the environment Litestream runs
-   * with (swamp-club#3534). Without it Litestream inherits the
-   * supervisor's whole environment.
+   * narrows the environment Litestream runs with; without it Litestream
+   * inherits the supervisor's whole environment
    */
   readonly replicaType?: LitestreamReplicaType;
-  /** How long the sidecar stays up unused. */
   readonly idleMs: number;
-  /** How long Litestream gets to stop before it is killed. */
   readonly stopWaitMs: number;
-  /** How often the idle check runs. */
   readonly tickMs: number;
-  /**
-   * The longest the sidecar goes without checking a lineage its writer
-   * keeps acknowledging on (swamp-club#3935, swamp-club#4261);
-   * {@link REPLICA_VERIFY_BACKSTOP_MS} when absent.
-   */
   readonly verifyIntervalMs?: number;
 }
 
-/** A running Litestream child. */
 export interface LitestreamChild {
   readonly pid: number;
   readonly exited: Promise<unknown>;
   kill(signal: Deno.Signal): void;
 }
 
-/** What the supervisor does to the world, replaceable in tests. */
 export interface SupervisorDeps {
-  /** Resolves the hash-checked binary, right before each start. */
   resolveBinary(): Promise<string>;
   startLitestream(
     binary: string,
@@ -113,43 +83,31 @@ export interface SupervisorDeps {
   ): LitestreamChild;
   now(): number;
   sleep(ms: number): Promise<void>;
-  /** Resolves once the supervisor is asked to stop (SIGTERM, SIGINT). */
   stopRequested?: Promise<void>;
-  /**
-   * Restores the lineage as a reader would and records the verdict
-   * (swamp-club#3935); see `replica_verifier.ts`. Without it the sidecar
-   * never checks its replica.
-   */
   verifyReplica?(request: SupervisorVerifyRequest): Promise<unknown>;
   /**
-   * The replica's newest snapshot by its max TXID, or undefined when it
-   * could not be read (swamp-club#4261); see `replica_snapshot.ts`. Without
-   * it no snapshot is ever new, and only a new lineage or the backstop
-   * starts a check.
+   * without it no snapshot is ever new, and only a new lineage or the backstop
+   * starts a check
    */
   readSnapshotTxid?(
     request: SupervisorSnapshotRequest,
   ): Promise<string | undefined>;
 }
 
-/** What a supervisor asks {@link SupervisorDeps.readSnapshotTxid} to list. */
 export interface SupervisorSnapshotRequest {
   readonly paths: ReplicationPaths;
   readonly replicaType: LitestreamReplicaType;
   readonly signal: AbortSignal;
 }
 
-/** What a supervisor asks {@link SupervisorDeps.verifyReplica} to check. */
 export interface SupervisorVerifyRequest {
   readonly paths: ReplicationPaths;
   readonly lineageFence: number;
   readonly replicaType: LitestreamReplicaType;
   readonly signal: AbortSignal;
-  /** The replica's newest snapshot when the check started, if known. */
   readonly snapshotTxid?: string;
 }
 
-/** Why a supervisor ended. */
 export type SupervisorExit =
   | "another-supervisor"
   | "idle"
@@ -164,7 +122,6 @@ export type SupervisorExit =
 const LOCK_RETRY_MS = 5_000;
 const LOCK_RETRY_STEP_MS = 50;
 
-/** The arguments that start a supervisor for `options`. */
 export function supervisorArgs(options: SupervisorOptions): string[] {
   return [
     SUPERVISOR_MARKER,
@@ -191,7 +148,6 @@ export function supervisorArgs(options: SupervisorOptions): string[] {
   ];
 }
 
-/** Parses {@link supervisorArgs}, or returns undefined when they are not. */
 export function parseSupervisorArgs(
   args: readonly string[],
 ): SupervisorOptions | undefined {
@@ -232,10 +188,6 @@ export function parseSupervisorArgs(
   };
 }
 
-/**
- * Runs a supervisor until its sidecar has idled out, Litestream has exited,
- * or it is asked to stop. Resolves with why it ended.
- */
 export async function runReplicationSupervisor(
   options: SupervisorOptions,
   deps: SupervisorDeps,
@@ -285,8 +237,8 @@ async function superviseHeld(
     supervisorPid: Deno.pid,
     uid: Deno.uid(),
     hostname: Deno.hostname(),
-    // Its owner is judged by this, not the hostname, which may change while
-    // it runs (swamp-club#3801).
+    // its owner is judged by this, not the hostname, which may change while it
+    // runs
     process: (await localProcess()).identity,
     lineageFence: options.lineageFence,
     replicaPath: options.replicaPath,
@@ -367,25 +319,14 @@ async function superviseHeld(
   }
 }
 
-/**
- * How often, at most, a sidecar lists its replica's snapshots while its
- * writer has acknowledged something no verdict covers (swamp-club#4261):
- * one LIST request each.
- */
 export const SNAPSHOT_POLL_INTERVAL_MS = 15 * 60 * 1000;
 
-/** How long one listing of the replica's snapshots may take. */
 const SNAPSHOT_POLL_DEADLINE_MS = 60 * 1000;
 
 /**
- * The sidecar's checks of its own replica (swamp-club#3935): at most one
- * at a time, started from the tick loop and never awaited by it, so a long
- * restore delays neither a stop request nor noticing Litestream exit. Which
- * checks run is `shouldVerifyReplica`'s rule (swamp-club#4261); the
- * replica's newest snapshot is listed the same way, in the background, and
- * only while there is something a check could cover: at most every
- * {@link SNAPSHOT_POLL_INTERVAL_MS}, and once more when the sidecar goes
- * idle, so its idle exit sees a snapshot written since.
+ * at most one check at a time, never awaited by the tick loop, so a long
+ * restore delays neither stop nor noticing Litestream exit; snapshots are
+ * listed rate-limited, and once more at idle
  */
 class ReplicaCheck {
   #running: Promise<void> | undefined;
@@ -404,7 +345,6 @@ class ReplicaCheck {
     return this.#running !== undefined;
   }
 
-  /** Starts a snapshot listing or a check when one is due. */
   async maybeStart(idle: boolean): Promise<void> {
     const verify = this.deps.verifyReplica;
     const replicaType = this.options.replicaType;
@@ -479,7 +419,6 @@ class ReplicaCheck {
         ...(snapshotTxid !== undefined ? { snapshotTxid } : {}),
       }).then(
         () => {},
-        // No verdict: tried again after the retry delay or a new snapshot.
         () => {},
       ).finally(() => {
         // The retry delay counts from here: a check can run 30 minutes.
@@ -488,13 +427,11 @@ class ReplicaCheck {
     );
   }
 
-  /** Cancels a running listing or check and waits for it. */
   async stop(): Promise<void> {
     this.#abort.abort();
     await this.#running;
   }
 
-  /** Whether the writer acknowledged something `last` does not cover. */
   #uncovered(
     acknowledgedTxid: string | undefined,
     last: ReplicaVerification | undefined,
@@ -513,7 +450,6 @@ class ReplicaCheck {
   }
 }
 
-/** Stops Litestream, killing it once `stopWaitMs` has passed. */
 async function stopChild(
   child: LitestreamChild,
   stopWaitMs: number,
@@ -536,7 +472,6 @@ async function cleanUp(paths: ReplicationPaths): Promise<void> {
   await Deno.remove(paths.socket).catch(() => {});
 }
 
-/** When a command last released the sidecar: `use.lock`'s mtime. */
 async function lastUsedAt(paths: ReplicationPaths): Promise<number> {
   try {
     return (await Deno.stat(paths.useLock)).mtime?.getTime() ?? 0;
@@ -545,7 +480,6 @@ async function lastUsedAt(paths: ReplicationPaths): Promise<number> {
   }
 }
 
-/** Records a use of the sidecar at `nowMs`. */
 export async function touchUseLock(
   paths: Pick<ReplicationPaths, "useLock">,
   nowMs: number,

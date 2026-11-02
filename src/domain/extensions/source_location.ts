@@ -20,28 +20,9 @@
 import { canonicalizePath } from "../../infrastructure/persistence/canonicalize_path.ts";
 
 /**
- * Identifies a single Source within an Extension aggregate.
- *
- * Three pieces of identity:
- *   - `canonicalPath`: case/separator-folded full path to the source `.ts`
- *     entry point. Used for equality. On case-insensitive filesystems
- *     (Windows always; macOS HFS+/APFS in their default config) two
- *     surface forms (`EXTENSIONS/Models/A.ts`, `extensions/models/a.ts`)
- *     resolve to the same canonical form.
- *   - `extensionRoot`: the directory the owning Extension considers its
- *     root. For pulled extensions this is the per-extension subtree
- *     (`<repo>/.swamp/pulled-extensions/@scope/foo`). For locals this is
- *     the repo root (NOT a per-kind directory — locals share one synthetic
- *     aggregate spanning every `extensions/<kind>/` tree).
- *   - `relativePath`: lexically `canonicalPath` rebased on
- *     `canonicalize(extensionRoot)`, kept for diagnostics and registration
- *     paths that need a stable short name.
- *
- * Equality is **by canonicalPath only**. Two SourceLocations with the
- * same canonicalPath but different extensionRoots are an aggregate-level
- * bug (an invariant the aggregate enforces). The value object itself
- * accepts the inputs and exposes them; it does not validate the
- * relationship.
+ * equality is by canonicalPath only, folded for case-insensitive filesystems;
+ * one canonicalPath with different extensionRoots is an aggregate bug this
+ * value object does not validate
  */
 export interface SourceLocation {
   readonly canonicalPath: string;
@@ -50,13 +31,8 @@ export interface SourceLocation {
 }
 
 /**
- * Constructs a SourceLocation. `absolutePath` and `extensionRoot` are
- * canonicalized via {@link canonicalizePath}; `relativePath` is computed
- * by lexical-rebase of the canonicalized absolutePath onto the
- * canonicalized extensionRoot. Caller is responsible for ensuring
- * `absolutePath` actually lives under `extensionRoot` — a path that
- * doesn't is an aggregate-level invariant violation, surfaced by Extension
- * (I1), not here.
+ * the caller ensures absolutePath lives under extensionRoot; a violation is an
+ * aggregate-level invariant surfaced by Extension, not here
  */
 export function makeSourceLocation(
   absolutePath: string,
@@ -71,10 +47,6 @@ export function makeSourceLocation(
   };
 }
 
-/**
- * Equality by canonicalPath. Two SourceLocations are equal iff their
- * canonicalPath strings match.
- */
 export function sourceLocationEquals(
   a: SourceLocation,
   b: SourceLocation,
@@ -83,18 +55,11 @@ export function sourceLocationEquals(
 }
 
 /**
- * Lexically rebases `child` on `parent`. Returns the substring of `child`
- * after `parent` plus a separator, or `child` unchanged if it doesn't
- * start with `parent`. Both inputs must already be canonicalized — this
- * function does no path normalization.
- *
- * On Windows, canonicalizePath has already converted backslashes to
- * forward slashes, so the separator we strip is always `/`.
+ * both inputs must already be canonicalized; canonicalizePath turns backslashes
+ * into forward slashes on Windows, so the separator stripped is always /
  */
 function lexicalRelative(parent: string, child: string): string {
   if (!child.startsWith(parent)) return child;
   const tail = child.slice(parent.length);
-  // Strip a leading separator if present. canonicalizePath collapses
-  // backslashes to forward slashes on Windows, so `/` is sufficient.
   return tail.startsWith("/") ? tail.slice(1) : tail;
 }

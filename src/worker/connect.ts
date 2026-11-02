@@ -17,19 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * The worker dial-home loop (see design/enablers/remote-execution.md, "Enrollment").
- *
- * A worker is a swamp binary plus a token and a URL: it opens the control
- * socket outbound, enrolls (or re-authenticates after a blip or restart),
- * keeps the data-plane session credential sliding, and executes dispatches
- * until told to stop. The instance UUID lives in memory only and tells a
- * same-process reconnect apart from a new process; the machine id persists
- * in the cache directory and is what the token binds to — a worker with a
- * stable cache directory survives restarts and reboots on the same token
- * until the token lifetime expires.
- */
-
 import { join } from "@std/path";
 import { RpcChannel, RpcError } from "../domain/remote/rpc_channel.ts";
 import {
@@ -62,14 +49,11 @@ import {
 
 const logger = getSwampLogger(["worker", "connect"]);
 
-/** Refresh the session credential when 2/3 of its lifetime has elapsed. */
 const REFRESH_FRACTION = 2 / 3;
 
-/** Reconnect backoff: starts here, doubles, caps below. */
 const RECONNECT_BASE_DELAY_MS = 1_000;
 const RECONNECT_MAX_DELAY_MS = 30_000;
 
-/** Give up after this many consecutive connection failures before enrollment. */
 const MAX_PRE_ENROLL_FAILURES = 3;
 
 export type WorkerStatusEvent =
@@ -94,56 +78,31 @@ export interface WorkerExitResult {
 }
 
 export interface RunWorkerOptions {
-  /** Orchestrator control-socket URL (ws:// or wss://). */
   url: string;
-  /** Enrollment credential of the form `<name>.<secret>`. */
   token: string;
   labels?: Record<string, string>;
   swampVersion: string;
-  /** Overrides the data-plane base URL derived from the connect URL. */
   dataPlaneUrl?: string;
   /**
    * Bundle/asset cache directory; defaults to a fresh temp dir, removed when
    * the worker exits unless a dispatch is still running from it.
    */
   cacheDir?: string;
-  /** Abort to shut the worker down. */
   signal?: AbortSignal;
-  /** Status callback for CLI rendering. */
   onStatus?: (event: WorkerStatusEvent) => void;
-  /** Reconnect on socket loss (default true). */
   reconnect?: boolean;
-  /** Drain and exit 0 after N dispatches complete. */
   maxDispatches?: number;
-  /** Drain and exit 0 after being continuously idle for this many ms. */
   idleTimeoutMs?: number;
-  /** Number of concurrent dispatch slots (default 1). */
   concurrency?: number;
-  /**
-   * Called once during setup with a function that triggers drain from
-   * outside (e.g. signal handler). The caller can store this and invoke
-   * it when a signal arrives.
-   */
   onDrainAvailable?: (requestDrain: (reason: WorkerExitReason) => void) => void;
-  /** Extra headers for proxy/tunnel pass-through (env: SWAMP_SERVE_EXTRA_HEADERS). */
   headers?: Record<string, string>;
-  /**
-   * PEM-encoded CA certificates to trust for TLS connections: the control
-   * socket and every dispatch runner's data-plane requests.
-   */
   caCerts?: string[];
-  /** Test seam: WebSocket factory. */
   createSocket?: (url: string, headers?: Record<string, string>) => WebSocket;
-  /** Test seam: override the runner command for the dispatch child process. */
   runnerCommand?: { cmd: string; args: string[] };
   /**
-   * Set for a worker without a swamp-club credential, which passes the auth
-   * gate on its orchestrator's pass (design/surfaces/auth-gate.md, "Remote
-   * workers"). Called with the pass from the first successful enrollment, or
-   * with undefined when the orchestrator sent none (`serveRefused` when it
-   * refused with `gate_pass_unavailable`); it throws the gate's block error
-   * to stop the worker. Admission happens once per process: a reconnect does
-   * not repeat it.
+   * for a worker without a swamp-club credential: called once per process with
+   * the orchestrator's pass (undefined if none) and throws the gate's block
+   * error to stop the worker
    */
   admitGatePass?: (
     gatePass: string | undefined,
@@ -156,11 +115,6 @@ interface SessionState {
   expiresAtMs: number;
 }
 
-/**
- * Run the worker until the signal aborts, enrollment is permanently
- * rejected, a lifecycle policy triggers drain, or (with reconnect
- * disabled) the socket closes.
- */
 export async function runWorker(
   options: RunWorkerOptions,
 ): Promise<WorkerExitResult> {
@@ -177,9 +131,8 @@ export async function runWorker(
 }
 
 /**
- * Removes the temp cache directory a worker made for itself. An abort
- * returns without waiting for in-flight dispatches, which may still be
- * running bundles from it: the directory is then left behind.
+ * an abort returns without waiting for in-flight dispatches, which may still
+ * run bundles from it, so the directory is left behind
  */
 export async function releaseWorkerCacheDir(
   cacheDir: string,
@@ -251,9 +204,8 @@ async function runWorkerFrom(
     const channel = currentChannel;
     const close = currentCloseConnection;
     if (handle) {
-      // Announce the drain before waiting on in-flight work, so the
-      // orchestrator stops scheduling onto this worker for the whole drain
-      // (swamp-club#3156). A failed announcement must not hold up the drain.
+      // announce the drain before waiting on in-flight work so the orchestrator
+      // stops scheduling here; a failed announcement must not hold up the drain
       const callDrain = () =>
         channel
           ? channel.call(RemoteMethod.drain, {}).then(() => {}, () => {})
@@ -376,10 +328,9 @@ async function runWorkerFrom(
 const MACHINE_ID_FILE = "machine-id";
 
 /**
- * Durable machine identity: read `machine-id` from the cache directory or
- * create it. The enrollment token binds to this id, so a stable cache
- * directory (--cache-dir) is what lets a worker re-enroll after a restart;
- * the default temp cache directory yields a fresh id per process.
+ * the enrollment token binds to this id, so a stable cache directory lets a
+ * worker re-enroll after a restart; the default temp directory yields a fresh
+ * id per process
  */
 async function loadOrCreateMachineId(cacheDir: string): Promise<string> {
   const path = join(cacheDir, MACHINE_ID_FILE);
@@ -400,12 +351,9 @@ async function loadOrCreateMachineId(cacheDir: string): Promise<string> {
 }
 
 /**
- * Enrollment failures that retrying cannot fix — a dead token or a version
- * mismatch needs a new token or a new binary, not patience. A coded
- * rejection is decided by its code. An uncoded one (an orchestrator that
- * predates the codes, or a transport error) is matched on its text with
- * quoted names removed, so a token named e.g. 'expired-runners' cannot turn
- * a retryable failure into a permanent stop.
+ * retrying cannot fix a dead token or version mismatch; an uncoded rejection is
+ * matched on its text with quoted names removed, so a token named
+ * 'expired-runners' cannot make a retryable failure permanent
  */
 function isPermanentEnrollmentFailure(error: unknown): boolean {
   if (error instanceof AuthGateBlockedError) return true;
@@ -438,7 +386,6 @@ function abortableDelay(ms: number, signal?: AbortSignal): Promise<void> {
   });
 }
 
-/** Whether this process has passed the auth gate (see `admitGatePass`). */
 interface GateState {
   admitted: boolean;
   /**
@@ -467,7 +414,6 @@ interface ConnectOnceArgs {
   onDispatchFinished: () => void;
 }
 
-/** One socket lifetime: connect, enroll, serve dispatches until close. */
 function connectOnce(args: ConnectOnceArgs): Promise<string> {
   const lifecycleTrace = traceCarrier(injectTraceContext());
   const { options, instanceUuid, machineId, session, gate } = args;
@@ -556,12 +502,9 @@ function connectOnce(args: ConnectOnceArgs): Promise<string> {
       ).then((result) => {
         session.credential = result.sessionCredential;
         session.expiresAtMs = result.sessionExpiresAtMs;
-        // The orchestrator counts the worker as ready once enrollment
-        // returns, so the handler is registered now; a dispatch that
-        // arrives before admission waits for it.
-        // Until admission completes, a reconnect asks for a pass again; if
-        // the serve has since dropped its pass, that refusal stops the
-        // worker even while the first check is pending (fails closed).
+        // the handler is registered before admission so an early dispatch waits
+        // for it; until admitted, a reconnect asks for a pass again and a
+        // refusal stops the worker (fails closed)
         const admitGatePass = options.admitGatePass;
         const admitted = gate.admitted || !admitGatePass
           ? Promise.resolve()
@@ -609,9 +552,9 @@ function connectOnce(args: ConnectOnceArgs): Promise<string> {
           });
         });
       }).catch(async (error: unknown) => {
-        // Never rejects: everything below is caught and ends in finish().
-        // An orchestrator with no pass to give refuses before redeeming the
-        // token; admission turns that into the gate's own block.
+        // never rejects: everything is caught and ends in finish(); an
+        // orchestrator with no pass refuses before redeeming the token, which
+        // admission turns into the gate's block
         let failure = error;
         if (
           options.admitGatePass && error instanceof RpcError &&

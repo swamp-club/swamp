@@ -20,29 +20,20 @@
 import { LineIndex, type SourceComment } from "./extension_source_ast.ts";
 
 /**
- * Where a line of a bundle came from:
- * - `author` — a module whose path is not a dependency's: the extension's
- *   own code. So is the code after a line comment that names no module and
- *   is no known annotation, since it cannot be shown to be a dependency's.
- * - `dependency` — a module in a Deno or npm cache, `node_modules`, or at a
- *   remote specifier.
- * - `unattributed` — code above the first module comment (esbuild's runtime
- *   prelude), or anywhere in a bundle with no module comments.
+ * author is the extension's own code, including code after an unrecognised line
+ * comment, which cannot be shown to be a dependency's; unattributed is
+ * esbuild's prelude or a bundle with no module comments
  */
 export type BundleModuleOrigin = "author" | "dependency" | "unattributed";
 
-/** The module a bundle line belongs to. */
 export interface BundleModule {
-  /** The module's path as its comment wrote it; absent when unattributed. */
   path?: string;
   origin: BundleModuleOrigin;
 }
 
-/** A module boundary: the line it is on, and the path its comment names. */
 interface ModuleMark {
   line: number;
   path: string;
-  /** False when the comment names no module the pattern recognizes. */
   recognized: boolean;
 }
 
@@ -73,15 +64,10 @@ const DEPENDENCY_PATH = new RegExp(
   "i",
 );
 
-/** The path with each backslash read as a separator (a Windows build). */
 function slashed(path: string): string {
   return path.replaceAll("\\", "/");
 }
 
-/**
- * Whether a module comment's path is a dependency's: a Deno or npm cache
- * path, a `node_modules` path, or a remote specifier.
- */
 export function isDependencyModulePath(path: string): boolean {
   return DEPENDENCY_PATH.test(slashed(path));
 }
@@ -106,10 +92,6 @@ export function dependencyLabel(path: string): string {
   return p.replace(/^(?:\.\.\/)+/, "");
 }
 
-/**
- * The boundary a line comment at column 0 marks, or undefined for an
- * annotation, which marks none.
- */
 function markFor(line: number, text: string): ModuleMark | undefined {
   const match = MODULE_COMMENT.exec(text);
   if (match) return { line, path: match[1], recognized: true };
@@ -118,15 +100,9 @@ function markFor(line: number, text: string): ModuleMark | undefined {
 }
 
 /**
- * The modules of a bundle `deno bundle` wrote, read from the comment esbuild
- * puts above each module's code. Answers which module a line belongs to.
- *
- * Every line comment at column 0 other than a known annotation is a
- * boundary, so a module comment the pattern does not recognize (an unusual
- * extension, a path broken by a newline) still ends the module above it.
- * Lines are counted by `\n`, as the safety rules count them.
- *
- * The comments are text in the bundle: whoever built it chose them.
+ * every column-0 line comment except a known annotation is a boundary, so an
+ * unrecognised module comment still ends the module above. The comments are
+ * text whoever built the bundle chose.
  */
 export class BundleModuleMap {
   private constructor(private readonly marks: readonly ModuleMark[]) {}
@@ -152,10 +128,6 @@ export class BundleModuleMap {
     return new BundleModuleMap(marks);
   }
 
-  /**
-   * The map of a bundle that does not parse, from every line that starts
-   * with `//`.
-   */
   static fromText(source: string): BundleModuleMap {
     const marks: ModuleMark[] = [];
     const lines = source.split("\n");
@@ -168,12 +140,10 @@ export class BundleModuleMap {
     return new BundleModuleMap(marks);
   }
 
-  /** How many module boundaries the bundle holds. */
   get moduleCount(): number {
     return this.marks.length;
   }
 
-  /** The module the 1-based `line` belongs to: the closest boundary above it. */
   moduleAt(line: number): BundleModule {
     let lo = 0;
     let hi = this.marks.length - 1;

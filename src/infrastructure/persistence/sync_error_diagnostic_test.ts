@@ -132,7 +132,6 @@ Deno.test("summarizeSyncError: plain object error with no message", () => {
 Deno.test("summarizeSyncError: empty message treated as missing", () => {
   const err = new Error("");
   const { summary, fields } = summarizeSyncError("pull", "@t/x", err);
-  // Falls back to the error name ("Error") as trailer.
   assertStringIncludes(summary, ": Error");
   assertEquals(fields.errorMessage, undefined);
 });
@@ -144,9 +143,7 @@ Deno.test("summarizeSyncError: long message truncated at 2000 chars with ellipsi
   // `fields.errorMessage` retains the full message for consumers that want it
   // (e.g. .cause-walking renderers); only the summary is truncated.
   assertEquals(fields.errorMessage, long);
-  // Summary contains exactly 2000 'a's followed by ellipsis.
   assertStringIncludes(summary, "a".repeat(2000) + "…");
-  // Summary does NOT contain the 2001st 'a' because it was truncated.
   const after = summary.split("a".repeat(2000))[1] ?? "";
   assertEquals(after.startsWith("a"), false);
 });
@@ -169,14 +166,11 @@ Deno.test("summarizeSyncError: throwing getters on read fields don't break extra
 
   const { summary, fields } = summarizeSyncError("pull", "@t/x", err);
 
-  // Safe fields still extracted.
   assertEquals(fields.httpStatusCode, 403);
   assertEquals(fields.requestId, "R1");
   assertEquals(fields.code, "AccessDenied");
-  // Throwing fields are treated as missing, not surfaced as errors.
   assertEquals(fields.errorMessage, undefined);
   assertEquals(fields.name, undefined);
-  // Summary still renders without the throwing fields.
   assertStringIncludes(summary, "@t/x pull failed");
   assertStringIncludes(summary, "HTTP 403");
   assertStringIncludes(summary, "code=AccessDenied");
@@ -215,8 +209,6 @@ Deno.test("summarizeSyncError: summary strips newlines so it stays single-line",
   assertStringIncludes(summary, "@t/x pull failed");
   assertStringIncludes(summary, "code=X");
   assertStringIncludes(summary, "line1 line2 line3");
-  // Full, unmodified message remains on `errorMessage` for consumers
-  // that want fidelity (e.g. a later renderer walking .cause).
   assertEquals(fields.errorMessage, "line1\nline2\n\n  line3");
 });
 
@@ -236,7 +228,6 @@ Deno.test("isDatastoreAuthorizationError: an S3-style refusal by status or code 
       Object.assign(new Error("denied"), { name: "InvalidAccessKeyId" }),
     ),
   );
-  // A Google API error carries the status as a numeric code.
   assert(isDatastoreAuthorizationError({ code: 403, message: "Forbidden" }));
 });
 

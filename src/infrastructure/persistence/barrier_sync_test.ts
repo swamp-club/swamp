@@ -25,7 +25,6 @@ import {
   barrierSync,
 } from "./barrier_sync.ts";
 
-/** A fake libc recording its calls; `fcntl` answers `result`. */
 function fakeLibc(
   options: { fd?: number; fcntl?: () => Promise<number> } = {},
 ) {

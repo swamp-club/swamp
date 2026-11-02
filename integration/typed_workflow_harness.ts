@@ -18,23 +18,8 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * The typed workflow harness: a temp repository with a counting vault that
- * answers existence itself, a writer behavior with tagged records, and the
- * drivers the typed-secrets integration scenarios share (typed-secrets 4.1
- * to 4.4). No test lives here; typed_workflow_passes_test.ts and
- * typed_persistence_seams_test.ts import it.
- */
-
-/**
- * Typed secrets in the workflow passes, end to end
- * (design/enablers/typed-secrets.md Sections 3.4, 5 and 7.1, typed-secrets
- * 4.1): guards, asserts, forEach items and identities, child workflow
- * bindings and the model.method consumer path run through a real
- * WorkflowExecutionService on a temp repository, against a vault that
- * answers existence itself and counts every value it hands out, so a load
- * is a load and a check costs nothing. The internal option is turned on by
- * passing the run its sensitive values over a typed registry, as only tests
- * may. Every scenario uses default production construction.
+ * the vault answers existence itself and counts every value it hands out, so a
+ * load is a load and a check costs nothing
  */
 
 import { assert, assertEquals } from "@std/assert";
@@ -90,53 +75,36 @@ export interface Fixture {
   repoDir: string;
   type: string;
   canaries: Canary[];
-  /** The value stored under TOKEN_KEY, a canary of its own. */
   token: string;
-  /** What the trusted method received, in order. */
   received: Received[];
-  /** Every value the vault handed out: a load. */
   loads: string[];
-  /** Every existence answer the vault gave: a check that read nothing. */
   checks: string[];
   run: (
     workflow: Workflow,
     extra?: Workflow[],
     inputs?: Record<string, unknown>,
   ) => Promise<Run>;
-  /** Resumes a suspended run, over a typed registry when `typed`. */
   resume: (
     workflowName: string,
     runId: string,
   ) => Promise<Run>;
-  /**
-   * Replays a workflow's evaluated cache (`--last-evaluated`), over a typed
-   * registry when `typed`.
-   */
   replay: (workflowName: string) => Promise<Run>;
-  /** Rotates the value the vault holds under `key`, as an operator would. */
   rotate: (key: string, value: string) => void;
-  /** Approves the run's waiting manual approval in its record. */
   approve: (workflowName: string, runId: string) => Promise<void>;
-  /** Saves a workflow, replacing the stored one of the same id. */
   saveWorkflow: (workflow: Workflow) => Promise<void>;
-  /** Edits a run's stored record in place. */
   editRun: (
     workflowName: string,
     runId: string,
     edit: (data: Record<string, unknown>) => void,
   ) => Promise<void>;
-  /** Called by the write methods once their record is written. */
   hooks: { afterWrite?: () => void; directTypeResolver?: DirectTypeResolver };
   /**
-   * Writes one tagged record per canary class through a prior run of the
-   * real writer, then clears the counters, so a scenario's loads and checks
-   * are its own. Expansion and the run-start pass read data before any step
-   * runs, so the records must exist before the scenario's run starts.
+   * writes one tagged record per canary class through a prior run of the real
+   * writer, then clears the counters; expansion and the run-start pass read
+   * data before any step runs, so the records must exist first
    */
   seed: () => Promise<void>;
-  /** The vault key the record `name` stores its password under. */
   storedKey: (name: string) => Promise<string>;
-  /** Files under .swamp holding `value`, or the sentinel mark. */
   filesHolding: (value: string) => Promise<string[]>;
   forbidden: string[];
 }
@@ -148,7 +116,6 @@ export interface Run {
   errors: Map<string, string>;
   skipped: Map<string, unknown>;
   asserts: Map<string, { passed: boolean; message: string }>;
-  /** The run record of the completed run, as a JSON text. */
   record: string;
 }
 
@@ -300,7 +267,6 @@ export async function withFixture(
     };
     const workflowRepo = new YamlWorkflowRepository(repoDir);
     const runRepo = new YamlWorkflowRunRepository(repoDir);
-    /** What a run or a resume is handed: a typed registry when `typed`. */
     const sensitiveValuesFor = () => {
       const redactor = new SecretRedactor();
       return {
@@ -551,12 +517,9 @@ export const PASSWORD = `\${{ ${PASSWORD_CEL} }}`;
 export const TOKEN = `\${{ vault.get('${VAULT}', '${TOKEN_KEY}') }}`;
 
 /**
- * Every event, the run-carrying ones included, and the run record hold no
- * canary and no sentinel. A run-carrying event is judged as the json output
- * and the serve stream show it, through the libswamp run view, since the
- * domain event carries the aggregate itself, whose memory holds sentinels
- * in a typed run. `allowed` names sentinel-shaped text the scenario fed in
- * as data (another prefix), which persists as it is by design.
+ * a run-carrying event is judged through the libswamp run view, as json output
+ * shows it, since the aggregate's memory holds sentinels; `allowed` text fed in
+ * as data persists by design
  */
 export async function assertNothingLeaked(
   f: Fixture,

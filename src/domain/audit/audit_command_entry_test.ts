@@ -30,7 +30,6 @@ Deno.test("createBashCommandEntry creates entry with timestamp", () => {
   assertEquals(entry.sessionId, "session-1");
   assertEquals(entry.command, "aws s3 ls");
   assertEquals(entry.cwd, "/repo");
-  // Timestamp should be a valid ISO string
   assertEquals(typeof entry.timestamp, "string");
   assertEquals(isNaN(new Date(entry.timestamp).getTime()), false);
 });

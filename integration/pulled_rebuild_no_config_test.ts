@@ -18,13 +18,9 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * A rebuild of pulled extension source reads no Deno config from the
- * consumer's repository (swamp-club#3970). Deno discovers a deno.json from
- * the working directory, so `deno bundle` runs here with its working
- * directory at a consumer repository whose deno.json maps a bare name to a
- * module of the consumer's: with the flags a pulled rebuild gets
- * (`denoProjectArgs({ noConfig: true })`) that mapping never reaches the
- * pulled source; with the flags a local extension gets, it does.
+ * a rebuild of pulled extension source must read no Deno config from the
+ * consumer's repo: with the noConfig flags its deno.json mapping never reaches
+ * the pulled source, with a local extension's flags it does
  */
 
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
@@ -39,10 +35,6 @@ const ENV = {
 
 const EVIL_MARKER = "consumer-config-reached-pulled-source";
 
-/**
- * A consumer repository whose deno.json maps `vecdep` to its own module,
- * with a pulled extension's model importing `vecdep`.
- */
 async function withConsumerRepo(
   fn: (repoDir: string, source: string) => Promise<void>,
 ): Promise<void> {
@@ -89,7 +81,6 @@ async function withConsumerRepo(
   }
 }
 
-/** Runs `deno bundle` from `cwd` with `projectArgs`; returns its result. */
 async function bundleFrom(
   cwd: string,
   source: string,

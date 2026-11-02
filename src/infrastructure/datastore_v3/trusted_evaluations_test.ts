@@ -29,7 +29,6 @@ import type { V3Datastore } from "./v3_datastore.ts";
 
 const TYPE = ModelType.create("acme/web");
 
-/** A trust over one stored evaluation of `web`, written by `writer`. */
 function trustOver(
   writer: string | null,
   options: { stored?: Definition; size?: number; own?: string } = {},

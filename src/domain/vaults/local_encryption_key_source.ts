@@ -18,13 +18,8 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * The local_encryption config fields that decide where the vault's key
- * material comes from and where its secrets are stored on the host. Unset
- * ssh_key_path with auto_generate unset or false reads the host's default
- * SSH key, so auto_generate is one of them too.
- *
- * A remote caller (swamp serve) must not choose these: they name files on
- * the machine running swamp, not on the caller's (swamp-club#2690).
+ * these decide where key material comes from and secrets are stored; a remote
+ * caller must not choose them, since they name files on the server's machine
  */
 export const LOCAL_ENCRYPTION_KEY_SOURCE_FIELDS = [
   "base_dir",
@@ -36,18 +31,11 @@ export const LOCAL_ENCRYPTION_KEY_SOURCE_FIELDS = [
 export type LocalEncryptionKeySourceField =
   typeof LOCAL_ENCRYPTION_KEY_SOURCE_FIELDS[number];
 
-/**
- * Whether a vault type is the built-in local_encryption type. Vault types
- * resolve case-insensitively, so this does too.
- */
+/** vault types resolve case-insensitively, so this does too */
 export function isLocalEncryptionType(type: string): boolean {
   return type.toLowerCase() === "local_encryption";
 }
 
-/**
- * The key source a server applies when the caller cannot choose one: an
- * auto-generated key stored with the secrets under the server's repo.
- */
 export function serverDefaultKeySource(
   repoDir: string,
 ): Record<LocalEncryptionKeySourceField, unknown> {
@@ -60,10 +48,8 @@ export function serverDefaultKeySource(
 }
 
 /**
- * The key-source fields whose value in `config` differs from `reference`.
- * A field unset in both is unchanged. Values compare strictly, so anything
- * other than an identical primitive counts as changed. Returns field names
- * only, never values: the values are host paths.
+ * returns field names only, never values, since the values are host paths;
+ * values compare strictly
  */
 export function findChangedKeySourceFields(
   config: Record<string, unknown>,
@@ -75,13 +61,8 @@ export function findChangedKeySourceFields(
 }
 
 /**
- * The key-source fields `config` sets to something other than the server
- * default: the ones a remote caller may not supply.
- *
- * `base_dir` must equal `repoDir` as a string. An equivalent spelling (a
- * trailing slash, `..`, a symlinked prefix) is refused on purpose: the
- * caller can leave the field out, and normalizing here would put path
- * resolution on the security decision.
+ * base_dir must equal repoDir as a string; equivalent spellings are refused on
+ * purpose since normalizing would put path resolution on the security decision
  */
 export function findNonDefaultKeySourceFields(
   config: Record<string, unknown>,
@@ -95,21 +76,13 @@ export function findNonDefaultKeySourceFields(
 }
 
 /**
- * The config swamp stores for a local_encryption vault whose key source
- * nobody chose: an auto-generated key. `base_dir` is left unset so the
- * stored config names no host path; it resolves to the repository the vault
- * is loaded from (see {@link withRuntimeBaseDir}).
+ * base_dir is left unset so the stored config names no host path and resolves
+ * to the repository the vault loads from
  */
 export function defaultLocalEncryptionConfig(): Record<string, unknown> {
   return { auto_generate: true };
 }
 
-/**
- * `config` with the server's default key source in place of whatever key
- * source it names, in the form it is stored: every key-source field is
- * replaced by {@link defaultLocalEncryptionConfig}, so `base_dir` is left
- * unset and resolves to the server's repo when the vault loads.
- */
 export function withServerDefaultKeySource(
   config: Record<string, unknown>,
 ): Record<string, unknown> {
@@ -121,12 +94,9 @@ export function withServerDefaultKeySource(
 }
 
 /**
- * The config a vault provider is built from: for a local_encryption vault
- * whose `base_dir` is unset or empty, `config` with `base_dir` set to
- * `repoDir`; otherwise `config` unchanged. Every place that builds a
- * local_encryption provider from a stored config goes through this, so an
- * unset `base_dir` always means the repository and never the process's
- * working directory.
+ * every place that builds a local_encryption provider from stored config goes
+ * through this, so an unset base_dir means the repository, never the working
+ * directory
  */
 export function withRuntimeBaseDir(
   type: string,

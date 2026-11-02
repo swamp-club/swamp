@@ -140,7 +140,6 @@ value for them other than the server's defaults, and stores those defaults.`,
   const vaultType = options.type as string | undefined;
   const libCtx = libSwampContextForRepo(repoContext, { logger: cliCtx.logger });
 
-  // Interactive search mode when no argument provided
   if (!vaultNameOrId) {
     if (cliCtx.outputMode === "json") {
       throw new UserError(
@@ -191,18 +190,16 @@ value for them other than the server's defaults, and stores those defaults.`,
               // A local user can already write the vault file, so a config
               // that no longer parses may be replaced.
               authorizeRepair: () => true,
-              // A local user owns this host, so the vault may name its own key
-              // source; over --server the server keeps it (swamp-club#2690).
+              // a local user owns this host, so the vault may name its own key
+              // source; over --server the server keeps it
               trustKeySource: true,
             }),
             renderer.handlers(),
           ),
       ), `the vault definition "${editNameOrId}"`);
 
-  // A vault is edited on a copy and saved like a piped edit, so the edit is
-  // committed (swamp-club#4107). Opening the editor loads the vault
-  // (swamp-club#4097); a change another member lands while it is open
-  // refuses the save.
+  // a vault is edited on a copy and saved like a piped edit so it is committed;
+  // a change another member lands while the editor is open refuses the save
   if (stdinContent === null) {
     const file = await resolveVaultEditFile(libCtx, deps, {
       vaultNameOrId,
@@ -261,8 +258,8 @@ value for them other than the server's defaults, and stores those defaults.`,
     return;
   }
 
-  // A stale stdin edit, a rename's included, is refused before it writes
-  // (swamp-club#4097). By name, then by id, as the edit itself resolves it.
+  // a stale stdin edit, a rename's included, is refused before it writes;
+  // resolved by name, then by id, as the edit itself does
   const target = await repoContext.vaultConfigRepo.findByName(vaultNameOrId)
     .catch(() => null) ??
     (await repoContext.vaultConfigRepo.findAll().catch(() => [])).find(

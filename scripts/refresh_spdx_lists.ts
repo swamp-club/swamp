@@ -18,13 +18,9 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * Regenerates packages/extension-scoring/licensing/spdx_lists.generated.ts from the SPDX
- * License List data at a pinned release. Run with `deno run refresh-spdx`,
- * optionally passing a release tag (e.g. `v3.30.0`) to move the pin.
- *
- * The lists are vendored so the CLI never fetches them at run time. The
- * replacements for deprecated ids are curated here: SPDX marks an id
- * deprecated but does not name its successor in machine-readable form.
+ * the lists are vendored so the CLI never fetches them at run time;
+ * deprecated-id replacements are curated here because SPDX does not name
+ * successors in machine-readable form
  */
 
 import { fromFileUrl } from "@std/path";
@@ -34,7 +30,6 @@ const OUTPUT = fromFileUrl(
   new URL("../packages/extension-scoring/licensing/spdx_lists.generated.ts", import.meta.url),
 );
 
-/** Suggested expression for each deprecated license id that has one. */
 const DEPRECATED_REPLACEMENTS: Record<string, string> = {
   "AGPL-1.0": "AGPL-1.0-only",
   "AGPL-3.0": "AGPL-3.0-only",

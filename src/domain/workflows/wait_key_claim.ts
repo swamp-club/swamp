@@ -18,23 +18,9 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * Wait keys: a name a `wait_for_signal` step declares, held by at most one
- * open wait of its workflow at a time (swamp-club#3209).
- *
- * A _claim_ says which wait holds a key. Claims of one key are numbered and
- * each is created once with `putIfAbsent`, so two steps that claim a free
- * key at the same moment create the same generation and exactly one
- * succeeds. The holder of a key is the wait of its highest claim for as
- * long as that wait has no outcome.
- *
- * The highest record of a key is never deleted to be replaced: a number
- * that came back into use would let a claimant that read the old highest
- * and one that read after the delete both create a claim. The claim of a
- * deleted run is superseded first by a _release_, the next generation of
- * the same family, which names no wait and leaves the key free.
- *
- * Every record is plaintext in a store other writers can reach, so each is
- * validated on every read.
+ * claims are created once with putIfAbsent so of two simultaneous claimants
+ * exactly one wins; the highest record is never deleted, since a reused number
+ * would let two claimants both create a claim
  */
 
 import { z } from "zod";
@@ -56,32 +42,24 @@ import type {
 import { cancelledOutcome, timedOutOutcome } from "./signal_wait_records.ts";
 import type { Workflow } from "./workflow.ts";
 
-/** Key family of key records: `wait-keys/<workflowId>/<key>/<generation>`. */
 export const WAIT_KEY_RECORD_PREFIX = "wait-keys/";
 
-/** The largest key record read back, in bytes. */
 export const WAIT_KEY_RECORD_MAX_BYTES = 16 * 1024;
 
 /**
- * How often a claimant creates the next generation before it gives up. It
- * tries again only after losing a create to a release or to a claim that
- * was settled at once, so more than two attempts means heavy contention.
+ * a retry follows only a lost create to a release or an at-once settled claim,
+ * so more than two attempts means heavy contention
  */
 export const WAIT_KEY_CLAIM_ATTEMPTS = 8;
 
 /**
- * How long a claim may stand with no registration and no outcome before
- * its wait counts as abandoned. A step registers its wait straight after
- * it claims, so a claim this old with neither record names a wait that was
- * never opened, or whose records were removed without the claim: by a
- * process that stopped in between, or by the run garbage collection of a
- * build from before key claims.
+ * a step registers straight after claiming, so an old claim with neither record
+ * names a wait never opened or whose records were removed without the claim
  */
 export const WAIT_KEY_UNREGISTERED_GRACE_MS = 5 * 60 * 1000;
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
-/** True for a workflow id that is one path segment, as a key needs. */
 function isSinglePathSegment(id: string): boolean {
   return id.length > 0 && !/[\\/]/.test(id) && id !== "." && id !== "..";
 }
@@ -92,12 +70,10 @@ const address = {
     "must be a single path segment",
   ),
   key: z.string().refine(isWaitKey),
-  /** 1 for the first record of a key; each later record adds one. */
   generation: z.number().int().min(1),
   recordedAt: z.string().datetime(),
 };
 
-/** The record that a wait holds a key. */
 export const WaitKeyClaimSchema = z.object({
   kind: z.literal("claim"),
   ...address,
@@ -105,15 +81,13 @@ export const WaitKeyClaimSchema = z.object({
   runId: z.string().uuid(),
   jobName: z.string().min(1),
   stepName: z.string().min(1),
-  /** The deadline of the wait, so a claimant can settle an overdue holder. */
+  /** the wait's deadline, so a claimant can settle an overdue holder */
   deadline: z.string().datetime(),
-  /** Set when the step declared `acceptEarly` (swamp-club#3212). */
   early: WaitEarlySchema.optional(),
 });
 
 export type WaitKeyClaim = z.infer<typeof WaitKeyClaimSchema>;
 
-/** The record that supersedes a removed claim and leaves its key free. */
 export const WaitKeyReleaseSchema = z.object({
   kind: z.literal("release"),
   ...address,
@@ -128,13 +102,11 @@ export const WaitKeyRecordSchema = z.discriminatedUnion("kind", [
 
 export type WaitKeyRecord = z.infer<typeof WaitKeyRecordSchema>;
 
-/** Where one key record lives. */
 export type WaitKeyAddress = Pick<
   WaitKeyRecord,
   "workflowId" | "key" | "generation"
 >;
 
-/** The key prefix of every key record of a workflow. Throws for an id that is not one path segment. */
 export function waitKeyWorkflowPrefix(workflowId: string): string {
   if (!isSinglePathSegment(workflowId)) {
     throw new Error(
@@ -144,7 +116,6 @@ export function waitKeyWorkflowPrefix(workflowId: string): string {
   return `${WAIT_KEY_RECORD_PREFIX}${workflowId}/`;
 }
 
-/** The key prefix of the records of one key. Throws for a malformed key. */
 export function waitKeyPrefix(workflowId: string, key: string): string {
   if (!isWaitKey(key)) {
     throw new Error(`A wait key must be ${WAIT_KEY_FORM}, got ${key}.`);
@@ -152,7 +123,6 @@ export function waitKeyPrefix(workflowId: string, key: string): string {
   return `${waitKeyWorkflowPrefix(workflowId)}${key}/`;
 }
 
-/** The store key of one key record. */
 export function waitKeyRecordKey(at: WaitKeyAddress): string {
   if (!Number.isInteger(at.generation) || at.generation < 1) {
     throw new Error(`Not a wait key generation: ${at.generation}`);
@@ -160,7 +130,6 @@ export function waitKeyRecordKey(at: WaitKeyAddress): string {
   return `${waitKeyPrefix(at.workflowId, at.key)}${at.generation}`;
 }
 
-/** The address a store key of this family names, or undefined. */
 export function waitKeyAddressFromKey(
   storeKey: string,
 ): WaitKeyAddress | undefined {
@@ -181,9 +150,8 @@ export function encodeWaitKeyRecord(record: WaitKeyRecord): Uint8Array {
 }
 
 /**
- * Reads the record stored at `expected`. A record that is too large, does
- * not parse, or names another address than the one it is stored under is
- * unreadable, never absent.
+ * a record that is too large, unparseable, or at another address than it is
+ * stored under is unreadable, never absent
  */
 export function decodeWaitKeyRecord(
   bytes: Uint8Array | null,
@@ -214,7 +182,6 @@ export function decodeWaitKeyRecord(
     : { kind: "unreadable" };
 }
 
-/** The wait a claim names, as the facts an outcome is built from. */
 export function waitRefOfClaim(claim: WaitKeyClaim): WaitRef {
   return {
     waitId: claim.waitId,
@@ -226,18 +193,13 @@ export function waitRefOfClaim(claim: WaitKeyClaim): WaitRef {
   };
 }
 
-/** Who holds a key: the wait of a claim, or nobody. */
 export type KeyHolding =
   | { readonly held: false }
   | { readonly held: true; readonly claim: WaitKeyClaim };
 
 /**
- * Decides who holds a key from its highest record and the outcome of the
- * wait that record names. The key is free when it has no record, when the
- * highest is a release, and when the claimed wait has an outcome of any
- * kind, one that cannot be read included: an outcome is written once, so
- * such a wait can no longer take a signal. Only a claim whose wait has no
- * outcome holds the key.
+ * a wait with an outcome of any kind, even an unreadable one, does not hold the
+ * key: an outcome is written once, so it can take no signal
  */
 export function decideKeyHolder(
   highest: WaitKeyRecord | undefined,
@@ -251,10 +213,6 @@ export function decideKeyHolder(
     : { held: false };
 }
 
-/**
- * The job and step of the `wait_for_signal` step of `workflow` that declares
- * `key`, or undefined when no step of it does.
- */
 export function declaredWaitKeyStep(
   workflow: Workflow,
   key: string,
@@ -271,15 +229,9 @@ export function declaredWaitKeyStep(
 }
 
 /**
- * The claims that read the pending signals of a slot: the claim of the
- * slot's own generation, and the claim one generation up when it was created
- * over a release (see `claimWaitKey`). Generations only grow and each is
- * written once, so no other record of the key reads the slot, and two reads
- * answer what a listing of every key record would (swamp-club#3308).
- *
- * `unreadable` is true when either record is stored and cannot be read: the
- * caller then knows nothing about who reads the slot. `known` is a record of
- * the key the caller already holds, which is not read again.
+ * generations only grow and each is written once, so two reads answer what
+ * listing every key record would; unreadable means the caller knows nothing
+ * about who reads the slot
  */
 export async function claimsReadingSlot(
   store: Pick<WaitKeyRecords, "findKeyRecord">,
@@ -306,37 +258,29 @@ export async function claimsReadingSlot(
   return { claims, unreadable };
 }
 
-/** The highest record of a key as read back. */
 export type HighestKeyRecord =
   | { readonly kind: "none" }
   | { readonly kind: "found"; readonly record: WaitKeyRecord }
-  /** The highest generation is stored and cannot be read. */
   | { readonly kind: "unreadable"; readonly generation: number };
 
-/** The store operations a claim needs. */
 export interface WaitKeyRecords
   extends Pick<PendingSignalRecords, "highestPendingRecord"> {
-  /** The record of the highest generation of a key. */
   highestKeyRecord(workflowId: string, key: string): Promise<HighestKeyRecord>;
 
   /**
-   * Creates `record` unless its generation exists, and returns what is
-   * stored at that generation. The caller learns whether it won by
-   * comparing that record with its own, never from the create itself.
+   * learn whether you won by comparing the returned record with your own, never
+   * from the create itself
    */
   createKeyRecord(
     record: WaitKeyRecord,
   ): Promise<StoredWaitRecord<WaitKeyRecord>>;
 
-  /** The record of one generation of a key. */
   findKeyRecord(at: WaitKeyAddress): Promise<StoredWaitRecord<WaitKeyRecord>>;
 
-  /** Every key record that can be read. */
   listKeyRecords(): Promise<WaitKeyRecord[]>;
 
   removeKeyRecord(at: WaitKeyAddress): Promise<void>;
 
-  /** Removes every key record of a workflow, with the workflow. */
   removeKeyRecordsOfWorkflow(workflowId: string): Promise<void>;
 
   findOutcome(waitId: string): Promise<StoredWaitRecord<WaitOutcome>>;
@@ -348,7 +292,6 @@ export interface WaitKeyRecords
   ): Promise<StoredWaitRecord<WaitRegistration>>;
 }
 
-/** The wait that asks for a key. */
 export interface WaitKeyRequest {
   workflowId: string;
   key: string;
@@ -356,29 +299,21 @@ export interface WaitKeyRequest {
   runId: string;
   jobName: string;
   stepName: string;
-  /** The deadline of the wait, as an ISO timestamp. */
   deadline: string;
-  /** The step's `acceptEarly`, in seconds, when it declared one. */
   acceptEarly?: number;
 }
 
 export type WaitKeyAcquisition =
-  /** The key was free and `claim` now names the asking wait. */
   | { readonly kind: "acquired"; readonly claim: WaitKeyClaim }
   /**
-   * The asking step already holds the key through an earlier wait that is
-   * still open: its process stopped after claiming and before the run was
-   * saved. The step takes that wait over.
+   * the step's process stopped after claiming and before the run was saved; the
+   * step takes that open wait over
    */
   | { readonly kind: "own"; readonly claim: WaitKeyClaim }
-  /** Another open wait holds the key. */
   | { readonly kind: "held"; readonly claim: WaitKeyClaim }
-  /** The highest record of the key cannot be read, so its holder is unknown. */
   | { readonly kind: "unreadable"; readonly generation: number }
-  /** Every attempt lost its create to another claimant. */
   | { readonly kind: "contended" };
 
-/** Why a keyed wait was not opened, in words for a log line. */
 export function waitKeyRefusal(
   key: string,
   refusal: Exclude<WaitKeyAcquisition, { kind: "acquired" | "own" }>,
@@ -394,14 +329,8 @@ export function waitKeyRefusal(
 }
 
 /**
- * The outcome of the wait `claim` names, settling it as timed out first
- * when it has none and its deadline has passed, as every reader of a wait
- * does. An outcome that names another run is not that wait's outcome.
- *
- * A wait whose step set `acceptEarly` is first given its key's pending
- * signal (swamp-club#3212). The claim does not hold the schema the wait
- * captured, so that needs the wait's registration; without one nothing is
- * taken.
+ * the claim does not hold the schema the wait captured, so giving it the
+ * pending signal needs the wait's registration; without one nothing is taken
  */
 async function outcomeOfClaim(
   store: WaitKeyRecords,
@@ -438,15 +367,9 @@ async function outcomeOfClaim(
 }
 
 /**
- * Settles the wait of `claim` as cancelled when it was abandoned: the claim
- * is older than {@link WAIT_KEY_UNREGISTERED_GRACE_MS} and its wait has no
- * registration. True when the wait has an outcome afterwards.
- *
- * The outcome is what makes this safe, not the clock. It is created once,
- * like any other, so a step that was only slow and registers its wait
- * later holds a wait that is already closed: a signal for it is answered
- * closed and a resume fails the step. Two waits are never open under one
- * key. A registration that cannot be read is not absent, and is left.
+ * the once-created outcome makes this safe, not the clock: a slow step that
+ * registers later holds an already closed wait, so two waits are never open
+ * under one key; an unreadable registration is left
  */
 async function settleAbandoned(
   store: WaitKeyRecords,
@@ -465,8 +388,8 @@ async function settleAbandoned(
 }
 
 /**
- * Claims a key for a wait, or reports who holds it. Called before the wait
- * is registered, so a step that finds its key held opens nothing.
+ * called before the wait is registered, so a step that finds its key held opens
+ * nothing
  */
 export async function claimWaitKey(
   store: WaitKeyRecords,
@@ -487,9 +410,8 @@ export async function claimWaitKey(
         : { kind: "absent" },
     );
     if (holding.held) {
-      // A claim reads as held when its outcome is gone with its run, too.
-      // Such a claim was superseded before the outcome was removed, so a
-      // holder still the highest record is a wait that is open.
+      // a claim whose outcome is gone with its run was superseded first, so a
+      // holder still the highest record is an open wait
       const still = await store.highestKeyRecord(
         request.workflowId,
         request.key,
@@ -532,26 +454,20 @@ export async function claimWaitKey(
       stored.kind === "found" && stored.record.kind === "claim" &&
       stored.record.waitId === claim.waitId
     ) return { kind: "acquired", claim: stored.record };
-    // Another claimant, or a release, took the generation. Read again: an
-    // open claim there holds the key, anything else leaves it free.
+    // another claimant or a release took the generation: read again, where an
+    // open claim holds the key and anything else leaves it free
   }
   return { kind: "contended" };
 }
 
-/** Who holds a key, as a reader that claims nothing finds it. */
 export type KeyHolderLookup =
-  /** `claim` names the open wait that holds the key. */
   | { readonly kind: "held"; readonly claim: WaitKeyClaim }
   | { readonly kind: "free" }
-  /** The highest record of the key cannot be read, so its holder is unknown. */
   | { readonly kind: "unreadable"; readonly generation: number };
 
 /**
- * Finds the wait that holds a key, for a signal addressed by key
- * (swamp-club#3210). It writes nothing: a holder past its deadline with no
- * outcome is still the holder, and whoever acts on the wait settles it, as
- * every reader of a wait does. A workflow id or a key that no record can be
- * kept under holds nothing.
+ * writes nothing: a holder past its deadline with no outcome is still the
+ * holder, and whoever acts on the wait settles it
  */
 export async function findKeyHolder(
   store: Pick<WaitKeyRecords, "highestKeyRecord" | "findOutcome">,
@@ -575,9 +491,8 @@ export async function findKeyHolder(
         : stored,
     );
     if (!holding.held) return { kind: "free" };
-    // A claim reads as held when its outcome is gone with its run, too.
-    // Such a claim was superseded before the outcome was removed, so a
-    // holder still the highest record is a wait that is open.
+    // a claim whose outcome is gone with its run was superseded first, so a
+    // holder still the highest record is an open wait
     const still = await store.highestKeyRecord(workflowId, key);
     if (
       still.kind === "found" &&
@@ -585,18 +500,14 @@ export async function findKeyHolder(
     ) return { kind: "held", claim: holding.claim };
     highest = still;
   }
-  // Superseded on every read: no wait held the key for long enough to be
-  // named, and the next signal reads again.
+  // superseded on every read: no wait held the key long enough to be named, and
+  // the next signal reads again
   return { kind: "free" };
 }
 
 /**
- * The wait that last held a key and its outcome, when the key's highest
- * record is still that wait's claim: one that was signalled, timed out or
- * cancelled and that no later wait has claimed over. Undefined once the
- * claim is released or its outcome is removed with its run. It reads two
- * records and writes nothing, for a signal by key that found no open wait
- * and has to say whether an earlier signal already landed.
+ * reads two records and writes nothing, for a signal by key that found no open
+ * wait and must say whether an earlier signal already landed
  */
 export async function findSettledKeyHolder(
   store: Pick<WaitKeyRecords, "highestKeyRecord" | "findOutcome">,
@@ -616,27 +527,15 @@ export async function findSettledKeyHolder(
     : undefined;
 }
 
-/** What superseding and removing claims did. */
 export interface KeyClaimRemoval {
-  /** Claims and superseded releases deleted. */
   removed: number;
-  /** Releases created over a highest claim. */
   released: number;
 }
 
 /**
- * Removes the claims `shouldRemove` selects, with the runs they belong to.
- * A selected claim that is the highest of its key is superseded by a
- * release first, so its number is never used again; a release below the
- * highest of its key is removed in the same pass. A key whose highest
- * record cannot be read is left as it is.
- *
- * Call it before the outcomes of those runs are removed: a claim whose
- * outcome is gone reads as an open wait.
- *
- * The pending signals of the slots a removed claim read go with it
- * (swamp-club#3212), after the claim itself: a slot belongs to one claim, so
- * nothing reads them once it is gone.
+ * a highest claim is superseded by a release first so its number is never
+ * reused; call before the runs' outcomes are removed, since a claim whose
+ * outcome is gone reads as an open wait
  */
 export async function releaseKeyClaims(
   store:
@@ -672,7 +571,6 @@ export async function releaseKeyClaims(
     const { workflowId, key } = records[0];
     const highest = await store.highestKeyRecord(workflowId, key);
     if (highest.kind !== "found") continue;
-    // Records below `floor` are superseded and safe to delete.
     let floor = highest.record.generation;
     if (
       highest.record.kind === "claim" &&

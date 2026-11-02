@@ -29,19 +29,13 @@ import { UserError } from "../../domain/errors.ts";
 import { bold, cyan } from "@std/fmt/colors";
 import { collectiveLines } from "./collective_standing.ts";
 
-/** The command that opens the billing page `status` points at. */
 const SUBSCRIPTION_START_COMMAND = "swamp subscription start";
 
-/** Plans with nothing to bill: the next step is to buy one. */
 const UPGRADE_PLANS: ReadonlySet<string> = new Set(["free", "personal"]);
 
 /**
- * The label in front of the billing link, chosen as swamp-club chooses it.
- *
- * A Personal License is not a plan — no price, seats or subscription, and
- * work use needs a paid one — so it upgrades like free. Admin standing has no
- * billing, and the web hides the link for it too. Any other value, an unknown
- * one included, is a plan someone pays for.
+ * free and personal upgrade; admin has no billing and the web hides the link;
+ * any other plan, unknown included, is paid for
  */
 export function callToActionLabel(plan: string | null): string | undefined {
   if (plan === null || UPGRADE_PLANS.has(plan)) return "To upgrade:";
@@ -49,7 +43,6 @@ export function callToActionLabel(plan: string | null): string | undefined {
   return "To manage billing:";
 }
 
-/** The first line, worded exactly as `swamp auth whoami` words it. */
 function identityLine(status: SubscriptionStatusView): string {
   return status.collectiveToken
     ? `Collective token: ${status.collectiveSlug} on ${status.serverUrl}`

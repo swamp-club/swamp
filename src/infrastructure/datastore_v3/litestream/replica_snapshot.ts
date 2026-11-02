@@ -18,15 +18,8 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * The replica's newest snapshot (swamp-club#4261): what tells the writer's
- * sidecar that Litestream wrote a new level-9 snapshot, so its next check
- * reads through it. One `litestream ltx -level 9` lists the snapshot level,
- * a single LIST request on a bucket.
- *
- * `ltx -json` output is not a documented contract, so anything this does not
- * recognise reads as unknown, and an unknown snapshot never starts a check.
- *
- * @module
+ * ltx -json output is not a documented contract, so anything unrecognised reads
+ * as unknown, and an unknown snapshot never starts a check
  */
 
 import { normalizeTxid } from "../../../domain/datastore_v3/published_lineage.ts";
@@ -35,14 +28,8 @@ import {
   type LitestreamReplicaType,
 } from "./sidecar_env.ts";
 
-/** Litestream's snapshot level. */
 const SNAPSHOT_LEVEL = 9;
 
-/**
- * The newest snapshot's max TXID in `litestream ltx -level 9 -json` output,
- * normalized; undefined when the output is not that shape or lists no
- * snapshot.
- */
 export function parseNewestSnapshotTxid(output: string): string | undefined {
   let files: unknown;
   try {
@@ -64,22 +51,14 @@ export function parseNewestSnapshotTxid(output: string): string | undefined {
   return newest;
 }
 
-/** What {@link readNewestSnapshotTxid} lists. */
 export interface SnapshotListRequest {
-  /** The hash-checked Litestream binary. */
   readonly binary: string;
-  /** A Litestream config naming `source` and its one replica. */
   readonly config: string;
-  /** The database path the config names; it is never opened. */
   readonly source: string;
   readonly replicaType: LitestreamReplicaType;
   readonly signal: AbortSignal;
 }
 
-/**
- * Lists the replica's snapshot level and resolves with its newest snapshot's
- * max TXID, or undefined when it could not be listed or read.
- */
 export async function readNewestSnapshotTxid(
   request: SnapshotListRequest,
 ): Promise<string | undefined> {
@@ -99,7 +78,7 @@ export async function readNewestSnapshotTxid(
       stdout: "piped",
       stderr: "null",
       signal: request.signal,
-      // Only what its replica needs (swamp-club#3534).
+      // pass only the environment its replica type needs
       env: litestreamChildEnv(request.replicaType, Deno.env.toObject()),
       clearEnv: true,
     }).output();

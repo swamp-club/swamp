@@ -114,7 +114,6 @@ Deno.test("writeDatastoreFormatMarker: without hard links it creates the marker 
       }),
       "v3",
     );
-    // No temp file is left, and a second write is still refused.
     const names = [];
     for await (const entry of Deno.readDir(dir)) names.push(entry.name);
     assertEquals(names, ["datastore-format.json"]);

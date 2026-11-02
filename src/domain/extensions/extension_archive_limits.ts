@@ -20,27 +20,18 @@
 const MIB = 1024 * 1024;
 
 /**
- * Largest compressed extension archive (`.tar.gz`) that push will send and
- * pull will accept.
- *
- * The registry enforces no size at publish time. Its only ceiling is the
- * scoring analyzer's `MAX_TARBALL_BYTES` (swamp-club
- * `lib/infrastructure/extension-tarball-analyzer.ts`), so this matches it:
- * every archive the registry can score still installs.
+ * matches the scoring analyzer's MAX_TARBALL_BYTES, the registry's only
+ * ceiling, so every archive it can score still installs
  */
 export const MAX_EXTENSION_ARCHIVE_BYTES = 50 * MIB;
 
 /**
- * Largest decompressed byte stream (tar headers, padding and file bodies)
- * that one read pass over an extension archive may produce. Bounds gzip
- * bombs. Matches the registry scoring analyzer's `MAX_EXTRACTED_BYTES`.
+ * bounds gzip bombs; matches the registry scoring analyzer's
+ * MAX_EXTRACTED_BYTES
  */
 export const MAX_EXTENSION_ARCHIVE_DECOMPRESSED_BYTES = 500 * MIB;
 
-/**
- * Renders an archive size or limit in MiB for error messages. Rounds up, so
- * a size just over a limit never prints as equal to it.
- */
+/** rounds up so a size just over a limit never prints as equal to it */
 export function formatArchiveBytes(bytes: number): string {
   const mib = bytes / MIB;
   return `${

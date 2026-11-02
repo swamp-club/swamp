@@ -17,14 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// A pulled extension changed on disk under a running serve, as a
-// `--server` pull leaves it (swamp-club#3594). Until serve reloads, its
-// dispatch refuses to ship workers the new source while serve still runs
-// the old code; the reload a --hot-reload serve runs after the pull makes
-// serve and its workers run the new code together. Wires the extension
-// loader, catalog, model registry, serve's reload, DispatchService and
-// BundleRegistry as `swamp serve` wires them.
-
 import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
 import { ensureDir } from "@std/fs";
 import { join } from "@std/path";
@@ -59,7 +51,6 @@ import { initializeLogging } from "../src/infrastructure/logging/logger.ts";
 
 await initializeLogging({});
 
-/** Mock `deno bundle`: copies the source to the `-o` output path. */
 const copyingBundler = async (_cmd: string, args: string[]) => {
   const out = args[args.indexOf("-o") + 1];
   await Deno.writeTextFile(out, await Deno.readTextFile(args[args.length - 1]));
@@ -105,7 +96,6 @@ const worker: WorkerSnapshot = {
   activeDispatchIds: [],
 };
 
-/** A DispatchService over one idle worker that records each fingerprint. */
 function dispatcher(bundles: BundleRegistry) {
   const shipped: string[] = [];
   const gateway: DispatchGateway = {
@@ -167,7 +157,6 @@ Deno.test("a pulled extension changed under serve is refused for dispatch until 
     "models",
   );
   const source = join(modelsDir, "changed.ts");
-  // A pull writes the source and its pre-built bundle together.
   const pull = async (version: string) => {
     const code = modelCode(type, version);
     await Deno.writeTextFile(source, code);
@@ -204,7 +193,6 @@ Deno.test("a pulled extension changed under serve is refused for dispatch until 
       modelRegistry.setTypeLoader((t, entry) =>
         loader.loadSingleType(t, entry)
       );
-      // Serve's boot: the pulled type is registered.
       await reloadPulledExtensions(repoDir, lockfilePath);
       await modelRegistry.ensureTypeLoaded(type);
       const v1 = modelRegistry.get(type)!;
@@ -218,7 +206,6 @@ Deno.test("a pulled extension changed under serve is refused for dispatch until 
       await assertRejects(() => run(v1), StaleExtensionSourceError, type);
       assertEquals(shipped, []);
 
-      // The reload a --hot-reload serve runs after the pull.
       const reload = await reloadAfterExtensionChange(repoDir, lockfilePath);
       assertEquals(reload.success, true);
       await modelRegistry.ensureTypeLoaded(type);

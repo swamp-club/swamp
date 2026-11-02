@@ -20,32 +20,24 @@
 import { UserError } from "../errors.ts";
 
 /**
- * Most results one data query page returns. Serve caps every request at it,
- * and a sorted query given no limit is capped at it, so every sorted page is
- * bounded (swamp-club#4177).
+ * serve caps every request at it, and a sorted query given no limit is capped
+ * at it, so every sorted page is bounded
  */
 export const MAX_QUERY_RESULTS = 10_000;
 
-/** Longest cursor token a query accepts. */
 export const MAX_QUERY_CURSOR_LENGTH = 16_384;
 
 export type QuerySortDirection = "asc" | "desc";
 
 /**
- * The order of a sorted data query: `createdAt`, or one tag's value as
- * `tags.<key>`. Both compare as strings, so ISO 8601 UTC times sort in time
- * order, and a row without the tag sorts as the empty string. Ties break on
- * the item's identity, so the order is total.
+ * both compare as strings so ISO 8601 UTC times sort in time order, and a row
+ * without the tag sorts as empty; ties break on identity so the order is total
  */
 export interface QuerySort {
   readonly field: string;
   readonly direction: QuerySortDirection;
 }
 
-/**
- * A row's place in a sorted query: its sort value and its identity
- * (namespace, model type, model id, data name, version), the tie-break.
- */
 export interface QueryCursorPosition {
   readonly key: string;
   readonly id: readonly [string, string, string, string, number];
@@ -56,10 +48,6 @@ const TAG_PREFIX = "tags.";
 const TAG_KEY = /^[A-Za-z0-9_.-]{1,128}$/;
 const CURSOR_VERSION = 1;
 
-/**
- * Validates a sort's field and direction and returns it as a QuerySort.
- * Throws a UserError naming what is wrong.
- */
 export function createQuerySort(
   field: string,
   direction: string,
@@ -85,17 +73,12 @@ export function createQuerySort(
   return { field, direction };
 }
 
-/**
- * Parses a sort as the CLI writes it: `<field>` or `<field>:asc|desc`,
- * ascending when no direction is given.
- */
 export function parseQuerySort(text: string): QuerySort {
   const colon = text.lastIndexOf(":");
   if (colon === -1) return createQuerySort(text, "asc");
   return createQuerySort(text.slice(0, colon), text.slice(colon + 1));
 }
 
-/** The tag key a sort orders by, or null when it orders by createdAt. */
 export function querySortTagKey(sort: QuerySort): string | null {
   if (sort.field === "createdAt") return null;
   return createQuerySort(sort.field, sort.direction).field.slice(
@@ -121,10 +104,7 @@ function fromBase64Url(token: string): string {
   return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
 }
 
-/**
- * Encodes the position of a page's last row as an opaque cursor token. It
- * holds the sort and the row's sort value and identity, nothing else.
- */
+/** holds the sort and the row's sort value and identity, nothing else */
 export function encodeQueryCursor(
   sort: QuerySort,
   position: QueryCursorPosition,
@@ -138,10 +118,6 @@ export function encodeQueryCursor(
   }));
 }
 
-/**
- * Decodes a cursor token for a query sorted by `sort`. Throws a UserError
- * for a malformed token, or one made for a different sort.
- */
 export function decodeQueryCursor(
   token: string,
   sort: QuerySort,

@@ -38,7 +38,6 @@ Deno.test("extension search: --sort relevance without query throws UserError", (
 Deno.test("extension search: --sort relevance with query does not throw", () => {
   const sort = "relevance";
   const query = "aws";
-  // Should not throw
   if (sort === "relevance" && !query) {
     throw new UserError('Sort by "relevance" requires a search query.');
   }
@@ -78,7 +77,6 @@ Deno.test("extension search: valid content type values are accepted", () => {
     "datastores",
   ];
   const contentType = ["models", "workflows"];
-  // Should not throw
   for (const ct of contentType) {
     if (!validContentTypes.includes(ct)) {
       throw new UserError(
@@ -108,9 +106,6 @@ Deno.test("extension search: invalid sort option throws UserError", () => {
   assertStringIncludes(error.message, "invalid");
   assertStringIncludes(error.message, "Must be one of");
 });
-
-// Channel stable-stripping tests — replicate the logic from the command to
-// test the stripping behavior in isolation.
 
 function applyChannelStripping(channel: string[]): string[] {
   const hasNonStable = channel.some((ch: string) => ch !== "stable");

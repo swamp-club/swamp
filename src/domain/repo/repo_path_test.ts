@@ -30,9 +30,7 @@ Deno.test("RepoPath.create accepts absolute path", () => {
 
 Deno.test("RepoPath.create converts relative path to absolute", () => {
   const path = RepoPath.create("./my-repo");
-  // Should be absolute
   assertEquals(isAbsolute(path.value), true);
-  // Should contain the relative path component
   assertEquals(path.value.includes("my-repo"), true);
 });
 

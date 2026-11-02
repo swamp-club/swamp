@@ -17,7 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/** Non-`text/*` media types whose content is human-readable text. */
 const TEXT_APPLICATION_TYPES = new Set([
   "application/json",
   "application/x-ndjson",
@@ -32,21 +31,8 @@ const TEXT_APPLICATION_TYPES = new Set([
   "application/graphql",
 ]);
 
-/** Structured-syntax suffixes (RFC 6839) of text-based formats. */
 const TEXT_SUFFIXES = ["+json", "+xml", "+yaml"];
 
-/**
- * Returns true if the content type represents human-readable text: any
- * `text/*` type, a text-based `application/*` type such as JSON, YAML, XML
- * or TOML, or a type with a text-based structured-syntax suffix such as
- * `application/vnd.api+json`. Parameters (`; charset=utf-8`) and case are
- * ignored.
- */
-/**
- * Whether a media type is JSON itself: `application/json` with any
- * parameters (`; charset=utf-8`), case-insensitively. A structured-syntax
- * suffix such as `application/vnd.api+json` is text but not this.
- */
 export function isJsonMediaType(contentType: string): boolean {
   return contentType.split(";", 1)[0].trim().toLowerCase() ===
     "application/json";

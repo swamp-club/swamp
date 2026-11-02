@@ -18,18 +18,9 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * Fitness test for running a model method under per-model locks:
- *
- *   A file that takes per-model locks (`acquireModelLocks`) and runs a
- *   method (`modelMethodRun`) runs it inside `runUnderModelLocks`.
- *
- * Outside that scope a shell step's nested swamp gets no list of the locks
- * its run holds, so it falls back to skipping every lock this process holds,
- * other runs' included (swamp-club#2955). Nothing fails when a site forgets
- * the wrap, so this pins the sites. Workflow steps take their locks through
- * `StepLockHook` and are scoped in `execution_service.ts`.
- *
- * Static — no subprocesses, nothing is executed.
+ * a file that takes per-model locks and runs a method must run it inside
+ * runUnderModelLocks, or a nested swamp skips every lock this process holds;
+ * nothing fails otherwise, so the sites are pinned
  */
 
 import { assertEquals } from "@std/assert";
@@ -41,7 +32,6 @@ import {
   SRC_DIR,
 } from "./arch_fitness_helpers.ts";
 
-/** How many times `source` calls `name`, outside comment lines. */
 function callCount(source: string, name: string): number {
   const call = new RegExp(`\\b${name}\\s*\\(`, "g");
   return source.split("\n")
@@ -62,7 +52,6 @@ Deno.test("callCount: counts calls, not comments", () => {
   );
 });
 
-/** Files that take per-model locks and run any model's methods. */
 const SCOPED = [
   "src/cli/commands/model_method_run.ts",
   "src/serve/handlers/model_handlers.ts",
@@ -109,12 +98,9 @@ Deno.test("method runs under per-model locks are scoped with runUnderModelLocks"
 });
 
 /**
- * Files that run a client's request as also holding the locks the client
- * forwarded. Each must name the locks of every step it runs inside that
- * scope: a step whose lock hook leaves them out runs in the adopted scope
- * instead of outside any, so its nested swamp waits on the step's own lock.
- * `createStepLockHook` names them (src/serve/deps_test.ts pins that), and
- * serve_deps_rules_test.ts pins that serve's workflow runs use it.
+ * files that adopt a client's forwarded locks must name the locks of every step
+ * they run in that scope, or a step's nested swamp waits on its own lock;
+ * createStepLockHook names them
  */
 const ADOPTERS = ["src/serve/connection.ts"];
 
@@ -147,13 +133,9 @@ Deno.test("only serve's request dispatch adopts a client's forwarded lock list",
 });
 
 /**
- * Where a run's locks are lent to a hop. A hop is given them only through a
- * hand-off, and whoever begins one must end it when the hop returns and
- * before the run writes: the end is what re-keys the locks, so a swamp the
- * hop left running stops skipping them (swamp-club#3111). Reading the lock
- * list with `childLockEnv` or `remoteLockHolder` and handing it to a
- * process skips that, and nothing fails when a site does, so this pins the
- * sites.
+ * locks are lent to a hop only through a hand-off, which whoever begins it must
+ * end before the run writes, since the end re-keys the locks; nothing fails if
+ * a site skips it, so the sites are pinned
  */
 const HAND_OFF_SITES: Record<string, string[]> = {
   beginChildHandOff: [

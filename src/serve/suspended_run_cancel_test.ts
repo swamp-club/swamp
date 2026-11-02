@@ -77,16 +77,9 @@ interface Harness {
   registry: ActiveRunRegistry;
   saved: WorkflowRun[];
   pushes: number;
-  /** Run and workflow repository calls. */
   repoCalls: number;
 }
 
-/**
- * A serve context over in-memory repositories holding `runs`, with a real
- * active-run registry and a sync service that counts pushes. `failLoad`
- * makes every run lookup throw; `failReread` only the gated re-read of a
- * located run, which loads it by id from its workflow.
- */
 function harness(
   workflows: Workflow[],
   runs: WorkflowRun[],
@@ -431,10 +424,8 @@ Deno.test("awaitAbortedRun: returns false when the run completes but is still re
   registry.deregister(runId);
 });
 
-/** A pid no process has: the largest a 32-bit pid_t holds. */
 const DEAD_PID = 2147483647;
 
-/** A run left `running` under `pid` by serve instance `instanceId`. */
 function runningRun(
   workflow: Workflow,
   pid: number,
@@ -447,7 +438,6 @@ function runningRun(
   return run;
 }
 
-/** The tracker row serve instance `instanceId` registered for `run`. */
 function trackerRow(
   run: WorkflowRun,
   pid: number,
@@ -486,18 +476,12 @@ async function withTracker(
   }
 }
 
-/**
- * A control plane holding a heartbeat for each of `alive`, and for
- * `new-instance`, the instance the deciders under test run as: heartbeats
- * are being written. See {@link controlPlaneWithoutHeartbeats}.
- */
 function controlPlaneWith(
   alive: string[],
 ): ConnectionContext["controlPlaneStore"] {
   return controlPlaneWithoutHeartbeats([...alive, "new-instance"]);
 }
 
-/** A control plane holding a heartbeat only for each of `alive`. */
 function controlPlaneWithoutHeartbeats(
   alive: string[] = [],
 ): ConnectionContext["controlPlaneStore"] {
@@ -533,7 +517,6 @@ Deno.test("ownerGoneDecider: a dead pid in the tracker row of a previous serve i
 
 Deno.test("ownerGoneDecider: a live pid in the tracker row keeps the owner, whatever the control plane says", async () => {
   await withTracker(async (tracker) => {
-    // The parent process is alive and is not this one.
     const run = runningRun(makeWorkflow("deploy"), Deno.ppid, "old-instance");
     tracker.register(trackerRow(run, Deno.ppid, "old-instance"));
 
@@ -587,8 +570,6 @@ Deno.test("ownerGoneDecider: a previous instance's row under this process's reus
         gone.why.includes("this serve instance is running it"),
         false,
       );
-      // Telling this row from a live process of another instance is
-      // swamp-club#3739.
       assertStringIncludes(gone.why, "is still alive");
     }
   });
@@ -639,7 +620,6 @@ Deno.test("ownerGoneDecider: without a tracker row, another instance's run is go
       await decide({ controlPlaneStore: controlPlaneWith([]) }),
       { gone: true },
     );
-    // Its own run with no row: nothing shows the owner gone.
     assertStringIncludes(
       await why(
         decide({ controlPlaneStore: controlPlaneWith([]) }, "peer"),
@@ -826,8 +806,6 @@ Deno.test("cancelSuspendedRunAndPush: without recorded heartbeats, a running run
   });
 });
 
-// --- swamp-club#2867: the gated cancel settles the nested runs with it.
-
 Deno.test("cancelSuspendedRunAndPush: cancels the suspended nested runs with the run, in one push, and releases their ids", async () => {
   const { chain, workflows } = nestedChain(3);
   const h = harness(workflows, chain);
@@ -882,7 +860,6 @@ Deno.test("cancelSuspendedRunAndPush: a nested run another operation holds is le
 
 Deno.test("cancelSuspendedRunAndPush: a nested run this instance is running is asked to stop and not waited for", async () => {
   const { chain, workflows } = nestedChain();
-  // The child was approved and resumed: it runs under its own registration.
   const running = WorkflowRun.fromData({
     ...chain[1].toData(),
     status: "running",

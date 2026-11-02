@@ -17,10 +17,9 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// Worker for extension_catalog_concurrent_migration_test.ts. It stands in
-// for a second swamp process: it takes the extension catalog's write lock
-// and reports that it holds it. When the test says it is opening the store,
-// it commits a write a moment later, then reports that it committed.
+// stands in for a second swamp process: takes the extension catalog's write
+// lock and reports it, then commits a write a moment after the test says it is
+// opening the store
 
 import { DatabaseSync } from "node:sqlite";
 

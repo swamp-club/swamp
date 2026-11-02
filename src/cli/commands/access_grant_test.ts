@@ -26,17 +26,10 @@ import { RepoPath } from "../../domain/repo/repo_path.ts";
 import { RepoService } from "../../domain/repo/repo_service.ts";
 import { VERSION } from "./version.ts";
 
-// Import models barrel to trigger self-registration
 import "../../domain/models/models.ts";
 
-// Initialize logging for tests
 await initializeLogging({});
 
-/**
- * In-process serve endpoint streaming the given run events followed by a
- * `done` frame — enough to drive the command's streaming --server path
- * without a subprocess.
- */
 function runEventServer(
   events: Record<string, unknown>[],
 ): { url: string; requests: () => number; shutdown: () => Promise<void> } {
@@ -65,7 +58,6 @@ function runEventServer(
   };
 }
 
-/** Runs `access grant create` against a scripted run result; returns Deno.exitCode. */
 async function runGrantCreateAgainst(
   run: Record<string, unknown>,
 ): Promise<number> {
@@ -246,7 +238,6 @@ Deno.test("accessGrantCommand: create has --methods option", async () => {
   assertEquals(methodsOpt !== undefined, true);
 });
 
-/** Each refusal the grant model raises inside `create`, with its message. */
 const REFUSED_CREATES: { label: string; args: string[]; message: string }[] = [
   {
     label: "a subject with no kind",
@@ -289,8 +280,6 @@ async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
     await fn(dir);
   } finally {
     if (Deno.build.os === "windows") {
-      // Best-effort: EBUSY can fire when V8 hasn't GC'd native
-      // sqlite handles yet. Temp dir is ephemeral, OS reclaims.
       await Deno.remove(dir, { recursive: true }).catch(() => {});
     } else {
       await Deno.remove(dir, { recursive: true });
@@ -306,7 +295,6 @@ async function initRepo(dir: string): Promise<void> {
   }).init(RepoPath.create(dir), { tools: [] });
 }
 
-/** Runs `access grant <args>` with --json, returning what it printed. */
 async function runGrant(args: string[]): Promise<string> {
   const { accessGrantCommand } = await import("./access_grant.ts");
   const printed: string[] = [];
@@ -325,7 +313,6 @@ async function runGrant(args: string[]): Promise<string> {
   return printed.join("\n");
 }
 
-/** Every file under `path`, or none when it does not exist. */
 async function filesUnder(path: string): Promise<string[]> {
   const found: string[] = [];
   try {

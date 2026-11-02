@@ -163,7 +163,6 @@ Deno.test("refreshAutoupdateSchedulerIfOwed: records the unloaded mark before bo
   await refreshAutoupdateSchedulerIfOwed(deps, VERSION);
 
   assertEquals(onDiskAtBootout?.schedulerLeftUnloaded, true);
-  // A successful refresh then clears it.
   assertEquals(deps.written.at(-1)?.schedulerLeftUnloaded, undefined);
 });
 
@@ -302,7 +301,6 @@ Deno.test("createAutoupdateRefreshDeps: the refresh lock admits one holder at a 
       deps.withRefreshLock(() => Promise.resolve("inner"))
     );
     assertEquals(inner, null);
-    // Released afterwards.
     assertEquals(
       await deps.withRefreshLock(() => Promise.resolve("again")),
       "again",

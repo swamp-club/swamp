@@ -20,12 +20,8 @@
 import { quoteShellWord } from "../shell_word.ts";
 
 /**
- * The coordinates of one stored data item, as a `swamp data query` predicate
- * selects it. Set the fields that identify the item for the read being
- * replaced: a model-scoped read names the model, a workflow-scoped read names
- * the run, job and step that produced it. The run is either pinned by its id
- * or, with `latestRunWorkflow`, followed as that workflow's latest run
- * (swamp-club#2957) — never both.
+ * a run is either pinned by its id or followed as the workflow's latest run
+ * with latestRunWorkflow, never both
  */
 export type DataQueryTarget =
   & {
@@ -42,17 +38,14 @@ export type DataQueryTarget =
     | { latestRunWorkflow: string; workflowRunId?: never }
   );
 
-/** Writes a value as a CEL string literal; JSON escapes are valid CEL. */
 export function celString(value: string): string {
   return JSON.stringify(value);
 }
 
 /**
- * Builds the CEL predicate that selects `target`. Naming the version also
- * opts the query into history, so a version that is no longer the latest is
- * still found. A latest-run target without a version opts in with
- * `version >= 0`: a later write elsewhere can demote the run's item from
- * latest, and the run still holds it.
+ * naming the version opts into history so a non-latest version is found; a
+ * latest-run target without a version opts in with version >= 0, since a later
+ * write elsewhere can demote the run's item from latest
  */
 export function dataQueryPredicate(target: DataQueryTarget): string {
   const clauses: string[] = [];
@@ -87,20 +80,12 @@ export function dataQueryPredicate(target: DataQueryTarget): string {
   return clauses.join(" && ");
 }
 
-/**
- * The projection that reads an item's content together with how it is
- * represented: UTF-8 text, or base64 when the bytes are not valid UTF-8.
- */
 const ENCODED_CONTENT_SELECT =
   '{"content": content, "contentEncoding": contentEncoding}';
 
 /**
- * Builds the `swamp data query` command a user can paste into a POSIX shell
- * to read `target`. With `includeContent`, the command selects the content,
- * as `swamp data get` prints it; without, it lists the item's metadata.
- * `withEncoding` also selects `contentEncoding`, for content that may come
- * back base64-encoded, and asks for `--json`: base64 is read from the JSON
- * result, where log output would render it as one huge table cell.
+ * withEncoding asks for --json, since base64 is read from the JSON result where
+ * log output would render it as one huge table cell
  */
 export function dataQueryCommand(
   target: DataQueryTarget,

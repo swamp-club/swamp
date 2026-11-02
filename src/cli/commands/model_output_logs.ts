@@ -48,13 +48,11 @@ import type { ModelOutputLogsResponse } from "../../serve/protocol.ts";
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
 
-/** The preferred spelling: `swamp behavior output logs`. */
 export const BEHAVIOR_OUTPUT_LOGS_SYNTAX: CommandSyntax = {
   invocation: "swamp behavior output logs",
   surface: "behavior",
 };
 
-/** The legacy spelling: `swamp model output logs`. */
 export const MODEL_OUTPUT_LOGS_SYNTAX: CommandSyntax = {
   invocation: "swamp model output logs",
   surface: "model",

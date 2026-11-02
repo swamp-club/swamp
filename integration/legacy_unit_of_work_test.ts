@@ -17,15 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// The legacy unit of work against the in-memory remote, through the mark hook
-// the composition root builds (requireInitializedRepoUnlocked wires
-// buildMarkDirtyHook over the test datastore's sync service). The same script
-// of writes, removes and marks runs twice, once calling the hook directly as
-// repositories do today and once through the adapter's stage, each against
-// its own remote. The remotes must see the same operations, plan the same
-// push and end up with the same files: the adapter changes nothing
-// (swamp-club#2970, datastore rework Phase 1).
-
 import { assert, assertEquals } from "@std/assert";
 import { dirname, join } from "@std/path";
 import {
@@ -53,11 +44,6 @@ type Mark = (change: StagedChange) => Promise<void>;
 type Push = () => Promise<void>;
 type Op = Omit<InMemoryRemoteOpRecord, "instance">;
 
-/**
- * Pushes the way core does for the advertised capability: two-phase
- * (preparePush then commitPush) when the service supports it, otherwise a
- * single pushChanged.
- */
 function pushFor(service: InMemorySyncService, twoPhaseSync: boolean): Push {
   return twoPhaseSync
     ? async () => {
@@ -68,11 +54,6 @@ function pushFor(service: InMemorySyncService, twoPhaseSync: boolean): Push {
     };
 }
 
-/**
- * Writes and removes real files in the cache, marking each change before it
- * happens. Includes a removal of a pushed file (absence on disk means delete)
- * and path marks after a bulk mark, which the S3 and GCS extensions drop.
- */
 async function runScript(
   cacheDir: string,
   mark: Mark,
@@ -142,8 +123,8 @@ async function observe(
       const hook = ctx.repoContext.markDirty;
       assert(hook !== undefined, "expected the composition-built mark hook");
       assert(ctx.syncService !== undefined, "expected a sync service");
-      // The datastore format check (swamp-club#3189) connects one service
-      // of its own first, to read the marker; it writes nothing.
+      // the datastore format check connects one sync service of its own first,
+      // to read the marker; it writes nothing
       assertEquals(
         services.length,
         2,
@@ -200,13 +181,11 @@ for (const twoPhaseSync of [true, false]) {
       assertEquals(adapter.ops, direct.ops);
       assertEquals(adapter.pending, direct.pending);
       assertEquals(adapter.files, direct.files);
-      // The script reached the remote: the bulk mark is in the op log, the
-      // removal of a pushed file was deleted remotely, and the writes landed.
       assert(direct.ops.some((op) => (op as { bulk?: boolean }).bulk === true));
       assertEquals(direct.files["data/a.txt"], undefined);
-      // A bulk mark makes the next push a full walk that deletes nothing, so
-      // the removal of c.txt after it never reaches the remote (pinned legacy
-      // behaviour; the adapter must reproduce it exactly).
+      // a bulk mark makes the next push a full walk that deletes nothing, so
+      // removing c.txt after it never reaches the remote; the adapter must
+      // reproduce this
       assertEquals(direct.files["data/c.txt"], "c");
       assertEquals(direct.files["data/b.txt"], "b2");
       assertEquals(direct.files["data/d.txt"], "d");

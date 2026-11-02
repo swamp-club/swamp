@@ -18,11 +18,9 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * The local hub's workspace routing. One swamp process serves one
- * repo (its extension registries are bound to it at startup), so each
- * workspace's dashboard runs in a child `swamp dashboard --child` process.
- * The hub, which is the `swamp start` server, owns the browser's one origin
- * and forwards `/w/<workspace>/...` to that workspace's child.
+ * one swamp process serves one repo because its extension registries are bound
+ * at startup, so each workspace runs in a child process behind the hub's single
+ * browser origin
  */
 
 import { endOnAbort } from "../stream_abort.ts";
@@ -46,66 +44,39 @@ import {
 
 const logger = getLogger(["swamp", "dashboard", "hub"]);
 
-/** How many of a child's last stderr lines explain a failed start. */
 const STDERR_TAIL_LINES = 20;
-/** The header the dashboard sends its local token in (HTTP requests). */
 export const LOCAL_TOKEN_HEADER = "x-swamp-local-token";
-/** How long a child may take to start listening before it is killed. */
 const CHILD_START_TIMEOUT_MS = 60_000;
-/** How long a stopping child gets after stdin closes, then after SIGTERM. */
 const CHILD_STOP_GRACE_MS = 10_000;
 const CHILD_KILL_GRACE_MS = 5_000;
 
-/** A workspace the switcher can offer. */
 export interface HubWorkspace {
   readonly name: string;
   readonly path: string;
 }
 
-/** A running child: its loopback port and the token it requires. */
 export interface HubChild {
   readonly port: number;
   readonly token: string;
-  /** Resolves when the child process exits. */
   readonly exited: Promise<void>;
   stop(): Promise<void>;
 }
 
 export interface WorkspaceHubDeps {
   /**
-   * The credential every workspace route and the workspace list require:
-   * the start server's one-time token, which the page holds. Offered as
-   * the `bearer.<token>` WebSocket subprotocol or the
-   * {@link LOCAL_TOKEN_HEADER} header.
+   * the start server's one-time token, which the page holds, guards every
+   * workspace route and the list
    */
   token: string;
-  /** The registered workspace's folder, or null when there is none. */
   resolveWorkspace(name: string): Promise<string | null>;
   listWorkspaces(): Promise<HubWorkspace[]>;
   spawnChild(repoDir: string): Promise<HubChild>;
-  /**
-   * False when the hub serves one fixed repo (`swamp dashboard` in a
-   * folder): the page then offers no workspace switcher. Defaults to true.
-   */
   switchable?: boolean;
-  /**
-   * How long a workspace's child stays up with no dashboard tab open
-   * before it is stopped. Defaults to {@link DEFAULT_CHILD_IDLE_MS}.
-   */
   idleMs?: number;
-  /**
-   * Runs the local dashboard's actions as CLI commands in a workspace's
-   * folder (see `local_actions.ts`). Defaults to {@link SWAMP_CLI_ACTIONS}.
-   */
   actions?: ActionRunner;
 }
 
-/** How the hub runs `swamp` for an action in a workspace's folder. */
 export interface ActionRunner {
-  /**
-   * Runs a command to its end and returns what it printed. `signal` stops
-   * it when the hub shuts down.
-   */
   run(
     repoDir: string,
     args: readonly string[],
@@ -119,28 +90,18 @@ export interface ActionRunner {
     repoDir: string,
     args: readonly string[],
   ): { readonly pid: number; readonly exited: Promise<number> };
-  /**
-   * Opens the repo's run tracker for the length of one resume's wait:
-   * `isRunning` is true once `runId` runs under process `pid`.
-   */
   watchRuns(repoDir: string): {
     isRunning(runId: string, pid: number): boolean;
     close(): void;
   };
 }
 
-/** How long a resume may take to start its run before the page is told. */
 const RESUME_START_WAIT_MS = 30_000;
 const RESUME_START_POLL_MS = 200;
 
-/** A child with no dashboard open stops after this long, unless busy. */
 export const DEFAULT_CHILD_IDLE_MS = 10 * 60_000;
 
 export interface WorkspaceHub {
-  /**
-   * Answers a hub route, or null when the request is not one. `track` is
-   * told about each browser socket so the server stays up while it is open.
-   */
   handle(
     req: Request,
     track: (socket: WebSocket) => void,
@@ -176,7 +137,6 @@ export function createWorkspaceHub(deps: WorkspaceHubDeps): WorkspaceHub {
     if (entries.get(path) === entry) entries.delete(path);
   };
 
-  /** Arms (or re-arms) the idle stop, unless a tab is open. */
   const armIdle = (path: string, entry: Entry) => {
     clearTimeout(entry.idle);
     entry.idle = undefined;
@@ -247,7 +207,6 @@ export function createWorkspaceHub(deps: WorkspaceHubDeps): WorkspaceHub {
 
   const actions = deps.actions ?? SWAMP_CLI_ACTIONS;
 
-  /** Runs one action as its CLI command and replies as serve would. */
   const runAction = async (
     repoDir: string,
     type: DelegatedAction,
@@ -274,10 +233,9 @@ export function createWorkspaceHub(deps: WorkspaceHubDeps): WorkspaceHub {
         );
         return;
       }
-      // The tracker opens before the resume starts: a tracker that can't
-      // be read fails the action with nothing started. Once the resume has
-      // started, nothing may report it as failed, or a retry would resume
-      // the same run twice.
+      // open the tracker before the resume starts so an unreadable tracker
+      // fails with nothing started; once started nothing may report failure or
+      // a retry would resume the same run twice
       const runs = actions.watchRuns(repoDir);
       const closeRuns = () => {
         try {
@@ -352,10 +310,9 @@ export function createWorkspaceHub(deps: WorkspaceHubDeps): WorkspaceHub {
     headers.delete(LOCAL_TOKEN_HEADER);
     headers.set(HUB_TOKEN_HEADER, child.token);
     const hasBody = req.method !== "GET" && req.method !== "HEAD";
-    // Not the request's signal: a streamed answer (the health SSE) ends
-    // when the browser cancels the body, which cancels the upstream read.
-    // The hub's own signal ends every forwarded stream when it shuts down,
-    // so a tab left open never holds the server's shutdown up.
+    // not the request's signal: a streamed answer ends when the browser cancels
+    // the body; the hub's signal ends every forwarded stream at shutdown so an
+    // open tab never holds it up
     let upstream: Response;
     try {
       upstream = await fetch(
@@ -586,9 +543,8 @@ export function createWorkspaceHub(deps: WorkspaceHubDeps): WorkspaceHub {
 }
 
 /**
- * Starts `swamp dashboard --child` for a repo. The child prints
- * `{"port":N}` on stdout once it listens, and stops when its stdin closes,
- * so it never outlives the hub.
+ * the child prints its port on stdout once it listens and stops when its stdin
+ * closes, so it never outlives the hub
  */
 export async function spawnDashboardChild(repoDir: string): Promise<HubChild> {
   const token = crypto.randomUUID() + crypto.randomUUID();
@@ -702,7 +658,6 @@ export async function spawnDashboardChild(repoDir: string): Promise<HubChild> {
   };
 }
 
-/** A protocol request frame the page sent, or null for anything else. */
 function parseFrame(
   text: string,
 ): { type: string; id: string; payload?: unknown } | null {
@@ -716,7 +671,6 @@ function parseFrame(
   }
 }
 
-/** The command line that runs this swamp: the binary, or deno and swamp. */
 function swampInvocation(args: readonly string[]): {
   execPath: string;
   args: string[];
@@ -734,10 +688,9 @@ function swampInvocation(args: readonly string[]): {
 }
 
 /**
- * The hub's environment for an action, without the variables that would
- * send it to a `swamp serve` (`--server`'s environment fallbacks): the
- * dashboard shows the local repo, so its actions act on it. A repo whose
- * marker names a server still sends them there, as the CLI does in it.
+ * drops the serve URL variables so actions act on the local repo the dashboard
+ * shows; a repo whose marker names a server still sends them there, as the CLI
+ * does
  */
 export function actionEnv(): Record<string, string> {
   const env = Deno.env.toObject();
@@ -747,15 +700,13 @@ export function actionEnv(): Record<string, string> {
 }
 
 /**
- * A workspace child's environment: the hub's, without the serve URLs (with
- * either set, the child would start as a thin client and not open its
- * repo's local extensions), plus its token.
+ * without the serve URLs: with either set the child would start as a thin
+ * client and not open its repo's local extensions
  */
 export function childEnv(token: string): Record<string, string> {
   return { ...actionEnv(), [HUB_TOKEN_ENV]: token };
 }
 
-/** Runs actions with this swamp's own CLI, against the workspace's folder. */
 export const SWAMP_CLI_ACTIONS: ActionRunner = {
   async run(repoDir, args, signal) {
     const cmd = swampInvocation([...args, "--repo-dir", repoDir]);
@@ -803,10 +754,6 @@ export const SWAMP_CLI_ACTIONS: ActionRunner = {
   },
 };
 
-/**
- * The local token a request offers: the `bearer.<token>` subprotocol (the
- * page's WebSocket) or the {@link LOCAL_TOKEN_HEADER} header (its fetches).
- */
 function offeredLocalToken(
   req: Request,
 ): { token: string; viaProtocol: boolean } | null {
@@ -822,7 +769,6 @@ function offeredLocalToken(
   return null;
 }
 
-/** True if `promise` settles within `ms`. */
 async function settlesWithin(
   promise: Promise<unknown>,
   ms: number,
@@ -840,7 +786,6 @@ async function settlesWithin(
   }
 }
 
-/** Signals a child that may already have exited. */
 function killQuietly(process: Deno.ChildProcess, signal: Deno.Signal): void {
   try {
     process.kill(signal);

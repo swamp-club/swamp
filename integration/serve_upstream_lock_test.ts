@@ -17,15 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Model locks in team mode (swamp-club#3985): two serve-mode checkouts,
- * each in a Worker as a machine of its own, write data versions of one
- * behavior at once through serve, each command under the behavior's lock
- * as `model method run` takes it. The lock is serve's, so every version
- * lands, numbered without gaps or repeats, and none is refused as already
- * live, which is what two machines' local locks let happen.
- */
-
 import "../src/domain/models/models.ts";
 import { assertEquals } from "@std/assert";
 import { waitFor } from "@swamp-club/swamp-testing";
@@ -50,18 +41,16 @@ await initializeLogging({});
 const DATA_ID = "0b6c4bb4-9d61-4f0c-9a43-6f0c1f7b2a31";
 const PER_CLIENT = 10;
 /**
- * Saves each side makes when a machine and serve's own runs interleave:
- * enough that, without serve's lock, some overlap (red-checked).
+ * saves each side makes when a machine and serve's own runs interleave: enough
+ * that, without serve's lock, some overlap
  */
 const INTERLEAVED = 20;
 
-/** What a client machine wrote, and what failed. */
 interface Written {
   readonly versions: readonly number[];
   readonly errors: readonly string[];
 }
 
-/** Runs `count` locked saves in `client`, in a Worker of its own. */
 function runClient(
   scratch: Scratch,
   serve: Serve,
@@ -72,11 +61,6 @@ function runClient(
   return startClient(scratch, serve, client, label, count).finished;
 }
 
-/**
- * Starts `count` locked saves in `client`, in a Worker of its own:
- * `started` once the worker has loaded and been told to run them,
- * `finished` with what they wrote.
- */
 function startClient(
   scratch: Scratch,
   serve: Serve,
@@ -143,7 +127,6 @@ function startClient(
   return { started, finished };
 }
 
-/** Every version of `out` serve's log holds, from its keys. */
 async function landedVersions(serve: Serve): Promise<number[]> {
   const versions = new Set<number>();
   for (const entry of await serve.log()) {
@@ -193,7 +176,6 @@ Deno.test({
       );
       assertEquals(saved, oneTo(2 * PER_CLIENT));
       assertEquals(await landedVersions(serve), oneTo(2 * PER_CLIENT));
-      // Each checkout reads the last version, whichever machine wrote it.
       assertEquals(
         await latestIn(scratch, serve, a, serve.modelType),
         2 * PER_CLIENT,

@@ -50,14 +50,11 @@ import { v3DatastoreFor } from "../../infrastructure/datastore_v3/v3_repo_contex
 import { readExplicitLeases } from "../../infrastructure/datastore_v3/explicit_model_leases.ts";
 import type { DatastoreServeSection } from "../../libswamp/datastores/status.ts";
 
-/** How long a serve-mode checkout waits for serve's own section. */
 const SERVE_SECTION_TIMEOUT_MS = 5_000;
 
 /**
- * Serve's section of a serve-mode checkout's status (swamp-club#4195): its
- * explicit leases and quarantine, which only an admin may read. Serve not
- * answering, or refusing the caller, leaves the section out with the
- * reason; the checkout's own status is never failed by it.
+ * serve not answering, or refusing the caller, leaves the section out with the
+ * reason; the checkout's own status never fails because of it.
  */
 async function serveSectionOf(
   serverUrl: string,
@@ -92,9 +89,6 @@ async function serveSectionOf(
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
 
-/**
- * Shows current datastore configuration and health.
- */
 export const datastoreStatusCommand = withRemoteOptions(
   new Command()
     .description("Show datastore configuration and health")
@@ -142,24 +136,21 @@ export const datastoreStatusCommand = withRemoteOptions(
   });
 
   const ctx = createLibSwampContext({ logger: cliCtx.logger });
-  // The v3 datastore this checkout reads: through serve, its own copy
-  // (swamp-club#4195); otherwise the datastore itself.
+  // a checkout written through serve reads its own copy; otherwise the
+  // datastore itself.
   const resolution = resolverEngine(datastoreResolver) === "v3"
     ? await resolveDatastoreForRepo(repoDir)
     : undefined;
   const v3Location = resolution !== undefined
     ? await v3LocationOf(resolution)
     : undefined;
-  // A checkout written through serve runs this here, not on serve, so it
-  // can show what it saved offline; serve's own section is added when serve
-  // answers (swamp-club#4195).
+  // a checkout written through serve runs this here, not on serve, so it can
+  // show what it saved offline.
   const serveUpstream = resolution?.serveUpstream;
   const deps = await createDatastoreStatusDeps(datastoreResolver, {
     ...(v3Location !== undefined
       ? {
         describeCommitLog: () => v3DatastoreFor(repoDir, v3Location).describe(),
-        // What this checkout saved offline, or could not land
-        // (swamp-club#4195).
         listOutboxEntries: async () =>
           outboxEntryStatusesOf(
             (await v3DatastoreFor(repoDir, v3Location).outbox.entries())

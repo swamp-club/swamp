@@ -18,20 +18,9 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * The continuation sweep (swamp-club#3108): finds the suspended runs that
- * need no further decision and continues them.
- *
- * The instance that accepts a run's last signal tries to continue it at
- * once, but that launch can be lost: the registry is full, the server is
- * shutting down or crashes, or the signal was delivered by the local
- * command. The sweep is the path that always comes back. It runs once at
- * boot and then on an interval, and each pass offers every suspended run
- * this instance has a record of to {@link continueSettledRun}, which decides
- * and launches through the run's continuation claim.
- *
- * It is also what notices a deadline under serve (swamp-club#3109): a run
- * held back only by a wait for a signal that is past its deadline has that
- * wait settled as timed out, and continues.
+ * the last signal's launch can be lost (full registry, shutdown, crash); the
+ * sweep always comes back, at boot and on an interval, and settles waits past
+ * their deadline as timed out
  */
 
 import { sweepPendingSignals } from "../domain/workflows/signal_wait_cleanup.ts";
@@ -47,24 +36,15 @@ const logger = getSwampLogger(["serve", "continuation-sweep"]);
 
 export const DEFAULT_CONTINUATION_SWEEP_INTERVAL_MS = 30_000;
 
-/** What one pass did. */
 export interface ContinuationSweepResult {
-  /** Suspended runs looked at. */
   readonly examined: number;
-  /** Resumes launched. */
   readonly launched: number;
 }
 
 /**
- * One pass over the suspended runs this instance has a record of. A run
- * that cannot be read, or whose continuation fails, is logged and passed
- * over, so one damaged run never stops the pass.
- *
- * `takeover` lets the pass replace the claim of a holder known to be dead.
- * It is right only while this instance's run records are current: always on
- * a filesystem datastore, and on a synced one only straight after the boot
- * hydration. On a synced datastore a run is also compared with the remote
- * before it resumes, where the sync service can read it (`fetchContent`).
+ * a run that cannot be read or continued is logged and passed over; takeover
+ * replaces a dead holder's claim and is right only while this instance's run
+ * records are current
  */
 export async function sweepContinuations(
   ctx: ConnectionContext,
@@ -72,13 +52,11 @@ export async function sweepContinuations(
     takeover: boolean;
     isStopping?: () => boolean;
     /**
-     * Aborts the listing of a workflow's suspended runs: a rebuild or repair
-     * of its run index stops between records and writes no index once no
-     * other reader needs it. The pass stops waiting for the listing at once,
-     * even one queued behind another reader of the index (swamp-club#3472).
+     * aborts the listing of suspended runs: an index rebuild stops between
+     * records and writes no index once no other reader needs it; the pass stops
+     * waiting at once, even when queued behind another reader
      */
     signal?: AbortSignal;
-    /** The clock deadlines and backoffs are read against, for tests. */
     now?: () => number;
   },
 ): Promise<ContinuationSweepResult> {
@@ -133,10 +111,9 @@ export async function sweepContinuations(
 }
 
 /**
- * A workflow's suspended runs, or {@link STOPPED} once `signal` aborts
- * first. The listing is then let go: a rebuild or repair stops at the next
- * record if no other reader needs it. Shared work and a plain read of the
- * index finish without holding up the sweep's shutdown.
+ * a listing the signal aborts is let go: a rebuild or repair stops at the next
+ * record if no other reader needs it; shared work and plain reads finish
+ * without holding up shutdown
  */
 async function listSuspendedRuns(
   runRepo: ConnectionContext["repoContext"]["workflowRunRepo"],
@@ -158,11 +135,9 @@ async function listSuspendedRuns(
 }
 
 /**
- * Removes the pending signals nothing will take (swamp-club#3212): a signal
- * by key is held through serve, so serve is where they gather, and nothing
- * else here runs the wait-record sweep. It reads key records and never a run
- * record, so it is safe on every datastore. Never throws: a sweep that fails
- * is logged, and the next one tries again.
+ * removes pending signals nothing will take, which gather in serve as key
+ * signals are held there; reads only key records so it is safe on every
+ * datastore; never throws, a failed sweep is retried
  */
 export async function sweepHeldSignals(
   ctx: Pick<ConnectionContext, "repoContext">,
@@ -181,22 +156,16 @@ export async function sweepHeldSignals(
 }
 
 /**
- * How often serve sweeps pending signals. A lapse stays as the highest
- * record of its slot until the slot is claimed, so every sweep reads each
- * such slot again, for good. Nothing waits on the sweep being prompt: a
- * signal lapses a day after its age limit, and whoever stores a signal over
- * another removes the one below. So it runs far less often than the
- * continuation pass it rides on (swamp-club#3308).
+ * a lapse stays as its slot's highest record until claimed, so each sweep
+ * rereads it; nothing needs it prompt, so it runs far less often than the
+ * continuation pass
  */
 export const HELD_SIGNAL_SWEEP_INTERVAL_MS = 10 * 60 * 1000;
 
 /**
- * A {@link sweepHeldSignals} that runs on the first call and then no more
- * often than every `intervalMs`, for calling with each continuation pass.
- * A call that is not due reads nothing and returns 0. The time of the last
- * sweep is kept here, in this process: every instance keeps its own. A call
- * timed before the last sweep means the clock was set back, and sweeps: the
- * schedule must not stand still until the clock has caught up.
+ * runs on the first call and then at most every intervalMs; the last sweep time
+ * is per process; a call timed before it means the clock was set back and
+ * sweeps, so the schedule never stalls
  */
 export function heldSignalSweeper(
   intervalMs: number = HELD_SIGNAL_SWEEP_INTERVAL_MS,
@@ -221,19 +190,13 @@ export interface ContinuationSweepDeps {
    * can be behind, and a pass would resume it.
    */
   readonly bootPassOnly?: boolean;
-  /**
-   * One pass; `boot` is true for the first pass after the server started.
-   * `signal` aborts when the sweep is disposed.
-   */
   sweep(
     pass: { boot: boolean; isStopping: () => boolean; signal: AbortSignal },
   ): Promise<ContinuationSweepResult>;
 }
 
-/** Whether serve starts the sweep, and why not when it does not. */
 export type ContinuationSweepStart =
   | "start"
-  /** The interval is 0. */
   | "disabled"
   /**
    * A synced datastore with no continuation claims every instance reads: no
@@ -242,7 +205,6 @@ export type ContinuationSweepStart =
    * resuming one run from their own copies of it.
    */
   | "no_shared_claims"
-  /** The boot hydration did not complete, so the run records may be old. */
   | "records_not_current";
 
 export function decideContinuationSweepStart(options: {
@@ -259,7 +221,6 @@ export function decideContinuationSweepStart(options: {
   return "start";
 }
 
-/** Runs the continuation sweep at boot and then on an interval. */
 export class ContinuationSweepService {
   readonly #deps: ContinuationSweepDeps;
   readonly #abort = new AbortController();
@@ -291,10 +252,9 @@ export class ContinuationSweepService {
   }
 
   /**
-   * Stops the schedule and waits for a pass in flight. The pass lets go of
-   * its listing of suspended runs at once (swamp-club#3472): a run index
-   * rebuild must not hold shutdown. A run it is continuing is still waited
-   * for, so the claim it took is released while this instance is live.
+   * stops the schedule and waits for a pass in flight; the pass lets go of its
+   * run listing at once so an index rebuild cannot hold shutdown, but a run
+   * being continued is waited for so its claim is released
    */
   async dispose(): Promise<void> {
     this.#disposed = true;
@@ -306,7 +266,6 @@ export class ContinuationSweepService {
     if (this.#running) await this.#running;
   }
 
-  /** One pass now. A pass already in flight is awaited instead. */
   async runOnce(): Promise<void> {
     if (this.#running) return await this.#running;
     this.#running = this.#pass().finally(() => {

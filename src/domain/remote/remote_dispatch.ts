@@ -18,13 +18,9 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * The domain-side port for dispatching a step to a remote worker.
- *
- * Workflow execution (domain layer) decides *that* a step is remote — a step
- * declaring `target`/`labels`/`platform` placement — and hands it to this
- * port. The orchestrator's DispatchService (serve layer) implements it and
- * registers itself here at startup; running a placed step outside a serving
- * orchestrator fails with a clear error instead of silently running locally.
+ * workflow execution hands placed steps to this port; serve's DispatchService
+ * registers itself at startup; outside a serving orchestrator a placed step
+ * fails with a clear error instead of running locally
  */
 
 import type { UnifiedDataRepository } from "../data/repositories.ts";
@@ -44,25 +40,15 @@ import type {
 } from "../vaults/secret_bag_registry.ts";
 
 /**
- * The plaintext frame a protocol version 5 worker receives, for the
- * deprecation window typed-secrets 5.3 ends (design/enablers/typed-secrets.md
- * Section 9): the arguments with their secrets resolved, the step's bag
- * entries with their values, and the values the worker's redactor masks.
+ * the plaintext frame a version 5 worker receives, for the deprecation window:
+ * resolved arguments, bag entries with values, and the values the worker's
+ * redactor masks
  */
 export interface LegacyStepDelivery {
   globalArgs: Record<string, unknown>;
   methodArgs: Record<string, unknown>;
-  /**
-   * Resolved vault secret values for the worker's SecretRedactor, and the
-   * sensitive argument values a local run would register.
-   */
   secretValues?: string[];
-  /**
-   * Method args with vault sentinels intact, shipped with {@link secretBag}
-   * so the worker resolves them itself (see DispatchParams).
-   */
   unresolvedMethodArgs?: Record<string, unknown>;
-  /** The step's vault secret bag entries, with their values. */
   secretBag?: SecretBagEntry[];
 }
 
@@ -81,63 +67,47 @@ export interface RemoteStepRequest {
     tags: Record<string, string>;
   };
   /**
-   * The step's global and method arguments as the definition holds them:
-   * sentinels in place of secrets, and the global arguments not yet
-   * validated. A version 6 worker loads, resolves and validates them
-   * itself; a version 5 worker gets {@link legacyDelivery}'s instead.
+   * arguments as the definition holds them: sentinels for secrets, global args
+   * not yet validated; a version 6 worker resolves and validates them itself, a
+   * version 5 worker gets legacyDelivery's
    */
   globalArgs: Record<string, unknown>;
   methodArgs: Record<string, unknown>;
   resourceSpecs?: Record<string, unknown>;
   fileSpecs?: Record<string, unknown>;
-  /** W3C trace context propagated into the worker's execution. */
   traceHeaders?: Record<string, string>;
   runtimeTags?: Record<string, string>;
   tagOverrides?: Record<string, string>;
   dataOutputOverrides?: DataOutputOverride[];
   workflowName?: string;
-  /** The workflow run this step belongs to, recorded on its step lease. */
   workflowRunId?: string;
   jobName?: string;
   stepName?: string;
   signal?: AbortSignal;
   onEvent?: (event: RpcStreamEvent) => void;
   dataRepo?: UnifiedDataRepository;
-  /** Dispatch-level probe marker for fleet verification. */
   probeMarker?: string;
-  /**
-   * One reference-only entry per sentinel the arguments carry, which a
-   * version 6 dispatch ships as its bag. Absent when the step holds no
-   * secret.
-   */
   referenceBag?: ShippedReferenceEntry[];
   /**
-   * The references behind {@link referenceBag}, which serve admits to the
-   * dispatch's own secret reads and loads (swamp-club#3529).
+   * the references behind referenceBag, which serve admits to the dispatch's
+   * own secret reads and loads
    */
   secretReferences?: readonly SecretReference[];
   /**
-   * Sensitive literal values the arguments hold as authored, for serve's
-   * dispatch redactor. They are not secrets the typed-secrets contract
-   * covers (design/enablers/typed-secrets.md Section 1.3).
+   * sensitive literal values the arguments hold as authored, for serve's
+   * dispatch redactor; not secrets the typed-secrets contract covers
    */
   redactorSeeds?: string[];
   /**
-   * Builds the frame a version 5 worker receives: it loads the step's
-   * references and validates its arguments, so it is called only once the
-   * dispatcher has chosen a version 5 worker, and at most once per attempt
-   * however many such workers the attempt is dispatched to. Absent when the
-   * arguments hold no secret and need no validation on serve, as for a
-   * fleet probe: the arguments above are then the frame's.
+   * builds the version 5 frame; called only once a version 5 worker is chosen,
+   * at most once per attempt; absent when the arguments hold no secret and need
+   * no validation on serve
    */
   legacyDelivery?: () => Promise<LegacyStepDelivery>;
   /**
-   * Places data text in a frame's global and method arguments for the
-   * shell of the chosen worker, by the platform it enrolled with
-   * (swamp-club#3868). Called for every dispatch attempt, since a
-   * re-dispatch can choose a worker of another platform; it throws to
-   * refuse. Required: a dispatcher that skipped it would run data as
-   * authored text. A step whose arguments hold no data passes the identity.
+   * places data text in arguments for the chosen worker's shell by platform;
+   * called per attempt since a re-dispatch may pick another platform; throws to
+   * refuse; required so data never runs as authored text
    */
   placeArguments: (
     args: {
@@ -150,25 +120,19 @@ export interface RemoteStepRequest {
     methodArgs: Record<string, unknown>;
   };
   /**
-   * Called when a version 6 worker reports that the step's arguments
-   * passed their schema, at most once however many workers report it
-   * (swamp-club#3681).
+   * called when a version 6 worker reports the arguments passed their schema,
+   * at most once however many workers report it
    */
   onArgumentsValidated?: () => Promise<void>;
   /**
-   * Begins the hand-off of the per-model locks held for the step to one
-   * dispatch attempt, so a swamp the step starts on the worker skips them.
-   * Call it once per attempt, send what it lends, and await its end when
-   * the attempt returns, is cancelled or loses its worker: the locks are
-   * then re-keyed, so a retry carries new nonces and whatever the attempt
-   * left running stops skipping them.
+   * call once per attempt and await its end when the attempt returns, is
+   * cancelled or loses its worker: the locks are re-keyed, so a retry carries
+   * new nonces and leftovers stop skipping them
    */
   beginLockHandOff?: () => Promise<LockHandOff<RemoteLockHolder | undefined>>;
   /**
-   * Bypass the scheduler and dispatch directly to the targeted worker.
-   * Only used by the fleet verification probe, which must reach workers
-   * in "unverified" status that the scheduler would otherwise exclude.
-   * Requires `placement.target` to be set.
+   * bypasses the scheduler; only for the fleet probe, which must reach
+   * unverified workers the scheduler excludes; requires placement.target
    */
   skipScheduler?: boolean;
   /**
@@ -183,7 +147,6 @@ export interface RemoteStepResult {
   outputs: DispatchOutput[];
   logs: string[];
   durationMs: number;
-  /** The worker that executed the step (telemetry attribution). */
   workerName?: string;
 }
 
@@ -194,7 +157,6 @@ export interface RemoteStepDispatcher {
 
 let activeDispatcher: RemoteStepDispatcher | null = null;
 
-/** Called by the orchestrator at startup (and cleared on shutdown). */
 export function setRemoteStepDispatcher(
   dispatcher: RemoteStepDispatcher | null,
 ): void {
@@ -207,7 +169,6 @@ export function getRemoteStepDispatcher(): RemoteStepDispatcher | null {
 
 let remoteOnlyMode = false;
 
-/** Called by the orchestrator at startup when --remote-only is set. */
 export function setRemoteOnlyMode(enabled: boolean): void {
   remoteOnlyMode = enabled;
 }

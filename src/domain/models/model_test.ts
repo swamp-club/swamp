@@ -44,17 +44,11 @@ import type { DefinitionRepository } from "../definitions/repositories.ts";
 import { type DataId, generateDataId } from "../data/data_id.ts";
 import { getLogger } from "@logtape/logtape";
 
-/**
- * Stored result from mock data writer.
- */
 interface MockWriterResult {
   handle: DataHandle;
   content: Uint8Array;
 }
 
-/**
- * Creates mock writeResource and createFileWriter functions that store written content in memory.
- */
 function createMockWriters(): {
   writeResource: (
     specName: string,
@@ -163,9 +157,6 @@ function createMockWriters(): {
   return { writeResource, createFileWriter, getResults };
 }
 
-/**
- * Creates a mock UnifiedDataRepository for testing.
- */
 function createMockDataRepo(): UnifiedDataRepository {
   return {
     namespace: SOLO_NAMESPACE,
@@ -232,9 +223,6 @@ function createMockDataRepo(): UnifiedDataRepository {
   };
 }
 
-/**
- * Creates a mock DefinitionRepository for testing.
- */
 function createMockDefinitionRepo(): DefinitionRepository {
   return {
     findById: () => Promise.resolve(null),
@@ -249,9 +237,6 @@ function createMockDefinitionRepo(): DefinitionRepository {
   };
 }
 
-/**
- * Creates a test MethodContext with mocked repositories.
- */
 function createTestContext(modelType: ModelType): {
   context: MethodContext;
   getResults: () => MockWriterResult[];
@@ -278,9 +263,6 @@ function createTestContext(modelType: ModelType): {
   return { context, getResults };
 }
 
-/**
- * Helper to get parsed JSON content from mock results.
- */
 function getResultAttributes(
   results: MockWriterResult[],
   index = 0,
@@ -337,7 +319,6 @@ Deno.test("ModelRegistry.resetLoadedFlag re-runs the loader on next ensureLoaded
   await registry.ensureLoaded();
   assertEquals(loadCount, 1);
 
-  // Without reset, a second ensureLoaded is a no-op.
   await registry.ensureLoaded();
   assertEquals(loadCount, 1);
 
@@ -362,7 +343,6 @@ Deno.test("ModelRegistry.getOrLoad: answers a registered type without loading, l
   assertEquals(loadCount, 0);
   assertEquals(await registry.getOrLoad(loadedLater.type), loadedLater);
   assertEquals(loadCount, 1);
-  // Extensions load once; a type nothing registers stays undefined.
   assertEquals(await registry.getOrLoad("swamp/never"), undefined);
   assertEquals(loadCount, 1);
 });
@@ -481,7 +461,6 @@ Deno.test("ModelRegistry.typesProvidedByExtension: lists loaded and lazy types o
     ...createLazyEntry("@swamp/vercel/deployments/zeta"),
     extensionName: "@swamp/vercel/deployments",
   });
-  // An imported type keeps the extension its catalog row named.
   registry.promoteFromLazy(createTestModel("@swamp/vercel/deployments/zeta"));
   registry.registerLazy({
     ...createLazyEntry("@swamp/vercel/deployments/deployments"),
@@ -567,7 +546,6 @@ Deno.test("ModelDefinition method can execute", async () => {
 // since they use the global registry
 
 Deno.test("defineModel registers model with global registry", async () => {
-  // Dynamic import to get a fresh reference to the global registry
   const { modelRegistry } = await import("./model.ts");
 
   const model = createTestModel("test/define-model-registers");
@@ -586,9 +564,7 @@ Deno.test("defineModel returns the same definition passed in", () => {
 Deno.test("defineModel is idempotent when called with same model", () => {
   const model = createTestModel("test/define-model-idempotent");
 
-  // First call registers
   const result1 = defineModel(model);
-  // Second call should not throw, just return the definition
   const result2 = defineModel(model);
 
   assertEquals(result1, model);
@@ -645,8 +621,6 @@ Deno.test("modelRegistry: every type the built-in barrel registers is marked bui
     assertEquals(modelRegistry.isBuiltIn(type), true, type);
   }
 });
-
-// ModelRegistry.extend() tests
 
 Deno.test("ModelRegistry.extend adds methods to existing model", () => {
   const registry = new ModelRegistry();
@@ -756,8 +730,6 @@ Deno.test("ModelRegistry.extend - extended methods are callable", async () => {
   assertEquals(attrs?.greeting, "Hello, world");
 });
 
-// --- CalVer validation tests ---
-
 Deno.test("ModelRegistry.register rejects non-CalVer version string", () => {
   const registry = new ModelRegistry();
   const model: ModelDefinition = {
@@ -858,8 +830,6 @@ Deno.test("ModelRegistry.register accepts model with no upgrades", () => {
   assertEquals(registry.has("test/no-upgrades"), true);
 });
 
-// --- inferMethodKind tests ---
-
 Deno.test("inferMethodKind - returns explicit kind from definition", () => {
   assertEquals(inferMethodKind("run", { kind: "create" }), "create");
   assertEquals(inferMethodKind("do-something", { kind: "delete" }), "delete");
@@ -912,8 +882,6 @@ Deno.test("inferMethodKind - explicit kind overrides name inference", () => {
   assertEquals(inferMethodKind("create", { kind: "read" }), "read");
 });
 
-// --- resolveMethodKind tests ---
-
 Deno.test("resolveMethodKind - reports a kind set on the definition as declared", () => {
   assertEquals(resolveMethodKind("probe", { kind: "read" }), {
     kind: "read",
@@ -961,8 +929,6 @@ Deno.test("resolveMethodKind - reports none with no kind for an unrecognized nam
   assertEquals("kind" in resolved, false);
 });
 
-// --- isMutatingKind tests ---
-
 Deno.test("isMutatingKind - returns true for create/update/delete/action/undefined", () => {
   assertEquals(isMutatingKind("create"), true);
   assertEquals(isMutatingKind("update"), true);
@@ -975,8 +941,6 @@ Deno.test("isMutatingKind - returns false for read/list", () => {
   assertEquals(isMutatingKind("read"), false);
   assertEquals(isMutatingKind("list"), false);
 });
-
-// --- ModelRegistry.extend() with checks tests ---
 
 Deno.test("ModelRegistry.extend adds checks to existing model", () => {
   const registry = new ModelRegistry();
@@ -1072,8 +1036,6 @@ Deno.test("ModelRegistry.extend merges checks from extension with existing check
   assertEquals("check-b" in extended!.checks!, true);
 });
 
-// --- ModelRegistry.extend() with resources tests ---
-
 Deno.test("ModelRegistry.extend: adds resources to existing model", () => {
   const registry = new ModelRegistry();
   registry.register(createTestModel("swamp/extend-resources"));
@@ -1158,8 +1120,6 @@ Deno.test("ModelRegistry.extend: adds resources to model with no existing resour
   assertEquals("state" in extended!.resources!, true);
 });
 
-// --- ModelRegistry.applyExtensionMembers() tests ---
-
 function stubMethod(description: string) {
   return {
     description,
@@ -1184,12 +1144,9 @@ Deno.test("ModelRegistry.applyExtensionMembers: adds and overrides in one merge"
   assertEquals(after.methods.probe.description, "new probe");
   assertEquals(after.methods.extra.description, "extra");
   assertEquals(after.methods.write.description, "Write message to data");
-  // Immutable: the previous definition object is untouched.
   assertEquals(before.methods.probe.description, "old probe");
   assertEquals("extra" in before.methods, false);
 });
-
-// --- ModelRegistry.removeExtensionMembers() tests (swamp-club#2745) ---
 
 Deno.test("ModelRegistry.removeExtensionMembers: removes only the exact definitions passed in", () => {
   const registry = new ModelRegistry();
@@ -1217,7 +1174,6 @@ Deno.test("ModelRegistry.removeExtensionMembers: removes only the exact definiti
   assertEquals("extra" in after.methods, false);
   assertEquals(after.methods.kept, kept);
   assertEquals(after.methods.write, baseWrite);
-  // Immutable: the previous definition object is untouched.
   assertEquals(before.methods.extra, extra);
 });
 
@@ -1354,8 +1310,6 @@ Deno.test("ModelRegistry.applyExtensionMembers: throws on unregistered type", ()
     "Cannot extend unregistered behavior type: swamp/apply-none",
   );
 });
-
-// --- Lazy entry tests ---
 
 function createLazyEntry(typeString: string): LazyModelEntry {
   return {
@@ -1500,9 +1454,8 @@ Deno.test("ModelRegistry.ensureTypeLoaded: concurrent caller waits for extension
   const registry = new ModelRegistry();
   registry.registerLazy(createLazyEntry("@myorg/echo"));
 
-  // Simulate loadSingleType: register base type, yield, then extend.
-  // A concurrent caller arriving between promoteFromLazy and extend
-  // must wait for the full load to complete (swamp-club#521).
+  // a concurrent caller arriving between promoteFromLazy and extend must wait
+  // for the full load to complete
   registry.setTypeLoader(async (type) => {
     registry.promoteFromLazy(createTestModel(type));
     await new Promise((resolve) => setTimeout(resolve, 50));
@@ -1515,13 +1468,10 @@ Deno.test("ModelRegistry.ensureTypeLoaded: concurrent caller waits for extension
     });
   });
 
-  // Caller 1: starts loading (triggers the type loader)
   const promise1 = registry.ensureTypeLoaded("@myorg/echo");
 
-  // Wait for promoteFromLazy but NOT extend
   await new Promise((resolve) => setTimeout(resolve, 10));
 
-  // Caller 2: must see extensions after awaiting
   await registry.ensureTypeLoaded("@myorg/echo");
 
   const modelDef = registry.get("@myorg/echo");
@@ -1760,7 +1710,6 @@ Deno.test("ModelRegistry.ensureTypeLoaded: retries after transient failure", asy
     return Promise.resolve();
   });
 
-  // First call fails
   let caught = false;
   try {
     await registry.ensureTypeLoaded("@myorg/echo");
@@ -1771,7 +1720,6 @@ Deno.test("ModelRegistry.ensureTypeLoaded: retries after transient failure", asy
   assertEquals(callCount, 1);
   assertEquals(registry.get("@myorg/echo"), undefined);
 
-  // Second call retries and succeeds
   await registry.ensureTypeLoaded("@myorg/echo");
   assertEquals(callCount, 2);
   assertEquals(registry.get("@myorg/echo")?.version, "2026.02.09.1");
@@ -1965,7 +1913,6 @@ Deno.test("ModelRegistry.register: a field marked both sensitive and secrets: re
     error.message,
   );
   assertEquals(registry.has("swamp/conflict"), false);
-  // Marked one way or the other, or with another secrets value, registers.
   registry.register({
     ...createTestModel("swamp/fine"),
     globalArguments: z.object({ g: z.string().meta({ sensitive: true }) }),

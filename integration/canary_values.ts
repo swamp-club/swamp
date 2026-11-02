@@ -17,13 +17,8 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// Canary secrets for the typed-secrets boundary tests (swamp-club#3511).
-//
-// Generates synthetic secrets in every class design/enablers/typed-secrets.md
-// Section 12.2 names, fresh for each run, plus a vault type that serves them
-// and counts every read. The prohibited-sink scans that use these classes run
-// black-box against the compiled binary in swamp-uat; this repository only
-// checks the boundaries where plaintext is allowed.
+// the prohibited-sink scans run black-box in swamp-uat; this repository only
+// checks the boundaries where plaintext is allowed
 
 import { vaultTypeRegistry } from "../src/domain/vaults/vault_type_registry.ts";
 import { SENTINEL_EXACT } from "../src/domain/vaults/secret_bag_registry.ts";
@@ -34,7 +29,6 @@ import { SENTINEL_EXACT } from "../src/domain/vaults/secret_bag_registry.ts";
  */
 export const REDACTOR_MIN_LENGTH = 3;
 
-/** Every canary class Section 12.2 requires. */
 export const CANARY_CLASSES = [
   "empty",
   "one-char",
@@ -54,7 +48,6 @@ export const CANARY_CLASSES = [
 
 export type CanaryClass = typeof CANARY_CLASSES[number];
 
-/** A synthetic secret. */
 export interface Canary {
   readonly class: CanaryClass;
   readonly value: string;
@@ -93,7 +86,6 @@ function randomLetters(length: number): string {
   return [...bytes].map((b) => letters[b % letters.length]).join("");
 }
 
-/** One canary of `canaryClass`, fresh for this call. */
 export function generateCanary(canaryClass: CanaryClass): Canary {
   switch (canaryClass) {
     case "empty":
@@ -116,17 +108,14 @@ export function generateCanary(canaryClass: CanaryClass): Canary {
   }
 }
 
-/** One canary of every class, fresh for this call. */
 export function generateCanaries(): Canary[] {
   return CANARY_CLASSES.map(generateCanary);
 }
 
-/** Whether the redactor would ignore `canary` as too short. */
 export function belowRedactorMinimum(canary: Canary): boolean {
   return canary.value.length < REDACTOR_MIN_LENGTH;
 }
 
-/** What a boundary or sink received in place of a canary. */
 export type ValueKind =
   | "plaintext"
   | "sentinel"
@@ -156,28 +145,18 @@ export function classifyValue(observed: unknown, canary: Canary): ValueKind {
   return "other";
 }
 
-/** One read the counting vault served. */
 export interface VaultRead {
   vault: string;
   key: string;
 }
 
-/** A per-run vault type that serves canaries and counts every read. */
 export interface CountingVault {
-  /** The registered vault type, unique to this run. */
   readonly type: string;
-  /** Every `get` served, in order. */
   readonly reads: readonly VaultRead[];
-  /** Reads of `key` so far. */
   readsOf(key: string): number;
-  /** Removes the type from the process-global registry. */
   dispose(): void;
 }
 
-/**
- * Registers a vault type under a per-run name whose provider serves
- * `secrets` and records each `get`. Call `dispose` in a `finally`.
- */
 export function registerCountingVault(
   secrets: Record<string, string>,
 ): CountingVault {

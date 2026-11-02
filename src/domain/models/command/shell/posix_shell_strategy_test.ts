@@ -23,7 +23,6 @@ import { VaultSecretBag } from "../../../vaults/vault_secret_bag.ts";
 import { SecretBagRegistry } from "../../../vaults/secret_bag_registry.ts";
 import { secretOccurrencesOf } from "../../../vaults/secret_occurrences.ts";
 
-/** The reference every secret of these tests stands for. */
 const REF = { vaultName: "v", key: "k" };
 
 Deno.test("PosixShellStrategy.buildInvocation: wraps command in sh -c", () => {
@@ -39,8 +38,6 @@ Deno.test("PosixShellStrategy.normalizesCrlfOutput: keeps every CR a command wri
 });
 
 Deno.test("PosixShellStrategy.buildInvocation: passes command through verbatim (no escaping)", () => {
-  // The shell handles parsing — strategy doesn't pre-escape. This
-  // matches `Deno.Command` semantics where args are passed as-is.
   const strategy = new PosixShellStrategy();
   const cmd = `echo "hello $WORLD" && exit 0`;
   assertEquals(

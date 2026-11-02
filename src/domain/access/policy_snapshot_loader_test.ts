@@ -817,7 +817,6 @@ Deno.test("createConditionEvaluator: a name bound by a comprehension is not a fi
   );
 });
 
-/** Runs `fn` with the snapshot loader's warnings captured, as messages. */
 async function capturingLoaderWarnings(
   fn: () => Promise<void>,
 ): Promise<string[]> {
@@ -853,7 +852,6 @@ Deno.test("PolicySnapshotLoader.load: a vault grant with a name or key condition
     resource: { kind: "vault", pattern: "*" },
     condition: 'key.startsWith("root-")',
   });
-  // A condition on an unsupplied field is still named, so the capture works.
   const onOwner = makeGrant({
     resource: { kind: "data", pattern: "*" },
     condition: 'owner.kind == "user"',
@@ -1027,8 +1025,6 @@ Deno.test("PolicySnapshotLoader.load: checks a grant again when its selector cha
   assertEquals(forGrant[1].includes("model:acme/*"), true);
 });
 
-// --- Records that cannot be read (swamp-club#3386) ---
-
 type FakeRecord =
   | { kind: "grant"; attrs: Grant }
   | { kind: "group"; attrs: Group }
@@ -1045,23 +1041,9 @@ type FakeRecord =
       | "validation"
       | "no-metadata"
       | "json";
-    /** Listed under the orphaned `@`-prefixed type, with no definition. */
     orphaned?: boolean;
   };
 
-/**
- * A data repository over records a test can change between loads. A record
- * unreadable at "listing" is reported by findAllForType, as the filesystem
- * repository reports a directory it cannot read, and at "metadata" as it
- * reports metadata that does not parse, and at "schema" as it reports
- * metadata that fails its schema, and at "validation" as it reports any
- * other metadata error; at "content", getContent throws,
- * with a message that differs on every read, as a remote error's may; at
- * "content-syntax", it throws SyntaxError, as a remote read of a malformed
- * response may; at "missing", it returns null; at "invalid", the content
- * parses but fails the grant or group schema; at "json", the content does
- * not parse.
- */
 function createChangingDataRepo(
   records: Map<string, FakeRecord>,
 ): UnifiedDataRepository & {
@@ -1154,7 +1136,6 @@ function createChangingDataRepo(
   };
 }
 
-/** Runs `fn` with the snapshot loader's logs captured, as level and text. */
 async function capturingLoaderLogs(
   fn: () => Promise<void>,
 ): Promise<Array<{ level: string; message: string }>> {
@@ -1253,11 +1234,9 @@ Deno.test("PolicySnapshotLoader.load: the first build refuses a record it cannot
     );
     assertEquals(error.records.map((r) => r.record), ["swamp/grant/d"]);
     assertStringIncludes(error.message, "swamp/grant/d");
-    // Nothing was committed: the snapshot is still the empty one.
     assertEquals(effectsFor(loader, "user:adam"), []);
     assertEquals(loader.unreadable, []);
 
-    // Once readable, the first build succeeds.
     records.set("d", {
       kind: "grant",
       attrs: makeGrant({ id: "deny-1", effect: "deny" }),
@@ -1378,7 +1357,6 @@ Deno.test("PolicySnapshotLoader.load: an unreadable group keeps its members for 
   assertEquals(errors.length, 1);
   assertStringIncludes(errors[0].message, "allow grants to the group");
 
-  // Readable again: the allow comes back.
   records.set("devs", { kind: "group", attrs: makeGroup("devs", ["adam"]) });
   await loader.load();
   await loader.dispose();
@@ -1552,7 +1530,6 @@ Deno.test("PolicySnapshotLoader.load: a rebuild that also loads a peer's change 
   const logs = await capturingLoaderLogs(async () => {
     await loader.load();
     await loader.load();
-    // A peer adds a grant while the other record stays unreadable.
     records.set("o", { kind: "grant", attrs: onOwner });
     await loader.load();
   });
@@ -1601,7 +1578,6 @@ Deno.test("PolicySnapshotLoader.load: the first-build error does not tell a reco
 Deno.test("PolicySnapshotLoader.load: each way a record fails is classed by where it failed", async () => {
   const cases: Array<[FakeRecord & { unreadable: string }, string]> = [
     [{ kind: "grant", unreadable: "content" }, "unreadable"],
-    // A failed read is unreadable whatever its error class.
     [{ kind: "grant", unreadable: "content-syntax" }, "unreadable"],
     [{ kind: "grant", unreadable: "json" }, "corrupt"],
     [{ kind: "grant", unreadable: "invalid" }, "unrecognised"],
@@ -1707,8 +1683,6 @@ Deno.test("PolicySnapshotLoader.load: other data of a grant model that fails, su
     ...inner,
     getContent: inner.getContent,
     findAllForType(type: ModelType, options?: FindAllForTypeOptions) {
-      // The repository returns the grant's access data and reports only a
-      // sibling report that failed, as it does per data name.
       options?.unreadable?.push({
         modelType: type,
         modelId: "d",
@@ -1737,7 +1711,6 @@ Deno.test("PolicySnapshotLoader.load: builds run one at a time, so an older buil
   const repo = {
     findAllForType: inner.findAllForType,
     async getContent(type: ModelType, modelId: string, dataName: string) {
-      // Content is read when called; a gated read returns it only later.
       const content = await inner.getContent(type, modelId, dataName);
       if (gate) await gate;
       return content;
@@ -1762,7 +1735,6 @@ Deno.test("PolicySnapshotLoader.load: builds run one at a time, so an older buil
   await Promise.all([older, newer]);
   await loader.dispose();
 
-  // B ran after A, read the revoke, and committed last.
   assertEquals(effectsFor(loader, "user:adam"), []);
 });
 
@@ -1818,10 +1790,8 @@ Deno.test("PolicySnapshotLoader.load: a record whose cause changes under the sam
   );
   await loader.load();
   const logs = await capturingLoaderLogs(async () => {
-    // A remote read failing with a SyntaxError is unreadable...
     records.set("d", { kind: "grant", unreadable: "content-syntax" });
     await loader.load();
-    // ...and then the content is corrupt: SyntaxError again, another cause.
     records.set("d", { kind: "grant", unreadable: "json" });
     await loader.load();
   });
@@ -1839,9 +1809,6 @@ Deno.test("PolicySnapshotLoader.load: a record whose cause changes under the sam
     [["corrupt", "SyntaxError"]],
   );
 });
-
-// Diagnostic phases of the access-data poll's snapshot reload
-// (swamp-club#4005).
 
 function accessDataRepo(): UnifiedDataRepository {
   return createMockDataRepo(

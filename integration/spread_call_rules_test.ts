@@ -17,29 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Fitness test for spread arguments:
- *
- *   No array of unbounded size is spread into the arguments of
- *   `Math.max`, `Math.min`, `String.fromCharCode`, `.push`, `.unshift` or
- *   `.splice`.
- *
- * Spreading an array into a call puts every element on the stack as an
- * argument. V8 throws `RangeError: Maximum call stack size exceeded` once
- * that passes roughly 125k elements, so any array that grows with runtime
- * data (data versions, run outputs, log lines, query rows, forEach steps)
- * eventually breaks the command using it. swamp-club#2565 was every write to
- * a resource failing past ~129k versions because of `Math.max(...versions)`.
- *
- * Use `maxOf` / `minOf` from `src/domain/array_extrema.ts`, or a `for…of`
- * loop that pushes one element at a time. A spread over an array that is
- * bounded by construction may stay, pinned below with the reason it is
- * bounded. Spreads inside array or object literals (`[...a]`, `{...o}`) are
- * not calls and are not matched.
- *
- * Static — no subprocesses, nothing is executed.
- */
-
 import { assertEquals } from "@std/assert";
 import { join } from "@std/path";
 import {
@@ -50,20 +27,11 @@ import {
   SRC_DIR,
 } from "./arch_fitness_helpers.ts";
 
-/** Calls with an argument ceiling, as `Math.max(`, `.push(` etc. */
 const CALL_START =
   /(?:\bMath\.(?:max|min)|\bString\.fromCharCode|\.(?:push|unshift|splice))(\.apply)?\s*\(/g;
 
-/** Longest call text kept in a pin key. */
 const MAX_KEY_LENGTH = 100;
 
-/**
- * Returns the text of each call in `source` that spreads an argument into
- * one of the functions in {@link CALL_START}, or passes an array to one of
- * them through `.apply`. Whitespace is collapsed so a multi-line call reads
- * as one line, and long calls are cut at {@link MAX_KEY_LENGTH}. Comment
- * lines are ignored.
- */
 function findSpreadCalls(source: string): string[] {
   const code = source
     .split("\n")
@@ -93,11 +61,6 @@ function findSpreadCalls(source: string): string[] {
   return hits;
 }
 
-/**
- * Scans the argument list whose `(` is at `openParen`. `spreads` is whether
- * `...` appears directly in it — not nested in an inner call, array, object
- * or string — and `end` is the index just past its closing `)`.
- */
 function scanArguments(
   code: string,
   openParen: number,
@@ -119,7 +82,6 @@ function scanArguments(
   return { spreads, end: code.length };
 }
 
-/** Index of the quote closing the string literal that opens at `start`. */
 function skipString(code: string, start: number): number {
   const quote = code[start];
   for (let i = start + 1; i < code.length; i++) {
@@ -189,11 +151,6 @@ Deno.test("findSpreadCalls: ignores comment lines", () => {
   );
 });
 
-/**
- * Spread calls whose array is bounded by construction, grouped by file with
- * the reason they are bounded. Each call is its text as
- * {@link findSpreadCalls} renders it.
- */
 const PINNED: ReadonlyArray<
   { file: string; reason: string; calls: readonly string[] }
 > = [

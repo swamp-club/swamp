@@ -17,17 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Integration test for the giga-swamp Phase 3 filesystem layout.
- *
- * Phase 3 makes the datastore storage layout namespace-aware: a configured
- * namespace lands data under `{datastore}/{namespace}/data/...` while the
- * catalog stays repo-local at `{repoDir}/.swamp/data/_catalog.db`. Solo mode
- * (no namespace) must be byte-identical to before. These tests wire the path
- * resolver, repository, and catalog together exactly as `repo_context` does
- * and assert the resulting on-disk layout.
- */
-
 import { assertEquals } from "@std/assert";
 import { join } from "@std/path";
 import { existsSync } from "@std/fs";
@@ -74,11 +63,6 @@ function makeData(name: string): Data {
   });
 }
 
-/**
- * Wires resolver + repo + catalog exactly as repo_context does, writes one
- * data item, and returns the on-disk anchors plus the queried rows so each
- * test can assert the layout.
- */
 async function writeOneItem(
   repoDir: string,
   config: DatastoreConfig,
@@ -131,17 +115,13 @@ Deno.test("giga-swamp layout: namespaced repo lands data under {ds}/{namespace}/
       config,
     );
 
-    // Data base dir is the namespaced tier: {ds}/infra/data.
     assertEquals(dataBaseDir, join(dsDir, "infra", "data"));
-    // The model's data directory exists under the namespaced path...
     assertEquals(
       existsSync(join(dsDir, "infra", "data", type.normalized, modelId)),
       true,
     );
-    // ...and NOTHING is written to the un-namespaced {ds}/data tier.
     assertEquals(existsSync(join(dsDir, "data")), false);
 
-    // The catalog is repo-local, never in the (possibly shared) datastore.
     assertEquals(catalogPath, join(repoDir, ".swamp", "data", "_catalog.db"));
     assertEquals(existsSync(catalogPath), true);
     assertEquals(
@@ -149,7 +129,6 @@ Deno.test("giga-swamp layout: namespaced repo lands data under {ds}/{namespace}/
       false,
     );
 
-    // Catalog rows carry the configured namespace.
     assertEquals(rows.length, 1);
     assertEquals(rows[0].namespace, "infra");
   });
@@ -165,17 +144,14 @@ Deno.test("giga-swamp layout: solo mode is byte-identical (data in {ds}/data, re
       config,
     );
 
-    // No prefix: data lands directly under {ds}/data.
     assertEquals(dataBaseDir, join(dsDir, "data"));
     assertEquals(
       existsSync(join(dsDir, "data", type.normalized, modelId)),
       true,
     );
-    // Catalog is repo-local (matches the default-repo location today).
     assertEquals(catalogPath, join(repoDir, ".swamp", "data", "_catalog.db"));
     assertEquals(existsSync(catalogPath), true);
 
-    // Solo rows carry the empty namespace.
     assertEquals(rows.length, 1);
     assertEquals(rows[0].namespace, "");
   });
@@ -183,7 +159,6 @@ Deno.test("giga-swamp layout: solo mode is byte-identical (data in {ds}/data, re
 
 Deno.test("giga-swamp layout: two namespaces sharing a datastore keep data and catalogs separate", async () => {
   await withTempDir(async (root) => {
-    // One shared datastore, two repos with different namespaces.
     const dsDir = join(root, "shared-ds");
     const repoA = join(root, "repo-a");
     const repoB = join(root, "repo-b");
@@ -199,7 +174,6 @@ Deno.test("giga-swamp layout: two namespaces sharing a datastore keep data and c
       namespace: "security",
     });
 
-    // Data is partitioned by namespace under the shared datastore.
     assertEquals(
       existsSync(join(dsDir, "infra", "data", type.normalized, a.modelId)),
       true,
@@ -209,12 +183,10 @@ Deno.test("giga-swamp layout: two namespaces sharing a datastore keep data and c
       true,
     );
 
-    // Each repo owns a private catalog — no shared file to clobber.
     assertEquals(a.catalogPath, join(repoA, ".swamp", "data", "_catalog.db"));
     assertEquals(b.catalogPath, join(repoB, ".swamp", "data", "_catalog.db"));
     assertEquals(a.catalogPath === b.catalogPath, false);
 
-    // Each repo's catalog sees only its own namespace's row.
     assertEquals(a.rows.map((r) => r.namespace), ["infra"]);
     assertEquals(b.rows.map((r) => r.namespace), ["security"]);
   });

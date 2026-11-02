@@ -28,9 +28,8 @@ import {
 } from "./step_output_sources.ts";
 
 /**
- * Zod v4 z.record() explicitly skips __proto__ keys, silently dropping
- * any binding whose key is "__proto__".  This helper bypasses z.record()
- * and copies keys via Object.defineProperty on a null-prototype object.
+ * Zod v4 z.record() skips __proto__ keys, silently dropping such bindings; this
+ * copies keys via Object.defineProperty onto a null-prototype object
  */
 function protoSafeRecord<V extends z.ZodTypeAny>(
   valueSchema: V,
@@ -99,17 +98,17 @@ export const DeferredExpressionSchema = z.object({
         status: z.string(),
         outputs: record.optional(),
         /**
-         * The records the outputs were merged from, as stored, captured in
-         * a typed run so the record's evaluator views them through the
-         * accessor adapter (typed-secrets 4.2). Absent otherwise.
+         * the records the outputs were merged from, as stored, captured in a
+         * typed run so the record's evaluator views them through the accessor
+         * adapter; absent otherwise
          */
         sources: StepOutputSourcesSchema.optional(),
       }),
     ).optional(),
   }),
   /**
-   * Where data sits in `bindings` (keyed `inputs.x`, `self.globalArguments.y`,
-   * ...), captured with them. Absent on records written before provenance.
+   * where data sits in bindings (keyed inputs.x, self.globalArguments.y, ...),
+   * captured with them; absent on older records
    */
   provenance: ProvenanceMapDataSchema.optional(),
 });
@@ -126,11 +125,9 @@ export function isDeferredExpression(cel: string): boolean {
 }
 
 /**
- * `omit` names binding paths whose values must not be persisted, such as
- * resume-time inputs and forEach items derived from them: `inputs.<key>`,
- * `run.inputs.<key>` or `self.<key>`. Everything after the prefix is one key,
- * dots included, since input names are the caller's. Only an own property of
- * the copied bindings is removed, so no path reaches a prototype.
+ * omit names binding paths not to persist; everything after the prefix is one
+ * key, dots included, and only own properties are removed, so no path reaches a
+ * prototype
  */
 export function captureDeferredBindings(
   context: ExpressionContext,

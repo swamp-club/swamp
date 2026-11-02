@@ -79,7 +79,6 @@ Deno.test("ReadWriteLock property: invariants hold across random command sequenc
           );
           const held = acquirers.filter((a) => a.state === "held");
           const heldExclusive = held.filter((a) => a.mode === "exclusive");
-          // tryAcquire holders are tracked as exclusive acquirers too.
           assertEquals(
             lock.sharedHolders,
             held.filter((a) => a.mode === "shared").length,
@@ -158,7 +157,6 @@ Deno.test("ReadWriteLock property: invariants hold across random command sequenc
           check();
         }
 
-        // Drain: releasing every holder until quiet leaves the lock idle.
         for (let guard = 0; guard < 1000; guard++) {
           const held = acquirers.filter((a) => a.state === "held");
           if (held.length === 0) break;
@@ -173,10 +171,8 @@ Deno.test("ReadWriteLock property: invariants hold across random command sequenc
         assertEquals(lock.sharedHolders, 0);
         assertEquals(lock.waiters, 0);
 
-        // Acquirers are granted in arrival order. Checked after the drain so
-        // waiters granted only once everything was released are included. An
-        // immediate grant only happens with an empty queue, so every earlier
-        // acquirer was already granted or aborted; ids follow arrival order.
+        // checked after the drain so late grants are included; an immediate
+        // grant only happens with an empty queue, so ids follow arrival order
         const sorted = [...grantOrder].sort((a, b) => a - b);
         assertEquals(grantOrder, sorted, "grants out of arrival order");
       },

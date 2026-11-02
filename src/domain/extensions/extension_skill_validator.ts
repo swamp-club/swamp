@@ -20,35 +20,27 @@
 import { join } from "@std/path";
 import { parse as parseYaml } from "@std/yaml";
 
-/** A single validation issue found in a skill directory. */
 export interface SkillValidationIssue {
   skill: string;
   message: string;
 }
 
-/** Per-skill validation info. */
 export interface ValidatedSkill {
   name: string;
   hasScripts: boolean;
   fileCount: number;
 }
 
-/** Result of validating extension skill directories. */
 export interface SkillValidationResult {
   errors: SkillValidationIssue[];
   warnings: SkillValidationIssue[];
-  /** All validated file paths (absolute). */
   skillFiles: string[];
-  /** Per-skill metadata. */
   skills: ValidatedSkill[];
 }
 
-const MAX_INDIVIDUAL_FILE_SIZE = 500 * 1024; // 500KB
-const MAX_TOTAL_SKILL_SIZE = 2 * 1024 * 1024; // 2MB
+const MAX_INDIVIDUAL_FILE_SIZE = 500 * 1024;
+const MAX_TOTAL_SKILL_SIZE = 2 * 1024 * 1024;
 
-/**
- * Recursively collects all file paths and their sizes under a directory.
- */
 async function collectFiles(
   dir: string,
 ): Promise<Array<{ path: string; size: number }>> {
@@ -71,9 +63,6 @@ async function collectFiles(
   return files;
 }
 
-/**
- * Checks whether a directory exists.
- */
 async function dirExists(path: string): Promise<boolean> {
   try {
     const stat = await Deno.stat(path);
@@ -83,12 +72,6 @@ async function dirExists(path: string): Promise<boolean> {
   }
 }
 
-/**
- * Parses YAML frontmatter from a SKILL.md file.
- * Frontmatter is delimited by `---` lines at the start of the file.
- *
- * @returns The parsed frontmatter object, or null if no frontmatter found.
- */
 function parseFrontmatter(
   content: string,
 ): Record<string, unknown> | null {
@@ -117,18 +100,6 @@ function parseFrontmatter(
   }
 }
 
-/**
- * Validates skill directories for extension push.
- *
- * Checks:
- * - SKILL.md exists in each skill directory
- * - SKILL.md has valid YAML frontmatter with `name` and `description`
- * - Individual file size limits
- * - Total skill content size limit
- * - Detects presence of scripts/ directory
- *
- * @param skillDirs Array of objects with skill name and absolute path
- */
 export async function validateExtensionSkills(
   skillDirs: Array<{ name: string; absolutePath: string }>,
 ): Promise<SkillValidationResult> {
@@ -139,7 +110,6 @@ export async function validateExtensionSkills(
   let totalSize = 0;
 
   for (const { name, absolutePath } of skillDirs) {
-    // Check SKILL.md exists
     const skillMdPath = join(absolutePath, "SKILL.md");
     let skillMdContent: string;
     try {
@@ -152,7 +122,6 @@ export async function validateExtensionSkills(
       continue;
     }
 
-    // Validate frontmatter
     const frontmatter = parseFrontmatter(skillMdContent);
     if (!frontmatter) {
       errors.push({
@@ -183,10 +152,8 @@ export async function validateExtensionSkills(
       }
     }
 
-    // Detect scripts/ directory (per-skill)
     const skillHasScripts = await dirExists(join(absolutePath, "scripts"));
 
-    // Collect and validate all files
     const files = await collectFiles(absolutePath);
     validatedSkills.push({
       name,

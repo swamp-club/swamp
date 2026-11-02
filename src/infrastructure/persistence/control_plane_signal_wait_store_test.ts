@@ -73,7 +73,6 @@ function accepted(reg: WaitRegistration, verdict: string) {
   return decision.outcome;
 }
 
-/** An in-memory control-plane store that records the keys it is asked for. */
 function memoryStore(): AtomicControlPlaneStore & {
   data: Map<string, Uint8Array>;
 } {
@@ -209,7 +208,6 @@ Deno.test("ControlPlaneSignalWaitStore: a damaged record reads unreadable, is no
   const garbage = new TextEncoder().encode("{");
   backing.data.set(`waits/${reg.waitId}`, garbage);
   backing.data.set(`wait-outcomes/${reg.waitId}`, garbage);
-  // A key in the family that names no wait is skipped.
   backing.data.set("waits/README", garbage);
 
   assertEquals(await store.findRegistration(reg.waitId), {
@@ -259,7 +257,6 @@ Deno.test("ControlPlaneSignalWaitStore: two stores on one directory see each oth
       kind: "found",
       record: outcome,
     });
-    // On disk under the store's root, in the two key families.
     assertEquals(
       (await Deno.stat(join(dir, "_control", "waits", reg.waitId))).isFile,
       true,
@@ -344,8 +341,6 @@ Deno.test("ControlPlaneSignalWaitStore.register: enforces the encoded byte limit
   }
 });
 
-// Key records (swamp-club#3209).
-
 function keyRequest(overrides: Partial<WaitKeyRequest> = {}): WaitKeyRequest {
   return {
     workflowId: "wf-1",
@@ -407,7 +402,6 @@ Deno.test("ControlPlaneSignalWaitStore.highestKeyRecord: reads the highest gener
     kind: "unreadable",
     generation: 11,
   });
-  // A key of the family that names no record is not a generation.
   backing.data.set("wait-keys/wf-1/other/latest", new Uint8Array());
   const other = await store.highestKeyRecord("wf-1", "other");
   assert(other.kind === "found");
@@ -433,7 +427,6 @@ Deno.test("ControlPlaneSignalWaitStore: lists readable key records, removes one,
 
   await store.removeKeyRecordsOfWorkflow("wf-1");
   assertEquals([...backing.data.keys()], [waitKeyRecordKey(elsewhere)]);
-  // Registrations and outcomes are another family and are left alone.
   const reg = registration();
   await store.register(reg);
   await store.removeKeyRecordsOfWorkflow("wf-1");
@@ -512,8 +505,6 @@ Deno.test("ControlPlaneSignalWaitStore.highestKeyRecord: a record removed betwee
   });
 });
 
-// Pending signals (swamp-club#3212).
-
 function pendingSignal(
   overrides: Partial<PendingSignal> = {},
 ): PendingSignal {
@@ -541,7 +532,6 @@ Deno.test("ControlPlaneSignalWaitStore: a pending signal is created once under i
     record: first,
   });
   assertEquals([...backing.data.keys()], ["wait-pending/wf-1/verdict/1/1"]);
-  // A second create of the same number is answered with what is stored.
   const second = pendingSignal({
     receiptId: "44444444-4444-4444-8444-444444444444",
   });
@@ -559,7 +549,6 @@ Deno.test("ControlPlaneSignalWaitStore.highestPendingRecord: reads the highest n
   await store.createPendingRecord(pendingSignal());
   const newer = pendingSignal({ number: 2 });
   await store.createPendingRecord(newer);
-  // Another slot and another key are not this slot's.
   await store.createPendingRecord(pendingSignal({ slot: 2, number: 9 }));
   await store.createPendingRecord(pendingSignal({ key: "other", number: 9 }));
   assertEquals(await store.highestPendingRecord(slot), {
@@ -613,7 +602,6 @@ Deno.test("ControlPlaneSignalWaitStore: pending signals are kept on a real files
     const store = new ControlPlaneSignalWaitStore(backing);
     const record = pendingSignal();
     await store.createPendingRecord(record);
-    // Read by another instance over the same directory.
     const other = new ControlPlaneSignalWaitStore(
       new FileSystemControlPlaneStore(dir) as AtomicControlPlaneStore,
     );
@@ -636,7 +624,6 @@ Deno.test("ControlPlaneSignalWaitStore: pending signals are kept on a real files
 
 Deno.test("ControlPlaneSignalWaitStore: a sweep of a lapsed slot asks for the same records however many other keys are claimed (swamp-club#3308)", async () => {
   const at = OPENED.toISOString();
-  // The requests one sweep makes with `others` workflows holding a key each.
   const requestsOfASweep = async (others: number): Promise<string[]> => {
     const backing = memoryStore();
     const store = new ControlPlaneSignalWaitStore(backing);
@@ -655,8 +642,6 @@ Deno.test("ControlPlaneSignalWaitStore: a sweep of a lapsed slot asks for the sa
       });
       assertEquals(stored.kind, "found");
     }
-    // A workflow that no longer runs: its early signal lapsed, and the
-    // lapse stays as the highest record of its slot.
     const lapse = await store.createPendingRecord({
       kind: "lapse",
       workflowId: "wf-retired",
@@ -685,7 +670,6 @@ Deno.test("ControlPlaneSignalWaitStore: a sweep of a lapsed slot asks for the sa
 
   const few = await requestsOfASweep(10);
   assertEquals(await requestsOfASweep(500), few);
-  // The pending signals, the retired key's records, its slot, its lapse.
   assertEquals(few.length, 4);
   assert(few.every((request) => !request.includes("wf-0")));
 });

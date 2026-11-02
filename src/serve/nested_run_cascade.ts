@@ -43,15 +43,12 @@ import { withSyncGate } from "./sync_gate.ts";
 
 const logger = getSwampLogger(["serve", "nested-cascade"]);
 
-/** How long the fetch of one run record this instance lacks may take. */
 const RUN_RECORD_FETCH_TIMEOUT_MS = 30_000;
 
 /**
- * Fetches a run record this instance does not have, for a caller that
- * already holds the sync gate: the gate is not reentrant, so the gated
- * fetch in signal delivery cannot be used from inside it. Only a record
- * that is missing is fetched; one that is here may hold a change not pushed
- * yet. Best effort: a record that stays missing reads as missing.
+ * for a caller already holding the non-reentrant sync gate; fetches only a
+ * missing record, since one that is here may hold an unpushed change; best
+ * effort
  */
 export async function fetchMissingRunUnderGate(
   ctx: ConnectionContext,
@@ -76,17 +73,9 @@ export async function fetchMissingRunUnderGate(
 }
 
 /**
- * The cascade of a serve handler (swamp-club#2867): it cancels the
- * suspended nested runs an ended run waited on, in the handler's own gated
- * unit of work, so one push carries the parent and its children.
- *
- * Each child is reserved in the registry while it is cancelled, as a cancel
- * of that child would reserve it. A child this instance is running is asked
- * to abort and is never waited for: its final push needs the sync gate the
- * handler holds. Each cancel is audited.
- *
- * `why` is the reason the parent ended, which names who ended it, for the
- * audit trail.
+ * cancels the suspended nested runs in the handler's gated unit of work so one
+ * push carries parent and children; a child this instance runs is only asked to
+ * abort, since its final push needs the gate
  */
 export function serveNestedCascade(
   ctx: ConnectionContext,
@@ -133,11 +122,8 @@ export function serveNestedCascade(
 }
 
 /**
- * Runs the cascade for a run that ended cancelled outside a persisted
- * cancel: one this instance was driving when it was aborted, which settles
- * itself. Gated and pushed like a persisted cancel. Best effort: a failure
- * leaves the children as the abort left them, to be refused and cancelled
- * when next touched.
+ * best effort: a failure leaves the children as the abort left them, to be
+ * refused and cancelled when next touched
  */
 export async function cascadeEndedRunAndPush(
   ctx: ConnectionContext,
@@ -163,11 +149,6 @@ export async function cascadeEndedRunAndPush(
   }
 }
 
-/**
- * The gated half of {@link cascadeEndedRunAndPush}: reads the ended run and
- * cancels the nested runs it waited on, in a root unit of work whose flush
- * is the push.
- */
 async function cascadeEndedRunUnderGate(
   ctx: ConnectionContext,
   registry: ActiveRunRegistry,

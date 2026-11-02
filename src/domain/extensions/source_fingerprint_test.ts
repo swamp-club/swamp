@@ -17,14 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// SourceFingerprint is a value type: an opaque string compared by
-// equality, produced by computeSourceFingerprint. These tests pin the
-// rebundle/staleness contract of that value — equal fingerprint means
-// "same content graph, no rebundle"; any content, dep-set, or path
-// change must yield a different value; and the value must be a pure,
-// deterministic function of the content graph (never of mtimes or
-// unrelated files).
-
 import { assertEquals, assertNotEquals } from "@std/assert";
 import { join } from "@std/path";
 import type { SourceFingerprint } from "./source_fingerprint.ts";
@@ -34,7 +26,6 @@ import {
   type SourceModuleLookup,
 } from "./bundle_freshness.ts";
 
-/** A lookup with no recorded modules: fingerprints walk relative imports. */
 const noRecordedModules: SourceModuleLookup = {
   findSourceModules: () => undefined,
 };
@@ -64,8 +55,6 @@ async function writeEntryAndDep(
   return { entry, dep };
 }
 
-// ── Identity: same content graph → same fingerprint ───────────────────
-
 Deno.test("computeSourceFingerprint: identical content yields identical fingerprint (no rebundle)", async () => {
   await withTempDir(async (dir) => {
     const { entry, dep } = await writeEntryAndDep(dir);
@@ -75,8 +64,6 @@ Deno.test("computeSourceFingerprint: identical content yields identical fingerpr
       noRecordedModules,
     );
 
-    // Rewrite both files with identical bytes — a fresh write, new
-    // mtimes, same content graph.
     await Deno.writeTextFile(entry, ENTRY_SOURCE);
     await Deno.writeTextFile(dep, DEP_SOURCE);
     const second: SourceFingerprint = await computeSourceFingerprint(
@@ -186,8 +173,6 @@ Deno.test("computeSourceFingerprint: unimported sibling files do not affect the 
   });
 });
 
-// ── Change detection: content, additions, removals ────────────────────
-
 Deno.test("computeSourceFingerprint: content edit changes the value and reverting restores it", async () => {
   await withTempDir(async (dir) => {
     const { entry, dep } = await writeEntryAndDep(dir);
@@ -255,8 +240,6 @@ Deno.test("computeSourceFingerprint: removing a dependency file changes the fing
       noRecordedModules,
     );
 
-    // Delete the imported file — the entry point's bytes are unchanged
-    // but the content graph is now broken, so the value must move.
     await Deno.remove(dep);
     const broken = await computeSourceFingerprint(
       entry,
@@ -265,8 +248,6 @@ Deno.test("computeSourceFingerprint: removing a dependency file changes the fing
     );
     assertNotEquals(broken, healthy);
 
-    // Restoring identical content restores the original value — no
-    // rebundle is needed once the graph is byte-identical again.
     await Deno.writeTextFile(dep, DEP_SOURCE);
     const restored = await computeSourceFingerprint(
       entry,

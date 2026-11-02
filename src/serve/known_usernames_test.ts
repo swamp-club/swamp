@@ -141,7 +141,6 @@ Deno.test("addUnknownUsernames: names only users without a name", () => {
 Deno.test("addUnknownUsernames: two tokens of a renamed user never make the name alternate", () => {
   const names: Record<string, string> = {};
   addUnknownUsernames(names, { "sub-1": "old-name" });
-  // A login gives the new name, which replaces it.
   Object.assign(names, { "sub-1": "new-name" });
   for (let i = 0; i < 3; i++) {
     addUnknownUsernames(names, { "sub-1": "old-name" });

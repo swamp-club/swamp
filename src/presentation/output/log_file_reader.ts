@@ -19,26 +19,15 @@
 
 import type { OutputMode } from "./output.ts";
 
-/**
- * Options for reading a log file.
- */
 export interface ReadLogFileOptions {
-  /** Number of lines to read from the end of the file. */
   tail?: number;
 }
 
-/**
- * Result of reading a log file.
- */
 export interface LogFileData {
   lines: string[];
   path: string;
 }
 
-/**
- * Reads a log file and returns its lines.
- * Handles missing files gracefully for backward compatibility.
- */
 export async function readLogFile(
   path: string,
   options?: ReadLogFileOptions,
@@ -54,7 +43,6 @@ export async function readLogFile(
   }
 
   let lines = content.split("\n");
-  // Remove trailing empty line from final newline
   if (lines.length > 0 && lines[lines.length - 1] === "") {
     lines = lines.slice(0, -1);
   }
@@ -66,9 +54,6 @@ export async function readLogFile(
   return { lines, path };
 }
 
-/**
- * Renders log file content to the console.
- */
 export function renderLogFile(
   data: LogFileData,
   mode: OutputMode,

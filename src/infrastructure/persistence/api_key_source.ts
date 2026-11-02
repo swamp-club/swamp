@@ -23,7 +23,6 @@ export const API_KEY_ENV = "SWAMP_API_KEY";
 export const API_KEY_FILE_ENV = "SWAMP_API_KEY_FILE";
 export const CLUB_API_KEY_FILE_FLAG = "--club-api-key-file";
 
-/** Where the collective API key comes from, named as the user supplied it. */
 export type ApiKeySourceName =
   | typeof CLUB_API_KEY_FILE_FLAG
   | typeof API_KEY_FILE_ENV
@@ -46,10 +45,8 @@ function readEnv(name: string): string | undefined {
 }
 
 /**
- * Names the source the collective API key is taken from, without reading
- * any file. Precedence: `--club-api-key-file`, then SWAMP_API_KEY_FILE,
- * then SWAMP_API_KEY. Never throws, so it is safe on paths every command
- * takes; `resolveApiKey` reports misconfiguration.
+ * never throws, so it is safe on paths every command takes; resolveApiKey
+ * reports misconfiguration
  */
 export function apiKeySourceName(): ApiKeySourceName | undefined {
   if (apiKeyFileOverride !== undefined) return CLUB_API_KEY_FILE_FLAG;
@@ -58,7 +55,6 @@ export function apiKeySourceName(): ApiKeySourceName | undefined {
   return undefined;
 }
 
-/** True when any collective API key source is set. Reads no file. */
 export function hasApiKeySource(): boolean {
   return apiKeySourceName() !== undefined;
 }
@@ -102,13 +98,8 @@ function readKeyFile(path: string, source: ApiKeySourceName): string {
 }
 
 /**
- * Returns the collective API key, or `undefined` when no source is set.
- * Key files are read on every call, so a rotated file is picked up the
- * same way a changed env var is.
- *
- * @throws UserError when both SWAMP_API_KEY and SWAMP_API_KEY_FILE are set
- *   without `--club-api-key-file`, or when the key file is missing,
- *   unreadable or empty.
+ * key files are read on every call, so a rotated file is picked up the same way
+ * a changed env var is
  */
 export function resolveApiKey(): string | undefined {
   if (apiKeyFileOverride !== undefined) {

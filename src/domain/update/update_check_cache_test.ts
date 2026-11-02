@@ -33,7 +33,7 @@ Deno.test("isCacheStale returns false when cache is fresh", () => {
   const now = new Date("2026-03-01T12:00:00Z");
   const cache = {
     latestVersion: "1.0.0",
-    checkedAt: "2026-03-01T06:00:00Z", // 6 hours ago
+    checkedAt: "2026-03-01T06:00:00Z",
   };
   assertEquals(isCacheStale(cache, now), false);
 });
@@ -42,7 +42,7 @@ Deno.test("isCacheStale returns true when cache is exactly 24h old", () => {
   const now = new Date("2026-03-02T12:00:00Z");
   const cache = {
     latestVersion: "1.0.0",
-    checkedAt: "2026-03-01T12:00:00Z", // exactly 24h ago
+    checkedAt: "2026-03-01T12:00:00Z",
   };
   assertEquals(isCacheStale(cache, now), true);
 });
@@ -51,7 +51,7 @@ Deno.test("isCacheStale returns true when cache is older than 24h", () => {
   const now = new Date("2026-03-03T12:00:00Z");
   const cache = {
     latestVersion: "1.0.0",
-    checkedAt: "2026-03-01T12:00:00Z", // 48h ago
+    checkedAt: "2026-03-01T12:00:00Z",
   };
   assertEquals(isCacheStale(cache, now), true);
 });

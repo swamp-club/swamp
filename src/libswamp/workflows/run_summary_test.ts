@@ -98,7 +98,6 @@ Deno.test("summarizeWorkflowRuns: counts per workflow and in total", () => {
     cancelled: 1,
     running: 2,
     suspended: 1,
-    // Only finished runs: a suspended run's duration is not counted.
     durationMs: 1575,
   });
   assertEquals(summary.workflows.map((w) => w.workflowName), [
@@ -112,7 +111,6 @@ Deno.test("summarizeWorkflowRuns: counts per workflow and in total", () => {
   assertEquals(alpha.lastStartedAt, new Date(T0 + 2 * MIN).toISOString());
   assertEquals(beta.runs, 5);
   assertEquals(beta.durationMs, 25);
-  // The unknown status counts in runs only.
   assertEquals(
     beta.succeeded + beta.failed + beta.cancelled + beta.running +
       beta.suspended,
@@ -120,7 +118,6 @@ Deno.test("summarizeWorkflowRuns: counts per workflow and in total", () => {
   );
   assertEquals(summary.timeline, undefined);
   assertEquals("since" in summary, false);
-  // The undated run is not the oldest: it has no start to age out by.
   assertEquals(summary.oldestStartedAt, new Date(T0).toISOString());
 });
 
@@ -220,8 +217,6 @@ Deno.test("summarizeWorkflowRuns: no runs give zero totals and empty lists", () 
   });
 });
 
-// ── workflowRunSummary generator ────────────────────────────────────────
-
 function makeDeps(
   isReadable?: WorkflowRunSummaryDeps["isReadable"],
 ): WorkflowRunSummaryDeps {
@@ -303,9 +298,7 @@ Deno.test("workflowRunSummary: since and until bound the window and are echoed a
   });
   assertEquals(data.since, new Date(T0 + 30 * MIN).toISOString());
   assertEquals(data.until, "2026-10-12T12:00:00.000Z");
-  // a1 is before since; a2 starts exactly at until, which is exclusive.
   assertEquals(data.totals.runs, 1);
-  // The oldest run counted, not a1 outside the window.
   assertEquals(data.oldestStartedAt, new Date(T0 + 60 * MIN).toISOString());
   assertEquals(data.workflows.map((w) => w.workflowName), ["beta"]);
 });

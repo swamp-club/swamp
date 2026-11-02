@@ -149,8 +149,8 @@ Deno.test('repoInit: legacy `tool` field returns "none" for empty tools (--tool 
     RepoInitEvent,
     { kind: "completed" }
   >;
-  // `--tool none` users see `tool: "none"` matching what they passed,
-  // preserving the legacy contract. Multi-tool returns `null` (next test).
+  // --tool none reports tool: "none" as passed, preserving the legacy contract;
+  // multi-tool returns null
   assertEquals(completed.data.tools, []);
   assertEquals(completed.data.tool, "none");
 });

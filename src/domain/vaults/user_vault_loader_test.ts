@@ -28,7 +28,6 @@ import { ExtensionRepository } from "../../infrastructure/persistence/extension_
 import { LockfileRepository } from "../../infrastructure/persistence/lockfile_repository.ts";
 import type { DenoRuntime } from "../runtime/deno_runtime.ts";
 
-/** Stub runtime that returns "deno" as the binary path. */
 class StubDenoRuntime implements DenoRuntime {
   ensureDeno(): Promise<string> {
     return Promise.resolve("deno");
@@ -38,7 +37,6 @@ class StubDenoRuntime implements DenoRuntime {
   }
 }
 
-/** W1b/(a-2): construct an ExtensionRepository wrapping a test catalog. */
 function makeRepoForCatalog(
   catalog: ExtensionCatalogStore,
   repoRoot: string,
@@ -63,7 +61,6 @@ Deno.test("UserVaultLoader - returns empty result for nonexistent directory", as
 Deno.test("UserVaultLoader - loads valid vault from temp directory", async () => {
   const tmpDir = await Deno.makeTempDir({ prefix: "vault_loader_test_" });
   try {
-    // Write a valid vault file
     const vaultFile = join(tmpDir, "custom_vault.ts");
     await Deno.writeTextFile(
       vaultFile,
@@ -281,11 +278,9 @@ export const vault = {
     prefix: "vault_cache_test_vaults_",
   });
   try {
-    // Write initial files
     await Deno.writeTextFile(join(vaultsDir, "helper.ts"), helperCode);
     await Deno.writeTextFile(join(vaultsDir, "my_vault.ts"), vaultCode);
 
-    // First load — populates cache
     const loader1 = new ExtensionLoader(
       new StubDenoRuntime(),
       vaultKindAdapter,
@@ -293,7 +288,6 @@ export const vault = {
     );
     await loader1.load(vaultsDir);
 
-    // Read the cached bundle content (namespaced by baseDir hash)
     const { bundleNamespace } = await import(
       "../../infrastructure/persistence/paths.ts"
     );
@@ -307,7 +301,6 @@ export const vault = {
     );
     const cachedBundle1 = await Deno.readTextFile(bundlePath);
 
-    // Modify only the dependency (not the entry point)
     await Deno.writeTextFile(
       join(vaultsDir, "helper.ts"),
       `export const vaultName = "updated";`,
@@ -317,7 +310,6 @@ export const vault = {
     const bumped = new Date(Date.now() + 5_000);
     await Deno.utime(join(vaultsDir, "helper.ts"), bumped, bumped);
 
-    // Second load — should detect dependency change and rebundle
     const loader2 = new ExtensionLoader(
       new StubDenoRuntime(),
       vaultKindAdapter,
@@ -325,7 +317,6 @@ export const vault = {
     );
     await loader2.load(vaultsDir);
 
-    // The bundle should have been regenerated with the new dependency content
     const cachedBundle2 = await Deno.readTextFile(bundlePath);
     assertEquals(cachedBundle1 !== cachedBundle2, true);
   } finally {
@@ -570,10 +561,8 @@ export const vault = {
 });
 
 Deno.test("UserVaultLoader: registerLazyFromCatalog skips validation_failed rows (swamp-club#209)", async () => {
-  // Seed the catalog with a validation-failed sentinel row and verify
-  // it never reaches the registry. The ADV-1 invariant — findByKind
-  // returns the row regardless — is guarded at the catalog-store
-  // level; this test guards the per-loader filter.
+  // a validation-failed sentinel row must never reach the registry; findByKind
+  // returns it regardless, so the per-loader filter is what this guards
   const repoDir = await Deno.makeTempDir({
     prefix: "swamp_issue209_vault_repo_",
   });
@@ -602,7 +591,6 @@ export const vault = {
 `;
     await Deno.writeTextFile(join(vaultsDir, "valid.ts"), validVault);
 
-    // Cold-start populates the catalog with the valid vault.
     const catalog = new ExtensionCatalogStore(dbPath);
     const repository = makeRepoForCatalog(catalog, repoDir);
     const loader = new ExtensionLoader(
@@ -614,7 +602,6 @@ export const vault = {
     );
     await loader.buildIndex(vaultsDir);
 
-    // Inject a validation-failed row keyed by a different source path.
     catalog.upsert({
       source_path: join(vaultsDir, "broken.ts"),
       type_normalized: "",
@@ -625,11 +612,8 @@ export const vault = {
       extends_type: "",
       source_mtime: "2026-05-01T12:00:00.000Z",
       source_fingerprint: "deadbeef-broken",
-      // W1b: validation_failed dropped — state="ValidationFailed" is the signal.
     });
 
-    // Re-run buildIndex. registerLazyFromCatalog must skip the broken
-    // row even though findByKind returns it.
     const loader2 = new ExtensionLoader(
       new StubDenoRuntime(),
       vaultKindAdapter,
@@ -639,11 +623,7 @@ export const vault = {
     );
     await loader2.buildIndex(vaultsDir);
 
-    // Valid type appears; broken sentinel does not. Use the singleton
-    // registry the loader writes into.
     assertEquals(vaultTypeRegistry.has(`@test/issue209-vault-${ts}`), true);
-    // Empty-string type can never be a real registered name, but
-    // assert anyway to pin the invariant.
     assertEquals(vaultTypeRegistry.has(""), false);
     catalog.close();
   } finally {
@@ -652,12 +632,8 @@ export const vault = {
   }
 });
 
-// ===== Pin 1 (W2) =====
-//
-// `bundleAndIndexOne` is the public per-file entry point that
-// InstallExtensionService calls during install. The lifecycle service
-// owns the catalog write via `repository.save()`; the loader's per-file
-// method MUST NOT write directly. This test is the regression net.
+// bundleAndIndexOne must not write catalog rows; the lifecycle service owns the
+// catalog write via repository.save()
 
 Deno.test(
   "UserVaultLoader.bundleAndIndexOne: returns vault metadata without writing catalog rows (Pin 1)",
@@ -708,7 +684,6 @@ export const vault = {
         baseDir: vaultsDir,
       });
 
-      // Pin 1: catalog row count must be unchanged.
       assertEquals(
         catalog.findAll().length,
         before,
@@ -819,11 +794,7 @@ Deno.test(
   },
 );
 
-// Note: the warm-start handling of a transient BundleBuildFailed row (issue
 // #424 — it must be re-attempted, not pinned as a fingerprint-matched cache
-// hit) is covered directly and portably at the freshness layer by
-// "findStaleFiles: matching fingerprint + state=BundleBuildFailed → stale" in
-// src/domain/extensions/bundle_freshness_test.ts.
 
 Deno.test("vaultKindAdapter.extractTypeFromSource: ignores type in helper objects above the export", () => {
   const source = `

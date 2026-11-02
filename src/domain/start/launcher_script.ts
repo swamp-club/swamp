@@ -19,20 +19,13 @@
 
 import type { HarnessLaunchSpec } from "./harness.ts";
 
-/**
- * Quotes a value for a POSIX shell: single quotes, with each `'` written as
- * `'\''`. Every byte inside single quotes is literal.
- */
 export function posixQuote(value: string): string {
   return `'${value.replace(/'/g, `'\\''`)}'`;
 }
 
 /**
- * Quotes a value for a line in a `.cmd` file: double quotes, with `%`
- * doubled so batch expansion leaves it alone. Inside double quotes `&`, `|`,
- * `<`, `>` and `^` are literal. A double quote or a line break cannot be
- * represented, so they are refused; Swamp only ever writes paths it chose
- * and fixed text here.
+ * double quotes with % doubled; & | < > ^ are literal inside them; a double
+ * quote or line break cannot be represented, so they are refused
  */
 export function cmdQuote(value: string): string {
   if (/["\r\n]/.test(value)) {
@@ -42,52 +35,39 @@ export function cmdQuote(value: string): string {
 }
 
 /**
- * Quotes an argument of a `call` line in a `.cmd` file. `call` expands `%`
- * a second time, so each `%` is written as `%%%%`: the file's own expansion
- * leaves `%%`, and `call`'s leaves `%`. (`call` also doubles a `^` inside
- * quotes, which has no escape; Swamp only writes paths and fixed text here.)
+ * call expands % a second time, so each % is written %%%%; call also doubles a
+ * ^ inside quotes, which has no escape
  */
 export function cmdCallQuote(value: string): string {
   return cmdQuote(value).replace(/%%/g, "%%%%");
 }
 
 /**
- * Quotes a value for pasting at an interactive `cmd` prompt, where `%%` is
- * not an escape and a `%NAME%` expands when NAME is set. Each `%` is moved
- * outside the quotes and written `^%`, so `50%` becomes `"50"^%""`; the
- * quoted pieces join into one argument. Refuses what {@link cmdQuote}
- * refuses.
+ * %% is not an escape at an interactive prompt, so each % is moved outside the
+ * quotes as ^% and the quoted pieces join into one argument
  */
 export function cmdPasteQuote(value: string): string {
   cmdQuote(value);
   return `"${value.replace(/%/g, `"^%"`)}"`;
 }
 
-/** True for a Windows batch file, which another batch file must `call`. */
 export function isBatchFile(path: string): boolean {
   return /\.(cmd|bat)$/i.test(path);
 }
 
-/** What a launcher needs besides the harness spec. */
 export interface LauncherEnvironment {
   readonly workspacePath: string;
-  /** The folder holding the swamp binary, put first on PATH. */
   readonly swampBinDir: string;
-  /** Variables to export, only those that were set when start ran. */
   readonly exports: Readonly<Record<string, string>>;
-  /** Variables the agent must not inherit. */
   readonly unset: readonly string[];
 }
 
 /**
- * How long a resume may run before its failure no longer means "nothing to
- * continue". A real session that later exits with an error must not open a
- * second, fresh one. The POSIX launcher checks it; `cmd` has no simple clock,
- * so on Windows any failed resume falls back.
+ * a real session that later exits with an error must not open a fresh one; cmd
+ * has no simple clock, so on Windows any failed resume falls back
  */
 export const RESUME_FALLBACK_SECONDS = 10;
 
-/** The `launch.command` script for macOS and Linux. */
 export function renderPosixLauncher(
   spec: HarnessLaunchSpec,
   env: LauncherEnvironment,
@@ -122,7 +102,6 @@ export function renderPosixLauncher(
   return lines.join("\n") + "\n";
 }
 
-/** The `launch.cmd` script for Windows. */
 export function renderCmdLauncher(
   spec: HarnessLaunchSpec,
   env: LauncherEnvironment,
@@ -155,7 +134,6 @@ export function renderCmdLauncher(
   return lines.join("\r\n") + "\r\n";
 }
 
-/** The command a user can paste when no window could be opened. */
 export function copyCommand(
   spec: HarnessLaunchSpec,
   workspacePath: string,

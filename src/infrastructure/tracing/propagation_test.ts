@@ -22,14 +22,11 @@ import { extractTraceContext, injectTraceContext } from "./propagation.ts";
 
 Deno.test("injectTraceContext: returns empty object when tracing is not initialized", () => {
   const headers = injectTraceContext();
-  // Without an active span/provider, propagation injects nothing
   assertEquals(typeof headers, "object");
   assertEquals(Object.keys(headers).length, 0);
 });
 
 Deno.test("extractTraceContext: returns a context object", () => {
   const ctx = extractTraceContext({ traceparent: "00-abc-def-01" });
-  // Should return a context (even if the traceparent is not parseable by
-  // the no-op propagator, the function should not throw)
   assertEquals(typeof ctx, "object");
 });

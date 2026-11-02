@@ -23,9 +23,8 @@ import type { OutputMode } from "../output/output.ts";
 import { getSwampLogger } from "../../infrastructure/logging/logger.ts";
 
 /**
- * Result payload for the outdated check. Filtered to non-up_to_date
- * statuses; the strict exit-code-1-only-on-update_available semantic
- * is enforced by the caller, not the renderer.
+ * filtered to non-up_to_date statuses; exiting 1 only on update_available is
+ * enforced by the caller, not the renderer
  */
 export interface ExtensionOutdatedResult {
   extensions: ExtensionUpdateStatus[];
@@ -51,10 +50,8 @@ class LogExtensionOutdatedRenderer implements Renderer<ExtensionOutdatedEvent> {
 
         const maxName = Math.max(...exts.map((x) => x.name.length));
 
-        // not_found and failed render as warnings to match
-        // `extension update --check` parity. They do NOT fail the exit
-        // code (only update_available does) — see the command-level
-        // exit-code logic and design/primitives/extensions.md for the rationale.
+        // not_found and failed render as warnings, matching extension update
+        // --check, and do not fail the exit code; only update_available does
         for (const ext of exts) {
           const paddedName = ext.name.padEnd(maxName);
           switch (ext.status) {

@@ -18,70 +18,47 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * The agent session record: what one coding-agent session did in a swamp
- * repo, as the agent-sessions extension writes it and the dashboard reads it
- * (swamp-club#4154). It is a read model built per session, not the
- * observation event stream. Prompts, replies and other transcript content
- * are never part of it: every object is strict, so a record carrying any
- * field this schema does not name is refused.
- *
- * Kept free of Deno and Node APIs so the dashboard can bundle it or mirror
- * it. See design/surfaces/agent-sessions.md.
+ * a read model built per session, never transcript content: every object is
+ * strict, so a record with a field this schema does not name is refused. Kept
+ * free of Deno and Node APIs so the dashboard can bundle it
  */
 
 import { z } from "zod";
 
-/** The record version this swamp writes and reads. */
 export const AGENT_SESSION_SCHEMA_VERSION = 2;
 
-/** Every version this swamp reads; older versions are skipped as `older`. */
 export const SUPPORTED_AGENT_SESSION_SCHEMA_VERSIONS: readonly number[] = [2];
 
-/** Value of the `type` tag that marks a data item as an agent session. */
 export const AGENT_SESSION_TYPE_TAG = "agent-session";
 
-/** Tag key that carries the session's swamp-club user id. */
 export const AGENT_SESSION_USER_ID_TAG = "swampUserId";
 
-/** Tag key that carries the session's start, as `toISOString()` writes it. */
 export const AGENT_SESSION_STARTED_AT_TAG = "startedAt";
 
-/** Tag key that carries a child session's parent id; absent on top-level sessions. */
 export const AGENT_SESSION_PARENT_TAG = "parentSessionId";
 
-/** Tag key that is `"true"` for a headless session and `"false"` otherwise. */
 export const AGENT_SESSION_HEADLESS_TAG = "headless";
 
-/** Tag key that carries the session's list summary as compact JSON. */
 export const AGENT_SESSION_SUMMARY_TAG = "summary";
 
-/**
- * Tag key that carries the session's repo, the record's `repo` as is, so a
- * list can filter by repo in the query (swamp-club#4211).
- */
 export const AGENT_SESSION_REPO_TAG = "repo";
 
-/** The predicate that lists every agent session through `data.query`. */
 export const AGENT_SESSION_QUERY_PREDICATE =
   `tags.type == "${AGENT_SESSION_TYPE_TAG}"`;
 
 /**
- * The `data.query` select for a list of sessions. It reads only the data
- * name, the owning behavior's name and tags, so with a predicate over tags
- * the query never loads a record body; without a select, the query loads the
- * body of every match. `data.get` needs the behavior name to open a session.
+ * reads only name, behavior name and tags, so with a tag predicate the query
+ * never loads a record body; without a select it loads every match's body
  */
 export const AGENT_SESSION_LIST_SELECT =
   `{"name": name, "modelName": modelName, "tags": tags}`;
 
-/** The predicate that lists top-level sessions only, leaving out subagents. */
 export const AGENT_SESSION_TOP_LEVEL_PREDICATE =
   `${AGENT_SESSION_QUERY_PREDICATE} && !has(tags.${AGENT_SESSION_PARENT_TAG})`;
 
-/** Size bounds; a longest real session (169 calls, 17 turns) fits well inside. */
 export const AGENT_SESSION_LIMITS = {
-  // Harness and session id together form a data name, stored as a directory
-  // name: 14 + 32 + 1 + 128 = 175 characters at most, under every OS limit.
+  // harness and session id form a data name stored as a directory name: at most
+  // 175 characters, under every OS limit
   harnessLength: 32,
   sessionIdLength: 128,
   idLength: 200,
@@ -97,15 +74,15 @@ export const AGENT_SESSION_LIMITS = {
   spansPerRoot: 500,
   findings: 500,
   callIdsPerFinding: 2000,
-  // A summary's strings are bounded, so its JSON stays well under this even
-  // when every character needs escaping.
+  // a summary's strings are bounded, so its JSON stays under this even when
+  // every character needs escaping
   summaryTagLength: 4096,
 } as const;
 
 const L = AGENT_SESSION_LIMITS;
 
-// A harness slug has no `_`, so the `_` in a data name always ends it. Both
-// are lowercase so two names never meet on a case-insensitive filesystem.
+// a harness slug has no _, so the _ in a data name always ends it; both are
+// lowercase so names never meet on a case-insensitive filesystem
 const SLUG = /^[a-z0-9][a-z0-9-]*$/;
 const SESSION_ID = /^[a-z0-9][a-z0-9_-]*$/;
 
@@ -115,7 +92,6 @@ const AgentIdSchema = z.string().min(1).max(L.idLength);
 const MillisSchema = z.number().nonnegative();
 const TokenCountSchema = z.number().int().nonnegative();
 
-/** Canonical tool kinds; a harness tool name with no mapping is `unknown`. */
 export const ToolKindSchema = z.enum([
   "shell",
   "file-read",
@@ -130,10 +106,7 @@ export const ToolKindSchema = z.enum([
   "unknown",
 ]);
 
-/**
- * Whether a tool call used swamp, went around it, or neither. `unlabeled` is
- * a call the importer wrote before any classifier labelled it.
- */
+/** unlabeled is a call the importer wrote before any classifier labelled it */
 export const CallLabelSchema = z.enum([
   "swamp",
   "bypass",
@@ -141,12 +114,11 @@ export const CallLabelSchema = z.enum([
   "unlabeled",
 ]);
 
-/** `info` is a finding that is not a problem to tune, such as swamp's own overhead. */
 export const FindingSeveritySchema = z.enum(["high", "medium", "low", "info"]);
 
 /**
- * Whether a person steered the session. A child session copies its parent's
- * value; `unknown` is for a harness that cannot tell.
+ * a child session copies its parent's value; unknown is for a harness that
+ * cannot tell
  */
 export const InvocationSchema = z.enum(["interactive", "headless", "unknown"]);
 
@@ -157,7 +129,6 @@ export const TokenUsageSchema = z.strictObject({
   cacheWrite: TokenCountSchema,
 });
 
-/** One span of a swamp command, timed from its root's start. */
 export const SwampSpanSchema = z.strictObject({
   name: z.string().min(1).max(L.nameLength),
   start: MillisSchema,
@@ -166,19 +137,15 @@ export const SwampSpanSchema = z.strictObject({
   error: z.boolean(),
 });
 
-/** One swamp command run by a tool call, `offset` ms after the call started. */
 export const SwampSpanRootSchema = z.strictObject({
   offset: MillisSchema,
   spans: z.array(SwampSpanSchema).min(1).max(L.spansPerRoot),
 });
 
 /**
- * One tool call. `text` holds only the redacted target of the call (a
- * command line, a path, a skill name or a URL), never text the model wrote;
- * `truncated` marks one that was cut to fit. `category` and `rule` say why a
- * call got its label, so an `unlabeled` call has neither.
- * `subagentSessionId` names the child session a subagent call started.
- * Times are ms from the session's start.
+ * text holds only the redacted target of the call (command line, path, skill
+ * name or URL), never text the model wrote; times are ms from the session's
+ * start
  */
 export const ToolCallSchema = z.strictObject({
   id: z.string().min(1).max(L.idLength),
@@ -197,7 +164,6 @@ export const ToolCallSchema = z.strictObject({
   swampSpans: z.array(SwampSpanRootSchema).max(L.spanRootsPerCall).optional(),
 });
 
-/** One model response and the tool calls it made; times are ms from the session's start. */
 export const TurnSchema = z.strictObject({
   n: z.number().int().positive(),
   start: MillisSchema,
@@ -206,7 +172,6 @@ export const TurnSchema = z.strictObject({
   calls: z.array(ToolCallSchema).max(L.callsPerTurn),
 });
 
-/** A pattern worth tuning, pointing at the calls it was found in. */
 export const FindingSchema = z.strictObject({
   severity: FindingSeveritySchema,
   title: z.string().min(1).max(L.findingTitleLength),
@@ -216,12 +181,9 @@ export const FindingSchema = z.strictObject({
 });
 
 /**
- * Version 2 of the agent session record. `swampUserId` is the stable
- * swamp-club user id (serve's OAuth `sub`) and the only identity meant for
- * access decisions; `swampUsername` is a display label that a rename can
- * make stale. Both are self-reported by the writer. `model` is absent when
- * the session ended before any model reply; `agentId` is a child session's
- * subagent id as the harness wrote it, and `agentType` its subagent type.
+ * swampUserId is the stable user id and the only identity meant for access
+ * decisions; swampUsername is a display label a rename can make stale; both are
+ * self-reported by the writer
  */
 export const AgentSessionRecordV2Schema = z.strictObject({
   schemaVersion: z.literal(2),
@@ -318,10 +280,8 @@ export type AgentSessionTurn = z.infer<typeof TurnSchema>;
 export type AgentSessionToolCall = z.infer<typeof ToolCallSchema>;
 export type AgentSessionFinding = z.infer<typeof FindingSchema>;
 
-/** Why a stored session was not read. */
 export type AgentSessionSkipReason = "newer" | "older" | "invalid";
 
-/** The outcome of reading one stored session. */
 export type AgentSessionReading =
   | { readonly kind: "record"; readonly record: AgentSessionRecord }
   | {
@@ -332,10 +292,9 @@ export type AgentSessionReading =
   };
 
 /**
- * Reads one stored session's content. Never throws: a session this swamp
- * cannot read comes back as `skipped` with a note for the viewer, so one bad
- * record never fails a page. A note names field paths and never repeats a
- * value from the content, except the integer `schemaVersion`.
+ * never throws: an unreadable session comes back skipped so one bad record
+ * never fails a page; a note names field paths and never repeats a content
+ * value except schemaVersion
  */
 export function readAgentSessionRecord(content: unknown): AgentSessionReading {
   const version = typeof content === "object" && content !== null &&
@@ -389,9 +348,9 @@ export function readAgentSessionRecord(content: unknown): AgentSessionReading {
 }
 
 /**
- * Counts turns and calls on the raw content, so a record over the session
- * limits is refused before the parser validates every call in it. Reads only
- * array lengths, and stops as soon as a limit is passed.
+ * counts on the raw content so an oversized record is refused before the parser
+ * validates every call; reads only array lengths and stops once a limit is
+ * passed
  */
 function exceedsSessionSize(content: Record<string, unknown>): boolean {
   const turns = content.turns;
@@ -419,9 +378,8 @@ function skipped(
 }
 
 /**
- * The data name a session is stored under: one item per harness session.
- * Throws when `harness` or `sessionId` is not one the record schema accepts,
- * so no two sessions share a name.
+ * throws when harness or sessionId is not one the record schema accepts, so no
+ * two sessions share a name
  */
 export function agentSessionDataName(
   harness: string,
@@ -442,12 +400,8 @@ export function agentSessionDataName(
 const CHILD_ID_HASH_LENGTH = 32;
 
 /**
- * A child session's id, for a harness subagent id that is unique only within
- * its parent: the parent's id, cut to fit, then `_` and a hash of the two ids.
- * The hash covers both ids in full and in any case, so two children never
- * share an id however their ids are spelled. Throws when `parentSessionId` is
- * not a session id the record schema accepts, or `agentId` is empty or
- * longer than an id may be.
+ * the hash covers both ids in full and in any case, so two children never share
+ * an id however their ids are spelled
  */
 export async function agentSessionChildId(
   parentSessionId: string,
@@ -479,8 +433,8 @@ export async function agentSessionChildId(
 }
 
 /**
- * The predicate that lists one session's children. Throws when the id is not
- * one the record schema accepts, so nothing but an id reaches the predicate.
+ * throws when the id is not one the record schema accepts, so nothing but an id
+ * reaches the predicate
  */
 export function agentSessionChildrenPredicate(parentSessionId: string): string {
   if (!SessionIdSchema.safeParse(parentSessionId).success) {
@@ -492,10 +446,8 @@ export function agentSessionChildrenPredicate(parentSessionId: string): string {
 }
 
 /**
- * The condition that matches sessions whose `repo` tag is `repo`. The value
- * is any string a record's `repo` may hold, quoted as a CEL string literal
- * (JSON's escapes are a subset of CEL's), so no value can change the
- * predicate's meaning. Throws on a value the record schema would refuse.
+ * the value is quoted as a CEL string literal (JSON escapes are a subset of
+ * CEL's), so no value can change the predicate's meaning
  */
 export function agentSessionRepoCondition(repo: string): string {
   if (repo.length === 0 || repo.length > L.nameLength) {
@@ -508,11 +460,6 @@ export function agentSessionRepoCondition(repo: string): string {
 
 const CountSchema = z.number().int().nonnegative();
 
-/**
- * Version 1 of a session's list summary, stored as compact JSON in its
- * `summary` tag so the list never loads record bodies. Counts cover the
- * session's own calls; `subagents` counts its subagent calls.
- */
 export const AgentSessionSummaryV1Schema = z.strictObject({
   repo: z.string().min(1).max(L.nameLength),
   harness: HarnessSchema,
@@ -544,10 +491,8 @@ function addCapped(total: number, value: number): number {
 }
 
 /**
- * Derives a session's list summary from its record. `wallMs` is the latest
- * turn or call end; `activeMs` adds up turn durations, counting a negative
- * one as zero. Totals stop at `Number.MAX_SAFE_INTEGER`, so an absurd record
- * still gives a summary the reader accepts.
+ * totals stop at Number.MAX_SAFE_INTEGER, so an absurd record still gives a
+ * summary the reader accepts; a negative turn duration counts as zero
  */
 export function agentSessionSummary(
   record: AgentSessionRecord,
@@ -595,10 +540,7 @@ export function agentSessionSummary(
   };
 }
 
-/**
- * The list tags a session is written with, next to the output spec's `type`
- * tag. Derived from the record so they cannot drift from it.
- */
+/** derived from the record so the tags cannot drift from it */
 export function agentSessionTags(
   record: AgentSessionRecord,
 ): Record<string, string> {
@@ -614,10 +556,8 @@ export function agentSessionTags(
 }
 
 /**
- * Reads a `summary` tag. Never throws: a value that is too long, is not
- * JSON, or does not match the summary schema comes back `undefined`, and the
- * page opens the record instead. Tags are self-reported, so the page shows a
- * summary but always validates the full record when a session is opened.
+ * never throws; tags are self-reported, so the page shows a summary but always
+ * validates the full record when a session is opened
  */
 export function readAgentSessionSummary(
   value: unknown,
@@ -635,14 +575,12 @@ export function readAgentSessionSummary(
   return summary.success ? summary.data : undefined;
 }
 
-/** The JSON Schema of the current version, for extension authors. */
 export function agentSessionRecordJsonSchema(): Record<string, unknown> {
   return z.toJSONSchema(AgentSessionRecordV2Schema, {
     unrepresentable: "any",
   }) as Record<string, unknown>;
 }
 
-/** The JSON Schema of the list summary, for extension authors. */
 export function agentSessionSummaryJsonSchema(): Record<string, unknown> {
   return z.toJSONSchema(AgentSessionSummaryV1Schema, {
     unrepresentable: "any",

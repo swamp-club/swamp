@@ -19,27 +19,9 @@
 
 import { markErrorPaths, UserError } from "../../domain/errors.ts";
 
-/**
- * Pattern that matches environment variable references and tilde:
- * - `~` at start of path (before `/` or end of string)
- * - `${VAR_NAME}` — braced syntax
- * - `$VAR_NAME` — unbraced syntax
- */
 const ENV_VAR_PATTERN =
   /^~(?=\/|$)|\$\{([a-zA-Z_][a-zA-Z0-9_]*)\}|\$([a-zA-Z_][a-zA-Z0-9_]*)/g;
 
-/**
- * Expands environment variable references in a path string.
- *
- * Supports:
- * - `~` at the start of a path (expands to `$HOME` or `$USERPROFILE`)
- * - `$VAR` and `${VAR}` syntax (expands from the environment)
- *
- * Throws a `UserError` if a referenced variable is not set.
- *
- * @param path - The path string potentially containing env var references
- * @returns The path with all env var references expanded
- */
 export function expandEnvVars(path: string): string {
   return path.replace(ENV_VAR_PATTERN, (match, bracedVar, unbracedVar) => {
     if (match === "~") {
@@ -69,16 +51,6 @@ export function expandEnvVars(path: string): string {
   });
 }
 
-/**
- * Collapses known environment variable values back into `$VAR` form
- * for portable storage.
- *
- * Currently collapses `$HOME` (or `$USERPROFILE` on Windows). If the path
- * starts with the value of `$HOME`, that prefix is replaced with `$HOME`.
- *
- * @param path - An absolute path to collapse
- * @returns The path with known prefixes replaced by env var references
- */
 export function collapseEnvVars(path: string): string {
   const home = Deno.env.get("HOME") ?? Deno.env.get("USERPROFILE");
   if (!home) {

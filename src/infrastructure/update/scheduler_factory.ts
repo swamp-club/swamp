@@ -67,9 +67,8 @@ export async function createScheduler(
   }
 }
 
-// Resolves scheduler privilege level across all platforms, not just launchd.
-// Returns "daemon" when the binary is root-owned (privileged scheduler needed),
-// "agent" otherwise (user-level scheduler).
+// resolves the scheduler privilege level on every platform: daemon when the
+// binary is root-owned, agent otherwise
 export async function resolveLaunchdMode(): Promise<LaunchdMode> {
   const installed = await detectInstalledMode();
   if (installed) return installed;

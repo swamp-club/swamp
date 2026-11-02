@@ -28,17 +28,9 @@ import {
 } from "./abort_settlement.ts";
 
 /**
- * Cancels a run that an aborted execution left `running` with nothing
- * driving it, settling its unfinished jobs and steps against the run's
- * evaluated snapshot, or else `workflow`, and completes its tracker row as
- * `cancelled`.
- *
- * The run is reloaded from the repository, so a terminal status the
- * execution already saved is never overwritten: a missing run, or one in
- * any status other than `running`, is left untouched. Call this only after
- * the execution stream has finished or been disposed.
- *
- * Returns true when the run was cancelled.
+ * the run is reloaded so a terminal status the execution already saved is never
+ * overwritten; call only after the execution stream has finished or been
+ * disposed
  */
 export async function cancelStrandedRun(
   runRepo: WorkflowRunRepository,

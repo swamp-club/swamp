@@ -47,7 +47,6 @@ async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
   }
 }
 
-/** Writes version `n` of a record the way the data repository lays it out. */
 async function writeVersion(
   dir: string,
   modelId: string,
@@ -62,7 +61,6 @@ async function writeVersion(
   await Deno.writeTextFile(join(dataDir, "latest"), String(n));
 }
 
-/** Publishes the event a grant or group method run publishes after it saved. */
 async function ownRun(
   bus: EventBus,
   type: string,
@@ -180,12 +178,10 @@ Deno.test("FilesystemAccessDataChangeSource: data other than grant-main and grou
   await withSource(async ({ grantDir, bus, source }) => {
     await writeVersion(grantDir, "g1", 1);
     await source.prime();
-    // The method-summary report a run writes after its event.
     await writeVersion(grantDir, "g1", 1, "report", "report-summary");
     await writeVersion(grantDir, "g1", 2);
     await ownRun(bus, GRANT, "g1", 2);
     assertEquals(await source.detect(), 0);
-    // A record holding only other data reads as no record.
     await writeVersion(grantDir, "g2", 1, "report", "report-summary");
     assertEquals(await source.detect(), 0);
   });
@@ -363,7 +359,6 @@ Deno.test("FilesystemAccessDataChangeSource: a symlinked directory is recorded, 
 /** chmod has no effect for root, and Windows has no POSIX modes. */
 const IGNORE_CHMOD = Deno.build.os === "windows" || Deno.uid() === 0;
 
-/** Runs `fn` with `path` unreadable, restoring its mode afterwards. */
 async function whileUnreadable(
   path: string,
   fn: () => Promise<void>,
@@ -394,15 +389,12 @@ for (
         await writeVersion(grantDir, "g-ok", 1);
         await source.prime();
         await whileUnreadable(join(grantDir, ...unreadablePath), async () => {
-          // A peer revokes the readable grant while the other is unreadable.
           await writeVersion(grantDir, "g-ok", 2, "revoked");
           assertEquals(await source.detect(), 2);
-          // Still unreadable with the same error: not counted again.
           assertEquals(await source.detect(), 0);
           await writeVersion(grantDir, "g-ok", 3, "active");
           assertEquals(await source.detect(), 1);
         });
-        // Readable again: a change, so the loader reads it.
         assertEquals(await source.detect(), 1);
         assertEquals(await source.detect(), 0);
       });
@@ -421,8 +413,6 @@ Deno.test({
       await source.prime();
       await whileUnreadable(grantDir, async () => {
         await writeVersion(groupDir, "team", 2, "new member");
-        // The group, the grant directory turning unreadable, and its
-        // record no longer seen.
         assertEquals(await source.detect(), 3);
         assertEquals(await source.detect(), 0);
       });
@@ -462,7 +452,6 @@ Deno.test({
         async () => {
           assertEquals(await source.detect(), 1);
           assertEquals(await source.detect(), 0);
-          // A peer revokes it in a new version beside the unreadable one.
           await writeVersion(grantDir, "g1", 3, "revoked");
           assertEquals(await source.detect(), 1);
         },
@@ -491,10 +480,6 @@ Deno.test({
   },
 });
 
-// Counts detect() reports into the poller's change_detection phase
-// (swamp-club#4005).
-
-/** Runs detect() as the poller does, inside its change_detection phase. */
 function detectAsPhase(
   source: FilesystemAccessDataChangeSource,
 ): Promise<number> {
@@ -517,8 +502,6 @@ Deno.test("FilesystemAccessDataChangeSource.detect: counts records, entries, cha
     });
     const [changed, unchanged] = diagnosticPhases(spans, "change_detection");
     assertEquals(changed.attributes["swamp.diagnostic.records"], 2);
-    // g1: 1/, 1/raw, 1/metadata.yaml, 2/, 2/raw, 2/metadata.yaml, latest;
-    // g2: 1/, 1/raw, 1/metadata.yaml, latest.
     assertEquals(changed.attributes["swamp.diagnostic.entries"], 11);
     assertEquals(changed.attributes["swamp.diagnostic.unreadable_entries"], 0);
     assertEquals(changed.attributes["swamp.diagnostic.changed"], 1);

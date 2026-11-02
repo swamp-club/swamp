@@ -17,12 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * A v3 filesystem datastore whose commits fail on demand, for the cases of
- * swamp-club#3759: the chunk storage stops answering, as an unreachable
- * bucket does, or the commit's append fails.
- */
-
 import "../src/domain/models/models.ts";
 import { z } from "zod";
 import { waitFor } from "@swamp-club/swamp-testing";
@@ -42,10 +36,8 @@ import { runInRootUnitOfWork } from "../src/infrastructure/persistence/repo_unit
 import type { RowRepos } from "./usecase_sync_fixtures.ts";
 import { withV3RowRepos } from "./usecase_v3_fixtures.ts";
 
-/** The content each run writes: well past what a commit inlines. */
 export const PAYLOAD = "x".repeat(64 * 1024);
 
-/** What the faults below are doing now; reset by {@link withFaults}. */
 export const faults = { storageDown: false, appendFails: false };
 
 /** An S3-shaped connection refusal: a wrapper whose cause has the code. */
@@ -60,7 +52,6 @@ function refused(): Error {
   );
 }
 
-/** The storage calls that reach the bucket on a bucket datastore. */
 const NETWORK_CALLS = new Set([
   "has",
   "put",
@@ -71,7 +62,6 @@ const NETWORK_CALLS = new Set([
   "statChunks",
 ]);
 
-/** Chunk storage whose bucket calls are refused while `faults.storageDown`. */
 function unreachableWhenDown(storage: DatastoreStorage): DatastoreStorage {
   return new Proxy(storage, {
     get(target, property) {
@@ -95,7 +85,6 @@ function unreachableWhenDown(storage: DatastoreStorage): DatastoreStorage {
   });
 }
 
-/** A commit sink whose append fails while `faults.appendFails`. */
 function failingAppend(sink: OutboxCommitSink): OutboxCommitSink {
   return new Proxy(sink, {
     get(target, property) {
@@ -110,7 +99,6 @@ function failingAppend(sink: OutboxCommitSink): OutboxCommitSink {
   });
 }
 
-/** Runs `fn` against fresh v3 repos opened with the faults wrapped in. */
 export async function withFaults(
   fn: (repos: RowRepos) => Promise<void>,
 ): Promise<void> {
@@ -129,10 +117,6 @@ export async function withFaults(
   }
 }
 
-/**
- * Registers a model whose `write` method writes {@link PAYLOAD} as a file
- * output and then takes the storage down, as the reporter's proxy cut did.
- */
 export function registerBigWriter(cut = true): ModelType {
   const type = ModelType.create(`test/big-writer-${crypto.randomUUID()}`);
   modelRegistry.register({
@@ -165,13 +149,9 @@ export function registerBigWriter(cut = true): ModelType {
 }
 
 /**
- * Registers a model whose `write` method waits until a run checkpoint has
- * committed while it runs, then writes {@link PAYLOAD} and takes the
- * storage down (swamp-club#3882):
- * the run's committed record shows the step running, as a cut mid-step
- * leaves it. The step's start is saved before the method runs, inside the
- * checkpoint interval of the run's start, so a trailing checkpoint commits
- * it within that interval.
+ * the step's start is saved before the method runs, so a trailing checkpoint
+ * commits it and the committed record shows the step running, as a mid-step cut
+ * leaves it
  */
 export function registerMidStepCutter(repos: RowRepos): ModelType {
   const type = ModelType.create(`test/mid-step-cutter-${crypto.randomUUID()}`);
@@ -222,7 +202,6 @@ export async function saveInRoot(
   await runInRootUnitOfWork(repos.a.repoContext, { flush: undefined }, fn);
 }
 
-/** Saves a big-writer model named `name` in A. */
 export async function seedModel(
   repos: RowRepos,
   type: ModelType,
@@ -236,7 +215,6 @@ export async function seedModel(
   });
 }
 
-/** Saves a workflow whose one step runs `write` on `model`. */
 export async function seedWorkflow(
   repos: RowRepos,
   model: string,
@@ -257,9 +235,8 @@ export async function seedWorkflow(
 }
 
 /**
- * Whether a payload of `type` was committed: whether any commit in the log
- * names one of its keys. A's own checkout keeps a given-up file as dropped
- * work until a write recovers it, so the checkout cannot say.
+ * read the commit log, not A's checkout: it keeps a given-up file as dropped
+ * work until a write recovers it
  */
 export async function payloadCommitted(
   repos: RowRepos,

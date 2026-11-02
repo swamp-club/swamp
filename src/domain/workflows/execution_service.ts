@@ -386,13 +386,8 @@ import {
   RunVaultAccess,
 } from "../vaults/run_vault_access.ts";
 
-/** Parent-scope roots a deferred expression may read; anything else is scope-free. */
 const SCOPED_REFERENCE = /\b(inputs|self|run|steps)\b/;
 
-/**
- * Replaces deferred references whose expression reads no parent scope with
- * their authored text and vouches for that text. Scoped references are kept.
- */
 function inlineUnscopedDeferred<T>(
   data: T,
   records: readonly DeferredExpression[],
@@ -429,7 +424,6 @@ function inlineUnscopedDeferred<T>(
   };
 }
 
-/** Replaces sensitive values in a definition's tag values with placeholders. */
 function withTagPlaceholders(
   definition: Definition,
   sensitiveValues: RunSensitiveValues,
@@ -440,13 +434,11 @@ function withTagPlaceholders(
   }
 }
 
-/** A step task's inputs and global arguments, as they move through a pair. */
 type TaskArgs = {
   inputs?: Record<string, unknown> | string;
   globalArgs?: Record<string, unknown> | string;
 };
 
-/** The step's input records as a pair; absent inputs are empty. */
 function stepInputPair(
   taskArgs: SplicePair<TaskArgs>,
 ): SplicePair<Record<string, unknown>> {
@@ -461,12 +453,9 @@ function stepInputPair(
 }
 
 /**
- * The executed copy of a direct-execution step's definition. The resolver
- * routed and coerced the raw members; the same key routing applies to the
- * sanitized members. Coercion changes values by content (a `"true"` string
- * becomes a boolean), so a key whose value coercion changed takes the coerced
- * raw value with sensitive values sentinelized, rather than the uncoerced
- * sanitized one.
+ * coercion changes values by content ("true" becomes a boolean), so a key whose
+ * value coercion changed takes the coerced raw value with sensitive values
+ * sentinelized, not the uncoerced sanitized one
  */
 function sanitizedDirectExecution(
   result: DirectTypeResolveResult,
@@ -508,10 +497,6 @@ function sanitizedDirectExecution(
   return { definition, methodInputs };
 }
 
-/**
- * Where data sits in a step's merged placement fields: each field takes the
- * map of the level whose value it inherits, as mergePlacementFields picks it.
- */
 function placementProvenance(
   workflow: Workflow,
   job: Job,
@@ -535,11 +520,6 @@ function placementProvenance(
   return map;
 }
 
-/**
- * Task-argument provenance after whole-field record expressions resolved: a
- * field that was a record expression takes the origin of its evaluation, any
- * other keeps its map.
- */
 function recordProvenance(
   map: ProvenanceMap,
   task: { inputs?: unknown; globalArgs?: unknown },
@@ -561,24 +541,16 @@ function recordProvenance(
   return out;
 }
 
-/**
- * Resolves a task field that may be a record, an expression string, or a
- * non-record value left behind by resolveAvailableExpressions. Returns a
- * validated Record or undefined. Throws UserError for user-authored mistakes
- * (wrong expression result type, missing context).
- */
 async function resolveRecordExpression(
   value: Record<string, unknown> | string | undefined,
   fieldName: string,
   expressionContext: Record<string, unknown> | undefined,
   /**
-   * The step's pass evaluator, defined whenever the context is: in a typed
-   * run a record that holds a Secret issues into the step's bag
-   * (design/enablers/typed-secrets.md Section 3.3, typed-secrets 4.1).
+   * defined whenever the context is: in a typed run a record that holds a
+   * Secret issues into the step's bag
    */
   evaluator: CelExpressionEvaluator | undefined,
   authored: AuthoredExpressions,
-  /** Where data sits in `value`. */
   provenance: ProvenanceMap,
 ): Promise<Record<string, unknown> | undefined> {
   if (value === undefined) return undefined;
@@ -624,15 +596,9 @@ async function resolveRecordExpression(
 }
 
 /**
- * Resolves a scalar expression that survived `resolveAvailableExpressions` —
- * the task target, deferred past run-start evaluation when it reads step
- * output or when its step carries a guard.
- *
- * The record sibling above cannot serve: a target evaluates to a name, not a
- * record. Provenance is checked the same way, so a target assembled out of
- * substituted data is refused rather than executed. A target interpolating a
- * deferred expression into literal text (`stage-${{ data.latest(...) }}`) is
- * resolved expression by expression, as run-start evaluation would have.
+ * a target assembled out of substituted data is refused rather than executed;
+ * one interpolating a deferred expression into literal text is resolved
+ * expression by expression, as run-start evaluation would
  */
 async function resolveScalarExpression(
   value: string | undefined,
@@ -640,7 +606,6 @@ async function resolveScalarExpression(
   expressionContext: Record<string, unknown> | undefined,
   celEvaluator: CelExpressionEvaluator,
   authored: AuthoredExpressions,
-  /** Where data sits in `value`. */
   provenance: ProvenanceMap,
 ): Promise<string | undefined> {
   if (value === undefined) return undefined;
@@ -686,10 +651,8 @@ async function resolveScalarExpression(
 }
 
 /**
- * Warns about each step argument that reaches its method holding another
- * templating system's `${{ ... }}` text (swamp-club#2528). It covers text
- * deferred past run start too (one reading `self.*` or `steps.*`), which the
- * step-time passes leave raw without a report of their own.
+ * covers text deferred past run start too (reading self.* or steps.*), which
+ * the step-time passes leave raw without a report of their own
  */
 function warnForeignTaskArguments(
   workflowName: string,
@@ -708,17 +671,9 @@ function warnForeignTaskArguments(
 }
 
 /**
- * Fails a direct step whose authored arguments still hold `${{ ... }}` text
- * reading a root that is neither a swamp namespace nor a known foreign one
- * (swamp-club#3400). Run-start evaluation fails such text itself; this
- * covers text it deferred to step time (one that also reads `self.*`). A
- * direct step's global arguments, and the inputs routed to them, are
- * evaluated with its definition, under the looser rule for definitions, and
- * would pass through. Expression text the author did not write as an
- * expression is left to the checks on persisting the definition: text that
- * arrived as data, and the result of `literal()`, which is a constant the
- * author wrote, so no data range marks it, but whose produced text is not in
- * the authored set.
+ * covers text run-start evaluation deferred to step time; text that arrived as
+ * data, and the result of literal(), are left to the checks on persisting the
+ * definition
  */
 function assertNoUnlistedForeignArguments(
   field: "inputs" | "globalArgs",
@@ -740,30 +695,20 @@ function assertNoUnlistedForeignArguments(
   }
 }
 
-/** True when a step of `workflow` waits for a signal. */
 function holdsSignalWait(workflow: Workflow): boolean {
   return workflow.jobs.some((job) =>
     job.steps.some((step) => step.task.isWaitForSignal())
   );
 }
 
-/**
- * Extracts a human-readable reason from an AbortSignal. Returns the
- * Error message when the reason is an Error, or "aborted" otherwise.
- */
 function abortReason(signal: AbortSignal): string {
   return signal.reason instanceof Error ? signal.reason.message : "aborted";
 }
 
 /**
- * Coerces resume override inputs to their declared types and checks them
- * against the workflow's input schema, as `workflow run` does for a fresh
- * run. Only the supplied keys are checked, each by its value merged over the
- * run's stored inputs: a partial nested override (`--input creds.key=new`)
- * is complete only once merged. Keys not supplied are not re-checked. Throws
- * a UserError coded `input_validation_failed`, the code `workflow run` uses.
- * The run id comes before the detail so serve's 512-character error limit
- * cuts the detail.
+ * only supplied keys are checked, each by its value merged over the stored
+ * inputs, since a partial nested override is complete only once merged; the run
+ * id comes first so serve's 512-character limit cuts the detail
  */
 function coerceResumeInputs(
   workflow: Workflow,
@@ -791,14 +736,9 @@ function coerceResumeInputs(
 }
 
 /**
- * Thrown when a manual_approval step suspends the workflow. Uses an
- * exception for control flow because the generator stack (runStep →
- * runJob → merge → run) has no other way to unwind cleanly — yield
- * can only travel one frame up, but suspension must exit the entire
- * execution. Caught by run() and resume() to yield the terminal
- * suspended event. Also re-detected after mergeWithConcurrency via
- * run.status === "suspended" since merge() swallows errors from
- * parallel streams.
+ * an exception unwinds the generator stack (runStep, runJob, merge, run), since
+ * yield travels one frame; also re-detected via run.status after
+ * mergeWithConcurrency because merge swallows errors from parallel streams
  */
 export class WorkflowSuspendedError extends Error {
   constructor(
@@ -812,15 +752,13 @@ export class WorkflowSuspendedError extends Error {
   }
 }
 
-/** The outcome of the one workflow lookup a run makes. */
 type RunWorkflowLookup =
   | { readonly workflow: Workflow | null }
   | { readonly error: unknown };
 
 /**
- * The vault access a workflow's `vaults:` list holds its runs to, or
- * `undefined` when it declares none. Entered inside the scope a nested run
- * starts from, so a child's list intersects with its parent's.
+ * entered inside the scope a nested run starts from, so a child's list
+ * intersects with its parent's
  */
 function workflowVaultAccess(
   workflow: Workflow | undefined,
@@ -833,11 +771,8 @@ function workflowVaultAccess(
 }
 
 /**
- * The vault access a resume of `run` is held to: the workflow's current
- * `vaults:` list and the list the run recorded at run start, both. An edit
- * to the workflow can narrow a suspended run but never widen it. A run that
- * recorded no list (none applied, or it predates the record) is held to the
- * current list alone.
+ * an edit to the workflow can narrow a suspended run but never widen it; a run
+ * with no recorded list is held to the current list alone
  */
 function resumeVaultAccess(
   workflow: Workflow,
@@ -853,11 +788,8 @@ function resumeVaultAccess(
 }
 
 /**
- * A step's data output overrides layered over its definition's `resources`
- * overrides. For the same spec they merge field by field: each field the step
- * sets wins, and the definition supplies the rest, so a step that sets only
- * `vary` keeps the definition's `vaultName`, `lifetime` and
- * `garbageCollection`.
+ * for the same spec they merge field by field: each field the step sets wins
+ * and the definition supplies the rest
  */
 export function mergeDataOutputOverrides(
   definitionResources: ResourceOverrides | undefined,
@@ -890,9 +822,6 @@ export function mergeDataOutputOverrides(
   return merged;
 }
 
-/**
- * Context for step execution.
- */
 export interface StepExecutionContext {
   workflowId: WorkflowId;
   workflowRunId: string;
@@ -901,93 +830,50 @@ export interface StepExecutionContext {
   stepName: string;
   repoDir: string;
   pulledExtensionsRoot?: string;
-  /** Cancellation signal threaded from the libswamp entry point. */
   signal: AbortSignal;
-  /** Expression context for evaluating ${{ }} expressions */
   expressionContext?: ExpressionContext;
-  /** Current workflow run (for log file references in model outputs) */
   workflowRun?: WorkflowRun;
-  /** The step being executed (for accessing data output overrides) */
   step?: Step;
-  /** Callback to emit events into the parent event stream */
   emitEvent?: (event: WorkflowExecutionEvent) => void;
-  /** forEach iteration variable (e.g., { env: "dev" } for self.env) */
   forEachVariable?: ForEachBinding;
-  /** Zero-based forEach iteration index, exposed as self._index */
   forEachIndex?: number;
-  /**
-   * Expressions written in the workflow source, unioned with the executing
-   * model's own source definition before every post-substitution pass.
-   * See {@link collectAuthoredExpressions}.
-   */
   authoredExpressions: ReadonlySet<string>;
   /**
-   * The step as written in the workflow source, before the workflow evaluator
-   * substituted values into it. A direct-execution step validates the
-   * definition it builds from its evaluated arguments, so the template-syntax
-   * scan reads the authored arguments from here instead (swamp-club#2496).
-   * Absent when the source step is not known; validation then scans the
-   * definition as it is.
+   * a direct-execution step validates the definition built from evaluated
+   * arguments, so the template-syntax scan reads the authored arguments from
+   * here; absent when unknown, then the definition is scanned
    */
   authoredStep?: Step;
-  /** Tags from the workflow definition, merged into data writer tag overrides */
   workflowTags?: Record<string, string>;
-  /** Runtime tags from --tag CLI flags, passed to method execution context */
   runtimeTags?: Record<string, string>;
-  /** Secret redactor for stripping vault secrets from persisted data and logs */
   secretRedactor?: SecretRedactor;
   /**
    * The run's record of sensitive values resolved for expressions. Required,
    * so no step can resolve a sensitive value without recording it.
    */
   sensitiveValues: RunSensitiveValues;
-  /**
-   * Task inputs and global arguments as each step should execute them, where
-   * workflow evaluation spliced sensitive values into them.
-   */
   sanitizedTasks?: SanitizedTaskOverlay;
-  /** Where data sits in each evaluated step (swamp-club#3205). */
   stepProvenance?: StepProvenanceOverlay;
-  /** Report filter options for per-step report execution */
   reportFilterOptions?: ReportFilterOptions;
-  /** The git commit sha of the swamp repo at execution time */
   swampSha?: string;
-  /** Check names to skip during pre-flight checks */
   skipCheckNames?: string[];
-  /** Skip checks that have any of these labels */
   skipCheckLabels?: string[];
-  /** Skip all pre-flight checks */
   skipAllChecks?: boolean;
-  /** Identity of the user who initiated this run */
   initiatedBy?: string;
-  /** Resolved base directory for data storage (S3 cache path) */
   dataBaseDir?: string;
-  /**
-   * Resolves the datastore-tier subdirs (outputs, evaluated definitions,
-   * auto-definitions) the step's repositories read and write. Unset keeps
-   * them under the repo-local `.swamp/`.
-   */
   datastoreResolver?: DatastorePathResolver;
-  /** Catalog store for write-through indexing */
   catalogStore: CatalogStore;
   /**
-   * Giga-swamp namespace stamped on data this step writes. Defaults to
-   * SOLO_NAMESPACE when unset, keeping the catalog stamp in lockstep with the
-   * namespaced data path.
+   * defaults to SOLO_NAMESPACE when unset, keeping the catalog stamp in
+   * lockstep with the namespaced data path
    */
   namespace?: Namespace;
-  /** Resolved vault config directory (managed config tier or local vaults/) */
   vaultsDir?: string;
   /**
-   * The repo's `defaultVault` from `.swamp.yaml`: where the step's sensitive
-   * outputs land when neither the field, an override nor the spec names a
-   * vault (swamp-club#3680).
+   * where the step's sensitive outputs land when neither the field, an override
+   * nor the spec names a vault
    */
   defaultVaultName?: string;
-  /**
-   * The repo's `autoGc` setting: the step's data repository enforces
-   * integer `garbageCollection` caps at write time when true.
-   */
   autoGc?: boolean;
   runTracker?: RunTrackerRepository;
   ephemeralRepo?: UnifiedDataRepository;
@@ -996,54 +882,31 @@ export interface StepExecutionContext {
   workflowRunRepo?: WorkflowRunRepository;
   workflowGateService?:
     import("../models/workflow_gate_service.ts").WorkflowGateService;
-  /** Workflow-level placement defaults (inherited by all steps unless overridden) */
   workflowPlacement?: import("./placement.ts").PlacementFields;
-  /**
-   * Where data sits in the merged placement fields, taken from the level
-   * whose value each field inherits (swamp-club#3205).
-   */
   placementProvenance?: ProvenanceMap;
-  /** Job-level placement defaults (inherited by steps in this job unless overridden) */
   jobPlacement?: import("./placement.ts").PlacementFields;
-  /**
-   * Worker affinity key. When set, all steps sharing this key are pinned
-   * to the same remote worker. Computed from workflow/job affinity settings.
-   */
   affinityKey?: string;
   /**
-   * Effective `writes` declaration, merged workflow → job → step (child wins).
-   * When true, forces fail-instead-of-redispatch on worker disconnect.
+   * merged workflow, job, step (child wins); true forces
+   * fail-instead-of-redispatch on worker disconnect
    */
   declaredWrites?: boolean;
 }
 
-/**
- * Executor interface for running step tasks.
- */
 export interface StepExecutor {
-  /**
-   * Executes a step task.
-   *
-   * @param step - The step to execute
-   * @param ctx - Execution context
-   * @returns The step output
-   */
   execute(step: Step, ctx: StepExecutionContext): Promise<unknown>;
 }
 
 /**
- * Grace period for cleanup steps (always/completed dependents) after
- * cancellation. Cleanup steps run with a fresh signal bounded by this
- * timeout so they cannot hang indefinitely.
+ * cleanup steps run with a fresh signal bounded by this timeout so they cannot
+ * hang indefinitely
  */
 export const CLEANUP_GRACE_TIMEOUT_MS = 30_000;
 
 /**
- * Waits, at most {@link CLEANUP_GRACE_TIMEOUT_MS}, for the nested workflow
- * steps still in flight to settle. After an abort the job runner stops reading
- * a step's events, so a nested step finishes its child run in the background;
- * the parent waits here so the child saves itself cancelled before the parent
- * records its own cancellation.
+ * after an abort the job runner stops reading a step's events, so a nested step
+ * finishes its child run in the background; wait here so the child saves itself
+ * cancelled before the parent records its own
  */
 async function awaitNestedRuns(
   pending: ReadonlySet<Promise<void>>,
@@ -1061,25 +924,16 @@ async function awaitNestedRuns(
 }
 
 /**
- * How long after its abort a cancelled run waits for the model methods it
- * started to stop (see {@link InFlightMethodRuns}). It covers the shell
- * executor's 3 s SIGTERM-to-SIGKILL grace (an aborted step skips the pipe
- * drain) and the save of the cancelled method-run output; the method-summary
- * report and lock flush that follow the save may take longer. It stays under
- * serve's 5 s abort graces, so serve still sees an aborted run finish.
+ * covers the shell executor's kill grace and the save of the cancelled
+ * method-run output; stays under serve's abort graces so serve still sees an
+ * aborted run finish
  */
 export const STEP_STOP_GRACE_MS = 4_000;
 
 /**
- * The model-method executions of one run still in flight, and when the run's
- * signal aborted.
- *
- * After an abort a level of several steps stops reading them, and the run
- * settles and saves itself cancelled while their methods are still stopping.
- * The CLI then exits and kills them before they save their method-run records,
- * which stay `running` (swamp-club#2918). The run waits here, until
- * `stepStopGraceMs` after the abort, so each method records its own
- * cancellation first.
+ * after an abort the run saves itself cancelled while methods still stop, and a
+ * CLI exit would kill them with records left running; the run waits here so
+ * each records its own cancellation first
  */
 class InFlightMethodRuns {
   readonly #pending = new Set<Promise<void>>();
@@ -1098,7 +952,6 @@ class InFlightMethodRuns {
     }
   }
 
-  /** Holds `execution` until it settles, and returns it. */
   track<T>(execution: Promise<T>): Promise<T> {
     const release = () => {
       this.#pending.delete(settled);
@@ -1109,10 +962,9 @@ class InFlightMethodRuns {
   }
 
   /**
-   * Waits for the executions in flight, until `graceMs` after the abort. The
-   * deadline counts from the abort, not from this call, so the serve graces
-   * that also start at the abort still see the run finish; a run whose
-   * cleanup outlasted the grace does not wait at all.
+   * the deadline counts from the abort, not this call, so serve graces that
+   * also start at the abort still see the run finish; a run whose cleanup
+   * outlasted the grace does not wait
    */
   async settle(graceMs: number): Promise<void> {
     if (this.#pending.size === 0) return;
@@ -1137,17 +989,11 @@ class InFlightMethodRuns {
     }
   }
 
-  /** Stops listening to the run's signal. */
   dispose(): void {
     this.#signal?.removeEventListener("abort", this.#onAbort);
   }
 }
 
-/**
- * Waits for the work a cancelled run left in flight before the run records
- * its cancellation: its nested workflow steps (see {@link awaitNestedRuns})
- * and its model methods (see {@link InFlightMethodRuns}).
- */
 async function awaitInFlightWork(
   nestedRuns: ReadonlySet<Promise<void>>,
   methodRuns: InFlightMethodRuns,
@@ -1160,20 +1006,17 @@ async function awaitInFlightWork(
 }
 
 /**
- * Whether the run's abort already settled this step while it ran: a level of
- * several steps stops reading them, and the job fails the ones still running
- * as cancelled (failAbandonedSteps). A method that answers after that must
- * not overwrite the settlement; its method-run record keeps its own outcome.
+ * a method that answers after the job failed the step as cancelled must not
+ * overwrite the settlement; its method-run record keeps its own outcome
  */
 function abandonedByAbort(stepRun: StepRun, options: StepOptions): boolean {
   return (options.signal?.aborted ?? false) && stepRun.status !== "running";
 }
 
 /**
- * Fails a step whose work was in flight. With the run's abort fired, the
- * abort stopped it, so the step is marked `stoppedByAbort`: serve's shutdown
- * then interrupts it as unknown rather than leave it failed, where no
- * recovery reopens it (swamp-club#3369).
+ * with the abort fired the step is marked stoppedByAbort: serve's shutdown then
+ * interrupts it as unknown rather than leave it failed, where no recovery
+ * reopens it
  */
 function failInFlightStep(
   stepRun: StepRun,
@@ -1188,11 +1031,6 @@ function failInFlightStep(
   }
 }
 
-/**
- * Runs a nested workflow step's stream, holding a promise in `nestedRuns`
- * until the stream ends so the run can wait for it (see
- * {@link awaitNestedRuns}).
- */
 async function* trackNestedRun<T, R>(
   nestedRuns: Set<Promise<void>> | undefined,
   stream: AsyncGenerator<T, R>,
@@ -1209,11 +1047,8 @@ async function* trackNestedRun<T, R>(
 }
 
 /**
- * Decode the step-name segment of a `${jobId}:${stepName}` composite key.
- *
- * Splits on the FIRST colon only, so step names that themselves contain
- * colons (e.g. `docker:build`) round-trip without truncation. Returns ""
- * when the key has no colon.
+ * splits on the first colon only, so step names that contain colons round-trip
+ * without truncation
  */
 export function stepNameFromCompositeKey(key: string): string {
   const idx = key.indexOf(":");
@@ -1226,14 +1061,9 @@ export function jobNameFromCompositeKey(key: string): string {
 }
 
 /**
- * Translate a {@link WorkflowRun} status into the tracker's vocabulary.
- *
- * The run tracker is a projection of the aggregate, so its row must report
- * the outcome the aggregate derived — not merely that the process finished.
- * `pending`, `running` and `succeeded` all map to `completed`: the first two
- * cannot reach a completion path, and they are listed only to keep the switch
- * exhaustive. There is no `default` on purpose — a status added to the
- * aggregate later fails the type check here instead of being read as success.
+ * the row must report the outcome the aggregate derived; pending and running
+ * map to completed only to keep the switch exhaustive; no default on purpose,
+ * so a new status fails the type check
  */
 export function trackerStatusForRun(
   status: WorkflowRun["status"],
@@ -1255,12 +1085,9 @@ export function trackerStatusForRun(
 }
 
 /**
- * The open wait that holds the key `claim` refused a step for, as the
- * holder's own registration names it (swamp-club#3214). Undefined when the
- * registration is missing, cannot be read, or names another workflow, key or
- * run than the claim: nothing then says which wait it is. A store that
- * fails is the same: the step has failed with `wait_key_held` already, and
- * a missing name never changes that.
+ * undefined when the registration is missing, unreadable, or names another
+ * workflow, key or run than the claim; a failing store is the same, since the
+ * step already failed with wait_key_held
  */
 async function waitKeyHolderOf(
   store: Pick<SignalWaitStore, "findRegistration">,
@@ -1295,11 +1122,6 @@ async function waitKeyHolderOf(
   }
 }
 
-/**
- * The suspended event for a run that suspended at a level checkpoint: its
- * waiting approval gate, or else the nested workflow step waiting on a
- * suspended child run (swamp-club#2736). Undefined when neither waits.
- */
 function suspendedEventFor(
   run: WorkflowRun,
   workflow: Workflow,
@@ -1310,10 +1132,9 @@ function suspendedEventFor(
       .find((j) => j.name === waiting.jobName)?.steps;
     const taskData = definitionSteps
       ?.find((s) => s.name === waiting.stepName)?.task.data;
-    // The step run holds the prompt and the timeout its gate was requested
-    // with. A step expanded by forEach has no step of its name in the
-    // definition, so the definition answers only for a run record without
-    // them (swamp-club#3217, swamp-club#3218).
+    // the step run holds the prompt and timeout its gate was requested with; a
+    // forEach-expanded step has no step of its name in the definition, so the
+    // definition answers only for a record without them
     const stepRun = run.getJob(waiting.jobName)?.getStep(waiting.stepName);
     return {
       kind: "suspended",
@@ -1368,26 +1189,9 @@ function suspendedEventFor(
 }
 
 /**
- * The global arguments the template-syntax scan reads for a definition that a
- * direct-execution step built from its own arguments (swamp-club#2496).
- *
- * Such a definition holds the values after the workflow evaluator substituted
- * them, so a CEL concatenation that builds `{{env.name}}`, or a workflow input
- * carrying it, would read as a `${{` with its `$` dropped. Each key this step
- * supplied is scanned as the author wrote it instead. When the step wrote its
- * arguments as one whole-field expression, evaluation produced every key, so
- * none of them is scanned. Keys the step did not supply, kept from a stored
- * definition, are scanned as stored when an author wrote that definition, and
- * not at all when it is an auto-definition, whose stored values are another
- * run's evaluated arguments. A supplied key the definition does not hold
- * never reaches the method, so it is not scanned at all.
- *
- * @param definitionGlobals - The built definition's global arguments
- * @param suppliedKeys - The global argument keys this step supplied
- * @param authored - The step's authored arguments those keys came from: its
- *   `globalArgs`, or its `inputs` when they were routed to global arguments
- * @param scanStored - Whether keys the step did not supply are authored text
- *   to scan: true for a definition in `models/`, false for an auto-definition
+ * each supplied key is scanned as the author wrote it, since the built
+ * definition holds substituted values; kept stored keys are scanned only for an
+ * authored definition, never an auto-definition
  */
 export function templateScanGlobalArguments(
   definitionGlobals: Record<string, unknown>,
@@ -1411,27 +1215,17 @@ export function templateScanGlobalArguments(
   return scanned;
 }
 
-/**
- * Infrastructure dependencies the {@link DefaultStepExecutor} needs to
- * run a model method. Inject this for tests so the executor can be
- * exercised without disk, real vaults, or YAML on the filesystem.
- *
- * In production, callers either build deps explicitly via
- * {@link DefaultStepExecutor.fromRepoDir} or rely on the no-arg
- * constructor's lazy per-call construction (today's behaviour).
- */
 export interface DirectTypeResolveResult {
   definition: Definition;
   modelType: ModelType;
   created: boolean;
   routedMethodInputs: Record<string, unknown>;
-  /** Expressions written in the stored definition; empty when created. */
   authoredExpressions?: ReadonlySet<string>;
 }
 
 /**
- * How a durable v2 data write is synced (swamp-club#4032): a repository's
- * `writeSync`, passed through unopened to the repositories built here.
+ * a repository's writeSync, passed through unopened to the repositories built
+ * here
  */
 type DurableWriteSync = FileSystemUnifiedDataRepository["writeSync"];
 
@@ -1441,25 +1235,15 @@ export type DirectTypeResolver = (
   methodName: string,
   inputs: Record<string, unknown>,
   globalArgs: Record<string, unknown> | undefined,
-  /** Expressions written in the workflow source; see {@link AuthoredExpressions}. */
   authoredExpressions: AuthoredExpressions,
-  /**
-   * The run's record, so sensitive values routed into the stored definition
-   * are written as the vault references they came from.
-   */
   sensitiveValues?: RunSensitiveValues,
-  /**
-   * Where data sits in `inputs` and `globalArgs`, so a global argument
-   * holding expression text in data is never persisted.
-   */
   provenance?: DirectInputsProvenance,
 ) => Promise<DirectTypeResolveResult>;
 
 /**
- * Runs a step lock's flush with what the step wrote. A step that already
- * failed keeps its own error: a version its flush could not publish, or
- * refused to push after losing its lock, is logged instead (swamp-club#3146,
- * swamp-club#3373). Any other flush error is thrown.
+ * a step that already failed keeps its own error: a flush that could not
+ * publish, or refused to push after losing its lock, is logged instead; any
+ * other flush error is thrown
  */
 async function flushStepLock(
   flush: (written?: readonly WrittenVersion[]) => Promise<void>,
@@ -1478,25 +1262,16 @@ async function flushStepLock(
 }
 
 export interface StepLockResult {
-  /**
-   * Pushes the step's changes and releases its locks. `written` lists the
-   * data versions the step wrote, which the push publishes and checks
-   * (swamp-club#3146).
-   */
   flush: (written?: readonly WrittenVersion[]) => Promise<void>;
   /**
-   * The nonces of the lock files the hook took. The step runs inside
-   * `processLockHolderMarker.runHolding` with them, so a swamp the step
-   * starts skips these locks and not those of parallel steps. A hook that
-   * leaves it out runs the step outside any scope, so that swamp matches
-   * this process's locks on the pid alone and never waits on the step's
-   * own lock.
+   * the step runs inside processLockHolderMarker.runHolding with these nonces
+   * so a swamp it starts skips these locks, not parallel steps'; without them
+   * that swamp matches locks on pid alone
    */
   heldLockIds?: readonly string[];
   /**
-   * The same locks as the step's scope lends them, with the reclaim that
-   * ends a hand-off. Used in place of {@link heldLockIds} when present, so
-   * a swamp left over from a hop that has ended stops skipping them.
+   * used in place of heldLockIds when present, so a swamp left over from a hop
+   * that has ended stops skipping them
    */
   lentLocks?: LentLocks;
 }
@@ -1504,10 +1279,7 @@ export interface StepLockResult {
 export type StepLockHook = (
   modelType: string,
   modelId: string,
-  /**
-   * The step's method and behavior name, for a hook that judges the step
-   * before it starts (swamp-club#4195); a hook may ignore it.
-   */
+  /** for a hook that judges the step before it starts; a hook may ignore it */
   step?: { readonly methodName: string; readonly behaviorName: string },
 ) => Promise<StepLockResult>;
 
@@ -1520,18 +1292,12 @@ export interface StepExecutorDeps {
   methodExecutionService: MethodExecutionService;
   vaultService: VaultService;
   expressionEvaluator: ExpressionEvaluationService;
-  /**
-   * Evaluates the target of a `context.runModel` call from a step, with the
-   * data repositories and vault service a standalone run of that target uses.
-   */
   invocationEvaluator: ExpressionEvaluationService;
   directTypeResolver?: DirectTypeResolver;
   runTracker?: RunTrackerRepository;
   /**
-   * Whether a definition `definitionRepo` returned was loaded from the
-   * auto-definitions directory, which swamp writes from a run's evaluated
-   * arguments. Its stored global arguments are then not linted as authored
-   * text (swamp-club#2496). Absent, every definition counts as authored.
+   * such a definition's stored global arguments are not linted as authored
+   * text; absent, every definition counts as authored
    */
   isAutoDefinition?: (
     definition: Definition,
@@ -1539,9 +1305,6 @@ export interface StepExecutorDeps {
   ) => Promise<boolean>;
 }
 
-/**
- * Default step executor that handles model methods and workflow invocations.
- */
 export class DefaultStepExecutor implements StepExecutor {
   private readonly validationService = new DefaultModelValidationService();
   private readonly reportRunner = new MethodReportRunner();
@@ -1560,12 +1323,6 @@ export class DefaultStepExecutor implements StepExecutor {
     this._directTypeResolver = directTypeResolver;
   }
 
-  /**
-   * Build a fully-wired DefaultStepExecutor for production use. Performs
-   * the same construction the no-arg path does at execute() time, just
-   * once at the seam — so callers that have a repoDir at construction
-   * time can avoid per-call rebuild of repos and the vault service.
-   */
   static async fromRepoDir(
     repoDir: string,
     opts: {
@@ -1588,11 +1345,6 @@ export class DefaultStepExecutor implements StepExecutor {
     );
   }
 
-  /**
-   * Construct deps either from the injected set (tests) or per-call
-   * from the StepExecutionContext (production no-arg path — today's
-   * behaviour preserved exactly).
-   */
   private async resolveDeps(
     ctx: StepExecutionContext,
   ): Promise<StepExecutorDeps> {
@@ -1785,11 +1537,9 @@ export class DefaultStepExecutor implements StepExecutor {
       executionService.workflowGateService = ctx.workflowGateService;
     }
 
-    // Compute effective placement by merging workflow → job → step defaults.
-    // Each level inherits from its parent; explicit values (including {})
-    // override inherited ones. The merge happens here — after forEach
-    // expansion but before expression resolution — so inherited fields are
-    // available for expression resolution.
+    // merged after forEach expansion but before expression resolution so
+    // inherited fields are available to it; explicit values, including {},
+    // override inherited ones
     const effectiveFields = mergePlacementFields(
       mergePlacementFields(ctx.workflowPlacement, ctx.jobPlacement),
       ctx.step?.placementFields,
@@ -1797,11 +1547,8 @@ export class DefaultStepExecutor implements StepExecutor {
     let resolvedPlacement = resolvePlacement(effectiveFields);
     let placementMap = ctx.placementProvenance ?? ProvenanceMap.authored();
 
-    // This step's bag, a view of the run's registry. Sensitive data values
-    // spliced into the step's arguments become its sentinels: from the
-    // workflow-level overlay, the step-input passes, the definition pass and
-    // the runtime pass. One bag per step, so remote dispatch ships only this
-    // step's secrets, while any sentinel the run issued resolves through it.
+    // one bag per step, so remote dispatch ships only this step's secrets,
+    // while any sentinel the run issued resolves through it
     const stepSecretBag = new VaultSecretBag(ctx.sensitiveValues.sentinels);
     const argumentSanitizer = sensitiveSpliceSanitizer(
       stepSecretBag,
@@ -1812,7 +1559,6 @@ export class DefaultStepExecutor implements StepExecutor {
     const overlay = ctx.step
       ? ctx.sanitizedTasks?.forStep(ctx.step, stepSecretBag)
       : undefined;
-    // Where data sits in the step's task, raw and sanitized (swamp-club#3205).
     const stepMaps = (ctx.stepProvenance ?? StepProvenanceOverlay.authored())
       .forStep(ctx.step);
     let taskProvenance = stepMaps.raw.subtree("task");
@@ -1844,14 +1590,9 @@ export class DefaultStepExecutor implements StepExecutor {
       sanitizedTaskProvenance,
     );
 
-    // Resolve every available expression (self.* from the forEach variable,
-    // run.*, etc.) anywhere in the task and placement fields before model
-    // lookup. The expression context has self populated with the forEach
-    // variable by runStep(). resolveAvailableExpressions defers vault/env and
-    // step-output kinds to their dedicated stages — see
-    // available_expression_resolver.ts.
-    // The pass issues into the step's bag: existing sentinels bind as
-    // Secrets and Secret results leave as sentinels delivery loads.
+    // vault/env and step-output kinds are deferred to their dedicated stages;
+    // the pass issues into the step's bag, so existing sentinels bind as
+    // Secrets and Secret results leave as sentinels delivery loads
     const stepPass = ctx.expressionContext
       ? await expressionEvaluator.passEvaluatorFor(ctx.sensitiveValues, {
         secretBag: stepSecretBag,
@@ -1861,10 +1602,9 @@ export class DefaultStepExecutor implements StepExecutor {
     if (ctx.expressionContext && stepPass) {
       const evaluate = (expr: string, context: Record<string, unknown>) =>
         stepPass.evaluate(expr, context);
-      // The pass below evaluates synchronously, so the content its
-      // expressions read through the model map must be local first
-      // (swamp-club#3179), and in a typed run the sensitive-field
-      // references it can read must be authorized first (Section 3.4).
+      // the pass evaluates synchronously, so content its expressions read
+      // through the model map must be local first, and in a typed run the
+      // sensitive-field references it can read must be authorized first
       await stepPass.prepare(
         [task, taskArgs.raw, resolvedPlacement],
         ctx.expressionContext,
@@ -1947,12 +1687,9 @@ export class DefaultStepExecutor implements StepExecutor {
       ) as typeof selectors,
     };
 
-    // The task target survives resolveAvailableExpressions when it was
-    // deferred past run-start evaluation — a target reading step output, or
-    // any dynamic target on a guarded step. Resolve it here, after the guard
-    // has already decided: runStep returns early on a guarded skip and never
-    // reaches this executor, so a step that will not run never resolves the
-    // target it would have used.
+    // resolved here, after the guard decided: runStep returns early on a
+    // guarded skip and never reaches this executor, so a step that will not run
+    // never resolves its target
     const resolveSelector = async (field: keyof typeof selectors) =>
       await resolveScalarExpression(
         task[field],
@@ -1970,13 +1707,10 @@ export class DefaultStepExecutor implements StepExecutor {
       ...task,
       modelIdOrName: await resolveSelector("modelIdOrName"),
       modelName: await resolveSelector("modelName"),
-      // Include type and method selectors deferred until step outputs exist.
       modelType: await resolveSelector("modelType"),
       methodName: (await resolveSelector("methodName"))!,
     };
 
-    // Resolve whole-field expression strings for inputs/globalArgs that survived
-    // resolveAvailableExpressions (e.g., deferred step-output dependencies).
     const recordInputs = await resolveRecordExpression(
       task.inputs,
       "task.inputs",
@@ -2043,32 +1777,19 @@ export class DefaultStepExecutor implements StepExecutor {
       .graft("globalArgs", taskArgs.rawProvenance.subtree("globalArgs"));
     task = { ...task, inputs: recordInputs, globalArgs: recordGlobalArgs };
 
-    // Where data sits in the evaluated and executed definitions.
     let definitionProvenance: DefinitionPassProvenance = AUTHORED_DEFINITION;
     let originalDefinition: Definition;
     let modelType: ModelType;
     /**
-     * Expressions contributed by the model's own source definition.
-     * Only a definition loaded from the repository is author-written: a
-     * direct-execution definition that was just created is synthesised from
-     * `task.inputs`, which the workflow evaluator has already substituted data
-     * into, so treating it as a provenance root would re-admit exactly the
-     * injected text this gate exists to refuse. When direct execution reuses
-     * a stored definition, the resolver reports that definition's expressions
-     * as collected before caller-supplied global arguments were applied —
-     * sound because direct execution stores expression text the caller
-     * cannot vouch for only inside a literal() call, or refuses it, so
-     * nothing stored is substituted content that resolves.
+     * only a repository-loaded definition is author-written; a just-created
+     * direct-execution one is built from substituted task.inputs, and treating
+     * it as a provenance root would re-admit the injected text this gate refuses
      */
     let authoredFromDefinition: ReadonlySet<string> = new Set();
 
     let authoredForDirect = ctx.authoredExpressions;
-    // The definition the executed copy starts from when a direct-execution
-    // step routed sanitized values into it; otherwise the loaded definition.
     let executedBase: Definition | undefined;
     let sanitizedStepInputs: Record<string, unknown> | undefined;
-    // Global arguments the template-syntax scan reads in place of a
-    // definition's evaluated ones; see templateScanGlobalArguments.
     let authoredGlobalArguments: Record<string, unknown> | undefined;
     // Whether originalDefinition is the stored file, not a copy holding the
     // real values direct execution resolved.
@@ -2084,12 +1805,9 @@ export class DefaultStepExecutor implements StepExecutor {
         );
       }
 
-      // Direct execution may persist these values into a definition. A
-      // deferred reference whose expression needs no parent scope (env,
-      // literal vault.get) is restored to its authored text, which persists
-      // and resolves exactly as it did before deferral. Scoped references
-      // stay as tokens and are refused by resolveOrCreateDefinition if they
-      // route to global arguments.
+      // A deferred reference needing no parent scope is restored to its
+      // authored text; scoped references stay tokens and are refused for global
+      // arguments.
       const inlined = inlineUnscopedDeferred(
         { inputs: task.inputs, globalArgs: task.globalArgs },
         ctx.expressionContext?.deferredExpressions ?? [],
@@ -2145,10 +1863,9 @@ export class DefaultStepExecutor implements StepExecutor {
       sanitizedStepInputs = executedDirect.methodInputs;
 
       const authoredTask = ctx.authoredStep?.task.data;
-      // A step edited since a cached evaluation (--last-evaluated) can have
-      // moved its arguments between globalArgs and inputs; its authored text
-      // then no longer describes the values it runs with, so the definition
-      // is scanned as it is.
+      // a step edited since a cached evaluation can have moved arguments
+      // between globalArgs and inputs, so its authored text does not describe
+      // the values it runs with; the definition is scanned as it is
       if (
         authoredTask?.type === "model_method" &&
         !task.globalArgs === !authoredTask.globalArgs
@@ -2171,9 +1888,9 @@ export class DefaultStepExecutor implements StepExecutor {
         );
       }
 
-      // Routed global arguments keep the provenance of the inputs they came
+      // routed global arguments keep the provenance of the inputs they came
       // from, so self.globalArguments and the definition pass see where data
-      // sits in them (swamp-club#3205).
+      // sits in them
       const routedGlobals = routedGlobalProvenance(
         result.definition.globalArguments as Record<string, unknown>,
         (task.globalArgs ?? task.inputs ?? {}) as Record<string, unknown>,
@@ -2239,7 +1956,6 @@ export class DefaultStepExecutor implements StepExecutor {
           ),
       );
     } else if (task.modelIdOrName) {
-      // Standard path: look up existing definition
       const lookupResult = await findDefinitionByIdOrName(
         definitionRepo,
         task.modelIdOrName,
@@ -2264,7 +1980,6 @@ export class DefaultStepExecutor implements StepExecutor {
       );
     }
 
-    // Log via model method run logger (same categories as standalone)
     const runLogger = getRunLogger(
       originalDefinition.name,
       task.methodName,
@@ -2286,7 +2001,6 @@ export class DefaultStepExecutor implements StepExecutor {
       methodName: task.methodName,
     });
 
-    // --- Check for env var usage and warn ---
     const envVarUsages = detectEnvVarUsageInDefinition(originalDefinition);
     if (envVarUsages.length > 0) {
       ctx.emitEvent?.({
@@ -2299,7 +2013,6 @@ export class DefaultStepExecutor implements StepExecutor {
       });
     }
 
-    // Get the model definition from registry (auto-resolve if needed)
     const modelDef = await resolveModelType(modelType, getAutoResolver());
     if (!modelDef) {
       throw new Error(`Unknown behavior type: ${modelType.normalized}`);
@@ -2321,10 +2034,8 @@ export class DefaultStepExecutor implements StepExecutor {
       },
     );
 
-    // Fail fast if validation fails
     const failures = validationResults.results.filter((r) => !r.passed);
     if (failures.length > 0) {
-      // A multi-line error goes under its check name, every line indented.
       const errors = failures.map((f) =>
         f.error?.includes("\n")
           ? `  ${f.name}:\n${f.error.replace(/^/gm, "    ")}`
@@ -2335,44 +2046,27 @@ export class DefaultStepExecutor implements StepExecutor {
       );
     }
 
-    // Over the stored definition, as authored, and before the step's inputs
-    // are written into it (a definition with no expressions is not copied
-    // first): the hash changes only when the definition does, and holds no
-    // resolved value (swamp-club#3722). A direct-execution definition is
-    // built from the step's evaluated arguments, so it is hashed below in
-    // its persisted form, whose sensitive values are vault references.
+    // hashed over the stored definition as authored, before inputs are written
+    // into it, so the hash changes only when the definition does and holds no
+    // resolved value; direct execution is hashed below in persisted form
     const isDirectExecution = executedBase !== undefined;
     const storedDefinitionHash = isDirectExecution
       ? undefined
       : await originalDefinition.computeHash();
 
-    // Evaluate CEL expressions (vault left raw for persistence)
     let evaluatedDefinition = originalDefinition;
-    // The copy that executes: evaluatedDefinition's splices with sensitive
-    // data values in its arguments replaced by sentinels from stepSecretBag.
     let executedDefinition = executedBase ?? originalDefinition;
     let failedExpressions: FailedExpressions = new Map();
     let stepInputs = SplicePair.of<Record<string, unknown>>({});
-    // Provenance for every pass from here on. Union the workflow source's
-    // authored expressions with the model's own, where the model has an
-    // authored source at all. Anything else in task.inputs or the evaluated
-    // definition arrived through CEL data substitution and must not be
-    // evaluated again — not by the step-input pass below, not by the
-    // definition pass, and not by the runtime pass.
-    //
-    // task.inputs is deliberately NOT seeded here: by this point the workflow
-    // evaluator has already substituted data into it. Author-written step
-    // inputs are covered by the workflow-source set, collected before that ran.
+    // task.inputs is not seeded: the evaluator already substituted data into
+    // it, and substituted data must not be evaluated again.
     const authoredExpressions = new Set([
       ...authoredForDirect,
       ...authoredFromDefinition,
     ]);
-    // What vouches for the step's own inputs. Another templating system's
-    // text in a definition vouches for nothing: matched by raw text against
-    // the same `literal()` output in a step input, it would be evaluated
-    // there as the author's expression and fail on its root
-    // (swamp-club#3389). A run stores such text wrapped in `literal()`, but
-    // a hand-written definition can hold it bare.
+    // another templating system's text in a definition vouches for nothing:
+    // matched by raw text against the same literal() output in a step input, it
+    // would be evaluated as the author's expression and fail on its root
     const stepInputAuthored = (): ReadonlySet<string> => {
       const fromDefinition = [...authoredExpressions].filter((raw) =>
         !authoredForDirect.has(raw)
@@ -2391,8 +2085,6 @@ export class DefaultStepExecutor implements StepExecutor {
 
     if (ctx.expressionContext) {
       runLogger.debug("Evaluating expressions");
-      // Set self context for this specific model before evaluating
-      // Preserve any forEach variables that were set by the workflow engine
       const forEachVars: Record<string, unknown> = {};
       if (ctx.forEachVariable && ctx.forEachVariable.name) {
         if (ctx.forEachIndex !== undefined) {
@@ -2424,7 +2116,6 @@ export class DefaultStepExecutor implements StepExecutor {
       }
       attachBindingProvenance(ctx.expressionContext, { self: selfProvenance });
 
-      // Evaluate step task inputs and merge into context
       if (task.inputs) {
         stepInputs = await expressionEvaluator.evaluateDataPair(
           stepInputPair(taskArgs),
@@ -2459,9 +2150,8 @@ export class DefaultStepExecutor implements StepExecutor {
         failedExpressions,
         provenance: definitionProvenance,
       } = await new DefinitionExpressionEvaluator(
-        // The step's definition pass issues into the step's bag, so a
-        // forEach item or an input that is a sentinel binds as a Secret
-        // (typed-secrets 4.1).
+        // the definition pass issues into the step's bag, so a forEach item or
+        // an input that is a sentinel binds as a Secret
         await expressionEvaluator.passEvaluatorFor(ctx.sensitiveValues, {
           secretBag: stepSecretBag,
           location: originalDefinition.name,
@@ -2476,11 +2166,9 @@ export class DefaultStepExecutor implements StepExecutor {
       ));
     }
 
-    // Definition inputs feed evaluation; copying them into cached method
-    // arguments can leak a sensitive value under an unmarked input name.
-    // Keep schema-accepted method inputs; when evaluation masks an argument,
-    // its forwarded definition-input aliases are masked too. Unknown keys are
-    // omitted. Runtime forwarding below stays unchanged.
+    // copying definition inputs into cached method arguments can leak a
+    // sensitive value under an unmarked input name, so only schema-accepted
+    // inputs are kept and forwarded aliases of masked arguments are masked
     const cachedDefinition = Definition.fromData(executedDefinition.toData());
     let cachedProvenance = definitionProvenance.raw;
     let cachedExecutedProvenance = definitionProvenance.sanitized;
@@ -2492,9 +2180,8 @@ export class DefaultStepExecutor implements StepExecutor {
       ),
     );
 
-    // Forward all step inputs as method arguments.
-    // This runs after expression evaluation, so task.inputs values
-    // take precedence over any values resolved from ${{ inputs.X }} expressions.
+    // runs after expression evaluation, so task.inputs values take precedence
+    // over values resolved from inputs.X expressions
     if (executedDefinition === evaluatedDefinition) {
       executedDefinition = Definition.fromData(evaluatedDefinition.toData());
     }
@@ -2541,27 +2228,22 @@ export class DefaultStepExecutor implements StepExecutor {
       failedExpressions,
     );
 
-    // Acquire the per-step lock before the step writes anything. The lock
-    // covers the evaluated definition, the running output and run-tracker
-    // row, the method execution (result + log data) AND report generation
-    // (report data), so a single flush pushes everything to the remote
-    // datastore. Taking it first also means a lock timeout fails the step
-    // before any record is left at running.
+    // the lock covers every write of the step so one flush pushes everything;
+    // taking it first means a lock timeout fails the step before any record is
+    // left at running
     let flushLock:
       | ((written?: readonly WrittenVersion[]) => Promise<void>)
       | null = null;
-    // Declared outside try so the catch block can record artifacts written
-    // before a throw (e.g. model writes data then throws on verdict=FAIL),
-    // and the lock's flush can publish them. Each phase owns its mutations
-    // of this list; the orchestrator only creates and threads it.
+    // declared outside try so the catch can record artifacts written before a
+    // throw and the lock's flush can publish them
     const savedArtifacts: Array<{
       dataId: string;
       name: string;
       version: number;
       tags: Record<string, string>;
     }> = [];
-    // Versions a worker wrote before its step failed, which reach this
-    // process only on the error (swamp-club#3146).
+    // versions a worker wrote before its step failed reach this process only on
+    // the error
     const failedRemoteWrites: WrittenVersion[] = [];
     let stepFailed = false;
     // Undefined when a hook took locks without naming them.
@@ -2601,9 +2283,8 @@ export class DefaultStepExecutor implements StepExecutor {
         persisted.persistedProvenance,
       );
 
-      // Capture pre-vault args for report context (so vault secrets stay as expressions)
-      // Reports and the completed event show arguments to the user and are
-      // persisted with report output, so sensitive values are masked there.
+      // reports and the completed event show arguments to the user and are
+      // persisted with report output, so sensitive values are masked there
       const reportGlobalArgs = ctx.sensitiveValues.masked(
         evaluatedDefinition.globalArguments,
       ) as Record<string, unknown>;
@@ -2611,11 +2292,9 @@ export class DefaultStepExecutor implements StepExecutor {
         evaluatedDefinition.getMethodArguments(task.methodName),
       ) as Record<string, unknown>;
 
-      // Resolve runtime expressions (vault and env) at runtime (never persisted).
-      // Vault secrets become sentinel tokens; the secretBag maps sentinels to raw values.
-      // The expression context is passed so that dynamic vault.get() arguments
-      // (e.g. vault.get(inputs.vaultName, inputs.secretKey)) can be CEL-evaluated.
-      // Scoped to the step's method, as every delivery's runtime pass is.
+      // vault secrets become sentinels the secretBag maps to values; the
+      // expression context lets dynamic vault.get() arguments be CEL-evaluated;
+      // scoped to the step's method, as every delivery's runtime pass is
       const runtimeResult = await expressionEvaluator
         .resolveRuntimeExpressionsInDefinition(
           executedDefinition,
@@ -2636,7 +2315,6 @@ export class DefaultStepExecutor implements StepExecutor {
       // which can also splice one into a tag).
       withTagPlaceholders(evaluatedDefinition, ctx.sensitiveValues);
 
-      // Validate method exists on the model
       const method = modelDef.methods[task.methodName];
       if (!method) {
         const availableMethods = Object.keys(modelDef.methods).join(", ");
@@ -2647,7 +2325,6 @@ export class DefaultStepExecutor implements StepExecutor {
         );
       }
 
-      // Create ModelOutput for tracking
       const definitionHash = storedDefinitionHash ??
         await persisted.definition.computeHash();
       const output = ModelOutput.create({
@@ -2665,15 +2342,12 @@ export class DefaultStepExecutor implements StepExecutor {
         },
       });
 
-      // Mark as running and save
       output.markRunning(Deno.pid);
-      // Reference the workflow run's log file for history access
       if (ctx.workflowRun?.logFile) {
         output.setLogFile(ctx.workflowRun.logFile);
       }
       await outputRepo.save(modelType, task.methodName, output);
 
-      // Register with the run tracker (if available).
       const { runTracker } = allDeps;
       let heartbeatInterval: ReturnType<typeof setInterval> | undefined;
       if (runTracker) {
@@ -2692,7 +2366,6 @@ export class DefaultStepExecutor implements StepExecutor {
         runTracker.register(activeRun);
       }
 
-      // Start heartbeat inside try so it's always cleaned up on error.
       if (runTracker) {
         heartbeatInterval = setInterval(() => {
           try {
@@ -2796,8 +2469,8 @@ export class DefaultStepExecutor implements StepExecutor {
           failedRemoteWrites.push(version);
         }
         stepFailed = true;
-        // The step's failure, its events and the run record read the message
-        // from what is thrown here (swamp-club#3681).
+        // the step's failure, its events and the run record read the message
+        // from what is thrown here
         throw redactedError(error, ctx.secretRedactor);
       }
     } finally {
@@ -2816,12 +2489,6 @@ export class DefaultStepExecutor implements StepExecutor {
     }
   }
 
-  /**
-   * Invoke the model method. Builds the per-call tag overrides,
-   * resolves the data-output overrides for vary, and dispatches to
-   * the method execution service.
-   * Returns the raw method execution result.
-   */
   private async invokeMethod(args: {
     task: {
       modelIdOrName?: string;
@@ -2878,11 +2545,9 @@ export class DefaultStepExecutor implements StepExecutor {
 
     runLogger.debug("Executing method {method}", { method: task.methodName });
 
-    // Build workflow-specific tag overrides. Use "source" instead of
-    // "type" to preserve the original data type (resource/file) while
-    // tracking provenance for cross-workflow resolution.
-    // Tags are identifiers readers filter by exact string; a sensitive value
-    // in one becomes its placeholder before any writer sees it.
+    // tags are filtered by exact string, so a sensitive value in one becomes
+    // its placeholder before any writer sees it; source (not type) keeps the
+    // original data type
     const workflowTagOverrides: Record<string, string> = {
       ...ctx.sensitiveValues.tagsWithPlaceholders(ctx.workflowTags ?? {}),
       source: "step-output",
@@ -2894,7 +2559,6 @@ export class DefaultStepExecutor implements StepExecutor {
       ...(ctx.initiatedBy ? { initiatedBy: ctx.initiatedBy } : {}),
     };
 
-    // Resolve vary suffixes per output spec from current step inputs.
     const stepDataOutputOverrides = ctx.step?.dataOutputOverrides
       ? Array.from(ctx.step.dataOutputOverrides).map((override) => {
         let resolvedVarySuffix: string | undefined;
@@ -2927,9 +2591,8 @@ export class DefaultStepExecutor implements StepExecutor {
       })
       : undefined;
 
-    // Note: any failure between the start of runModelMethodTask and this
-    // point (vary-key validation, etc.) becomes a "pre-method-executing"
-    // failure and is reported via step_failed instead — by design.
+    // a failure before this point (vary-key validation, etc.) is reported via
+    // step_failed instead of method_executing, by design
     ctx.emitEvent?.({
       kind: "method_executing",
       jobId: ctx.jobName,
@@ -2939,9 +2602,8 @@ export class DefaultStepExecutor implements StepExecutor {
       methodName: task.methodName,
     });
 
-    // Register sensitive argument values with the workflow redactor so they
-    // are scrubbed from the workflow log file. Must use post-vault-resolution
-    // values from evaluatedDefinition.
+    // register post-vault-resolution values from evaluatedDefinition with the
+    // redactor so they are scrubbed from the workflow log
     if (ctx.secretRedactor) {
       const globalArgSchema = modelDef.globalArguments;
       if (globalArgSchema) {
@@ -3055,12 +2717,6 @@ export class DefaultStepExecutor implements StepExecutor {
     );
   }
 
-  /**
-   * Success-path handler. Owns all mutations of `output` and
-   * `savedArtifacts` for the success case: appends method artifacts,
-   * appends report artifacts, marks the output as succeeded, persists.
-   * Returns the orchestrator's final result tuple.
-   */
   private async handleMethodSuccess(args: {
     task: {
       modelIdOrName?: string;
@@ -3108,12 +2764,9 @@ export class DefaultStepExecutor implements StepExecutor {
       savedArtifacts,
     } = args;
 
-    // Track data outputs for context refresh (specName → instanceName → record).
     const resources: Record<string, Record<string, DataRecord>> = {};
     const files: Record<string, Record<string, FileDataRecord>> = {};
 
-    // Append method artifacts to output and savedArtifacts; build the
-    // resources/files maps used by downstream steps' expression context.
     if (result.dataHandles && result.dataHandles.length > 0) {
       for (const handle of result.dataHandles) {
         const artifactRef = {
@@ -3138,10 +2791,9 @@ export class DefaultStepExecutor implements StepExecutor {
           if (!resources[handle.specName]) {
             resources[handle.specName] = {};
           }
-          // In a typed run the record keeps its stored references and its
-          // tag, and no vault is read: the typed evaluator adapts it, in the
-          // model map and in the step's outputs, so a tagged field is a
-          // Secret loaded at delivery (typed-secrets 4.2).
+          // in a typed run the record keeps its stored references and tag and
+          // no vault is read; the typed evaluator adapts it, so a tagged field
+          // is a Secret loaded at delivery
           resources[handle.specName][handle.name] = await fromResourceHandle(
             handle,
             modelType,
@@ -3172,7 +2824,6 @@ export class DefaultStepExecutor implements StepExecutor {
       { method: task.methodName, model: originalDefinition.name },
     );
 
-    // Per-step reports. Vary suffix derived from forEach variable.
     if (ctx.reportFilterOptions) {
       const reportVarySuffix = ctx.forEachVariable?.value !== undefined
         ? coerceToSuffix(
@@ -3219,14 +2870,6 @@ export class DefaultStepExecutor implements StepExecutor {
     };
   }
 
-  /**
-   * Failure-path handler. Owns all mutations of `output` and
-   * `savedArtifacts` for the failure case: recovers handles attached
-   * to the error (partial-write artifacts), marks the output as failed,
-   * persists, runs failure-path reports (errors swallowed by the runner),
-   * and attaches savedArtifacts to the error so the outer step loop
-   * records them on the step run. Caller is expected to rethrow.
-   */
   private async handleMethodFailure(args: {
     task: {
       modelIdOrName?: string;
@@ -3247,9 +2890,7 @@ export class DefaultStepExecutor implements StepExecutor {
     reportGlobalArgs: Record<string, unknown>;
     reportMethodArgs: Record<string, unknown>;
     error: unknown;
-    /** Whether the run's abort stopped the method; it is then cancelled. */
     aborted: boolean;
-    /** What aborted it, when the abort named a cause (see `cancelCause`). */
     cancelCause?: string;
     output: ModelOutput;
     savedArtifacts: Array<{
@@ -3279,9 +2920,8 @@ export class DefaultStepExecutor implements StepExecutor {
       savedArtifacts,
     } = args;
 
-    // Recover data handles written before the throw (e.g. model wrote
-    // data then threw on verdict=FAIL). The execution service attaches
-    // them to the error.
+    // recover handles the model wrote before throwing (e.g. verdict=FAIL); the
+    // execution service attaches them to the error
     const errorHandles = recoveredDataHandles(error);
     if (errorHandles.length > 0) {
       for (const handle of errorHandles) {
@@ -3297,10 +2937,9 @@ export class DefaultStepExecutor implements StepExecutor {
       }
     }
 
-    // The record, the failed-step report and the step's error carry the
-    // message and stack through the run's redactor: a method that echoes a
-    // sensitive argument in its error lands it in none of them
-    // (swamp-club#3681).
+    // the record, failed-step report and step error carry the message and stack
+    // through the redactor, so a method echoing a sensitive argument in its
+    // error leaks it into none of them
     const failure = executionErrorFrom(error, ctx.secretRedactor);
     const errorMessage = failure.message;
     if (aborted) {
@@ -3316,12 +2955,9 @@ export class DefaultStepExecutor implements StepExecutor {
       error: errorMessage,
     });
 
-    // Run method-summary report for failed executions so report
-    // consumers see structured error output (matching modelMethodRun
-    // failure behavior). The runner's internal try/catch ensures
-    // report errors don't mask the original execution error. The
-    // artifacts it returns are recorded on the failed step, exactly as
-    // for a successful step.
+    // run the method-summary report on failure too so consumers see structured
+    // errors; the runner swallows report errors so they never mask the
+    // original, and returned artifacts are recorded on the step
     if (ctx.reportFilterOptions) {
       const reportVarySuffix = ctx.forEachVariable?.value !== undefined
         ? coerceToSuffix(
@@ -3369,7 +3005,6 @@ export class DefaultStepExecutor implements StepExecutor {
   }
 }
 
-// Re-export from dedicated file for backward compatibility
 export type { WorkflowExecutionEvent } from "./execution_events.ts";
 export type { RecoveryAssessment } from "./recovery_assessment.ts";
 import type {
@@ -3382,9 +3017,6 @@ import {
   type RecoveryAssessment,
 } from "./recovery_assessment.ts";
 
-/**
- * Internal options bundle passed through runJob/runStep to reduce parameter count.
- */
 interface StepOptions {
   /**
    * Expressions written in the workflow source. Threaded to every pass that
@@ -3392,10 +3024,6 @@ interface StepOptions {
    * never evaluated as if the author had written it.
    */
   authoredExpressions: ReadonlySet<string>;
-  /**
-   * The workflow as loaded, before evaluation, from which each step's
-   * authored task is looked up. See {@link StepExecutionContext.authoredStep}.
-   */
   authoredWorkflow?: Workflow;
   lastEvaluated?: boolean;
   workflowNestingDepth?: number;
@@ -3411,21 +3039,14 @@ interface StepOptions {
   sensitiveValues: RunSensitiveValues;
   sanitizedTasks?: SanitizedTaskOverlay;
   stepProvenance?: StepProvenanceOverlay;
-  /** Where data sits in the evaluated workflow (swamp-club#3205). */
   workflowProvenance?: ProvenanceMap;
   signal?: AbortSignal;
   reportFilterOptions?: ReportFilterOptions;
-  /** The git commit sha of the swamp repo at execution time */
   swampSha?: string;
-  /** Check names to skip during pre-flight checks */
   skipCheckNames?: string[];
-  /** Skip checks that have any of these labels */
   skipCheckLabels?: string[];
-  /** Skip all pre-flight checks */
   skipAllChecks?: boolean;
-  /** Minimum assert severity that fails the run (default: all failures fail) */
   assertFailOnSeverity?: AssertSeverity;
-  /** Identity of the user who initiated this run */
   initiatedBy?: string;
   /**
    * `root.key` binding paths (e.g. `inputs.token`, `self.item`) whose values
@@ -3434,17 +3055,14 @@ interface StepOptions {
    */
   resumeDerived?: readonly string[];
   /**
-   * Set on the step levels a job runs in cleanup mode after the run's abort
-   * (see runJob). A step skipped there on its dependsOn never ran, and may
-   * depend on work the abort settled, so it is marked `settledByAbort` and a
-   * resume evaluates it again.
+   * set on step levels run in cleanup mode after the abort; a step skipped
+   * there on dependsOn never ran, so it is marked settledByAbort and a resume
+   * evaluates it again
    */
   cleanupStepLevel?: boolean;
   /**
-   * Set on the job levels a run enters in cleanup mode after its abort, and on
-   * each cleanup job of a level reached after it. A job skipped there on its
-   * dependsOn is skipped as one the abort never started
-   * (`JobRun.skipNotStarted`), so a resume evaluates it again.
+   * set on job levels entered in cleanup mode after the abort; a job skipped
+   * there on dependsOn is skipNotStarted, so a resume evaluates it again
    */
   cleanupJobLevel?: boolean;
   /**
@@ -3453,25 +3071,14 @@ interface StepOptions {
    * recording its own cancellation (see {@link awaitNestedRuns}).
    */
   nestedRuns?: Set<Promise<void>>;
-  /**
-   * The run's model-method executions still in flight, which the run awaits
-   * before recording its own cancellation (see {@link InFlightMethodRuns}).
-   */
   inFlightMethodRuns?: InFlightMethodRuns;
-  /**
-   * How long after its abort the run waits for them; defaults to
-   * {@link STEP_STOP_GRACE_MS}. Passed on to nested runs.
-   */
   stepStopGraceMs?: number;
 }
 
 /**
- * Adds `jobName` to `started` once `stream` is first pulled, which
- * mergeWithConcurrency does only when the job gets a permit. A job first
- * pulled with `signal` already aborted never starts: a level holding one job
- * is pulled whatever the signal, where a level holding several starts none.
- * `signal` is the one the job would run under, so a level that starts a cleanup
- * job beside others still refuses those.
+ * marks a job started when first pulled; a job pulled with signal already
+ * aborted never starts, though a level holding one job is pulled regardless of
+ * the signal
  */
 async function* markStarted<T>(
   jobName: string,
@@ -3484,9 +3091,6 @@ async function* markStarted<T>(
   yield* stream;
 }
 
-/**
- * Domain service for workflow execution.
- */
 export class WorkflowExecutionService {
   private readonly sortService = new TopologicalSortService();
   private readonly executor: StepExecutor;
@@ -3498,52 +3102,38 @@ export class WorkflowExecutionService {
   private readonly dataBaseDir?: string;
   private readonly catalogStore: CatalogStore;
   private readonly workflowReportRunner = new WorkflowReportRunner();
-  /** Evaluator for sub-workflow input expressions. Per-instance, not per-call. */
   private readonly expressionEvaluator: ExpressionEvaluationService;
 
   workflowGateService?:
     import("../models/workflow_gate_service.ts").WorkflowGateService;
 
-  /**
-   * Claims a run while a resume takes it over. Defaults to no claim, for a
-   * caller that already keeps other writers off the run.
-   */
   runClaims: WorkflowRunClaims = unclaimedRuns;
 
   /**
-   * Where the registrations and outcomes of signal waits are kept, or why
-   * this datastore cannot hold them. Defaults to unsupported, so a caller
-   * that wires no store refuses a wait instead of opening one nothing can
-   * signal.
+   * defaults to unsupported, so a caller that wires no store refuses a wait
+   * instead of opening one nothing can signal
    */
   signalWaits: SignalWaitSupport = SIGNAL_WAITS_NOT_CONFIGURED;
 
-  /**
-   * Commits the run's progress as it saves its record (swamp-club#3587),
-   * paced by the implementation. Defaults
-   * to none, for a datastore whose writes land as they are made.
-   */
   runCheckpointer: RunCheckpointer = NO_RUN_CHECKPOINTS;
 
   /**
-   * Stops this executor saving a run another owner has taken over: serve's
-   * shutdown, once it marks an aborted run interrupted (swamp-club#4101).
-   * Defaults to never closing.
+   * stops this executor saving a run another owner has taken over, such as when
+   * serve shutdown marks an aborted run interrupted; defaults to never closing
    */
   runWriteFence: RunWriteFence = OPEN_RUN_WRITE_FENCE;
 
   /**
-   * The continuation claims a resume of a suspended run takes
-   * (swamp-club#3108). Unset where the datastore has no store every host
-   * reads directly; a resume there takes none.
+   * the continuation claims a resume of a suspended run takes; unset where the
+   * datastore has no store every host reads directly, so a resume there takes
+   * none
    */
   continuationClaims?: ContinuationClaims;
 
   /**
-   * Compares this host's record of a run with the datastore's, for a resume
-   * that asks for it with `requireCurrentRecord`. Unset where every host
-   * reads the same record, and where the datastore cannot be read without
-   * replacing the local copy; such a resume is then not checked.
+   * checks this host's record of a run against the datastore's for a resume
+   * with requireCurrentRecord; unset where every host reads the same record or
+   * the datastore cannot be read without replacing the local copy
    */
   runRecordCurrency?: RunRecordCurrency;
 
@@ -3583,10 +3173,8 @@ export class WorkflowExecutionService {
     private readonly unreadableContent?: UnreadableContentLookup,
     private readonly defaultVaultName?: string,
     /**
-     * How the repositories this service builds sync a durable v2 write
-     * (swamp-club#4032): the repository context's own policy
-     * (`FileSystemUnifiedDataRepository.writeSync`). Unset, every sync is
-     * a full one.
+     * how repositories this service builds sync a durable v2 write, per the
+     * repository context's own policy; unset, every sync is a full one
      */
     private readonly durableWriteSync?: DurableWriteSync,
   ) {
@@ -3667,9 +3255,6 @@ export class WorkflowExecutionService {
     );
   }
 
-  /**
-   * Executes a workflow by ID or name, yielding progress events.
-   */
   async *run(
     idOrName: string,
     options?: {
@@ -3686,18 +3271,16 @@ export class WorkflowExecutionService {
       expectedName?: string;
       lastEvaluated?: boolean;
       /**
-       * The evaluated cache a `--last-evaluated` run replays, as the caller
-       * loaded and superseded on (swamp-club#3583). Loaded here when absent,
-       * which is safe only for a caller that superseded nothing.
+       * the evaluated cache a --last-evaluated run replays, as the caller
+       * loaded and superseded on; loaded here when absent, which is safe only
+       * for a caller that superseded nothing
        */
       evaluatedCache?: EvaluatedWorkflowCache;
       inputs?: Record<string, unknown>;
       runtimeTags?: Record<string, string>;
       workflowNestingDepth?: number;
       ancestorWorkflowIds?: Set<string>;
-      /** The run whose nested workflow step starts this run. */
       parentRunId?: string;
-      /** The parent step that starts this run, recorded on the run. */
       parentRun?: ParentRunRef;
       /**
        * The parent run's redactor and sensitive-value record, passed to a
@@ -3712,49 +3295,31 @@ export class WorkflowExecutionService {
       authoredExpressions?: ReadonlySet<string>;
       deferredExpressions?: readonly DeferredExpression[];
       /**
-       * Where data sits in `inputs`, when the caller knows (a nested run
-       * gets its parent step's map). Otherwise derived from the workflow:
-       * a value equal to its default or static trigger literal is authored,
-       * anything else came from the caller and is data.
+       * where data sits in inputs, when the caller knows; otherwise derived: a
+       * value equal to its default or static trigger literal is authored,
+       * anything else is data
        */
       inputsProvenance?: ProvenanceMap;
       signal?: AbortSignal;
-      /** Report filter options for per-step report execution */
       reportFilterOptions?: ReportFilterOptions;
-      /** The git commit sha of the swamp repo at execution time */
       swampSha?: string;
-      /** Check names to skip during pre-flight checks */
       skipCheckNames?: string[];
-      /** Skip checks that have any of these labels */
       skipCheckLabels?: string[];
-      /** Skip all pre-flight checks */
       skipAllChecks?: boolean;
-      /** Minimum assert severity that fails the run */
       assertFailOnSeverity?: AssertSeverity;
-      /** Identity of the user who initiated this run */
       initiatedBy?: string;
-      /** Serve instance identity for cross-machine reconciliation */
       instanceId?: string;
-      /** How this run was triggered (schedule, webhook, api) */
       triggerSource?: string;
-      /** Optional metadata linking the run to external systems */
       references?: Record<string, string>;
-      /**
-       * How long after an abort the run waits for its model methods to stop
-       * before recording its cancellation; defaults to
-       * {@link STEP_STOP_GRACE_MS}.
-       */
       stepStopGraceMs?: number;
     },
   ): AsyncGenerator<WorkflowExecutionEvent> {
     const runSpan = getTracer().startSpan("swamp.workflow.run", {
       attributes: { "workflow.name": idOrName },
     });
-    // Looked up once, at the first step under the run's span, so the run
-    // is held to the vaults list of the workflow it executes. The run reuses
-    // this lookup and never looks the workflow up again: a failed or empty
-    // lookup is reported inside the run as before, so no workflow ever runs
-    // without its vaults list.
+    // looked up once at the first step under the run's span so the run is held
+    // to its workflow's vaults list; a failed or empty lookup is reported
+    // inside the run, so no workflow runs without it
     let lookup: RunWorkflowLookup = { workflow: null };
     yield* trackWorkflowProgress(
       bindGeneratorToSpan(
@@ -3781,11 +3346,6 @@ export class WorkflowExecutionService {
     );
   }
 
-  /**
-   * The lookups the before-any-step reserved tag check follows: the stored
-   * definitions steps name and the nested workflows they run, as the steps
-   * themselves look them up.
-   */
   private reservedTagLookups(): ReservedTagLookups {
     return {
       findDefinition: async (idOrName) => {
@@ -3802,7 +3362,6 @@ export class WorkflowExecutionService {
     };
   }
 
-  /** Finds the workflow {@link run} executes, by id or by name. */
   private async findRunWorkflow(
     idOrName: string,
     options?: { byId?: boolean; expectedName?: string },
@@ -3816,10 +3375,6 @@ export class WorkflowExecutionService {
       : await this.lookupWorkflow(idOrName);
   }
 
-  /**
-   * Body of {@link run}, executed with `runSpan` as the active span so job
-   * spans (and everything under them) nest beneath it. Ends `runSpan`.
-   */
   private async *runInSpan(
     runSpan: Span,
     idOrName: string,
@@ -3854,9 +3409,9 @@ export class WorkflowExecutionService {
       let stepProvenance = StepProvenanceOverlay.authored();
       let workflowProvenance = ProvenanceMap.authored();
       let persistedWorkflow: PersistedEvaluatedWorkflow | undefined;
-      // The run's inputs. A run replaying the evaluated cache adds the inputs
-      // the cache was evaluated with, which its steps ran with: what a resume
-      // compares an override against (swamp-club#3583).
+      // a run replaying the evaluated cache adds the inputs the cache was
+      // evaluated with, which its steps ran with: what a resume compares an
+      // override against
       let runInputs = options?.inputs;
       const secretRedactor = options?.secretRedactor ?? new SecretRedactor();
       const sensitiveValues = options?.sensitiveValues ??
@@ -3874,9 +3429,8 @@ export class WorkflowExecutionService {
         // Refused before anything runs: a wait opened where its records
         // cannot be shared would accept a signal nothing ever applies.
         if (holdsSignalWait(found)) await this.openSignalWaits(found.name);
-        // Refused before any step runs, so a reserved tag a later step
-        // supplies cannot fail the run after earlier steps' side effects
-        // (swamp-club#3635).
+        // refused before any step runs, so a reserved tag a later step supplies
+        // cannot fail the run after earlier steps' side effects
         const reservedTag = await reservedWorkflowRunTag(
           found,
           options?.runtimeTags,
@@ -3884,25 +3438,19 @@ export class WorkflowExecutionService {
         );
         if (reservedTag) throw wordedError(reservedTag);
 
-        // Provenance for the runtime pass, collected from the workflow as
-        // loaded from disk. Taken here rather than from the evaluation below
-        // because --last-evaluated swaps in a cached workflow that already has
-        // data content spliced into it and never runs the evaluator at all.
-        // The set persisted with that cache is unioned in below, so a source
-        // edited since it was evaluated cannot orphan the cached expressions.
+        // collected from the workflow as loaded from disk, not the evaluation:
+        // --last-evaluated swaps in a cached workflow already spliced with
+        // data; the cache's persisted set is unioned in below
         authoredExpressions = collectWorkflowAuthoredExpressions(
           found,
           new Set(options?.authoredExpressions),
         );
-        // In --last-evaluated mode the steps run from the cached evaluation,
-        // but their authored text is looked up in the source as loaded now.
-        // Only the template-syntax lint reads it, so a source edited since
-        // the cache was written can change what that lint reports, never
-        // what is evaluated or trusted.
+        // in --last-evaluated mode authored text is looked up in the current
+        // source; only the template-syntax lint reads it, so an edited source
+        // changes that report, never what is evaluated or trusted
         authoredWorkflow = found;
 
         if (options?.lastEvaluated) {
-          // Load previously evaluated workflow from cache
           const lastEvaluated = options.evaluatedCache ??
             await this.evaluatedWorkflowRepo
               .findByNameWithProvenance(workflow.name);
@@ -3919,8 +3467,8 @@ export class WorkflowExecutionService {
                 `Run the workflow without --last-evaluated to evaluate it again; that rewrites the cache.`,
             );
           }
-          // A newer swamp may have written a sensitive value in a form this
-          // one does not recognise (swamp-club#3681).
+          // a newer swamp may have written a sensitive value in a form this one
+          // does not recognise
           if (isNewerSensitiveFormat(lastEvaluated)) {
             throw new UserError(
               `The evaluated workflow cached for "${workflow.name}" was written by a newer swamp in a format this one cannot read safely, so it is not replayed. ` +
@@ -3936,10 +3484,9 @@ export class WorkflowExecutionService {
                 `Run the workflow without --last-evaluated to evaluate it again; that rewrites the cache.`,
             );
           }
-          // The cached steps run with the inputs the cache was evaluated
-          // with, so the run records those, and a supplied input must equal
-          // its recorded value (swamp-club#3583). Key names only in the
-          // refusal: values may be secrets.
+          // cached steps run with the inputs the cache was evaluated with, so
+          // the run records those and a supplied input must equal its recorded
+          // value; the refusal names keys only, values may be secrets
           const replay = replayInputs(lastEvaluated, options?.inputs ?? {});
           if ("refusal" in replay) throw new UserError(replay.refusal);
           runInputs = replay.inputs;
@@ -3955,10 +3502,9 @@ export class WorkflowExecutionService {
             persistedProvenance: lastEvaluated.persistedProvenance,
             provenance: lastEvaluated.provenance,
           }, sensitiveValues);
-          // Use the fully evaluated workflow (forEach expanded, expressions resolved)
           workflow = restored.workflow;
-          // The cached steps run, not the source's, so their reserved tags
-          // are refused before any of them runs too (swamp-club#3635).
+          // the cached steps run, not the source's, so their reserved tags are
+          // refused before any of them runs too
           const cachedReservedTag = await reservedWorkflowRunTag(
             workflow,
             options?.runtimeTags,
@@ -3966,9 +3512,9 @@ export class WorkflowExecutionService {
           );
           if (cachedReservedTag) throw wordedError(cachedReservedTag);
           sanitizedTasks = restored.sanitizedTasks;
-          // A typed replay aligned the cache's persisted-coordinate map onto
+          // a typed replay aligned the cache's persisted-coordinate map onto
           // the restored copy; a cache without provenance predates it and
-          // replays as it always did (swamp-club#3205).
+          // replays as it always did
           const cachedProvenance = restored.provenance ??
             lastEvaluated.provenance ??
             ProvenanceMap.authored();
@@ -4023,7 +3569,6 @@ export class WorkflowExecutionService {
           // definition. The evaluated fingerprint also varies with inputs.
           definitionFingerprint = await computeWorkflowFingerprint(found);
 
-          // Build expression context and evaluate workflow
           const buildCtxSpan = tracer.startSpan(
             "swamp.workflow.build_context",
           );
@@ -4034,7 +3579,6 @@ export class WorkflowExecutionService {
           );
           buildCtxSpan.end();
 
-          // Add workflow inputs to context
           if (options?.inputs) {
             expressionContext.inputs = options.inputs;
           }
@@ -4090,7 +3634,6 @@ export class WorkflowExecutionService {
 
         expressionContext.deferredExpressions = deferredExpressions;
 
-        // Create workflow run with merged tags (runtime tags take precedence)
         const mergedTags: Record<string, string> = {
           ...sensitiveValues.tagsWithPlaceholders(workflow.tags ?? {}),
           ...(options?.runtimeTags ?? {}),
@@ -4102,8 +3645,8 @@ export class WorkflowExecutionService {
           options?.triggerSource,
         );
         this.startedRunIds.add(run.id);
-        // A serve run records who triggered it, so a resume is held to that
-        // principal's vault access, not the resumer's (swamp-club#2676).
+        // a serve run records who triggered it, so a resume is held to that
+        // principal's vault access, not the resumer's
         const triggeringPrincipal = currentVaultAccess()?.triggeringPrincipal;
         if (triggeringPrincipal) {
           run.recordTriggeringPrincipal(triggeringPrincipal);
@@ -4150,7 +3693,6 @@ export class WorkflowExecutionService {
           expressionContext.workflowRunId = run.id;
         }
 
-        // Register run file sink target for the workflow log output
         workflowLogPath = join(
           swampPath(this.repoDir, SWAMP_SUBDIRS.workflowRuns),
           workflow.id,
@@ -4166,11 +3708,9 @@ export class WorkflowExecutionService {
         );
         run.setLogFile(workflowLogPath);
 
-        // Enrich span with resolved workflow metadata
         runSpan.setAttribute("workflow.id", workflow.id);
         runSpan.setAttribute("workflow.run_id", run.id);
 
-        // Capture the evaluated workflow fingerprint for recovery
         if (evaluatedWorkflowFingerprint) {
           await this.evaluatedWorkflowRepo.saveForRun(
             run.id,
@@ -4184,10 +3724,8 @@ export class WorkflowExecutionService {
           );
         }
 
-        // Start execution
         run.start(Deno.pid, options?.instanceId);
 
-        // Register workflow run with the tracker
         if (this.runTracker) {
           const wfActiveRun = ActiveRun.createWorkflowRun({
             id: run.id,
@@ -4216,9 +3754,9 @@ export class WorkflowExecutionService {
         wfSetupSpan.end();
       }
 
-      // Saved before `started` is yielded, so the event's run id always names
-      // a recorded run: a client that stops listening at `started` (`swamp
-      // workflow run --detach`) can read the run at once (swamp-club#1090).
+      // saved before started is yielded, so the event's run id always names a
+      // recorded run that a client stopping at started (workflow run --detach)
+      // can read at once
       await this.saveRun(workflow.id, run);
 
       yield {
@@ -4277,7 +3815,6 @@ export class WorkflowExecutionService {
         assertFailOnSeverity: options?.assertFailOnSeverity,
       };
 
-      // Sort jobs topologically
       const jobNodes: GraphNode[] = workflow.jobs.map((job) => ({
         name: job.name,
         weight: job.weight,
@@ -4288,9 +3825,6 @@ export class WorkflowExecutionService {
 
       const jobConcurrency = resolveJobConcurrency(workflow);
 
-      // Track per-step model info and data handles for the workflow-scope
-      // report context. Built up by intercepting the events the service
-      // emits as steps execute.
       const modelInfoByStep = new Map<
         string,
         {
@@ -4309,7 +3843,6 @@ export class WorkflowExecutionService {
         import("../models/model.ts").DataHandle[]
       >();
 
-      // Execute jobs level by level
       let anyJobFailed = false;
       let afterAbort = false;
       const startedJobs = new Set<string>();
@@ -4328,7 +3861,6 @@ export class WorkflowExecutionService {
         const { levelSignal, abortedBeforeLevel } = entered;
         afterAbort = entered.afterAbort;
 
-        // Merge parallel job generators within each level
         const jobStreams = level.map((jobName) => {
           const jobStepOpts = entered.jobStepOpts(jobName);
           return markStarted(
@@ -4427,7 +3959,6 @@ export class WorkflowExecutionService {
         return;
       }
 
-      // Check if the run was cancelled via abort signal
       if (options?.signal?.aborted) {
         if (wfHeartbeatInterval) clearInterval(wfHeartbeatInterval);
         await awaitInFlightWork(
@@ -4443,7 +3974,6 @@ export class WorkflowExecutionService {
         return;
       }
 
-      // Complete workflow
       if (wfHeartbeatInterval) clearInterval(wfHeartbeatInterval);
       const wfTeardownSpan = tracer.startSpan("swamp.workflow.teardown");
       try {
@@ -4554,21 +4084,14 @@ export class WorkflowExecutionService {
       if (workflowAffinityKey) {
         getRemoteStepDispatcher()?.releaseAffinity(workflowAffinityKey);
       }
-      // Always release the per-run log file sink when the generator is
-      // disposed — including early abandonment via generator.return() (e.g. a
-      // streaming consumer that breaks on socket close). Cleanup placed after a
-      // yield would be skipped on .return(); only finally blocks unwind.
+      // release in finally: early abandonment via generator.return() (e.g. a
+      // consumer breaking on socket close) skips cleanup placed after a yield
       runFileSink.unregister(workflowLogHandle);
       inFlightMethodRuns.dispose();
       runSpan.end();
     }
   }
 
-  /**
-   * Executes a workflow by ID or name.
-   * Convenience wrapper around run() that drains the event stream
-   * and returns the final WorkflowRun.
-   */
   async execute(
     idOrName: string,
     options?: {
@@ -4588,13 +4111,6 @@ export class WorkflowExecutionService {
     return result;
   }
 
-  /**
-   * Loads the run a resume names, checks it may be resumed, records this
-   * process as its owner and saves it as running. The caller holds the run's
-   * claim for the whole call, so the checks are made on the run as stored and
-   * nothing saves between the load and the save. Returns the run, the
-   * record as it was stored, and the coerced resume inputs.
-   */
   private async takeOverRun(
     workflow: Workflow,
     workflowIdOrName: string,
@@ -4614,7 +4130,6 @@ export class WorkflowExecutionService {
     snapshot: WorkflowRunData;
     resumeInputs: Record<string, unknown>;
     claim: ContinuationClaim | undefined;
-    /** The stored jobs a failed run's reset reaches; empty otherwise. */
     resetJobs: ReadonlySet<string>;
     /**
      * The expression-named jobs paired with stored jobs, from the run as
@@ -4629,10 +4144,9 @@ export class WorkflowExecutionService {
     if (!loadedRun) {
       throw new UserError(`Workflow run not found: ${runId}`);
     }
-    // A nested run nothing waits on any more is cancelled, not continued
-    // (swamp-club#2867). Under the run's claim, as the save it may make
-    // needs. A run whose owner still saves it is left to the refusal below:
-    // a cancel written now would be saved over.
+    // a nested run nothing waits on any more is cancelled, not continued, under
+    // the run's claim; a run whose owner still saves it is left to the refusal
+    // below, as a cancel now would be saved over
     const ownerStillSaves = this.runTracker !== undefined &&
       this.ownerLiveness !== undefined &&
       suspendedRunOwnerStillRuns(
@@ -4687,8 +4201,6 @@ export class WorkflowExecutionService {
     } else if (
       existingRun.status === "failed" && !options?.suspendedOnly
     ) {
-      // Retry: reset the entry template of every failed step, and each
-      // template's dependents, through the same path as --from.
       reset = planFailedRunResume(workflow, existingRun);
     } else if (existingRun.status !== "suspended") {
       const accepted = options?.suspendedOnly
@@ -4743,16 +4255,15 @@ export class WorkflowExecutionService {
       await this.checkNestedWaitsSettled(existingRun);
     }
 
-    // A value that does not match its declared type would otherwise fail
-    // only once the run is reset, for a forEach input leaving the job running
-    // with its iterations pending (swamp-club#2502).
+    // a value not matching its declared type would otherwise fail only once the
+    // run is reset, for a forEach input leaving the job running with its
+    // iterations pending
     const resumeInputs = coerceResumeInputs(
       workflow,
       existingRun,
       options?.inputs ?? {},
     );
-    // A value the run has cannot change under the steps that read it
-    // (swamp-club#3583).
+    // a value the run has cannot change under the steps that read it
     checkResumeInputOverrides(workflow, existingRun, resumeInputs);
 
     // A copy of the run that is behind the datastore's shows a suspension a
@@ -4769,12 +4280,9 @@ export class WorkflowExecutionService {
       throw new RunRecordStaleError(loadedRun.id);
     }
 
-    // The last refusal: this suspension is consumed once, by whoever holds
-    // its claim. Taken after every other check, so a refused resume leaves
-    // no claim behind. The suspension key depends on this order: a resume
-    // refused on an open wait changes no step, so the key stays the same,
-    // and a claim kept on it would hold off every later resume
-    // (swamp-club#3183).
+    // the last refusal, after every other check so a refused resume leaves no
+    // claim; a resume refused on an open wait changes no step, so the key stays
+    // and a kept claim would hold off every later resume
     const claim = suspensionKey === undefined
       ? undefined
       : await this.claimSuspension(
@@ -4787,10 +4295,9 @@ export class WorkflowExecutionService {
     // the stored run suspended and nothing consumed, so the claim goes back.
     let snapshot: WorkflowRunData;
     try {
-      // Taken before any mutation. If anything throws after the save below and
-      // before execution starts, the run is restored to exactly this state
-      // rather than left running with nothing driving it. Taken from the run as
-      // stored, so a restore writes references back, never restored values.
+      // taken before any mutation so a throw after the save and before
+      // execution restores the run to this state; from the run as stored, so a
+      // restore writes references back, never values
       snapshot = loadedRun.toData();
 
       // Work the run's abort left unfinished runs now, as it would have had the
@@ -4812,10 +4319,9 @@ export class WorkflowExecutionService {
         existingRun.resumeFromSuspended(owner);
       }
 
-      // Record the key names of any resume-time inputs for audit. Done before
-      // the save below so the audit trail persists immediately. The values
-      // reach the run's inputs once the resume prepares, as inputs do; a
-      // secret is passed as a vault key name, never as an input value.
+      // record resume-input key names for audit before the save so the trail
+      // persists; a secret is passed as a vault key name, never as an input
+      // value
       if (Object.keys(resumeInputs).length > 0) {
         existingRun.recordResumeInputs(Object.keys(resumeInputs));
       }
@@ -4833,10 +4339,6 @@ export class WorkflowExecutionService {
     return { existingRun, snapshot, resumeInputs, claim, resetJobs, jobPairs };
   }
 
-  /**
-   * Takes the continuation claim of a suspension, or refuses the resume
-   * when another holder has it. Undefined where there is no claim store.
-   */
   private async claimSuspension(
     runId: string,
     suspensionKey: string,
@@ -4860,7 +4362,6 @@ export class WorkflowExecutionService {
     );
   }
 
-  /** Gives back a claim whose resume ran nothing. Never throws. */
   private async releaseSuspension(
     claim: ContinuationClaim | undefined,
   ): Promise<void> {
@@ -4878,23 +4379,6 @@ export class WorkflowExecutionService {
     }
   }
 
-  /**
-   * Resumes a workflow run, keeping its run ID and completed step results.
-   *
-   * - A suspended run continues once every approval gate is decided, unless
-   *   the workflow changed shape since the run (see
-   *   {@link checkSuspendedRunResume}).
-   * - A failed run with `fromStep` re-enters at that step and its dependents.
-   * - A failed run without `fromStep` retries: every failed step's entry
-   *   template and its dependents are reset (see {@link planFailedRunResume}).
-   *
-   * Terminal steps outside the reset set are skipped and their outputs are
-   * restored into `steps.*`. Override `inputs` are coerced to their declared
-   * types and checked against the workflow's input schema, as `workflow run`
-   * does; a mismatch is a refusal (see {@link coerceResumeInputs}). A
-   * refusal changes nothing; a failure after the run is marked running but
-   * before execution starts restores the run.
-   */
   async *resume(
     workflowIdOrName: string,
     runId: string,
@@ -4903,11 +4387,8 @@ export class WorkflowExecutionService {
       runtimeTags?: Record<string, string>;
       reportFilterOptions?: ReportFilterOptions;
       swampSha?: string;
-      /** Additional/override inputs supplied at resume time (CLI --input). */
       inputs?: Record<string, unknown>;
-      /** Minimum assert severity that fails the run */
       assertFailOnSeverity?: AssertSeverity;
-      /** Re-enter the DAG at this step (template name from the workflow YAML). */
       fromStep?: string;
       /**
        * The job of `fromStep`, as named in the workflow YAML. Needed when the
@@ -4925,30 +4406,21 @@ export class WorkflowExecutionService {
        */
       instanceId?: string;
       /**
-       * Who asks for the suspension's continuation claim; a person, unless
-       * serve continues the run by itself (swamp-club#3108).
+       * who asks for the suspension's continuation claim; a person, unless
+       * serve continues the run by itself
        */
       continuation?: ContinuationMode;
       /**
-       * Refuse a suspended run whose record here differs from the
-       * datastore's, where that can be told. Set when serve continues a run
-       * by itself from a copy that may be behind (swamp-club#3108).
+       * refuse a suspended run whose record here differs from the datastore's,
+       * where that can be told; set when serve continues a run by itself from a
+       * copy that may be behind
        */
       requireCurrentRecord?: boolean;
-      /**
-       * How long after an abort the resume waits for its model methods to
-       * stop before recording its cancellation; defaults to
-       * {@link STEP_STOP_GRACE_MS}.
-       */
       stepStopGraceMs?: number;
       /**
-       * The redactor and sensitive-value record the resume runs with, as
-       * {@link run} takes them; tests hand a resume a typed registry this
-       * way (typed-secrets 4.2), and with it the resume restores the stored
-       * references as references and loads at delivery (typed-secrets 4.4).
-       * The seam stays until typed-secrets 4.6 turns the typed path on for
-       * every entry point and a resume builds its own typed registry.
-       * Production callers pass nothing.
+       * the redactor and sensitive-value record the resume runs with, as run takes
+       * them; a seam for tests to hand a resume a typed registry, which restores
+       * stored references as references. Production callers pass nothing
        */
       secretRedactor?: SecretRedactor;
       sensitiveValues?: RunSensitiveValues;
@@ -4983,7 +4455,6 @@ export class WorkflowExecutionService {
     ));
   }
 
-  /** Body of {@link resume}, once the workflow and run are found. */
   private async *resumeWorkflow(
     workflow: Workflow,
     located: WorkflowRun,
@@ -4995,9 +4466,9 @@ export class WorkflowExecutionService {
     // before anything runs, as for a new run, so one that turns out
     // unusable refuses here and not after earlier steps have executed.
     if (holdsSignalWait(workflow)) await this.readySignalWaits(workflow.name);
-    // So is a reserved tag the remaining steps supply: refused before the run
+    // so is a reserved tag the remaining steps supply: refused before the run
     // is taken over, a later step's tag cannot fail the resume after earlier
-    // steps' side effects (swamp-club#3635).
+    // steps' side effects
     const reservedTag = await reservedWorkflowRunTag(
       workflow,
       options?.runtimeTags,
@@ -5010,9 +4481,9 @@ export class WorkflowExecutionService {
     const secretRedactor = options?.secretRedactor ?? new SecretRedactor();
     const sensitiveValues = options?.sensitiveValues ??
       new RunSensitiveValues(secretRedactor);
-    // Taken over under the run's claim, which is released before anything
-    // executes: a cancel either lands first and is seen here, or finds the
-    // run running under this process (swamp-club#2919).
+    // taken over under the run's claim, released before anything executes: a
+    // cancel either lands first and is seen here, or finds the run running
+    // under this process
     const {
       existingRun,
       snapshot,
@@ -5118,9 +4589,9 @@ export class WorkflowExecutionService {
         startedAt: existingRun.startedAt!.toISOString(),
         tags: { ...existingRun.tags },
         initiatedBy: existingRun.initiatedBy,
-        // The same set `inputs.*` reads: a step still to run sees one value
-        // through either, so an approval showing `run.inputs.X` shows what
-        // the step after it acts on (swamp-club#3583).
+        // the same set inputs.* reads: a step still to run sees one value
+        // through either, so an approval showing run.inputs.X shows what the
+        // step after it acts on
         inputs: existingRun.inputs,
       };
       expressionContext.steps = {};
@@ -5147,11 +4618,9 @@ export class WorkflowExecutionService {
           { location: workflow.name },
         ),
       );
-      // Collected before evaluation, for the same reason as the fresh-run
-      // seam: afterwards, spliced data content is indistinguishable from
-      // source. The run's captured inputs may still hold a parent's
-      // unresolved runtime expression, which only the persisted inherited
-      // set can vouch for.
+      // collected before evaluation, as in a fresh run: afterwards spliced data
+      // is indistinguishable from source; captured inputs may hold a parent's
+      // unresolved expression only the persisted inherited set can vouch for
       const authoredExpressions = collectWorkflowAuthoredExpressions(
         workflow,
         new Set(existingRun.inheritedExpressions),
@@ -5164,10 +4633,9 @@ export class WorkflowExecutionService {
       );
       warnForeignTaskArguments(workflow.name, evaluated.foreignTaskArguments);
       const resolvedWorkflow = evaluated.workflow;
-      // An expression-named job the reset reaches must evaluate to the
-      // stored job it was planned against, and every one to a job the run
-      // has: resume walks records by evaluated name. Refused here, before
-      // execution, so the run is restored as it was.
+      // an expression-named job the reset reaches must evaluate to its planned
+      // stored job, and every one to a job the run has, as resume walks records
+      // by evaluated name; refused before execution so the run is restored
       const mismatch = evaluatedJobMismatch(
         workflow,
         resolvedWorkflow,
@@ -5184,10 +4652,9 @@ export class WorkflowExecutionService {
       const stepProvenance = evaluated.stepProvenance;
       const workflowProvenance = evaluated.provenance;
 
-      // Re-register the log file sink so resume output is captured.
-      // Append to preserve records from earlier attempts. The path is the
-      // one a run's start gives it, derived again rather than read from the
-      // record, whose writer may not be this process (swamp-club#3922).
+      // append to keep records from earlier attempts; the path is derived again
+      // as a run's start gives it, not read from the record, whose writer may
+      // not be this process
       const workflowLogPath = join(
         swampPath(this.repoDir, SWAMP_SUBDIRS.workflowRuns),
         workflow.id,
@@ -5214,10 +4681,9 @@ export class WorkflowExecutionService {
 
     const nestedRuns = new Set<Promise<void>>();
     const inFlightMethodRuns = new InFlightMethodRuns(options?.signal);
-    // The try opens immediately after register() — before the "started"
-    // yield — so early consumer abandonment (a client that receives
-    // "started" then disconnects) still unwinds the finally, which stops the
-    // heartbeat and releases the log sink.
+    // the try opens right after register, before the started yield, so a client
+    // abandoning after started still unwinds the finally that stops the
+    // heartbeat and releases the sink
     try {
       yield {
         kind: "started",
@@ -5503,11 +4969,8 @@ export class WorkflowExecutionService {
       yield { kind: "completed" as const, run: existingRun };
       throw error;
     } finally {
-      // Always stop the heartbeat and release the per-run log sink when the
-      // generator is disposed — including early abandonment via
-      // generator.return() (e.g. a streaming consumer that breaks on socket
-      // close). Cleanup placed after a yield would be skipped on .return();
-      // only finally blocks unwind.
+      // stop the heartbeat and release the sink in finally: early abandonment
+      // via generator.return() skips cleanup placed after a yield
       if (resumeHeartbeatInterval) clearInterval(resumeHeartbeatInterval);
       runFileSink.unregister(workflowLogHandle);
       inFlightMethodRuns.dispose();
@@ -5537,10 +5000,6 @@ export class WorkflowExecutionService {
     );
   }
 
-  /**
-   * Body of {@link runJob}, executed with `jobSpan` as the active span so step
-   * spans nest beneath it. Ends `jobSpan`.
-   */
   private async *runJobInSpan(
     jobSpan: Span,
     workflow: Workflow,
@@ -5562,7 +5021,6 @@ export class WorkflowExecutionService {
         throw new Error(`Job run not found: ${jobName}`);
       }
 
-      // Check if job's trigger condition is met
       const shouldRun = shouldJobRun(job, run);
       if (!shouldRun) {
         if (options.cleanupJobLevel) {
@@ -5575,7 +5033,6 @@ export class WorkflowExecutionService {
         return;
       }
 
-      // Start job (skip if already running from a resumed suspended run)
       if (jobRun.status !== "running") {
         jobRun.start();
       }
@@ -5586,11 +5043,8 @@ export class WorkflowExecutionService {
       // is a structural transformation, not expression evaluation.
       let expandedStepsMap: Map<string, ExpandedStep[]> | undefined;
       if (expressionContext) {
-        // In a typed run the expansion's evaluator issues into a bag over
-        // the run's registry: an item that holds a Secret leaves forEach.in
-        // as a sentinel the step's passes bind back as a Secret, and a
-        // secret in a name leaves as a sentinel the stand-in replaces
-        // (typed-secrets 4.1).
+        // In a typed run the expansion's evaluator issues into a bag over the
+        // run's registry: a Secret in an item or name leaves as a sentinel.
         expandedStepsMap = await new ForEachExpansionService(
           await this.expressionEvaluator.passEvaluatorFor(
             options.sensitiveValues,
@@ -5605,24 +5059,18 @@ export class WorkflowExecutionService {
               (options.stepProvenance ?? StepProvenanceOverlay.authored())
                 .forStep(step).raw,
           );
-        // Rewrite the jobRun's step list to match the expansion. The
-        // template StepRun (the step as written in the workflow) never
-        // executes once forEach expands, so leaving it in place makes it
-        // show up in history as a perpetually-pending phantom. When the
-        // original step is *not* a forEach, the expansion map reports a
-        // single entry whose expandedName equals the template — that's a
-        // no-op for replaceExpandedSteps.
+        // rewrite the step list to match the expansion: the template StepRun
+        // never executes, so leaving it shows as a perpetually pending phantom
+        // in history
         for (const step of job.steps) {
           if (!step.forEach) continue;
           const expanded = expandedStepsMap.get(step.name);
           const names = expanded ? expanded.map((e) => e.expandedName) : [];
           jobRun.replaceExpandedSteps(step.name, names);
           jobRun.registerForEachExpansion(step.name, names);
-          // An iteration that waited on a nested run but that the collection
-          // no longer produces is never walked again. The resume checked its
-          // child already finished, so it is skipped and its link kept for
-          // history (swamp-club#2736). No skip reason: the reason enum cannot
-          // grow without older binaries refusing the record.
+          // an iteration that waited on a nested run but is not produced by the
+          // collection is skipped, its link kept; no skip reason, since the
+          // enum cannot grow without older binaries refusing the record
           for (const stepRun of jobRun.steps) {
             if (
               stepRun.isNestedWait &&
@@ -5635,22 +5083,20 @@ export class WorkflowExecutionService {
         }
       }
 
-      // Build step graph nodes from explicit dependencies
       const stepNodes: GraphNode[] = job.steps.map((step) => ({
         name: step.name,
         weight: step.weight,
         dependencies: step.getDependencyNames(),
       }));
 
-      // If we have expanded steps, update the graph nodes
       let effectiveNodes = stepNodes;
       if (expandedStepsMap) {
         effectiveNodes = [];
         for (const node of stepNodes) {
           const expanded = expandedStepsMap.get(node.name);
           if (expanded && expanded.length > 0) {
-            // Create nodes for each expanded step, grouped under the forEach
-            // step so its iterations run in list order (swamp-club#3318)
+            // create nodes for each expanded step, grouped under the forEach
+            // step so its iterations run in list order
             for (const [index, exp] of expanded.entries()) {
               effectiveNodes.push({
                 name: exp.expandedName,
@@ -5658,7 +5104,6 @@ export class WorkflowExecutionService {
                 group: exp.forEachVar.name !== ""
                   ? { key: node.name, index }
                   : undefined,
-                // Map dependencies to all expanded step names
                 dependencies: node.dependencies.flatMap((dep) => {
                   const depExpanded = expandedStepsMap!.get(dep);
                   return depExpanded && depExpanded.length > 0
@@ -5668,7 +5113,6 @@ export class WorkflowExecutionService {
               });
             }
           } else if (!expanded || expanded.length === 0) {
-            // Skip steps that expanded to empty (e.g., empty array)
             continue;
           } else {
             effectiveNodes.push(node);
@@ -5709,7 +5153,6 @@ export class WorkflowExecutionService {
         );
       }
 
-      // Execute steps level by level
       let jobFailed = false;
       // Set when the abort leaves a guarded step undecided.
       let jobUndecided = false;
@@ -5731,14 +5174,8 @@ export class WorkflowExecutionService {
             }),
           );
         }
-        // After a step failure with an aborted signal, give subsequent
-        // levels a fresh cleanup signal so always/completed dependents
-        // can run. shouldStepRun() handles condition-based filtering —
-        // steps whose conditions aren't met are skipped naturally.
-        // A level reached after the abort with nothing failed starts no work:
-        // merge() would start a step alone in its level whatever the signal.
-        // Its cleanup steps run under the cleanup signal, the rest are settled
-        // (swamp-club#4149). A suspended run keeps its pending steps to resume.
+        // A level reached after abort with nothing failed starts no work; its
+        // cleanup steps run under the cleanup signal, the rest are settled.
         const reachedAfterAbort: boolean = (options.signal?.aborted ?? false) &&
           run.status !== "suspended" &&
           (jobReachedAfterAbort || (!jobFailed && !jobUndecided));
@@ -5764,7 +5201,6 @@ export class WorkflowExecutionService {
           failAbandonedSteps(jobRun);
         }
 
-        // Merge parallel step generators within each level
         const stepConcurrencies: number[] = [];
         const levelSteps = new Map<string, Step>();
         const levelIterations = new Set<string>();
@@ -5794,7 +5230,6 @@ export class WorkflowExecutionService {
           progress.delete(stepName);
         };
         const stepStreams = level.map((stepName) => {
-          // Find the expanded step info if applicable
           let forEachVar: ForEachBinding | undefined;
           let originalStep: Step | undefined;
 
@@ -5840,7 +5275,6 @@ export class WorkflowExecutionService {
             stepOptions = cleanupOptions;
           }
 
-          // Collect step-level concurrency for this level
           const stepConc = originalStep?.concurrency ??
             job.getStep(stepName)?.concurrency;
           if (stepConc && stepConc > 0) {
@@ -5870,7 +5304,6 @@ export class WorkflowExecutionService {
         // Only a level the abort interrupted settles its never-started steps.
         const abortedBeforeLevel: boolean = levelSignal?.aborted ?? false;
 
-        // Resolve: step (min across level) > job > workflow > global
         const levelStepConc = minOf(stepConcurrencies);
         const stepConcurrency = resolveEffectiveConcurrency(
           levelStepConc ?? job.concurrency ?? workflow.concurrency,
@@ -5890,11 +5323,9 @@ export class WorkflowExecutionService {
           }
         }
 
-        // A step this level never started (queued behind a concurrency limit
-        // when the abort fired) would stay pending, so a failed or completed
-        // condition on it could never be met. Settle it as runStep would have
-        // on reaching it (settleUnstartedStep). A suspended run keeps its
-        // pending steps to resume.
+        // a step queued behind a concurrency limit when the abort fired would
+        // stay pending and a failed or completed condition on it could never be
+        // met; settle it as runStep would; a suspended run keeps pending steps
         const interrupted: boolean = !abortedBeforeLevel &&
           (levelSignal?.aborted ?? false) && run.status !== "suspended";
         if (interrupted) {
@@ -5961,11 +5392,9 @@ export class WorkflowExecutionService {
         }
       }
 
-      // A step still waiting for a signal that this walk never reached is an
-      // iteration a smaller forEach collection dropped. A resume refuses an
-      // open wait, so its deadline has passed or it cannot be read. Settle
-      // it as re-entering it would have, rather than report the job
-      // succeeded with the step still waiting.
+      // A step still waiting for a signal this walk never reached is an
+      // iteration a smaller forEach dropped; settle it rather than report the
+      // job succeeded.
       if (run.status !== "suspended" && !options.signal?.aborted) {
         for (const dropped of jobRun.steps) {
           if (!dropped.isSignalWait) continue;
@@ -5994,10 +5423,8 @@ export class WorkflowExecutionService {
         }
       }
 
-      // When the run is suspended and this job still has non-terminal steps
-      // (pending or waiting_approval), leave the job running so resume picks
-      // it up. In all other cases — normal completion or failure — complete
-      // the job.
+      // when the run is suspended and the job has non-terminal steps, leave the
+      // job running so resume picks it up; otherwise complete it
       const suspendedWithPendingSteps = run.status === "suspended" &&
         jobRun.steps.some((s) =>
           s.status !== "succeeded" && s.status !== "failed" &&
@@ -6013,10 +5440,9 @@ export class WorkflowExecutionService {
             message: "Job failed",
           });
         } else if (jobUndecided) {
-          // Only undecided guarded steps are left, so the job's outcome is
-          // ambiguous: neither `succeeded`, `failed`, `completed` nor
-          // `skipped` holds for it. Like other work an abort settles, it gets
-          // no event. A job no longer running keeps its status.
+          // only undecided guarded steps are left, so the job outcome is
+          // ambiguous: none of succeeded, failed, completed or skipped holds;
+          // like other abort-settled work it gets no event
           if (jobRun.status === "running") jobRun.markUnknown();
           jobSpan.setAttribute("job.status", jobRun.status);
           jobSpan.setStatus({ code: SpanStatusCode.OK });
@@ -6051,10 +5477,6 @@ export class WorkflowExecutionService {
     }
   }
 
-  /**
-   * Executes a step (regular or forEach-expanded), yielding events.
-   * Catches errors internally to preserve allSettled semantics via merge().
-   */
   private async *runStep(
     workflow: Workflow,
     run: WorkflowRun,
@@ -6108,11 +5530,6 @@ export class WorkflowExecutionService {
     }
   }
 
-  /**
-   * Body of {@link runStep}, executed with `stepSpan` as the active span so
-   * the model method span (and the traceparent handed to it) nests beneath
-   * it. Ends `stepSpan`.
-   */
   private async *runStepInSpan(
     stepSpan: Span,
     workflow: Workflow,
@@ -6127,7 +5544,6 @@ export class WorkflowExecutionService {
     forEachIndex?: number,
     forEachTemplate?: string,
   ): AsyncGenerator<WorkflowExecutionEvent> {
-    // For forEach-expanded steps, use the original step but create a dynamic step run
     const step = originalStep ?? job.getStep(stepName);
     if (!step) {
       stepSpan.end();
@@ -6135,10 +5551,8 @@ export class WorkflowExecutionService {
     }
     stepSpan.setAttribute("step.task.type", step.task.data.type);
 
-    // For forEach-expanded steps, we need to dynamically create the step run
     let stepRun = jobRun.getStep(stepName);
     if (!stepRun && forEachVar && forEachVar.name) {
-      // This is a forEach-expanded step - add it to the job run
       jobRun.addExpandedStep(stepName);
       stepRun = jobRun.getStep(stepName);
     }
@@ -6184,10 +5598,9 @@ export class WorkflowExecutionService {
       throw new Error(`Step run not found: ${stepName}`);
     }
 
-    // A nested workflow step waiting on its child run already passed its
-    // trigger and guard when it started the child: re-entering, it reads the
-    // child's outcome, and a guard or dependsOn that changed since must not
-    // skip it and strand the child (swamp-club#2736).
+    // a nested workflow step waiting on its child already passed its trigger
+    // and guard; re-entering, it reads the child's outcome, and a changed guard
+    // or dependsOn must not skip it and strand the child
     const reenterNestedWait = stepRun.isNestedWait;
     // A step waiting for a signal re-enters the same way: it settles the wait
     // it holds, and is never skipped or started again, which would lose the
@@ -6269,7 +5682,6 @@ export class WorkflowExecutionService {
       }
     }
 
-    // Evaluate guard expression — truthy means the step is already done
     if (step.guard && !reenterWait) {
       const guardCel = extractCelExpression(step.guard);
       if (!guardCel) {
@@ -6284,11 +5696,9 @@ export class WorkflowExecutionService {
         undefined,
         run.id,
       );
-      // When the abort fires while a pending step's guard is evaluated, the
-      // step does not start and stays pending whatever the guard answers:
-      // the level may already have settled and moved on, and a step whose
-      // guard did not decide in time must not look finished. A step reached
-      // after the abort, or recorded running, runs as before.
+      // if the abort fires while a pending step's guard is evaluated, the step
+      // stays pending whatever the guard answers: the level may have moved on
+      // and an undecided guard must not look finished
       const abortedBeforeGuard = options.signal?.aborted ?? false;
       const guardedStep = stepRun;
       const statusBeforeGuard = guardedStep.status;
@@ -6298,10 +5708,9 @@ export class WorkflowExecutionService {
         statusBeforeGuard === "pending" && !abortedBeforeGuard &&
         (options.signal?.aborted ?? false);
       try {
-        // A guard is a predicate destination: in a typed run its evaluator
-        // binds the run's sentinels as Secrets and refuses a result that
-        // holds one, before any load (design/enablers/typed-secrets.md
-        // Section 7.1, typed-secrets 4.1).
+        // a guard is a predicate destination: in a typed run its evaluator
+        // binds the run's sentinels as Secrets and refuses a result that holds
+        // one, before any load
         const celEvaluator = await this.expressionEvaluator.passEvaluatorFor(
           options.sensitiveValues,
           { location: `${stepName}.guard`, secretResult: "refuse" },
@@ -6351,10 +5760,9 @@ export class WorkflowExecutionService {
             stepId: stepName,
             reason: "guarded",
             guardExpression: guardCel,
-            // A guard result that holds a secret is refused in a typed run;
-            // text, lists and maps shown are masked either way, and a bare
-            // number or boolean is shown as it is, since the mask would
-            // coerce it.
+            // a guard result holding a secret is refused in a typed run; text,
+            // lists and maps shown are masked either way, a bare number or
+            // boolean is shown as is since the mask would coerce it
             guardResult: typeof guardResult === "number" ||
                 typeof guardResult === "boolean"
               ? guardResult
@@ -6530,14 +5938,9 @@ export class WorkflowExecutionService {
             maxTimeout,
             task.key,
           );
-        // A keyed wait claims its key before it is registered, so a step
-        // that finds the key held opens nothing (swamp-club#3209). A wait
-        // taken over holds its claim already.
-        // A claim that was created for a wait that is then not opened would
-        // hold the key with nothing on the run record to settle it. The
-        // wait is settled as cancelled, which frees the key at once. Where
-        // the store fails this too, the next claimant closes the claim once
-        // it has aged (`settleAbandoned`).
+        // A keyed wait claims its key before registering, so a step finding the
+        // key held opens nothing; an unopened wait's claim is settled as
+        // cancelled.
         const closeUnopenedWait = async (unopened: SignalWait) => {
           if (unopened.key === undefined) return;
           try {
@@ -6566,10 +5969,9 @@ export class WorkflowExecutionService {
               ...(task.acceptEarly !== undefined
                 ? { acceptEarly: task.acceptEarly }
                 : {}),
-              // Read now, not when the step began: finding a wait to take
-              // over reads every registration, and a claim dated before
-              // that would look older than it is to a claimant judging
-              // whether it was abandoned.
+              // read now, not when the step began: finding a wait to take over
+              // reads every registration, and an earlier-dated claim would look
+              // older than it is to a claimant judging abandonment
             }, new Date());
           } catch (error) {
             // The claim may have been created before the store failed: a
@@ -6592,8 +5994,8 @@ export class WorkflowExecutionService {
                 : {}),
             });
           } else if (acquisition.kind === "acquired") {
-            // The wait keeps where its key's pending signal is, so any
-            // reader can give it that signal (swamp-club#3212).
+            // the wait keeps where its key's pending signal is, so any reader
+            // can give it that signal
             if (acquisition.claim.early !== undefined) {
               wait = wait.withEarly(acquisition.claim.early);
             }
@@ -6650,11 +6052,9 @@ export class WorkflowExecutionService {
           }
         }
         stepRun.waitForSignal(wait);
-        // A signal that arrived before the wait opened is taken now, after
-        // the claim and the registration: a signaller that stores its
-        // signal and then reads the key finds one of them, whichever of the
-        // two reads comes first (swamp-club#3212). The step then succeeds at
-        // once and the run does not suspend on it.
+        // A signal that arrived before the wait opened is taken after the claim
+        // and registration, so the step succeeds at once and the run does not
+        // suspend.
         const earlyRef = earlyWaitRef(
           waitRefOf(run, stepRun) ?? {
             waitId: wait.id,
@@ -6717,7 +6117,6 @@ export class WorkflowExecutionService {
         return;
       }
 
-      // Handle manual approval tasks — suspend the workflow
       if (task.type === "manual_approval") {
         stepRun.waitForApproval(task.prompt, task.timeout);
         yield {
@@ -6731,22 +6130,16 @@ export class WorkflowExecutionService {
           prompt: String(options.sensitiveValues.masked(task.prompt)),
           timeout: task.timeout,
         };
-        // Capture the effective workflow inputs so steps after the gate can
-        // resolve `inputs.*` once the run is resumed. This is the manual_approval
-        // branch, which runs before any step-level input augmentation, so
-        // `inputs` here is the clean workflow-level set.
-        //
-        // Return instead of throwing WorkflowSuspendedError so that merge()
-        // continues draining parallel sibling generators to completion. The
-        // post-level save in run()/resume() captures the consistent state.
+        // Capture the clean workflow-level inputs so steps after the gate
+        // resolve inputs.* on resume; return, not throw, so merge() keeps
+        // draining siblings.
         run.suspend(stepExprContext?.inputs);
         stepSpan.end();
         return;
       }
 
-      // Handle assert tasks — evaluate CEL predicate, record pass/fail
       if (task.type === "assert") {
-        // The predicate destination, as for a guard (typed-secrets 4.1).
+        // the predicate destination, as for a guard
         const celEvaluator = await this.expressionEvaluator.passEvaluatorFor(
           options.sensitiveValues,
           { location: `${stepName}.task.expr`, secretResult: "refuse" },
@@ -6778,9 +6171,9 @@ export class WorkflowExecutionService {
           if (abandonedByAbort(stepRun, options)) return;
           const passed = !!result;
 
-          // Interpolate ${{ }} expressions in the message. Only authored
-          // occurrences are resolved and substituted: run-start evaluation
-          // can splice data into the message (swamp-club#3205).
+          // interpolate ${{ }} in the message; only authored occurrences are
+          // resolved and substituted, as run-start evaluation can splice data
+          // into the message
           const messageProvenance = (options.stepProvenance ??
             StepProvenanceOverlay.authored()).forStep(step).raw.subtree(
               "task.message",
@@ -6934,7 +6327,6 @@ export class WorkflowExecutionService {
         return;
       }
 
-      // Handle workflow tasks inline to forward nested workflow events
       if (task.type === "workflow") {
         liveOutputs = yield* trackNestedRun(
           options.nestedRuns,
@@ -6954,9 +6346,6 @@ export class WorkflowExecutionService {
         return;
       }
 
-      // Model method tasks delegate to the step executor.
-      // withEventBridge lets the executor push events via callback
-      // while we yield them into the parent stream.
       const output = yield* withEventBridge<
         WorkflowExecutionEvent,
         unknown
@@ -7030,7 +6419,6 @@ export class WorkflowExecutionService {
       // data it wrote, but not the step's outcome or its outputs.
       const abandoned = abandonedByAbort(stepRun, options);
 
-      // Track data artifacts and update expression context if this was a model method
       let stepDataHandles:
         | import("../models/model.ts").DataHandle[]
         | undefined;
@@ -7049,16 +6437,13 @@ export class WorkflowExecutionService {
         };
         stepDataHandles = taskOutput.dataHandles;
 
-        // Track data artifacts in step run
         if (taskOutput.dataArtifacts) {
           for (const artifact of taskOutput.dataArtifacts) {
             stepRun.addDataArtifact(artifact);
           }
         }
 
-        // Update expression context for subsequent steps (only when not using --last-evaluated)
         if (stepExprContext && taskOutput.model && !abandoned) {
-          // Create model entry if it doesn't exist
           if (!stepExprContext.model[taskOutput.model]) {
             stepExprContext.model[taskOutput.model] = {
               input: {
@@ -7072,7 +6457,6 @@ export class WorkflowExecutionService {
           }
           const modelData = stepExprContext.model[taskOutput.model];
 
-          // Update resource context (specName → instanceName → record)
           if (taskOutput.resources) {
             if (!modelData.resource) modelData.resource = {};
             for (
@@ -7086,7 +6470,6 @@ export class WorkflowExecutionService {
               Object.assign(modelData.resource[specName], instances);
             }
           }
-          // Update file context (specName → instanceName → record)
           if (taskOutput.files) {
             if (!modelData.file) modelData.file = {};
             for (
@@ -7131,8 +6514,6 @@ export class WorkflowExecutionService {
         stepSpan.end();
         throw error;
       }
-      // Record data artifacts that were written before the throw so they
-      // survive in the workflow run record for later data get --workflow.
       const errorArtifacts = (error as Record<string, unknown>).dataArtifacts as
         | Array<{
           dataId: string;
@@ -7162,12 +6543,9 @@ export class WorkflowExecutionService {
         code: SpanStatusCode.ERROR,
         message: errorMessage,
       });
-      // Populate model/method context on step_failed only for
-      // model-method tasks. The libswamp telemetry bridge keys off these
-      // fields to synthesize a child invocation entry for failures that
-      // occurred before `method_executing` was yielded. Workflow-task
-      // steps (which short-circuit via runWorkflowStep above) and other
-      // structural failures leave them undefined.
+      // model/method context goes on step_failed only for model-method tasks:
+      // the telemetry bridge uses it to synthesize a child entry for failures
+      // before method_executing; other failures leave them undefined
       const taskData = step.task.data;
       const failedDataHandles = taskData.type === "model_method"
         ? recoveredDataHandles(error)
@@ -7216,14 +6594,9 @@ export class WorkflowExecutionService {
   }
 
   /**
-   * The suspended event with the open waits for a signal that the run's
-   * nested runs hold, so whoever receives the event can name them without
-   * having seen each wait requested (swamp-club#3110). A nested run's own
-   * suspension is read by its parent and never forwarded, so it is left as
-   * it is. Reads only; a failed read leaves the event as it is, since the
-   * run has already suspended. On a custom datastore the first read opens
-   * the wait store, which can pull the namespace: expected here, where the
-   * run holds its lock.
+   * adds the open signal waits held by nested runs to the suspended event so
+   * receivers can name them; a nested run's own suspension is left alone;
+   * read-only, a failed read leaves the event as it is
    */
   private async withNestedSignalWaits(
     event: WorkflowExecutionEvent,
@@ -7269,10 +6642,6 @@ export class WorkflowExecutionService {
     }
   }
 
-  /**
-   * Refuses, changing nothing, while a nested workflow step of the run waits
-   * on a child run that has not finished (swamp-club#2736).
-   */
   private async checkNestedWaitsSettled(run: WorkflowRun): Promise<void> {
     await assertNestedWaitsSettled(
       {
@@ -7285,13 +6654,9 @@ export class WorkflowExecutionService {
   }
 
   /**
-   * Settles a nested workflow step re-entered while it waits on its child
-   * run, from the child's outcome alone: the parent never drives the child
-   * (swamp-club#2736). A succeeded child's outputs are adopted; a child
-   * whose approval was rejected fails the step as a rejected approval; any
-   * other finished child, a missing one or a broken link fails the step; an
-   * unfinished child, or one whose record cannot be read, suspends the run
-   * on it again.
+   * settles a re-entered nested workflow step from the child's outcome alone:
+   * success adopts outputs, a rejected approval or other finished, missing or
+   * broken child fails it, an unfinished or unreadable one suspends again
    */
   private async *settleNestedWait(
     run: WorkflowRun,
@@ -7433,11 +6798,6 @@ export class WorkflowExecutionService {
     return undefined;
   }
 
-  /**
-   * Handles a workflow task step, forwarding child workflow events
-   * to the parent stream. Returns the child's outputs for the parent's
-   * `steps.<name>.outputs` when the child succeeds.
-   */
   private async *runWorkflowStep(
     workflow: Workflow,
     run: WorkflowRun,
@@ -7456,7 +6816,6 @@ export class WorkflowExecutionService {
     WorkflowExecutionEvent,
     Pick<ResolvedStepOutputs, "outputs" | "sources"> | undefined
   > {
-    // Where data sits in the step's task (swamp-club#3205).
     let taskProvenance = (options.stepProvenance ??
       StepProvenanceOverlay.authored()).forStep(step).raw.subtree("task");
     // The step's passes share one rejection report, so each refused
@@ -7465,16 +6824,9 @@ export class WorkflowExecutionService {
     const report = createRejectionReport();
     const inStepReport = <T>(fn: () => T): T =>
       runWithRejectionReport(report, fn);
-    // Resolve every available expression (self.* from the forEach variable,
-    // run.*, etc.) in the task BEFORE the recursion-depth guard, cycle
-    // detection, ancestor-set additions, and the child invocation, so they all
-    // operate on the resolved workflowIdOrName rather than a literal `${{ }}`.
-    // Vault/env and step-output kinds are deferred to their dedicated stages;
-    // the inputs evaluateData pass below still resolves the rest.
-    // The invocation's pass evaluator, issuing into a bag over the run's
-    // registry: a child input record that holds a Secret issues into it,
-    // and the child binds the sentinel back as a Secret through the shared
-    // registry (typed-secrets 4.1).
+    // Resolve every available expression in the task before the depth guard,
+    // cycle detection and child invocation; vault, env and step-output kinds
+    // wait.
     const childPass = expressionContext
       ? await this.expressionEvaluator.passEvaluatorFor(
         options.sensitiveValues,
@@ -7482,8 +6834,8 @@ export class WorkflowExecutionService {
       )
       : undefined;
     if (expressionContext && childPass) {
-      // Synchronous pass: make what it reads local first (swamp-club#3179),
-      // and authorize the sensitive-field references it can read.
+      // synchronous pass: make what it reads local first, and authorize the
+      // sensitive-field references it can read
       await childPass.prepare(task, expressionContext);
       const resolved = inStepReport(() =>
         resolveAvailableExpressionsTracked(
@@ -7498,8 +6850,6 @@ export class WorkflowExecutionService {
       taskProvenance = resolved.provenance;
     }
 
-    // Resolve whole-field expression string for inputs that survived
-    // resolveAvailableExpressions (e.g., deferred step-output dependencies).
     const sourceInputs = task.inputs;
     const childReference = {
       secretBag: new VaultSecretBag(options.sensitiveValues.sentinels),
@@ -7537,10 +6887,9 @@ export class WorkflowExecutionService {
       expressionContext,
     );
 
-    // The task target survives the passes above when it was deferred past
-    // run-start evaluation — it reads step output, or its step carries a
-    // guard. Resolve it here, after the guard has decided and after earlier
-    // steps have written the data it names (swamp-club#2351).
+    // the task target survives the passes above when deferred (it reads step
+    // output, or its step has a guard); resolve it here, after the guard has
+    // decided and earlier steps have written the data it names
     task = {
       ...task,
       workflowIdOrName: await inStepReport(async () =>
@@ -7558,7 +6907,6 @@ export class WorkflowExecutionService {
       ) as string,
     };
 
-    // Recursion guard
     const depth = options.workflowNestingDepth ?? 0;
     if (depth >= MAX_WORKFLOW_NESTING_DEPTH) {
       const errorMessage =
@@ -7581,7 +6929,6 @@ export class WorkflowExecutionService {
       return;
     }
 
-    // Cycle detection
     const ancestors = options.ancestorWorkflowIds ?? new Set<string>();
     if (ancestors.has(task.workflowIdOrName)) {
       const chain = [...ancestors, task.workflowIdOrName].join(" -> ");
@@ -7602,8 +6949,6 @@ export class WorkflowExecutionService {
       return;
     }
 
-    // Evaluate inputs using the expression context. Reuse the
-    // per-instance evaluator (was previously constructed per call).
     let evaluatedInputs = task.inputs as Record<string, unknown> | undefined;
     let inputsProvenance = taskProvenance.subtree("inputs");
     if (task.inputs && typeof task.inputs !== "string" && expressionContext) {
@@ -7623,10 +6968,9 @@ export class WorkflowExecutionService {
       inputsProvenance = tracked.provenance;
     }
 
-    // Deferred bindings are persisted by the child, so resume-derived values
-    // are left out. Vault selectors that read them are bound in the parent
-    // before omission, preserving the selected reference for the child
-    // without copying unrelated inputs or fetching a secret (swamp-club#3583).
+    // deferred bindings are persisted by the child, so resume-derived values
+    // are left out; vault selectors that read them are bound in the parent
+    // first, keeping the reference without copying inputs or fetching a secret
     const deferred = expressionContext
       ? inStepReport(() =>
         this.expressionEvaluator.deferChildInputs(
@@ -7661,10 +7005,9 @@ export class WorkflowExecutionService {
         )
       ),
     );
-    // The parent's constants whose output the child receives, such as a
-    // literal() call, so the child recognises that text as the parent
-    // author's and does not report refusing it (swamp-club#3402). A constant
-    // reads no binding, so it grants the child nothing.
+    // the parent's constants (such as a literal() call) whose output the child
+    // receives, so the child recognises that text as the parent author's; a
+    // constant reads no binding, so it grants the child nothing
     for (
       const constant of authoredConstantsProducing(
         options.authoredExpressions,
@@ -7686,10 +7029,8 @@ export class WorkflowExecutionService {
       );
     }
 
-    // Create a child WorkflowExecutionService with nesting context.
-    // Share the parent's executor so child workflows reuse its
-    // (possibly injected) deps — without this, every level of nesting
-    // forces a fresh executor with its own per-call construction.
+    // share the parent's executor so nested workflows reuse its possibly
+    // injected deps instead of building a fresh one per nesting level
     const childAncestors = new Set(ancestors);
     childAncestors.add(workflow.name);
 
@@ -7722,9 +7063,8 @@ export class WorkflowExecutionService {
     childService.runWriteFence = this.runWriteFence;
 
     let childRun: WorkflowRun | undefined;
-    // The child's suspended event is the parent step's outcome, as its
+    // the child's suspended event is the parent step's outcome, as its
     // completed event is: the parent suspends on it and emits its own
-    // (swamp-club#2736).
     let childSuspended: WorkflowRun | undefined;
     const childEvents = childService.run(task.workflowIdOrName, {
       inputs: evaluatedInputs,
@@ -7907,12 +7247,6 @@ export class WorkflowExecutionService {
     return childOutputs;
   }
 
-  /**
-   * Runs a model method on the step executor, held in the run's in-flight
-   * set until it settles so a cancelled run waits for it to record itself
-   * (see {@link InFlightMethodRuns}). The step's passes share one rejection
-   * report, so each refused expression is logged once for the step.
-   */
   private executeMethod(
     step: Step,
     ctx: StepExecutionContext,
@@ -7940,10 +7274,9 @@ export class WorkflowExecutionService {
         methodName: string,
         inputs?: Record<string, unknown>,
       ) => {
-        // A forEach-expanded name carries whatever its item value held, and
-        // Step.create applies the authored-name rule, so a control character
-        // from data is escaped rather than failing the guard or assert
-        // (swamp-club#3027).
+        // a forEach-expanded name carries its item value and Step.create
+        // applies the authored-name rule, so a control character from data is
+        // escaped rather than failing the guard or assert
         const syntheticName = escapeControlCharacters(`${prefix}${stepName}`);
         const syntheticStep = Step.create({
           name: syntheticName,
@@ -7986,11 +7319,8 @@ export class WorkflowExecutionService {
               modelName,
             );
             if (def) {
-              // Hand the evaluator the stored record so tagged fields adapt
-              // as Secrets without loading values.
-              // Looked up by the handle's name, the record's data name: a
-              // method names its instance, and only by convention after
-              // its spec (typed-secrets 4.1).
+              // Hand the evaluator the stored record so tagged fields adapt as
+              // Secrets without loading values; looked up by the handle's name.
               const resource = await modelMethodResourceResult(
                 this.dataRepo,
                 def.type,
@@ -8008,18 +7338,16 @@ export class WorkflowExecutionService {
   }
 
   /**
-   * Restores a stored run's written references and attaches the run's
-   * record, so the run is written back with references. References become
-   * unloaded sentinels; each delivery loads them. A run with no
-   * references (or one written before sensitive values were kept off disk)
-   * is used as stored.
+   * restores a stored run's written references as unloaded sentinels that each
+   * delivery loads, so the run is written back with references; a run with none
+   * is used as stored
    */
   private rehydrateRun(
     run: WorkflowRun,
     sensitiveValues: RunSensitiveValues,
   ): WorkflowRun {
-    // A newer swamp may have written a sensitive value in a form this one
-    // does not recognise, so the record is not resumed (swamp-club#3681).
+    // a newer swamp may have written a sensitive value in a form this one does
+    // not recognise, so the record is not resumed
     if (isNewerSensitiveFormat(run)) {
       throw new UserError(
         `The run record for "${run.workflowName}" was written by a newer swamp in a format this one cannot read safely, so it is not resumed. Upgrade swamp to resume it.`,
@@ -8033,12 +7361,9 @@ export class WorkflowExecutionService {
   }
 
   /**
-   * Builds the resolver that reads step outputs back from the datastore for
-   * steps whose full output is no longer in memory (resume, replay, child
-   * runs). Sensitive fields are vault-resolved so these values match what a
-   * live run exposes. In a typed run they are read as stored and no vault
-   * is read: the typed evaluator views the outputs through their sources,
-   * so a tagged field is a Secret loaded at delivery (typed-secrets 4.2).
+   * reads step outputs back from the datastore; sensitive fields are
+   * vault-resolved to match a live run, but in a typed run they are read as
+   * stored, a tagged field being a Secret loaded at delivery
    */
   private createStepOutputResolver(): StepOutputResolver {
     const readAttributes = createDataRepositoryAttributeReader(this.dataRepo);
@@ -8053,26 +7378,6 @@ export class WorkflowExecutionService {
     });
   }
 
-  /**
-   * Prepares one job level of a run or resume. After a job failure with an
-   * aborted signal, the level runs in cleanup mode: a fresh cleanup signal so
-   * always/completed job dependents can run (shouldJobRun() handles
-   * filtering), and any job this walk started that is still "running" is
-   * marked failed with its running steps — the signal aborted their execution
-   * but the generators were abandoned before they could record the failure.
-   * A job a resume inherited as running from a suspension is in flight only
-   * once this walk starts it, so it runs when its level is reached; one the
-   * abort kept from starting was settled when its level finished
-   * (finishJobLevel).
-   *
-   * A level reached after the abort with work done and nothing failed starts no
-   * work, and neither does any later level (`afterAbort`, which the caller
-   * passes back as `alreadyAfterAbort`), so a job settled here cannot send a
-   * later level into cleanup mode: a job yet to start runs under the cleanup
-   * signal only if it is a cleanup job (jobRunsAfterFailure), and the rest are
-   * settled here, so a later cleanup job can read them. A run where nothing
-   * ran yet has nothing to clean up, and starts nothing as before.
-   */
   private enterJobLevel(
     workflow: Workflow,
     run: WorkflowRun,
@@ -8158,31 +7463,6 @@ export class WorkflowExecutionService {
     };
   }
 
-  /**
-   * Finishes one job level of a run or resume after its jobs drained, and
-   * returns whether a job has failed so the next level enters cleanup mode.
-   *
-   * A job this level never started (queued behind workflow concurrency when
-   * the abort fired) would stay pending, so a failed or completed condition on
-   * it could never be met. It is settled as runJob would have: skipped when
-   * its dependsOn is unmet, otherwise from its steps (settleNotStartedJob). A
-   * suspended run keeps its pending jobs to resume.
-   *
-   * A job a resume inherited as running (the job the run was suspended in,
-   * or one a failed run left running) that this walk never started, the abort
-   * having fired before the level or while the job was queued, is settled the
-   * same way, whether or not the abort interrupted the level or the job
-   * shares it (markStarted): its pending
-   * steps as a never-started job's, then the job from its steps' outcome
-   * (settleNotResumedJob). Its approved work never ran, so a dependent gated
-   * on it must not see it still running.
-   *
-   * When the signal aborts mid-level with parallel jobs, mergeWithConcurrency
-   * may exit before job_completed events are consumed, so a failure is also
-   * derived from model state, after the settling above: a job it ended failed
-   * or unknown sends later levels into cleanup mode, so an always or
-   * completed dependent runs only once the job is settled.
-   */
   private finishJobLevel(
     workflow: Workflow,
     run: WorkflowRun,
@@ -8227,25 +7507,13 @@ export class WorkflowExecutionService {
   }
 
   private async lookupWorkflow(idOrName: string): Promise<Workflow | null> {
-    // Try by name first
     const byName = await this.workflowRepo.findByName(idOrName);
     if (byName) return byName;
 
-    // Try by ID
     const id = createWorkflowId(idOrName);
     return await this.workflowRepo.findById(id);
   }
 
-  /**
-   * Builds the expression context for a workflow run or resume.
-   *
-   * Only expressions reading the model or file namespaces need every model
-   * definition loaded. The workflow YAML is checked first, then the stored
-   * definitions of the steps that will be evaluated against this context.
-   * Cached runs inspect evaluated definitions, including direct-type steps.
-   * Fresh direct-type steps carry what the workflow YAML supplied. Nested
-   * workflow steps build their own context when they run.
-   */
   private async buildRunContext(
     workflow: Workflow,
     sensitiveValues: RunSensitiveValues,
@@ -8287,11 +7555,6 @@ export class WorkflowExecutionService {
       : this.modelResolver.buildLightContext(sensitiveValues);
   }
 
-  /**
-   * Assesses whether an interrupted run can be automatically recovered.
-   * Returns which unknown steps are auto-recoverable (have guards) and
-   * which require operator acknowledgement.
-   */
   async assessRecovery(
     workflowIdOrName: string,
     runId?: string,
@@ -8321,11 +7584,6 @@ export class WorkflowExecutionService {
     return assessRecoveryForRun(workflow, run);
   }
 
-  /**
-   * Recovers an interrupted run by resetting unknown steps to pending and
-   * re-entering the executor. Requires either all unknown steps to have
-   * guards (auto-recovery) or explicit operator acknowledgement.
-   */
   async *recover(
     workflowIdOrName: string,
     options?: {
@@ -8375,11 +7633,9 @@ export class WorkflowExecutionService {
     // first so a refused recover leaves the run as it was.
     await this.checkNestedWaitsSettled(run);
 
-    // Reset unknown steps to pending for re-execution
     run.resetUnknownStepsForRecovery();
     await this.saveRun(workflow.id, run);
 
-    // Re-enter the executor via the existing resume path
     yield* this.resume(workflowIdOrName, run.id, {
       signal: options?.signal,
       instanceId: options?.instanceId,
@@ -8409,10 +7665,9 @@ export class WorkflowExecutionService {
   }
 
   /**
-   * The wait a step of this run registered before, when the step should
-   * take it over: one still open, or one a signal was accepted for. A wait
-   * that passed its deadline unsignalled is closed instead, so the step
-   * opens a fresh one, as it does on a retry.
+   * the earlier wait this step should take over: one still open or one a signal
+   * was accepted for; a wait past its deadline unsignalled is closed so the
+   * step opens a fresh one
    */
   private async adoptableWait(
     waits: SignalWaitStore,
@@ -8445,11 +7700,9 @@ export class WorkflowExecutionService {
   }
 
   /**
-   * The store a resume settles a run's waits from. On a datastore that
-   * cannot hold wait records this is a store that keeps nothing: such a run
-   * was suspended by a build from before those records, nothing can signal
-   * it here, and its waits end at their deadline, so the resume can still
-   * fail them with `wait_timeout` and run the `failed` handlers.
+   * a datastore that cannot hold wait records gets a store that keeps nothing:
+   * the run was suspended before those records existed and its waits end at
+   * their deadline, so a resume can still fail them with wait_timeout
    */
   private signalWaitsForSettling(): SignalWaitStore {
     return this.signalWaits.supported
@@ -8457,21 +7710,15 @@ export class WorkflowExecutionService {
       : UNSHARED_SIGNAL_WAITS;
   }
 
-  /**
-   * Refuses a workflow with a wait before anything runs when its wait
-   * records cannot be kept: no store, or one that turns out not to be
-   * usable once opened.
-   */
   private async openSignalWaits(workflowName: string): Promise<void> {
     this.requireSignalWaits(workflowName);
     await this.readySignalWaits(workflowName);
   }
 
   /**
-   * Opens the wait store when there is one to open. A store that turns out
-   * unusable is a refusal naming the workflow; any other failure, such as
-   * the network, is passed on as it is, not reported as a missing
-   * capability.
+   * an unusable store is a refusal naming the workflow; any other failure, such
+   * as the network, is passed on as it is rather than reported as a missing
+   * capability
    */
   private async readySignalWaits(workflowName: string): Promise<void> {
     if (!this.signalWaits.supported || !this.signalWaits.ready) return;
@@ -8485,10 +7732,6 @@ export class WorkflowExecutionService {
     }
   }
 
-  /**
-   * The store for wait records, or a refusal naming why this datastore
-   * cannot hold them.
-   */
   private requireSignalWaits(workflowName: string): SignalWaitStore {
     if (this.signalWaits.supported) return this.signalWaits.store;
     throw new UserError(
@@ -8496,11 +7739,6 @@ export class WorkflowExecutionService {
     );
   }
 
-  /**
-   * Runs `prepare`; if it throws, saves the run back as `snapshot`, hands its
-   * tracker row back, and rethrows. A failed restore is logged and the
-   * original error still wins.
-   */
   private async restoreRunOnFailure<T>(
     { workflowId, snapshot, handBackTrackerRow, claim }: {
       workflowId: WorkflowId;
@@ -8556,10 +7794,6 @@ export class WorkflowExecutionService {
     }
   }
 
-  /**
-   * Heartbeats the run's tracker row every 30 seconds, when there is a
-   * tracker. The caller clears the returned interval.
-   */
   private startResumeHeartbeat(
     runId: string,
   ): ReturnType<typeof setInterval> | undefined {
@@ -8575,16 +7809,9 @@ export class WorkflowExecutionService {
   }
 
   /**
-   * Hands the run's tracker row to this process: a suspended, failed or
-   * interrupted row becomes running under this pid and `instanceId`, and a
-   * row that retention purged is registered again. A row in any other status
-   * is left alone. Returns a function that puts the row back to its prior
-   * status (`priorStatus` for a row this call registered), for a resume that
-   * fails before execution starts.
-   *
-   * Never throws: it runs after the run is saved as running and before the
-   * restore that would undo that save, and tracker bookkeeping is
-   * best-effort, so a tracker failure is logged and the resume goes on.
+   * never throws: it runs after the run is saved as running and before the
+   * restore that undoes that save, and tracker bookkeeping is best-effort, so a
+   * failure is logged and the resume goes on
    */
   private handOverTrackerRow(
     run: WorkflowRun,
@@ -8598,8 +7825,8 @@ export class WorkflowExecutionService {
       const prior = tracker.findById(run.id);
       if (tracker.reactivate(run.id, Deno.pid, hostname(), instanceId)) {
         const status = prior?.status ?? priorStatus;
-        // With the prior reason, so a settled row is not unsettled again
-        // (swamp-club#2917).
+        // complete with the prior reason, so a settled row is not unsettled
+        // again
         const reason = prior?.cancelReason ?? undefined;
         return () => tracker.complete(run.id, status, reason);
       }
@@ -8625,14 +7852,6 @@ export class WorkflowExecutionService {
     }
   }
 
-  /**
-   * Runs workflow-scope reports after the workflow completes and appends
-   * their data artifacts to the WorkflowRun aggregate so the `--workflow`
-   * retrieval path can resolve them.
-   *
-   * Buffers report events emitted by the runner so they can be yielded
-   * back through the service's event stream in order.
-   */
   private async *runWorkflowReports(
     workflow: Workflow,
     run: WorkflowRun,
@@ -8692,17 +7911,8 @@ export class WorkflowExecutionService {
           continue;
         }
 
-        // Look up the definition for methodArgs and globalArgs only.
-        // The modelId comes from step execution time (info.modelId),
-        // NOT from this lookup — the lookup can return a stale or
-        // different definition for auto-created models.
-        //
-        // The step already knows its model's type: `model_resolved` carries the
-        // resolved definition's own name and type together. Scoping by that type
-        // keeps each lookup inside one type directory instead of recursively
-        // parsing every definition in the repo once per step, and it cannot
-        // match a same-named definition of another type the way a global name
-        // search can.
+        // The lookup supplies methodArgs and globalArgs only; modelId comes
+        // from step execution since the lookup can return a stale definition.
         const modelType = tryCreateModelType(info.modelType);
         let definition: Definition | null = null;
         if (modelType) {
@@ -8710,12 +7920,9 @@ export class WorkflowExecutionService {
             await this.evaluatedDefRepo.findByName(modelType, info.modelName) ??
               await this.definitionRepo.findByName(modelType, info.modelName);
           if (!definition) {
-            // A source definition may sit outside the directory its type
-            // implies — the YAML `type` field wins over the path — and a step
-            // that failed before its evaluated definition was saved falls back
-            // to the source repository. Only the global search finds those, so
-            // it stays as a last resort, gated on the type matching so it can
-            // still never pick up a same-named definition of another type.
+            // the YAML type field wins over the path, and a step that failed
+            // before its evaluated definition was saved falls back to source;
+            // only the global search finds those, gated on a matching type
             const global = await this.definitionRepo.findByNameGlobal(
               info.modelName,
             );
@@ -8798,10 +8005,6 @@ export class WorkflowExecutionService {
     }
   }
 
-  /**
-   * Evaluates CEL expressions in a workflow via WorkflowExpressionEvaluator,
-   * carrying the tracing span this orchestrator opened around the call.
-   */
   private async evaluateWorkflow(
     workflow: Workflow,
     context: ExpressionContext,
@@ -8812,10 +8015,9 @@ export class WorkflowExecutionService {
     });
 
     try {
-      // The run-start pass of a typed run issues into a bag over the run's
-      // registry: a data read that returns a Secret leaves as a sentinel
-      // and loads nothing for a step a guard may later skip
-      // (design/enablers/typed-secrets.md Section 5, typed-secrets 4.1).
+      // the run-start pass of a typed run issues into a bag over the run's
+      // registry: a data read returning a Secret leaves as a sentinel and loads
+      // nothing for a step a guard may later skip
       const result = await new WorkflowExpressionEvaluator(
         await this.expressionEvaluator.passEvaluatorFor(
           sensitiveValuesOf(context),
@@ -8852,11 +8054,9 @@ export class WorkflowExecutionService {
 }
 
 /**
- * Create a lightweight copy of step output, stripping heavy payload fields
- * from DataRecords (`resources`) and DataHandles (`dataHandles`). The full
- * data is already persisted in the datastore; keeping it on the WorkflowRun
- * causes the run aggregate to grow proportionally to cumulative step
- * output, which triggers OOM on large workflows (swamp-club#1673).
+ * strips heavy payload fields from DataRecords and DataHandles: the full data
+ * is in the datastore, and keeping it on the run makes the aggregate grow with
+ * cumulative output until large workflows run out of memory
  */
 function stripResourceContent(
   output: Record<string, unknown>,
@@ -8904,12 +8104,9 @@ function stripResourceContent(
 }
 
 /**
- * Builds a ModelType from a step's recorded type string, or null if it cannot.
- *
- * `model_resolved` always carries `modelType.normalized`, so this should always
- * succeed. It exists so a step with an unexpected type string degrades to empty
- * method/global args — the same result a lookup miss already produces — instead
- * of throwing and failing report assembly for the whole run.
+ * model_resolved always carries the type, so this should succeed; an unexpected
+ * type string degrades to empty method/global args, as a lookup miss does,
+ * instead of failing report assembly for the run
  */
 function tryCreateModelType(rawType: string): ModelType | null {
   try {
@@ -8926,11 +8123,6 @@ function readGlobalConcurrencyLimit(): number | undefined {
   return Number.isFinite(n) && n > 0 ? n : undefined;
 }
 
-/**
- * Effective job-level concurrency for a workflow: `workflow.concurrency`
- * capped by SWAMP_MAX_CONCURRENT_STEPS. Fresh runs and resumes share it so
- * both bound a level's parallel jobs the same way.
- */
 function resolveJobConcurrency(workflow: Workflow): number | undefined {
   return resolveEffectiveConcurrency(
     workflow.concurrency,

@@ -21,18 +21,12 @@ import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
 
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
-/**
- * A single vault type search result item.
- */
 export interface VaultTypeSearchItem {
   type: string;
   name: string;
   description: string;
 }
 
-/**
- * Data payload for the completed event.
- */
 export interface VaultTypeSearchData {
   query: string;
   results: VaultTypeSearchItem[];
@@ -43,9 +37,6 @@ export type VaultTypeSearchEvent =
   | { kind: "completed"; data: VaultTypeSearchData }
   | { kind: "error"; error: SwampError };
 
-/**
- * Dependencies for the vault type search generator.
- */
 export interface VaultTypeSearchDeps {
   getVaultTypes(): Array<{
     type: string;
@@ -54,19 +45,11 @@ export interface VaultTypeSearchDeps {
   }>;
 }
 
-/**
- * Input for the vault type search generator.
- */
 export interface VaultTypeSearchInput {
   query?: string;
 }
 
-/**
- * Searches available vault types.
- *
- * Returns all vault types — filtering for JSON mode is handled by the renderer.
- * The Ink renderer uses fzf for interactive fuzzy matching.
- */
+/** returns all vault types; filtering for JSON mode is done by the renderer */
 export async function* vaultTypeSearch(
   _ctx: LibSwampContext,
   deps: VaultTypeSearchDeps,

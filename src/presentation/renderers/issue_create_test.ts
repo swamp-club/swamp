@@ -31,7 +31,6 @@ import { redactIssueTitleAndBody } from "../../domain/issues/content_redactor.ts
 
 type Handoff = Extract<RepositoryDispatchResult, { kind: "handoff" }>;
 
-/** Captures console.log calls during `fn` and returns the concatenated output. */
 async function captureConsoleLog(
   fn: () => Promise<void> | void,
 ): Promise<string> {
@@ -139,8 +138,6 @@ Deno.test("issue_create renderer (json): extension-lab variant serialises method
   assertEquals(parsed.number, 42);
 });
 
-// ---- renderExtensionRepositoryHandoff ----
-
 function handoffIssueGh(): Handoff {
   return {
     kind: "handoff",
@@ -231,9 +228,6 @@ Deno.test("renderExtensionRepositoryHandoff (log): advisory runs without error",
   );
 });
 
-// ---- renderRedactionNotice / renderRedactionSkipped ----
-
-/** Captures console.error calls during `fn` and returns the concatenated output. */
 function captureConsoleError(fn: () => void): string {
   const original = console.error;
   const lines: string[] = [];

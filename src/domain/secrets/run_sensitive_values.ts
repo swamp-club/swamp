@@ -47,56 +47,33 @@ export function definedEntry(
   });
 }
 
-/**
- * The vault location a resolved secret was read from: the same vault name
- * and key a bag entry references.
- */
 export type SecretSource = SecretReference;
 
-/**
- * Receives secret values as they are resolved from vault references.
- * `SecretRedactor` and {@link RunSensitiveValues} both satisfy it.
- */
 export interface SecretSink {
   addSecret(value: string, source?: SecretSource): void;
   /**
-   * Records a stored sensitive-field reference whose vault read failed. The
-   * reference text stays in the record; this keeps why, so the run can name
-   * the failed read where the text is refused or used (swamp-club#3806).
+   * records a stored reference whose vault read failed; the text stays in the
+   * record, this keeps why so the run can name the failed read
    */
   recordUnread?(reference: UnreadSensitiveReference): void;
 }
 
-/**
- * A stored sensitive-field reference the run tried to read from its vault and
- * could not: where it points, the field it sits at, and the provider's error.
- */
 export interface UnreadSensitiveReference extends SecretSource {
-  /** The reference text exactly as the record stores it. */
   readonly text: string;
   readonly fieldPath: string;
   readonly reason: string;
 }
 
-/**
- * Finds the failed read recorded for a stored reference's exact text;
- * {@link RunSensitiveValues} keeps the run's record.
- */
 export interface UnreadReferenceLookup {
   unreadReferenceFor(text: string): UnreadSensitiveReference | undefined;
 }
 
-/**
- * Describes a failed sensitive-field read for a warning or an error: the
- * vault, the key, and the provider's reason.
- */
 export function describeUnreadReference(
   reference: UnreadSensitiveReference,
 ): string {
   return `vault '${reference.vaultName}', key '${reference.key}': ${reference.reason}`;
 }
 
-/** A recorded sensitive value and where it came from. */
 export interface SensitiveEntry {
   readonly value: string;
   readonly source: SecretSource;
@@ -105,10 +82,6 @@ export interface SensitiveEntry {
 /** Values shorter than this are never recorded, matching SecretRedactor. */
 const MIN_SECRET_LENGTH = 3;
 
-/**
- * Builds the vault reference text a data record stores for a sensitive field,
- * the same form `processSensitiveResourceData` writes.
- */
 export function vaultReferenceText(source: SecretSource): string {
   return `\${{ vault.get('${source.vaultName}', '${source.key}') }}`;
 }
@@ -122,27 +95,17 @@ function encodeKeyForName(key: string): string {
 }
 
 /**
- * The sensitive values one run resolved for schema-marked sensitive fields,
- * each with the vault and key it was resolved from.
- *
- * Created once per run alongside the run's SecretRedactor and passed
- * explicitly to every place that resolves sensitive vault references for
- * expressions. Every value is forwarded to the redactor, so logs and the
- * persisted shell command field mask it. It carries the run's sentinel
- * registry, the index of the same secrets by sentinel, so every bag of the
- * run is a view of one registry wherever the run's values go, child runs
- * included.
+ * every value is forwarded to the redactor so logs and the persisted shell
+ * command field mask it; every bag of the run views one sentinel registry,
+ * child runs included
  */
 export class RunSensitiveValues implements SecretSink, UnreadReferenceLookup {
   private readonly entries = new Map<string, SecretSource>();
-  /** Failed sensitive-field reads, by their stored reference text. */
   private readonly unread = new Map<string, UnreadSensitiveReference>();
-  /** list() result, rebuilt only after a new value is recorded. */
   private sorted: SensitiveEntry[] | undefined;
 
   constructor(
     private readonly redactor?: SecretRedactor,
-    /** The sentinels this run issued; every bag of the run issues into it. */
     readonly sentinels: SecretBagRegistry = new SecretBagRegistry(),
   ) {
     // In a typed run the redactor masks the run's sentinels too, so logs,
@@ -152,29 +115,17 @@ export class RunSensitiveValues implements SecretSink, UnreadReferenceLookup {
   }
 
   /**
-   * The run's redactor, for the vault check scope of a typed evaluation: an
-   * existence probe's value goes to it and is dropped
-   * (design/enablers/typed-secrets.md Section 3.4). Undefined when the run
-   * has none.
+   * an existence probe's value goes to this redactor and is dropped; undefined
+   * when the run has none
    */
   get probeRedactor(): SecretRedactor | undefined {
     return this.redactor;
   }
 
-  /**
-   * Whether masks and stand-ins are also derived from the sentinels the run
-   * issued: a typed run that issued at least one. Reading a registry entry
-   * loads nothing.
-   */
   private get derivesFromSentinels(): boolean {
     return (!this.sentinels.isEmpty);
   }
 
-  /**
-   * Replaces every sentinel the run issued in `text` with what `standIn`
-   * makes of its entry, in a typed run. Sentinel-shaped text with another
-   * prefix, or that the run did not issue, stays as it is.
-   */
   private withSentinelStandIns(
     text: string,
     standIn: (entry: RegistryEntry) => string,
@@ -203,10 +154,8 @@ export class RunSensitiveValues implements SecretSink, UnreadReferenceLookup {
   }
 
   /**
-   * The failed read recorded for `text`, when it is exactly the stored
-   * reference of a sensitive field this run could not read. The reason is
-   * masked through the run's redactor, since a provider's error can echo
-   * input.
+   * the reason is masked through the run's redactor since a provider's error
+   * can echo input
    */
   unreadReferenceFor(text: string): UnreadSensitiveReference | undefined {
     const reference = this.unread.get(text);
@@ -214,7 +163,6 @@ export class RunSensitiveValues implements SecretSink, UnreadReferenceLookup {
     return { ...reference, reason: this.redactor.redact(reference.reason) };
   }
 
-  /** Whether no value has been recorded. */
   get isEmpty(): boolean {
     return this.entries.size === 0;
   }
@@ -227,12 +175,10 @@ export class RunSensitiveValues implements SecretSink, UnreadReferenceLookup {
     return this.sorted;
   }
 
-  /** The vault source a value was resolved from, if it was recorded. */
   sourceOf(value: string): SecretSource | undefined {
     return this.entries.get(value);
   }
 
-  /** Whether the text contains any recorded value. */
   occursIn(text: string): boolean {
     for (const value of this.entries.keys()) {
       if (text.includes(value)) return true;
@@ -249,12 +195,7 @@ export class RunSensitiveValues implements SecretSink, UnreadReferenceLookup {
     return `sensitive-${source.vaultName}.${encodeKeyForName(source.key)}`;
   }
 
-  /**
-   * Replaces every recorded value in the text with its placeholder, and in a
-   * typed run every sentinel the run issued with the placeholder of its
-   * reference, derived from the sentinel without reading a value. An entry
-   * with no reference (one a worker rebuilt) becomes the mask.
-   */
+  /** an entry with no reference (one a worker rebuilt) becomes the mask */
   withPlaceholders(text: string): string {
     // Sentinels first: a recorded value that is a fragment of a sentinel
     // must not break the sentinel apart before it is recognised.
@@ -272,10 +213,8 @@ export class RunSensitiveValues implements SecretSink, UnreadReferenceLookup {
   }
 
   /**
-   * Replaces recorded values with placeholders throughout a structure: in every
-   * string, and as a whole number or boolean whose text is a recorded value.
-   * Apply before deriving a name from the value (a data-name suffix), since
-   * that derivation rewrites the text and would hide the value from matching.
+   * apply before deriving a name from the value, since that rewrites the text
+   * and would hide the value from matching
    */
   withPlaceholdersDeep(value: unknown): unknown {
     if (this.isEmpty && !this.derivesFromSentinels) return value;
@@ -298,16 +237,13 @@ export class RunSensitiveValues implements SecretSink, UnreadReferenceLookup {
   }
 
   /**
-   * Replaces every sentinel the run issued in a forEach step name with the
-   * iteration's stand-in, `sensitive-<index>`, derived from the sentinel
-   * without reading a value (typed-secrets 4.1): the item's position is the
-   * identity, stable across resume, whatever the secret was.
+   * the stand-in is the item's position, derived without reading a value and
+   * stable across resume whatever the secret was
    */
   withForEachStandIns(text: string, index: number): string {
     return this.withSentinelStandIns(text, () => `sensitive-${index}`);
   }
 
-  /** Replaces recorded values in every tag or label value with placeholders. */
   tagsWithPlaceholders(
     tags: Record<string, string>,
   ): Record<string, string> {
@@ -324,10 +260,8 @@ export class RunSensitiveValues implements SecretSink, UnreadReferenceLookup {
   }
 
   /**
-   * Masks every recorded value in a structure with `***` for display, and
-   * in a typed run every sentinel the run issued, whatever it stands for and
-   * without reading it. A number or boolean equal to a recorded value
-   * becomes the string `***`, so the result is not the input's type.
+   * a number or boolean equal to a recorded value becomes the string ***, so
+   * the result is not the input's type
    */
   masked(value: unknown): unknown {
     if (this.isEmpty && !this.derivesFromSentinels) return value;

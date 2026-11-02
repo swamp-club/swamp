@@ -113,7 +113,6 @@ Deno.test("decideRunVaultAccess: a reserved vault is refused unless the principa
   );
   assertEquals(refused.allowed, false);
   assertEquals(refused.rule, "reserved");
-  // The reason covers writes as well as reads.
   assertStringIncludes(refused.reason, "usable by a serve run only");
   assertEquals(
     decideRunVaultAccess(svc, user("root"), "_token-secrets", "read").allowed,
@@ -152,7 +151,6 @@ Deno.test("decideRunVaultAccess: a deny-only principal loses just the denied vau
   const other = decideRunVaultAccess(svc, user(), "roomcontrol", "read");
   assertEquals(other.allowed, true);
   assertEquals(other.rule, "unscoped");
-  // A deny for read leaves write alone.
   assertEquals(decideRunVaultAccess(svc, user(), "erp", "write").allowed, true);
 });
 
@@ -168,17 +166,14 @@ Deno.test("decideRunVaultAccess: any vault allow scopes the principal for every 
   assertEquals(other.allowed, false);
   assertEquals(other.rule, "vault-scoped");
   assertStringIncludes(other.reason, "vault:erp");
-  // The refusal says how to fix it.
   assertStringIncludes(
     other.reason,
     "add a vault:erp allow grant for read to this principal",
   );
-  // Read was granted; write on the same vault is not.
   assertEquals(
     decideRunVaultAccess(svc, user(), "roomcontrol", "write").allowed,
     false,
   );
-  // Another principal holds no vault grant and is not scoped.
   assertEquals(
     decideRunVaultAccess(svc, user("alice"), "erp", "read").allowed,
     true,
@@ -248,7 +243,6 @@ Deno.test("decideRunVaultAccess: with keyUnknown a refusal that depends on a key
     condition: 'key.startsWith("app-")',
   });
   const svc = service([keyAllow]);
-  // Evaluated with no key the condition fails, so the scoped bot is refused.
   assertEquals(
     decideRunVaultAccess(svc, user(), "outputs", "write").rule,
     "vault-scoped",
@@ -264,7 +258,6 @@ Deno.test("decideRunVaultAccess: with keyUnknown a refusal that depends on a key
   assertEquals(undetermined.allowed, false);
   assertEquals(undetermined.undetermined, true);
   assertEquals(undetermined.rule, "key-undetermined");
-  // A known key decides as before.
   assertEquals(
     decideRunVaultAccess(svc, user(), "outputs", "write", "app-token").allowed,
     true,
@@ -273,7 +266,6 @@ Deno.test("decideRunVaultAccess: with keyUnknown a refusal that depends on a key
     decideRunVaultAccess(svc, user(), "outputs", "write", "other").allowed,
     false,
   );
-  // A vault no key-conditioned grant matches is still refused.
   assertEquals(
     decideRunVaultAccess(svc, user(), "erp", "write", undefined, {
       keyUnknown: true,
@@ -290,7 +282,6 @@ Deno.test("decideRunVaultAccess: with keyUnknown a key-conditioned allow for ano
       condition: 'key.startsWith("app-")',
     }),
   ]);
-  // No key makes a read allow cover a write, so the write is refused now.
   const decision = decideRunVaultAccess(
     svc,
     user(),
@@ -301,7 +292,6 @@ Deno.test("decideRunVaultAccess: with keyUnknown a key-conditioned allow for ano
   );
   assertEquals(decision.rule, "vault-scoped");
   assertEquals(decision.undetermined, undefined);
-  // The read the allow covers is still undetermined without the key.
   assertEquals(
     decideRunVaultAccess(svc, user(), "outputs", "read", undefined, {
       keyUnknown: true,
@@ -335,7 +325,6 @@ Deno.test("decideRunVaultAccess: a key-conditioned deny through an IdP group is 
     }).undetermined,
     true,
   );
-  // Without the group the deny does not apply to the principal.
   assertEquals(
     decideRunVaultAccess(svc, user(), "outputs", "write").allowed,
     true,
@@ -367,7 +356,6 @@ Deno.test("decideRunVaultAccess: a key-conditioned deny through a collective is 
     }).undetermined,
     true,
   );
-  // Outside the collective the deny does not apply to the principal.
   assertEquals(
     decideRunVaultAccess(svc, user(), "outputs", "write").allowed,
     true,
@@ -412,7 +400,6 @@ Deno.test("decideRunVaultAccess: with keyUnknown and no key condition the decisi
     }),
   ]);
   const options = { keyUnknown: true };
-  // Another principal's key condition does not apply to bot.
   const refused = decideRunVaultAccess(
     svc,
     user(),
@@ -488,7 +475,6 @@ Deno.test("ServeRunVaultPolicy: a token session re-reads its record at most once
     idpGroups: [],
     collectives: [],
   });
-  // The record's groups decide: the bot is scoped through idp-group:ci.
   assertEquals((await policy.decide("erp", "read")).allowed, false);
   assertEquals((await policy.decide("roomcontrol", "read")).allowed, true);
   assertEquals(reads, 1);
@@ -556,7 +542,6 @@ Deno.test("ServeRunVaultPolicy: decides against the current snapshot on every op
     collectives: [],
   });
   assertEquals((await policy.decide("erp", "read")).allowed, true);
-  // A reload that writes a vault deny applies to the run's next read.
   loader.decisionService = service([
     grant({ effect: "deny", resource: { kind: "vault", pattern: "erp" } }),
   ]);
@@ -775,7 +760,6 @@ Deno.test("resumeRunVaultScope: a resume of a token-triggered run revalidates th
       },
     });
 
-  // Active: the recorded IdP group decides, not the record's (empty) groups.
   const active = scopeFor(tokenRecord());
   assert(active);
   assertEquals(
@@ -784,7 +768,6 @@ Deno.test("resumeRunVaultScope: a resume of a token-triggered run revalidates th
   );
   assertEquals((await active.access.decide("erp", "read")).allowed, false);
 
-  // Revoked: every vault operation is refused.
   const revoked = scopeFor(tokenRecord({ state: "revoked" }));
   assert(revoked);
   assertEquals(

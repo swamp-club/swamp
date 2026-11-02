@@ -43,7 +43,6 @@ import { currentUnitOfWork } from "../persistence/unit_of_work_scope.ts";
 
 const PUBLISH = { mustUpload: true, earlierChangeOnly: false };
 
-/** One checkout's lockfile, committing to `sink`. */
 async function checkout(
   dir: string,
   name: string,
@@ -73,7 +72,6 @@ async function checkout(
   };
 }
 
-/** Runs one transaction's hydrate, its change and its publishes. */
 async function transaction(
   side: { hook: MarkDirtyHook; lockfilePath: string; configBase: string },
   stored: PutExpect,
@@ -110,7 +108,6 @@ Deno.test("createV3LockfileSync: a publish over a lockfile another checkout chan
     const sink = new MemorySink();
     const a = await checkout(dir, "a", sink);
     const b = await checkout(dir, "b", sink);
-    // B starts from no lockfile; A lands one while B's change runs.
     const error = await assertRejects(() =>
       transaction(b, "absent", async () => {
         await Deno.writeTextFile(a.lockfilePath, "{}");
@@ -122,7 +119,6 @@ Deno.test("createV3LockfileSync: a publish over a lockfile another checkout chan
     assertEquals(conflict.code, "config_edit_conflict");
     assertEquals(conflict.conflicts.map((c) => c.kind), ["lockfile"]);
     assert(conflict.message.includes("Pull and retry"), conflict.message);
-    // A's lockfile stands.
     assertEquals(sink.landed.length, 1);
   } finally {
     if (Deno.build.os === "windows") {

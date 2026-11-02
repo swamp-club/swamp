@@ -30,7 +30,6 @@ import type { WorkflowRepository } from "./repositories.ts";
 import type { WorkflowId } from "./workflow_id.ts";
 import { createWorkflowId } from "./workflow_id.ts";
 
-/** Minimal fake workflow repository for testing. */
 class FakeWorkflowRepo implements WorkflowRepository {
   private workflows: Map<string, Workflow> = new Map();
 
@@ -156,10 +155,6 @@ Deno.test("extractModelReferencesFromWorkflow - returns null for CEL in nested w
   const refs = await extractModelReferencesFromWorkflow(workflow, repo);
   assertEquals(refs, null);
 });
-
-// ============================================================================
-// extractStepDefinitionReferences (swamp-club#2123)
-// ============================================================================
 
 function workflowWithSteps(tasks: StepTask[]): Workflow {
   return Workflow.create({

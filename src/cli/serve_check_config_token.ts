@@ -20,16 +20,9 @@
 import { UserError } from "../domain/errors.ts";
 import type { ApiKeySourceName } from "../infrastructure/persistence/api_key_source.ts";
 
-/** The swamp-club credential available to the CLI, and where it came from. */
 export interface CheckConfigCredential {
-  /** The swamp-club server the credential was issued by. */
   readonly serverUrl: string;
   readonly apiKey: string;
-  /**
-   * The collective API key source (`--club-api-key-file`,
-   * SWAMP_API_KEY_FILE or SWAMP_API_KEY), or `login` for the stored
-   * `swamp auth login`.
-   */
   readonly source: ApiKeySourceName | "login";
 }
 
@@ -42,13 +35,9 @@ function originOf(url: string, what: string): string {
 }
 
 /**
- * Picks the bearer token `swamp serve check-config` uses to look up
- * usernames on the OAuth provider.
- *
- * The credential is only sent to the origin it was issued by. The command
- * is meant to be run on configs before they are deployed, including ones
- * the user did not write, so a crafted `oauth-provider` must never receive
- * the user's token.
+ * the credential is only sent to the origin it was issued by: the command runs
+ * on configs the user did not write, so a crafted `oauth-provider` must never
+ * receive the token
  */
 export function selectCheckConfigToken(
   providerUrl: string,

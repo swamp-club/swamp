@@ -18,15 +18,10 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * A set of data version numbers kept as merged ranges (swamp-club#3532).
- * Retention and version-count GC remove a name's oldest versions in order,
- * so the versions a partition has removed stay a handful of ranges however
- * many there are.
- *
- * @module
+ * retention and version-count gc remove a name's oldest versions in order, so
+ * removed versions stay a handful of ranges however many there are
  */
 
-/** One inclusive range of versions, `[first, last]`. */
 export type VersionRange = readonly [number, number];
 
 /**
@@ -38,10 +33,6 @@ export class VersionRanges {
 
   private constructor(readonly ranges: readonly VersionRange[]) {}
 
-  /**
-   * The set covering `ranges`, which may overlap, touch or come in any
-   * order. Throws when a range is not two positive integers in order.
-   */
   static of(ranges: readonly (readonly number[])[]): VersionRanges {
     for (const range of ranges) {
       const [first, last] = range;
@@ -75,7 +66,6 @@ export class VersionRanges {
     return this.ranges.length === 0;
   }
 
-  /** The greatest version in the set; 0 when it is empty. */
   get max(): number {
     return this.ranges.at(-1)?.[1] ?? 0;
   }
@@ -93,13 +83,11 @@ export class VersionRanges {
     return false;
   }
 
-  /** The set with `version` added. */
   add(version: number): VersionRanges {
     if (this.has(version)) return this;
     return VersionRanges.of([...this.ranges, [version, version]]);
   }
 
-  /** Whether both sets hold the same versions. */
   equals(other: VersionRanges): boolean {
     return this.ranges.length === other.ranges.length &&
       this.ranges.every(([first, last], i) =>
@@ -107,14 +95,12 @@ export class VersionRanges {
       );
   }
 
-  /** The versions in either set. */
   union(other: VersionRanges): VersionRanges {
     if (other.isEmpty) return this;
     if (this.isEmpty) return other;
     return VersionRanges.of([...this.ranges, ...other.ranges]);
   }
 
-  /** The set without `version`. */
   delete(version: number): VersionRanges {
     if (!this.has(version)) return this;
     const ranges: VersionRange[] = [];

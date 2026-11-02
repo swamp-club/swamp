@@ -17,16 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * `swamp extension fmt --check`, `quality` and `push` give one answer for
- * the same extension (swamp-club#3022). Each scenario runs push's prepare
- * phase (enforce, as a push does), the quality generator and the fmt
- * generator over one real extension on disk, with the real safety analyzer,
- * review rules and `deno fmt` / `deno lint`. Only bundling, dependency trust
- * and the rubric's deno invocations are stubbed: they need the network or
- * are scored elsewhere.
- */
-
 import {
   assert,
   assertEquals,
@@ -114,10 +104,6 @@ function prepareDeps(): ExtensionPushPrepareDeps {
   };
 }
 
-/**
- * The real archive extraction, so the archive collect mode builds is the one
- * scored; the rubric's deno calls answer with an empty doc.
- */
 function scoreDeps(): RubricScoreDeps {
   return {
     extractTarball: extractTarGz,
@@ -132,11 +118,6 @@ function scoreDeps(): RubricScoreDeps {
   };
 }
 
-/**
- * The real archive extraction, with `deno doc --json` failing on a bare
- * `zod` import nothing maps: deno 2.9.7's own stderr for it, against the
- * entrypoint's URL.
- */
 function bareZodDocFailureScoreDeps(): RubricScoreDeps {
   return {
     extractTarball: extractTarGz,
@@ -167,15 +148,10 @@ interface Fixture {
   denoConfigPath: string | undefined;
 }
 
-/**
- * Writes the extension into a temp dir laid out as CI publishes it (the
- * repo is the extension dir) and resolves its inputs as the CLI would.
- */
 async function withExtension(
   files: {
     model: string;
     denoJson?: string;
-    /** The config's file name; `deno.json` when omitted. */
     denoConfigName?: "deno.json" | "deno.jsonc";
     additional?: Record<string, string>;
   },
@@ -201,8 +177,6 @@ async function withExtension(
       denoConfigPath = join(root, files.denoConfigName ?? "deno.json");
       await Deno.writeTextFile(denoConfigPath, files.denoJson);
     }
-    // What Deno resolves the model's bare imports to, read from the real
-    // module graph as the CLI reads it (swamp-club#3612).
     const bareImports = denoConfigPath
       ? (await new DenoInfoModuleGraphReader(DENO).read(model, {
         denoConfigPath,
@@ -348,8 +322,6 @@ Deno.test("quality and push agree: a bare import that ships as written is the sa
     const pushBare = pushed.reviewRulesResult.warnings.filter((w) =>
       w.ruleId === "bare-specifiers"
     );
-    // deno doc fails on the shipped bare import, as on the registry; quality
-    // still completes with the rubric (swamp-club#3669).
     const quality = await runQuality(
       fixture,
       undefined,
@@ -400,7 +372,6 @@ Deno.test("quality and push agree: a hidden packaged file is the same safety err
     ]);
     assertEquals(quality.score.factors.length > 0, true);
 
-    // Never cached: the next run is cold and reports the same failure.
     const again = await runQuality(fixture);
     assertEquals(again.cacheHit, false);
     assertEquals(again.gateFailures.map((f) => f.gate), ["safety"]);

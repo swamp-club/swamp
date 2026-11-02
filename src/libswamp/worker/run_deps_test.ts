@@ -59,7 +59,6 @@ Deno.test("createWorkerModelRunDeps: createAndSaveDefinition calls markDirty hoo
   }
 });
 
-/** A definition file written straight into a directory. */
 async function writeDefinition(
   dir: string,
   type: string,
@@ -99,7 +98,6 @@ Deno.test("createWorkerModelRunDeps: with definitionType, finds an auto-definiti
       "swamp/worker",
       "worker-a",
     );
-    // A same-name definition of another type in models/ is not a match.
     await writeDefinition(join(dir, "models"), "command/shell", "worker-a");
     ctx.definitionRepo.findByNameGlobal = () => {
       throw new Error("global name search");

@@ -18,15 +18,9 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * Retention policy for the serve-side bookkeeping records (see
- * design/enablers/remote-execution.md, "Worker, token and bookkeeping
- * reaping").
- *
- * Step leases and pending dispatches declare `lifetime: "infinite"`, so
- * `swamp data gc` never removes them. A record may be reaped once it has
- * ended — reached a terminal state, after which it is never rewritten — and
- * its `endedAt` is at least the grace period in the past. Live records
- * (active leases, waiting dispatches) are never reapable at any age.
+ * step leases and pending dispatches are lifetime infinite, so data gc never
+ * removes them; a record is reapable once ended (terminal, never rewritten) and
+ * endedAt is past the grace period. Live records never are.
  */
 
 import { minOf } from "../../array_extrema.ts";
@@ -48,7 +42,6 @@ function endedLongEnoughAgo(
   return nowMs - endedMs >= gracePeriodMs;
 }
 
-/** True when a step-lease record has ended and aged past the grace period. */
 export function isReapableLease(
   attrs: unknown,
   gracePeriodMs: number,
@@ -60,7 +53,6 @@ export function isReapableLease(
   return endedLongEnoughAgo(parsed.data.endedAt, gracePeriodMs, nowMs);
 }
 
-/** True when a pending-dispatch record has ended and aged past the grace period. */
 export function isReapableDispatch(
   attrs: unknown,
   gracePeriodMs: number,
@@ -72,11 +64,6 @@ export function isReapableDispatch(
   return endedLongEnoughAgo(parsed.data.endedAt, gracePeriodMs, nowMs);
 }
 
-/**
- * The instant an enrollment token stopped admitting workers, in ms: its
- * `expiresAt`, or its `revokedAt` when revoked earlier. Undefined while it
- * can still admit workers (not revoked and not yet expired).
- */
 function enrollmentTokenEndedMs(
   token: { state: string; expiresAt: string; revokedAt?: string },
   nowMs: number,

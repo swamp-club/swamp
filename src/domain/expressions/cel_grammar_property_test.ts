@@ -23,7 +23,6 @@ import { literalOccurrence } from "./cel_grammar.ts";
 import { scanExpressions } from "./expression_scanner.ts";
 import { CelEvaluator } from "../../infrastructure/cel/cel_evaluator.ts";
 
-/** Text built from what a CEL string or the expression scanner treats specially. */
 const arbText = fc.oneof(
   fc.array(
     fc.constantFrom(

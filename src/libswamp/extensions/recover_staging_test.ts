@@ -51,7 +51,6 @@ async function withRepo(fn: (repoDir: string) => Promise<void>) {
   }
 }
 
-/** Starts an install of `name` and kills it before any rename. */
 async function crashedInstall(
   repoDir: string,
   name: string,
@@ -126,7 +125,6 @@ Deno.test("recoverPulledExtensionStaging: rolls back an install interrupted befo
     await Deno.mkdir(roots.extensionRoot, { recursive: true });
     await Deno.writeTextFile(v1, "version: 1\n");
 
-    // The upgrade dies once phase 1 has moved the live root aside.
     let renames = 0;
     const tx = await ExtensionInstallTransaction.begin({
       repoDir,
@@ -166,7 +164,6 @@ const STAGING = join(".swamp", "pulled-extensions", ".swamp-staging", "id");
 const LIVE = join(".swamp", "pulled-extensions", "@acme", "thing");
 const OLD = join(STAGING, "old", "0");
 
-/** The refusal for a left journal of `@acme/thing` with these copies. */
 function refusal(liveState: ObservedPath, oldState: ObservedPath): string {
   const repoDir = `/tmp/swamp-recover-${crypto.randomUUID()}`;
   const extensionRoot: ExtensionRootCopies = {

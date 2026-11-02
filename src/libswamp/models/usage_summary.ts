@@ -35,13 +35,11 @@ import {
   toSearchItem,
 } from "./output_search.ts";
 
-/** One output in a model's `recent` list; its row names the model. */
 export type ModelUsageRecentOutput = Omit<
   ModelOutputSearchItem,
   "definitionId" | "modelName" | "type"
 >;
 
-/** Usage of one definition id under one type over the window. */
 export interface ModelUsageSummaryModel {
   definitionId: string;
   modelName: string;
@@ -49,15 +47,11 @@ export interface ModelUsageSummaryModel {
   executions: number;
   failed: number;
   lastStartedAt: string;
-  /** Distinct methods run, most recent first. */
   methods: string[];
-  /** The newest outputs, newest first, at most `recentLimit`. */
   recent: ModelUsageRecentOutput[];
 }
 
-/** Data payload for the completed event. */
 export interface ModelUsageSummaryData {
-  /** The window as resolved, when bounded. */
   since?: string;
   until?: string;
   /**
@@ -65,7 +59,6 @@ export interface ModelUsageSummaryData {
    * that no longer resolve, which have no row in `models`.
    */
   totals: { executions: number; failed: number };
-  /** Newest use first. */
   models: ModelUsageSummaryModel[];
 }
 
@@ -74,7 +67,6 @@ export type ModelUsageSummaryEvent =
   | { kind: "completed"; data: ModelUsageSummaryData }
   | { kind: "error"; error: SwampError };
 
-/** What authorization judges an output on; the same for all a group holds. */
 export interface ModelUsageOutputGroup {
   definitionId: string;
   modelName?: string;
@@ -82,7 +74,6 @@ export interface ModelUsageOutputGroup {
   methodName: string;
 }
 
-/** Dependencies for the model usage summary generator. */
 export type ModelUsageSummaryDeps =
   & Pick<
     ModelOutputSearchDeps,
@@ -101,21 +92,15 @@ export type ModelUsageSummaryDeps =
      * or recent lists.
      */
     isReadable(group: ModelUsageOutputGroup): Promise<boolean>;
-    /** The name of a definition with this id, under any type. */
     definitionNameById(definitionId: string): Promise<string | undefined>;
   };
 
-/** Input for the model usage summary generator. */
 export interface ModelUsageSummaryInput {
-  /** Counts outputs started at or after this time (ISO, or a duration back). */
   since?: string;
-  /** Counts outputs started before this time (exclusive). */
   until?: string;
-  /** Outputs kept per model in `recent`; clamped to 0..100, default 20. */
   recentLimit?: number;
 }
 
-/** Outputs tallied for one group, read in newest-first order. */
 interface GroupTally extends ModelUsageOutputGroup {
   /**
    * The name its row shows: a definition's outputs recorded under a type it
@@ -129,7 +114,6 @@ interface GroupTally extends ModelUsageOutputGroup {
   recent: ModelOutputSearchOutput[];
 }
 
-/** An output's search result, less what its row already says. */
 function recentOutput(
   output: ModelOutputSearchOutput,
   type: string,
@@ -140,10 +124,9 @@ function recentOutput(
 }
 
 /**
- * Summarises model outputs: exact counts per model and in total, each model's
- * methods and newest outputs. Reads the same outputs as the output search,
- * and tallies them per model and method before authorizing, because the
- * decision for one output of a method is the decision for all of them.
+ * reads the same outputs as the output search and tallies per model and method
+ * before authorizing, because the decision for one output of a method is the
+ * decision for all of them
  */
 export async function* modelUsageSummary(
   _ctx: LibSwampContext,
@@ -260,10 +243,9 @@ export async function* modelUsageSummary(
 }
 
 /**
- * Merges readable groups (each newest first) into one row per model and the
- * totals. Outputs of an id with no definition under any type count in the
- * totals only: no page can look such a row up, and history can hold many
- * deleted definitions (swamp-club#3959), so they must not grow the reply.
+ * outputs of an id with no definition under any type count in the totals only:
+ * no page can look such a row up, and history can hold many deleted
+ * definitions, so they must not grow the reply
  */
 function summarize(
   groups: readonly GroupTally[],

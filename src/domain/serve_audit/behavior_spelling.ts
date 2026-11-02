@@ -18,12 +18,9 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * The behavior spelling of audit filters (swamp-club#3334). Audit events are
- * stored with the model spelling (`model.method.run`, resource kind `model`),
- * and swamp keeps writing it. A filter, alert rule or policy rule written with
- * the behavior spelling is read in the model spelling when it is matched, so
- * both spellings select the same events. Nothing here rewrites a stored event
- * or the serve config file a rule was read from.
+ * audit events are stored in the model spelling; behavior-spelled filters and
+ * rules are read as model spelling when matched, and nothing rewrites stored
+ * events or config
  */
 
 import {
@@ -35,7 +32,6 @@ import {
   replacePrefix,
 } from "../terminology/behavior_aliases.ts";
 
-/** An audit action in the stored spelling: `behavior.` becomes `model.`. */
 export function canonicalAuditAction(action: string): string {
   return replacePrefix(
     action,
@@ -44,10 +40,6 @@ export function canonicalAuditAction(action: string): string {
   );
 }
 
-/**
- * An audit resource filter (`<kind>:<name>`) in the stored spelling:
- * `behavior:` becomes `model:`.
- */
 export function canonicalAuditResource(resource: string): string {
   return replacePrefix(
     resource,
@@ -56,12 +48,10 @@ export function canonicalAuditResource(resource: string): string {
   );
 }
 
-/** An audit resource kind in the stored spelling: `behavior` becomes `model`. */
 export function canonicalAuditResourceKind(kind: string): string {
   return canonicalResourceKind(kind);
 }
 
-/** `value` passed through `canonical` when it is set. */
 export function canonicalOptional(
   value: string | undefined,
   canonical: (value: string) => string,

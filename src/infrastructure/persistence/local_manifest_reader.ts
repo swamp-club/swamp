@@ -24,28 +24,14 @@ import { parse as parseYaml } from "@std/yaml";
 const logger = getLogger(["swamp", "persistence", "local-manifest-reader"]);
 
 /**
- * Identity derived from a local extension's `manifest.yaml`. Both fields
- * must be present in the manifest for the identity to override the
- * synthetic `@local/<basename>@0.0.0` default. If either field is
- * missing, the manifest is treated as not declaring an identity.
+ * both name and version must be present to override the synthetic @local
+ * default; if either is missing the manifest declares no identity
  */
 export interface LocalManifestIdentity {
   readonly name: string;
   readonly version: string;
 }
 
-/**
- * Reads `extensions/manifest.yaml` under `repoRoot` and extracts the
- * top-level `name` and `version` fields. Returns `null` when:
- *
- *   - The file does not exist (no manifest — silent).
- *   - The file is malformed YAML (warning logged).
- *   - Either `name` or `version` is missing or non-string (warning logged).
- *
- * This is a minimal reader — it does NOT validate the full manifest
- * schema used by `swamp extension push/pull`. It only extracts the two
- * fields needed for local extension identity.
- */
 export function readLocalManifestIdentity(
   repoRoot: string,
 ): LocalManifestIdentity | null {
@@ -53,11 +39,6 @@ export function readLocalManifestIdentity(
   return readManifestIdentityAt(manifestPath);
 }
 
-/**
- * Reads a `manifest.yaml` at an arbitrary path and extracts `name` and
- * `version`. Returns `null` on missing file, malformed YAML, or
- * incomplete identity (same semantics as {@link readLocalManifestIdentity}).
- */
 export function readManifestIdentityAt(
   manifestPath: string,
 ): LocalManifestIdentity | null {
@@ -84,12 +65,8 @@ export function readManifestIdentityAt(
 }
 
 /**
- * Reads a `manifest.yaml` at an arbitrary path and returns its top-level
- * `dependencies` — the extension refs it declares. Returns an empty array
- * on missing file, malformed YAML, or when `dependencies` is absent or not
- * an array. Non-string items are dropped. Like
- * {@link readManifestIdentityAt}, it does NOT validate the full manifest
- * schema, so an older installed manifest never blocks a caller.
+ * does not validate the full manifest schema, so an older installed manifest
+ * never blocks a caller
  */
 export function readManifestDependenciesAt(manifestPath: string): string[] {
   const obj = readManifestObjectAt(manifestPath);
@@ -99,11 +76,6 @@ export function readManifestDependenciesAt(manifestPath: string): string[] {
   );
 }
 
-/**
- * Reads and parses a `manifest.yaml` into its top-level object. Returns
- * `null` on a missing file (silent), and on an unreadable file, malformed
- * YAML or a non-object document (warning logged).
- */
 function readManifestObjectAt(
   manifestPath: string,
 ): Record<string, unknown> | null {

@@ -23,11 +23,8 @@ import { isBriefFile } from "./brief.ts";
 import type { TrustMode } from "./start_session.ts";
 
 /**
- * The prompt a harness is started with: it names the task's brief, where
- * the task itself lives. Only a well-formed brief path is accepted, so no
- * text the user typed ever reaches a command line.
- *
- * @throws {Error} When `briefFile` isn't a `tasks/<slug>.md` path.
+ * only a well-formed brief path is accepted, so no text the user typed reaches
+ * a command line
  */
 export function launchPrompt(briefFile: string): string {
   if (!isBriefFile(briefFile)) {
@@ -39,24 +36,18 @@ export function launchPrompt(briefFile: string): string {
   return `Read ${briefFile} and use the swamp-getting-started skill.`;
 }
 
-/** What `swamp start` knows about one agent harness. */
 export interface HarnessDefinition {
   readonly id: DetectableAiTool;
   readonly displayName: string;
-  /** The executable name looked up on PATH. */
   readonly binary: string;
-  /** The tool name `repo init --tool` enrols. */
   readonly enrolTool: string;
   readonly trustMode: TrustMode;
-  /** False when the harness takes no starting prompt: copy-command only. */
   readonly launchable: boolean;
-  /** The arguments after the binary, starting the task with `prompt`. */
   readonly args: (
     workspacePath: string,
     os: string,
     prompt: string,
   ) => readonly string[];
-  /** The arguments that open the agent in the workspace with no prompt. */
   readonly openArgs: (workspacePath: string, os: string) => readonly string[];
   /**
    * The arguments that continue the agent's most recent conversation in the
@@ -68,38 +59,31 @@ export interface HarnessDefinition {
   ) => readonly string[];
 }
 
-/**
- * How a launch starts the agent: with the task, continuing its earlier
- * conversation, or as a fresh session with no prompt.
- */
 export type LaunchMode = "task" | "resume" | "open";
 
-/** Everything needed to start one harness in the workspace. */
 export interface HarnessLaunchSpec {
   readonly harness: DetectableAiTool;
   readonly displayName: string;
   readonly binaryPath: string;
   readonly args: readonly string[];
   /**
-   * Arguments to run instead when `args` fails straight away. Set for a
-   * resume: with no earlier conversation in the folder, a harness's
-   * continue flag exits non-zero (`claude --continue` prints "No
-   * conversation found to continue"), so a fresh session opens instead.
+   * run instead when args fails straight away; set for a resume, since with no
+   * earlier conversation the continue flag exits non-zero, so a fresh session
+   * opens instead
    */
   readonly fallbackArgs?: readonly string[];
   readonly trustMode: TrustMode;
 }
 
 /**
- * Builds Codex's per-folder trust override. The folder is a quoted key so
- * the dots in `.swamp` are not read as key separators.
+ * the folder is a quoted key so the dots in .swamp are not read as key
+ * separators
  */
 function codexTrustOverride(workspacePath: string): string {
   const escaped = workspacePath.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
   return `projects."${escaped}".trust_level="trusted"`;
 }
 
-/** The harnesses `swamp start` can detect, in the order the page lists them. */
 export const HARNESSES: readonly HarnessDefinition[] = [
   {
     id: "claude",
@@ -204,15 +188,13 @@ export const HARNESSES: readonly HarnessDefinition[] = [
   },
 ];
 
-/** The definition for a harness id, or undefined for an unknown one. */
 export function findHarness(id: string): HarnessDefinition | undefined {
   return HARNESSES.find((h) => h.id === id);
 }
 
 /**
- * Picks the resolved path to launch from a lookup's output lines. On
- * Windows `where` lists the extensionless npm shim first; prefer a `.cmd`
- * or `.exe` hit.
+ * on Windows where lists the extensionless npm shim first, so prefer a .cmd or
+ * .exe hit
  */
 export function pickBinaryPath(
   lines: readonly string[],
@@ -225,8 +207,8 @@ export function pickBinaryPath(
 }
 
 /**
- * The trust mode a launch on this platform actually gets. Codex's override
- * cannot be carried by `cmd`, so on Windows Codex shows its own dialog.
+ * Codex's override cannot be carried by cmd, so on Windows Codex shows its own
+ * dialog
  */
 export function effectiveTrustMode(
   harness: HarnessDefinition,
@@ -237,12 +219,6 @@ export function effectiveTrustMode(
     : harness.trustMode;
 }
 
-/**
- * Plans how to start a harness: the binary, its arguments, its trust mode.
- * A task launch names the task's brief (`briefFile`, workspace-relative).
- *
- * @throws {Error} For a task launch without a valid brief path.
- */
 export function planHarnessLaunch(
   harness: HarnessDefinition,
   binaryPath: string,
@@ -270,7 +246,6 @@ export function planHarnessLaunch(
   };
 }
 
-/** True when reopening the harness continues its previous conversation. */
 export function canResume(harness: HarnessDefinition): boolean {
   return harness.resumeArgs !== undefined;
 }

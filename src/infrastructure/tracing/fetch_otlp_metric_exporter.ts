@@ -25,7 +25,6 @@ import { AggregationTemporality } from "@opentelemetry/sdk-metrics";
 import { type ExportResult, ExportResultCode } from "@opentelemetry/core";
 import { JsonMetricsSerializer } from "@opentelemetry/otlp-transformer";
 
-/** Uses native fetch, like the trace exporter, including compiled-binary TLS. */
 export class FetchOtlpMetricExporter implements PushMetricExporter {
   readonly #pending = new Set<Promise<void>>();
   #closed = false;

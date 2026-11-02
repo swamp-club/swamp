@@ -17,13 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * The v3 opt-in (swamp-club#3279): setup, the format guard, the single
- * writer, the refusals and the v2 paths a v3 datastore never takes. The
- * per-use-case gate is in the `usecase_sync_characterization_*_test.ts`
- * files (`usecase_v3_fixtures.ts`).
- */
-
 import "../src/domain/models/models.ts";
 import {
   assert,
@@ -210,7 +203,6 @@ Deno.test("v3 opt-in: setup refuses a non-empty path, a symlinked path and a rep
       );
     }
 
-    // A record in the repo's own datastore: v3 starts empty.
     const record = swampPath(repoDir, "data", "some", "record.yaml");
     await Deno.mkdir(join(record, ".."), { recursive: true });
     await Deno.writeTextFile(record, "x: 1\n");
@@ -219,7 +211,6 @@ Deno.test("v3 opt-in: setup refuses a non-empty path, a symlinked path and a rep
       errorOf(await setupV3(repoDir, fresh)) ?? "",
       "holds records",
     );
-    // Nothing was created for the refused setup.
     await assertRejects(() => Deno.stat(fresh), Deno.errors.NotFound);
   });
 });
@@ -311,7 +302,6 @@ Deno.test("v3 opt-in: a second writing process is refused, and a reader is not",
   });
 });
 
-/** A model saved in A's commit-log root. */
 function saveSeedModel(
   repos: Parameters<Parameters<typeof withV3RowRepos>[1]>[0],
 ) {
@@ -429,7 +419,6 @@ Deno.test("v3 opt-in: every v2 sync path is skipped or refused", async () => {
     // The context syncs nothing: no sync service, so serve builds no sync
     // gate, pollers or config pull, and no push or pull runs at the locks.
     assertEquals(repos.a.syncService, undefined);
-    // `datastore sync`.
     const sync = await createDatastoreSyncDeps(
       repos.repoA,
       repos.a.datastoreResolver,
@@ -485,14 +474,12 @@ Deno.test("v3 opt-in: datastore gc collects on v3, and datastore status reports 
         (await runCli({ args: ["datastore", "status", ...json] })).join("\n"),
       );
       assertEquals(status.format, 3);
-      // The model is git-tracked; its data is the one commit.
       assertEquals(status.commitLog.storedCommits, 1);
       assertEquals(status.commitLog.compactedThrough, 0);
     });
   });
 });
 
-/** Every `sha256` an output record's data artifacts carry, in its checkout. */
 async function artifactDigests(repoDir: string): Promise<(string | null)[]> {
   const digests: (string | null)[] = [];
   for await (
@@ -599,8 +586,8 @@ Deno.test("v3 opt-in: a query on a fresh checkout answers from the read model, n
       { flush: undefined },
       () => saveData(repos.serveRepo, model, "committed"),
     );
-    // B joins first: a checkout holding records before its first v3 open
-    // is refused (swamp-club#3690).
+    // B joins first: a checkout holding records before its first v3 open is
+    // refused
     await requireInitializedRepoReadOnly({
       repoDir: repos.repoB,
       outputMode: "json",
@@ -699,7 +686,6 @@ Deno.test("v3 opt-in: a namespace set before setup becomes the v3 datastore's na
   });
 });
 
-/** Every file under `root`, by relative path, with its bytes as text. */
 async function snapshot(root: string): Promise<Record<string, string>> {
   const files: Record<string, string> = {};
   for await (const entry of walk(root, { includeDirs: false })) {
@@ -756,7 +742,6 @@ Deno.test("v3 opt-in: a setup that stopped after the marker, or after the skelet
   }
 });
 
-/** Every file under `dir`, by relative path, with its bytes. */
 async function snapshotOf(
   dir: string,
 ): Promise<Map<string, Uint8Array | string>> {
@@ -795,12 +780,10 @@ Deno.test("v3 opt-in: doctor datastores --repair refuses on v3, and the check st
             "Nothing was changed.",
         );
       }
-      // Nothing was changed: the datastore is byte-identical.
       assertEquals(await snapshotOf(datastorePath), before);
       const report = JSON.parse(
         (await runCli({ args: ["doctor", "datastores", ...json] })).join("\n"),
       );
-      // The v3 content check passes on a healthy checkout (swamp-club#3617).
       assertEquals(report.overallStatus, "pass");
       assertEquals(
         report.healthFindings.find((f: { check: string }) =>
@@ -852,7 +835,6 @@ Deno.test({
   fn: async () => {
     await withV3RowRepos({}, async (repos) => {
       const stateDir = readModelStateDir(repos.repoA);
-      // Every connection closed, so its WAL files are gone.
       await closeV3Datastores();
       for (const suffix of ["-wal", "-shm"]) {
         await Deno.remove(join(stateDir, READ_MODEL_STATE_FILE + suffix))
@@ -882,7 +864,6 @@ Deno.test({
           finding?.message ?? "",
           "Could not inspect this v3 checkout's content: ",
         );
-        // The other checks still report.
         assertEquals(
           data.healthFindings.find((f) => f.check === "health")?.passed,
           true,
@@ -923,7 +904,6 @@ Deno.test("v3 opt-in: datastore lock status and release act on the writer lease"
   await withV3RowRepos({}, async (repos, datastorePath) => {
     await withMockedEnv(UNSET_ENV, async () => {
       const json = ["--repo-dir", repos.repoB, "--json"];
-      // A holds the writer lock: B's status sees this process holding it.
       const held = JSON.parse(
         (await runCli({ args: ["datastore", "lock", "status", ...json] }))
           .join("\n"),

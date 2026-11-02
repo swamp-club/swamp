@@ -66,10 +66,8 @@ await initializeLogging({});
 
 const WRITER = { host: "host-b", pid: 7, instance: "cli-flush" };
 
-/** What one send does: land, or fail with an error. */
 type Answer = "land" | Error;
 
-/** A serve over a {@link FixtureHistory}, answering sends in turn. */
 class FakePort implements OfflineFlushPort {
   readonly history = new FixtureHistory();
   readonly commits: Commit[] = [];
@@ -79,13 +77,11 @@ class FakePort implements OfflineFlushPort {
   readonly quarantinedEntries: string[] = [];
   readonly sentMaybe: string[] = [];
   answers: Answer[] = [];
-  /** Compacted versions the checkout's files hold, by `name@version`. */
   readonly compactedFiles = new Map<
     string,
     { readonly metadata: DataMetadata; readonly raw?: Uint8Array }
   >();
   compactedSeq = 0;
-  /** Offline entries flushes landed, as the outbox records them. */
   readonly ownTxnIds = new Set<string>();
 
   catchUpPartition(): Promise<void> {
@@ -126,7 +122,6 @@ class FakePort implements OfflineFlushPort {
     for (const key of keys) this.settled.push(key.txnId);
     return Promise.resolve();
   }
-  /** What landed offline entries left for later ones, as the outbox keeps it. */
   carry: OfflineRebaseCarry = EMPTY_REBASE_CARRY;
   recordOwnLanded(
     key: { txnId: string },
@@ -163,7 +158,6 @@ class FakePort implements OfflineFlushPort {
     return Promise.resolve(this.compactedFiles.get(`${name}@${version}`));
   }
 
-  /** Lands `commit` as serve's own, as another writer's did meanwhile. */
   land(commit: Commit): void {
     this.history.append(commit);
     this.commits.push(commit);
@@ -225,14 +219,11 @@ Deno.test("flushOfflineEntries: lands entries in order, renumbered past a versio
   ]);
   assertEquals(report.landed, 2);
   assertEquals(port.settled, ["mine-1", "mine-2"]);
-  // The first never lands on 2, which the second still holds while queued:
-  // a queued number never names two versions.
   assertEquals(port.history.partition.versions("out"), [1, 3, 4]);
   assertEquals(
     report.renumbered.map((version) => [version.from, version.to]),
     [[1, 3], [2, 4]],
   );
-  // Each renumbered version names the behavior whose partition it is in.
   assertEquals(
     new Set(report.renumbered.map((version) => version.behavior)).size,
     1,
@@ -300,7 +291,6 @@ Deno.test("flushOfflineEntries: a missing grant quarantines an entry, a refused 
     await offlineEntry(2, "r", 1, {}),
   ]);
   assertEquals(report.quarantined, 1);
-  // The rejected one's partition waited behind the quarantined one.
   assertEquals(port.marks, ["q quarantined"]);
   assertEquals(port.quarantinedEntries, ["q"]);
   assertEquals(port.settled, []);
@@ -372,8 +362,6 @@ Deno.test("flushOfflineEntries: an entry sent without an answer longer ago than 
   assertEquals(port.sends, []);
   assertEquals(port.marks, ["old rejected"]);
 
-  // Within the retention, it is sent again: serve would have answered
-  // "landed" had it taken it.
   const recent = new FakePort();
   const sent = await flush(recent, [
     await offlineEntry(1, "recent", 1, {
@@ -391,7 +379,6 @@ Deno.test("flushOfflineEntries: an entry's own failure rejects it and the flush 
     await offlineEntry(2, "after", 2),
   ]);
   assertEquals(report.rejected, 1);
-  // Its partition's later entry waits behind it, as after any rejection.
   assertEquals(report.waiting, 1);
   assertEquals(port.marks, ["broken rejected"]);
 
@@ -407,8 +394,6 @@ Deno.test("flushOfflineEntries: an entry's own failure rejects it and the flush 
 const offlineEntrySync = await offlineEntry(1, "auth", 1);
 
 Deno.test("flushOfflineEntries: a latest whose commit was compacted is judged by its createdAt from the checkout's files", async () => {
-  // The current latest landed after the offline work's base, then was
-  // compacted: only the checkout's files still say when it was written.
   const latestOps = await saveOps({
     name: "out",
     version: 1,
@@ -429,11 +414,8 @@ Deno.test("flushOfflineEntries: a latest whose commit was compacted is judged by
     raw: new TextEncoder().encode("out@1"),
   });
   const kept = await flush(withFiles, [await offlineEntry(1, "mine", 1)]);
-  // Written offline at 09:00, two minutes before the latest: it stays.
   assertEquals(kept.latest.map((outcome) => outcome.kind), ["restated"]);
 
-  // Compacted no later than the entry's base: the offline writer saw it,
-  // so its own later write takes latest, as online.
   const seen = new FakePort();
   seen.history.append(compacted);
   seen.compactedSeq = 1;
@@ -489,8 +471,6 @@ Deno.test("flushOfflineEntries: a local failure that may pass stops the flush an
 
 Deno.test("flushOfflineEntries: serve withholding the current latest's content sends the entry again without the restatement, so the rebased version becomes latest, and says so", async () => {
   const port = new FakePort();
-  // Landed meanwhile and observed at 10:00, after the offline work ran at
-  // 09:00: the offline version would leave it latest, restated.
   port.land(fixtureCommit({
     seq: 1,
     txnId: "theirs",
@@ -518,7 +498,6 @@ Deno.test("flushOfflineEntries: serve withholding the current latest's content s
   const [outcome] = report.latest;
   assert(outcome.kind === "rebased");
   assertEquals(outcome.restateSkipped, "content-not-provided");
-  // Only the rebased version landed: no restatement above it.
   assertEquals(port.history.partition.latest("out"), 2);
 });
 
@@ -532,7 +511,6 @@ Deno.test("flushOfflineEntries: chunk_not_provided for an entry that restates no
   assertEquals(port.marks, ["mine rejected"]);
 });
 
-/** The content of `out`'s latest version in `port`'s history, as JSON. */
 function latestContent(port: FakePort): string | undefined {
   const version = port.history.partition.latest("out");
   if (version === undefined) return undefined;
@@ -552,8 +530,6 @@ function latestContent(port: FakePort): string | undefined {
 
 Deno.test("flushOfflineEntries: several offline entries observed before a version that landed meanwhile all leave it latest: each is judged against the restatement the one before landed", async () => {
   const port = new FakePort();
-  // Bob's version, observed at 10:00, after every offline write below but
-  // within the 5-minute window of each.
   port.land(fixtureCommit({
     seq: 1,
     txnId: "bob-1",
@@ -580,8 +556,6 @@ Deno.test("flushOfflineEntries: several offline entries observed before a versio
     report.latest.map((outcome) => outcome.kind),
     ["restated", "restated", "restated"],
   );
-  // Bob's content holds latest at the end: a restatement of version 1,
-  // which the report names.
   assertEquals(latestContent(port), "restates 1");
   assertEquals(report.latestAtEnd.length, 1);
   const [atEnd] = report.latestAtEnd;
@@ -598,8 +572,6 @@ Deno.test("flushOfflineEntries: a flush judges the checkout's own offline versio
     }),
   ]);
   assertEquals(first.latest.map((outcome) => outcome.kind), ["rebased"]);
-  // The next command flushes the rest: written two minutes after the
-  // first, which it saw.
   const second = await flush(port, [
     await offlineEntry(2, "offline-2", 2, {
       executedAt: "2026-10-30T09:02:00.000Z",
@@ -609,7 +581,6 @@ Deno.test("flushOfflineEntries: a flush judges the checkout's own offline versio
   assertEquals(latestContent(port), "offline-2");
 });
 
-/** An offline entry whose commit holds `ops`. */
 function entryOf(
   sequence: number,
   txnId: string,
@@ -630,14 +601,12 @@ function entryOf(
   };
 }
 
-/** The digest of `out@version`'s raw record as serve holds it. */
 function rawDigest(port: FakePort, version: number): string | undefined {
   return port.history.partition.record(
     fixtureChanges().dataKey("out", version, "raw"),
   )?.sha256;
 }
 
-/** Another writer's `out@3`, landed while the checkout was offline. */
 async function theirsAtThree(port: FakePort): Promise<string> {
   port.land(fixtureCommit({
     seq: 1,
@@ -668,8 +637,6 @@ for (
     ]);
     assertEquals(report.landed, 2);
     assertEquals(report.rejected, 0);
-    // The other writer's version 3 survives; the checkout's own, landed
-    // as 4, is the one removed.
     assertEquals(port.history.partition.versions("out"), [3]);
     assertEquals(rawDigest(port, 3), theirs);
   });
@@ -722,7 +689,6 @@ Deno.test("flushOfflineEntries: a flush cut off between two offline entries rema
   const first = await flush(port, [save, remove]);
   assertEquals(first.landed, 1);
   assertEquals(first.waiting, 1);
-  // The next command flushes what is left.
   const second = await flush(port, [remove]);
   assertEquals(second.landed, 1);
   assertEquals(port.history.partition.versions("out"), [3]);

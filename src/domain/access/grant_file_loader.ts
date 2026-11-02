@@ -18,10 +18,9 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * Reads every grant file `swamp serve` reads at startup — the repository
- * `grants/` directory, `--grants-file` and `--grants-dir` — and reports what
- * it found without deciding anything, so serve startup and
- * `swamp serve check-config` judge the same files (swamp-club#3130).
+ * reads every grant file serve reads at startup and reports what it found
+ * without deciding anything, so serve startup and serve check-config judge the
+ * same files
  */
 
 import { join } from "@std/path";
@@ -42,18 +41,14 @@ import {
 } from "./grant_username_resolution.ts";
 import { grantsDirSourceName } from "./grant_source.ts";
 
-/** One grant file outside the repository grants/ directory. */
 export interface ExternalGrantFile {
   readonly path: string;
-  /** Null for a file that is empty or only whitespace. */
   readonly result: GrantFileParseResult | null;
 }
 
-/** A `--grants-dir` file, under its grant source name. */
 export interface GrantsDirFile extends ExternalGrantFile {
   readonly name: string;
   readonly sourceName: string;
-  /** Set when the listed file could not be read; result is then null. */
   readonly readError?: unknown;
 }
 
@@ -80,7 +75,6 @@ export type GrantsDirLoad =
     readonly path: string;
     readonly files: readonly GrantsDirFile[];
   }
-  /** The configured directory is the repository grants/ directory. */
   | { readonly status: "same-as-repo"; readonly configured: string }
   | {
     readonly status: "missing";
@@ -94,11 +88,10 @@ export type GrantsDirLoad =
   };
 
 export interface ServeGrantFiles {
-  /** The repository grants/ directory, by file name. */
   readonly repo: Map<string, GrantFileParseResult>;
   /**
-   * Set when grants/ exists but cannot be listed; `repo` is then empty.
-   * Serve startup rethrows the cause, as it always has.
+   * set when grants/ exists but cannot be listed; repo is then empty and serve
+   * startup rethrows the cause
    */
   readonly repoUnreadable?: { readonly path: string; readonly cause: unknown };
   readonly grantsFile?: GrantsFileLoad;
@@ -106,18 +99,15 @@ export interface ServeGrantFiles {
 }
 
 export interface ServeGrantFileOptions {
-  /** `--grants-file`, relative to the repository when not absolute. */
   readonly grantsFile?: string;
-  /** `--grants-dir`, relative to the repository when not absolute. */
   readonly grantsDir?: string;
   readonly validateCondition?: ConditionValidator;
   readonly readTypeLiterals?: ConditionTypeLiteralReader;
 }
 
 /**
- * A `--grants-dir` file. Dotfiles are skipped here and not in the repository
- * grants/ directory (readGrantFiles): that difference predates this loader
- * and the poller hashes each directory the same way, so change both together.
+ * dotfiles are skipped here but not in the repository grants/ directory; the
+ * poller hashes each directory the same way, so change both together
  */
 function isGrantsDirFile(entry: Deno.DirEntry): boolean {
   return (entry.isFile || entry.isSymlink) &&
@@ -125,7 +115,6 @@ function isGrantsDirFile(entry: Deno.DirEntry): boolean {
     !entry.name.startsWith(".");
 }
 
-/** Reads one `--grants-file`, at an already resolved path. */
 export async function readGrantsFileSource(
   path: string,
   options: ServeGrantFileOptions,
@@ -153,7 +142,6 @@ export async function readGrantsFileSource(
   };
 }
 
-/** Reads one `--grants-dir` and its grant files, at an already resolved path. */
 export async function readGrantsDirSource(
   path: string,
   options: ServeGrantFileOptions,
@@ -196,7 +184,6 @@ export async function readGrantsDirSource(
   return { status: "loaded", path, files };
 }
 
-/** Reads every grant file serve reads, resolved as serve resolves them. */
 export async function readServeGrantFiles(
   repoDir: string,
   options: ServeGrantFileOptions,
@@ -238,10 +225,6 @@ export async function readServeGrantFiles(
   };
 }
 
-/**
- * Every `username:` subject the loaded grant files name (swamp-club#3123),
- * deduplicated, from files that parsed, whatever else they hold.
- */
 export function serveGrantFileUsernames(files: ServeGrantFiles): string[] {
   const results: GrantFileParseResult[] = [...files.repo.values()];
   if (files.grantsFile?.status === "loaded" && files.grantsFile.file.result) {
@@ -255,40 +238,29 @@ export function serveGrantFileUsernames(files: ServeGrantFiles): string[] {
   return grantFileUsernames(results.flatMap((result) => result.entries));
 }
 
-/**
- * Why a grant file was reported: it fails to load (`invalid`), cannot be
- * read (`unreadable`), is absent where the check ran (`missing-source`), or
- * spells a type no type is stored as (`spelling`).
- */
 export type GrantFileCheckReason =
   | "invalid"
   | "unreadable"
   | "missing-source"
   | "spelling";
 
-/** One grant-file finding, located by file and, when known, entry. */
 export interface GrantFileCheckIssue {
   readonly reason: GrantFileCheckReason;
   readonly file: string;
-  /** 1-based entry number within the file. */
   readonly entry?: number;
   readonly message: string;
 }
 
 export interface GrantFileCheck {
-  /** How many grant files were read, empty ones included. */
   readonly filesChecked: number;
-  /** What would stop serve starting. */
   readonly errors: readonly GrantFileCheckIssue[];
-  /** Advisory: spellings that match no type, and sources absent here. */
   readonly warnings: readonly GrantFileCheckIssue[];
 }
 
 /**
- * How a repository grants/ file is named to users: `grants/<name>` with a
- * forward slash on every platform, since it names the file within the
- * repository rather than a path to open. `--grants-file` and `--grants-dir`
- * files are named by their native paths.
+ * a repository grants file is named grants/<name> with a forward slash on every
+ * platform, since it names the file within the repository; external files are
+ * named by native path
  */
 export function repoGrantFileName(name: string): string {
   return `grants/${name}`;
@@ -319,10 +291,9 @@ function resultIssues(
 }
 
 /**
- * Judges grant files the way serve startup does: anything that refuses
- * startup is an error. A `--grants-file` or `--grants-dir` that is absent
- * here is only a warning, since it may exist only where serve runs; serve
- * refuses to start if it is absent there.
+ * anything that refuses startup is an error; an absent --grants-file or
+ * --grants-dir is only a warning, since it may exist only where serve runs,
+ * which refuses to start without it
  */
 export function checkServeGrantFiles(files: ServeGrantFiles): GrantFileCheck {
   const errors: GrantFileCheckIssue[] = [];
@@ -397,12 +368,6 @@ export function checkServeGrantFiles(files: ServeGrantFiles): GrantFileCheck {
   return { filesChecked, errors, warnings };
 }
 
-/**
- * Resolves the `username:` subjects of the loaded grant files and reports
- * each one that does not resolve as an `invalid` issue, as serve startup
- * would refuse it (swamp-club#3123). Files are named as
- * {@link checkServeGrantFiles} names them.
- */
 export async function checkServeGrantFileUsernames(
   files: ServeGrantFiles,
   resolver: GrantUsernameResolver,

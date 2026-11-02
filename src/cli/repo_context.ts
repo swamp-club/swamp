@@ -17,14 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * CLI adapter for validating repository initialization.
- *
- * This module bridges CLI commands with the domain's RepoService by:
- * - Checking if a directory is an initialized swamp repository
- * - Throwing clear errors when not initialized
- */
-
 import { serveUpstreamAt } from "../infrastructure/datastore_v3/serve_upstream_registry.ts";
 import type { ServeUpstreamTarget } from "../domain/datastore_v3/serve_upstream.ts";
 import { recordServeUpstreamFormat } from "../infrastructure/persistence/datastore_format_guard.ts";
@@ -232,22 +224,16 @@ function labeledPrefix(label: string): string {
   return dim(`${padded} │`);
 }
 
-// Lock and sync progress is commentary, so `-q` silences it. Set once per
-// invocation from the CLI's global action (swamp-club#2257).
 let lockProgressQuiet = false;
 
-/** Silence lock-wait and datastore sync progress for this invocation. */
 export function setLockProgressQuiet(quiet: boolean): void {
   lockProgressQuiet = quiet;
 }
 
-// JSON mode has no console log output, and a failing command's stderr must
-// stay one JSON document (design/surfaces/auth-gate.md), so progress is
-// written in log mode only. Set once per invocation from the CLI's global
-// action (swamp-club#3902).
+// json mode has no console log output and a failing command's stderr must stay
+// one JSON document, so progress is written in log mode only
 let lockProgressJson = false;
 
-/** Tell lock-wait, sync and v3 recovery progress the invocation's output mode. */
 export function setLockProgressOutputMode(mode: OutputMode): void {
   lockProgressJson = mode === "json";
 }
@@ -255,10 +241,8 @@ export function setLockProgressOutputMode(mode: OutputMode): void {
 const writeStderrLine = (line: string): void => console.error(line);
 
 /**
- * Tells a serve-mode checkout's offline notices the invocation's output mode
- * (swamp-club#4195): in json mode, where the logger is silent, each is one
- * JSON object on stderr, as json-mode warnings are; log mode says them
- * through the logger. Set once per invocation from the CLI's global action.
+ * in json mode, where the logger is silent, each offline notice is one JSON
+ * object on stderr; log mode says them through the logger
  */
 export function setServeOfflineOutputMode(mode: OutputMode): void {
   setServeOfflineNoticeWriter(
@@ -268,11 +252,6 @@ export function setServeOfflineOutputMode(mode: OutputMode): void {
   );
 }
 
-/**
- * Has a v3 checkout's recovery of an interrupted writer say on stderr that
- * it is running, as lock and sync progress does (swamp-club#3893). Set once
- * per invocation from the CLI's global action.
- */
 export function enableV3RecoveryProgress(): void {
   setV3RecoveryProgress(createLockProgressWriter("system"));
 }
@@ -344,12 +323,6 @@ import { resolveSourceBaseDirs } from "../infrastructure/persistence/git_worktre
 import type { ExtensionWorkflowRepository } from "../infrastructure/persistence/extension_workflow_repository.ts";
 import { importCheckoutControlPlane } from "../infrastructure/persistence/checkout_control_plane_import.ts";
 
-/**
- * Resolves source workflow directories from `.swamp-sources.yaml`.
- * Results are cached per repoDir to avoid re-reading and re-expanding on
- * every call (multiple repo context functions call this per command).
- * Returns an empty array if no sources are configured or file doesn't exist.
- */
 const sourceWorkflowDirCache = new Map<string, string[]>();
 export async function getSourceWorkflowDirs(
   repoDir: string,
@@ -375,12 +348,8 @@ export async function getSourceWorkflowDirs(
 }
 
 /**
- * Re-enumerates the source and pulled-extension workflow directories and
- * points the extension workflow repository at them. The repository context
- * enumerates these once, when it is created; callers that change what is on
- * disk afterwards (a managed-config pull, a reload) call this to catch up.
- *
- * @returns The number of pulled-extension workflow directories found
+ * the repository context enumerates these once at creation; call this after
+ * changing what is on disk (a managed-config pull, a reload)
  */
 export async function refreshExtensionWorkflowDirs(
   extWorkflowRepo: Pick<ExtensionWorkflowRepository, "updateAdditionalDirs">,
@@ -399,13 +368,6 @@ export async function refreshExtensionWorkflowDirs(
   return pulledWfDirs.length;
 }
 
-/**
- * A `LibSwampContext` for a CLI command whose write use cases go through
- * `repoContext`'s repositories. Each use case's unit of work is bound to
- * `repoContext.markDirty` itself, so the repositories stage into it (datastore
- * rework Phase 2, swamp-club#3025). With no hook (filesystem datastores,
- * read-only contexts) it behaves as `createLibSwampContext`.
- */
 export function libSwampContextForRepo(
   repoContext: Pick<RepositoryContext, "markDirty" | "commitLog">,
   options?: { logger?: Logger; signal?: AbortSignal },
@@ -417,28 +379,9 @@ export function libSwampContextForRepo(
 }
 
 /**
- * Bridges a `DatastoreSyncService` into a `MarkDirtyHook` that repositories
- * can call without knowing the cache root. Repositories pass the absolute
- * path of the about-to-be-written file (or `undefined` for bulk mutations);
- * the hook computes the cache-relative form and forwards it to the sync
- * service via `DatastoreSyncOptions.relPath`.
- *
- * Path conversion: `relative(cacheRoot, absPath)` then forward-slash
- * normalize. Forward-slash on the wire is the cross-platform key
- * convention (matching `.datastore-index.json`); extensions consuming
- * `relPath` for disk access on Windows convert back to native separators.
- *
- * When the path is outside cacheRoot (e.g. repo-local `.swamp/outputs/`
- * vs a remote cache at `~/.swamp/repos/<id>/`), the relative result starts
- * with `..`. In that case we fall back to `relative(repoSwampDir, absPath)`
- * — both trees share the same internal layout, so either root produces a
- * usable cache-relative key.
- *
- * A path outside both roots (repo-local `models/`, `workflows/` or `vaults/`
- * without managedConfig) is never synced, so the hook sends nothing. The
- * S3 and GCS extensions treat an escaping relPath as bulk invalidation, so
- * forwarding it would turn the next push into a walk of the whole cache.
- * A cross-drive `relative()` result on Windows is absolute, not `..`.
+ * a path outside both roots is never synced: the S3 and GCS extensions treat an
+ * escaping relPath as bulk invalidation, which would turn the next push into a
+ * walk of the whole cache
  */
 export function buildMarkDirtyHook(
   syncService: DatastoreSyncService,
@@ -455,11 +398,6 @@ export function buildMarkDirtyHook(
   };
 }
 
-/**
- * The cache-relative, forward-slash path {@link buildMarkDirtyHook} marks for
- * `absPath`, or undefined for a path outside both roots, which it never
- * marks. Exported so tests can map staged changes to the marks they cause.
- */
 export function cacheRelativeMarkPath(
   absPath: string,
   cacheRoot: string,
@@ -473,10 +411,6 @@ export function cacheRelativeMarkPath(
   return SEPARATOR === "/" ? rel : rel.split(SEPARATOR).join("/");
 }
 
-/**
- * The repository's foreign content fetcher over a sync service, or undefined
- * when there is no sync service or it cannot read another namespace.
- */
 function buildForeignContentFetcher(
   syncService: DatastoreSyncService | undefined,
 ): ForeignContentFetcher | undefined {
@@ -504,8 +438,8 @@ function buildHydrateFileHook(
       await (options?.signal
         ? syncService.hydrateFile!(relPath, { signal: options.signal })
         : syncService.hydrateFile!(relPath));
-    // Outside the cache the datastore writes somewhere other than absPath,
-    // so only a path inside it can hold the datastore to its claim.
+    // outside the cache the datastore writes somewhere other than absPath, so
+    // only a path inside it can hold the datastore to its claim
     if (hydrated && insideCache && !(await fileExists(absPath))) {
       getSwampLogger(["cli", "datastore"])
         .warn`Datastore ${datastoreType} reported hydrateFile success for ${relPath} but no file exists at ${absPath}`;
@@ -529,68 +463,53 @@ async function fileExists(path: string): Promise<boolean> {
 }
 
 /**
- * Whether a `relative(root, path)` result points outside `root`: a `..`
- * segment first, or an absolute path (cross-drive on Windows). A first
- * segment that merely starts with two dots (`..hidden`) is inside the root.
+ * a first segment that merely starts with two dots (..hidden) is inside the
+ * root; a cross-drive relative result on Windows is absolute
  */
 function escapesRoot(rel: string): boolean {
   return rel === ".." || rel.startsWith(`..${SEPARATOR}`) || isAbsolute(rel);
 }
 
-/**
- * Options for requireInitializedRepo.
- */
 export interface RequireRepoOptions {
   repoDir: string;
   outputMode: OutputMode;
   /**
-   * On a v3 datastore, take the writer lease again once another writer has
-   * taken it over and finished, rather than refusing every later commit.
-   * Serve's lifetime hold sets it; a one-shot command fails as a whole
-   * instead (swamp-club#3359).
+   * on v3, take the writer lease again once another writer took it over and
+   * finished, rather than refusing every later commit; serve's lifetime hold
+   * sets it, a one-shot command fails instead
    */
   retakeLostV3Lease?: boolean;
   /**
-   * On a v3 datastore, follow rather than wait when another process holds
-   * the writer lease: serve's team mode (swamp-club#4096). The result's
-   * `v3Role` says which this process became.
+   * on v3, follow rather than wait when another process holds the writer lease
+   * (serve's team mode); the result's v3Role says which this process became
    */
   followV3Lease?: boolean;
   /**
-   * On a v3 datastore, how the writer lease's hold meets a claim on it
-   * (swamp-club#4063): a direct writer's, refused once serve owns the
-   * datastore, unless set. Serve passes its address; `datastore claim` and
-   * `release` pass `claimer`.
+   * on v3, how the lease hold meets a claim on it: a direct writer's is refused
+   * once serve owns the datastore, unless set; serve passes its address,
+   * datastore claim and release pass claimer
    */
   v3OwnerCheck?: V3OwnerCheck;
   /**
-   * Give up after this long, instead of the lock timeout, when the datastore
-   * lock or a per-model lock another process holds is not free. The
-   * end-of-command retention pass sets it so a busy repository skips the
-   * pass rather than holding up the command (swamp-club#3473).
+   * give up after this long instead of the lock timeout; the end-of-command
+   * retention pass sets it so a busy repository skips the pass rather than
+   * holding up the command
    */
   lockWaitMs?: number;
   /**
-   * Skip the coordinator's implicit pull-at-startup and push-at-flush.
-   * The lock is still acquired (so concurrent writers are blocked), but
-   * no sync service is registered with the coordinator. Used by the
-   * `swamp datastore sync` command, which owns its own pull/push and
-   * must not race with the coordinator's implicit phase — without this
-   * flag the implicit pull silently moves files and the explicit pull
-   * fast-paths to 0, causing `filesPulled: 0` to be reported even when
-   * data was hydrated. See lab #220.
+   * skip the implicit pull and push but still take the lock; datastore sync
+   * owns its own pull and push, and an implicit pull would make its explicit
+   * pull report 0 files
    */
   skipImplicitSync?: boolean;
   /**
-   * Pull the config tier from the remote datastore before reading.
-   * Only effective under managedConfig with a custom datastore — a no-op
-   * for filesystem datastores. Used by read-only commands that need
-   * fresh remote state (e.g. `vault get --pull` from a fresh container).
+   * pull the config tier from the remote datastore before reading; only
+   * effective under managedConfig with a custom datastore, for read-only
+   * commands needing fresh remote state
    */
   pull?: boolean;
 }
 
-/** Options for {@link ensureManagedConfigBase}. */
 export interface EnsureManagedConfigBaseOptions {
   /**
    * When false, resolve with installed datastore extensions only: a missing
@@ -600,30 +519,9 @@ export interface EnsureManagedConfigBaseOptions {
 }
 
 /**
- * Pre-populates the module-level managed config registry by resolving the
- * datastore config. Call this before {@link resolveManagedConfigPaths} in
- * commands that use {@link requireRepoMarker} (lightweight, no datastore
- * resolution) so resolveManagedConfigPaths resolves the correct
- * cache-relative base path for custom datastores (S3, GCS) when no
- * explicit `configBasePath` argument is provided.
- *
- * Commands that go through {@link requireInitializedRepo} /
- * {@link requireInitializedRepoReadOnly} / {@link requireInitializedRepoUnlocked}
- * already pass `configBasePath` to resolveManagedConfigPaths and do NOT need
- * this call.
- *
- * When the datastore cannot be resolved (its extension is not installed or
- * does not load), nothing is registered here: resolveManagedConfigPaths then
- * records the in-repo `.swamp/config` fallback as unresolved, and write
- * commands refuse it (see {@link assertManagedConfigWritable}). The datastore
- * type registry's loaded flag is reset so a later attempt rescans for the
- * extension. Transient `lock_timeout` errors are rethrown rather than
- * reported as unresolved.
- *
- * @param resolverOverride Test seam — inject a mock resolver to avoid loading
- *   real datastore extensions in tests.
- * @returns Whether the base was resolved (always false for repos without
- *   managedConfig).
+ * if the datastore cannot be resolved nothing is registered; the in-repo
+ * .swamp/config fallback is then recorded unresolved and write commands refuse
+ * it. lock_timeout errors are rethrown
  */
 export async function ensureManagedConfigBase(
   repoDir: string,
@@ -667,24 +565,12 @@ export async function ensureManagedConfigBase(
   }
 }
 
-/** The most recent managed config resolution failure per repo, for errors. */
 const lastResolutionFailure = new Map<string, string>();
 
 /**
- * Resolves the lockfile path based on whether managed config is enabled.
- * When managedConfig is true it points into the managed config base (the
- * datastore config tier); when false it is `<modelsDir>/upstream_extensions.json`.
- *
- * The marker flag (`managedConfig: true` in `.swamp.yaml`) is the sole
- * authority for activation. When no explicit `configBasePath` is provided,
- * the module-level registry (populated by {@link ensureManagedConfigBase})
- * supplies the correct base for custom datastores (S3, GCS) whose config
- * tier lives at the cache path rather than repo-local `.swamp/config/`.
- * Without a registered base the in-repo `.swamp/config` fallback is used and
- * recorded as unresolved; it never replaces a resolved base.
- *
- * Pulled extension sources always live under the in-repo pulled root
- * (`resolvePulledExtensionsRoot`), whatever the config base.
+ * without a registered base the in-repo .swamp/config fallback is used and
+ * recorded as unresolved, never replacing a resolved base; pulled extension
+ * sources always live under the in-repo root
  */
 export function resolveManagedConfigPaths(
   repoDir: string,
@@ -725,10 +611,8 @@ export function resolveManagedConfigPaths(
 }
 
 /**
- * Thrown when an extension command would write the managed extension
- * lockfile but the managed config base could not be resolved, so the only
- * lockfile available is the in-repo `.swamp/config` guess. Writing there
- * would never reach the datastore's lockfile (swamp-club#2483).
+ * writing the lockfile to the in-repo guess would never reach the datastore's
+ * lockfile
  */
 export class ManagedConfigUnresolvedError extends UserError {
   constructor(
@@ -750,13 +634,6 @@ export class ManagedConfigUnresolvedError extends UserError {
   }
 }
 
-/**
- * Refuses a managed extension lockfile write when the managed config base
- * is only the in-repo guess. Applies to managedConfig repos on an
- * extension-backed datastore; filesystem datastores always resolve.
- *
- * @throws ManagedConfigUnresolvedError when the base is unresolved.
- */
 export function assertManagedConfigWritable(
   repoDir: string,
   marker: RepoMarkerData | null,
@@ -773,37 +650,20 @@ export function assertManagedConfigWritable(
   );
 }
 
-/** Where a managed extension lockfile write should go. */
 export interface ManagedLockfileWrite {
   lockfilePath: string;
   /**
-   * Whether to publish the lockfile to the datastore afterwards. False when
-   * the datastore-extension exemption records into the in-repo lockfile
-   * because the base is unresolved; nothing in the datastore cache changed.
+   * false when the datastore-extension exemption records into the in-repo
+   * lockfile because the base is unresolved; nothing in the datastore cache
+   * changed
    */
   publish: boolean;
 }
 
 /**
- * Resolves the lockfile an extension write command should change, applying
- * the guard against writing to a guessed managed config base
- * (swamp-club#2483).
- *
- * The base is resolved as other commands resolve it, auto-installing a
- * missing datastore extension, so a fresh checkout's writes work as before.
- * When the base is resolved (or the repo does not need it), the resolved
- * lockfile is returned. When it is still unresolved on an extension-backed
- * datastore (the extension could not be installed or does not load), the
- * write is allowed only if every target is the datastore extension itself
- * (the #445 recovery path): it then records into the in-repo lockfile
- * without publishing. Otherwise {@link ManagedConfigUnresolvedError} is
- * thrown.
- *
- * @param options.exemptTargets Extension names the command writes; pass
- *   them only for commands that may repair the datastore extension
- *   (`extension pull`, `extension update <name>`).
- * @param options.extensionLookup Registry lookup used to recognise datastore
- *   extensions whose name is not a prefix of the datastore type.
+ * an unresolved base on an extension-backed datastore is allowed only when
+ * every target is the datastore extension itself: it records in-repo without
+ * publishing; otherwise it throws
  */
 export async function resolveManagedLockfileForWrite(
   repoDir: string,
@@ -829,8 +689,8 @@ export async function resolveManagedLockfileForWrite(
       const candidates = await datastoreExtensionCandidates(type, lookup);
       return targets.every((target) => candidates.includes(target));
     };
-    // Static candidates first: the usual target (`@swamp/s3-datastore`)
-    // needs no registry round trip, which matters on an offline machine.
+    // static candidates first: the usual target needs no registry round trip,
+    // which matters on an offline machine
     const exempt = await allCandidates() ||
       (options?.extensionLookup !== undefined &&
         await allCandidates(options.extensionLookup));
@@ -846,12 +706,9 @@ export async function resolveManagedLockfileForWrite(
 }
 
 /**
- * Keeps the resolution failure short for the guard's message. A missing
- * datastore extension surfaces from resolution as "Unknown datastore type"
- * (or, for the legacy `s3` type, "requires the ... extension. Install it
- * with: swamp extension pull ..."); both are reported as "its datastore
- * extension is not installed and could not be installed automatically", so
- * the error's own remedy (pull the extension) is the only one.
+ * a missing datastore extension is reported as not installed and not
+ * auto-installable, so the error's own remedy (pull the extension) is the only
+ * one shown
  */
 function describeResolutionFailure(
   message: string | undefined,
@@ -867,10 +724,6 @@ function describeResolutionFailure(
   return message.trim().replace(/[.\s]+$/, "");
 }
 
-/**
- * Result of successful repo validation containing the validated directory
- * and repository context.
- */
 export interface RepoValidationContext {
   repoDir: string;
   marker: RepoMarkerData | null;
@@ -878,34 +731,25 @@ export interface RepoValidationContext {
   datastoreResolver: DatastorePathResolver;
   lockfilePath: string;
   managedConfig?: boolean;
-  /** Resolved vault config directory — the datastore config tier under managedConfig, otherwise `<repoDir>/vaults`. */
   vaultsDir: string;
 }
 
-/**
- * Lightweight repo + datastore resolution without acquiring the datastore lock.
- *
- * Used by breakglass commands (lock status, lock release) that need the
- * datastore config to inspect/release a lock but must not acquire it.
- */
 export interface DatastoreResolutionResult {
   repoDir: string;
   datastoreConfig: DatastoreConfig;
   marker: RepoMarkerData | null;
-  /** The engine the datastore's format marker chose (swamp-club#3279). */
   engine: DatastoreEngine;
   /**
-   * Serve, when this checkout's v3 datastore is written through it
-   * (swamp-club#3985): the config says format 3, the command takes serve
-   * mode, and a serve address is configured. Its storage is then never read.
+   * serve, when this checkout's v3 datastore is written through it: the config
+   * says format 3, the command takes serve mode, and a serve address is
+   * configured. Its storage is then never read
    */
   serveUpstream?: ServeUpstreamTarget;
 }
 
 /**
- * Whether `.swamp.yaml` names a format-3 datastore, with no
- * `SWAMP_DATASTORE` override: the only checkouts serve mode applies to
- * (swamp-club#3985). An override names the datastore to open directly.
+ * only a format-3 datastore with no SWAMP_DATASTORE override takes serve mode;
+ * an override names the datastore to open directly
  */
 export function markerSaysV3(marker: RepoMarkerData | null): boolean {
   const ds = marker?.datastore;
@@ -918,10 +762,6 @@ export function markerSaysV3(marker: RepoMarkerData | null): boolean {
   }
 }
 
-/**
- * Serve, when this command in the checkout `marker` describes writes its
- * v3 datastore through it (swamp-club#3985); undefined otherwise.
- */
 export async function serveUpstreamOf(
   marker: RepoMarkerData | null,
 ): Promise<ServeUpstreamTarget | undefined> {
@@ -936,11 +776,8 @@ export async function serveUpstreamOf(
 }
 
 /**
- * How `resolveDatastoreConfig` resolves a datastore written through
- * `upstream`: its extension type never resolved, installed or built, its
- * paths the checkout's local root. Undefined without serve. Every resolver
- * of a serve-mode checkout's config passes it, the extension loaders'
- * included, so none of them reaches the datastore's extension.
+ * every resolver of a serve-mode checkout's config passes this, extension
+ * loaders included, so none reaches the datastore's extension
  */
 export function serveUpstreamConfigOptions(
   repoDir: string,
@@ -954,10 +791,6 @@ export function serveUpstreamConfigOptions(
   };
 }
 
-/**
- * The v3 location the resolved datastore opens at: serve's follower copy
- * when its upstream is serve (swamp-club#3985), else the datastore's own.
- */
 export async function v3LocationOf(
   resolution: Pick<
     DatastoreResolutionResult,
@@ -1027,11 +860,9 @@ export async function resolveDatastoreForRepo(
   const markerRepo = new RepoMarkerRepository();
   const marker = await markerRepo.read(repoPath);
 
-  // A v3 datastore written through serve (swamp-club#3985): setup writes
-  // `format: 3` for every v3 datastore and clones carry it, so a v2
-  // datastore with a serve address for --server runs never comes here.
-  // Decided from `.swamp.yaml` before the config resolves, so an extension
-  // datastore's type is never installed nor its provider built.
+  // decided from .swamp.yaml before the config resolves, so an extension
+  // datastore's type is never installed nor its provider built; a v2 datastore
+  // with a serve address never comes here
   const serveUpstream = await serveUpstreamOf(marker);
 
   const datastoreConfig = await withSpan(
@@ -1046,8 +877,6 @@ export async function resolveDatastoreForRepo(
       ),
   );
   if (serveUpstream !== undefined) {
-    // Says where the command runs and why, for a user who expected the
-    // serve address to send it to serve (swamp-club#3985).
     getSwampLogger(["cli", "datastore"])
       .debug`Running locally with serve at ${serveUpstream.serverUrl} as the datastore's upstream: this checkout's datastore is format 3, so its data is read and written through serve. Pass --server to run the command on serve instead.`;
     recordServeUpstreamFormat(datastoreConfig);
@@ -1065,16 +894,15 @@ export async function resolveDatastoreForRepo(
     };
   }
 
-  // Before any caller locks, pulls, pushes or writes: refuse a datastore
-  // marked with a format this binary cannot read (swamp-club#3189).
+  // refuse a datastore marked with a format this binary cannot read before any
+  // caller locks, pulls, pushes or writes
   const engine = await withSpan(
     "swamp.repo.datastore.format",
     {},
     () => ensureSupportedDatastoreFormat(repoPath.value, datastoreConfig),
   );
-  // A checkout that joins a v3 datastore through .swamp.yaml while its
-  // .swamp holds records is refused before anything leases, catches up or
-  // writes, as setup refuses it (swamp-club#3690).
+  // a checkout joining a v3 datastore through .swamp.yaml while its .swamp
+  // holds records is refused before anything leases, catches up or writes
   if (engine === "v3") {
     await withSpan(
       "swamp.datastore.v3.join_check",
@@ -1087,11 +915,8 @@ export async function resolveDatastoreForRepo(
 }
 
 /**
- * The engine of the repo's datastore, decided without checking its format
- * and without reading anything remote: v3 only for a filesystem datastore
- * whose marker on disk says so. For a command that must choose how to open
- * the repo before it opens it (swamp-club#3359). Anything it cannot read
- * answers v2, so the open that follows reports it as it always has.
+ * decided without checking format or reading anything remote; anything
+ * unreadable answers v2, so the open that follows reports it
  */
 export async function peekRepoDatastoreEngine(
   repoDir: string,
@@ -1107,30 +932,11 @@ export async function peekRepoDatastoreEngine(
   }
 }
 
-/**
- * Result of lightweight repo marker validation.
- * Contains just the repo directory and marker — no datastore config,
- * lock, or sync. Used by extension commands that manage local files
- * and don't need the datastore.
- */
 export interface RepoMarkerResult {
   repoDir: string;
   marker: RepoMarkerData | null;
 }
 
-/**
- * Validates that a directory is an initialized swamp repository and reads
- * the repo marker, without resolving the datastore config, acquiring locks,
- * or registering sync.
- *
- * Use this for extension management commands (pull, update, rm, search)
- * that operate on local files in pulled-extensions/ and don't interact
- * with the datastore.
- *
- * @param repoDir - The repository directory to validate
- * @returns The validated repo directory and marker
- * @throws UserError if not initialized
- */
 export async function requireRepoMarker(
   repoDir: string,
 ): Promise<RepoMarkerResult> {
@@ -1149,25 +955,8 @@ export async function requireRepoMarker(
 }
 
 /**
- * Validates that a directory is an initialized swamp repository without
- * acquiring the datastore lock or performing sync operations.
- *
- * Use this for read-only commands (search, get, list, validate, etc.)
- * that do not modify the datastore. This allows read-only operations to
- * run concurrently with write operations like workflow runs.
- *
- * For remote datastores, this reads from the local cache without pulling
- * latest. The cache reflects whatever was last synced by a write command.
- * For filesystem datastores, reads see writes immediately.
- *
- * On a filesystem datastore the context carries the datastore's wait
- * records, for reading. On a custom datastore it carries none: opening that
- * store pulls the namespace, which this path never does.
- *
- * @param options - The repo directory and output mode
- * @param factoryConfig - Optional factory configuration overrides
- * @returns The validated repo context
- * @throws UserError if not initialized
+ * on a custom datastore the context carries no wait records: opening that store
+ * pulls the namespace, which this path never does
  */
 export async function requireInitializedRepoReadOnly(
   options: RequireRepoOptions,
@@ -1179,8 +968,6 @@ export async function requireInitializedRepoReadOnly(
     () => resolveDatastoreForRepo(options.repoDir),
   );
   const { repoDir, datastoreConfig, marker, engine } = resolution;
-  // A v3 datastore's location: the filesystem datastore, or a bucket
-  // datastore's local root (swamp-club#3534).
   const v3 = engine === "v3"
     ? await withSpan(
       "swamp.datastore.v3.bind",
@@ -1201,9 +988,9 @@ export async function requireInitializedRepoReadOnly(
     datastoreConfig,
   );
 
-  // Sync service used solely for on-demand content hydration (no lock, no
-  // pull/push lifecycle). Only created when the extension advertises
-  // lazyHydration and the config enables it.
+  // used solely for on-demand hydration, with no lock or pull/push lifecycle;
+  // created only when the extension advertises lazyHydration and the config
+  // enables it
   let hydrateFileHook: HydrateFileHook | undefined;
   let readOnlySyncService:
     | ReturnType<
@@ -1211,10 +998,7 @@ export async function requireInitializedRepoReadOnly(
     >
     | undefined;
 
-  // Verify datastore is accessible. A v3 bucket datastore syncs nothing
-  // (swamp-club#3534).
   if (isCustomDatastoreConfig(datastoreConfig) && v3 === undefined) {
-    // Ensure cache/datastore dir exists — no health check or lock on read-only path
     if (datastoreConfig.cachePath) {
       await ensureDir(datastoreConfig.cachePath);
     }
@@ -1267,7 +1051,6 @@ export async function requireInitializedRepoReadOnly(
         );
       }
     }
-    // No lock acquisition — read-only path
   }
 
   const configBase = datastoreResolver.resolvePath("config");
@@ -1317,12 +1100,8 @@ export async function requireInitializedRepoReadOnly(
     ? join(configBase, "vaults")
     : join(repoPath.value, "vaults");
 
-  // Resolve source workflow directories from .swamp-sources.yaml
   const sourceWorkflowDirs = await getSourceWorkflowDirs(repoPath.value);
 
-  // Create repository context with the validated directory and datastore resolver
-  // A v3 datastore's context commits through the commit log and reads the
-  // read model's catalog (swamp-club#3279).
   const v3Factory = v3 !== undefined
     ? await v3RepositoryFactoryConfig(repoPath.value, v3, {
       managedConfig: marker?.datastore?.managedConfig === true,
@@ -1356,12 +1135,9 @@ export async function requireInitializedRepoReadOnly(
 
   markForwardedRunRecords(repoContext, v3);
 
-  // A read shows what a wait record says of a step, such as the receipt of
-  // a signal no resume has applied yet (swamp-club#3110). Only a filesystem
-  // or v3 datastore's records are read here: a v2 custom datastore's store
-  // pulls its namespace when it opens, and this path neither syncs nor holds
-  // the lock. The store is given without the save hook `attachSignalWaits`
-  // installs, so the context writes no wait record.
+  // only a filesystem or v3 datastore's wait records are read here: a v2 custom
+  // store pulls its namespace on open, which this path never does. The store
+  // has no save hook, so no wait record is written
   if (!isCustomDatastoreConfig(datastoreConfig) || v3 !== undefined) {
     repoContext.signalWaits = resolveSignalWaitSupport(
       datastoreConfig,
@@ -1396,14 +1172,9 @@ export async function requireInitializedRepoReadOnly(
 }
 
 /**
- * Commits the repo's existing definitions, workflows and vault configs into
- * a v3 datastore's config tier when managedConfig is on and the commit log
- * has never held them (swamp-club#3300): managedConfig set by hand in
- * `.swamp.yaml` keeps the config the repo already has, as `swamp datastore
- * config migrate` does. Once adopted, a name has commits and is never
- * adopted again. A refusal (another checkout committed a name first) is a
- * warning: the command goes on, and the next one adopts nothing for those
- * names.
+ * commits the repo's existing definitions, workflows and vault configs into a
+ * v3 config tier once, when managedConfig is on; a refusal is a warning and the
+ * command goes on
  */
 async function adoptManagedConfigOnV3(
   repoContext: RepositoryContext,
@@ -1413,8 +1184,8 @@ async function adoptManagedConfigOnV3(
   marker: RepoMarkerData | null,
 ): Promise<void> {
   const logger = getSwampLogger(["cli", "managed-config"]);
-  // Offline, a definition cannot be committed (swamp-club#4195): the next
-  // writing command that reaches serve adopts it.
+  // offline, a definition cannot be committed: the next writing command that
+  // reaches serve adopts it
   if (serveOfflineAt(config.path) !== undefined) {
     logger.debug`Serve is unreachable: existing config is adopted later`;
     return;
@@ -1433,7 +1204,6 @@ async function adoptManagedConfigOnV3(
         plan.lockfile !== undefined ? " and the extension lockfile" : ""
       } into the datastore config tier`;
     }
-    // Reported with the adoption that left them out, not on every command.
     if (
       (plan.adoptions.length > 0 || plan.lockfile !== undefined) &&
       plan.skipped.length > 0
@@ -1451,11 +1221,6 @@ async function adoptManagedConfigOnV3(
   }
 }
 
-/**
- * Warns a read-only command that managedConfig hides repo config the v3
- * commit log has never held: it cannot commit, so it says what will
- * (swamp-club#3300). It only warns, so nothing it meets fails the command.
- */
 async function warnUnadoptedManagedConfig(
   repoDir: string,
   config: V3DatastoreConfig,
@@ -1479,7 +1244,6 @@ async function warnUnadoptedManagedConfig(
   }
 }
 
-/** The repo's own extension lockfile, where it lives without managedConfig. */
 function repoLocalLockfilePath(
   repoDir: string,
   marker: RepoMarkerData | null,
@@ -1491,20 +1255,6 @@ function repoLocalLockfilePath(
   );
 }
 
-/**
- * Validates that a directory is an initialized swamp repository.
- *
- * Acquires the datastore lock and performs sync operations (pull on start,
- * push on end). Use this for commands that modify the datastore.
- *
- * For read-only commands, use requireInitializedRepoReadOnly() instead
- * to avoid blocking on the datastore lock.
- *
- * @param options - The repo directory and output mode
- * @param factoryConfig - Optional factory configuration overrides
- * @returns The validated repo context
- * @throws UserError if not initialized
- */
 export function requireInitializedRepo(
   options: RequireRepoOptions,
   factoryConfig?: Partial<Omit<RepositoryFactoryConfig, "repoDir">>,
@@ -1512,12 +1262,11 @@ export function requireInitializedRepo(
   return withSpan("swamp.repo.init", {}, async () => {
     const resolution = await resolveDatastoreForRepo(options.repoDir);
     const { repoDir, datastoreConfig, marker, engine } = resolution;
-    // Teardown may run a retention pass on a repository opened to write
-    // (swamp-club#3473).
+    // teardown may run a retention pass on a repository opened to write
     noteRetentionCandidate(repoDir);
-    // A v3 datastore takes one writing process at a time; join this
-    // process's hold before any other lock (swamp-club#3279). A bucket
-    // datastore's is at its local root (swamp-club#3534).
+    // a v3 datastore takes one writing process at a time; join this process's
+    // hold before any other lock. A bucket datastore's hold is at its local
+    // root
     const v3 = engine === "v3" ? await v3LocationOf(resolution) : undefined;
     if (v3 !== undefined) {
       await holdV3Writer(v3, repoDir, {
@@ -1539,21 +1288,18 @@ export function requireInitializedRepo(
       datastoreConfig,
     );
 
-    // Track whether a remote sync happened so we can invalidate the catalog
     let needsCatalogInvalidation = false;
 
-    // Sync service is shared between the coordinator (pull/push) and the
-    // repositories (markDirty on cache writes). Hoisted so both wirings
-    // reference the same instance.
+    // shared between the coordinator (pull/push) and the repositories
+    // (markDirty on cache writes); hoisted so both use the same instance
     let syncService:
       | ReturnType<
         NonNullable<DatastoreProvider["createSyncService"]>
       >
       | undefined;
 
-    // Verify datastore is accessible. A v3 bucket datastore syncs nothing:
-    // it locks and commits as a filesystem v3 datastore does, at its local
-    // root (swamp-club#3534).
+    // a v3 bucket datastore syncs nothing: it locks and commits as a filesystem
+    // v3 datastore does, at its local root
     const lockConfig = lockingConfigOf(datastoreConfig);
     if (isCustomDatastoreConfig(lockConfig)) {
       const provider = await resolveCustomProvider(lockConfig);
@@ -1565,7 +1311,6 @@ export function requireInitializedRepo(
         },
       );
 
-      // If the custom provider supports sync, register sync service too
       syncService = lockConfig.cachePath
         ? provider.createSyncService?.(
           repoPath.value,
@@ -1577,11 +1322,9 @@ export function requireInitializedRepo(
         await ensureDir(lockConfig.cachePath);
       }
 
-      // See `RequireRepoOptions.skipImplicitSync` JSDoc. When set, the
-      // sync service is not registered with the coordinator (no implicit
-      // pull/push); the repository factory still receives it for
-      // markDirty hooks, harmlessly so for explicit-sync callers that
-      // don't write through repositories.
+      // with skipImplicitSync the service is not registered with the
+      // coordinator (no implicit pull/push); the repository factory still
+      // receives it for markDirty hooks
       const registerService = options.skipImplicitSync
         ? undefined
         : syncService;
@@ -1594,7 +1337,6 @@ export function requireInitializedRepo(
         namespace: lockConfig.namespace,
         slowLockScope: { scope: { kind: "global" }, shareable: true },
       });
-      // Invalidate catalog after pull so next query backfills from fresh data
       if (registerService) {
         needsCatalogInvalidation = true;
       }
@@ -1626,23 +1368,18 @@ export function requireInitializedRepo(
         }
       }
 
-      // Symmetric drain — see design/enablers/datastores.md "Lock Lifecycle".
-      //
-      // First drain: wait for any per-model locks visible at command start
-      // to be released. A writer that has *already* acquired a per-model
-      // lock and passed its TOCTOU recheck (acquireModelLocks, this file)
-      // is committed to writing data; we must let it finish.
+      // first drain: wait for per-model locks visible at command start; a
+      // writer that already passed its TOCTOU recheck is committed to writing
+      // and must finish
       await waitForPerModelLocks(
         lockConfig.path,
         lockConfig.namespace,
         { maxWaitMs: options.lockWaitMs },
       );
 
-      // Acquire the global lock. From here on, any writer that inspects
-      // the global lock will back off — but a writer that slipped past the
-      // first drain may have acquired a per-model lock between the drain
-      // ending and this acquisition, so its in-flight write would still
-      // race our structural work.
+      // acquire the global lock; a writer that slipped past the first drain may
+      // have taken a per-model lock since, and its in-flight write would still
+      // race our structural work
       const lock = new FileLock(
         lockConfig.path,
         {
@@ -1659,18 +1396,9 @@ export function requireInitializedRepo(
         },
       });
 
-      // Second drain: with the global lock now held, wait for any such
-      // straggling per-model locks to release. Writers in the middle of
-      // their own TOCTOU recheck will see the global lock and abandon
-      // their per-model lock; writers already past the recheck and into
-      // the data write must finish before we touch the filesystem. This
-      // closes the symmetric TOCTOU window — do not remove without
-      // updating the lock-lifecycle contract documented in
-      // design/enablers/datastores.md.
-      //
-      // The locks this drain skips are listed in the global lock before it
-      // ends, so a holder taking one back from a hop that has ended waits
-      // for this command instead of writing under it.
+      // second drain closes the symmetric TOCTOU window: writers past the
+      // recheck must finish before we touch the filesystem. Skipped locks are
+      // listed in the global lock so a holder re-taking one waits
       await waitForPerModelLocks(
         lockConfig.path,
         lockConfig.namespace,
@@ -1704,12 +1432,8 @@ export function requireInitializedRepo(
       ? join(configBase, "vaults")
       : join(repoPath.value, "vaults");
 
-    // Resolve source workflow directories from .swamp-sources.yaml
     const sourceWorkflowDirs = await getSourceWorkflowDirs(repoPath.value);
 
-    // Create repository context with the validated directory and datastore resolver
-    // A v3 datastore's context commits through the commit log and reads the
-    // read model's catalog (swamp-club#3279).
     const v3Factory = v3 !== undefined
       ? await v3RepositoryFactoryConfig(repoPath.value, v3, {
         managedConfig: marker?.datastore?.managedConfig === true,
@@ -1775,8 +1499,6 @@ export function requireInitializedRepo(
       { v3 },
     );
 
-    // If a remote sync pulled fresh data, invalidate the catalog so the
-    // next query backfills from the freshly-pulled local cache.
     if (needsCatalogInvalidation) {
       repoContext.catalogStore.invalidate();
     }
@@ -1802,20 +1524,6 @@ export function requireInitializedRepo(
   });
 }
 
-/**
- * Validates that a directory is an initialized swamp repository without
- * acquiring any lock. Returns the repo context plus the datastore config
- * so callers can acquire per-model locks after resolving which model(s)
- * they target.
- *
- * Use this for model-scoped commands (model method run, workflow run)
- * that acquire per-model locks AFTER resolving which model they target.
- *
- * @param options - The repo directory and output mode
- * @param factoryConfig - Optional factory configuration overrides
- * @returns The validated repo context and datastore config
- * @throws UserError if not initialized
- */
 export async function requireInitializedRepoUnlocked(
   options: RequireRepoOptions,
   factoryConfig?: Partial<Omit<RepositoryFactoryConfig, "repoDir">>,
@@ -1823,29 +1531,19 @@ export async function requireInitializedRepoUnlocked(
   RepoValidationContext & {
     datastoreConfig: DatastoreConfig;
     /**
-     * Single sync service instance shared by this repo context's markDirty
-     * hook and any subsequent `acquireModelLocks` pull/push call. Undefined
-     * for filesystem datastores or custom datastores without a cache. Passed
-     * into `acquireModelLocks` so cache writes and the fast-path watermark
-     * read go through the same instance — implementations that cache the
-     * sidecar flag in memory stay coherent. See `design/enablers/datastores.md`.
+     * one sync service shared by the markDirty hook and acquireModelLocks, so
+     * cache writes and the watermark read stay coherent across both
      */
     syncService?: DatastoreSyncService;
-    /**
-     * On a v3 datastore, whether this process holds the writer lease or,
-     * with `followV3Lease`, follows another that does.
-     */
     v3Role?: "writer" | "follower";
   }
 > {
   const resolution = await resolveDatastoreForRepo(options.repoDir);
   const { repoDir, datastoreConfig, marker, engine } = resolution;
-  // Teardown may run a retention pass on a repository opened to write
-  // (swamp-club#3473).
+  // teardown may run a retention pass on a repository opened to write
   noteRetentionCandidate(repoDir);
-  // A v3 datastore takes one writing process at a time; join this process's
-  // hold before any model lock (swamp-club#3279). A bucket datastore's is
-  // at its local root (swamp-club#3534).
+  // a v3 datastore takes one writing process at a time; join this process's
+  // hold before any model lock. A bucket datastore's hold is at its local root
   const v3 = engine === "v3" ? await v3LocationOf(resolution) : undefined;
   let v3Role: "writer" | "follower" | undefined;
   if (v3 !== undefined) {
@@ -1872,8 +1570,6 @@ export async function requireInitializedRepoUnlocked(
 
   let syncService: DatastoreSyncService | undefined;
 
-  // Verify datastore is accessible (same checks as requireInitializedRepo).
-  // A v3 bucket datastore syncs nothing (swamp-club#3534).
   if (isCustomDatastoreConfig(datastoreConfig) && v3 === undefined) {
     if (datastoreConfig.cachePath) {
       await ensureDir(datastoreConfig.cachePath);
@@ -1934,12 +1630,8 @@ export async function requireInitializedRepoUnlocked(
     ? join(configBase, "vaults")
     : join(repoPath.value, "vaults");
 
-  // Resolve source workflow directories from .swamp-sources.yaml
   const sourceWorkflowDirs = await getSourceWorkflowDirs(repoPath.value);
 
-  // Create repository context with the validated directory and datastore resolver
-  // A v3 datastore's context commits through the commit log and reads the
-  // read model's catalog (swamp-club#3279).
   const v3Factory = v3 !== undefined
     ? await v3RepositoryFactoryConfig(repoPath.value, v3, {
       managedConfig: marker?.datastore?.managedConfig === true,
@@ -2029,33 +1721,22 @@ export async function requireInitializedRepoUnlocked(
 }
 
 /**
- * Initial retry interval for per-model locks.
- *
- * A per-model lock is released as soon as its method run finishes, so
- * `FileLock`'s 1s default meant a waiter slept through a release that
- * happened milliseconds later. Backoff doubles from here up to
- * {@link MODEL_LOCK_MAX_BACKOFF_MS}.
+ * a per-model lock is released as soon as its run finishes, so FileLock's 1s
+ * default slept through releases; backoff doubles from here up to the max
  */
 export const MODEL_LOCK_RETRY_INTERVAL_MS = 25;
 
 /**
- * Ceiling for the per-model lock's doubling backoff.
- *
- * A workflow step holds its model's lock for the whole method run, so
- * concurrent steps against one instance (e.g. `forEach` iterations) queue on
- * it. Under `FileLock`'s 8s default the tail of that queue slept for seconds
- * after each release (swamp-club#2870); this cap keeps every waiter within a
- * quarter second of the holder letting go.
+ * steps against one instance queue on its lock, and FileLock's 8s default left
+ * the queue tail sleeping after each release; this cap keeps every waiter
+ * within a quarter second of the holder letting go
  */
 export const MODEL_LOCK_MAX_BACKOFF_MS = 250;
 
 /**
- * The lock serve takes for `serveKey`, when `config` (a locking config) is
- * the local root of a checkout whose datastore is written through serve
- * (swamp-club#3985); undefined otherwise. Checkouts on other machines pick
- * data versions from their own copies, so only serve's own lock keeps them
- * and serve's runs apart. Once it is held the checkout catches up from
- * serve, so the work under it reads every version written before it.
+ * other machines pick data versions from their own copies, so only serve's lock
+ * keeps them and serve's runs apart; once held, the checkout catches up from
+ * serve first
  */
 function serveLockOf(
   config: DatastoreConfig,
@@ -2071,16 +1752,16 @@ function serveLockOf(
     displayKey,
     maxWaitMs,
     onAcquired: () => catchUpV3HandlesAt(root),
-    // Registered while held, so the checkout's commits to the partition
-    // name the lease (swamp-club#4121).
+    // registered while held, so the checkout's commits to the partition name
+    // the lease
     root,
     ...(options?.onLost === undefined ? {} : { onLost: options.onLost }),
-    // An explicit lease this checkout holds on the key is used, not
-    // asked for again (`swamp model lease acquire`).
+    // an explicit lease this checkout holds on the key is used, not asked for
+    // again
     adopt: () => explicitLeaseOn(root, serveKey),
     forget: (leaseId) => forgetExplicitLease(root, leaseId),
-    // Offline (swamp-club#4195) the hold never asks serve: the checkout's
-    // own lock, and the explicit lease it recorded while that lasts.
+    // offline the hold never asks serve: it uses the checkout's own lock and
+    // the explicit lease it recorded while that lasts
     offline: () => {
       const state = serveOfflineAt(root);
       return state === undefined ? undefined : {
@@ -2090,8 +1771,8 @@ function serveLockOf(
         skewMs: WRITER_LEASE_CLOCK_SKEW_MS,
       };
     },
-    // Under an explicit lease serve no longer keeps the checkout's own
-    // commands apart, so a lock local to the checkout does.
+    // under an explicit lease serve no longer keeps the checkout's own commands
+    // apart, so a lock local to the checkout does
     localLock: () =>
       new FileLock(root, {
         lockKey: `explicit-leases/${serveKey}`,
@@ -2103,15 +1784,9 @@ function serveLockOf(
 }
 
 /**
- * Judges a method run, or a workflow step running one, by the offline
- * rules before it starts (swamp-club#4195), when `config`'s checkout is
- * working offline; nothing otherwise. A read or list run is allowed, and
- * its behavior's partition registered so what it records queues; one that
- * changes things needs the explicit lease the checkout recorded on the
- * behavior, live by serve's clock.
- *
- * @throws OfflineLeaseRequiredError when the run changes things and the
- *   checkout holds no live lease on the behavior: nothing ran
+ * when offline, reads and lists are allowed and their partition is registered
+ * so what they record queues; anything that changes things needs a live
+ * explicit lease on the behavior, by serve's clock
  */
 export async function assertOfflineRunAllowed(
   config: DatastoreConfig,
@@ -2120,11 +1795,9 @@ export async function assertOfflineRunAllowed(
     readonly modelId: string;
     readonly behaviorName: string;
     readonly methodName: string;
-    /** The method's resolved kind; undefined counts as one that changes things. */
     readonly methodKind: MethodKind | undefined;
   },
 ): Promise<void> {
-  // The v3 local root, as the locks and the handle name it.
   const locking = lockingConfigOf(config);
   if (isCustomDatastoreConfig(locking)) return;
   const root = locking.path;
@@ -2146,7 +1819,6 @@ export async function assertOfflineRunAllowed(
   }
 }
 
-/** What the holder of a lock at serve is told (swamp-club#4121). */
 export interface ServeLockHoldOptions {
   /**
    * Called once when a fenced lease at serve lapses: the work under the
@@ -2156,20 +1828,14 @@ export interface ServeLockHoldOptions {
 }
 
 /**
- * Creates a per-model distributed lock.
- *
- * Lock key: `data/{modelType}/{modelId}/.lock`
- *
- * The lock creates a new model's data directory, and any directory above
- * it, before the data repository writes under it. On a durable v2
- * filesystem datastore it syncs the parent of each one it creates, as the
- * repository does for the directories it creates (swamp-club#4017), and on
- * a durable v3 one whose checkout may keep data local (swamp-club#4019).
+ * creates the model's data directory and parents before the repository writes
+ * under it; on durable datastores it syncs the parent of each directory it
+ * creates
  */
 /**
- * `create`'s lock, once serve's own run may take the lock for the behavior:
- * no lease the leader before kept on it is still being adopted
- * (swamp-club#4195). A CLI process sets no gate, so it never waits.
+ * once serve's own run may take the lock: no lease the previous leader kept on
+ * the behavior is still being adopted. A CLI process sets no gate, so never
+ * waits
  */
 async function ownLockAfterAdoption(
   modelType: string,
@@ -2189,11 +1855,9 @@ export async function createModelLock(
   modelId: string,
   options?: ServeLockHoldOptions,
 ): Promise<DistributedLock> {
-  // A v3 bucket datastore locks as a filesystem one (swamp-club#3534).
   const config = lockingConfigOf(datastoreConfig);
   const lockKey = modelLockKey(config.namespace, modelType, modelId);
   const maxWaitMs = resolveLockTimeoutMs();
-  // One written through serve locks at serve (swamp-club#3985).
   const atServe = serveLockOf(
     config,
     modelLockKey(undefined, modelType, modelId),
@@ -2217,11 +1881,9 @@ export async function createModelLock(
 }
 
 /**
- * Whether a v3 checkout's datastore filter may keep data written under
- * `config` local (swamp-club#4019): data is not among its directories, or
- * an exclude pattern may match it. No commit replays such data, so the
- * model lock syncs the directories it creates for it, as on v2. The lock
- * has no data name, so any exclude pattern counts.
+ * no commit replays data a datastore filter may keep local, so the model lock
+ * syncs the directories it creates for it, as on v2; the lock has no data name,
+ * so any exclude pattern counts
  */
 function mayKeepDataLocal(config: DatastoreConfig): boolean {
   return !getDatastoreDirectories(config).includes(SWAMP_SUBDIRS.data) ||
@@ -2229,11 +1891,9 @@ function mayKeepDataLocal(config: DatastoreConfig): boolean {
 }
 
 /**
- * Creates the distributed lock behind a workflow run's claim.
- *
- * A claim is held for one load, decision and save of the run record, so it
- * uses the per-model lock's short retry settings. A resume's take-over also
- * restores the run's sensitive values under it, which can read a vault.
+ * a claim is held for one load, decision and save of the run record, so it uses
+ * the per-model lock's short retry settings; a resume's take-over also restores
+ * sensitive values, which can read a vault
  */
 export async function createWorkflowRunLock(
   datastoreConfig: DatastoreConfig,
@@ -2243,11 +1903,9 @@ export async function createWorkflowRunLock(
   if (!isUuid(runId)) {
     throw new UserError(`Not a workflow run id: ${runId}`);
   }
-  // A v3 bucket datastore locks as a filesystem one (swamp-club#3534).
   const config = lockingConfigOf(datastoreConfig);
   const lockKey = workflowRunLockKey(config.namespace, runId);
   const maxWaitMs = resolveLockTimeoutMs();
-  // One written through serve locks at serve (swamp-club#3985).
   const atServe = serveLockOf(
     config,
     workflowRunLockKey(undefined, runId),
@@ -2267,10 +1925,6 @@ export async function createWorkflowRunLock(
   });
 }
 
-/**
- * Claims on the repository's workflow runs, each backed by a datastore lock,
- * so they exclude every swamp process that writes the same datastore.
- */
 export function createWorkflowRunClaims(
   config: DatastoreConfig,
 ): WorkflowRunClaims {
@@ -2283,45 +1937,25 @@ export function createWorkflowRunClaims(
 }
 
 /**
- * Whether signal waits can be used on this datastore, with the store for
- * their records (swamp-club#3093). The records must be visible to every
- * process that can settle a wait, so they live with the datastore, never
- * under the repository:
- *
- * - A filesystem datastore keeps them under its own path, below the
- *   namespace when one is set, so every repository on that datastore sees
- *   them.
- * - A custom datastore keeps them in its extension's control-plane store,
- *   which must create a record atomically (`putIfAbsent`).
- * - Any other datastore does not support waits: a store local to this
- *   machine would accept a signal the run's own host never sees.
+ * wait records must be visible to every process that can settle a wait, so they
+ * live with the datastore, never under the repository; any other datastore does
+ * not support waits
  */
 export function resolveSignalWaitSupport(
   config: DatastoreConfig,
   syncService?: DatastoreSyncService,
   options?: {
-    /**
-     * The sync service is already bound to the datastore's namespace, as in
-     * `swamp serve` after boot, so the store is used as it is.
-     */
     namespaceBound?: boolean;
     /**
-     * Run records are stored in the datastore itself, beside the wait
-     * records (see {@link runsLiveInDatastore}). Only a filesystem
-     * datastore of which this is true lets the sweep judge a wait by its
-     * run record.
+     * only a filesystem datastore of which this is true lets the sweep judge a
+     * wait by its run record
      */
     runsInDatastore?: boolean;
-    /**
-     * The datastore's v3 location, when it is a v3 one: a bucket
-     * datastore's wait records live in its datastore-wide control plane,
-     * under its namespace's reserved prefix (swamp-club#3534).
-     */
     v3?: V3DatastoreConfig;
   },
 ): SignalWaitSupport {
-  // Serve can deliver a signal only to a wait it registered itself, so a member
-  // driving a run from a checkout cannot wait on one (swamp-club#4245).
+  // serve can deliver a signal only to a wait it registered itself, so a member
+  // driving a run from a checkout cannot wait on one
   if (options?.v3 !== undefined && serveUpstreamAt(options.v3.path)) {
     return {
       supported: false,
@@ -2362,12 +1996,9 @@ export function resolveSignalWaitSupport(
         `the "${config.type}" datastore has no control-plane store shared between hosts; ${update}`,
     };
   }
-  // The extension's store is not created here. The S3 and GCS extensions
-  // bind their namespace for good on the first sync or control-plane call,
-  // and older versions fix the store's list prefix when it is created, so
-  // a store made before a namespaced pull would look under the wrong
-  // prefix. Every command builds a repository context; only one that uses
-  // a wait opens the store.
+  // the S3 and GCS extensions bind their namespace on the first sync call and
+  // older ones fix the list prefix at creation, so the store is opened only by
+  // a command that uses a wait
   const remote = lazyRemoteStore(
     syncService,
     config.namespace && !options?.namespaceBound ? config.namespace : undefined,
@@ -2380,10 +2011,6 @@ export function resolveSignalWaitSupport(
   };
 }
 
-/**
- * The continuation claims of a control-plane store, for one holder. What is
- * known of another holder comes from the serve heartbeats in the same store.
- */
 export function continuationClaimsOver(
   store: AtomicControlPlaneStore,
   holder: string,
@@ -2396,20 +2023,12 @@ export function continuationClaimsOver(
   };
 }
 
-/** How long one read of a run record from the remote datastore may take. */
 export const RUN_RECORD_FETCH_TIMEOUT_MS = 30_000;
 
 /**
- * Compares this host's record of a run with the one its synced datastore
- * holds, byte for byte (swamp-club#3108). Undefined on a filesystem
- * datastore, where both are one file, and for a sync service that cannot
- * read a remote file without replacing the cached one (`fetchContent`).
- * Only for a repository whose run records are stored in the datastore
- * ({@link runsLiveInDatastore}): one that keeps them to itself has no remote
- * copy to compare with.
- *
- * A record with a change this host has not pushed yet also reads as
- * different; the caller leaves the run for a later attempt.
+ * byte for byte; a record with a change this host has not pushed also reads as
+ * different, and the caller leaves the run for a later attempt. Only for
+ * repositories whose run records live in the datastore
  */
 export function runRecordCurrencyOver(
   config: DatastoreConfig,
@@ -2451,28 +2070,22 @@ export function runRecordCurrencyOver(
 }
 
 /**
- * The control-plane store a local command shares with `swamp serve` on the
- * repository at `repoDir`, for what serve reads from it (token secrets,
- * schedule pauses): a v3 datastore's own, where serve keeps its control
- * plane since swamp-club#4096, otherwise the checkout's `.swamp/_control`.
- * A checkout writing through serve (a serve upstream) has no direct reach
- * to the datastore's, and keeps the checkout's, as does a directory that is
- * no repository.
+ * a checkout writing through serve has no direct reach to the datastore's
+ * control plane, nor does a directory that is no repository; both keep the
+ * checkout's .swamp/_control
  */
 export async function localServeControlPlane(
   repoDir: string,
 ): Promise<AtomicControlPlaneStore> {
-  // A directory that is no repository has no datastore: the checkout's
-  // store, as before.
   if (!await new RepoService(VERSION).isInitialized(RepoPath.create(repoDir))) {
     return new FileSystemControlPlaneStore(swampPath(repoDir));
   }
   const resolution = await resolveDatastoreForRepo(repoDir);
   if (resolution.engine === "v3" && resolution.serveUpstream === undefined) {
     const shared = v3ServeControlPlaneAt(await v3LocationOf(resolution));
-    // What this checkout's serve kept before team mode moves in first, as
+    // import what the checkout's serve kept before team mode moves in, as
     // serve's boot does: a token command run before serve restarts must not
-    // make a new token key that strands the checkout's tokens.
+    // make a new token key that strands the checkout's tokens
     await importCheckoutControlPlane(
       new FileSystemControlPlaneStore(swampPath(resolution.repoDir)),
       shared,
@@ -2483,26 +2096,14 @@ export async function localServeControlPlane(
 }
 
 /**
- * The continuation claims a local command takes when it resumes a run
- * (swamp-club#3108), in the store `swamp serve` keeps its heartbeats in:
- *
- * - A v3 datastore keeps them in its own control plane, as serve keeps its
- *   heartbeats (swamp-club#4096).
- * - A filesystem datastore keeps them under the repository, as serve does
- *   when its datastore has no control-plane store of its own.
- * - A custom datastore keeps them in its extension's control-plane store.
- *   Without one there are no claims, and a resume takes none.
+ * claims live in the store serve keeps its heartbeats in; a custom datastore
+ * without a control-plane store has no claims, and a resume takes none
  */
 export function resolveContinuationClaims(
   config: DatastoreConfig,
   repoDir: string,
   syncService?: DatastoreSyncService,
   options?: {
-    /**
-     * The datastore's v3 location, when it is a v3 one: serve keeps its
-     * heartbeats in the datastore's own control plane (swamp-club#4096), so
-     * the claims go there too.
-     */
     v3?: V3DatastoreConfig;
   },
 ): ContinuationClaims | undefined {
@@ -2544,11 +2145,9 @@ export function resolveContinuationClaims(
 }
 
 /**
- * Whether workflow run records are stored in the datastore, where wait
- * records are, and not kept in the repository by the datastore's
- * `directories` or `exclude` settings. Repositories that share a datastore
- * but keep their runs to themselves cannot see each other's runs, so none
- * of them can tell a deleted run from another repository's.
+ * repositories that share a datastore but keep their runs to themselves cannot
+ * see each other's runs, so none can tell a deleted run from another
+ * repository's
  */
 export function runsLiveInDatastore(resolver: DatastorePathResolver): boolean {
   return resolver.isDatastoreSubdir(SWAMP_SUBDIRS.workflowRuns) &&
@@ -2556,27 +2155,15 @@ export function runsLiveInDatastore(resolver: DatastorePathResolver): boolean {
 }
 
 /**
- * The retention watermarks of a datastore (swamp-club#3473). Like signal
- * waits they live with the datastore, never under the repository, so every
- * process sharing it sees the same records:
- *
- * - A filesystem datastore keeps them under its own path, below the
- *   namespace when one is set.
- * - A custom datastore keeps them in its extension's control-plane store,
- *   opened on first use after a namespaced pull.
- * - A custom datastore without an atomic control-plane store has none:
- *   retention still runs, and lookups give the plain not-found answer.
+ * like signal waits, watermarks live with the datastore so every sharing
+ * process sees them; a custom datastore without an atomic control-plane store
+ * has none and retention still runs
  */
 export function resolveRetentionWatermarks(
   config: DatastoreConfig,
   syncService?: DatastoreSyncService,
   options?: {
     namespaceBound?: boolean;
-    /**
-     * The datastore's v3 location, when it is a v3 one: a bucket
-     * datastore's watermarks live in its datastore-wide control plane,
-     * under its namespace's reserved prefix (swamp-club#3534).
-     */
     v3?: V3DatastoreConfig;
   },
 ): RetentionWatermarkRepository | undefined {
@@ -2608,8 +2195,8 @@ export function resolveRetentionWatermarks(
 }
 
 /**
- * Marks a checkout written through serve: other members forward run records it
- * reads, so a record's fields are their report (swamp-club#4245).
+ * other members forward the run records a serve-mode checkout reads, so a
+ * record's fields are their report
  */
 function markForwardedRunRecords(
   repoContext: Pick<RepositoryContext, "workflowRunRepo">,
@@ -2621,9 +2208,8 @@ function markForwardedRunRecords(
 }
 
 /**
- * Gives a repository context its wait support. With a store, every run its
- * repository saves as ended closes its waits first, so no path that ends a
- * run leaves a wait accepting signals.
+ * every run saved as ended closes its waits first, so no path that ends a run
+ * leaves a wait accepting signals
  */
 export function attachSignalWaits(
   repoContext: Pick<RepositoryContext, "signalWaits" | "workflowRunRepo">,
@@ -2653,7 +2239,6 @@ export function attachSignalWaits(
   };
 }
 
-/** The wait support a repository context carries, or none configured. */
 export function signalWaitsOf(
   repoContext: Pick<RepositoryContext, "signalWaits">,
 ): SignalWaitSupport {
@@ -2661,16 +2246,9 @@ export function signalWaitsOf(
 }
 
 /**
- * The control-plane store of a custom datastore, opened on first use: the
- * sync service is bound to `namespace` by a pull when one is given (the
- * only call that binds, as in `initializeControlPlaneVaultForCli`), and
- * only then is the store created. `open` rejects with `notAtomic` when the
- * store lacks `putIfAbsent`. A failed open is tried again by the next call.
- *
- * The pull can therefore happen partway through a command, as the pulls of
- * `acquireModelLocks` do. It brings remote changes into the cache and does
- * not discard this command's own unpushed writes, and a run being resumed
- * or saved is held in memory and written after.
+ * the pull can happen partway through a command; it brings remote changes in
+ * without discarding unpushed writes, and a run being resumed or saved is held
+ * in memory and written after
  */
 function lazyRemoteStore(
   syncService: DatastoreSyncService,
@@ -2705,81 +2283,31 @@ function lazyRemoteStore(
   };
 }
 
-/**
- * One scan of the per-model locks a structural command's drain waits on.
- */
 export interface PerModelLockScan {
-  /** Live (non-stale) locks the drain waits on. */
   held: number;
-  /**
-   * Those of `held` that a swamp above this one holds for another of its
-   * runs or steps, by lock file path relative to the datastore. They are
-   * released only when that run finishes (design/enablers/datastores.md,
-   * "Parent-Process Lock Awareness").
-   */
   heldForOtherRuns: ReadonlyArray<{ pid: number; lockPath: string }>;
-  /**
-   * The nonces of the live locks the scan skipped because a swamp above
-   * this one named them as held for the run that started it. Locks skipped
-   * on the pid alone are left out.
-   */
   skippedLockIds: readonly string[];
-  /** Those of `held` whose lock file records a nonce. */
   waitedLocks: ReadonlyArray<{ lockId: string; lockPath: string }>;
 }
 
-/**
- * The drain-wait markers a drain publishes and reads; `DrainWaitStore` in
- * production.
- */
 export type DrainWaits = Pick<DrainWaitStore, "publish" | "list" | "remove">;
 
-/** Optional behaviour for {@link waitForPerModelLocks}. */
 export interface WaitForPerModelLocksOptions {
-  /** Where progress lines go. Defaults to the system-labelled stderr line. */
   progressWriter?: LockProgressWriter;
-  /** Test seam: replaces the scan of the datastore's lock files. */
   findModelLocks?: () => Promise<PerModelLockScan>;
-  /** Test seam: the marker that says which locks this process inherited. */
   lockHolderMarker?: LockHolderMarker;
-  /** Test seam: the drain-wait markers of the datastore. */
   drainWaits?: DrainWaits;
-  /** Test seam: how long to pause between scans. */
   pollIntervalMs?: number;
-  /** How long to wait before giving up; defaults to the lock timeout. */
   maxWaitMs?: number;
-  /**
-   * Records the nonces of the locks the drain skips; the drain under the
-   * global lock passes that lock's `publishSkipping`. The drain then ends
-   * only on a scan that matches the list already recorded.
-   */
   publishSkipping?: (lockIds: readonly string[]) => Promise<void>;
 }
 
 const DRAIN_POLL_INTERVAL_MS = 1_000;
 
 /**
- * Waits for any held per-model locks to be released.
- *
- * Called twice during structural command setup (`requireInitializedRepo`):
- * once before acquiring the global lock to drain in-flight writers, and
- * once after to catch writers that slipped past the first drain. See
- * design/enablers/datastores.md "Lock Lifecycle" for the full contract.
- *
- * Only works for filesystem datastores — S3 datastores use distributed
- * locks that cannot be scanned locally.
- *
- * While it waits, the drain publishes a drain-wait marker and reads the
- * other drains' markers. Two drains that each wait on a lock held until the
- * other exits would both run into the lock timeout, so the later one throws
- * a `LockWaitCycleError` instead (design/enablers/datastores.md,
- * "Parent-Process Lock Awareness").
- *
- * Returns the nonces of the locks its last scan skipped.
- *
- * The test seams in `options` are for tests only — production callers pass
- * at most `progressWriter` and `publishSkipping`. Not exported from any
- * barrel.
+ * two drains each waiting on a lock the other holds until it exits would both
+ * hit the lock timeout, so the later one throws LockWaitCycleError. Filesystem
+ * datastores only: S3 locks cannot be scanned locally
  */
 export async function waitForPerModelLocks(
   datastorePath: string,
@@ -2816,25 +2344,23 @@ export async function waitForPerModelLocks(
             );
             if (state.kind === "absent") continue;
             if (state.kind === "unreadable") {
-              // A holder is mid-write (create, or a heartbeat rewrite), so
-              // the lock is held; it cannot say for whom, so it is never
-              // skipped as an ancestor's (swamp-club#3148).
+              // an unreadable lock file is a holder mid-write, so the lock is
+              // held; it cannot say for whom, so it is never skipped as an
+              // ancestor's
               if (state.fresh) held++;
               continue;
             }
             const info = state.info;
-            // Skip locks held for the run that started this one: those
-            // handed down by nonce, or an ancestor swamp's on this host
-            // (prevents deadlock when a workflow shell step spawns a nested
-            // swamp command).
+            // skip locks held for the run that started this one, handed down by
+            // nonce or an ancestor swamp's on this host, so a shell step's
+            // nested swamp command does not deadlock
             const relation = relationTo(info);
-            // Only count non-stale locks
             const acquiredAt = new Date(info.acquiredAt).getTime();
             const live = Date.now() - acquiredAt <= info.ttlMs;
             if (relation === "ancestor") {
-              // A lock skipped on the pid alone may be held for another run
-              // and released while this drain still waits, so it is not
-              // reported as held until this drain exits.
+              // a lock skipped on the pid alone may be held for another run and
+              // released while this drain waits, so it is not reported held
+              // until this drain exits
               if (
                 live && info.nonce !== undefined &&
                 inheritedLockIds.has(info.nonce)
@@ -2864,17 +2390,12 @@ export async function waitForPerModelLocks(
       return { held, heldForOtherRuns, skippedLockIds, waitedLocks };
     });
 
-  // With a publisher (the drain under the global lock), every change to the
-  // skipped set is published before the drain sleeps or returns, and the
-  // drain ends only on a scan that matches what is already published. A
-  // holder re-keys its lock and then reads the list; this publishes the
-  // list and then reads the lock, so one of them always sees the other. A
-  // lock found re-keyed leaves the list before the drain waits on it, so
-  // the drain and the holder's reclaim never wait on each other.
+  // every change to the skipped set is published before the drain sleeps or
+  // returns, and it ends only on a matching scan; holder and drain each write
+  // then read, so one always sees the other
   let published: readonly string[] = [];
   const confirm = async (scan: PerModelLockScan): Promise<boolean> => {
     if (options.publishSkipping === undefined) return true;
-    // Capped as the lock file caps it, so a longer list still confirms.
     const now = new Set(scan.skippedLockIds.slice(0, MAX_LOCK_SKIPPING));
     if (
       now.size === published.length && published.every((id) => now.has(id))
@@ -2910,9 +2431,9 @@ export async function waitForPerModelLocks(
   try {
     await drainWait.check(first);
     while (true) {
-      // The first list published is confirmed at once; after that every
-      // scan is a poll apart, so a skipped set that keeps changing cannot
-      // spin the drain.
+      // the first list published is confirmed at once; after that every scan is
+      // a poll apart, so a skipped set that keeps changing cannot spin the
+      // drain
       if (last.held > 0 || rescans > 0) {
         await new Promise((resolve) => setTimeout(resolve, pollIntervalMs));
       }
@@ -2943,15 +2464,13 @@ export async function waitForPerModelLocks(
 }
 
 /**
- * One drain's own drain-wait marker, and its watch for a drain it must give
- * way to. Marker I/O that fails is logged and otherwise ignored: the drain
- * then just waits, as it did before markers existed.
+ * marker I/O that fails is logged and otherwise ignored: the drain then just
+ * waits
  */
 class PublishedDrainWait {
   readonly #id = crypto.randomUUID();
   readonly #host = hostname();
   #published = false;
-  /** The drain to yield to as of the last check, and its marker's age. */
   #suspect: { id: string; updatedAtMs: number } | undefined;
 
   constructor(
@@ -2960,15 +2479,11 @@ class PublishedDrainWait {
   ) {}
 
   /**
-   * Publishes this drain's wait for `scan`, then throws
-   * `LockWaitCycleError` once another drain it must give way to has been
-   * seen on two checks in a row and has refreshed its marker in between.
-   * One sighting is not enough: a marker can be up to a poll old, and its
-   * drain may already be moving on.
+   * throws LockWaitCycleError only once the other drain is seen on two checks
+   * in a row with a refreshed marker: one sighting is not enough, since a
+   * marker can be up to a poll old
    */
   async check(scan: PerModelLockScan): Promise<void> {
-    // A drain that skips nothing, or waits on nothing it can name, is in no
-    // other drain's way and publishes nothing.
     if (scan.skippedLockIds.length === 0 || scan.waitedLocks.length === 0) {
       this.#suspect = undefined;
       await this.withdraw();
@@ -3019,7 +2534,6 @@ class PublishedDrainWait {
     });
   }
 
-  /** Removes this drain's marker, if it published one. */
   async withdraw(): Promise<void> {
     if (!this.#published) {
       return;
@@ -3034,11 +2548,6 @@ class PublishedDrainWait {
   }
 }
 
-/**
- * The timeout message for a drain still waiting on locks a swamp above it
- * holds for another of its runs, which a nested structural command cannot
- * outwait when that run is itself waiting on a nested structural command.
- */
 function heldForOtherRunsMessage(
   scan: PerModelLockScan,
   elapsed: number,
@@ -3055,87 +2564,38 @@ function heldForOtherRunsMessage(
     `Run those commands one at a time, or in a workflow step of their own.`;
 }
 
-/**
- * Acquires per-model locks in sorted order (deadlock prevention).
- *
- * Checks for the global `.datastore.lock` before acquiring per-model locks.
- * If a structural command holds the global lock, per-model acquisition
- * waits for it to release (reuses existing stale detection).
- *
- * For custom datastores with sync support, pulls model-scoped files after
- * acquiring per-model locks, and the returned flush function pushes changed
- * files under a brief global lock.
- *
- * Registers each lock with the coordinator so SIGINT cleanup works.
- *
- * @returns A flush function that releases all acquired per-model locks
- *          (and pushes changes for sync-capable datastores).
- */
 export interface ModelLockResult {
   /**
-   * {@link push}, then {@link release} even when the push fails. Its one
-   * remaining caller is the per-step model lock in a workflow run
-   * (`StepLockResult.flush`, run by `DefaultStepExecutor`): the step's lock
-   * owns its push and release, and Phase 3 replaces model locks with leases
-   * (swamp-club#3055). Everything else pushes through a root unit of work
-   * with {@link push} and calls {@link release} after the root ends.
+   * one remaining caller is the per-step model lock in a workflow run;
+   * everything else pushes through a root unit of work with push and calls
+   * release after the root ends
    */
   flush: (written?: readonly WrittenVersion[]) => Promise<void>;
-  /**
-   * Pushes changed files for sync-capable datastores (single- or two-phase),
-   * without releasing the locks. A command that runs in a root unit of work
-   * passes this as the root's flush and calls {@link release} after the root
-   * has ended (swamp-club#3033).
-   */
   push: () => Promise<void>;
   /**
-   * {@link push}, given the data versions the work under these locks wrote:
-   * it publishes each one and checks the remote holds it, retrying a
-   * bounded number of times; see {@link AcquireModelLocksOptions.dataRepo}
-   * (swamp-club#3146). A root calls its flush with its outcome, so pass
-   * this to a root through a closure.
+   * push, given the versions its work wrote: publishes each and checks the
+   * remote holds it, retrying a bounded number of times. A root calls its flush
+   * with its outcome, so pass this through a closure
    */
   pushWritten: (written: readonly WrittenVersion[]) => Promise<void>;
-  /** Releases every per-model lock these locks took. */
   release: () => Promise<void>;
   /**
-   * True if a remote datastore pull during lock acquisition may have changed
-   * the local cache, so callers must invalidate the catalog. False when every
-   * pull reported 0 files: skipping the invalidation spares a full catalog
-   * backfill while the lock is held (swamp-club#2553).
+   * false when every pull reported 0 files, which spares a full catalog
+   * backfill while the lock is held
    */
   synced: boolean;
   /**
-   * The nonces of the filesystem lock files these locks wrote. Run the work
-   * done under the locks inside `processLockHolderMarker.runHolding` with
-   * them, so a swamp it starts skips these locks and no others
-   * (design/enablers/datastores.md, "Parent-Process Lock Awareness"). Empty
-   * for custom datastore locks, which the drain never scans.
-   *
-   * A snapshot taken when the locks were acquired: a re-key changes the
-   * nonces, so never hand this list to a child. Use {@link lentLocks}.
+   * a snapshot taken at acquisition: a re-key changes the nonces, so never hand
+   * this list to a child; use lentLocks
    */
   heldLockIds: readonly string[];
-  /**
-   * The same locks as a scope lends them: their nonces read live, and the
-   * reclaim that ends a hand-off ({@link reclaimModelLocks}). Pass these to
-   * the scope in place of {@link heldLockIds}, so a swamp left over from a
-   * hop that has ended stops skipping them.
-   */
   lentLocks: LentLocks;
-  /**
-   * Aborts, with the lapse as its reason, when a fenced lease these locks
-   * hold at serve lapses (swamp-club#4121): the work under them must stop,
-   * as a cancelled run does. Never aborts for local locks.
-   */
   leaseLost?: AbortSignal;
 }
 
 /**
- * Commits a step's staged writes before its lease at serve is released
- * (swamp-club#4121). A refusal fails the step: its writes were not taken
- * under the lease. Any other failure is warned about, as a run checkpoint
- * is: the run's end commit tries again.
+ * a refusal fails the step since its writes were not taken under the lease; any
+ * other failure is warned about and the run's end commit tries again
  */
 async function checkpointStepUnderLease(
   repoContext: Pick<RepositoryContext, "markDirty" | "commitLog">,
@@ -3156,11 +2616,6 @@ async function checkpointStepUnderLease(
   }
 }
 
-/**
- * Aborts `controller` with the lapse when `leaseLost` (a
- * {@link ModelLockResult.leaseLost}) fires (swamp-club#4121): the run
- * under the locks is cancelled, its cause naming the lapse.
- */
 export function cancelOnLeaseLost(
   leaseLost: AbortSignal | undefined,
   controller: AbortController,
@@ -3177,25 +2632,15 @@ export function cancelOnLeaseLost(
   );
 }
 
-/** Test seams and settings for {@link reclaimModelLocks}. */
 export interface ReclaimModelLocksOptions {
-  /** How long to wait on a structural command; the lock timeout by default. */
   timeoutMs?: number;
-  /** How often to re-read the global lock while waiting. */
   pollMs?: number;
   progressWriter?: LockProgressWriter;
-  /** The global lock's name in a {@link LockTimeoutError}. */
   displayKey?: string;
-  /** Test seam: whether a process on this host has exited. */
   isProcessDead?: (pid: number) => boolean;
-  /**
-   * The signal of the run whose locks these are. Once it aborts, a
-   * structural command known to be still at work is no longer waited on.
-   */
   signal?: AbortSignal;
 }
 
-/** Waits `ms`, or until `signal` aborts. */
 function pollDelay(ms: number, signal: AbortSignal | undefined): Promise<void> {
   return new Promise((resolve) => {
     const done = () => {
@@ -3209,25 +2654,9 @@ function pollDelay(ms: number, signal: AbortSignal | undefined): Promise<void> {
 }
 
 /**
- * Takes per-model locks back from a hop that has ended
- * (design/enablers/datastores.md, "Parent-Process Lock Awareness").
- *
- * Re-keys each lock, so a nested swamp the hop left running no longer
- * matches it and waits like any other. A structural command that skipped
- * one of them before the re-key may still be working: it lists the nonces
- * it skipped in its global lock, so while that list names a retired nonce
- * this waits, re-reading the list on every poll. The command withdraws a
- * nonce it finds re-keyed before it waits on that lock, so the two never
- * wait on each other.
- *
- * Pass `options.signal` for a run whose hop was cancelled: it has nothing
- * to write, so it does not wait. The locks are re-keyed as always, and the
- * wait ends as soon as the signal aborts.
- *
- * @throws {LockTimeoutError} when the structural command is still working
- * under a retired nonce at the timeout. The caller must then write nothing.
- * @throws {DOMException} `AbortError` when it is still working and the
- * signal has aborted. The caller must then write nothing.
+ * re-keys each lock so a nested swamp left by the hop no longer matches; waits
+ * while a structural command's skipped list names a retired nonce; on timeout
+ * the caller must write nothing
  */
 export async function reclaimModelLocks(
   locks: readonly FileLock[],
@@ -3253,17 +2682,15 @@ export async function reclaimModelLocks(
       const info = await globalLock.inspect();
       if (!info) break;
       if (Date.now() - new Date(info.acquiredAt).getTime() > info.ttlMs) break;
-      // A structural command killed with its hop (a shell step's timeout
-      // takes the whole process tree) leaves its lock behind until the ttl.
+      // a structural command killed with its hop (a shell step's timeout kills
+      // the whole process tree) leaves its lock behind until the ttl
       if (info.hostname === hostname() && processDead(info.pid)) break;
-      // A lock file caught mid-write is reported as held with no nonce and
-      // no list (swamp-club#3148); read it again rather than take a working
-      // structural command for one that skipped nothing.
+      // a lock file caught mid-write is reported held with no nonce and no
+      // list; read it again rather than take a working structural command for
+      // one that skipped nothing
       const unreadable = info.nonce === undefined && info.pid === 0;
       const skipping = lockSkipping(info);
       if (!unreadable && !retired.some((nonce) => skipping.has(nonce))) break;
-      // A lock file caught mid-write shows no command at work, so it is read
-      // again even after a cancel.
       if (!unreadable && options.signal?.aborted) {
         throw new DOMException(
           `Cancelled while a structural command held by ${info.holder} (pid ${info.pid}) was still working under a lock this run handed down`,
@@ -3295,70 +2722,46 @@ export async function reclaimModelLocks(
 }
 
 /**
- * Runs a datastore sync call; see {@link AcquireModelLocksOptions}. `kind`
- * says whether the call pulls (the step-start pull), pushes (the flush), or
- * pushes alone: the last publish attempt of a push whose earlier attempts
- * other syncs undid, which must not run alongside any other sync
- * (swamp-club#3146).
+ * push-alone is the last publish attempt of a push whose earlier attempts other
+ * syncs undid; it must not run alongside any other sync
  */
 export type SyncCallWrapper = <T>(
   fn: () => Promise<T>,
   kind: "pull" | "push" | "push-alone",
 ) => Promise<T>;
 
-/** Optional behaviour for {@link acquireModelLocks}. */
 export interface AcquireModelLocksOptions {
   /**
-   * Wraps the step-start pull and the push inside `flush`, and nothing else —
-   * never the lock waits or the lock release — so a caller never holds what
-   * the wrapper acquires while waiting on a model lock. Serve passes its
-   * shared sync gate here so run syncs exclude its poller pulls.
+   * wraps only the step-start pull and the push inside flush, never lock waits
+   * or release, so a caller never holds what the wrapper acquires while waiting
+   * on a model lock. Serve passes its shared sync gate
    */
   wrapSync?: SyncCallWrapper;
   /**
-   * The repository context the locked models' data is written through.
-   * With it, a push given the versions its work wrote makes sure the remote
-   * holds them (swamp-club#3146): another sync in this process can undo a
-   * push, by clearing the extension's dirty marks before the push walked
-   * them or by pulling an older latest marker over the local one. Before
-   * each push it moves each version's latest marker forward again and
-   * stages the version and the marker after the write; after it, it reads
-   * both back from the remote and repeats while either is missing or behind.
+   * another sync in this process can undo a push by clearing dirty marks early
+   * or pulling an older latest marker, so a push given versions re-stages them
+   * and reads them back, repeating while missing or behind
    */
   repoContext?: Pick<
     RepositoryContext,
     "markDirty" | "commitLog" | "unifiedDataRepo"
   >;
-  /**
-   * How a refusal's restore syncs on a durable v2 datastore
-   * (swamp-club#4033), so tests can observe the order. Production passes
-   * nothing: the defaults sync each file and directory to disk.
-   */
   restoreWriteHooks?: AtomicWriteSync;
   /**
-   * False takes the locks without pulling the models. The push then cannot
-   * tell a version another clone wrote under the same number from this
-   * host's own, so it publishes every version as this host holds it.
+   * false takes the locks without pulling; the push then cannot tell a
+   * same-numbered version another clone wrote from its own, so it publishes
+   * every version as this host holds it
    */
   pull?: boolean;
-  /**
-   * Set to take the locks only if they are free (a read or list run's
-   * publish, swamp-club#3934): no wait for the global lock, and at most
-   * {@link READ_PUBLISH_LOCK_WAIT_MS} for each per-model lock. Throws
-   * {@link ModelLocksBusyError} when another run holds one.
-   */
   failIfBusy?: boolean;
 }
 
 /**
- * How long a read or list run's publish waits for its behavior's lock
- * before leaving its data to the next run that takes it (swamp-club#3934):
- * long enough for one retry, short enough that the run is never held up by
- * a writer (swamp-club#1992).
+ * long enough for one retry, short enough that the run is never held up by a
+ * writer
  */
 export const READ_PUBLISH_LOCK_WAIT_MS = 2_000;
 
-/** Thrown by {@link acquireModelLocks} with `failIfBusy` when a lock is held. */
 class ModelLocksBusyError extends Error {
   constructor(lockKey: string) {
     super(`${lockKey} is held by another run`);
@@ -3366,13 +2769,10 @@ class ModelLocksBusyError extends Error {
   }
 }
 
-/** Pushes made to publish a step's written versions before giving up. */
 export const PUBLISH_ATTEMPTS = 3;
 
-/** How long one read of a published file from the remote datastore may take. */
 export const PUBLISH_CHECK_FETCH_TIMEOUT_MS = 30_000;
 
-/** The cache-relative, forward-slash path of `absPath`, or undefined outside it. */
 function cacheRelativePath(
   cachePath: string,
   absPath: string,
@@ -3382,7 +2782,6 @@ function cacheRelativePath(
   return SEPARATOR === "/" ? rel : rel.split(SEPARATOR).join("/");
 }
 
-/** One written version and the cache paths that publish it. */
 interface PublishTarget {
   readonly written: WrittenVersion;
   readonly metadataRel: string;
@@ -3390,15 +2789,9 @@ interface PublishTarget {
 }
 
 /**
- * Moves each data name's latest marker forward to the highest version in
- * `written` that is still on disk, and stages that version's directory and
- * the marker again, after the write, for the next push. A name whose
- * versions are all gone (deleted, garbage collected or rolled back on
- * purpose) is left alone. Returns what to check on the remote afterwards.
- *
- * The staging runs in a root unit of work with no push: inside a command's
- * root it rolls up into that root, and after the root has ended (a method
- * run's push is its root's flush) it reaches the mark hook on its own.
+ * staging runs in a root unit of work with no push: inside a command's root it
+ * rolls up into that root, and after the root has ended it reaches the mark
+ * hook on its own
  */
 async function stageVersionsForPublish(
   written: readonly WrittenVersion[],
@@ -3451,74 +2844,24 @@ async function stageVersionsForPublish(
   );
 }
 
-/**
- * How long restoring the datastore's copy of a refused run's versions may
- * take in all, so an unreachable datastore never holds up the refusal.
- */
 export const DISCARD_RESTORE_TIMEOUT_MS = 10_000;
 
-/** How a refused push's restore writes what it fetches (swamp-club#4033). */
 interface DiscardRestoreOptions {
-  /**
-   * Set when the datastore's writes are durable: every restored file is
-   * synced, and its directories before any latest marker names it.
-   */
   readonly sync: AtomicWriteSync | undefined;
-  /**
-   * Whether the cache hydrates lazily. A version a fetched marker names is
-   * then restored as a lazy pull leaves it, metadata only; otherwise with
-   * its content, since only a lazy cache can hydrate a missing `raw`.
-   */
   readonly lazy: boolean;
 }
 
-/** A latest marker read from the datastore, and the version it names. */
 interface FetchedMarker {
   readonly rel: string;
   readonly nameDir: string;
   readonly bytes: Uint8Array;
-  /** Undefined for the no-version sentinel `0` or an unreadable marker. */
   readonly version: number | undefined;
 }
 
 /**
- * Discards the data versions a push refused because a model lock was lost
- * (swamp-club#3485), so they reach no clone whether or not the refresh pull
- * after the refusal can run.
- *
- * Each version is deleted through the repository, which moves its name's
- * latest marker back and stages the removal. A removed file stays marked
- * dirty, and the extensions push a marked file that is gone locally as a
- * delete of the remote copy: after a breakglass, the new holder's version
- * of the same number. So each removed file, and the latest marker, is then
- * put back as the datastore holds it, read with `fetchContent`; a file the
- * datastore lacks stays removed.
- *
- * The markers are read first, so that a version one names which the cache
- * does not hold (the new holder's next version) is restored with the
- * content. Every content file is written before any directory is synced,
- * and the directories before any marker (swamp-club#4033), so a marker
- * written after a clean restore never names content a power cut could
- * lose. Every marker read is written, even one naming a version the cache
- * still lacks: a marker left removed stays dirty, and the next push would
- * delete the datastore's copy, while a marker naming a missing version is
- * replaced by the next pull. So no single failure stops the markers: a
- * marker that cannot be read is skipped, and a failed content restore or
- * directory sync is logged before the markers are written. Best effort:
- * the refusal stands whatever this does.
- *
- * The refused writes also left their paths marked, the data-name directory
- * among them (a save marks it before it allocates a version). A push walks
- * a marked directory and deletes every remote file under it the cache
- * lacks, and uploads a marked file that differs: the new holder's other
- * versions, and its `latest` marker (swamp-club#4091). So for each data
- * name whose restore matched the datastore throughout (every read answered,
- * every write and sync succeeded), the marks are then dropped with
- * `clearDirty`: the refused version directories, the files restored or
- * left removed, the latest marker and the data-name directory. A name with
- * any failure keeps its marks. A sync service without `clearDirty` keeps
- * every mark, so the refusal warns once, naming the data names, that a
- * later push can delete or overwrite the other run's versions there.
+ * a removed file stays marked dirty and extensions push it as a delete of the
+ * remote copy, so each removed file and latest marker is put back as the
+ * datastore holds it; best effort, the refusal stands
  */
 async function discardRefusedVersions(
   refused: readonly WrittenVersion[],
@@ -3534,13 +2877,9 @@ async function discardRefusedVersions(
   const logger = getSwampLogger(["datastore", "lock"]);
   const repo = repoContext.unifiedDataRepo;
   const content = new Set<string>();
-  // Each removed marker's cache path, and its data-name directory.
   const markers = new Map<string, string>();
-  // The data-name directory each refused path is under, and the paths whose
-  // marks are dropped once that name's restore matched the datastore.
   const owner = new Map<string, string>();
   const marked = new Map<string, Set<string>>();
-  // Each refused data name as a user reads it, by data-name directory.
   const names = new Map<string, string>();
   const markedUnder = (nameDir: string, rel: string | undefined) => {
     if (rel === undefined) return;
@@ -3549,8 +2888,6 @@ async function discardRefusedVersions(
     if (rels === undefined) marked.set(nameDir, rels = new Set());
     rels.add(rel);
   };
-  // Data names whose restore did not match the datastore: they keep their
-  // marks.
   const failed = new Set<string>();
   const failOwnerOf = (rel: string) => {
     const nameDir = owner.get(rel);
@@ -3619,8 +2956,6 @@ async function discardRefusedVersions(
       continue;
     }
     if (bytes === null) {
-      // The datastore has no marker: a name that still has one here, or
-      // whose marker cannot be checked, does not match it.
       if (await exists(join(nameDir, "latest")).catch(() => true)) {
         failed.add(nameDir);
       }
@@ -3714,16 +3049,9 @@ async function discardRefusedVersions(
 }
 
 /**
- * Replaces the cache's copy of `absPath` with the datastore's (swamp-club#3934),
- * through `fetchContent`, writing the bytes itself as `discardRefusedVersions`
- * does, or else `hydrateFile`. That contract does not promise to replace a
- * file already present, so the local copy is moved out of the cache first
- * and put back when the read fails: never left missing, since a push deletes
- * the remote copy of a marked file missing here. When the datastore has
- * none, the local copy is removed: a push of the missing marked file then
- * deletes nothing. Throws when neither read is available or the read fails,
- * so the caller pushes nothing rather than this host's copy over the
- * datastore's.
+ * the local copy is moved out first and put back if the read fails, never left
+ * missing: a push deletes the remote copy of a marked file missing here. Throws
+ * so nothing overwrites the datastore's copy
  */
 async function rehydrateContent(
   absPath: string,
@@ -3763,11 +3091,6 @@ async function rehydrateContent(
   }
 }
 
-/**
- * Reads `rel` through `hydrateFile` with this host's copy of it moved beside
- * the cache, so the read cannot keep it; the copy is put back when the read
- * fails or reports a file it did not write, and discarded otherwise.
- */
 async function hydrateOverLocal(
   absPath: string,
   rel: string,
@@ -3803,12 +3126,6 @@ async function hydrateOverLocal(
   return present;
 }
 
-/**
- * Each of `versions` this host still holds, with the data id its metadata
- * names now (undefined when the metadata names none). A version whose
- * metadata is gone is left out, as is one whose metadata cannot be read or
- * parsed unless `strict`, which throws instead.
- */
 async function localDataIds(
   versions: readonly WrittenVersion[],
   repo: RepositoryContext["unifiedDataRepo"],
@@ -3851,13 +3168,11 @@ async function localDataIds(
   return present;
 }
 
-/** Remote reads a publish check runs at once. */
 const PUBLISH_CHECK_CONCURRENCY = 8;
 
 /**
- * The targets the remote datastore does not hold yet, or undefined when a
- * read failed: a push that cannot be checked counts as unverified, not as
- * lost, so an unreachable remote never fails work whose push succeeded.
+ * a push that cannot be checked counts as unverified, not lost, so an
+ * unreachable remote never fails work whose push succeeded
  */
 async function unpublishedTargets(
   targets: readonly PublishTarget[],
@@ -3896,10 +3211,9 @@ async function unpublishedTargets(
 }
 
 /**
- * Reads a per-model lock just after it was acquired, as the reading its
- * push checks against (swamp-club#3373). A lock that reads nothing, is
- * still being written, or cannot be read gives undefined: its push is not
- * checked, as before, rather than refused for a backend that cannot report.
+ * a lock that reads nothing, is still being written, or cannot be read gives
+ * undefined: its push is not checked, rather than refused for a backend that
+ * cannot report
  */
 async function readTakenLock(
   lock: DistributedLock,
@@ -3913,22 +3227,9 @@ async function readTakenLock(
 }
 
 /**
- * Best-effort delete of a stale global lock whose `info` was just observed.
- *
- * Without this, the wait loops in `acquireModelLocks` only `break` past a
- * stale lock — the file remains on disk/in S3 and the post-acquire TOCTOU
- * re-check immediately re-detects it, triggering an infinite recursive
- * retry. Using the existing `forceRelease(expectedNonce)` breakglass
- * primitive (defined on `DistributedLock` for exactly this purpose)
- * actually clears the stale state so subsequent inspects return null.
- *
- * Failure modes are benign and intentionally swallowed:
- *   - `info.nonce` missing (older lock format) — skip; the surrounding
- *     wait-loop timeout still bounds the wait.
- *   - `forceRelease` returns false (nonce changed: the holder
- *     legitimately re-acquired or another process force-released first)
- *     — the next inspect will see the new state and we re-loop.
- *   - Backend transient error — same recovery; one extra loop iteration.
+ * without deleting it, the wait loops only break past a stale lock and the
+ * post-acquire recheck re-detects it, retrying forever; failures are swallowed
+ * since the wait timeout still bounds the wait
  */
 async function tryForceReleaseStaleLock(
   lock: DistributedLock,
@@ -3946,7 +3247,6 @@ async function tryForceReleaseStaleLock(
   }
 }
 
-/** Pulls one model's data, scoped to it when the extension can. */
 function pullModelData(
   syncService: DatastoreSyncService,
   config: DatastoreConfig,
@@ -3966,17 +3266,10 @@ function pullModelData(
   return syncService.pullChanged();
 }
 
-/**
- * Waits while a structural command holds the datastore's global lock, as
- * every run does before it touches a model's data: until the lock is
- * released, or proceeds past a lock older than its TTL, and throws
- * `LockTimeoutError` after twice the TTL.
- */
 async function waitForGlobalLockRelease(
   globalLock: DistributedLock,
   config: DatastoreConfig,
   write: LockProgressWriter,
-  /** What the caller does next, for the progress line. */
   next: string,
 ): Promise<void> {
   const globalInfo = await globalLock.inspect();
@@ -3986,9 +3279,8 @@ async function waitForGlobalLockRelease(
         `Global lock held by ${globalInfo.holder} — waiting for structural command to finish...`,
       ),
     );
-    // Poll until the global lock is released or expires (stale lock).
-    // Timeout after 2x TTL to prevent indefinite hangs if staleness
-    // detection fails (e.g. clock skew, S3 consistency issues).
+    // timeout after 2x TTL prevents indefinite hangs if staleness detection
+    // fails (clock skew, S3 consistency)
     const globalWaitStart = Date.now();
     const globalMaxWaitMs = (globalInfo.ttlMs ?? 30_000) * 2;
     await withRunPhase(
@@ -3999,7 +3291,6 @@ async function waitForGlobalLockRelease(
           await new Promise((resolve) => setTimeout(resolve, 1_000));
           const info = await globalLock.inspect();
           if (!info) break;
-          // Check if the lock has exceeded its TTL (stale/crashed process)
           const acquiredAt = new Date(info.acquiredAt).getTime();
           if (Date.now() - acquiredAt > info.ttlMs) {
             write(
@@ -4010,7 +3301,6 @@ async function waitForGlobalLockRelease(
             await tryForceReleaseStaleLock(globalLock, info);
             break;
           }
-          // Hard timeout to prevent indefinite hangs
           const globalElapsed = Date.now() - globalWaitStart;
           if (globalElapsed >= globalMaxWaitMs) {
             const lockOpts = datastoreGlobalLockOptions(config);
@@ -4033,10 +3323,8 @@ async function waitForGlobalLockRelease(
 }
 
 /**
- * The global lock's holder, for a run that never waits on it, or undefined
- * when it is free. A lock past its TTL is force-released, as
- * {@link waitForGlobalLockRelease} does, so a crashed structural command
- * does not hold such runs off until a waiting run clears it.
+ * a lock past its TTL is force-released, as the waiting path does, so a crashed
+ * structural command does not hold such runs off until a waiting run clears it
  */
 async function liveGlobalLockHolder(
   globalLock: DistributedLock,
@@ -4057,15 +3345,9 @@ async function liveGlobalLockHolder(
 }
 
 /**
- * Pulls the models' data without taking their locks. A read or list run on
- * a v2 extension datastore pulls this way before it runs unlocked, so it
- * reads current data and numbers its versions past every published one
- * (swamp-club#3934). It never waits and never fails the run: while a
- * structural command holds the global lock, or when the pull fails, the
- * run uses this host's cache, as it did before it pulled, and its publish
- * check still refuses any version another clone wrote. Returns whether the
- * local cache may have changed, so the caller invalidates the catalog.
- * Pulls nothing on another datastore.
+ * never waits and never fails the run: while a structural command holds the
+ * global lock or the pull fails, the run uses this host's cache and its publish
+ * check still refuses another clone's version
  */
 export async function pullModelsUnlocked(
   config: DatastoreConfig,
@@ -4073,7 +3355,6 @@ export async function pullModelsUnlocked(
   repoDir: string,
   syncService: DatastoreSyncService | undefined,
   options?: {
-    /** As {@link AcquireModelLocksOptions.wrapSync}. */
     wrapSync?: SyncCallWrapper;
     progressWriter?: LockProgressWriter;
   },
@@ -4084,7 +3365,6 @@ export async function pullModelsUnlocked(
   ) {
     return false;
   }
-  // As in acquireModelLocks (swamp-club#3189).
   await ensureSupportedDatastoreFormat(repoDir, config);
   const write = options?.progressWriter ?? defaultLockWriter;
   const wrapSync: SyncCallWrapper = options?.wrapSync ?? ((fn) => fn());
@@ -4092,8 +3372,8 @@ export async function pullModelsUnlocked(
     getSwampLogger(["datastore", "sync"])
       .warn`Could not pull from the datastore, so this run uses this host's data: ${error}`;
   };
-  // A read never waits on a structural command (swamp-club#1992): it runs
-  // on this host's cache instead.
+  // a read never waits on a structural command: it runs on this host's cache
+  // instead
   let globalInfo: LockInfo | undefined;
   let provider: DatastoreProvider;
   try {
@@ -4126,11 +3406,9 @@ export async function pullModelsUnlocked(
   let synced = false;
   for (const { modelType, modelId } of models) {
     try {
-      // A run on this host holding the behavior's lock writes into this
-      // cache, and a pull would overwrite its unpublished files with the
-      // datastore's older copies; its push publishes them. Use this host's
-      // data, as while the global lock is held. A holder elsewhere does not
-      // write here, so the pull goes ahead.
+      // a run on this host holding the behavior's lock writes unpublished files
+      // into this cache that a pull would overwrite, so use this host's data; a
+      // holder elsewhere does not write here
       const holder = await provider.createLock(config.datastorePath, {
         lockKey: modelLockKey(config.namespace, modelType, modelId),
         maxWaitMs: resolveLockTimeoutMs(),
@@ -4160,11 +3438,9 @@ export async function pullModelsUnlocked(
 }
 
 /**
- * Takes the locks a read or list run publishes its data versions under
- * (swamp-club#3934), or, when another run holds them, records `written` for
- * the next run that takes them on this host to publish, and returns
- * undefined: the run is never held up by a writer (swamp-club#1992). A
- * nested run under a parent holding the lock defers to the parent's push.
+ * when another run holds the locks, records the versions for the next run on
+ * this host to publish and returns undefined, so a writer never holds the run
+ * up; a nested run defers to its parent's push
  */
 export async function acquirePublishLocksOrDefer(
   config: DatastoreConfig,
@@ -4218,39 +3494,29 @@ export async function acquireModelLocks(
   models: Array<{ modelType: string; modelId: string }>,
   repoDir?: string,
   /**
-   * Sync service to use for pull/push. Normally supplied by the caller
-   * (e.g. via `requireInitializedRepoUnlocked` or the serve context) so the
-   * same instance handles both the markDirty hook on cache writes and the
-   * fast-path watermark read here — implementations that cache the sidecar
-   * flag in memory stay coherent across the two call sites. Omit to let
-   * this function create one; doing so is only safe when no separate
-   * repo-context markDirty hook will race this instance.
+   * normally supplied by the caller so one instance handles both the markDirty
+   * hook and the watermark read; omit only when no separate markDirty hook will
+   * race this instance
    */
   syncService?: DatastoreSyncService,
   /**
-   * CatalogStore for writing catalog exports after push. Passed from the
-   * repo context so we reuse the existing SQLite handle instead of opening
-   * a second one (avoids locking contention on _catalog.db).
+   * reuses the repo context's SQLite handle instead of opening a second one,
+   * avoiding lock contention on _catalog.db
    */
   catalogStore?: CatalogStore,
   progressWriter?: LockProgressWriter,
   options?: AcquireModelLocksOptions,
 ): Promise<ModelLockResult> {
   const write = progressWriter ?? defaultLockWriter;
-  // Fired by a fenced lease at serve that lapses (swamp-club#4121).
   const leaseLost = new AbortController();
   const logger = getSwampLogger(["datastore", "lock"]);
   const wrapSync: SyncCallWrapper = options?.wrapSync ?? ((fn) => fn());
   let synced = false;
 
-  // Free when the config came through resolveDatastoreForRepo; checks a
-  // config resolved any other way before the first lock (swamp-club#3189).
   await ensureSupportedDatastoreFormat(repoDir ?? ".", config);
 
-  // For custom datastores, resolve the provider once and reuse it everywhere
   let customProvider: DatastoreProvider | undefined;
   let customSyncService = syncService;
-  // A v3 bucket datastore takes file locks and syncs nothing (swamp-club#3534).
   if (isCustomDatastoreConfig(config) && isV2CustomDatastore(config)) {
     customProvider = await resolveCustomProvider(config);
     if (!customSyncService && config.cachePath) {
@@ -4261,12 +3527,9 @@ export async function acquireModelLocks(
     }
   }
 
-  // Wait for global lock to be released (if held by a structural command).
-  // Use the cached provider for custom types so all locks share the same instance.
-  // The inspected key MUST match the namespaced key the structural command
-  // acquires (datastoreGlobalLockOptions), or the symmetric drain silently
-  // coordinates against the wrong lock. createDatastoreLock applies the same
-  // options for the filesystem branch.
+  // the inspected key must match the namespaced key the structural command
+  // acquires, or the symmetric drain coordinates against the wrong lock; custom
+  // types use the cached provider so all locks share one instance
   const globalLock = customProvider && isCustomDatastoreConfig(config)
     ? customProvider.createLock(
       config.datastorePath,
@@ -4290,14 +3553,13 @@ export async function acquireModelLocks(
     );
   }
 
-  // Sort models for deterministic lock ordering (deadlock prevention)
+  // sorted for deterministic lock ordering, to prevent deadlock
   const sorted = [...models].sort((a, b) => {
     const keyA = `${a.modelType}/${a.modelId}`;
     const keyB = `${b.modelType}/${b.modelId}`;
     return keyA.localeCompare(keyB);
   });
 
-  // Deduplicate
   const seen = new Set<string>();
   const unique = sorted.filter((m) => {
     const key = `${m.modelType}/${m.modelId}`;
@@ -4308,11 +3570,6 @@ export async function acquireModelLocks(
 
   const lockKeys: string[] = [];
   const heldLocks: DistributedLock[] = [];
-  /**
-   * Per {@link heldLocks} index: the model it locks, and the lock as read
-   * just after it was acquired, which the push checks it against. Undefined
-   * when the lock read nothing or could not be read then.
-   */
   const heldLockModels: Array<{ modelType: string; modelId: string }> = [];
   const heldLockTaken: Array<LockInfo | undefined> = [];
   // A v3 context fences its own writer; a filesystem datastore has no push.
@@ -4341,13 +3598,11 @@ export async function acquireModelLocks(
     modelId: string,
   ) => pullModelData(syncService, config, caps, modelType, modelId);
 
-  // All or nothing: a call that returns no lock result holds no locks.
-  // Without this unwind a throw below leaves every lock taken so far held
-  // until the process exits (swamp-club#2901).
+  // all or nothing: without this unwind a throw below leaves every lock taken
+  // so far held until the process exits
   try {
     for (const { modelType, modelId } of unique) {
       const lockFileKey = modelLockKey(config.namespace, modelType, modelId);
-      // Use cached provider for custom types to avoid repeated registry lookups
       const lock = customProvider && isCustomDatastoreConfig(config)
         ? customProvider.createLock(config.datastorePath, {
           lockKey: lockFileKey,
@@ -4363,9 +3618,8 @@ export async function acquireModelLocks(
               onLost: (error) => leaseLost.abort(error),
             }),
         );
-      // Unique coordinator key so parallel steps on the same model get
-      // separate entries — prevents the second registration from
-      // overwriting the first (which would orphan the first lock).
+      // unique coordinator key so parallel steps on the same model do not
+      // overwrite each other's registration and orphan the first lock
       const coordinatorKey = `${lockFileKey}#${
         crypto.randomUUID().slice(0, 8)
       }`;
@@ -4382,9 +3636,9 @@ export async function acquireModelLocks(
       heldLockModels.push({ modelType, modelId });
       heldLockTaken.push(checkLocks ? await readTakenLock(lock) : undefined);
 
-      // Re-check global lock after acquiring each per-model lock to close TOCTOU race.
-      // If a structural command acquired the global lock between our initial check
-      // and this per-model acquisition, release everything and wait.
+      // re-check the global lock after each per-model acquire to close a TOCTOU
+      // race: if a structural command took it meanwhile, release everything and
+      // wait
       const postAcquireGlobalInfo = options?.failIfBusy
         ? await liveGlobalLockHolder(globalLock, write)
         : await globalLock.inspect();
@@ -4397,14 +3651,12 @@ export async function acquireModelLocks(
             `Global lock acquired by ${postAcquireGlobalInfo.holder} during per-model lock acquisition — releasing and retrying`,
           ),
         );
-        // Release all per-model locks acquired so far
         await release();
         lockKeys.length = 0;
         heldLocks.length = 0;
         heldLockModels.length = 0;
         heldLockTaken.length = 0;
 
-        // Wait for global lock to be released (with timeout)
         const retryWaitStart = Date.now();
         const retryMaxWaitMs = (postAcquireGlobalInfo.ttlMs ?? 30_000) * 2;
         await withRunPhase(
@@ -4441,11 +3693,9 @@ export async function acquireModelLocks(
           },
         );
 
-        // Restart the entire per-model lock acquisition from scratch —
-        // propagate the shared sync service so the retry keeps single-instance
-        // semantics. Pulls made before the restart already wrote to the local
-        // cache, and the retry's pulls of the same models report 0, so carry
-        // `synced` forward or the caller would skip catalog invalidation.
+        // restart with the shared sync service; the retry's pulls of
+        // already-pulled models report 0, so carry synced forward or the caller
+        // would skip catalog invalidation
         const retried = await acquireModelLocks(
           config,
           models,
@@ -4458,7 +3708,6 @@ export async function acquireModelLocks(
         return { ...retried, synced: synced || retried.synced };
       }
 
-      // For custom sync-capable datastores: pull after acquiring per-model lock
       if (customSyncService && options?.pull !== false) {
         try {
           write(
@@ -4491,11 +3740,10 @@ export async function acquireModelLocks(
     throw error;
   }
 
-  // Older nested swamps read only the holder; set once, never cleared, so
-  // concurrent lock holders in this process cannot clear it under each other.
+  // older nested swamps read only the holder; set once and never cleared, so
+  // concurrent lock holders in this process cannot clear it under each other
   processLockHolderMarker.markHoldingLocks();
 
-  // How a refusal restores the datastore's copy of what it discards.
   const refusalRestore = (
     custom: CustomDatastoreConfig,
   ): DiscardRestoreOptions => ({
@@ -4505,14 +3753,9 @@ export async function acquireModelLocks(
     lazy: custom.hydrationStrategy === "lazy",
   });
 
-  // A breakglass (`swamp datastore lock release --force`) lets another clone
-  // take a model's lock while this run still works under it. Both clones
-  // allocate data versions from their own caches, so the other run may have
-  // written and pushed the same version, and this push would overwrite it.
-  // Refuse to push unless every per-model lock still names the holder it
-  // named when taken (swamp-club#3373). The check and the upload are not
-  // atomic; Phase 5's model leases close that window. `refused` are the data
-  // versions the push would publish; a refusal discards them.
+  // a breakglass lets another clone take a model's lock mid-run and push the
+  // same version number, so refuse to push unless every per-model lock still
+  // names its holder. The check and upload are not atomic
   const assertModelLocksHeld = async (
     refused: readonly WrittenVersion[],
   ) => {
@@ -4530,15 +3773,9 @@ export async function acquireModelLocks(
       });
     }
     if (lost.length === 0) return;
-    // The refused versions stay marked dirty in the cache, and a later push
-    // (a workflow's end-of-run push, serve's sync, a `datastore sync`) would
-    // upload them, over the other run's after a breakglass. Discard them
-    // first, so that holds even when the datastore cannot be reached
-    // (swamp-club#3485), then pull the lost models so the cache holds the
-    // datastore's copy. The discard also drops the marks the refused writes
-    // left, so a later push cannot delete or overwrite the other run's
-    // versions (swamp-club#4091). Best effort: the refusal stands whatever
-    // either does.
+    // refused versions stay marked dirty and a later push would upload them
+    // over the other run's, so discard them first, even if the datastore is
+    // unreachable, then pull the lost models; best effort
     if (customSyncService) {
       try {
         const repoContext = options?.repoContext;
@@ -4570,15 +3807,13 @@ export async function acquireModelLocks(
     throw new ModelLockLostError(lost);
   };
 
-  // `beforePush` runs inside the same wrapped call as the push, so in serve
-  // no run pull can land between it and the upload (swamp-club#3146).
-  // `versions` are the data versions this push publishes.
+  // beforePush runs inside the same wrapped call as the push, so in serve no
+  // run pull can land between it and the upload
   const pushOnce = async (
     beforePush?: () => Promise<void>,
     kind: "push" | "push-alone" = "push",
     versions: readonly WrittenVersion[] = [],
   ) => {
-    // For custom sync-capable datastores: push changes to remote
     if (
       customSyncService && customProvider && isCustomDatastoreConfig(config)
     ) {
@@ -4590,9 +3825,6 @@ export async function acquireModelLocks(
         caps?.twoPhaseSync && syncService.preparePush &&
         syncService.commitPush
       ) {
-        // Two-phase push: file uploads outside global lock, index
-        // merge under global lock. Narrows the critical section from
-        // "entire sync" to "index read-modify-write" only.
         await wrapSync(async () => {
           await assertModelLocksHeld(versions);
           await beforePush?.();
@@ -4609,7 +3841,6 @@ export async function acquireModelLocks(
           );
         }, kind);
       } else {
-        // Single-phase fallback: everything under global lock
         await wrapSync(async () => {
           await assertModelLocksHeld(versions);
           await beforePush?.();
@@ -4632,9 +3863,9 @@ export async function acquireModelLocks(
   const lockedModels = new Set(
     unique.map((m) => JSON.stringify([m.modelType, m.modelId])),
   );
-  // Whether these locks pulled their models before the work's versions are
-  // checked: the pull overwrote, with the datastore's copy, every version
-  // another clone also wrote under the same number.
+  // whether these locks pulled their models before the check: the pull
+  // overwrote, with the datastore's copy, every version another clone also
+  // wrote under the same number
   const pulledUnderLocks = customSyncService !== undefined &&
     options?.pull !== false;
   const push = async (written?: readonly WrittenVersion[]) => {
@@ -4657,8 +3888,6 @@ export async function acquireModelLocks(
     const syncService = customSyncService;
     const custom = config;
     const cachePath = config.cachePath;
-    // What earlier read or list runs left for these locks to publish
-    // because another run held them (swamp-club#3934).
     let deferred: PendingPublish[] = [];
     try {
       // A record naming another model's versions too is left for a lock
@@ -4693,7 +3922,6 @@ export async function acquireModelLocks(
           .warn`Removing the data versions left to publish failed: ${error}`;
       }
     };
-    // A version whose data is gone from this host is dropped.
     const present = [
       // The run's own metadata must read: one that cannot is not skipped.
       ...await localDataIds(ours, publishContext.unifiedDataRepo, {
@@ -4701,12 +3929,9 @@ export async function acquireModelLocks(
       }),
       ...await localDataIds(left, publishContext.unifiedDataRepo),
     ];
-    // A version whose data id is no longer the one its run wrote was
-    // replaced by the pull under these locks: another clone wrote the same
-    // number first, and this host now holds that clone's copy. The cache
-    // holds what the datastore holds for these models, so the push that
-    // follows sends nothing of the other clone's back, and deletes none of
-    // it, whatever is marked (swamp-club#3934).
+    // a version whose data id is no longer the run's was replaced by the pull
+    // under these locks: another clone wrote that number first, so the push
+    // sends and deletes none of that clone's data
     const replaced = pulledUnderLocks
       ? present
         .filter((p) =>
@@ -4722,12 +3947,9 @@ export async function acquireModelLocks(
       .filter((w) => !replacedKeys.has(versionKey(w)));
     let conflict: DataVersionConflictError | undefined;
     if (replaced.length > 0) {
-      // On a lazy cache a metadata-only pull would have left the content
-      // this host wrote beside the other clone's metadata. Read the
-      // datastore's content over it, never remove it: the run's write left
-      // it marked, and a push deletes the remote copy of a marked file that
-      // is missing here (swamp-club#3934). Equal to the remote, the push
-      // sends nothing for it.
+      // on a lazy cache read the datastore's content over it, never remove it:
+      // the run's write left it marked and a push deletes the remote copy of a
+      // marked file missing here
       const own = replaced.filter((w) => ownKeys.has(versionKey(w)));
       const earlier = replaced.filter((w) => !ownKeys.has(versionKey(w)));
       if (custom.hydrationStrategy === "lazy") {
@@ -4749,12 +3971,9 @@ export async function acquireModelLocks(
             );
           }
         } catch (error) {
-          // The content left beside the other clone's metadata is still
-          // marked, and nothing would read it back again: the next pull
-          // finds the metadata current. Record the run's own such versions
-          // (an earlier run's keep their records, since nothing is
-          // settled), so the next lock finds them replaced and reads their
-          // content back before it pushes.
+          // content left beside the other clone's metadata is still marked and
+          // nothing would read it back, so record the run's own such versions
+          // for the next lock to read back before it pushes
           try {
             await recordPendingPublish(cachePath, own);
           } catch (recordError) {
@@ -4817,9 +4036,9 @@ export async function acquireModelLocks(
       }
       return pending;
     };
-    // The records go only once every version they name is confirmed
-    // published: a failed push keeps them for the next lock. Only the run's
-    // own versions fail the run; an earlier read's are retried later.
+    // the records go only once every version they name is confirmed published;
+    // a failed push keeps them for the next lock. Only the run's own versions
+    // fail the run
     let failure: unknown;
     try {
       const unconfirmed = await publish();
@@ -4839,9 +4058,9 @@ export async function acquireModelLocks(
     }
     if (failure !== undefined) {
       if (conflict === undefined) throw failure;
-      // The refusal carries the failure: the versions it left were not all
-      // published either, so a caller that tolerates the refusal still
-      // fails on the rest (swamp-club#3934).
+      // the refusal carries the failure: the versions it left were not all
+      // published either, so a caller that tolerates the refusal still fails on
+      // the rest
       throw new DataVersionConflictError(conflict.versions, {
         publishFailure: failure,
       });
@@ -4849,10 +4068,9 @@ export async function acquireModelLocks(
     if (conflict !== undefined) throw conflict;
   };
 
-  // A step's v3 writes are staged in its run's unit and committed by the
-  // run's checkpoints, which can land after the step releases its locks.
-  // Under a lease at serve they are committed before the release, so they
-  // reach serve naming the lease (swamp-club#4121).
+  // a v3 step's writes are committed by run checkpoints that can land after the
+  // locks are released; under a lease at serve they commit before release, so
+  // they reach serve naming the lease
   const atServe = heldLocks.some((lock) => lock instanceof ServeLock);
   const flush = async (written?: readonly WrittenVersion[]) => {
     try {
@@ -4861,7 +4079,6 @@ export async function acquireModelLocks(
       }
       await push(written);
     } finally {
-      // Always release per-model locks, even if push fails
       await release();
     }
   };
@@ -4896,12 +4113,8 @@ export async function acquireModelLocks(
 }
 
 /**
- * Runs `fn`, the method run done under the per-model locks `lockResult`
- * took (or under none, when it is undefined), so a swamp it starts skips
- * those locks and still waits on the ones this process holds for other
- * runs (design/enablers/datastores.md, "Parent-Process Lock Awareness").
- * Wrap the whole consumption of a method run's event stream: an async
- * generator's body runs in the context of whoever iterates it.
+ * wrap the whole consumption of a method run's event stream: an async
+ * generator's body runs in the context of whoever iterates it
  */
 export function runUnderModelLocks<T>(
   lockResult: Pick<ModelLockResult, "lentLocks"> | undefined,
@@ -4910,17 +4123,6 @@ export function runUnderModelLocks<T>(
   return processLockHolderMarker.runHolding(lockResult?.lentLocks ?? [], fn);
 }
 
-/**
- * Single-phase push: catalog export outside the lock, pushChanged under it.
- *
- * Writes the catalog export before acquiring the global lock, then acquires
- * the lock and calls `pushChanged`. The export is a full snapshot of the
- * local catalog — safe to write outside the lock because a later concurrent
- * writer simply overwrites with a more complete snapshot (same reasoning as
- * the two-phase path).
- *
- * Used when the extension does not advertise `twoPhaseSync`.
- */
 export async function flushSinglePhasePush(
   provider: DatastoreProvider,
   syncService: DatastoreSyncService,
@@ -4934,10 +4136,9 @@ export async function flushSinglePhasePush(
 ): Promise<void> {
   const write = progressWriter ?? defaultLockWriter;
 
-  // Write catalog export before acquiring the global lock so the
-  // synchronous SQLite read + JSON serialization doesn't hold the lock
-  // and block concurrent writers. Safe for the same reason as two-phase:
-  // the export is a full snapshot that a later writer simply overwrites.
+  // write the catalog export before taking the global lock so its SQLite read
+  // and JSON serialization do not block writers; a later writer overwrites with
+  // a more complete full snapshot
   await writeCatalogExportIfNeeded(
     syncService,
     config,
@@ -5001,20 +4202,6 @@ export async function flushSinglePhasePush(
   }
 }
 
-/**
- * Two-phase push: file I/O outside the lock, index merge under the lock.
- *
- * 1. `preparePush` — uploads changed files to the remote (expensive,
- *    runs under per-model locks only, no global lock)
- * 2. Acquire global lock
- * 3. Write catalog export
- * 4. `commitPush` — merges the manifest into the remote index (fast)
- * 5. Release global lock
- *
- * This narrows the critical section from "entire sync" to "index
- * read-modify-write" only. Concurrent writers to different models
- * overlap on step 1 and serialize only on steps 2–5.
- */
 export async function flushTwoPhasePush(
   provider: DatastoreProvider,
   syncService: DatastoreSyncService,
@@ -5027,10 +4214,6 @@ export async function flushTwoPhasePush(
   progressWriter?: LockProgressWriter,
 ): Promise<void> {
   const write = progressWriter ?? defaultLockWriter;
-  // Write catalog export before preparePush so it's included in the
-  // upload phase. The export is a full snapshot of the local catalog —
-  // safe to write outside the lock because a later concurrent writer
-  // simply overwrites with a more complete snapshot.
   await writeCatalogExportIfNeeded(
     syncService,
     config,
@@ -5039,7 +4222,6 @@ export async function flushTwoPhasePush(
     progressWriter,
   );
 
-  // Phase 1: upload files outside the global lock
   let manifest: PushManifest;
   try {
     write(dim("Preparing push (uploading files)..."));
@@ -5062,7 +4244,6 @@ export async function flushTwoPhasePush(
     throw new Error(summary, { cause: error });
   }
 
-  // Phase 2: index merge under global lock
   const pushLock = provider.createLock(
     config.datastorePath,
     {
@@ -5114,10 +4295,6 @@ export async function flushTwoPhasePush(
   }
 }
 
-/**
- * Writes `.catalog-export.json` for the namespace if applicable.
- * Shared by both single-phase and two-phase push paths.
- */
 export async function writeCatalogExportIfNeeded(
   syncService: DatastoreSyncService,
   config: CustomDatastoreConfig,
@@ -5153,15 +4330,9 @@ export interface VaultSyncResult {
 }
 
 /**
- * Lifecycle hook for vault commands.
- *
- * Vault **secrets** (encrypted blobs) live in `.swamp/secrets/` which is
- * always-local (ALWAYS_LOCAL_SUBDIRS) — they never enter the datastore.
- * Vault **configs** (YAML definitions in `vaults/`) do live in the
- * datastore's config tier when managedConfig is active, but config-tier
- * sync is handled separately by `pushManagedConfigChanges` (writes) and
- * `requireInitializedRepoReadOnly` with `pull: true` (reads). This hook
- * covers neither, so the returned flush is a no-op.
+ * vault secrets stay in always-local .swamp/secrets and vault configs sync
+ * through pushManagedConfigChanges and the read-only pull, so this hook covers
+ * neither and its flush is a no-op
  */
 export function acquireVaultSync(
   _config: DatastoreConfig,

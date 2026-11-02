@@ -42,7 +42,6 @@ Deno.test("authGateTiming: bare swamp and the auth path are exempt", () => {
       ["help", "model"],
       ["help", "model", "method", "run"],
       ["--log", "help", "workflow"],
-      // A pasted command line after `help` is still only help.
       ["help", "vault", "put", "prod", "DB_PASSWORD=hunter2"],
       ["completions", "zsh"],
       ["completions", "bash"],
@@ -129,8 +128,6 @@ Deno.test("authGateTiming: worker connect waits for enrollment; other worker com
 });
 
 Deno.test("authGateTiming: a boolean global option never hides the command after it", () => {
-  // Regression: a positional guess once read `swamp --log init` as bare
-  // `swamp`, because it did not know `--log` takes no value.
   for (
     const args of [
       ["--log", "init"],

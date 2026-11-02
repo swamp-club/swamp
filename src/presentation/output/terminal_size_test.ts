@@ -34,7 +34,6 @@ Deno.test("getTerminalColumns: uses the console width when it is positive", () =
 });
 
 Deno.test("getTerminalColumns: falls back to 80 when the console reports zero", () => {
-  // A pty with no attached window reports 0 columns without throwing.
   assertEquals(getTerminalColumns(() => ({ columns: 0, rows: 0 })), 80);
 });
 

@@ -17,11 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// swamp-club#2613: a manifest that lists several workflows under one
-// directory prefix must package every one of them. This wires the resolver
-// to the push prepare step and inspects the archive it produces, for both
-// of the issue's manifests (prefixed and bare).
-
 import { assertEquals } from "@std/assert";
 import { join } from "@std/path";
 import { stringify as stringifyYaml } from "@std/yaml";
@@ -189,7 +184,6 @@ for (const variant of variants) {
         input,
       );
 
-      // The dry-run report counts what the archive holds.
       assertEquals(prepared.resolvedData.workflowFiles.length, 3);
 
       const extracted = join(root, "extracted");

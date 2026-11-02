@@ -17,19 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * A package.json-mode extension (no Deno config, bare imports installed in
- * node_modules) is read, bundled, audited and packaged as push does
- * (swamp-club#3630): the module graph read and the bundle use
- * `--node-modules-dir=manual`, so the author's node_modules is left byte for
- * byte as installed; each bare import ships, and is audited, as the package
- * installed there, `npm:<name>@<installed version>`, with the range
- * package.json declares; and no bare-specifiers finding fires for them.
- * Wires the real resolver, module graph reader, bundler, dependency
- * extractor and archive assembly, offline: the packages are written by hand
- * in the npm and the deno install layouts, and the registry is unreachable.
- */
-
 import { assertEquals, assertStringIncludes } from "@std/assert";
 import { dirname, join, relative } from "@std/path";
 import { stringify as stringifyYaml } from "@std/yaml";
@@ -66,7 +53,6 @@ const ENV = {
 
 const logger = getLogger(["test"]);
 
-/** npm, its download counts and OSV, answering for ms 2.1.2 and 2.1.3. */
 function fakeRegistries(url: string | URL): Promise<Response> {
   const host = new URL(String(url)).host;
   if (host === "registry.npmjs.org") {
@@ -107,8 +93,6 @@ function stubDeps(audited: DependencySpecifier[]): ExtensionPushPrepareDeps {
     analyzeExtensionSafety: () => Promise.resolve({ errors: [], warnings: [] }),
     checkExtensionQuality: () => Promise.resolve({ passed: true, issues: [] }),
     extractDependencySpecifiers,
-    // The real audit, so the archive records what it resolved
-    // (swamp-club#3662); only the registries are fake.
     checkDependencyTrust: (specifiers) => {
       audited.push(...specifiers);
       return checkDependencyTrust(specifiers, fakeRegistries);
@@ -128,7 +112,6 @@ async function write(path: string, text: string): Promise<void> {
   await Deno.writeTextFile(path, text);
 }
 
-/** Writes an ESM package under `dir`, as an installer leaves it. */
 async function writePackage(
   dir: string,
   name: string,
@@ -145,14 +128,12 @@ async function writePackage(
 const MS_CODE = "export default function ms(n) {\n  return `${n}ms`;\n}\n";
 const ZOD_CODE = "export const z = {};\n";
 
-/** node_modules as `npm install` lays it out. */
 async function npmLayout(project: string): Promise<void> {
   const modules = join(project, "node_modules");
   await writePackage(join(modules, "ms"), "ms", "2.1.3", MS_CODE);
   await writePackage(join(modules, "zod"), "zod", "4.1.0", ZOD_CODE);
 }
 
-/** node_modules as `deno install` lays it out: symlinks into `.deno/`. */
 async function denoLayout(project: string): Promise<void> {
   const modules = join(project, "node_modules");
   for (
@@ -167,7 +148,6 @@ async function denoLayout(project: string): Promise<void> {
   }
 }
 
-/** Every path under `dir` with its bytes and mtime, symlinks unfollowed. */
 async function treeSnapshot(dir: string): Promise<string[]> {
   const entries: string[] = [];
   const visit = async (path: string) => {
@@ -236,7 +216,6 @@ async function withAuthor(
   }
 }
 
-/** The archive's files under `extension/`, by forward-slash path. */
 async function archiveFiles(archive: Uint8Array): Promise<Map<string, string>> {
   const out = await Deno.makeTempDir({ prefix: "swamp-package-json-out-" });
   try {
@@ -342,7 +321,6 @@ for (
       assertEquals(await treeSnapshot(nodeModules), before);
 
       const files = await archiveFiles(prepared.archiveBytes);
-      // Push ships zod as the host's zod 4, as under a Deno config.
       assertEquals(
         files.get("models/took.ts"),
         'import ms from "npm:ms@2.1.3";\nimport { z } from "npm:zod@4";\n' +
@@ -354,13 +332,10 @@ for (
         ),
         [],
       );
-      // zod is the host's, never audited.
       assertEquals(
         audited.map((s) => [s.name, s.version, s.installedVersion]),
         [["ms", "^2.1.0", "2.1.3"]],
       );
-      // The record lists ms at the installed version the source now pins
-      // (swamp-club#3662, v2 since swamp-club#3970).
       const record = JSON.parse(files.get("dependency-audit.json") ?? "");
       assertEquals(record.recordVersion, 2);
       assertEquals(record.dependencies, [{

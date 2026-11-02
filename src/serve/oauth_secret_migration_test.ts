@@ -39,7 +39,6 @@ const USER_VAULT = "default";
 
 interface FakeVaults {
   secrets: Map<string, Map<string, string>>;
-  /** Every user-vault call, as `method:key` (`list` has no key). */
   userVaultCalls: string[];
   failList: boolean;
   failGetKeys: Set<string>;
@@ -120,7 +119,6 @@ function userSecrets(fake: FakeVaults): Map<string, string> {
   return fake.secrets.get(USER_VAULT)!;
 }
 
-/** A serve registered with SWAMP_API_KEY: no bootstrap access token stored. */
 function seedApiKeyRegisteredServe(fake: FakeVaults): void {
   tokenSecrets(fake).set(OAUTH_CLIENT_ID_KEY, "client-id");
   tokenSecrets(fake).set(OAUTH_CLIENT_SECRET_KEY, "client-secret");

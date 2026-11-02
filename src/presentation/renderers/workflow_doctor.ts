@@ -43,7 +43,6 @@ function overallLabel(status: DoctorWorkflowsReport["overallStatus"]): string {
   }
 }
 
-/** `N passed, N failed`, plus the warning count only when there are any. */
 function summaryCounts(report: DoctorWorkflowsReport): string {
   const counts = `${report.totalPassed} passed, ${report.totalFailed} failed`;
   // A report from an older `swamp serve` has no warning count.

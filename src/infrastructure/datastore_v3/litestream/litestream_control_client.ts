@@ -18,29 +18,16 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * Talks to a Litestream sidecar through its control socket (swamp-club#3416):
- * `GET /info` to find a live sidecar and `POST /sync` with `wait` to force
- * the WAL to the replica. HTTP/1.1 over a Unix socket, one request per
- * connection.
- *
- * Every call has a deadline: a frozen sidecar's socket still accepts
- * connections and never answers (Phase 4A saw a command hang there). The
- * socket must belong to this user, so another user who bound the path first
- * cannot answer a sync for it.
- *
- * Windows reaches the socket through `litestream sync` instead; that client
- * waits for a pin of Litestream 0.5.18 or later.
- *
- * @module
+ * every call has a deadline since a frozen sidecar's socket accepts connections
+ * and never answers; the socket must belong to this user, so another user who
+ * bound the path first cannot answer a sync
  */
 
 import type { LitestreamSyncResponse } from "../../../domain/datastore_v3/litestream_replication.ts";
 
-/** Thrown when a control call fails before Litestream answers it. */
 export class LitestreamControlError extends Error {
   constructor(
     message: string,
-    /** The deadline passed before an answer: the sidecar may still be working. */
     readonly timedOut: boolean,
     options: { readonly cause?: unknown } = {},
   ) {
@@ -50,24 +37,21 @@ export class LitestreamControlError extends Error {
   }
 }
 
-/** What `GET /info` answers. */
 export interface LitestreamInfo {
   readonly version?: string;
   readonly pid?: number;
 }
 
-/** A parsed control response. */
 export interface ControlResponse {
   readonly status: number;
   readonly body: Record<string, unknown>;
 }
 
-/** The control calls a sidecar answers. */
 export interface LitestreamControl {
   info(socketPath: string, deadlineMs: number): Promise<LitestreamInfo>;
   /**
-   * Forces a sync. `signal` ends the wait early as a definite failure: the
-   * caller found the replica's storage unreachable (swamp-club#3802).
+   * `signal` ends the wait early as a definite failure: the caller found the
+   * replica's storage unreachable
    */
   sync(
     socketPath: string,
@@ -77,10 +61,8 @@ export interface LitestreamControl {
   ): Promise<LitestreamSyncResponse>;
 }
 
-/** How much longer Litestream's own sync wait runs than the client's deadline. */
 export const LITESTREAM_TIMEOUT_SLACK_S = 30;
 
-/** The control client over Deno's Unix sockets. */
 export const unixLitestreamControl: LitestreamControl = {
   async info(socketPath, deadlineMs) {
     const response = await controlRequest(socketPath, "GET", "/info", {
@@ -125,13 +107,6 @@ export const unixLitestreamControl: LitestreamControl = {
   },
 };
 
-/**
- * Sends one request on the control socket at `socketPath` and reads the
- * whole response, failing once `deadlineMs` has passed, or as soon as
- * `signal` aborts (not a timeout: the caller gave up on the answer).
- *
- * @throws LitestreamControlError
- */
 export async function controlRequest(
   socketPath: string,
   method: "GET" | "POST",
@@ -303,10 +278,6 @@ async function readAll(conn: Deno.UnixConn): Promise<Uint8Array> {
   return all;
 }
 
-/**
- * Parses an HTTP/1.1 response with a JSON body, sized by Content-Length or
- * chunked.
- */
 export function parseResponse(bytes: Uint8Array): ControlResponse {
   const split = indexOfBytes(bytes, CRLF_CRLF);
   if (split < 0) {

@@ -17,10 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Maps old built-in datastore type names to their extension replacements.
- * Applied when loading datastore configs from .swamp.yaml or env vars.
- */
 export const RENAMED_DATASTORE_TYPES: Record<string, string> = {
   "s3": "@swamp/s3-datastore",
 };

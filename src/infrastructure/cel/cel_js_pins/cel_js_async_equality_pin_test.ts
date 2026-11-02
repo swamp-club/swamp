@@ -17,16 +17,9 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// Pins for async equality handlers and async property access
-// (design/enablers/typed-secrets.md Section 4.2, fact 1: "Async custom function
-// inputs are awaited. Derived `!=`, container `isEqual`, and `listIncludes`
-// consume equality-handler returns synchronously, and a rejecting async handler
-// can leave unobserved promises. Equality handlers must therefore be
-// synchronous. A getter that returns a Promise reaches member access as an
-// unsupported value.").
-//
-// Handlers resolve without timers, so a Promise cel-js discards leaves no
-// pending timer behind for the test sanitizers.
+// pins async equality handlers and async property access; handlers resolve
+// without timers, so a Promise cel-js discards leaves no pending timer for the
+// sanitizers
 
 import { assertEquals, assertInstanceOf, assertRejects } from "@std/assert";
 import { waitFor } from "@swamp-club/swamp-testing";
@@ -91,8 +84,6 @@ Deno.test(
     "!=, list and map equality and membership consume an async == result synchronously",
   ),
   () => {
-    // The handler says "not equal". Each form below calls it once, treats the
-    // returned Promise as a truthy "equal", and answers synchronously.
     const { env, calls } = equalityEnvironment(() => Promise.resolve(false));
     const wrong: Array<[string, unknown]> = [
       ["s != t", false],
@@ -155,15 +146,14 @@ Deno.test(
     const { env } = equalityEnvironment(() =>
       Promise.reject(new Error("vault unavailable"))
     );
-    // A direct comparison surfaces the handler's own Error through its Promise.
     const direct = env.evaluate("s == t", { s, t });
     assertInstanceOf(direct, Promise);
     const error = await assertRejects(() => direct, Error, "vault unavailable");
     assertEquals(error.constructor, Error);
 
     let leaked = 0;
-    // Count and suppress only this handler's rejections; anything else still
-    // reaches the test runner.
+    // count and suppress only this handler's rejections; anything else still
+    // reaches the test runner
     const onRejection = (event: PromiseRejectionEvent) => {
       if ((event.reason as Error)?.message !== "vault unavailable") return;
       event.preventDefault();
@@ -174,8 +164,8 @@ Deno.test(
       assertEquals(env.evaluate("s != t", { s, t }), false);
       assertEquals(env.evaluate("[s] == [t]", { s, t }), true);
       assertEquals(env.evaluate("s in [t]", { s, t }), true);
-      // Wait for at least 3, then assert exactly 3, so an extra leak fails
-      // with its count instead of timing out between polls.
+      // wait for at least 3, then assert exactly 3, so an extra leak fails with
+      // its count instead of timing out between polls
       await waitFor(() => leaked >= 3, "three unobserved handler rejections");
       assertEquals(leaked, 3);
     } finally {

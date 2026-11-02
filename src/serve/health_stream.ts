@@ -23,33 +23,21 @@ export const DEFAULT_HEALTH_STREAM_INTERVAL_MS = 5000;
 const MIN_INTERVAL_MS = 1000;
 const MAX_INTERVAL_MS = 60000;
 
-/** Seconds a client refused at the stream cap should wait before retrying. */
 export const HEALTH_STREAM_CAP_RETRY_AFTER_SECONDS = 30;
 
-/** Ends a stream from the server side, telling the client why. */
 export interface HealthStreamCloser {
   close(code: number, reason: string): void;
 }
 
 export interface HealthStreamOptions {
   collect(signal: AbortSignal): Promise<HealthSnapshot>;
-  /** The raw `interval` query parameter, or null when absent. */
   intervalParam: string | null;
-  /** The raw `Last-Event-ID` header, or null when absent. */
   lastEventId: string | null;
-  /** Aborted when serve shuts down. */
   serverSignal: AbortSignal;
-  /** Aborted when the client disconnects. */
   requestSignal: AbortSignal;
-  /**
-   * Binds the stream to its token session so revocation can end it. Returns
-   * the unregister function, or null when the token is at its stream cap.
-   * Omitted when there is no token (auth mode none).
-   */
   registerSession?(closer: HealthStreamCloser): (() => void) | null;
 }
 
-/** Parses the `interval` query parameter, clamped to 1–60 s. */
 export function healthStreamInterval(param: string | null): number {
   if (param === null) return DEFAULT_HEALTH_STREAM_INTERVAL_MS;
   const parsed = parseInt(param, 10);
@@ -58,11 +46,9 @@ export function healthStreamInterval(param: string | null): number {
 }
 
 /**
- * Builds the SSE response for `/api/v1/health/stream`: a `health` event with
- * a fresh snapshot every interval, resumable by event id. When the server ends
- * the stream's session it sends a final `session-ended` event carrying the
- * close code and reason. A token at its stream cap gets 429 and no collection
- * runs.
+ * a token at its stream cap gets 429 and no collection runs; when the server
+ * ends the session a final session-ended event carries the close code and
+ * reason
  */
 export function createHealthStreamResponse(
   options: HealthStreamOptions,

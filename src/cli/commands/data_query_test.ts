@@ -24,10 +24,8 @@ import { UserError } from "../../domain/errors.ts";
 import type { DataQueryData } from "../../libswamp/data/query.ts";
 import type { DataRecord } from "../../domain/data/data_record.ts";
 
-// Import models barrel to trigger self-registration
 import "../../domain/models/models.ts";
 
-// Initialize logging for tests
 await initializeLogging({});
 
 Deno.test("dataQueryCommand has --single option", async () => {

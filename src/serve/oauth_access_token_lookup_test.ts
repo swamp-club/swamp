@@ -23,7 +23,6 @@ import { lookupOAuthAccessToken } from "./oauth_access_token_lookup.ts";
 
 const USER_VAULT = "default";
 
-/** A vault fake that records every read as `vault/key`. */
 function createFakeVault(secrets: Record<string, string>) {
   const reads: string[] = [];
   return {

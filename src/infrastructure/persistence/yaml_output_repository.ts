@@ -106,11 +106,6 @@ import {
 
 const logger = getLogger(["output-repo"]);
 
-/**
- * One-line reason a record could not be loaded: each failed field for a
- * validation error, the first line of anything else (YAML syntax errors
- * append a multi-line excerpt of the file).
- */
 function describeRecordError(error: unknown): string {
   if (error instanceof z.ZodError) {
     return error.issues
@@ -122,41 +117,29 @@ function describeRecordError(error: unknown): string {
 }
 
 /**
- * Minimum age before run gc treats an unreferenced run log as orphaned,
- * whatever the retention cutoff. A direct model method run writes its output
- * record only when it finishes, so for its whole duration its log has no
- * record pointing at it. The log's mtime moves with every line written, so
- * only a run that has been silent this long could lose its log.
+ * a direct run writes its output record only when it finishes, so its log has
+ * no record meanwhile; the log's mtime moves with every line, so only a
+ * long-silent run could lose its log
  */
 const ORPHAN_LOG_MIN_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 
-/**
- * How many records a summary read reads before adding their rows, so a scan
- * cancelled on a cold index keeps what it read for the next one.
- */
 const SUMMARY_BACKFILL_BATCH = 1024;
 
-/** How many days back the shards still taking new rows may reach. */
 const SUMMARY_QUIET_DAYS = 2;
 const DAY_MS = 24 * 60 * 60 * 1000;
 
 /**
- * How many shard bytes a read may parse per file it wants from that shard before
- * it reads the records instead, so one model's few runs do not parse a whole day
- * of its type. A record costs about as much as 2.7 KiB of rows on a quiet loop.
- * This allows several times that, because each awaited read also waits a turn of
- * a busy loop, and a read in batches reuses the shard it opened.
+ * shard bytes a read may parse per wanted file before reading the records
+ * instead, so one model's few runs do not parse a whole day of its type
  */
 const SUMMARY_SHARD_BYTES_PER_FILE = 16 * 1024;
 
-/** An output file name `<definitionId>-<stamp>.yaml`, as getPath writes it. */
 const OUTPUT_FILE_NAME =
   /^(.+)-(\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-\d{3}Z)\.yaml$/;
 
 /**
- * `instant`'s stamp when a name can carry it: one outside years 0000-9999 is
- * signed, so comparing it with a name's does not order them as their
- * instants.
+ * a year outside 0000-9999 makes a signed stamp, so comparing it with a name's
+ * does not order them as their instants
  */
 function nameStampOf(instant: Date | undefined): string | undefined {
   if (instant === undefined) return undefined;
@@ -164,24 +147,15 @@ function nameStampOf(instant: Date | undefined): string | undefined {
   return /^\d{4}-/.test(stamp) ? stamp : undefined;
 }
 
-/** An output with the type and method it was found under. */
 type GlobalOutput = { output: ModelOutput; type: ModelType; method: string };
 
-/** A summary with the type and method it was found under. */
 type GlobalSummary = { output: OutputSummary; type: ModelType; method: string };
 
-/** The rows of the shards a scan has opened, by type and day. */
 interface OpenShards {
-  /** The summaries' generation they were opened in: a clear retires them. */
   generation: string | undefined;
   readonly rows: Map<string, Promise<Map<string, OutputSummaryRow>>>;
 }
 
-/**
- * An output file a global scan listed, with the method directory it is in
- * and, when its name is in {@link getPath}'s form, the definition id and
- * stamp the name carries.
- */
 interface ListedOutput {
   modelType: ModelType;
   method: string;
@@ -190,11 +164,6 @@ interface ListedOutput {
   stamp?: string;
 }
 
-/**
- * The files of `listed` to read: every file when there is no
- * `selectReadable`, otherwise each file whose name carries no key and each
- * whose key it accepts. It is asked once, about the distinct keys.
- */
 async function chooseReadable<T extends ListedOutput>(
   listed: T[],
   selectReadable: SelectReadableOutputs | undefined,
@@ -225,16 +194,11 @@ async function chooseReadable<T extends ListedOutput>(
   });
 }
 
-/** The window of a definition's history search. */
 interface HistoryWindow {
   since?: Date;
   until?: Date;
 }
 
-/**
- * Whether a file name's stamp, or an output's start, is in `window`: at or
- * after `since` and before `until`.
- */
 function historyWindowOf(window: HistoryWindow | undefined): {
   stampIn: (stamp: string) => boolean;
   startedIn: (startedAt: Date) => boolean;
@@ -257,7 +221,6 @@ function historyWindowOf(window: HistoryWindow | undefined): {
   };
 }
 
-/** The window covering `a` and `b`: unbounded on a side either is. */
 function widenHistoryWindow(a: HistoryWindow, b: HistoryWindow): HistoryWindow {
   return {
     since: a.since === undefined || b.since === undefined
@@ -269,7 +232,6 @@ function widenHistoryWindow(a: HistoryWindow, b: HistoryWindow): HistoryWindow {
   };
 }
 
-/** Adds the files a caller joining reads to those a scan has pending. */
 function joinPendingReads(
   pending: Map<string, ListedOutput>,
   joining: Map<string, ListedOutput>,
@@ -282,7 +244,6 @@ function earlier(a: Date, b: Date): Date {
   return a.getTime() <= b.getTime() ? a : b;
 }
 
-/** The definition id and `startedAt` stamp an output file's name carries. */
 function parseOutputFileName(
   path: string,
 ): { definitionId: string; stamp: string } | undefined {
@@ -292,7 +253,6 @@ function parseOutputFileName(
     : { definitionId: match[1], stamp: match[2] };
 }
 
-/** Counts the `candidate_scan` phase always exports, zero included. */
 const CANDIDATE_SCAN_COUNTS = [
   "considered",
   "eligible",
@@ -301,24 +261,17 @@ const CANDIDATE_SCAN_COUNTS = [
   "failed",
 ] as const;
 
-/**
- * YAML-based implementation of OutputRepository.
- *
- * Stores outputs as YAML files in the directory structure:
- * {repoDir}/.swamp/outputs/{normalized-type}/{method}/{definition-id}-{timestamp}.yaml
- */
 export class YamlOutputRepository implements OutputRepository {
   private readonly baseDir: string;
   /**
-   * Where run logs are written. Always repo-local, so it differs from
-   * baseDir when outputs are stored in a datastore.
+   * always repo-local, so it differs from baseDir when outputs are stored in a
+   * datastore
    */
   private readonly localOutputsDir: string;
 
   /**
-   * Concurrent identical history, `since` and full searches share one read
-   * (swamp-club#4074), so the memory they take together is bounded by the
-   * repository's size rather than by how many clients poll.
+   * concurrent identical searches share one read, so memory is bounded by the
+   * repository's size rather than by how many clients poll
    */
   private readonly historyScans = new SharedScans<
     HistoryWindow,
@@ -329,32 +282,22 @@ export class YamlOutputRepository implements OutputRepository {
     ListedOutput[]
   >((a, b) => a === undefined || b === undefined ? undefined : earlier(a, b));
   /**
-   * The global scans' reads, shared by the callers of the same kind of scan
-   * (`since`, neither, or a batch of a newest-first read) whatever each
-   * listed: a caller joining adds the files it chose to the pending reads.
+   * shared by callers of the same kind of scan whatever each listed: a caller
+   * joining adds the files it chose to the pending reads
    */
   private readonly readScans = new SharedScans<
     Map<string, ListedOutput>,
     Map<string, GlobalOutput>
   >(joinPendingReads);
-  /** The same, for the scans that answer from the summaries where they can. */
   private readonly summaryScans = new SharedScans<
     Map<string, ListedOutput>,
     Map<string, GlobalSummary>
   >(joinPendingReads);
 
-  /** Finished outputs' summaries, so a search need not open their records. */
   private readonly summaries: OutputSummaryIndex;
 
-  /** Whether the records really are under this checkout's `.swamp`. */
   private recordsInCheckout?: Promise<boolean>;
 
-  /**
-   * `unreadableContent` tells an output record a v3 read model could not
-   * materialise from an absent one (swamp-club#3617): a lookup that could
-   * be answered by one fails loudly, and a listing warns that it leaves
-   * them out.
-   */
   constructor(
     private readonly repoDir: string,
     baseDir?: string,
@@ -366,27 +309,20 @@ export class YamlOutputRepository implements OutputRepository {
     this.summaries = new OutputSummaryIndex(repoDir, this.baseDir);
   }
 
-  /**
-   * Runs a write or remove with its changes signalled before it and, on v2,
-   * again once it has settled (swamp-club#2421).
-   */
   private staged<T>(
     changes: StagedChange | readonly StagedChange[],
     write: () => Promise<T>,
   ): Promise<T> {
-    // Every record write stages its typed change after it (swamp-club#3250),
-    // so a v3 unit takes no path change from this repository. Run logs have
-    // no typed change: nothing puts them on v3 yet.
+    // every record write stages its typed change after it, so a v3 unit takes
+    // no path change from here; run logs have no typed change since nothing
+    // puts them on v3 yet
     return withChangeSignalled(this.markDirty, changes, { typed: true }, write);
   }
 
   /**
-   * Handles a failure to load one output record during a scan. A file that
-   * vanished is skipped silently and an I/O error propagates; anything else
-   * (a YAML syntax error, a record that fails validation) is skipped with a
-   * warning, so one bad record never fails a read of every other output.
-   * Parse and validation errors are recognised before isIoError, which also
-   * matches on message text a YAML error can quote from the file.
+   * a vanished file is skipped, an I/O error propagates, anything else is
+   * warned and skipped; parse errors are checked before isIoError, which
+   * matches message text a YAML error can quote
    */
   private skipUnreadableRecord(path: string, error: unknown): void {
     if (error instanceof Deno.errors.NotFound) return;
@@ -399,12 +335,9 @@ export class YamlOutputRepository implements OutputRepository {
   }
 
   /**
-   * The output `id` of `type`'s `method`. An output id is not in its file's
-   * name, so on a miss every record of the method the datastore could not
-   * materialise may be it: the lookup fails as not found, naming them
-   * (swamp-club#3617), rather than report the output simply absent. It
-   * cannot tell a mistyped id from one of theirs, so the error does not
-   * carry the unreadable-content code.
+   * an output id is not in its file name, so on a miss the datastore's
+   * unmaterialised records may be it: fail as not found naming them, without
+   * the unreadable-content code since a mistyped id looks the same
    */
   async findById(
     type: ModelType,
@@ -431,24 +364,20 @@ export class YamlOutputRepository implements OutputRepository {
     method: string,
     id: ModelOutputId,
   ): Promise<ModelOutput | null> {
-    // We need to scan the directory since the filename includes a timestamp
     const dir = this.getMethodDir(type, method);
     try {
       for await (const entry of Deno.readDir(dir)) {
         if (!entry.isFile || !entry.name.endsWith(".yaml")) continue;
         const path = join(dir, entry.name);
 
-        // Per-file try/catch closes the TOCTOU window: a concurrent
-        // delete can remove a non-target file between readDir and
-        // readTextFile. NotFound on a single file means "skip it" —
-        // never "abort the search and return null when the target
-        // exists later in the directory."
+        // per-file try/catch closes the TOCTOU window: a concurrent delete can
+        // remove a file between readDir and read; NotFound skips it, never
+        // aborting a search whose target comes later
         try {
           const content = await Deno.readTextFile(path);
           const data = parseYaml(content) as ModelOutputData | null;
           if (!data) continue;
           if (data.id === id) {
-            // Convert logFile back to absolute path
             if (data.logFile) {
               data.logFile = toAbsolutePath(this.repoDir, data.logFile);
             }
@@ -468,11 +397,9 @@ export class YamlOutputRepository implements OutputRepository {
   }
 
   /**
-   * The outputs of `ids` found. Not loud about a record the datastore could
-   * not materialise (swamp-club#3617): its callers (the orphaned-run reaper,
-   * `model cancel`) read the records as evidence and treat a missing one as
-   * none, and failing them would stop the reaping and cancelling that
-   * clear the runs.
+   * not loud about unmaterialised records: callers (the orphaned-run reaper,
+   * model cancel) treat a missing record as none, and failing them would stop
+   * the reaping and cancelling that clear the runs
    */
   async findByIds(
     type: ModelType,
@@ -486,7 +413,6 @@ export class YamlOutputRepository implements OutputRepository {
       for await (const entry of Deno.readDir(dir)) {
         if (!entry.isFile || !entry.name.endsWith(".yaml")) continue;
         const path = join(dir, entry.name);
-        // A file deleted or unreadable mid-scan is skipped, as in findById.
         try {
           const content = await Deno.readTextFile(path);
           const data = parseYaml(content) as ModelOutputData | null;
@@ -521,10 +447,9 @@ export class YamlOutputRepository implements OutputRepository {
   }
 
   /**
-   * The definition's latest output. An output file's name carries its
-   * definition and start, so when the datastore could not materialise one
-   * that started later than the latest readable one, the lookup fails with
-   * its error (swamp-club#3617) rather than answer with an older output.
+   * a file name carries its definition and start, so an unmaterialised record
+   * that started after the latest readable one fails the lookup rather than
+   * answering with an older output
    */
   async findLatestByDefinition(
     type: ModelType,
@@ -533,7 +458,6 @@ export class YamlOutputRepository implements OutputRepository {
     const outputs = (await this.readAll(type)).filter((output) =>
       output.definitionId === definitionId
     );
-    // Sort by startedAt descending and take the first one
     outputs.sort((a, b) => b.startedAt.getTime() - a.startedAt.getTime());
     const latest = outputs.length === 0 ? null : outputs[0];
     let newest: { entry: UnreadableContentEntry; stamp: string } | undefined;
@@ -565,34 +489,9 @@ export class YamlOutputRepository implements OutputRepository {
   }
 
   /**
-   * The outputs of `definitionId`, for listing its history: like
-   * {@link findByDefinition}, but a file whose name says it belongs to
-   * another definition is skipped without being read (swamp-club#4056), as
-   * {@link findAllGlobalSince} trusts a name's stamp. A name not in
-   * {@link getPath}'s form is read. Callers that must find every record of
-   * the definition whatever its file is named (deleting it, authorizing a
-   * read) use {@link findByDefinition}.
-   *
-   * With a `window`, only outputs started at or after `since` and before
-   * `until` are returned, and a file whose name is stamped outside it is
-   * skipped without being read (swamp-club#4058). A name not in that form
-   * whose mtime is before `since` is skipped after a stat, as in
-   * {@link findAllGlobalSince}; its mtime says nothing about `until`, so
-   * otherwise it is read. Every record read is checked against the window
-   * again.
-   *
-   * Concurrent searches of the definition share one scan (swamp-club#4074):
-   * a search joins one that has not started yet, widening its window to
-   * cover its own, and keeps only its own window of what it reads. The
-   * outputs are shared with those searches, so callers must not mutate
-   * them. One search on a scan counts its reads (the one that started it,
-   * or the earliest still waiting if that one left); the others count
-   * `scans_joined`.
-   *
-   * Once `signal` aborts, the search rejects with its reason, and a scan no
-   * other search waits on starts no further listing or read
-   * (swamp-club#4070); one that had already started its last read returns
-   * as usual.
+   * skips files named for another definition or stamped outside the window
+   * unread; a name not in getPath form is read. Scans are shared, so callers
+   * must not mutate the outputs.
    */
   async findHistoryByDefinition(
     type: ModelType,
@@ -609,8 +508,6 @@ export class YamlOutputRepository implements OutputRepository {
     );
     if (joined) currentDiagnosticTally().add("scans_joined");
     const { stampIn, startedIn } = historyWindowOf(window);
-    // Only the ones whose file name says they are this definition's and
-    // started in the window, as the listing's own pre-filter would.
     await warnUnreadableLeftOut(
       this.unreadableContent,
       this.getTypeDir(type),
@@ -624,11 +521,6 @@ export class YamlOutputRepository implements OutputRepository {
     );
   }
 
-  /**
-   * The scan {@link findHistoryByDefinition} shares: the type's outputs,
-   * skipping unread every file whose name is another definition's or is
-   * stamped outside `window`.
-   */
   private async readHistory(
     type: ModelType,
     definitionId: DefinitionId,
@@ -662,12 +554,6 @@ export class YamlOutputRepository implements OutputRepository {
     return outputs;
   }
 
-  /**
-   * The output files of one type, in walk order, its listings drawing on
-   * `kind`'s share of the scan permits. With `readsName`, a file whose name it
-   * refuses is left out. Once `signal` aborts, no further listing starts and
-   * the listing rejects with its reason.
-   */
   private async listType(
     type: ModelType,
     kind: ScanKind,
@@ -685,7 +571,6 @@ export class YamlOutputRepository implements OutputRepository {
         signal,
       );
     } catch (error) {
-      // The type directory itself doesn't exist.
       if (error instanceof Deno.errors.NotFound) return [];
       throw error;
     }
@@ -698,12 +583,9 @@ export class YamlOutputRepository implements OutputRepository {
       SCAN_CONCURRENCY,
       async ({ name: method }) => {
         const methodDir = join(typeDir, method);
-        // Per-method-directory try/catch closes the directory-level
-        // TOCTOU window: a concurrent bulk delete can remove the
-        // method directory between readDir(typeDir) and
-        // readDir(methodDir). NotFound on a single method directory
-        // means "skip it" — never "abandon outputs already collected
-        // from other method directories of this type."
+        // per-method-directory try/catch closes the TOCTOU window: a concurrent
+        // bulk delete can remove a method directory mid-walk; NotFound skips
+        // it, never abandoning outputs already collected
         let entries: Deno.DirEntry[];
         try {
           entries = await withScanPermit(
@@ -737,12 +619,7 @@ export class YamlOutputRepository implements OutputRepository {
     )).flat();
   }
 
-  /**
-   * {@link findAll} without the unreadable-record warning, its listings and
-   * reads drawing on the lookups' share of the scan permits.
-   */
   private async readAll(type: ModelType): Promise<ModelOutput[]> {
-    // Every record of the type is read, whatever the caller then keeps.
     const tally = currentDiagnosticTally();
     const files = await this.listType(type, "lookup");
 
@@ -750,10 +627,9 @@ export class YamlOutputRepository implements OutputRepository {
       files,
       SCAN_CONCURRENCY,
       async ({ path }) => {
-        // Per-file try/catch closes the TOCTOU window: a concurrent
-        // delete (e.g. GC, output cleanup) can remove the file
-        // between readDir and readTextFile. NotFound on a single
-        // file means "skip it" — never "abandon the rest of the scan."
+        // per-file try/catch closes the TOCTOU window: a concurrent delete can
+        // remove a file between readDir and read; NotFound skips it, never
+        // abandoning the rest of the scan
         try {
           const content = await withScanPermit(
             "lookup",
@@ -782,15 +658,8 @@ export class YamlOutputRepository implements OutputRepository {
   }
 
   /**
-   * Every output of every registered type. Concurrent calls share their
-   * listing and their reads as {@link findAllGlobalSince}'s do
-   * (swamp-club#4074): each gets its own array, but the outputs in it are
-   * shared, so callers must not mutate them. With `selectReadable`, a file
-   * whose name carries a key it refuses is not read, as in
-   * {@link findAllGlobalSince}. Once `signal` aborts, the call rejects with
-   * its reason, and a scan no other call waits on starts no further listing
-   * or read (swamp-club#4070); one that had already started its last read
-   * returns as usual.
+   * concurrent calls share listing and reads; each gets its own array but the
+   * outputs in it are shared, so callers must not mutate them
    */
   async findAllGlobal(
     signal?: AbortSignal,
@@ -813,11 +682,6 @@ export class YamlOutputRepository implements OutputRepository {
     return found;
   }
 
-  /**
-   * The summary of every output of every registered type: what
-   * {@link findAllGlobal} finds, opening only the records the summaries cannot
-   * answer for (see {@link readSummaries}).
-   */
   async findAllGlobalSummaries(
     signal?: AbortSignal,
     selectReadable?: SelectReadableOutputs,
@@ -840,46 +704,9 @@ export class YamlOutputRepository implements OutputRepository {
   }
 
   /**
-   * Finds the summaries of all outputs whose `startedAt` is at or after the
-   * cutoff, skipping old records without reading them (swamp-club#4056), and
-   * opening only the listed records the summaries cannot answer for
-   * (see {@link readSummaries}). A file's name carries
-   * the `startedAt` its record was saved with (see {@link getPath}), and
-   * `startedAt` never changes, so a name stamped before the cutoff is skipped
-   * without even a stat; that holds however recently the file was written,
-   * which matters because a v3 read-model replay rewrites every record. A name
-   * not in that form falls back to the mtime pre-filter: a record is saved
-   * when its run starts and again when it ends, both at or after its
-   * `startedAt`, so a file last modified before the cutoff cannot have started
-   * on or after it. Every record read is checked against the cutoff again.
-   *
-   * With `selectReadable`, a file is read only when the key its location
-   * carries (type and method directories, definition id from its name) is
-   * one `selectReadable` accepts (swamp-club#4142). It is asked once, in
-   * the caller's own context, about the distinct keys the listing found. A
-   * file whose name is not in {@link getPath}'s form carries no key, and is
-   * read and returned for the caller to judge.
-   *
-   * Directories are listed and files read {@link SCAN_CONCURRENCY} at a
-   * time: every awaited listing or read waits for a turn of the event loop,
-   * so on a busy serve a scan that awaited them one by one took as long as
-   * the turns added up. The result is in walk order all the same.
-   *
-   * Inside a diagnostic phase the scan is counted (directories, entries,
-   * names skipped, stats, reads) into that phase's tally.
-   *
-   * Concurrent calls share one listing and one read (swamp-club#4074): a
-   * call joining a listing that has not started moves its cutoff back to
-   * its own if that is earlier, and a call joining reads that have not
-   * started adds the files it chose to them, so callers that may read
-   * different files read the union once. Each keeps only its own files, and
-   * the outputs at or after its own cutoff. Each gets its own array, but the
-   * outputs in it are shared, so callers must not mutate them.
-   *
-   * Once `signal` aborts, the call rejects with its reason, and a scan no
-   * other call waits on starts no further listing or read
-   * (swamp-club#4070); one that had already started its last read returns
-   * as usual.
+   * a name stamped before the cutoff is skipped without a stat, since startedAt
+   * never changes (a v3 replay rewrites every mtime); other names use an mtime
+   * pre-filter; every record read is rechecked
    */
   async findAllGlobalSince(
     cutoff: Date,
@@ -905,9 +732,6 @@ export class YamlOutputRepository implements OutputRepository {
     // before every name's.
     const cutoffStamp = fileStamp(cutoff);
 
-    // Only the ones whose file name says they started at or after the
-    // cutoff, as this listing's own pre-filter would; one whose name does
-    // not say is named too.
     await warnUnreadableLeftOut(
       this.unreadableContent,
       this.baseDir,
@@ -922,19 +746,9 @@ export class YamlOutputRepository implements OutputRepository {
   }
 
   /**
-   * The outputs started in `window`, read as {@link OutputsNewestFirst.next}
-   * asks for them (swamp-club#4143), from the listing {@link findAllGlobal} and
-   * {@link findAllGlobalSince} share. A file's name carries the `startedAt` its
-   * record was saved with, so files are ordered by name, newest first, with
-   * walk order breaking ties. A file whose name is not in {@link getPath}'s form
-   * says nothing, so it is read first; a file named outside `window` is left out
-   * unread. `selectReadable` is asked only about the files `next` reaches, in
-   * chunks that double within a call, so a caller who may read few of them
-   * asks only a few times however many files it passes over.
-   *
-   * Batches share reads only with other newest-first batches, so a full read
-   * never holds up a batch. Each batch joins a read that has not started, as
-   * {@link findGlobal}'s reads do.
+   * files are ordered by name, newest first; a name not in getPath form is read
+   * first; selectReadable is asked only about files next reaches, in chunks
+   * that double within a call
    */
   async findGlobalNewestFirst(
     window: { since?: Date; until?: Date },
@@ -965,14 +779,6 @@ export class YamlOutputRepository implements OutputRepository {
     );
   }
 
-  /**
-   * {@link findGlobalNewestFirst} over one definition's outputs
-   * (swamp-club#4174): the type's listing, leaving out unread a file named for
-   * another definition or outside `window`, as {@link findHistoryByDefinition}
-   * does. A file whose name is not in {@link getPath}'s form is read, and its
-   * output kept only if its record says it is this definition's. Listings are
-   * shared by the concurrent searches of a type.
-   */
   async findHistoryNewestFirst(
     type: ModelType,
     definitionId: DefinitionId,
@@ -1007,11 +813,6 @@ export class YamlOutputRepository implements OutputRepository {
     );
   }
 
-  /**
-   * The read a newest-first search asks for a batch at a time: the files of
-   * `listing` that `listed` accepts, ordered by name, newest first, each output
-   * kept only if `accepted` says so.
-   */
   private newestFirst(
     listing: SharedScanOutcome<ListedOutput[]>,
     listed: (file: ListedOutput) => boolean,
@@ -1037,7 +838,6 @@ export class YamlOutputRepository implements OutputRepository {
       return a.position - b.position;
     });
 
-    // Once per read, as the other global scans count it.
     let reportedJoined = false;
     const reportJoined = (joined: boolean) => {
       if (!joined || reportedJoined) return;
@@ -1105,7 +905,6 @@ export class YamlOutputRepository implements OutputRepository {
     };
   }
 
-  /** The shared listing, and the caller's own choice of files from it. */
   private async listReadable(
     key: "all" | "since",
     cutoff: Date | undefined,
@@ -1124,7 +923,6 @@ export class YamlOutputRepository implements OutputRepository {
     };
   }
 
-  /** The shared reads of the files `listed` chose, in walk order. */
   private async readChosen<T>(
     scans: SharedScans<Map<string, ListedOutput>, Map<string, T>>,
     key: string,
@@ -1161,29 +959,17 @@ export class YamlOutputRepository implements OutputRepository {
     return found;
   }
 
-  /**
-   * The output files of every registered type, in walk order: with a
-   * `cutoff`, leaving out unread a file whose name is stamped before it,
-   * or, when its name is not in {@link getPath}'s form, whose mtime is.
-   */
   private async listAllGlobal(
     cutoff: Date | undefined,
     signal: AbortSignal,
   ): Promise<ListedOutput[]> {
-    // Output directories are found by walking the registered model types. The
-    // CLI configures the extension loader but does not run it, so a command
-    // that never loaded the registry would walk only built-in types and miss
-    // every extension-typed output (swamp-club#2510). ensureLoaded is
-    // memoized, so callers that already loaded the registry (serve, model
-    // output get) pay nothing.
+    // the CLI configures but does not run the extension loader, so load the
+    // registry first or extension-typed outputs are missed; ensureLoaded is
+    // memoized
     await modelRegistry.ensureLoaded();
     return await this.listTypes([...modelRegistry.types()], cutoff, signal);
   }
 
-  /**
-   * The output files of `types`, in walk order, leaving out what
-   * {@link listAllGlobal}'s `cutoff` does.
-   */
   private async listTypes(
     types: readonly ModelType[],
     cutoff: Date | undefined,
@@ -1195,8 +981,8 @@ export class YamlOutputRepository implements OutputRepository {
     const cutoffStamp = cutoff === undefined ? undefined : fileStamp(cutoff);
     const tally = currentDiagnosticTally();
 
-    // Each stage keeps its items in walk order, so the result is in the
-    // order a sequential walk returns it (swamp-club#3067).
+    // each stage keeps its items in walk order, so the result matches a
+    // sequential walk
     const methodDirs = (await mapBounded(
       types,
       SCAN_CONCURRENCY,
@@ -1217,7 +1003,6 @@ export class YamlOutputRepository implements OutputRepository {
               dir: join(typeDir, entry.name),
             }));
         } catch (error) {
-          // The type directory itself doesn't exist.
           if (error instanceof Deno.errors.NotFound) return [];
           throw error;
         }
@@ -1229,10 +1014,9 @@ export class YamlOutputRepository implements OutputRepository {
       methodDirs,
       SCAN_CONCURRENCY,
       async ({ modelType, method, dir }) => {
-        // A concurrent bulk delete can remove the method directory between
-        // listing its type and listing it. NotFound on a single method
-        // directory means "skip it" — never "abandon results already
-        // collected from other method directories."
+        // a concurrent bulk delete can remove the method directory; NotFound
+        // skips it without abandoning results already collected from other
+        // directories
         let entries: Deno.DirEntry[];
         try {
           entries = await withScanPermit(
@@ -1249,7 +1033,6 @@ export class YamlOutputRepository implements OutputRepository {
         for (const entry of entries) {
           if (!entry.isFile || !entry.name.endsWith(".yaml")) continue;
           tally.add("entries");
-          // Stage A: the name's stamp, or the mtime when the name has none
           const match = OUTPUT_FILE_NAME.exec(entry.name);
           if (
             match !== null && cutoffStamp !== undefined &&
@@ -1275,9 +1058,8 @@ export class YamlOutputRepository implements OutputRepository {
   }
 
   /**
-   * `listed` without each file whose name is not in {@link getPath}'s form and
-   * whose mtime is before `cutoffMs`: a record is saved at or after its
-   * `startedAt`, so it cannot have started on or after the cutoff.
+   * a record is saved at or after its startedAt, so an unnamed file whose mtime
+   * is before the cutoff cannot have started on or after it
    */
   private async leaveOutOldUnnamed(
     listed: ListedOutput[],
@@ -1318,23 +1100,9 @@ export class YamlOutputRepository implements OutputRepository {
   }
 
   /**
-   * The summary of each of `files`, by path: its row in the summaries when
-   * there is one, otherwise read from its record, adding the row for the next
-   * read when its location says what the record says. A file whose name is not
-   * in {@link getPath}'s form has no row. A row is what a read of its finished
-   * record returned or a save wrote, and it answers only while the record's stat
-   * says it is that version, so results are those of reading every file: a record
-   * since damaged is read, and left out as it would be, and one since replaced
-   * gets a new row.
-   *
-   * With `errorMessages`, a run that did not succeed is read from its record,
-   * the only place its error message is kept.
-   *
-   * A shard much larger than what is wanted from it is left unopened and those
-   * files are read from their records. They add no row, since one may be there.
-   *
-   * `shards` keeps the rows opened, for a caller reading in several batches,
-   * until the summaries are cleared.
+   * a summary row answers only while the record's stat says it is that version;
+   * a damaged or replaced record is read again, so results match reading every
+   * file
    */
   private async readSummaries(
     files: ReadonlyMap<string, ListedOutput>,
@@ -1510,15 +1278,9 @@ export class YamlOutputRepository implements OutputRepository {
   }
 
   /**
-   * The fingerprint of each of `paths` that has one: not a file that cannot be
-   * stat'ed, whose read says what that means. A read checks one record per row.
-   *
-   * Records under the checkout's own `.swamp` are stat'ed synchronously in slices,
-   * because an awaited stat waits a turn of a busy loop: on a contended loop 75,000
-   * took 5 s awaited, 16 at a time, and 0.3 s in slices (0.25 s and 0.4 s on a quiet
-   * one). Records anywhere else are in a datastore that may be a network mount,
-   * where stats one at a time would take minutes and each would hold the event
-   * loop, so those are awaited, on the scan permits.
+   * records under the checkout's .swamp are stat'ed synchronously in slices,
+   * since an awaited stat waits a turn of a busy loop; others may be on a
+   * network mount, so they are awaited on scan permits
    */
   private async recordFingerprints(
     paths: readonly string[],
@@ -1566,7 +1328,6 @@ export class YamlOutputRepository implements OutputRepository {
             if (fingerprint !== undefined) fingerprints.set(path, fingerprint);
           } catch {
             signal.throwIfAborted();
-            // Its read reports what is wrong with it.
           }
         },
         signal,
@@ -1576,14 +1337,6 @@ export class YamlOutputRepository implements OutputRepository {
     return fingerprints;
   }
 
-  /**
-   * The reads of a global scan: each of `files` read and parsed,
-   * by path. A record whose type, method or definition differs from what
-   * its file's location says counts `key_mismatch`, so a layout that would
-   * make a caller's choice of files wrong shows in its traces. One that
-   * started at another time than its name says counts `stamp_mismatch`, which
-   * would make {@link findGlobalNewestFirst}'s order wrong.
-   */
   private async readListed(
     files: ReadonlyMap<string, ListedOutput>,
     signal: AbortSignal,
@@ -1593,12 +1346,10 @@ export class YamlOutputRepository implements OutputRepository {
       [...files.values()],
       SCAN_CONCURRENCY,
       async ({ modelType, method, path, definitionId, stamp }) => {
-        // Per-file try/catch closes the TOCTOU window: a concurrent delete
-        // can remove the file between its listing and readTextFile.
-        // NotFound on a single file means "skip it" — never "abandon the
-        // rest of the scan."
+        // per-file try/catch: a concurrent delete can remove the file after
+        // listing; NotFound skips it rather than abandoning the rest of the
+        // scan
         try {
-          // Stage B: parse and verify
           const content = await withScanPermit(
             "search",
             () => tally.measure("read", () => Deno.readTextFile(path)),
@@ -1654,11 +1405,9 @@ export class YamlOutputRepository implements OutputRepository {
       await assertSafePath(dir, this.baseDir);
       await ensureDir(dir);
       const data = output.toData();
-      // Convert logFile to relative path for storage
       if (data.logFile) {
         data.logFile = toRelativePath(this.repoDir, data.logFile);
       }
-      // Remove undefined values since YAML can't stringify them
       const cleanData = JSON.parse(JSON.stringify(data));
       const text = stringifyYaml(cleanData as Record<string, unknown>);
       await atomicWriteTextFile(path, text);
@@ -1689,22 +1438,10 @@ export class YamlOutputRepository implements OutputRepository {
     method: string,
     id: ModelOutputId,
   ): Promise<void> {
-    // We need to find the file first since filename includes timestamp.
-    // Notify per-path once the match is found, before the Deno.remove —
-    // same crash-safety as the unconditional pre-write notify. When no
-    // match is found, nothing is removed and no signal is needed.
-    //
-    // Find-then-act structure: the per-file try/catch wraps only the
-    // search (readTextFile + parseYaml + match check) so a concurrent
-    // delete of a non-target file doesn't abort the search before we
-    // reach the target. The destructive ops (staged remove + Deno.remove
-    // + cleanupEmptyParentDirs) run after the loop, still inside the
-    // outer try/catch — preserving the existing semantic that a
-    // NotFound from Deno.remove (race: target deleted concurrently) is
-    // absorbed and returns successfully (delete is idempotent).
+    // try/catch wraps only the search so a concurrent delete of another file
+    // cannot abort it; NotFound from the final remove is absorbed, keeping
+    // delete idempotent
     const dir = this.getMethodDir(type, method);
-    // The search reads the method's records until one matches: counted
-    // apart from the removal it leads to.
     const tally = currentDiagnosticTally();
     try {
       const match = await tally.measure("search", async () => {
@@ -1813,13 +1550,8 @@ export class YamlOutputRepository implements OutputRepository {
   }
 
   /**
-   * Deletes terminal outputs whose startedAt is older than the cutoff for
-   * their method directory, together with each output's own run log, then
-   * sweeps run logs no remaining output references. `cutoffFor` takes a path
-   * relative to an outputs root and returns the cutoff in epoch ms.
-   *
-   * With `limit`, the scan stops at the first expired output past it and
-   * reports `more`; the orphaned-log sweep is then left to the final batch.
+   * with limit, the scan stops at the first expired output past it and reports
+   * more; the orphaned-log sweep is left to the final batch
    */
   private async deleteExpired(
     cutoffFor: (relativePath: string) => number,
@@ -1837,10 +1569,8 @@ export class YamlOutputRepository implements OutputRepository {
     const deletedYamls = new Set<string>();
     const countedLogs = new Set<string>();
 
-    // Every batch lists every output file; the strategy is recorded so a
-    // scan-heavy batch can be told from a deletion-heavy one. Phases are
-    // exported only inside output retention
-    // (design/enablers/serve-phase-telemetry.md).
+    // every batch lists every output file; the strategy is recorded so a
+    // scan-heavy batch can be told from a deletion-heavy one
     const yamlFiles = await observeDiagnosticPhase("candidate_enumeration", {
       "swamp.diagnostic.scan_strategy": "full_listing",
     }, async (phase) => {
@@ -1969,7 +1699,6 @@ export class YamlOutputRepository implements OutputRepository {
     return { deleted, bytesReclaimed, more };
   }
 
-  /** The summary key of each of `yamlFiles` still kept, by type. */
   private liveSummaryKeys(
     yamlFiles: readonly string[],
     deletedYamls: ReadonlySet<string>,
@@ -1991,10 +1720,9 @@ export class YamlOutputRepository implements OutputRepository {
   }
 
   /**
-   * Removes an output record and its run log, returning the bytes reclaimed.
-   * Paths under baseDir are marked dirty before removal so datastore sync
-   * propagates the deletions; a repo-local log beside a datastore is never
-   * synced. On a dry run nothing is touched and only bytes are counted.
+   * paths under baseDir are marked dirty before removal so datastore sync
+   * propagates the deletion; a repo-local log beside a datastore is never
+   * synced
    */
   private async removeOutputFiles(
     yamlPath: string,
@@ -2055,9 +1783,8 @@ export class YamlOutputRepository implements OutputRepository {
   }
 
   /**
-   * The typed change of a removed record: an output.delete tombstone of its
-   * key under `<type>/<method>/<file>`. A record that never parsed carries no
-   * output id or model, so no repository ever put it, and it has none.
+   * a record that never parsed carries no output id or model, so no repository
+   * ever put it and it gets no tombstone
    */
   private recordTombstone(
     yamlPath: string,
@@ -2081,12 +1808,9 @@ export class YamlOutputRepository implements OutputRepository {
   }
 
   /**
-   * Removes run logs in the repo-local outputs root that no remaining output
-   * references: logs left behind before outputs were deleted by their
-   * recorded logFile, and logs of runs that failed before their output was
-   * saved. A log must be older than both its method's cutoff and
+   * a log must be older than both its method's cutoff and
    * ORPHAN_LOG_MIN_AGE_MS, since a run still in progress has no output record
-   * yet. A method directory whose records cannot all be read is skipped.
+   * yet
    */
   private async sweepOrphanLogs(
     cutoffFor: (relativePath: string) => number,
@@ -2168,10 +1892,8 @@ export class YamlOutputRepository implements OutputRepository {
   }
 
   /**
-   * Collects the run logs claimed by the outputs that remain for the method
-   * directory `localDir`, reading YAMLs from that directory and from its
-   * counterpart under baseDir. Returns null when a record cannot be read, so
-   * the caller keeps every log rather than guess which one it claims.
+   * returns null when a record cannot be read, so the caller keeps every log
+   * rather than guess which one it claims
    */
   private async referencedLogs(
     localDir: string,
@@ -2206,12 +1928,9 @@ export class YamlOutputRepository implements OutputRepository {
   }
 
   /**
-   * Resolves the run log an output owns. The recorded logFile is used when it
-   * points into the output's own method directory, either under baseDir or
-   * under the repo-local outputs root, where every run log is written. Any
-   * other logFile is not the output's to delete: workflow-step outputs point
-   * at their workflow run's log. Records without a logFile (or unparseable
-   * ones) fall back to the log sharing the YAML's filename stem.
+   * a logFile outside the output's own method directory is not its to delete
+   * (workflow-step outputs point at their run's log); records without one fall
+   * back to the yaml's stem
    */
   private ownedLogPath(
     yamlPath: string,
@@ -2233,7 +1952,6 @@ export class YamlOutputRepository implements OutputRepository {
     return path.startsWith(this.baseDir + SEPARATOR);
   }
 
-  /** The outputs root a file lives under, for empty-directory cleanup. */
   private rootFor(path: string): string {
     return this.inBaseDir(path) ? this.baseDir : this.localOutputsDir;
   }
@@ -2247,8 +1965,8 @@ export class YamlOutputRepository implements OutputRepository {
       for await (const entry of Deno.readDir(dir)) {
         const path = join(dir, entry.name);
         if (entry.isDirectory) {
-          // Loop, not push(...): one method directory can hold more outputs
-          // than fit in a spread call (swamp-club#2565).
+          // loop, not push(...): one method directory can hold more outputs
+          // than fit in a spread call
           for (const file of await this.collectFiles(path, extension)) {
             files.push(file);
           }

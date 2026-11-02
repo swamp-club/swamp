@@ -33,10 +33,6 @@ import {
 import type { PassEvaluator } from "../../domain/expressions/expression_evaluation_service.ts";
 import { prepareExpressionsIn } from "../../infrastructure/cel/cel_evaluator.ts";
 
-/**
- * A legacy-shaped pass over hand-written evaluators: what the untyped seam
- * hands the evaluation, with the real prepare step.
- */
 function passOver(
   evaluate: (expression: string, context: Record<string, unknown>) => unknown,
   evaluateAsync: (
@@ -178,8 +174,6 @@ Deno.test("workflowEvaluate workflow without expressions yields hadExpressions=f
   const data = completed.data as WorkflowEvaluateItemData;
   assertEquals(data.hadExpressions, false);
 });
-
-// --- forEach self.* in modelIdOrName / methodName tests ---
 
 function makeForEachWorkflow(overrides: {
   modelIdOrName: string;
@@ -404,8 +398,6 @@ Deno.test("forEach: resolves self.* in modelIdOrName with object iteration", asy
   assertEquals(asModelMethodTask(steps[1].task).modelIdOrName, "device-beta");
 });
 
-// Builds a forEach workflow whose step runs a `type: workflow` task, so we can
-// exercise dynamic workflowIdOrName resolution (swamp-club#814).
 function makeForEachWorkflowTask(overrides: {
   workflowIdOrName: string;
   stepName: string;
@@ -518,7 +510,6 @@ Deno.test("forEach: resolves all expressions in a multi-expression step name", a
   });
 
   const steps = data.jobs![0].steps;
-  // Both expressions in the name resolve, not just the first.
   assertEquals(steps[0].name, "apply-gitea-ssh");
 });
 
@@ -585,8 +576,6 @@ Deno.test("forEach: resolves self.* in modelName (model task parity)", async () 
   // deno-lint-ignore no-explicit-any
   assertEquals((steps[1].task as any).modelName, "scanner-eu-west-1");
 });
-
-// --- forEach self.* in placement fields (target, labels, platform) ---
 
 Deno.test("forEach: resolves self.* in target", async () => {
   const workflow = Workflow.fromData({
@@ -700,8 +689,6 @@ Deno.test("forEach: resolves self.* in platform", async () => {
   assertEquals(steps[1].platform, "linux/arm64");
 });
 
-// --- Guard expression skipping ---
-
 Deno.test("evaluate: guard expressions remain as strings (not resolved to booleans)", async () => {
   const workflow = Workflow.fromData({
     id: "00000000-0000-4000-8000-000000000020",
@@ -765,9 +752,6 @@ Deno.test("evaluate: guard expressions remain as strings (not resolved to boolea
   assertEquals(steps[1].guard, '${{ inputs.action != "stop" }}');
 });
 
-// --- Deferred task targets and the steps namespace (swamp-club#2351) ---
-
-/** Evaluates a single workflow with the identity CEL stub and returns its steps. */
 async function evaluateSteps(workflow: Workflow) {
   const deps = makeDeps({
     findWorkflowByName: () => Promise.resolve(workflow),
@@ -867,8 +851,6 @@ Deno.test("evaluate: steps.* references stay raw", async () => {
   );
 });
 
-// --- Input coercion ---
-
 Deno.test("evaluate: string boolean inputs are coerced to native booleans", async () => {
   const workflow = Workflow.fromData({
     id: "00000000-0000-4000-8000-000000000021",
@@ -897,7 +879,6 @@ Deno.test("evaluate: string boolean inputs are coerced to native booleans", asyn
       const ctx = { model: {}, env: {}, inputs: {} } as ReturnType<
         WorkflowEvaluateDeps["buildExpressionContext"]
       > extends Promise<infer T> ? T : never;
-      // Intercept via proxy to capture what inputs are set
       return Promise.resolve(
         new Proxy(ctx, {
           set(target, prop, value) {
@@ -940,10 +921,6 @@ Deno.test("isWorkflowEvaluateAllData: returns true for AllData, false for ItemDa
   assertEquals(isWorkflowEvaluateAllData(itemData), false);
 });
 
-/**
- * Deps holding `target` and an impostor workflow named with `target`'s id,
- * recording which workflow was saved.
- */
 function makeCollidingDeps(): {
   deps: WorkflowEvaluateDeps;
   target: Workflow;
@@ -1146,8 +1123,6 @@ Deno.test("forEach: a control character in an item value is escaped in the evalu
   assertEquals(steps.map((s) => s.name), ["deploy-a\\x0ab", "deploy-ok"]);
 });
 
-// --- prepare before synchronous evaluation (swamp-club#3179) ---
-
 type EvaluateContext = ReturnType<
   WorkflowEvaluateDeps["buildExpressionContext"]
 > extends Promise<infer T> ? T : never;
@@ -1326,8 +1301,7 @@ for (const all of [false, true]) {
       }));
     const events = await evaluate({ n: "3", cfg: '{"a":1}' });
     assertEquals(events.at(-1)?.kind, "completed");
-    // The caller's object is data whole: no schema property describes its
-    // keys (swamp-club#3681).
+    // the caller's object is data whole: no schema property describes its keys
     assertEquals(saved, [{
       inputs: { n: 3, cfg: { a: 1 }, enabled: false },
       provenance: ProvenanceMap.authored().withWholeData("n").withWholeData(

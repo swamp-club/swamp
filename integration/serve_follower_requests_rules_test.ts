@@ -16,13 +16,6 @@
 //
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
-/**
- * Fitness rules for serve's follower in team mode (swamp-club#4096): every
- * request type serve dispatches is either forwarded to the leader from a
- * follower (swamp-club#4120) or answered from its copy, so a new request
- * cannot be added without deciding which. Writes are forwarded; the reads
- * list holds no write.
- */
 
 import { assert, assertEquals } from "@std/assert";
 import { join } from "@std/path";
@@ -34,7 +27,6 @@ import { CONFIRMED_WRITE_REQUESTS } from "../src/serve/write_confirmation.ts";
 
 const ROOT = join(import.meta.dirname!, "..");
 
-/** The request types handleMessage's dispatch switch names. */
 async function dispatchedRequests(): Promise<Set<string>> {
   const source = await Deno.readTextFile(
     join(ROOT, "src", "serve", "connection.ts"),

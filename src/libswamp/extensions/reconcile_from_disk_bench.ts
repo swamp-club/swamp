@@ -17,17 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * W3 cold-start performance benchmark. Generates a repo with 50 local
- * extensions × 1 source each, runs ReconcileFromDisk, and measures
- * wall time. Run with:
- *
- *   deno bench --unstable-bundle --allow-all src/libswamp/extensions/reconcile_from_disk_bench.ts
- *
- * Pre-committed threshold: ≤ 1.2x of pre-W3 cold-start baseline.
- * If blown, optimize (fingerprint caching, mtime fast-path) before shipping.
- */
-
 import { join } from "@std/path";
 import { ensureDir } from "@std/fs";
 import { ReconcileFromDiskService } from "./reconcile_from_disk_service.ts";
@@ -174,7 +163,6 @@ Deno.bench(
         repoDir,
       });
 
-      // Warm up: run reconcile once to populate catalog.
       await service.execute();
 
       b.start();

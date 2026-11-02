@@ -17,14 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * The loud-read lookup of a v3 checkout (swamp-club#3617): tells a
- * repository whether content missing from the checkout is a record the read
- * model could not materialise.
- *
- * @module
- */
-
 import {
   basename,
   dirname,
@@ -46,13 +38,11 @@ import {
 import { swampPath } from "../persistence/paths.ts";
 import { errorPaths, markErrorPaths, UserError } from "../../domain/errors.ts";
 
-/** The read model's side of the lookup. */
 export interface UnreadableRecordSource {
   unreadableRecord(
     namespace: string,
     recordKey: string,
   ): Promise<UnreadableRecord | undefined>;
-  /** The unreadable records under the directory `keyPrefix`, if listable. */
   unreadableRecordsUnder?(
     namespace: string,
     keyPrefix: string,
@@ -60,27 +50,9 @@ export interface UnreadableRecordSource {
 }
 
 /**
- * The lookup over `source` for the checkout at `repoDir`, spelled as the
- * repositories of its context spell it.
- *
- * A content path maps to a namespace and record key relative to the
- * checkout's `.swamp/`: the cache root of namespace `ns` is `.swamp/` (solo)
- * or `.swamp/<ns>`, so a path is tried as a solo key and, under a first
- * segment, as that namespace's key. The paths compare as written first; only
- * when the content path is not under `repoDir` as written (a repository
- * built from another spelling of the checkout, such as a symlink or macOS's
- * `/tmp`) do both resolve their symlinks.
- *
- * A lookup that fails throws a {@link UserError} naming the path rather
- * than reading as absent: it runs only after a read found no file, and
- * reading a record it could not check as absent is the silent "no data"
- * the lookup exists to end. The read model's state is a WAL database with a
- * busy timeout, so an ordinary absent file does not fail on a passing lock;
- * a closed read model (a command shutting down) still reads as absent.
- *
- * When `source` can list records by key prefix, the lookup also has
- * `under`: the records under a directory, mapped from it as a path is, each
- * spelled under the directory as the caller gave it.
+ * a lookup that fails throws a UserError naming the path rather than reading as
+ * absent, the silent no-data this lookup exists to end; a closed read model
+ * still reads as absent
  */
 export function unreadableContentLookup(
   repoDir: string,
@@ -136,7 +108,6 @@ export function unreadableContentLookup(
   return Object.assign(lookup, { under });
 }
 
-/** A lookup that could not ask the read model, naming the path asked. */
 function lookupFailed(path: string, what: string, error: unknown): UserError {
   return markErrorPaths(
     new UserError(
@@ -148,7 +119,6 @@ function lookupFailed(path: string, what: string, error: unknown): UserError {
   );
 }
 
-/** The (namespace, record key) pairs `absPath` may be in the checkout. */
 async function recordKeysOf(
   repoDir: string,
   absPath: string,
@@ -165,7 +135,6 @@ async function recordKeysOf(
   return keys;
 }
 
-/** `path` relative to `root` when it is strictly inside it. */
 function inside(root: string, path: string): string | undefined {
   const rel = relative(resolve(root), resolve(path));
   if (rel === "" || rel === ".." || rel.startsWith(`..${SEPARATOR}`)) {
@@ -176,10 +145,6 @@ function inside(root: string, path: string): string | undefined {
   return rel;
 }
 
-/**
- * `path` with symlinks resolved, through its nearest existing parent when
- * it does not exist (the content file the read missed).
- */
 async function canonicalPath(path: string): Promise<string> {
   try {
     return await Deno.realPath(path);

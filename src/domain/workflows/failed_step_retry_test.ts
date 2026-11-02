@@ -41,7 +41,6 @@ function step(name: string, dependsOn: string[] = []): Step {
   });
 }
 
-/** build → deploy (depends on build), and an independent notify job. */
 function createWorkflow(): Workflow {
   return Workflow.create({
     name: "retry-wf",
@@ -60,7 +59,6 @@ function createWorkflow(): Workflow {
   });
 }
 
-/** A failed run: compile fails, lint and announce succeed, deploy is skipped. */
 function createFailedRun(workflow: Workflow): WorkflowRun {
   const run = WorkflowRun.create(workflow);
   run.start();
@@ -243,7 +241,6 @@ Deno.test("selectRetryTemplates: refuses a pending step and suggests --from", ()
   assertStringIncludes(error.message, "--from lint");
 });
 
-/** A forEach step named as written in the workflow, with its expression. */
 const EACH_TEMPLATE = "read-${{ self.plate }}";
 
 function createEachWorkflow(task: StepTask): Workflow {
@@ -407,7 +404,6 @@ Deno.test("selectRetryTemplates: refuses an older forEach record without forEach
   assertStringIncludes(error.message, `Step "read-a" in job "main"`);
 });
 
-/** Jobs one and two each have a step "check"; two also has "other". */
 function sharedNameWorkflow(): Workflow {
   return Workflow.create({
     name: "dup-wf",

@@ -20,10 +20,6 @@
 import { dirname, join, resolve, SEPARATOR } from "@std/path";
 import { markErrorPaths } from "../../domain/errors.ts";
 
-/**
- * Error thrown when a path resolves outside its expected boundary,
- * typically due to a symlink pointing outside the repository.
- */
 export class PathTraversalError extends Error {
   readonly path: string;
   readonly boundary: string;
@@ -41,17 +37,6 @@ export class PathTraversalError extends Error {
   }
 }
 
-/**
- * Resolves a path to its real filesystem location, handling the case where
- * the path (or parts of it) may not exist yet.
- *
- * If the path exists, uses `Deno.realPath()` directly. Otherwise, walks up
- * to the nearest existing ancestor, resolves that, and appends the remaining
- * non-existent segments.
- *
- * Exported for the v3 read model's `PathCache`, which remembers directories'
- * real paths for its containment checks (swamp-club#3337).
- */
 export async function resolveRealPath(path: string): Promise<string> {
   const normalized = resolve(path);
 
@@ -63,15 +48,12 @@ export async function resolveRealPath(path: string): Promise<string> {
     }
   }
 
-  // Path doesn't exist — walk up to find the nearest existing ancestor
   const segments: string[] = [];
   let current = normalized;
 
   while (true) {
     const parent = dirname(current);
     if (parent === current) {
-      // Reached filesystem root without finding an existing path;
-      // fall back to the lexically resolved path
       return normalized;
     }
 
@@ -85,25 +67,14 @@ export async function resolveRealPath(path: string): Promise<string> {
       if (!(e instanceof Deno.errors.NotFound)) {
         throw e;
       }
-      // Keep walking up
     }
   }
 }
 
 /**
- * Asserts that `path` resolves (following symlinks) to a location within
- * `boundary`.
- *
- * This protects against symlink-based path traversal attacks where a
- * directory like `.swamp/outputs` is replaced with a symlink pointing
- * outside the repository.
- *
- * The check handles paths that don't yet exist by resolving the nearest
- * existing ancestor and appending the remaining segments.
- *
- * @param path - The path to validate
- * @param boundary - The directory the path must stay within
- * @throws {PathTraversalError} if the resolved path escapes the boundary
+ * guards against a directory like .swamp/outputs being replaced by a symlink
+ * pointing outside the repository; a path not yet existing resolves through its
+ * nearest existing ancestor
  */
 export async function assertSafePath(
   path: string,
@@ -121,15 +92,8 @@ export async function assertSafePath(
 }
 
 /**
- * Synchronous, lexical containment check for repo-relative paths.
- * Rejects absolute paths, null bytes, and `..` traversal BEFORE any
- * filesystem I/O occurs. Use this to validate untrusted paths from
- * committed lockfiles or other repo-controlled data before passing
- * them to `Deno.stat`, `Deno.remove`, or similar operations.
- *
- * @param relativePath - The repo-relative path to validate
- * @param boundary - The absolute directory the path must stay within
- * @throws {PathTraversalError} if the resolved path escapes the boundary
+ * lexical check that rejects absolute paths, null bytes and .. before any
+ * filesystem I/O; use it on untrusted paths from committed lockfiles
  */
 export function assertContainedPath(
   relativePath: string,
@@ -167,11 +131,9 @@ export function assertContainedPath(
 }
 
 /**
- * Returns true when `name` is exactly one safe path segment: a non-empty
- * string that is not `.` or `..` and contains no separator or NUL. Use it
- * before joining an identifier read back from persisted data (such as a run
- * ID from a run record) onto a directory — `assertSafePath` alone accepts a
- * path equal to its boundary, so `""`, `.` or `..` would slip through.
+ * use before joining an identifier read from persisted data: assertSafePath
+ * alone accepts a path equal to its boundary, so an empty name, . or .. would
+ * slip through
  */
 export function isSinglePathSegment(name: unknown): name is string {
   return typeof name === "string" && name !== "" && name !== "." &&

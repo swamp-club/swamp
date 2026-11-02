@@ -17,7 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/** Reference-only CEL vault receiver and the pre-execution reference checks. */
 import type { Environment } from "cel-js";
 import {
   InvalidExpressionError,
@@ -40,11 +39,9 @@ import type { VaultSecretBag } from "../../domain/vaults/vault_secret_bag.ts";
 import { recordSecretRead, refuse } from "./secret_fault_context.ts";
 import { isSecret, type Secret, vaultReferenceSecret } from "./secret_value.ts";
 
-/** The same domain services the legacy resolver and delivery use. */
 export interface VaultEvaluationScope {
   readonly service: VaultService;
   readonly redactor: ProbeRedactor;
-  /** The authored field path; call line/column is appended to it. */
   readonly location: string;
 }
 
@@ -67,7 +64,6 @@ export class CelVaultNamespace {
   }
 }
 
-/** Checks namespace use before any argument is evaluated or provider is asked. */
 export function assertDirectVaultCalls(
   analysis: VaultCallAnalysis,
   expression: string,
@@ -79,10 +75,8 @@ export function assertDirectVaultCalls(
 }
 
 /**
- * Prepares a callable program with each direct call's checked arguments frozen
- * into it. Each call gets a private receiver, retaining its authored location.
- * The rewritten source is parsed through the public CEL API: no cached AST,
- * caller context or library-private program state is mutated.
+ * the rewritten source is parsed through the public CEL API: no cached AST,
+ * caller context or library-private program state is mutated
  */
 export async function prepareCheckedVaultCalls(
   env: Environment,
@@ -168,11 +162,9 @@ export async function prepareCheckedVaultCalls(
       value: new CelVaultNamespace(reference, location),
       enumerable: true,
     });
-    // Bound as dyn: cel-js unifies ternary branch types when it plans the
-    // program, and a Secret branch beside a string literal would otherwise
-    // fail where the untyped path worked (design Section 4.2, fact 9). The
-    // value is still the Secret, so every refusal and allowed overload
-    // dispatches on it at run time as before.
+    // bound as dyn: cel-js unifies ternary branch types when planning, so a
+    // Secret branch beside a string literal would fail; the value is still the
+    // Secret and dispatches at run time
     replacements.set(
       call,
       `dyn(${receiver}.get(${JSON.stringify(reference.vaultName)}, ${
@@ -184,7 +176,6 @@ export async function prepareCheckedVaultCalls(
   return () => program(local);
 }
 
-/** `path:line:column` of the call at `offset` in the authored expression. */
 export function callLocation(
   expression: string,
   offset: number,

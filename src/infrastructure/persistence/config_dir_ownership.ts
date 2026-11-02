@@ -19,17 +19,14 @@
 
 import { getSwampConfigDir } from "./paths.ts";
 
-/** The uid that owns `path`, or null where the platform has none. */
 export type StatUid = (path: string) => number | null;
 
 const statUid: StatUid = (path) => Deno.statSync(path).uid;
 
 /**
- * Whether a process running as `uid` owns `dir`, or may create it. False
- * only when the dir exists and belongs to another user, as for a system
- * daemon pointed at the enabling user's config dir. Writing there would leave
- * root-owned files the user's own runs cannot read back. Platforms without
- * uids (Windows) always own it.
+ * false only when the dir exists and another user owns it, such as a system
+ * daemon using the user's config dir, whose root-owned files the user couldn't
+ * read back; Windows always owns
  */
 export function ownsDirectory(
   dir: string,
@@ -46,7 +43,6 @@ export function ownsDirectory(
   }
 }
 
-/** Whether this process owns the swamp config dir (see ownsDirectory). */
 export function processOwnsConfigDir(): boolean {
   let dir: string;
   try {

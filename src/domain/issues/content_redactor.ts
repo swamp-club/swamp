@@ -17,10 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Tracks placeholder assignments for a single redaction pass so the same
- * raw value always maps to the same placeholder within one issue.
- */
 class PlaceholderMap {
   private readonly maps = new Map<string, Map<string, string>>();
 
@@ -39,17 +35,14 @@ class PlaceholderMap {
   }
 }
 
-/** Summary of what was redacted, for user notification. */
 export interface RedactionSummary {
   readonly totalRedactions: number;
   readonly categories: ReadonlyMap<string, number>;
 }
 
 /**
- * A single line-level change produced by redaction, so the reporter can
- * see exactly what was altered before the content leaves their machine.
- * When a redaction consumes newlines, one change spans the affected block
- * and `original`/`redacted` hold the joined multi-line text.
+ * when a redaction consumes newlines one change spans the affected block, and
+ * original/redacted hold the joined multi-line text
  */
 export interface RedactionLineChange {
   readonly lineNumber: number;
@@ -57,7 +50,6 @@ export interface RedactionLineChange {
   readonly redacted: string;
 }
 
-/** Result of redacting issue content. */
 export interface RedactionResult {
   readonly text: string;
   readonly summary: RedactionSummary;
@@ -82,16 +74,11 @@ const PUBLIC_HOST_ALLOWLIST = new Set([
   "example.net",
 ]);
 
-// --- Pattern definitions ---
-
-// Credit card: 13-19 digit sequences with optional separators.
-// The leading boundary is a lookbehind, not \b: \b cannot fire between a
-// joiner and the payload it introduces, because _ is itself a word character,
-// so \b would leave label-prefixed values (card_4111...) unredacted. Every
-// pattern below that anchors on the start of a payload run does the same.
+// leading boundary is a lookbehind, not a word boundary: _ is a word character,
+// so a boundary would leave label-prefixed values (card_4111...) unredacted;
+// other payload-start patterns do the same
 const CREDIT_CARD_RE = /(?<![0-9A-Za-z])(?:\d[ -]*?){12,18}\d\b/g;
 
-// SSN / national ID: XXX-XX-XXXX
 const SSN_RE = /(?<![0-9A-Za-z])\d{3}-\d{2}-\d{4}\b/g;
 
 // Phone numbers: require a + prefix or at least one separator to avoid
@@ -99,40 +86,31 @@ const SSN_RE = /(?<![0-9A-Za-z])\d{3}-\d{2}-\d{4}\b/g;
 const PHONE_RE =
   /(?:\+\d{1,3}[\s.-]?)\(?\d{2,4}\)?[\s.-]?\d{3,4}[\s.-]?\d{3,4}\b|\(?\d{2,4}\)?[\s.-]\d{3,4}[\s.-]\d{3,4}\b/g;
 
-// Email addresses
 const EMAIL_RE =
   /\b[a-zA-Z0-9._%+-]+@[a-zA-Z0-9](?:[a-zA-Z0-9-]*[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]*[a-zA-Z0-9])?)*\.[a-zA-Z]{2,}\b/g;
 
-// AWS access key IDs
 const AWS_KEY_RE = /(?<![0-9A-Za-z])(?:AKIA|ASIA)[A-Z0-9]{16}\b/g;
 
-// GitHub tokens
 const GITHUB_TOKEN_RE =
   /(?<![0-9A-Za-z])(?:ghp|gho|ghs|ghu|ghr)_[A-Za-z0-9_]{36,}\b/g;
 
-// Generic API keys / bearer tokens: long base64-ish strings with a prefix.
-// Use lookahead instead of \b after =* since = is non-word and \b fails
-// between two non-word characters (e.g. "==" followed by space). The
-// separator is spaces/tabs only — \s would let the match cross a newline
-// and consume the first token of the following line.
+// lookahead instead of a word boundary after =*, since = is non-word; separator
+// is spaces/tabs only so a match cannot cross a newline and consume the next
+// line's token
 const BEARER_RE = /\bBearer[ \t]+([A-Za-z0-9_\-.~+/]+=*)(?=\s|$)/g;
 
-// --- Labelled keys: a label joined to a payload (swamp_<key>, sk_live_<key>) ---
-//
-// Three tiers of the same shape, differing only in how much the label is
-// trusted. A recognised label is evidence, so it buys a looser payload rule;
-// an unrecognised one has to earn the match from the payload alone.
+// labelled keys come in three tiers: a recognised label is evidence and buys a
+// looser payload rule; an unrecognised one must earn the match from the payload
+// alone
 
 // Tier 1: labels whose formats are enumerated. Their payloads may carry
 // internal separators (sk_live_<key>, sk-ant-api03-<key>).
 const PREFIXED_KEY_RE =
   /\b(?:sk|pk|rk|ak|key|token|secret)[-_][a-zA-Z0-9_\-]{20,}\b/gi;
 
-// Tier 2: first-party and vendor labels whose formats join a label to one
-// unbroken payload. Each entry is a permanent false-positive surface, so the
-// list is deliberately short: only published formats that use a joiner, and
-// none already covered by tier 1. Additions belong here only after being
-// checked against real code.
+// each known label is a permanent false-positive surface, so keep the list
+// short: only published formats that use a joiner and are not already covered
+// by tier 1
 const KNOWN_KEY_LABELS = new Set([
   "swamp",
   "glpat",
@@ -147,8 +125,6 @@ const KNOWN_KEY_LABELS = new Set([
   "xai",
 ]);
 
-// Tiers 2 and 3 share this shape: a short label, one joiner, and a payload
-// that is a single unbroken run. Which tier applies is decided by the label.
 const LABELLED_KEY_RE = /\b[A-Za-z][A-Za-z0-9]{1,15}[-_][A-Za-z0-9]{20,}\b/g;
 
 // Labels that introduce a content hash rather than a credential. Same idea as
@@ -171,19 +147,13 @@ const HASH_KEY_LABELS = new Set([
 const UUID_PAYLOAD_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-// A payload that is one unbroken run of 20+ alphanumerics is key material;
-// one built from shorter runs is a word-structured identifier. Measured over
-// this repo, swamp-extensions, swamp-club, swamp-uat and a third-party package
-// cache: the longest run inside a benign identifier payload has a median of 10
-// and a maximum of 20, while key material runs 20 to 50+. That margin is why
-// no word list is needed to tell them apart.
+// one unbroken run of 20+ alphanumerics is key material; shorter runs make a
+// word-structured identifier, so no word list is needed to tell them apart
 const KEY_MATERIAL_RUN_RE = /[A-Za-z0-9]{20,}/;
 
-// Digits are what separate a random payload from a concatenated identifier
-// like "userlistdirectlicenses". Without this gate the generic tier redacts
-// 795 benign cloud API resource names across the first-party repositories —
-// a 100% false-positive rate on 164 distinct payloads. A trailing version
-// suffix is not evidence, so it is stripped before the test.
+// digits separate a random payload from a concatenated identifier like
+// userlistdirectlicenses; a trailing version suffix is not evidence, so it is
+// stripped before the test
 const VERSION_SUFFIX_RE = /v\d+(?:[a-z]+\d+)*$/i;
 
 function splitLabelledKey(match: string): { label: string; payload: string } {
@@ -194,17 +164,14 @@ function splitLabelledKey(match: string): { label: string; payload: string } {
   };
 }
 
-/** Whether a payload behind an unrecognised label looks like key material. */
 function isUnlabelledKeyPayload(payload: string): boolean {
   if (!/[A-Za-z]/.test(payload)) return false;
   return /\d/.test(payload.replace(VERSION_SUFFIX_RE, ""));
 }
 
-// A git word just before a hex run marks it as an object id (commit <sha>,
-// git checkout <sha>, /commit/<sha>). Only words that name a commit count:
-// ordinary words such as ref, object or head introduce tokens as often as
-// ids. The separators exclude _ and -, so joined forms (commit_<sha>,
-// sha-<hash>) stay with the labelled-key rules.
+// only git words that name a commit mark a hex run as an object id; ref, object
+// or head introduce tokens as often as ids; _ and - are not separators, so
+// joined forms stay with the labelled-key rules
 const GIT_ID_CONTEXT_RE =
   /(?:\b(?:commits?|sha(?:1|256)?|rev(?:ision)?|git (?:checkout|show|revert|cherry-pick|reset))(?: (?:id|sha|hash))?[ \t:=#@/"'`]{1,3}|\/(?:commits?|tree|blob)\/)$/i;
 
@@ -213,24 +180,17 @@ const GIT_ID_CONTEXT_RE =
 const SECRET_LABEL_RE =
   /token|key|password|passwd|secret|auth|credential|signature|hmac/i;
 
-// Git object ids are 40 (sha1) or 64 (sha256) hex characters.
 const GIT_ID_LENGTHS = new Set([40, 64]);
 
-// Generic long hex strings (40+ chars, like SHA tokens / API keys).
-// The lookbehind excludes any alphanumeric, matching what \b excluded, while
-// still allowing a run that starts right after a joiner.
+// the lookbehind excludes any alphanumeric but still allows a run that starts
+// right after a joiner
 const LONG_HEX_RE = /(?<![0-9A-Za-z])[0-9a-fA-F]{40,}\b/g;
 
-// Generic long base64 strings (32+ chars, often tokens/secrets).
-// Same =* lookahead fix as BEARER_RE.
 const LONG_BASE64_RE = /(?<![A-Za-z0-9+/])[A-Za-z0-9+/]{32,}={0,2}(?=\s|$)/g;
 
-// env-var style secrets: VAR_NAME=value where name contains sensitive
-// keywords. The value is either an explicitly quoted span (matched as a
-// unit so the interior can be redacted with the delimiters preserved),
-// an angle-bracket placeholder (<description>), or an unquoted run that
-// stops before a closing quote/backtick — a bare \S+ would consume the
-// delimiter and break surrounding shell/YAML syntax.
+// a quoted value matches as a unit so the interior redacts with delimiters
+// kept; an unquoted run stops before a closing quote or backtick, since a bare
+// non-space run would break surrounding shell/YAML
 const ENV_SECRET_RE =
   /\b([A-Z_]*(?:PASSWORD|SECRET|TOKEN|API_KEY|APIKEY|PRIVATE_KEY|ACCESS_KEY|AUTH)[A-Z_]*)=("[^"\n]*"|'[^'\n]*'|`[^`\n]*`|<[^>\n]*>|[^\s"'`]+)/gi;
 
@@ -239,54 +199,35 @@ const ENV_SECRET_RE =
 // exactly the "before" side of masking-bug evidence.
 const NON_SECRET_VALUE_RE = /^(?:\*+|\$\{[^}]*\})$/;
 
-// camelCase names where the only matched keyword is AUTH are
-// configuration identifiers (URI query params like authSource),
-// not env vars. Names containing high-confidence secret keywords
-// (PASSWORD, SECRET, TOKEN, KEY) are still redacted even if camelCase.
+// camelCase names whose only matched keyword is AUTH are config identifiers
+// (authSource), not env vars; PASSWORD, SECRET, TOKEN and KEY names are still
+// redacted
 const CAMEL_CASE_RE = /[a-z][A-Z]/;
 const HIGH_CONFIDENCE_SECRET_RE = /PASSWORD|SECRET|TOKEN|KEY/i;
 
-// Connection strings with credentials. RFC 3986 forbids whitespace and "/"
-// in the userinfo component, so the user and password groups exclude them —
-// otherwise the password group can swallow everything (across lines) up to
-// an unrelated later "@", e.g. a ws://host:port URL followed by an
-// @scope/package mention.
+// RFC 3986 forbids whitespace and / in userinfo, so the user and password
+// groups exclude them; otherwise the password can swallow text up to an
+// unrelated later @
 const CONNECTION_STRING_RE =
   /(\w+:\/\/)([^:/?#@\s]+):([^@/\s]+)@([^/:?#\s]+)(:\d+)?(\/[^\s?#]*)?(\?[^\s#]*)?(#\S*)?/g;
 
-// IPv4
-// The lookbehind also excludes a dot so a match cannot start partway into a
-// longer dotted run. The lookahead refuses a quad that runs on as a version:
-// a hyphen and a letter (the WSL2 kernel release 6.18.33.2-microsoft-standard)
-// or a dot and a digit (a fifth group, an OID such as 1.3.6.1.4.1). A hyphen
-// and a digit (10.0.0.1-10.0.0.5) and a dot and a letter (10.0.0.5.nip.io)
-// still match, since an address can stand there.
+// lookbehind excludes a dot so a match cannot start inside a longer dotted run;
+// lookahead refuses a quad that continues as a version (-letter or .digit) but
+// still matches ranges and nip.io hosts
 const IPV4_RE = /(?<![0-9A-Za-z.])(?:\d{1,3}\.){3}\d{1,3}\b(?!-[A-Za-z]|\.\d)/g;
 
-// IPv6 candidates: every token of word characters joined by two or more
-// colons, taken whole and judged by redactColonToken. Reading the whole token
-// lets one rule see both the address and the words around it, so an address is
-// redacted whatever touches it (peer:addr:<addr>, <addr>: no route,
-// <addr>:8080, x2001:db8:…) while code paths (std::collections::HashMap,
-// Foo::bar) and runs that cannot hold an address (a fast-check replay path
-// such as 992:3:11:17:17:12, a timestamp) are kept. The lookbehind starts a
-// match only at the start of a word, so a long run without colons is scanned
-// once. A dotted-quad tail (2001:db8::192.0.2.1) is taken with the token so an
-// address with an embedded IPv4 part is judged, and redacted, whole.
+// whole colon-joined tokens are judged by redactColonToken so an address
+// redacts whatever touches it, while code paths and non-address runs are kept;
+// a dotted-quad tail is judged with the token
 const IPV6_RE =
   /(?<![0-9A-Za-z_])[0-9A-Za-z_]*(?::[0-9A-Za-z_]*){2,}(?:(?<=:\d{1,3})(?:\.\d{1,3}){3}(?![.\d]))?/g;
 
-// One IPv6 group, or the empty group either side of "::".
 const HEX_GROUP_RE = /^[0-9A-Fa-f]{0,4}$/;
 
-// An embedded IPv4 tail, which stands for the last two groups.
 const IPV4_TAIL_RE = /^\d{1,3}(?:\.\d{1,3}){3}$/;
 
-// Home directory paths with usernames — captures the prefix and username
-// separately so we can reconstruct positionally.
 const HOME_PATH_RE = /(\/Users\/|\/home\/|C:\\Users\\|C:\/Users\/)([^\s/\\]+)/g;
 
-// FQDNs: at least 2 dots, not a version number, not in the allowlist
 const FQDN_RE =
   /\b(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]*[a-zA-Z0-9])?\.){2,}[a-zA-Z]{2,}\b/g;
 
@@ -328,11 +269,8 @@ function isSafeIpv4(ip: string): boolean {
   const parts = ip.split(".");
   if (parts.length !== 4) return false;
   const [a, b, c] = parts.map(Number);
-  // 127.0.0.0/8 loopback
   if (a === 127) return true;
-  // 169.254.0.0/16 link-local
   if (a === 169 && b === 254) return true;
-  // RFC 5737 documentation ranges
   if (a === 192 && b === 0 && c === 2) return true;
   if (a === 198 && b === 51 && c === 100) return true;
   if (a === 203 && b === 0 && c === 113) return true;
@@ -346,12 +284,9 @@ function isSafeIpv6(ip: string): boolean {
   return false;
 }
 
-// A colon run can hold an address when it has eight or more groups (an
-// address with a port or a label group either side) or six consecutive
-// two-hex groups (a MAC), or, unless it is strict, a "::". Anything else, such
-// as fewer than eight groups of mixed widths with no "::", can hold none.
-// Strict is for a run that touches a word with no single colon between them
-// (Foo::bar, x2001:…), where "::" is as likely a code path as an address.
+// an address needs 8+ groups or a MAC run; a :: also counts unless strict,
+// which applies when a word touches the run without a single colon (Foo::bar),
+// where :: is as likely a code path
 function isAddressLikeColonRun(run: string, strict: boolean): boolean {
   const groups = run.split(":").filter((group) => group !== "");
   // All zeros is the unspecified address, and the shape of passwd fields
@@ -369,18 +304,16 @@ function isAddressLikeColonRun(run: string, strict: boolean): boolean {
   return false;
 }
 
-// The hash labels above, in their joined form (sha512-<hash>), for the generic
-// backstops. SAFE_HEX_KEY_RE covers the JSON-key form ("sha256": "<hash>");
-// this covers the label form, so a lockfile integrity string survives both.
+// hash labels in joined form (sha512-<hash>); SAFE_HEX_KEY_RE covers the
+// JSON-key form, so a lockfile integrity string survives both
 const HASH_LABEL_PREFIX_RE =
   /(?:sha1|sha256|sha512|md5|integrity|digest|checksum|etag)[-_]$/i;
 
 const SAFE_HEX_KEY_RE =
   /(?:"|\\")?(?:checksum|sha256|sha1|sha512|digest|hash|contentHash|etag|md5)(?:"|\\")?[\s]*:[\s]*(?:"|\\")?$/i;
 
-// Common TLDs — used to distinguish real hostnames from dotted code
-// identifiers in the FQDN matcher. Code identifiers like "includes",
-// "get", "env", "length" are not TLDs so they get skipped.
+// used to tell real hostnames from dotted code identifiers like includes, get,
+// env or length, which are not TLDs and get skipped
 const COMMON_TLDS = new Set([
   "ac",
   "ad",
@@ -646,15 +579,9 @@ const COMMON_TLDS = new Set([
   "zw",
 ]);
 
-// TLDs from COMMON_TLDS that are also everyday property names
-// (work.workflow.name, step.output.info, job.task.run). Inside markdown code an
-// FQDN match ending in one of these is read as a code path, not a host,
-// unless its surroundings mark it as a host (see HOST_PREFIX_RE and
-// HOST_SUFFIX_RE). Country TLDs used for real infrastructure (it, in, no,
-// me, ...) and common hosting TLDs (com, net, io, dev, app, cloud, ...) are
-// deliberately absent, so hosts using them stay redacted in code too. That
-// includes id: config.user.id in code is redacted rather than risk leaking
-// a real .id (Indonesia) host.
+// TLDs that double as property names read as code paths inside markdown code
+// unless context marks a host; real-infrastructure TLDs (it, in, io, com, id)
+// are absent so those hosts stay redacted
 const CODE_IDENTIFIER_TLDS = new Set([
   "info",
   "jobs",
@@ -664,10 +591,9 @@ const CODE_IDENTIFIER_TLDS = new Set([
   "site",
 ]);
 
-// Context that only a host has: a URL scheme or userinfo before it, a port
-// or path after it. A dotted property path never sits in these positions.
-// Only the adjacent characters are checked: a host introduced by a keyword
-// (host=, --host, ssh) inside code is read as a code path.
+// context only a host has: a scheme or userinfo before, a port or path after;
+// only adjacent characters are checked, so a host after a keyword (host=, ssh)
+// inside code reads as a code path
 const HOST_PREFIX_RE = /(?:\/\/|@)$/;
 const HOST_SUFFIX_RE = /^(?::\d|\/)/;
 
@@ -679,10 +605,9 @@ interface CodeRange {
   end: number;
 }
 
-// Offset ranges of markdown code: fenced blocks first, then inline code
-// spans (a backtick run closed by a run of the same length on the same line)
-// in the text outside those fences. Unclosed fences and spans are prose.
-// Indented (four-space) code blocks are not recognised.
+// fenced blocks first, then inline spans (same-length backtick runs on one
+// line) outside fences; unclosed fences and spans are prose; indented code
+// blocks are not recognised
 function findCodeRanges(text: string): CodeRange[] {
   const ranges: CodeRange[] = [];
   const lines = text.split("\n");
@@ -712,9 +637,9 @@ function findCodeRanges(text: string): CodeRange[] {
       i = j;
       break;
     }
-    // An unclosed fence runs to the end of the text. Stop scanning for
-    // fences rather than rescan from every later opener; later lines are
-    // not fenced code, though inline spans on them are still found.
+    // an unclosed fence runs to the end of the text, so stop scanning rather
+    // than rescan from every later opener; inline spans on later lines are
+    // still found
     if (!closed) break;
   }
 
@@ -750,14 +675,9 @@ function isInsideCode(
 }
 
 /**
- * Redacts each IPv6 address or MAC in one colon token. The token's parts split
- * into word parts (labels such as peer, addr, warn) and maximal runs of hex
- * groups between them; each run is judged on its own. A word joined to a run
- * by one colon is a label and stays whole. A run is judged first by itself
- * (strictly, needing eight or more groups or a MAC, when exactly "::" touches
- * a word: Foo::bar), then strictly with the hex group glued onto a
- * neighbouring word (x2001:db8:…), so a full address glued to a word is still
- * caught. One colon at either end of a run stays outside the placeholder.
+ * splits a colon token into word parts (labels) and hex-group runs, each judged
+ * alone; a word joined by one colon stays whole; a run glued to a neighbouring
+ * word is judged strictly so a full address is caught
  */
 function redactColonToken(
   token: string,
@@ -806,13 +726,10 @@ function redactColonToken(
     const glueRight = right.match(/^[0-9A-Fa-f]{1,4}(?![0-9A-Fa-f])/)?.[0] ??
       "";
 
-    // The run by itself first.
     const own = judge(run.join(":"), touchesWord);
-    // A unit or word stuck on the end of an address (2001:db8::1ms) starts
-    // with the address's last group, so a run that is no address by itself
-    // is judged with that group, without any group glued on the left. It
-    // counts when the run joins two groups with a single colon, which code
-    // paths (fc::assert, Foo::bar) never do.
+    // a unit stuck on an address end (2001:db8::1ms) starts with its last
+    // group, so a non-address run is re-judged with it; counts only when two
+    // groups join by one colon, which code paths never do
     const runWithUnit = [...run, glueRight].join(":");
     const unitOnEnd = own === null && glueRight !== "" && !touchesLeftWord &&
       /[0-9A-Fa-f]:[0-9A-Fa-f]/.test(runWithUnit);
@@ -868,7 +785,6 @@ function applyRedactions(
 
   // Order matters: more specific patterns first, then broader ones.
 
-  // 1. Connection strings (before general URL/host matching)
   result = result.replace(
     CONNECTION_STRING_RE,
     (
@@ -891,11 +807,9 @@ function applyRedactions(
     },
   );
 
-  // 2. Env-var style secrets. Quoted values are redacted inside their
-  //    delimiters; masked (***) and ${VAR} values pass through untouched.
-  //    Distinct values get distinct indexed placeholders so before/after
-  //    evidence (e.g. a masked-vs-unmasked comparison table) keeps its
-  //    contrast instead of collapsing to identical rows.
+  // quoted values redact inside their delimiters; masked and variable-reference
+  // values pass through; distinct values get distinct placeholders so
+  // before/after evidence keeps its contrast
   result = result.replace(
     ENV_SECRET_RE,
     (match, name: string, value: string) => {
@@ -915,28 +829,24 @@ function applyRedactions(
     },
   );
 
-  // 3. AWS keys
   result = result.replace(AWS_KEY_RE, (match) => {
     count("secret");
     return placeholders.get("REDACTED-SECRET", match);
   });
 
-  // 4. GitHub tokens
   result = result.replace(GITHUB_TOKEN_RE, (match) => {
     count("secret");
     return placeholders.get("REDACTED-SECRET", match);
   });
 
-  // 5. Bearer tokens
   result = result.replace(BEARER_RE, (_match, token: string) => {
     count("secret");
     return `Bearer ${placeholders.get("REDACTED-SECRET", token)}`;
   });
 
-  // 6. Tier 1: enumerated labels (sk_live_..., token-..., etc.). The payload
-  //    must carry key material — an enumerated label in front of a
-  //    word-structured payload is an identifier like KEY_ALGORITHM_UNSPECIFIED,
-  //    not a credential.
+  // the payload must carry key material: an enumerated label before a
+  // word-structured payload is an identifier like KEY_ALGORITHM_UNSPECIFIED,
+  // not a credential
   result = result.replace(PREFIXED_KEY_RE, (match) => {
     const { payload } = splitLabelledKey(match);
     if (!KEY_MATERIAL_RUN_RE.test(payload) && !UUID_PAYLOAD_RE.test(payload)) {
@@ -946,16 +856,14 @@ function applyRedactions(
     return placeholders.get("REDACTED-SECRET", match);
   });
 
-  // 7. Email addresses
   result = result.replace(EMAIL_RE, () => {
     count("email");
     return "[REDACTED-EMAIL]";
   });
 
-  // 7a. Tiers 2 and 3: labelled keys. These run *after* the email pass on
-  //     purpose. Ahead of it, an address whose local part is a long run
-  //     (user_<long>@corp.com) loses its local part to a placeholder, the
-  //     email matcher no longer sees an address, and the domain survives.
+  // runs after the email pass on purpose: before it, a long local part
+  // (user_<long>@corp.com) becomes a placeholder, the email matcher misses the
+  // address, and the domain survives
   result = result.replace(LABELLED_KEY_RE, (match) => {
     const { label, payload } = splitLabelledKey(match);
     if (HASH_KEY_LABELS.has(label)) return match;
@@ -966,13 +874,11 @@ function applyRedactions(
     return placeholders.get("REDACTED-SECRET", match);
   });
 
-  // 8. SSNs
   result = result.replace(SSN_RE, () => {
     count("national ID");
     return "[REDACTED-ID]";
   });
 
-  // 9. Credit cards (Luhn-validated to reduce false positives)
   result = result.replace(CREDIT_CARD_RE, (match) => {
     const digits = match.replace(/[\s-]/g, "");
     if (digits.length >= 13 && digits.length <= 19 && isLuhnValid(digits)) {
@@ -982,8 +888,6 @@ function applyRedactions(
     return match;
   });
 
-  // 10. Phone numbers — require at least one structural character beyond
-  //     digits and whitespace to avoid matching numeric data like status codes.
   result = result.replace(PHONE_RE, (match) => {
     if (!/[+().-]/.test(match)) return match;
     const digits = match.replace(/\D/g, "");
@@ -994,9 +898,8 @@ function applyRedactions(
     return match;
   });
 
-  // 11. Home directory usernames — reconstruct positionally to avoid
-  //     wrong-substring replacement when username equals a path component
-  //     (e.g. /home/home).
+  // reconstruct positionally to avoid replacing the wrong substring when the
+  // username equals a path component (/home/home)
   result = result.replace(
     HOME_PATH_RE,
     (_match, prefix: string, _username: string) => {
@@ -1005,15 +908,14 @@ function applyRedactions(
     },
   );
 
-  // 12. IPv6 (before IPv4 to avoid partial matches on mapped addresses)
+  // IPv6 runs before IPv4 to avoid partial matches on mapped addresses
   result = result.replace(
     IPV6_RE,
     (token: string) => redactColonToken(token, placeholders, count),
   );
 
-  // 13. IPv4 (the regex requires exactly 4 octets and refuses a quad that
-  //     runs on as a version, so "1.23.4" and "6.18.33.2-microsoft" never
-  //     match). A group above 255 means the quad is not an address.
+  // a group above 255 means the quad is not an address; the regex already
+  // refuses version-like quads such as 1.23.4
   result = result.replace(IPV4_RE, (match) => {
     if (isSafeIpv4(match)) return match;
     if (match.split(".").some((part) => Number(part) > 255)) return match;
@@ -1021,15 +923,14 @@ function applyRedactions(
     return placeholders.get("IP", match);
   });
 
-  // 14. Internal hostnames (.internal, .local, .lan, .corp, etc.)
   result = result.replace(INTERNAL_HOST_RE, (match) => {
     if (isPublicHost(match)) return match;
     count("hostname");
     return placeholders.get("HOST", match);
   });
 
-  // 15. FQDNs (3+ segments). A code path inside markdown code whose last
-  //     label is identifier-like (`work.workflow.name`) is not a host.
+  // a code path inside markdown code whose last label is identifier-like is not
+  // a host
   const codeRanges = findCodeRanges(result);
   result = result.replace(
     FQDN_RE,
@@ -1054,7 +955,6 @@ function applyRedactions(
     },
   );
 
-  // 16. Long hex strings (likely tokens/hashes — after all specific patterns)
   result = result.replace(
     LONG_HEX_RE,
     (match: string, offset: number, source: string) => {
@@ -1072,7 +972,6 @@ function applyRedactions(
     },
   );
 
-  // 17. Long base64 strings
   result = result.replace(
     LONG_BASE64_RE,
     (match: string, offset: number, source: string) => {
@@ -1114,8 +1013,6 @@ function diffLines(
     }
     return changes;
   }
-  // Line counts differ (a redaction consumed newlines): align matching
-  // head/tail lines and report the middle as a single block change.
   let head = 0;
   while (
     head < before.length && head < after.length && before[head] === after[head]
@@ -1144,13 +1041,6 @@ function buildSummary(counts: Map<string, number>): RedactionSummary {
   return { totalRedactions, categories: counts };
 }
 
-/**
- * Redacts sensitive and identifying information from a single text string.
- *
- * Produces stable placeholders ([HOST-1], [IP-1], etc.) so the same raw
- * value maps to the same placeholder throughout the text, preserving
- * diagnostic structure without leaking identifying details.
- */
 export function redactIssueContent(text: string): RedactionResult {
   const placeholders = new PlaceholderMap();
   const counts = new Map<string, number>();
@@ -1162,10 +1052,6 @@ export function redactIssueContent(text: string): RedactionResult {
   };
 }
 
-/**
- * Redacts title and body together, sharing a single placeholder map so the
- * same raw value (e.g. an IP) gets the same placeholder in both fields.
- */
 export function redactIssueTitleAndBody(
   title: string,
   body: string,
@@ -1212,7 +1098,6 @@ function pluralize(word: string, count: number): string {
   return word + "s";
 }
 
-/** Formats the redaction summary into a human-readable log line. */
 export function formatRedactionSummary(summary: RedactionSummary): string {
   if (summary.totalRedactions === 0) return "";
   const parts: string[] = [];
@@ -1230,11 +1115,6 @@ function inlineTruncate(text: string): string {
   return flat.slice(0, MAX_DETAIL_LENGTH - 1) + "…";
 }
 
-/**
- * Formats per-line redaction changes into human-readable detail lines
- * ("line N: <original> -> <redacted>"), so the reporter can verify their
- * evidence survived redaction. `label` prefixes the location (e.g. "title").
- */
 export function formatRedactionDetails(
   changes: readonly RedactionLineChange[],
   label?: string,

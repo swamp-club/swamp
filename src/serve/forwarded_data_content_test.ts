@@ -39,7 +39,6 @@ const ID = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
 const BASE = `data/${TYPE.normalized}/${ID}`;
 const encoder = new TextEncoder();
 
-/** A context over stored records by key; inline puts read as themselves. */
 function context(stored: Record<string, string>): ContentCheckContext {
   return {
     deps: {
@@ -95,7 +94,6 @@ Deno.test("checkDataPut: a removal may lower or keep the latest marker to a stor
   assert(await judged("3") !== undefined);
   assert(await judged("01") !== undefined);
   assert(await judged("1 ") !== undefined);
-  // Lowered to a version the same commit removes.
   assert(
     await judged("1", [
       tombstoneOp({

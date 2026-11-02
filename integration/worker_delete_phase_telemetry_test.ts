@@ -17,16 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * swamp-club#4003: worker prune and each worker definition deletion export
- * their phases through the real OTLP exporter, with parentage, value types,
- * outcomes and counts intact. Wires a real repo, real worker definitions with
- * data, outputs and a referencing workflow, and the delete dependencies serve
- * builds; spans are exported over HTTP to a port-0 collector
- * (design/enablers/serve-phase-telemetry.md). The token listing and binding
- * prune are stubbed: they are the prune's ports, not the deletion under test.
- */
-
 import { assert, assertEquals } from "@std/assert";
 import { context, trace } from "@opentelemetry/api";
 import { AsyncLocalStorageContextManager } from "@opentelemetry/context-async-hooks";
@@ -98,10 +88,6 @@ interface OtlpRequest {
   resourceSpans: { scopeSpans: { spans: OtlpSpan[] }[] }[];
 }
 
-/**
- * Runs `fn` with spans exported over HTTP by {@link FetchOtlpExporter} to a
- * port-0 collector, and hands back every span it received.
- */
 async function withExportedSpans(
   fn: () => Promise<void>,
 ): Promise<OtlpSpan[]> {
@@ -155,7 +141,6 @@ function str(span: OtlpSpan, key: string): string | undefined {
   return attribute(span, key)?.stringValue;
 }
 
-/** A counter: exported as an OTLP integer, never a double or a string. */
 function count(span: OtlpSpan, key: string): number | undefined {
   const value = attribute(span, `swamp.diagnostic.${key}`);
   if (value === undefined) return undefined;
@@ -181,7 +166,6 @@ function isChildOf(child: OtlpSpan, parent: OtlpSpan): boolean {
 interface WorkerSpec {
   name: string;
   status?: string;
-  /** How long ago the worker disconnected; omit for a connected worker. */
   disconnectedMsAgo?: number;
   data?: number;
   outputs?: number;
@@ -190,11 +174,8 @@ interface WorkerSpec {
 interface Fixture {
   repoDir: string;
   repoContext: RepositoryContext;
-  /** Writes a worker definition with its data and outputs. */
   addWorker(spec: WorkerSpec): Promise<void>;
-  /** Saves a workflow with a step that runs the worker's definition. */
   referenceWorker(name: string): Promise<void>;
-  /** Prune dependencies as serve builds them, over the real repositories. */
   pruneDeps(): WorkerPruneDeps;
 }
 
@@ -291,7 +272,6 @@ async function withPruneFixture(
         }));
       },
       pruneDeps: () => ({
-        // The workers whose definitions are still in the repo.
         listWorkers: async () => {
           const workers: PrunableWorker[] = [];
           for (const spec of specs) {
@@ -319,7 +299,6 @@ async function withPruneFixture(
             bindings: specs.map((s) => ({ machineId: `machine-${s.name}` })),
           }]),
         deleteWorker: (definitionName) =>
-          // As serve's worker GC wires it (src/cli/commands/serve.ts).
           deleteWorkerWith(deleteDeps, definitionName),
         resolveStaleBindings: (token, remaining) =>
           Promise.resolve(
@@ -434,7 +413,6 @@ Deno.test("worker prune: stages, counts, parentage and outcomes survive the OTLP
     assertEquals(str(loop, "swamp.diagnostic.result"), "partial");
     assertEquals(str(pass, "swamp.diagnostic.result"), "partial");
 
-    // Each worker's delete nests under the loop, its phases under it.
     const deletes = spans.filter((s) => s.name === "swamp.model.delete");
     assertEquals(deletes.length, 2);
     const models = phases(spans, "model_delete");
@@ -462,7 +440,6 @@ Deno.test("worker prune: stages, counts, parentage and outcomes survive the OTLP
       count(under("workflow_reference_check", refused)[0], "referencing"),
       1,
     );
-    // The refusal stops before discovery and removal.
     assertEquals(under("output_discovery", refused).length, 0);
 
     for (
@@ -480,8 +457,6 @@ Deno.test("worker prune: stages, counts, parentage and outcomes survive the OTLP
     ) {
       assertEquals(under(stage, deleted).length, 1, stage);
     }
-    // The delete resolves by name across every type: a walk of the
-    // definitions, counted on the resolve phase.
     const resolve = under("definition_resolve", deleted)[0];
     assertEquals(attribute(resolve, "swamp.diagnostic.hit")?.boolValue, true);
     assertEquals(count(resolve, "primary_walks"), 1);
@@ -528,8 +503,6 @@ Deno.test("worker prune: stages, counts, parentage and outcomes survive the OTLP
 });
 
 Deno.test("worker prune: the span count does not grow with a worker's outputs or data", async () => {
-  // One fixture per size, so the two prunes see the same repo shape apart
-  // from the worker's own records.
   const pruneOne = (data: number, outputs: number) =>
     withPruneFixture(async (fixture) => {
       await fixture.addWorker({
@@ -585,13 +558,11 @@ Deno.test("worker prune: a consumer that stops part way leaves its open phases e
     assertEquals(count(loop, "deleted"), 1);
     const pass = only(spans, "swamp.diagnostic.prune_pass");
     assertEquals(str(pass, "swamp.outcome"), "cancelled");
-    // The worker deleted before the stop finished its own delete.
     assertEquals(
       str(only(spans, "swamp.diagnostic.model_delete"), "swamp.outcome"),
       "ok",
     );
     assertEquals(phases(spans, "binding_cleanup").length, 0);
-    // The second worker was never touched.
     assertEquals(
       (await fixture.pruneDeps().listWorkers()).map((w) => w.name),
       ["pool-b"],

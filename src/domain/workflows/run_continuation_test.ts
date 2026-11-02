@@ -41,7 +41,6 @@ const SCHEMA = {
 
 type StepKind = "wait" | "gate" | "work";
 
-/** A run with one job whose steps are of the given kinds, started. */
 function runOf(kinds: Record<string, StepKind>): WorkflowRun {
   const run = WorkflowRun.create(
     Workflow.create({

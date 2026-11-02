@@ -123,9 +123,8 @@ interface ExtensionPushOptions extends GlobalOptions {
 }
 
 /**
- * Names the flag that waives the warnings prompt on this run, or `undefined`
- * when neither was passed. `--yes` wins when both are given, so the summary
- * credits the flag users reach for.
+ * --yes wins when both flags are given, so the summary credits the flag users
+ * reach for.
  */
 export function resolveWarningsWaiver(
   options: { yes?: boolean; force?: boolean },
@@ -135,7 +134,6 @@ export function resolveWarningsWaiver(
   return undefined;
 }
 
-/** What the warnings gate decided for this run. */
 export type WarningsGateDecision =
   | {
     kind: "proceed";
@@ -148,15 +146,9 @@ export type WarningsGateDecision =
   | { kind: "prompt" };
 
 /**
- * Decides whether safety and review warnings prompt or pass a push.
- *
- * `--yes` and `--force` waive the warnings along with the push confirmation,
- * and the summary records what they waived. A dry run never prompts: it
- * performs no push and so has nothing to confirm. A `--json` run never
- * prompts either. Both proceed without a record, as they did before
- * swamp-club#3015 briefly made them refuse (restored by swamp-club#3047). A
- * log-mode run without a terminal reaches the prompt, whose own error says
- * to pass `--yes`.
+ * --yes and --force waive warnings along with the push confirmation, and the
+ * summary records the waiver. Dry run and --json proceed without a record; a log
+ * run without a terminal reaches the prompt, whose error says to pass --yes.
  */
 export function resolveWarningsGate(input: {
   warningCount: number;
@@ -215,7 +207,6 @@ export async function lookupPublishedBaseline(
   }
 }
 
-/** A 401 or 403 from the registry API: it refused the stored credentials. */
 function isRegistryAuthError(error: unknown): boolean {
   if (!(error instanceof UserError)) return false;
   return error.message === REGISTRY_NOT_AUTHENTICATED_MESSAGE ||
@@ -223,9 +214,7 @@ function isRegistryAuthError(error: unknown): boolean {
     error.code === REGISTRY_TOKEN_SCOPE_CODE;
 }
 
-/** How push answers a version that is already published. */
 export type ExistingVersionResponse =
-  /** Fail with the version-exists error; no prompt. */
   | { kind: "refuse"; message: string }
   /** Ask whether to bump (same or higher channel: promote is impossible). */
   | { kind: "bump-prompt" }
@@ -233,18 +222,9 @@ export type ExistingVersionResponse =
   | { kind: "choose" };
 
 /**
- * Decides how push answers a version that is already published.
- *
- * Only an interactive log run prompts, exactly as before swamp-club#2939:
- * `--json`, `--yes` and `--force` refuse, so `--yes` can never promote. A log
- * run without a terminal still reaches a prompt, whose own error says to
- * pass `--yes`. A refusal keeps the pre-#2939 message for a duplicate on the
- * requested channel; a version on another channel gets the check's message,
- * which names that channel and, when lower, the promote command.
- *
- * A yanked version is never offered for promotion, whatever channel it is
- * on: the registry refuses it. It gets the bump prompt, and a refusal uses
- * the check's message, which names the yank.
+ * only an interactive log run prompts; --json, --yes and --force refuse, so
+ * --yes can never promote. A yanked version is never offered for promotion (the
+ * registry refuses it): it gets the bump prompt, and a refusal names the yank.
  */
 export function resolveExistingVersionResponse(input: {
   extensionName: string;
@@ -275,13 +255,9 @@ export function resolveExistingVersionResponse(input: {
 }
 
 /**
- * Collects the warnings the gate covers into the record the summary prints
- * when they are accepted. Findings drop their report skeleton and their
- * remediation: `warnings.review` and `warnings.safety` already carry them,
- * and repeating them would bury the summary. Of the dependency trust
- * warnings those with a cause are gated: unaudited dependencies and the
- * shipped-version findings (a deprecated version, a loose specifier, a
- * yanked JSR version). The list is left out when there are none.
+ * findings drop their report skeleton and remediation, which warnings.review
+ * and warnings.safety already carry; repeating them would bury the summary.
+ * Only dependency trust warnings with a cause are gated.
  */
 export function buildAcceptedWarnings(prepared: {
   safetyWarnings: SafetyIssue[];
@@ -368,10 +344,9 @@ export const extensionPushCommand = new Command()
   .action(async function (options: ExtensionPushOptions, manifestPath: string) {
     const cliCtx = createContext(options, ["extension", "push"]);
     cliCtx.logger.debug`Starting extension push`;
-    // The renderer exists before anything can throw, so a --json run always
-    // leaves exactly one document on stdout: a render that ended the run
-    // wrote it, or renderUnfinished writes it with status failed. Paths are
-    // filled in once the repo and manifest directories are resolved.
+    // the renderer exists before anything can throw, so a --json run always
+    // leaves exactly one document on stdout; paths are filled in once the
+    // directories resolve.
     const cwd = logicalCwd();
     const renderPaths = { cwd, repoDir: cwd, manifestDir: cwd };
     const renderer = createExtensionPushRenderer(
@@ -400,14 +375,13 @@ export const extensionPushCommand = new Command()
         );
       }
 
-      // 1. Validate repo. The repo context and the package cache open the
-      // resolved repo dir; the extension's files resolve and report under
-      // the spelling the user gave (swamp-club#3536).
+      // the repo context and package cache open the resolved repo dir; the
+      // extension's files resolve and report under the spelling the user gave.
       const storageRepoDir = resolveRepoDir(options.repoDir);
       const repoDir = repoDirAsGiven(options.repoDir, storageRepoDir);
-      // Arguments resolve as before, against the process cwd and the
-      // resolved repo dir, so `..` means what it means to every other tool;
-      // the results are then spelled under the given repo dir.
+      // arguments resolve against the process cwd and the resolved repo dir, so
+      // `..` means what it means to every other tool; the results are then
+      // spelled under the given repo dir.
       const resolvedExtensionsDir = resolveExtensionsDir(options.extensionsDir);
       const extensionsDir = resolvedExtensionsDir === undefined
         ? undefined
@@ -428,7 +402,6 @@ export const extensionPushCommand = new Command()
         outputMode: cliCtx.outputMode,
       });
 
-      // 2. Resolve extension files (manifest, models, workflows, additional files)
       const resolved = await resolveExtensionFiles({
         repoDir,
         manifestPath: absoluteManifestPath,
@@ -470,19 +443,16 @@ export const extensionPushCommand = new Command()
         ),
       };
 
-      // 2a. Override version micro with epoch seconds when requested.
       if (options.versionSuffix === "epoch") {
         manifest.version = CalVer.withEpochMicro().value;
         cliCtx.logger
           .debug`Version overridden with epoch suffix: ${manifest.version}`;
       }
 
-      // 2b. The project config push bundles under, found while resolving
-      // files so the module graph is read under it too.
+      // the project config push bundles under, found while resolving files so
+      // the module graph is read under it too.
       const manifestDir = dirname(absoluteManifestPath);
       const { denoConfigPath, packageJsonDir } = resolved;
-      // The workspace root lock, --no-config and an ignored member lock
-      // (swamp-club#3971).
       const projectInputs = {
         ...(resolved.workspaceRootConfigPath
           ? { workspaceRootConfigPath: resolved.workspaceRootConfigPath }
@@ -493,7 +463,6 @@ export const extensionPushCommand = new Command()
           : {}),
       };
 
-      // 3. Create libswamp context and deps
       const ctx = createLibSwampContext({ logger: cliCtx.logger });
       const identity = await loadIdentity();
       // Every HTTP call made before the upload is recorded so the dry-run
@@ -512,9 +481,8 @@ export const extensionPushCommand = new Command()
         VERSION,
       );
 
-      // 3b. Opportunistic package cache lookup — if a prior `swamp
-      // extension quality` run packaged the same source, reuse those
-      // bytes. Cache miss falls back to packaging from scratch.
+      // opportunistic: reuse the bytes a prior extension quality run packaged
+      // from the same source; a miss packages from scratch.
       const cacheHashInput = {
         manifest,
         rootDir: resolved.extensionsRoot,
@@ -546,7 +514,7 @@ export const extensionPushCommand = new Command()
         includeFilePaths,
         denoConfigPath,
         packageJsonPath: undefined,
-        // The lock the bundle runs --frozen against (swamp-club#3662).
+        // the lock the bundle runs --frozen against.
         ...(await readOnlyLockFor({
           denoConfigPath,
           packageJsonDir,
@@ -567,7 +535,6 @@ export const extensionPushCommand = new Command()
         } (${cached.archiveBytes.length} bytes)`;
       }
 
-      // 4. Run prepare phase
       let prepared;
       try {
         prepared = await extensionPushPrepare(ctx, prepareDeps, {
@@ -616,7 +583,6 @@ export const extensionPushCommand = new Command()
           cachedArchiveIndex: cached?.metadata.archiveIndex,
         });
       } catch (error) {
-        // Handle structured errors from the prepare phase with rich rendering
         if (isSwampError(error)) {
           const details = error.details as Record<string, unknown> | undefined;
           if (details?.dependencyTrustErrors) {
@@ -649,7 +615,6 @@ export const extensionPushCommand = new Command()
               details.mismatches as CollectiveMismatch[],
             );
           } else if (details?.existingVersion) {
-            // Version already exists — promote, bump or stop interactively
             const existingVersion = details.existingVersion as string;
             const requestedChannel = (details.requestedChannel as
               | string
@@ -728,7 +693,6 @@ export const extensionPushCommand = new Command()
               // The version is part of the content hash, so bumping it
               // changes the hash and therefore the review-report path.
               const bumpedHash = await computePackageCacheHash(cacheHashInput);
-              // Re-run prepare with bumped version
               try {
                 prepared = await extensionPushPrepare(ctx, prepareDeps, {
                   manifest,
@@ -793,9 +757,8 @@ export const extensionPushCommand = new Command()
         }
       }
 
-      // 4b. Populate the package cache on a miss. Writing here lets a
-      // subsequent `swamp extension quality` run against the same source
-      // reuse these bytes without repackaging.
+      // populate the cache on a miss so a later extension quality run against
+      // the same source reuses these bytes.
       if (!cached) {
         try {
           await cache.put(cacheHash, prepared.archiveBytes, {
@@ -810,22 +773,18 @@ export const extensionPushCommand = new Command()
         }
       }
 
-      // 5. Render resolved data
       renderer.renderResolved(prepared.resolvedData);
 
-      // 5a. A declared license that is not valid SPDX warns; it never blocks.
       if (prepared.licenseWarning) {
         renderer.renderLicenseWarning(prepared.licenseWarning);
       }
 
-      // 6. Handle dependency trust warnings
       if (prepared.dependencyTrustResult.warnings.length > 0) {
         renderer.renderDependencyTrustWarnings(
           prepared.dependencyTrustResult.warnings,
         );
       }
 
-      // 6a. Handle review-rule warnings
       if (prepared.reviewRulesResult.warnings.length > 0) {
         renderer.renderReviewRuleWarnings(
           withAcceptance(
@@ -836,7 +795,6 @@ export const extensionPushCommand = new Command()
         );
       }
 
-      // 6b. Handle safety warnings
       if (prepared.safetyWarnings.length > 0) {
         renderer.renderSafetyWarnings(
           withAcceptance(
@@ -847,11 +805,9 @@ export const extensionPushCommand = new Command()
         );
       }
 
-      // 6c. One gate covers safety and review-rule warnings, so the user is
-      // never prompted twice. --yes and --force waive them along with the push
-      // confirmation, and the summary records what was waived. A dry run has
-      // nothing to confirm and a --json run never prompts, so neither stops
-      // here; the warnings were rendered above either way.
+      // one gate covers safety and review warnings so the user is never
+      // prompted twice; a dry run has nothing to confirm and --json never
+      // prompts.
       const gatedWarnings = buildAcceptedWarnings(prepared);
       const gate = resolveWarningsGate({
         warningCount: acceptedWarningCount(gatedWarnings),
@@ -885,11 +841,9 @@ export const extensionPushCommand = new Command()
         manifestDir,
       );
 
-      // 6d. Version-drift check (advisory warning only)
-      // Look up the last-published version in the registry to compare model
-      // versions. Best-effort — when there is nothing to compare against, the
-      // warning says why: never published, no credentials, rejected
-      // credentials, or a failed lookup.
+      // advisory and best-effort: when there is nothing to compare against, the
+      // warning says why (never published, no or rejected credentials, failed
+      // lookup).
       const baseline = await lookupPublishedBaseline(
         prepareDeps,
         manifest.name,
@@ -911,11 +865,6 @@ export const extensionPushCommand = new Command()
         renderer.renderVersionDriftWarnings(versionIssues);
       }
 
-      // 6e. Version-bump-without-upgrade check — warn when the extension
-      // version changed from the published baseline but model files lack
-      // an upgrades array. Skipped when --skip-upgrade-check is passed,
-      // when there is no published version, or when the version has not
-      // changed.
       if (
         !options.skipUpgradeCheck &&
         baseline.kind === "found" &&
@@ -929,9 +878,9 @@ export const extensionPushCommand = new Command()
         }
       }
 
-      // 7. Dry run — report and stop. A failed registry check, or one the
-      // registry did not answer, exits non-zero with the message the real push
-      // would have failed with; no bump prompt, since a dry run never prompts.
+      // a failed or unanswered registry check exits non-zero with the message
+      // the real push would have failed with; no bump prompt, since a dry run
+      // never prompts.
       if (prepared.isDryRun) {
         renderer.renderDryRun({
           name: prepared.manifest.name,
@@ -951,7 +900,6 @@ export const extensionPushCommand = new Command()
         return;
       }
 
-      // 8. Confirmation prompt
       if (!options.yes && !options.force && cliCtx.outputMode === "log") {
         const prompt = finalPushPrompt({
           name: prepared.manifest.name,
@@ -968,7 +916,6 @@ export const extensionPushCommand = new Command()
         }
       }
 
-      // 9. Execute push
       const executeDeps = createExtensionPushExecuteDeps(identity);
       await consumeStream(
         extensionPush(ctx, executeDeps, {

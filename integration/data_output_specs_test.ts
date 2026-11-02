@@ -17,11 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Integration tests for data output specs.
- *
- * Tests verify that models properly declare and use resource/file output specifications.
- */
 import { assertEquals, assertStringIncludes } from "@std/assert";
 import { join } from "@std/path";
 import { getLogger } from "@logtape/logtape";
@@ -40,7 +35,6 @@ import {
   createFileWriterFactory,
   createResourceWriter,
 } from "../src/domain/models/data_writer.ts";
-// Import shell model to trigger registration
 import "../src/domain/models/command/shell/shell_model.ts";
 
 async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
@@ -96,7 +90,6 @@ Deno.test("Data output specs - shell model execution produces valid resource han
 
     const modelType = ModelType.create("command/shell");
 
-    // Create shell definition
     const definition = Definition.create({
       name: "test-shell",
       methods: {
@@ -106,11 +99,9 @@ Deno.test("Data output specs - shell model execution produces valid resource han
 
     await definitionRepo.save(modelType, definition);
 
-    // Get model definition
     const model = modelRegistry.get(modelType);
     const executeMethod = model!.methods.execute;
 
-    // Create writeResource and createFileWriter for the context
     const { writeResource } = createResourceWriter(
       dataRepo,
       modelType,
@@ -124,7 +115,6 @@ Deno.test("Data output specs - shell model execution produces valid resource han
       model!.files ?? {},
     );
 
-    // Execute the method
     const result = await executionService.execute(
       definition,
       executeMethod,
@@ -153,8 +143,7 @@ Deno.test("Data output specs - shell model execution produces valid resource han
       },
     );
 
-    // Verify data output has correct spec names and kinds
-    assertEquals(result.dataHandles?.length, 2); // result resource + log file
+    assertEquals(result.dataHandles?.length, 2);
 
     const resultHandle = result.dataHandles!.find((h) =>
       h.specName === "result"
@@ -169,7 +158,6 @@ Deno.test("Data output specs - shell model execution produces valid resource han
     assertEquals(logHandle!.kind, "file");
     assertEquals(logHandle!.name, "log");
 
-    // Verify defaults were applied
     assertEquals(resultHandle!.metadata.contentType, "application/json");
     assertEquals(resultHandle!.metadata.lifetime, "infinite");
     assertEquals(resultHandle!.metadata.garbageCollection, 10);
@@ -194,7 +182,6 @@ Deno.test("Data output specs - undeclared resource spec fails at writeResource",
       methods: { execute: { arguments: { run: "echo test" } } },
     });
 
-    // Create writeResource with the shell model's resources
     const { writeResource } = createResourceWriter(
       dataRepo,
       shellModelType,
@@ -202,7 +189,6 @@ Deno.test("Data output specs - undeclared resource spec fails at writeResource",
       model!.resources ?? {},
     );
 
-    // Create a method that tries to use an undeclared spec name
     const badMethod = {
       description: "Bad method",
       arguments: model!.methods.execute.arguments,
@@ -210,7 +196,6 @@ Deno.test("Data output specs - undeclared resource spec fails at writeResource",
         _args: Record<string, unknown>,
         ctx: MethodContext,
       ) => {
-        // This should throw because "undeclared" is not in shell model's resources
         const handle = await ctx.writeResource!("undeclared", "undeclared", {
           test: "data",
         });
@@ -250,7 +235,6 @@ Deno.test("Data output specs - undeclared resource spec fails at writeResource",
       errorMessage = (error as Error).message;
     }
 
-    // The error should come from the writeResource function
     assertStringIncludes(errorMessage, "Undeclared resource spec 'undeclared'");
     assertStringIncludes(errorMessage, "Declared resource specs: result");
   });
@@ -274,7 +258,6 @@ Deno.test("Data output specs - undeclared file spec fails at createFileWriter", 
       methods: { execute: { arguments: { run: "echo test" } } },
     });
 
-    // Create createFileWriter with the shell model's files
     const { createFileWriter } = createFileWriterFactory(
       dataRepo,
       shellModelType,
@@ -282,7 +265,6 @@ Deno.test("Data output specs - undeclared file spec fails at createFileWriter", 
       model!.files ?? {},
     );
 
-    // Create a method that tries to use an undeclared file spec
     const badMethod = {
       description: "Bad method",
       arguments: model!.methods.execute.arguments,
@@ -290,7 +272,6 @@ Deno.test("Data output specs - undeclared file spec fails at createFileWriter", 
         _args: Record<string, unknown>,
         ctx: MethodContext,
       ) => {
-        // This should throw because "undeclared" is not in shell model's files
         const writer = ctx.createFileWriter!("undeclared", "undeclared");
         const handle = await writer.writeText("test");
         return { dataHandles: [handle] };
@@ -329,7 +310,6 @@ Deno.test("Data output specs - undeclared file spec fails at createFileWriter", 
       errorMessage = (error as Error).message;
     }
 
-    // The error should come from the createFileWriter function
     assertStringIncludes(errorMessage, "Undeclared file spec 'undeclared'");
   });
 });

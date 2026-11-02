@@ -115,8 +115,8 @@ export const auditExportCommand = withRemoteOptions(
       format,
       principal: options.principal,
       category: options.category,
-      // The stored spelling, so a server that predates the behavior spelling
-      // of an action or resource (swamp-club#3334) still matches it.
+      // the stored spelling, so a server that predates the behavior spelling
+      // still matches it.
       action: canonicalOptional(
         options.action as string | undefined,
         canonicalAuditAction,

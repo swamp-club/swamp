@@ -36,14 +36,11 @@ import {
 
 const logger = getLogger(["swamp", "retention"]);
 
-/** Items a collector removes per batch unless told otherwise. */
 export const DEFAULT_RETENTION_BATCH_SIZE = 100;
 
-/** What one batch of a collector removed. */
 export interface RetentionBatchResult {
   deleted: number;
   bytesReclaimed: number;
-  /** True when the collector stopped at the limit and has more to remove. */
   more: boolean;
   /**
    * True when the collector skipped items it failed to remove: the kind's
@@ -63,10 +60,9 @@ export interface RetentionCollector {
 }
 
 /**
- * Runs one output-retention batch as the `retention_batch` phase
- * (design/enablers/serve-phase-telemetry.md). Its `batch_commit` phase
- * covers what `runBatch` does once the collector settles: ending the unit of
- * work (the v2 push or the v3 commit) and releasing the gate.
+ * runs one output-retention batch as the retention_batch phase; its
+ * batch_commit phase covers ending the unit of work and releasing the gate once
+ * the collector settles
  */
 function observeOutputBatch(
   runBatch: RetentionPassDeps["runBatch"],
@@ -123,18 +119,14 @@ export interface RetentionPassDeps {
    * long pass never holds them for long.
    */
   runBatch<T>(fn: () => Promise<T>): Promise<T>;
-  /** Runs once after the batches, e.g. v3 history compaction. */
   afterPass?(result: RetentionPassResult): Promise<void>;
-  /** The pass's clock: cutoffs are taken from it, and the budget measured. */
   now(): Date;
 }
 
 export interface RetentionPassOptions {
   policy: RetentionPolicy;
   batchSize?: number;
-  /** Stop starting new batches after this long; the next pass continues. */
   budgetMs?: number;
-  /** Stop at the next batch boundary (shutdown). */
   isStopping?: () => boolean;
   /**
    * Called between batches; returns true to stop for now because the
@@ -161,17 +153,13 @@ export interface RetentionKindResult {
 export interface RetentionPassResult {
   startedAt: string;
   kinds: RetentionKindResult[];
-  /** True when every kind finished; false when the pass stopped early. */
   complete: boolean;
-  /** Why the pass stopped early, when it did. */
   stoppedBy?: "budget" | "stopping" | "busy";
 }
 
 /**
- * Runs one retention pass: for each kind with a retention, removes items
- * older than its cutoff in batches, then records one watermark per kind
- * (swamp-club#3473). A collector error ends that kind's pass, is logged and
- * leaves its watermark incomplete; the other kinds still run.
+ * a collector error ends that kind's pass, is logged and leaves its watermark
+ * incomplete; the other kinds still run
  */
 export async function runRetentionPass(
   deps: RetentionPassDeps,

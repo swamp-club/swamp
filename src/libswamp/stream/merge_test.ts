@@ -56,7 +56,6 @@ Deno.test("merge two streams contains all items", async () => {
     fromArray(["a", "b"]),
     fromArray(["c", "d"]),
   ]));
-  // All items present, order may vary
   assertEquals(items.sort(), ["a", "b", "c", "d"]);
 });
 
@@ -65,7 +64,6 @@ Deno.test("merge interleaves delayed streams", async () => {
     delayed(["a1", "a2"], 5),
     delayed(["b1", "b2"], 5),
   ]));
-  // All items present
   assertEquals(items.length, 4);
   assertEquals(items.sort(), ["a1", "a2", "b1", "b2"]);
 });

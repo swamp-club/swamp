@@ -17,14 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * In --json mode, an offline auth gate pass warns without breaking stderr: a
- * failing run's stderr is one JSON error document that carries the warning,
- * and any other run's stderr is the one warning line its exit hook writes
- * (swamp-club#2938). The gate warning renderer, the fatal error renderer and
- * the exit hook are wired here as the CLI wires them.
- */
-
 import { assertEquals } from "@std/assert";
 import { UserError } from "../src/domain/errors.ts";
 import { renderError } from "../src/presentation/output/error_output.ts";

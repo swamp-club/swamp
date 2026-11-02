@@ -40,13 +40,10 @@ import { initializeLogging } from "../src/infrastructure/logging/logger.ts";
 await initializeLogging({});
 
 interface Recorded {
-  /** affinityKey per dispatched step, keyed by step name. */
   keys: Map<string, string | undefined>;
   released: string[];
 }
 
-// Runs the workflow against a recording dispatcher and returns the run id
-// with the affinity key each remote step carried and every pin released.
 async function runRecorded(
   build: (modelName: string) => Workflow,
 ): Promise<{ runId: string; recorded: Recorded }> {

@@ -31,7 +31,6 @@ import {
   STEP_JOB_LIMITS,
 } from "./windows_job.ts";
 
-/** Handles a fake kernel32 hands out, named so calls read clearly. */
 const JOB = Deno.UnsafePointer.create(0x10n);
 const PROCESS = Deno.UnsafePointer.create(0x20n);
 
@@ -50,7 +49,6 @@ function limitFlagsOf(info: BufferSource): number {
   return bytes.getUint32(LIMIT_FLAGS_OFFSET, true);
 }
 
-/** A fake kernel32 that records calls; `fail` names calls that fail. */
 function fakeKernel32(fail: ReadonlySet<string> = new Set()) {
   const calls: string[] = [];
   let setCount = 0;

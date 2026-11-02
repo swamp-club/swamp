@@ -121,17 +121,14 @@ Deno.test("atomicWriteTextFile preserves original on directory error", async () 
     const filePath = join(dir, "test.yaml");
     await Deno.writeTextFile(filePath, "original");
 
-    // Try to write to a non-existent directory — the temp file creation will fail
     const badPath = join(dir, "nonexistent", "subdir", "test.yaml");
     await assertRejects(
       () => atomicWriteTextFile(badPath, "new content"),
     );
 
-    // Original file is untouched
     const result = await Deno.readTextFile(filePath);
     assertEquals(result, "original");
 
-    // No temp files left behind
     const tmpFiles = await listTmpFiles(dir);
     assertEquals(tmpFiles.length, 0);
   });
@@ -147,7 +144,6 @@ async function exists(path: string): Promise<boolean> {
   }
 }
 
-/** Sync hooks that record each call, and whether the target existed then. */
 function recordingSync(
   events: string[],
   overrides: Partial<AtomicWriteSync> = {},
@@ -232,7 +228,6 @@ Deno.test("atomicWriteTextFile: with sync, a failed file sync removes the temp f
       SyncFailedError,
       "EIO",
     );
-    // Named by where the file was going, not its temp name.
     assertEquals(error.path, filePath);
     assertStringIncludes(error.message, `Could not sync ${filePath} to disk`);
     assertEquals(await Deno.readTextFile(filePath), "original");

@@ -22,15 +22,9 @@ import { TOKEN_SECRETS_VAULT_NAME } from "../domain/vaults/control_plane_vault_p
 import { oauthAccessTokenKey } from "./device_auth_handler.ts";
 
 /**
- * Reads the OAuth access token stored for a server token at login, or null
- * when it has none.
- *
- * Only an OAuth login stores one, so a manually minted or worker server token
- * never has it. `_token-secrets` is read first. The token's own vault is a
- * fallback only for a record that still names a user vault, which is a token
- * minted before swamp-club#1511 whose secrets have not been migrated. For any
- * other token a miss is final, and reading a user vault for it could only fail
- * (swamp-club#3127).
+ * only an OAuth login stores a token; _token-secrets is read first, and the
+ * token's own vault is a fallback only for a record still naming a user vault;
+ * for any other token a miss is final
  */
 export async function lookupOAuthAccessToken(
   vaultService: Pick<VaultService, "get">,

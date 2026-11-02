@@ -20,33 +20,18 @@
 import type { z } from "zod";
 import { findClosestMatch } from "../string_distance.ts";
 
-/**
- * Error details for an individual input override validation failure.
- */
 export interface InputOverrideError {
-  /** The input key that failed validation */
   key: string;
-  /** Human-readable error message */
   message: string;
-  /** Suggestion for fixing the error (e.g., typo correction) */
   suggestion?: string;
-  /** Available valid keys, if applicable */
   availableKeys?: string[];
 }
 
-/**
- * Result of validating input overrides against a schema.
- */
 export interface InputOverrideValidationResult {
-  /** Whether all input overrides are valid */
   valid: boolean;
-  /** List of validation errors */
   errors: InputOverrideError[];
 }
 
-/**
- * Internal type for Zod v4 schema definition.
- */
 interface ZodDef {
   type: string;
   innerType?: z.ZodTypeAny;
@@ -57,24 +42,15 @@ interface ZodDef {
   schema?: z.ZodTypeAny;
 }
 
-/**
- * Gets the definition type from a Zod schema (Zod v4 compatible).
- */
 function getSchemaType(schema: z.ZodTypeAny): string {
   const def = (schema as unknown as { _def: ZodDef })._def;
   return def?.type ?? "";
 }
 
-/**
- * Gets the definition from a Zod schema.
- */
 function getSchemaDef(schema: z.ZodTypeAny): ZodDef {
   return (schema as unknown as { _def: ZodDef })._def;
 }
 
-/**
- * Unwraps optional, nullable, and other wrapper types to get the underlying schema.
- */
 function unwrapSchema(schema: z.ZodTypeAny): z.ZodTypeAny {
   const schemaType = getSchemaType(schema);
   const def = getSchemaDef(schema);
@@ -89,9 +65,6 @@ function unwrapSchema(schema: z.ZodTypeAny): z.ZodTypeAny {
   return schema;
 }
 
-/**
- * Gets the keys from a Zod object schema.
- */
 function getObjectKeys(schema: z.ZodTypeAny): string[] | null {
   const unwrapped = unwrapSchema(schema);
   const schemaType = getSchemaType(unwrapped);
@@ -102,9 +75,6 @@ function getObjectKeys(schema: z.ZodTypeAny): string[] | null {
   return null;
 }
 
-/**
- * Gets the property schema from an object by key.
- */
 function getObjectProperty(
   schema: z.ZodTypeAny,
   key: string,
@@ -121,7 +91,6 @@ function getObjectProperty(
   }
 
   if (schemaType === "record" && def.valueType) {
-    // Records allow any string key
     return def.valueType;
   }
 
@@ -136,9 +105,6 @@ function getObjectProperty(
   return null;
 }
 
-/**
- * Gets a human-readable type name from a Zod schema.
- */
 function getTypeName(schema: z.ZodTypeAny): string {
   const unwrapped = unwrapSchema(schema);
   const schemaType = getSchemaType(unwrapped);
@@ -169,37 +135,20 @@ function getTypeName(schema: z.ZodTypeAny): string {
   }
 }
 
-/**
- * Domain service for validating input overrides against a model's Zod schema.
- *
- * This service ensures that:
- * 1. Input keys exist in the model's inputAttributesSchema
- * 2. Input values have the correct type for their corresponding schema field
- */
 export class InputOverrideValidationService {
-  /**
-   * Validates input overrides against a model's schema.
-   *
-   * @param inputs - The input values to validate
-   * @param schema - The Zod schema to validate against
-   * @returns Validation result with any errors
-   */
   validate(
     inputs: Record<string, unknown>,
     schema: z.ZodTypeAny,
   ): InputOverrideValidationResult {
     const errors: InputOverrideError[] = [];
 
-    // Empty inputs are always valid
     if (Object.keys(inputs).length === 0) {
       return { valid: true, errors: [] };
     }
 
-    // Get available keys from schema
     const availableKeys = getObjectKeys(schema);
 
     for (const [key, value] of Object.entries(inputs)) {
-      // Check if key exists in schema
       const propertySchema = getObjectProperty(schema, key);
 
       if (!propertySchema) {
@@ -218,7 +167,6 @@ export class InputOverrideValidationService {
         continue;
       }
 
-      // Validate the value's type using safeParse
       const parseResult = propertySchema.safeParse(value);
       if (!parseResult.success) {
         const expectedType = getTypeName(propertySchema);
@@ -228,7 +176,6 @@ export class InputOverrideValidationService {
           ? "null"
           : typeof value;
 
-        // Extract more specific error message from Zod if available
         const zodIssue = parseResult.error.issues[0];
         const detailedMessage = zodIssue?.message
           ? zodIssue.message

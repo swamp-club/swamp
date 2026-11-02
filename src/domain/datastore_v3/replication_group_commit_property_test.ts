@@ -99,7 +99,6 @@ async function simulate(actions: readonly Action[]) {
     }
     await flush();
   }
-  // Drain: every remaining sync succeeds.
   while (settled < syncs.length) {
     settleNext(true);
     await flush();

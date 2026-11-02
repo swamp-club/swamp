@@ -21,17 +21,10 @@ import { assertEquals } from "@std/assert";
 import { Command } from "@cliffy/command";
 import { initializeLogging } from "../../infrastructure/logging/logger.ts";
 
-// Import models barrel to trigger self-registration
 import "../../domain/models/models.ts";
 
-// Initialize logging for tests
 await initializeLogging({});
 
-/**
- * In-process serve endpoint streaming the given run events followed by a
- * `done` frame — enough to drive the command's streaming --server path
- * without a subprocess.
- */
 function runEventServer(
   events: Record<string, unknown>[],
 ): { url: string; shutdown: () => Promise<void> } {
@@ -57,7 +50,6 @@ function runEventServer(
   };
 }
 
-/** Runs `access group create` against a scripted run result; returns Deno.exitCode. */
 async function runGroupCreateAgainst(
   run: Record<string, unknown>,
 ): Promise<number> {

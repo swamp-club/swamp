@@ -40,17 +40,12 @@ export const DEFAULT_INBOX_LIST_LIMIT = 20;
 export const MAX_INBOX_LIST_LIMIT = 100;
 
 export interface InboxListInput {
-  /** Read messages too, not only unread ones. */
   all?: boolean;
   limit?: number;
-  /** List the page older than this message id. */
   before?: string;
 }
 
-/**
- * One listed message: what the list shows and nothing more. The body, link
- * and action are the reading part, so they never reach the list.
- */
+/** the body, link and action are the reading part, so they never reach the list. */
 export interface InboxListItem {
   id: string;
   kind: string;
@@ -62,7 +57,6 @@ export interface InboxListItem {
 export interface InboxListView {
   status: InboxReadStatus;
   messages: InboxListItem[];
-  /** The id to pass as `before` for the next page; null on the last page. */
   nextCursor: string | null;
   /** Entries Swamp Club sent that broke the inbox contract and were left out. */
   dropped: number;
@@ -74,7 +68,6 @@ export type InboxListEvent =
   | { kind: "completed"; view: InboxListView }
   | { kind: "error"; error: SwampError };
 
-/** Dependencies for the inbox list operation, injected for testability. */
 export interface InboxListDeps {
   loadCredentials: () => Promise<AuthCredentials | null>;
   listMessages: (
@@ -91,7 +84,6 @@ export interface CreateInboxListDepsOptions {
   identity?: ClientIdentity;
 }
 
-/** Wires real infrastructure into InboxListDeps. */
 export function createInboxListDeps(
   options: CreateInboxListDepsOptions = {},
 ): InboxListDeps {
@@ -106,7 +98,6 @@ export function createInboxListDeps(
   };
 }
 
-/** Why the input is refused, or undefined when it may be sent. */
 function refusal(input: InboxListInput): SwampError | undefined {
   const limit = input.limit;
   if (
@@ -144,17 +135,14 @@ function toView(
   };
 }
 
-/** The events every inbox page fetch yields before its result. */
 type InboxPageFetchEvent =
   | { kind: "loading_credentials" }
   | { kind: "contacting_server"; serverUrl: string }
   | { kind: "error"; error: SwampError };
 
 /**
- * Fetches one page for the list and the interactive inbox alike. Returns the page, or
- * undefined after yielding the error that ended the fetch. Refused input
- * never reaches the network. A client failure propagates as the UserError
- * the client threw, as it does from whoami.
+ * refused input never reaches the network; a client failure propagates as the
+ * UserError the client threw.
  */
 async function* fetchPage(
   ctx: LibSwampContext,
@@ -204,10 +192,6 @@ async function* fetchPage(
   }
 }
 
-/**
- * Lists the signed-in user's inbox, newest first: unread messages unless
- * `all` is set.
- */
 export async function* inboxList(
   ctx: LibSwampContext,
   deps: InboxListDeps,
@@ -218,15 +202,10 @@ export async function* inboxList(
   if (page) yield { kind: "completed", view: toView(status, page) };
 }
 
-/**
- * One message whole, for reading: what the list shows plus the body, link
- * and suggested command.
- */
 export interface InboxMessageView {
   id: string;
   kind: string;
   title: string;
-  /** Markdown written by Swamp Club. */
   body: string;
   createdAt: string;
   readAt: string | null;
@@ -238,7 +217,6 @@ export interface InboxMessageView {
 
 export interface InboxBrowseView {
   messages: InboxMessageView[];
-  /** The id to pass as `before` for the next page; null on the last page. */
   nextCursor: string | null;
   /** Entries Swamp Club sent that broke the inbox contract and were left out. */
   dropped: number;
@@ -250,7 +228,6 @@ export type InboxBrowseEvent =
   | { kind: "completed"; view: InboxBrowseView }
   | { kind: "error"; error: SwampError };
 
-/** The whole message, built key by key from the client's parsed message. */
 export function toMessageView(m: InboxMessage): InboxMessageView {
   return {
     id: m.id,
@@ -267,9 +244,8 @@ export function toMessageView(m: InboxMessage): InboxMessageView {
 }
 
 /**
- * Loads one page of whole messages, read and unread, newest first, for the
- * interactive inbox. `all` has no further effect: read messages are always included so
- * they can be opened again. Marks nothing read.
+ * read messages are always included so they can be opened again; marks nothing
+ * read.
  */
 export async function* inboxBrowse(
   ctx: LibSwampContext,

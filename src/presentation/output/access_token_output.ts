@@ -17,12 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Render functions for the `swamp access token` command group. Each supports
- * both "log" (human-readable) and "json" (structured) output modes per the
- * terminal-output design system.
- */
-
 import { bold, cyan, dim, green, red, yellow } from "@std/fmt/colors";
 import { writeOutput } from "../../infrastructure/logging/logger.ts";
 import type { ServerTokenCreateData } from "../../libswamp/access/token_create.ts";

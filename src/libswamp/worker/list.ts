@@ -17,15 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * List worker pool state and enrollment tokens (see
- * design/enablers/remote-execution.md, "Worker state is swamp data").
- *
- * Both operations read the latest versions of the built-in models' resource
- * data through the same datastore query primitive workflows use — there is
- * no bespoke pool registry to consult.
- */
-
 import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
 import type { DataRecord } from "../../domain/data/data_record.ts";
@@ -47,15 +38,13 @@ import {
 const TOKEN_DATA_NAME = "token-main";
 const WORKER_STATE_DATA_NAME = "state-main";
 
-/** One enrollment token in the list. */
 export interface WorkerTokenListItem {
   name: string;
-  /** Lifecycle state as recorded in the datastore. */
   state: TokenState;
   /**
-   * Display state: recorded `unused`/`enrolled` tokens whose `expiresAt`
-   * has passed show as `expired`. Display-level only — the recorded state
-   * transitions when the orchestrator runs the `expire` method.
+   * display state: unused or enrolled tokens past expiresAt show as expired;
+   * the recorded state changes only when the orchestrator runs the expire
+   * method
    */
   effectiveState: TokenState;
   createdAt: string;
@@ -67,7 +56,6 @@ export interface WorkerTokenListItem {
   secretKey: string;
 }
 
-/** Data payload for the token list completed event. */
 export interface WorkerTokenListData {
   tokens: WorkerTokenListItem[];
   count: number;
@@ -78,10 +66,8 @@ export type WorkerTokenListEvent =
   | { kind: "completed"; data: WorkerTokenListData }
   | { kind: "error"; error: SwampError };
 
-/** One enrolled worker in the list. */
 export interface WorkerListItem {
   name: string;
-  /** Enrollment token that admitted this worker; a fleet shares one token. */
   tokenName: string;
   status: WorkerStatus;
   labels: Record<string, string>;
@@ -92,18 +78,15 @@ export interface WorkerListItem {
   lastSeenAt: string;
   capacity: number;
   activeDispatchIds: string[];
-  /** When the worker disconnected; present only while its status is `disconnected`. */
   disconnectedAt?: string;
 }
 
-/** Data payload for the worker list completed event. */
 export interface WorkerListData {
   workers: WorkerListItem[];
   count: number;
   filteredDisconnectedCount?: number;
 }
 
-/** Options for the worker list query. */
 export interface WorkerListOptions {
   includeDisconnected?: boolean;
   /**
@@ -119,16 +102,11 @@ export type WorkerListEvent =
   | { kind: "completed"; data: WorkerListData }
   | { kind: "error"; error: SwampError };
 
-/** Dependencies for the worker list operations. */
 export interface WorkerListDeps {
-  /** Returns the latest data records matching a CEL predicate, with
-   * JSON attributes loaded. */
   query: (predicate: string) => Promise<DataRecord[]>;
-  /** Clock — injectable for the display-level expiry overlay. */
   now?: () => number;
 }
 
-/** Wires the repo's data query service into WorkerListDeps. */
 export function createWorkerListDeps(
   dataQueryService: DataQueryService,
 ): WorkerListDeps {
@@ -142,10 +120,6 @@ export function createWorkerListDeps(
   };
 }
 
-/**
- * Computes the display state for a token: recorded live states past their
- * expiry render as `expired`.
- */
 export function effectiveTokenState(
   state: TokenState,
   expiresAt: string,
@@ -160,9 +134,6 @@ export function effectiveTokenState(
   return state;
 }
 
-/**
- * Lists all enrollment tokens, newest record first by name.
- */
 export async function* workerTokenList(
   _ctx: LibSwampContext,
   deps: WorkerListDeps,
@@ -218,13 +189,6 @@ export async function* workerTokenList(
   );
 }
 
-/**
- * Lists workers known to the pool, sorted by name.
- *
- * By default disconnected workers are excluded from the results.
- * Pass `{ includeDisconnected: true }` to include them all, or
- * `{ disconnectedWithinMs }` to keep only those that disconnected recently.
- */
 export async function* workerList(
   _ctx: LibSwampContext,
   deps: WorkerListDeps,

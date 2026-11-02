@@ -136,7 +136,6 @@ async function tokenMain(
   return content ? JSON.parse(new TextDecoder().decode(content)) : null;
 }
 
-/** Names declared by the server-token files in the auto-definitions dir. */
 async function tokenDefinitionFiles(
   repoContext: RepositoryContext,
 ): Promise<string[]> {
@@ -155,7 +154,6 @@ async function tokenDefinitionFiles(
   return names.sort();
 }
 
-/** The filesystem datastore serve runs on without a remote datastore. */
 function filesystemDatastore(repoDir: string): FilesystemDatastoreConfig {
   return { type: "filesystem", path: swampPath(repoDir) };
 }
@@ -174,11 +172,9 @@ function gcService(
       intervalMs: ONE_HOUR,
       gracePeriodMs,
       dataQueryService: repoContext.dataQueryService,
-      // The same repositories serve builds.
       ...createServerTokenGcRepos(repoDir, repoContext),
       vaultService,
       libCtx,
-      // The same lock serve passes.
       withTokenLock: (name, fn) =>
         withServerTokenLock(datastoreConfig, name, fn),
       pullChanged,
@@ -186,7 +182,6 @@ function gcService(
   );
 }
 
-/** Initializes a repo and registers the control-plane vault, as serve's boot does. */
 async function initTokenRepo(
   repoDir: string,
   libCtx: LibSwampContext,
@@ -237,7 +232,6 @@ Deno.test("server token GC: collects revoked and past-grace expired tokens acros
     );
     assertEquals(vaultEvents.some((e) => e.kind === "error"), false);
 
-    // Mirror serve's boot: register the control-plane vault globally.
     const provider = new ControlPlaneVaultProvider(
       new FileSystemControlPlaneStore(swampPath(repoDir)),
     );
@@ -291,7 +285,6 @@ Deno.test("server token GC: collects revoked and past-grace expired tokens acros
       );
     }
 
-    // A user secret, and a revoked token record tampered to point at it.
     const vaultService = await VaultService.fromRepository(repoDir);
     await vaultService.put("local", "prod-db-password", "hunter2");
     const tamperedDef = await repoContext.definitionRepo.findByName(
@@ -363,7 +356,6 @@ Deno.test("server token GC: collects revoked and past-grace expired tokens acros
     assertExists(liveDef);
     assertNotEquals(liveDef.id, orphanDef.id);
 
-    // With the default grace period the just-expired token is kept.
     const firstCount = await gcService(
       repoDir,
       repoContext,
@@ -380,7 +372,6 @@ Deno.test("server token GC: collects revoked and past-grace expired tokens acros
       "reused-tok",
     ]);
 
-    // The orphaned record is gone, and the re-minted token kept its secret.
     assertEquals(
       await repoContext.unifiedDataRepo.getContent(
         SERVER_TOKEN_MODEL_TYPE,
@@ -424,7 +415,6 @@ Deno.test("server token GC: collects revoked and past-grace expired tokens acros
     );
     assertEquals(tamperedAuth.ok, false);
 
-    // Nothing outside the collected tokens was touched.
     assertExists(
       await repoContext.definitionRepo.findByName(userType, "revoked-tok"),
     );
@@ -443,7 +433,6 @@ Deno.test("server token GC: collects revoked and past-grace expired tokens acros
     );
     assertEquals(activeAuth.ok, true);
 
-    // With no grace period the expired token goes too.
     const secondCount = await gcService(
       repoDir,
       repoContext,
@@ -525,7 +514,6 @@ Deno.test("server token GC: on a filesystem datastore, waits for a writer holdin
       }
     });
 
-    // The writer's token was left alone: its record and secret are intact.
     assertEquals((await tokenMain(repoContext, "ci"))?.state, "revoked");
     assertExists(
       await vaultService.get(
@@ -535,7 +523,6 @@ Deno.test("server token GC: on a filesystem datastore, waits for a writer holdin
       ),
     );
 
-    // Once the lock is free the next sweep collects it.
     assertEquals(await gc.runOnce(), 1);
     assertEquals(await tokenMain(repoContext, "ci"), null);
     assertEquals(
@@ -619,7 +606,6 @@ Deno.test("server token GC: pulls before it re-reads, so a rotation another repl
     assertEquals(await gc.runOnce(), 0);
     assertEquals(pulls, 1);
 
-    // The rotated token survives: its record and its secret.
     assertEquals((await tokenMain(repoContext, "ci"))?.state, "active");
     assertExists(
       await vaultService.get(

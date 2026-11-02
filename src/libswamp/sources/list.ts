@@ -32,20 +32,18 @@ import {
 } from "../../infrastructure/persistence/swamp_sources_repository.ts";
 import { resolveSourceBaseDirs } from "../../infrastructure/persistence/git_worktree.ts";
 
-/** Dependencies for the source list operation. */
 export interface SourceListDeps {
   readSources: () => Promise<SwampSourcesConfig | null>;
   repoDir: string;
-  /** Base directory for resolving relative source paths. */
   sourceBaseDir: string;
-  /** Git root fallback for relative paths recorded before
-   * swamp-club#4027; see `resolveSourceBaseDirs`. */
+  /**
+   * git root fallback for relative paths recorded before sources resolved from
+   * the repository; see resolveSourceBaseDirs
+   */
   legacyBaseDir?: string;
-  /** Returns the kinds a source contributes. Injectable for unit tests. */
   resolveKinds: (source: SwampSource) => Promise<ExtensionKind[]>;
 }
 
-/** Wires real infrastructure into SourceListDeps. */
 export async function createSourceListDeps(
   repoDir: string,
 ): Promise<SourceListDeps> {
@@ -60,7 +58,6 @@ export async function createSourceListDeps(
   };
 }
 
-/** Lists all configured extension sources with their status. */
 export async function* sourceList(
   _ctx: LibSwampContext,
   deps: SourceListDeps,
@@ -96,7 +93,6 @@ export async function* sourceList(
         );
         entry.expandedPaths = expanded.map((s) => s.path);
         if (expanded.length === 0) {
-          // Unexpanded glob — path(s) not yet present on disk.
           entry.status = "path_not_found";
         } else {
           const kinds = await deps.resolveKinds(source);

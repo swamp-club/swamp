@@ -18,19 +18,9 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * Built-in enrollment-token model (see design/enablers/remote-execution.md,
- * "Enrollment tokens").
- *
- * One model instance per token, named by the token name. The token's
- * plaintext only ever lives in a vault — the resource records the vault
- * reference and the lifecycle state machine `unused → enrolled → expired`
- * (plus `revoked`). A token's `maxEnrollments` controls how many distinct
- * machines may bind: `1` (the default) gives single-machine semantics,
- * a higher number or `"unlimited"` creates a fleet token. Each bound
- * machine may redeem again (worker restarts and reboots) until the
- * lifetime expires. The datastore provides no compare-and-swap, so
- * transitions are made atomic by the orchestrator process serializing
- * all token transitions in memory — it is the sole writer of this model.
+ * one instance per token; plaintext lives only in a vault. The datastore has no
+ * compare-and-swap, so the orchestrator, sole writer, serializes all token
+ * transitions in memory to make them atomic.
  */
 
 import { z } from "zod";
@@ -84,7 +74,6 @@ export const EnrollmentTokenSchema = z.object({
   bindings: z.array(BindingSchema).default([]),
   /** @deprecated Legacy field — kept so Zod parses old records. */
   boundMachineId: z.string().optional(),
-  /** @deprecated Legacy field — kept so Zod parses old records. */
   enrolledAt: z.string().datetime().optional(),
   revokedAt: z.string().datetime().optional(),
 }).transform((token) => {
@@ -107,7 +96,6 @@ const TOKEN_DATA_NAME = "token-main";
 
 export const WORKER_TOKEN_SECRET_KEY_PREFIX = "worker-token-";
 
-/** Vault key under which a token's plaintext is stored. */
 export function tokenSecretKey(tokenName: string): string {
   return `${WORKER_TOKEN_SECRET_KEY_PREFIX}${tokenName}`;
 }
@@ -126,7 +114,6 @@ function isExpired(token: EnrollmentToken, nowMs: number): boolean {
   return Date.parse(token.expiresAt) <= nowMs;
 }
 
-/** Why a connected worker lost the authority of the token it enrolled on. */
 export type EnrollmentBindingCutoffCause = "revoked" | "reminted" | "deleted";
 
 export type EnrollmentBindingVerdict =
@@ -134,12 +121,9 @@ export type EnrollmentBindingVerdict =
   | { readonly keep: false; readonly cause: EnrollmentBindingCutoffCause };
 
 /**
- * Decides whether a worker enrolled on the mint `boundCreatedAt` of a token
- * may stay connected. `token` is the current record, or null when it no
- * longer exists (or no longer parses). Minting after a revoke reuses the
- * name, so a record with a newer `createdAt` is a different credential.
- * Expiry is not a cause here: the gateway arms its own timer from
- * `expiresAt` at enrollment.
+ * whether a worker enrolled on this mint may stay connected. Minting after a
+ * revoke reuses the name, so a newer createdAt is a different credential.
+ * Expiry is not a cause; the gateway arms its own timer.
  */
 export function enrollmentTokenBindingVerdict(
   token: EnrollmentToken | null,
@@ -215,12 +199,9 @@ const RedeemArgsSchema = z.object({
 });
 
 /**
- * Redeem the token at enrollment, or re-authenticate a bound machine on
- * reconnect or restart. First redemption transitions `unused → enrolled`;
- * subsequent machines are appended to the bindings list until the
- * `maxEnrollments` allowance is exhausted. A known machineId re-auths
- * without writing. Expiry is a hard deadline: past `expiresAt` every
- * machine is rejected. Every failure throws.
+ * redeems at enrollment or re-authenticates a bound machine; a known machineId
+ * re-auths without writing, and past expiresAt every machine is rejected (hard
+ * deadline). Every failure throws.
  */
 async function redeem(
   args: z.infer<typeof RedeemArgsSchema>,
@@ -350,10 +331,6 @@ async function expire(
   return { dataHandles: [handle] };
 }
 
-/**
- * The enrollment-token model definition. Self-registers via the models
- * barrel.
- */
 export const enrollmentTokenModel: ModelDefinition = defineModel({
   type: ENROLLMENT_TOKEN_MODEL_TYPE,
   version: "2026.07.04.1",

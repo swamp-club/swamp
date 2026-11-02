@@ -48,19 +48,14 @@ import {
 export type { ClientIdentity };
 
 /**
- * Error codes a 403 from the registry carries, so callers can tell a refusal
- * apart from other failures without matching the server's prose. A token
- * missing a scope is `token_scope`; any other refusal (namespace, explicit
- * private publication the collective is not entitled to) is `forbidden`.
+ * a 403 carries token_scope when the token lacks a scope, else forbidden, so
+ * callers need not match the server's prose
  */
 export const REGISTRY_FORBIDDEN_CODE = "forbidden";
 export const REGISTRY_TOKEN_SCOPE_CODE = "token_scope";
-/** Per-attempt timeout of an extension archive download. */
 export const DOWNLOAD_ATTEMPT_TIMEOUT_MS = 120_000;
-/** Total time an archive download may take across its retries. */
 export const DOWNLOAD_BUDGET_MS = 300_000;
 
-/** `" after 3 attempts over 7s"` for a retried request, else empty. */
 function retriedSuffix(outcome: RetryOutcome | undefined): string {
   return outcome && outcome.attempts > 1
     ? ` after ${outcome.attempts} attempts over ${
@@ -69,11 +64,9 @@ function retriedSuffix(outcome: RetryOutcome | undefined): string {
     : "";
 }
 
-/** The message a 401 from the registry API is reported with. */
 export const REGISTRY_NOT_AUTHENTICATED_MESSAGE =
   "Not authenticated. Run 'swamp auth login' first.";
 
-/** Metadata sent during push initiation and confirmation. */
 export interface PushMetadata {
   name: string;
   version: string;
@@ -85,62 +78,41 @@ export interface PushMetadata {
   releaseNotes?: string;
   binaries?: string[];
   channel?: string;
-  /** The declared SPDX license expression; omitted when none is declared. */
   license?: string;
   /** The registry only accepts explicit private intent; public is omitted. */
   visibility?: "private";
 }
 
-/** Metadata sent during push confirmation (extends PushMetadata with content metadata). */
 export interface ConfirmPushMetadata extends PushMetadata {
   contentMetadata?: ExtensionContentMetadata;
 }
 
-/** Response from the initiate push endpoint. */
 export interface InitiatePushResult {
   uploadUrl: string;
   s3Key: string;
   extensionId: string;
 }
 
-/** Response from the confirm push endpoint. */
 export interface ConfirmPushResult {
   extensionId: string;
   name: string;
   version: string;
   visibility?: "public" | "private";
-  /**
-   * What the registry had to say about a push it accepted, such as client
-   * contentMetadata it discarded. Sanitised and bounded; absent when none.
-   */
   warnings?: RegistryWarnings;
 }
 
-/** The registry's warnings about a push it accepted, safe to print. */
 export interface RegistryWarnings {
-  /** At most {@link MAX_REGISTRY_WARNINGS} messages, each one line. */
   messages: string[];
-  /** How many further warnings the registry sent that are not in `messages`. */
   omitted: number;
 }
 
-/** The most registry warnings a confirm response surfaces. */
 export const MAX_REGISTRY_WARNINGS = 20;
-/** The longest a registry warning prints, in code points. */
 export const MAX_REGISTRY_WARNING_LENGTH = 1000;
 
-// Control characters, format characters (bidirectional overrides, isolates
-// and marks, zero-width characters, the BOM) that reorder or hide terminal
-// text, and the line and paragraph separators. The zero-width joiner goes
-// with them, so a joined emoji prints as its parts.
+// control, format (bidi, zero-width, BOM) and line/paragraph separators hide or
+// reorder terminal text; the joiner is included so joined emoji print as parts
 const UNPRINTABLE = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu;
 
-/**
- * Reduces the confirm response's `warnings` to text that is safe to print:
- * strings only, each one printable line of bounded length, and a bounded
- * number of them, with a count of the rest. Anything else the registry sent
- * there is dropped.
- */
 function registryWarnings(value: unknown): RegistryWarnings {
   if (!Array.isArray(value)) return { messages: [], omitted: 0 };
   const cleaned: string[] = [];
@@ -162,10 +134,8 @@ function registryWarnings(value: unknown): RegistryWarnings {
 }
 
 /**
- * Reduces a reason the registry sent to one printable line of bounded
- * length, or null when it is not a string or nothing printable is left. A
- * yank reason is written by a publisher and printed to other people's
- * terminals, some of it through raw prompt writes.
+ * yank reasons come from publishers and print to other people's terminals, some
+ * via raw prompt writes, so reduce to one bounded printable line
  */
 function registryReason(value: unknown): string | null {
   if (typeof value !== "string") return null;
@@ -177,36 +147,30 @@ function registryReason(value: unknown): string | null {
     : text;
 }
 
-/** Information about the latest published version. */
 export interface LatestVersionInfo {
   version: string;
   publishedAt: string;
   channel?: string;
 }
 
-/** Detailed version info including content metadata from the /latest endpoint. */
 export interface LatestVersionDetail {
   version: string;
   publishedAt: string;
   channel?: string;
-  /** The version's declared license; undefined when the registry omits it. */
   license?: string | null;
   contentMetadata: ExtensionContentMetadata | null;
 }
 
-/** Extension author metadata. */
 export interface ExtensionAuthor {
   username: string;
   displayName: string;
 }
 
-/** Quality score summary. */
 export interface ExtensionScoreSummary {
   percentage: number;
   grade: string;
 }
 
-/** Full extension metadata from the registry. */
 export interface ExtensionInfo {
   id: string;
   name: string;
@@ -240,7 +204,6 @@ export interface ExtensionInfo {
   isPrivate?: boolean;
 }
 
-/** Parameters for the extension search endpoint. */
 export interface ExtensionSearchParams {
   q?: string;
   collective?: string;
@@ -251,11 +214,9 @@ export interface ExtensionSearchParams {
   sort?: "relevance" | "new" | "updated" | "name";
   perPage?: number;
   page?: number;
-  /** Only extensions that declare a license (registry default: all). */
   licensed?: boolean;
 }
 
-/** A single extension entry in search results. */
 export interface ExtensionSearchEntry {
   id: string;
   name: string;
@@ -276,7 +237,6 @@ export interface ExtensionSearchEntry {
   supersededBy?: string | null;
 }
 
-/** Response from the extension search endpoint. */
 export interface ExtensionSearchResponse {
   extensions: ExtensionSearchEntry[];
   meta: {
@@ -286,33 +246,26 @@ export interface ExtensionSearchResponse {
   };
 }
 
-/** Response from the yank endpoint. */
 export interface YankResult {
   message: string;
 }
 
 /**
- * Response from the unyank endpoint.
- *
- * Note: unyank accepts an optional reason (unlike yank, where reason is
- * required). Callers passing `null` for reason send an empty POST body; the
- * server logs the unyank without a reason and still returns a message.
+ * unyank's reason is optional; a null reason sends an empty POST body and the
+ * server logs the unyank without one
  */
 export interface UnyankResult {
   message: string;
 }
 
-/** Response from the deprecate endpoint. */
 export interface DeprecateResult {
   message: string;
 }
 
-/** Response from the undeprecate endpoint. */
 export interface UndeprecateResult {
   message: string;
 }
 
-/** Response from the promote endpoint. */
 export interface PromoteResult {
   name: string;
   version: string;
@@ -321,7 +274,6 @@ export interface PromoteResult {
   message: string;
 }
 
-/** A single version entry in the versions list. */
 export interface VersionEntry {
   version: string;
   channel: string;
@@ -331,7 +283,6 @@ export interface VersionEntry {
   yankReason?: string | null;
 }
 
-/** Response from the list versions endpoint. */
 export interface ListVersionsResponse {
   versions: VersionEntry[];
   meta: {
@@ -341,12 +292,6 @@ export interface ListVersionsResponse {
   };
 }
 
-/**
- * HTTP client for the swamp-club extension registry API.
- *
- * Encapsulates all extension API interactions, following the same pattern
- * as SwampClubClient for auth operations.
- */
 export class ExtensionApiClient {
   constructor(
     private readonly serverUrl: string,
@@ -354,14 +299,8 @@ export class ExtensionApiClient {
     private readonly options: { sleep?: Sleep; fetch?: Fetcher } = {},
   ) {}
 
-  /** How each returned response was retried, read by checkResponse. */
   private readonly retryOutcomes = new WeakMap<Response, RetryOutcome>();
 
-  /**
-   * Pre-flight: check latest published version.
-   * Returns null if the extension has never been published
-   * or has no versions in the requested channel.
-   */
   async getLatestVersion(
     name: string,
     apiKey?: string,
@@ -391,10 +330,6 @@ export class ExtensionApiClient {
     };
   }
 
-  /**
-   * Get full version detail including content metadata from the /latest endpoint.
-   * Returns null if not found or no versions exist.
-   */
   async getLatestVersionDetail(
     name: string,
     apiKey?: string,
@@ -442,9 +377,6 @@ export class ExtensionApiClient {
     };
   }
 
-  /**
-   * Phase 1: Initiate push — validate metadata and get presigned S3 upload URL.
-   */
   async initiatePush(
     metadata: PushMetadata,
     apiKey: string,
@@ -467,9 +399,6 @@ export class ExtensionApiClient {
     };
   }
 
-  /**
-   * Phase 2: Upload tar.gz archive directly to S3 presigned URL.
-   */
   async uploadArchive(
     uploadUrl: string,
     archiveBytes: Uint8Array,
@@ -479,7 +408,7 @@ export class ExtensionApiClient {
         method: "PUT",
         headers: { "Content-Type": "application/gzip" },
         body: archiveBytes as unknown as BodyInit,
-        signal: AbortSignal.timeout(120_000), // 2 min for upload
+        signal: AbortSignal.timeout(120_000),
       });
 
       if (!res.ok) {
@@ -499,9 +428,6 @@ export class ExtensionApiClient {
     }
   }
 
-  /**
-   * Phase 3: Confirm push — verify upload completed and persist version.
-   */
   async confirmPush(
     metadata: ConfirmPushMetadata,
     apiKey: string,
@@ -535,9 +461,6 @@ export class ExtensionApiClient {
     };
   }
 
-  /**
-   * Search extensions using the structured search endpoint.
-   */
   async searchExtensions(
     params: ExtensionSearchParams,
     apiKey?: string,
@@ -565,10 +488,6 @@ export class ExtensionApiClient {
     return await res.json();
   }
 
-  /**
-   * Get extension metadata by name.
-   * Returns null if not found.
-   */
   async getExtension(
     name: string,
     apiKey?: string,
@@ -591,10 +510,6 @@ export class ExtensionApiClient {
     return await res.json();
   }
 
-  /**
-   * Get download URL for a specific version.
-   * Returns null if not found.
-   */
   async getDownloadUrl(
     name: string,
     version: string,
@@ -631,12 +546,6 @@ export class ExtensionApiClient {
     return null;
   }
 
-  /**
-   * Download the extension archive for a specific version.
-   * Returns the raw archive bytes. Refuses archives larger than
-   * `MAX_EXTENSION_ARCHIVE_BYTES`, counting while reading so an oversize
-   * body is never buffered in full.
-   */
   async downloadArchive(
     name: string,
     version: string,
@@ -665,10 +574,9 @@ export class ExtensionApiClient {
       // until complete, so a failed attempt leaves nothing on disk.
       const { response: res, outcome } = await fetchWithTransientRetry(
         async (attemptSignal) => {
-          // Called directly, not through this.fetch: the signed URL carries
-          // its own authorization, and identity headers or an API key must
-          // never reach the storage host. A recording fetcher would capture
-          // the signed query string, so no client built with one downloads.
+          // called directly, not via this.fetch: the signed URL carries its own
+          // authorization, and identity headers or an API key must never reach
+          // the storage host
           const res = await doFetch(downloadUrl, { signal: attemptSignal });
           if (!res.ok) return res;
           archive = await readArchiveBody(res, label);
@@ -713,10 +621,6 @@ export class ExtensionApiClient {
     }
   }
 
-  /**
-   * Fetch the SHA-256 checksum for a specific extension version.
-   * Returns null if the extension predates checksum support (legacy) or is not found.
-   */
   async getChecksum(
     name: string,
     version: string,
@@ -747,10 +651,6 @@ export class ExtensionApiClient {
     return data.checksum ?? null;
   }
 
-  /**
-   * Yank an extension or a specific version.
-   * When version is null, yanks the entire extension (all versions).
-   */
   async yankExtension(
     name: string,
     version: string | null,
@@ -782,11 +682,6 @@ export class ExtensionApiClient {
     return await res.json();
   }
 
-  /**
-   * Unyank an extension or a specific version, restoring availability.
-   * When reason is null, the request is sent with no body — the server
-   * accepts an empty POST and logs the unyank without a reason.
-   */
   async unyankExtension(
     name: string,
     version: string | null,
@@ -867,10 +762,6 @@ export class ExtensionApiClient {
     return await res.json();
   }
 
-  /**
-   * Promote an extension version to a higher channel.
-   * Only forward transitions are allowed (beta→rc, beta→stable, rc→stable).
-   */
   async promoteExtension(
     name: string,
     version: string,
@@ -894,9 +785,6 @@ export class ExtensionApiClient {
     return await res.json();
   }
 
-  /**
-   * List published versions for an extension with optional channel filtering.
-   */
   async listVersions(
     name: string,
     options?: {
@@ -959,13 +847,11 @@ export class ExtensionApiClient {
       throw new UserError(REGISTRY_NOT_AUTHENTICATED_MESSAGE);
     }
 
-    // Parse error message from server if available
     let serverMessage = body;
     const contentType = res.headers.get("content-type") ?? "";
     if (
       contentType.includes("text/html") || body.trimStart().startsWith("<!")
     ) {
-      // Server returned an HTML error page — extract nothing useful
       serverMessage =
         "The server returned an unexpected HTML response. This usually means the API endpoint is unavailable or misconfigured. Try again later.";
     } else {
@@ -1017,10 +903,8 @@ export class ExtensionApiClient {
 
   private async fetch(path: string, init: RequestInit): Promise<Response> {
     const url = `${this.serverUrl}${path}`;
-    // Merge identity headers FIRST so any caller-supplied header in
-    // init.headers wins on conflict. Required so per-call x-api-key /
-    // Authorization values from callers (e.g. push/yank, getCurrentUser)
-    // override the constructor identity.
+    // identity headers merge first so caller-supplied init.headers win, letting
+    // per-call x-api-key or Authorization override the constructor identity
     const headers = mergeIdentityHeaders(this.identity, init.headers);
     const doFetch = this.options.fetch ?? globalThis.fetch;
     try {
@@ -1057,7 +941,6 @@ export class ExtensionApiClient {
     }
   }
 
-  /** The error reported when no attempt of a request got an answer. */
   private requestError(error: TransientRequestError): RegistryUnavailableError {
     const { method, target } = error.outcome;
     const after = retriedSuffix(error.outcome);
@@ -1086,12 +969,6 @@ export class ExtensionApiClient {
   }
 }
 
-/**
- * Reads a download response body, refusing it once it exceeds
- * `MAX_EXTENSION_ARCHIVE_BYTES`. A declared `Content-Length` over the limit is
- * refused before reading; otherwise bytes are counted as they arrive, so a
- * missing or understated length cannot force the whole body into memory.
- */
 async function readArchiveBody(
   res: Response,
   label: string,

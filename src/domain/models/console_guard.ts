@@ -38,10 +38,6 @@ function defaultStderrWriter(line: string): void {
 
 let writeStderr: (line: string) => void = defaultStderrWriter;
 
-/**
- * Replaces the sink captured lines are written to. Tests pass a recorder to
- * count writes; `undefined` restores the default stderr writer.
- */
 export function setConsoleGuardStderrWriter(
   writer: ((line: string) => void) | undefined,
 ): void {
@@ -75,12 +71,9 @@ const allActiveLogs: Set<string[]> = new Set();
 const preGuardConsole = new Map<string, ConsoleMethod>();
 
 /**
- * Console output for swamp's own renderers. While a guard is active the
- * global console belongs to the guard, so a renderer writing through it would
- * have its output captured as if the running method had written it. These
- * methods write through the pre-guard console instead, so renderer output
- * always reaches its intended stream and never enters a method's logs.
- * Extension code must keep using the global console.
+ * renderers write through the pre-guard console so their output reaches its
+ * intended stream and never enters a method's logs; extension code must keep
+ * using the global console
  */
 export const unguardedConsole = {
   log(...args: unknown[]): void {
@@ -99,11 +92,8 @@ export interface ConsoleGuardOptions {
   jsonMode?: boolean;
 }
 
-// Redirects console methods to a capture array during fn execution.
-// In JSON mode, captures console output from extension code into `logs`
-// and writes each line to stderr to prevent stdout pollution, scrubbed with
-// the active redactors first. In non-JSON mode, console output flows to
-// stdout normally (the renderer is not involved).
+// in JSON mode captured console output goes into logs and, redacted, to stderr
+// to avoid stdout pollution; otherwise console output flows to stdout normally
 export async function withConsoleGuard<T>(
   fn: () => T | Promise<T>,
   logs: string[],
@@ -134,10 +124,9 @@ export async function withConsoleGuard<T>(
         for (const logArray of allActiveLogs) {
           logArray.push(line);
         }
-        // Every active redactor applies before the line reaches stderr,
-        // whichever writer is installed: in the dispatch runner that stream
-        // is read and re-logged by the worker supervisor (swamp-club#3526).
-        // The captured copy stays raw; its consumers redact it themselves.
+        // every active redactor applies before the line reaches stderr,
+        // whichever writer is installed; the captured copy stays raw and its
+        // consumers redact it themselves
         writeStderr(runFileSink.redactActive(line));
       };
     }

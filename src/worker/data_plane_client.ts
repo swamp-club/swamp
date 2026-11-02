@@ -17,18 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Worker-side client for the orchestrator's HTTP data plane (see
- * design/enablers/remote-execution.md, "Data plane: two transports").
- *
- * All byte-heavy traffic rides here: artifact reads (cached by immutable
- * (dataId, version) identity), writes through orchestrator-side writers,
- * bundle and co-located asset fetches. Every request presents the sliding
- * session credential and carries an abort-able timeout: reads give up after
- * {@link DATA_PLANE_TIMEOUT_MS}, unary writes after the much longer
- * {@link DATA_PLANE_WRITE_TIMEOUT_MS}.
- */
-
 import { createTlsHttpClient } from "../cli/remote_run.ts";
 import {
   observationOutcome,
@@ -52,14 +40,12 @@ import { secretReadKey } from "../domain/vaults/secret_loader.ts";
 
 const logger = getSwampLogger(["worker", "data-plane"]);
 
-/** Default per-request timeout for unary data-plane reads. */
 export const DATA_PLANE_TIMEOUT_MS = 60_000;
 
 /**
- * Default per-request timeout for unary data-plane writes. Serve saves a write
- * it has accepted even when the worker stops waiting, and the write routes are
- * not idempotent, so a write cannot be retried: giving up early on a slow or
- * stalled serve would fail a step whose data was saved (swamp-club#3519).
+ * serve saves an accepted write even if the worker stops waiting and writes are
+ * not idempotent, so a write cannot be retried; a short timeout would fail a
+ * step whose data was saved
  */
 export const DATA_PLANE_WRITE_TIMEOUT_MS = 15 * 60_000;
 
@@ -74,10 +60,8 @@ export interface RemoteDataHandle {
 }
 
 /**
- * Why the protected load route gave no value for a dispatch's references
- * (design/enablers/typed-secrets.md Section 9): its refusal code, and the
- * reference it names when one caused it. It never carries a value, nor the
- * reply's own text.
+ * carries the refusal code and the reference it names, never a value or the
+ * reply's text
  */
 export class DispatchSecretLoadError extends Error {
   readonly code: DispatchSecretLoadRefusal | "malformed_reply";
@@ -101,11 +85,6 @@ export class DispatchSecretLoadError extends Error {
   }
 }
 
-/**
- * `references` split into requests the load route admits: at most
- * {@link MAX_DISPATCH_SECRET_LOADS} references, claiming at most
- * {@link MAX_DISPATCH_SECRET_CLAIMS} distinct resources, each.
- */
 function loadChunks(
   references: readonly DispatchSecretLoadReference[],
 ): DispatchSecretLoadReference[][] {
@@ -137,12 +116,9 @@ export interface DataPlaneClientOptions {
   credential: () => string;
   /** Per-request timeout for reads; bulk uploads get no upper bound. */
   timeoutMs?: number;
-  /** Per-request timeout for unary writes. */
   writeTimeoutMs?: number;
   fetchImpl?: typeof fetch;
-  /** Maximum cached artifacts before oldest is evicted. Defaults to 1000. */
   maxCacheEntries?: number;
-  /** Extra headers for proxy/tunnel pass-through (env: SWAMP_SERVE_EXTRA_HEADERS). */
   extraHeaders?: Record<string, string>;
 }
 
@@ -186,7 +162,6 @@ export class DataPlaneClient {
       body?: BodyInit;
       signal?: AbortSignal;
       timeoutMs?: number | null;
-      /** A unary write: bounded by the write timeout, not the read one. */
       write?: boolean;
       headers?: Record<string, string>;
       /**
@@ -319,13 +294,9 @@ export class DataPlaneClient {
   }
 
   /**
-   * Loads the values behind a dispatch's references through the protected
-   * route (`POST /data/secrets`, design/enablers/typed-secrets.md Section
-   * 9), with the dispatch credential this client presents. Each distinct
-   * reference is asked for once, in requests the route admits, and the
-   * values come back keyed by {@link secretReadKey}. The route answers all
-   * or nothing, so a refusal throws a {@link DispatchSecretLoadError} that
-   * names its code and reference and never a value. Nothing is cached.
+   * the route answers all or nothing, so a refusal throws a
+   * DispatchSecretLoadError naming its code and reference, never a value;
+   * nothing is cached
    */
   async loadSecrets(
     references: readonly DispatchSecretLoadReference[],
@@ -372,7 +343,6 @@ export class DataPlaneClient {
     return values;
   }
 
-  /** Read artifact bytes by data-plane content path; cached forever. */
   async readArtifact(
     contentPath: string,
     signal?: AbortSignal,
@@ -456,7 +426,6 @@ export class DataPlaneClient {
     await response.body?.cancel().catch(() => {});
   }
 
-  /** Stream content to the writer and finalize it. No upper time bound. */
   async writeContent(
     writerId: string,
     content: Uint8Array | ReadableStream<Uint8Array> | string,
@@ -523,7 +492,6 @@ export class DataPlaneClient {
   }
 }
 
-/** Data-plane fetch that trusts the worker's `--ca-cert` certificates, if any. */
 export function createDataPlaneFetch(
   caCerts: string[] | undefined,
   createClient: (options: Deno.CreateHttpClientOptions) => Deno.HttpClient =
@@ -537,7 +505,6 @@ export function createDataPlaneFetch(
   return (input, init) => baseFetch(input, { ...init, client });
 }
 
-/** Derives the data-plane base URL from the control-socket connect URL. */
 export function dataPlaneUrlFromConnectUrl(connectUrl: string): string {
   const url = new URL(connectUrl);
   url.protocol = url.protocol === "wss:" ? "https:" : "http:";

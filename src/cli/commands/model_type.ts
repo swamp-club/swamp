@@ -30,29 +30,24 @@ import {
 } from "./type_describe.ts";
 import { createTypeSearchCommand, typeSearchCommand } from "./type_search.ts";
 
-/** The subcommands of `model type`, in registration order. */
 export interface ModelTypeChildren {
   readonly describe: ReturnType<typeof createTypeDescribeCommand>;
   readonly search: ReturnType<typeof createTypeSearchCommand>;
 }
 
-/** The legacy spelling: `swamp model type`. */
 export const MODEL_TYPE_SYNTAX: CommandSyntax = {
   invocation: "swamp model type",
   surface: "model",
 };
 
-/** The preferred spelling: `swamp behavior type`. */
 export const BEHAVIOR_TYPE_SYNTAX: CommandSyntax = {
   invocation: "swamp behavior type",
   surface: "behavior",
 };
 
 /**
- * Builds the parent command for model type operations for one CLI surface.
- * Children not passed are built fresh from `syntax`; Cliffy reparents a
- * command attached under a second parent, so two surfaces must never share
- * an instance.
+ * Cliffy reparents a command attached under a second parent, so two surfaces
+ * must never share an instance.
  */
 export function createModelTypeCommand(
   syntax: CommandSyntax,
@@ -76,9 +71,8 @@ export function createModelTypeCommand(
 }
 
 /**
- * Parent command for model type operations. Its subcommands are the exported
- * `typeDescribeCommand` and `typeSearchCommand` instances, so they are passed
- * in rather than built fresh.
+ * its subcommands are the exported typeDescribeCommand and typeSearchCommand
+ * instances, so they are passed in rather than built fresh.
  */
 export const modelTypeCommand = createModelTypeCommand(MODEL_TYPE_SYNTAX, {
   describe: typeDescribeCommand,

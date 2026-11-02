@@ -131,8 +131,6 @@ Deno.test("planConfigAdoption: a name whose definition has commits is not adopte
         Promise.resolve(partition.equals(committed) ? "committed" : "none"),
     });
     assertEquals(plan.adoptions.map((a) => a.name), ["other"]);
-    // No tier copy at its path: another checkout's, or since renamed or
-    // deleted, so it is reported rather than counted as done.
     assertEquals(plan.alreadyCommitted, 0);
     assertEquals(
       plan.skipped.map((s) => [s.name, s.reason]),
@@ -373,12 +371,6 @@ Deno.test("planConfigAdoption: the repo's lockfile is adopted with its pulled ex
   });
 });
 
-/**
- * A commit store holding one workflow partition's commits, one tombstone of
- * the given intent each, compacted through `compactedThrough`, and a read
- * model whose live records are `live` (undefined: not listable yet).
- * Records the seq each scanning read starts from.
- */
 function partitionStore(
   kinds: readonly ConfigRemoval[],
   compactedThrough = 0,
@@ -502,7 +494,6 @@ Deno.test("definitionCommitState: a compacted partition with no definition in wh
     await definitionCommitState(store, readModel, "", W1),
     "compacted",
   );
-  // The scan resumes at the first seq compaction left.
   assertEquals(reads, [8]);
 });
 

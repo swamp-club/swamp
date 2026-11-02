@@ -18,34 +18,27 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * The change one checkout made to the extension lockfile's entry set:
- * entries it wrote (`upserts`, by extension name) and entries it removed
- * (`removals`). A name appears in at most one of the two.
- *
- * Replaying a delta onto a lockfile fetched from the datastore reproduces
- * this checkout's change without reverting entries other checkouts wrote
- * meanwhile (swamp-club#2838).
+ * a name appears in at most one of upserts and removals; replaying a delta onto
+ * a datastore lockfile reproduces this checkout's change without reverting
+ * entries other checkouts wrote meanwhile
  */
 export interface LockfileDelta<E> {
   readonly upserts: Readonly<Record<string, E>>;
   readonly removals: readonly string[];
 }
 
-/** A delta that changes nothing. */
 export function emptyLockfileDelta<E>(): LockfileDelta<E> {
   return { upserts: {}, removals: [] };
 }
 
-/** True when applying `delta` changes no entry set. */
 export function isEmptyLockfileDelta<E>(delta: LockfileDelta<E>): boolean {
   return Object.keys(delta.upserts).length === 0 &&
     delta.removals.length === 0;
 }
 
 /**
- * The delta that turns `before` into `after`. Entries are compared by
- * value with object keys sorted, so a lockfile rewritten with a different
- * key order is not a change.
+ * entries compare by value with object keys sorted, so a lockfile rewritten in
+ * a different key order is not a change
  */
 export function diffLockfileEntries<E>(
   before: Readonly<Record<string, E>>,
@@ -68,7 +61,6 @@ export function diffLockfileEntries<E>(
   return { upserts, removals };
 }
 
-/** `entries` with `delta` applied. Does not modify `entries`. */
 export function applyLockfileDelta<E>(
   entries: Readonly<Record<string, E>>,
   delta: LockfileDelta<E>,
@@ -90,10 +82,6 @@ function canonicalJson(value: unknown): string {
   });
 }
 
-/**
- * One delta with the effect of applying `older` and then `newer`: newer
- * upserts and removals win for the names they touch.
- */
 export function mergeLockfileDeltas<E>(
   older: LockfileDelta<E>,
   newer: LockfileDelta<E>,

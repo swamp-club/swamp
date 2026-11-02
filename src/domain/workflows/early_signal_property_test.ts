@@ -32,16 +32,14 @@ import {
 import { sweepPendingSignals } from "./signal_wait_cleanup.ts";
 import { InMemorySignalWaitStore } from "./signal_wait_store_test_helpers.ts";
 
-// The listing of held pending signals (swamp-club#3214) against the two
-// decisions it must agree with: the refusal of a second early signal and
-// the sweep.
+// the listing of held pending signals must agree with the refusal of a second
+// early signal and with the sweep
 
 const BASE = Date.parse("2026-01-01T00:00:00.000Z");
 const at = (offsetMs: number) => new Date(BASE + offsetMs).toISOString();
 const WORKFLOW = "wf";
 const KEY = "k";
 
-/** What a slot's records may be: its highest record decides. */
 const headArb = fc.constantFrom(
   "none",
   "pending",
@@ -49,11 +47,9 @@ const headArb = fc.constantFrom(
   "unreadable",
 );
 
-/** A key's highest record, the records of each slot up to the next claim's, and a time to look. */
 const keyArb = fc.record({
   highest: fc.constantFrom("none", "claim", "release"),
   generation: fc.integer({ min: 1, max: 3 }),
-  // Slots 1 to 4, which covers every live slot and some the key has passed.
   heads: fc.array(headArb, { minLength: 4, maxLength: 4 }),
   receivedOffsets: fc.array(fc.integer({ min: 0, max: 600_000 }), {
     minLength: 4,
@@ -61,7 +57,6 @@ const keyArb = fc.record({
   }),
   acceptEarly: fc.integer({ min: 1, max: 600 }),
   lookOffset: fc.integer({ min: 0, max: 1_500_000 }),
-  // Whether every live head can be read, so the refusal is decided at all.
   readableOnly: fc.boolean(),
 });
 type KeyState = typeof keyArb extends fc.Arbitrary<infer T> ? T : never;
@@ -130,7 +125,6 @@ async function storeOf(s: KeyState): Promise<InMemorySignalWaitStore> {
   return store;
 }
 
-/** The heads of the live slots, as holdEarlySignal reads them. */
 async function liveHeads(
   store: InMemorySignalWaitStore,
 ): Promise<HighestPendingRecord[]> {
@@ -166,7 +160,6 @@ Deno.test("listHeldPendingSignals: lists exactly the signal decideEarlySignal re
       const heads = await liveHeads(store);
       const decision = decideEarlySignal(heads, now);
       assert(listed.length <= 1, "one signal per key at most");
-      // Whatever is listed is the head of a live slot.
       const liveReceipts = heads.flatMap((head) =>
         head.kind === "found" && head.record.kind === "pending"
           ? [head.record.receiptId]
@@ -181,8 +174,6 @@ Deno.test("listHeldPendingSignals: lists exactly the signal decideEarlySignal re
           decision.record.receiptId,
         ]);
       } else {
-        // Nothing is listed when a second signal would be stored, nor when
-        // a live head cannot be read and the refusal is undecided.
         assertEquals(listed, []);
       }
     }),
@@ -195,7 +186,6 @@ Deno.test("listHeldPendingSignals: a listed signal is never one the sweep remove
       const store = await storeOf(s);
       const now = new Date(BASE + s.lookOffset);
       const listed = await listHeldPendingSignals(store, now);
-      // Where each listed signal lives, read before the sweep.
       const addresses = [];
       for (const each of listed) {
         for (let slot = 1; slot <= s.heads.length; slot++) {

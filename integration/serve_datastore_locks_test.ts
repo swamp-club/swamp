@@ -17,12 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Serve's lock routes (swamp-club#3985) end to end: an in-process client
- * against a port-0 server over a real v3 repository, as serve wires them,
- * with serve's own file locks behind the leases.
- */
-
 import "../src/domain/models/models.ts";
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import { createModelLock } from "../src/cli/repo_context.ts";
@@ -61,7 +55,6 @@ async function call(
   return { status: response.status, json: await response.json() };
 }
 
-/** Members alice (`user:caller`) and bob, each with run on every behavior. */
 const twoMembers = () => [
   ...member(),
   grant({
@@ -95,10 +88,8 @@ Deno.test({
         "lock_held",
         "other",
       ]);
-      // Never the holder's identity.
       assert(!JSON.stringify(held.json).includes("user:caller"));
 
-      // Bob cannot renew or release alice's lease.
       assertEquals(
         (await call(server, "PUT", `locks/${leaseId}`, "bob-token", {})).status,
         404,
@@ -125,7 +116,6 @@ Deno.test({
         "alice-token",
       );
       assertEquals(released.status, 200);
-      // Released: renewing it is refused, and bob may take the lock.
       assertEquals(
         (await call(server, "PUT", `locks/${leaseId}`, "alice-token", {}))
           .status,
@@ -153,7 +143,6 @@ Deno.test({
   fn: async () => {
     await withServer(member(), async (server) => {
       const key = modelKey(server);
-      // Serve's own run holds the behavior's lock.
       const serveLock = await createModelLock(
         server.ctx.datastoreConfig,
         server.modelType.normalized,
@@ -168,13 +157,11 @@ Deno.test({
       } finally {
         await serveLock.release();
       }
-      // Any spelling of the type and id is the same lock.
       const taken = await call(server, "POST", "locks", "alice-token", {
         lockKey:
           `data/${server.modelType.normalized.toUpperCase()}/${server.model.id.toUpperCase()}/.lock`,
       });
       assertEquals([taken.status, taken.json.lockKey], [201, key]);
-      // Now serve's run waits on the caller's lease.
       assertEquals(await serveLock.tryAcquire(), false);
       await call(
         server,
@@ -227,8 +214,6 @@ Deno.test({
           .status,
         401,
       );
-      // GET lists the leases serve holds (swamp-club#4121); other methods
-      // are still refused.
       assertEquals(
         (await call(server, "GET", "locks", "alice-token")).status,
         200,

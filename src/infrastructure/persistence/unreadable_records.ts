@@ -17,15 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Reads of a directory of records that a v3 read model may hold unreadable
- * records under (swamp-club#3617): a record whose chunk is missing or
- * damaged has no file, so a listing would leave it out without a word, and
- * a lookup by an id its file name does not carry would find nothing.
- *
- * @module
- */
-
 import { getLogger } from "@logtape/logtape";
 import type {
   UnreadableContentEntry,
@@ -35,11 +26,6 @@ import { markErrorPaths, UserError } from "../../domain/errors.ts";
 
 const logger = getLogger(["swamp", "persistence", "unreadable-records"]);
 
-/**
- * The unreadable records under `absDir`, spelled under it; empty when the
- * lookup cannot list (no v3 datastore). One query per namespace the
- * directory may be in. A failing query throws, as a single-path lookup does.
- */
 export async function unreadableRecordsUnder(
   lookup: UnreadableContentLookup | undefined,
   absDir: string,
@@ -47,21 +33,11 @@ export async function unreadableRecordsUnder(
   return await lookup?.under?.(absDir) ?? [];
 }
 
-/** Paths this process has warned were left out of a listing. */
 const warnedLeftOut = new Set<string>();
 
 /**
- * Warns that a listing of `absDir`, or a search of it that found nothing,
- * leaves out the unreadable records under it that `include` keeps (all of
- * them by default), naming each with the way to bring it back or remove
- * it. The answer itself is unchanged, so its output (and `--json` shape)
- * stays the same.
- *
- * One warning per listing, not per record; a record is named once per
- * process, so a command that lists the same directory twice, or serve's
- * repeated sweeps, do not repeat it. A query that fails is a warning too:
- * the readable records listed are still right, and failing the whole
- * listing over the check would hide them.
+ * one warning per listing and each record named once per process; a failed
+ * query warns too, since failing the listing would hide the readable records
  */
 export async function warnUnreadableLeftOut(
   lookup: UnreadableContentLookup | undefined,
@@ -92,12 +68,8 @@ export async function warnUnreadableLeftOut(
 }
 
 /**
- * The error of a lookup that found nothing where unreadable records it
- * cannot tell apart (their file names do not carry what it looked up) may
- * hold the answer: it says `subject` was not found and names them, rather
- * than report it simply absent. Its code is `not_found`, not the
- * unreadable-content code: the subject may be a mistyped id that none of
- * them holds, so it must not read as a read of one of them.
+ * the code is not_found, not the unreadable-content code: the subject may be a
+ * mistyped id none of them holds, so it must not read as a read of one of them
  */
 export function mayBeUnreadableError(
   subject: string,

@@ -123,7 +123,6 @@ Deno.test("LogDataListRenderer - workflow-scope row renders '(workflow)' placeho
     );
 
     const joined = logs.join("\n");
-    // Step-scoped artifact keeps the "job.step" rendering.
     const stepLine = logs.find((l) => l.includes("report-step-summary"));
     if (!stepLine) {
       throw new Error(`expected step line in logs:\n${joined}`);
@@ -131,7 +130,6 @@ Deno.test("LogDataListRenderer - workflow-scope row renders '(workflow)' placeho
     if (!stepLine.includes("main.build")) {
       throw new Error(`expected 'main.build' in step line: ${stepLine}`);
     }
-    // Workflow-scoped artifact renders "(workflow)".
     const wfLine = logs.find((l) =>
       l.includes("report-swamp-workflow-summary")
     );

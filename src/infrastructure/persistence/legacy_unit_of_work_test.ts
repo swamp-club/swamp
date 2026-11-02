@@ -38,10 +38,6 @@ import {
   legacyUnitOfWorkTarget,
 } from "./legacy_unit_of_work.ts";
 
-/**
- * A mark hook that records its arguments, and can reject the next call or
- * hold it open until released.
- */
 function recordingHook(): {
   hook: MarkDirtyHook;
   calls: (string | undefined)[];

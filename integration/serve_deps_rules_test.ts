@@ -48,10 +48,9 @@ Deno.test("serve handlers must not construct fresh definition or workflow repos"
         line.includes("new YamlDefinitionRepository(") ||
         line.includes("new YamlWorkflowRepository(")
       ) {
-        // Auto-definition repos scoped to autoDefinitionsDir are
-        // write-only repos for direct-type-execution and file grants —
-        // they don't do general definition lookups, so the path
-        // divergence doesn't apply.
+        // auto-definition repos scoped to autoDefinitionsDir are write-only for
+        // direct-type execution and file grants, so the path divergence does
+        // not apply
         if (line.includes("autoDefRepo")) continue;
         violations.push(`${rel}:${i + 1}: ${line.trim()}`);
       }
@@ -118,10 +117,6 @@ Deno.test("serve handlers must pass injected definition repo to createData*Deps"
 
 const SERVE_DIR = join(ROOT, "src", "serve");
 
-/**
- * Returns the `[start, end)` span of every `<callee>(...)` call in `source`,
- * from the callee name to its matching close paren.
- */
 function callSpans(source: string, callee: string): [number, number][] {
   const spans: [number, number][] = [];
   const pattern = new RegExp(`\\b${callee}\\(`, "g");
@@ -138,7 +133,6 @@ function callSpans(source: string, callee: string): [number, number][] {
   return spans;
 }
 
-/** Collects identifiers named inside every `withSyncGate(...)` call. */
 function gatedIdentifiers(source: string): Set<string> {
   const names = new Set<string>();
   for (const [start, end] of callSpans(source, "withSyncGate")) {
@@ -152,10 +146,9 @@ function gatedIdentifiers(source: string): Set<string> {
 }
 
 /**
- * A raw push: one that commits to the datastore directly. A
- * `pushChangedToRemote` call counts with or without options, so a run
- * path's push through it must still sit in a shared-gate span
- * (swamp-club#3035).
+ * a raw push commits to the datastore directly; pushChangedToRemote counts with
+ * or without options, so a run path's push through it must sit in a shared-gate
+ * span
  */
 const RAW_PUSH =
   /pushChangedToRemote\(ctx[,)]|syncService[?.]*\.pushChanged\(/g;
@@ -166,11 +159,6 @@ interface ServeFunction {
   body: string;
 }
 
-/**
- * Every top-level function in `src/serve` (except the gate itself), split on
- * declarations so a call is attributed to the function whose body holds it,
- * plus the set of identifiers gated exclusively at a dispatch site.
- */
 async function collectServeFunctions(): Promise<{
   functions: ServeFunction[];
   dispatchGated: Set<string>;
@@ -215,16 +203,11 @@ Deno.test("serve functions that push must run under the sync gate", async () => 
     if (pushes.length === 0 && lockCalls.length === 0) continue;
     pushers++;
 
-    // Gated for the whole handler at its dispatch site, or a deliberate,
-    // documented exemption.
     if (dispatchGated.has(name) || UNGATED_PUSH_HANDLERS.has(name)) continue;
 
-    // Otherwise this is a run path: every push must sit inside a shared-gate
-    // span, and every model-lock acquisition must route its pull and flush
-    // push through the gate via wrapSync. The old rule matched only literal
-    // pushChanged calls, so pushes made by acquireModelLocks' flush were
-    // invisible to it — which is how every run path came to push ungated
-    // (swamp-club#2405).
+    // a run path's pushes must sit in a shared-gate span, and model-lock
+    // acquisition must route its pull and flush push through the gate via
+    // wrapSync, since acquireModelLocks' flush is no literal pushChanged call
     const shared = callSpans(body, "withSharedSyncGate");
     for (const at of pushes) {
       if (!shared.some(([start, end]) => at > start && at < end)) {
@@ -291,7 +274,6 @@ Deno.test("serve workflow runs take step locks through createStepLockHook", asyn
   ) {
     const content = await Deno.readTextFile(entry.path);
     const rel = normalise(relative(ROOT, entry.path));
-    // An assignment to `stepLockHook`, with or without a type annotation.
     const assigned = String.raw`\bstepLockHook\s*(?::[^=\n]+)?=`;
     const hooks = [...content.matchAll(new RegExp(`${assigned}(?![=>])`, "g"))];
     const built = [
@@ -372,7 +354,6 @@ Deno.test("serve handlers must pass vaultsDir to createWorker*Deps", async () =>
   );
 });
 
-/** The argument text of each call that starts at a match of `pattern`. */
 function callArguments(content: string, pattern: RegExp): string[] {
   const calls: string[] = [];
   for (const match of content.matchAll(pattern)) {
@@ -418,8 +399,6 @@ Deno.test("every workflow run entry point passes the repo's defaultVault", async
       callArguments(content, /(?<!function )\bcreateWorkflowRunDeps\(/g),
       "createWorkflowRunDeps(...)",
     );
-    // Serve's triggered runs (API, schedule, webhook) name their trigger
-    // source in the options they pass to executeWorkflowWithLocks.
     if (entry.path.startsWith(SERVE_DIR) || entry.path === serveCli) {
       counts.triggered += check(
         callArguments(content, /\b(?:executeWorkflowWithLocks|execute)\(/g)
@@ -527,10 +506,9 @@ Deno.test("every serve workflow run entry point passes the run write fence", asy
   );
 });
 
-// A CLI workflow run's steps share one sync service, so their syncs need the
-// same in-process gate a serve process's runs take: without it a sibling
-// step's commit clears the marks of a lock's last publish attempt
-// (swamp-club#3860).
+// a CLI workflow run's steps share one sync service, so their syncs need the
+// in-process gate serve runs take: without it a sibling step's commit clears
+// the marks of a lock's last publish attempt
 Deno.test("CLI workflow runs take step locks through workflowStepLockHook, which gates them", async () => {
   const violations: string[] = [];
   let hooks = 0;

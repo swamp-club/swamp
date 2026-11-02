@@ -26,12 +26,9 @@ import {
   detectSecretDocs,
 } from "@swamp-club/extension-scoring/secret-docs";
 
-// The schemas swamp's content extractor reads, fed to the shared detector.
-
 const fenced = (...lines: string[]) =>
   ["# Setup", "", "```bash", ...lines, "```", ""].join("\n");
 
-/** The 1-based lines flagged in a fenced block built by {@link fenced}. */
 const flaggedLines = (text: string, schemas?: ArgumentSchemas) =>
   detectSecretDocs(text, "markdown", schemas).map((f) => f.line);
 
@@ -60,7 +57,6 @@ Deno.test("detectSecretDocs: a namespaced zod field counts as declared, and as s
       await extractContentMetadata([modelFile], modelsDir, []),
     );
 
-    // As for a z.string() field: the sensitive mark decides, not the name.
     assertEquals(flaggedLines(fenced("--global-arg pin=1234"), schemas), [4]);
     assertEquals(
       flaggedLines(fenced("--global-arg tokenExpiry=2026-10-23"), schemas),

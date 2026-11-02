@@ -17,17 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Datastore setup leaves repo-local files where their readers look
- * (swamp-club#3281). The command audit, the vault audit, a legacy
- * repo-local telemetry spool and a workflow run's log are written by the
- * production writers into a checkout's own `.swamp`. After
- * `datastore setup filesystem` moves the checkout's data to a new path, the
- * run record lives there, and the production readers still find the audit
- * entries and the run's log in `.swamp`. Deleting the moved run still
- * removes its log.
- */
-
 import "../src/domain/models/models.ts";
 import { assert, assertEquals } from "@std/assert";
 import { ensureDir, exists } from "@std/fs";
@@ -67,7 +56,6 @@ await initializeLogging({});
 
 const WriteArgs = z.object({ text: z.string() });
 
-/** A model type, registered once per test with a unique name. */
 function registerWriter(): ModelType {
   const type = ModelType.create(`test/setup-local-${crypto.randomUUID()}`);
   modelRegistry.register({
@@ -98,7 +86,6 @@ function registerWriter(): ModelType {
   return type;
 }
 
-/** What a checkout in `repoDir` reads of its audit trail and `run`'s log. */
 async function readsOf(
   repoDir: string,
   run: WorkflowRun,
@@ -112,7 +99,6 @@ async function readsOf(
     vaultAudit:
       (await new JsonlVaultAuditRepository(repoDir).findByTimeRange(from, to))
         .length,
-    // The run's log as `workflow history logs` resolves and reads it.
     log: logFile !== undefined && await exists(logFile)
       ? (await readLogFile(logFile)).lines.join("\n")
       : undefined,
@@ -131,7 +117,6 @@ Deno.test("datastore setup: the audit trail, telemetry spool and run logs stay r
       repoId: "repo-3281",
     });
 
-    // The checkout's own writes, before setup.
     const type = registerWriter();
     const before = createRepositoryContext({ repoDir });
     await before.definitionRepo.save(
@@ -191,7 +176,6 @@ Deno.test("datastore setup: the audit trail, telemetry spool and run logs stay r
     // Setup deletes the catalog, which Windows refuses while it is open.
     before.catalogStore.close();
 
-    // Setup moves the checkout's data to the new datastore.
     const events: DatastoreSetupEvent[] = [];
     for await (
       const event of datastoreSetupFilesystem(
@@ -212,8 +196,6 @@ Deno.test("datastore setup: the audit trail, telemetry spool and run logs stay r
       false,
     );
 
-    // The run record moved; the audit trail, spool and log did not, and
-    // the readers still find them.
     const after = createRepositoryContext({
       repoDir,
       datastoreResolver: new DefaultDatastorePathResolver(repoDir, {
@@ -253,7 +235,6 @@ Deno.test("datastore setup: the audit trail, telemetry spool and run logs stay r
       }
     }
 
-    // Deleting the moved run still removes its repo-local log.
     const logFile = movedRun.logFile;
     assert(logFile !== undefined);
     await after.workflowRunRepo.deleteAllByWorkflowId(workflow.id);

@@ -99,12 +99,10 @@ export const model = {
   await withTempFile(tsCode, async (path) => {
     const js = await bundleExtension(path, DENO_PATH);
 
-    // Should not contain TypeScript syntax
     assertEquals(js.includes("interface Config"), false);
     assertEquals(js.includes(": string"), false);
     assertEquals(js.includes("<T extends"), false);
 
-    // Should be importable
     const mod = await importBundled(js);
     assertEquals((mod.model as { type: string }).type, "test");
   });
@@ -120,8 +118,6 @@ export const schema = z.object({ name: z.string() });
   await withTempFile(tsCode, async (path) => {
     const js = await bundleExtension(path, DENO_PATH);
 
-    // Zod should not be inlined — the bundle should be small
-    // A fully inlined zod would be hundreds of KB
     assertEquals(js.length < 10_000, true);
   });
 });
@@ -152,17 +148,14 @@ export const model = {
   try {
     const js = await bundleExtension(path, DENO_PATH);
 
-    // Bundle should succeed — yaml is inlined into the bundle
     assertEquals(js.length > 0, true);
 
-    // yaml package should be inlined (bundle > 10KB with yaml code included)
     assertEquals(
       js.length > 10_000,
       true,
       "yaml should be inlined into the bundle, making it larger than 10KB",
     );
 
-    // No deno.lock should be created in the source directory
     let lockExists = true;
     try {
       await Deno.stat(join(dir, "deno.lock"));
@@ -190,11 +183,8 @@ export const schema = z.object({ message: z.string() });
     const js = await bundleExtension(path, DENO_PATH);
     const mod = await importBundled(js);
 
-    // The schema from the bundled module should be a ZodType instance
-    // because zod is externalized and shares the same instance
     assertEquals(mod.schema instanceof z.ZodType, true);
 
-    // It should also parse correctly
     const parsed = (mod.schema as z.ZodObject<{ message: z.ZodString }>).parse({
       message: "hello",
     });
@@ -213,16 +203,12 @@ export const schema = z.object({ id: z.string(), data: z.unknown() });
     const js = await bundleExtension(path, DENO_PATH);
     const mod = await importBundled(js);
 
-    // Should be a ZodType from swamp's Zod instance
     assertEquals(mod.schema instanceof z.ZodType, true);
 
-    // z.toJSONSchema should work without _zod errors
     const jsonSchema = z.toJSONSchema(mod.schema as z.ZodTypeAny);
     assertEquals(jsonSchema.type, "object");
   });
 });
-
-// --- rewriteZodImports unit tests ---
 
 Deno.test("rewriteZodImports rewrites named imports", () => {
   const input = `import { z } from "npm:zod@4";`;
@@ -303,8 +289,8 @@ Deno.test("rewriteZodImports handles single-quoted specifiers", () => {
 const REAL_ZOD_IMPORT = `import { z } from "npm:zod@4";`;
 const REWRITTEN_ZOD_IMPORT = `const { z } = globalThis.__swamp_zod;`;
 
-// Each entry is a line of JS carrying zod import text as data, not as an
-// import declaration (swamp-club#3072).
+// each entry is a line of JS carrying zod import text as data, not as an import
+// declaration
 const ZOD_IMPORT_TEXT_AS_DATA: Record<string, string> = {
   "a template literal": 'export const t = `import { z } from "npm:zod@4";\n`;',
   "a double-quoted string":
@@ -429,8 +415,6 @@ export const schema = z.object({ text: z.string() });
   });
 });
 
-// --- rejectZodV3Imports unit tests ---
-
 Deno.test("rejectZodV3Imports: throws on zod@3 named import", () => {
   const input = `import { z } from "npm:zod@3.23.8";`;
   assertThrows(
@@ -464,8 +448,6 @@ Deno.test("rewriteZodImports: leaves zod@3 imports untouched", () => {
   const result = rewriteZodImports(input);
   assertEquals(result, input);
 });
-
-// --- zod version spellings (swamp-club#3637) ---
 
 Deno.test("isZod4Specifier: accepts every spelling that admits only zod 4", () => {
   for (
@@ -743,8 +725,6 @@ Deno.test("bundleExtension: a deno.json beside a package.json with no node_modul
   }
 });
 
-// --- uint8ArrayToBase64 unit tests ---
-
 Deno.test("uint8ArrayToBase64 matches btoa for small input", () => {
   const text = "hello world";
   const bytes = new TextEncoder().encode(text);
@@ -756,14 +736,10 @@ Deno.test("uint8ArrayToBase64 handles empty input", () => {
   assertEquals(uint8ArrayToBase64(new Uint8Array(0)), btoa(""));
 });
 
-// --- fixCjsEsmInterop unit tests ---
-
 Deno.test("fixCjsEsmInterop rewrites __toESM to always set default", () => {
-  // Use the exact single-line format esbuild generates
   const input =
     `var __toESM = (mod, isNodeMode, target) => (target = mod != null ? __create(__getProtoOf(mod)) : {}, __copyProps(\n  isNodeMode || !mod || !mod.__esModule ? __defProp(target, "default", { value: mod, enumerable: true }) : target,\n  mod\n));`;
   const result = fixCjsEsmInterop(input);
-  // The condition should be removed — always sets .default
   assertEquals(result.includes("isNodeMode ||"), false);
   assertEquals(result.includes("__esModule"), false);
   assertEquals(
@@ -772,7 +748,6 @@ Deno.test("fixCjsEsmInterop rewrites __toESM to always set default", () => {
     ),
     true,
   );
-  // Should not contain `: target,` fallback (only `target,` at the end remains from `__copyProps(... , target,` being removed)
   assertEquals(result.includes(": target,"), false);
 });
 
@@ -788,8 +763,6 @@ Deno.test("fixCjsEsmInterop leaves non-matching code untouched", () => {
   const input = `const x = 42; console.log("hello");`;
   assertEquals(fixCjsEsmInterop(input), input);
 });
-
-// --- sanitizeDataUrlError unit tests ---
 
 Deno.test("sanitizeDataUrlError truncates base64 data URLs", () => {
   const longBase64 = "A".repeat(200);
@@ -808,9 +781,8 @@ Deno.test("sanitizeDataUrlError leaves short errors untouched", () => {
 });
 
 Deno.test("bundleExtension resolves and inlines jsr: specifiers", async () => {
-  // Network-dependent (matches the existing npm: bar). Guards the "first-class
-  // jsr:" contract: deno bundle must resolve jsr: without requiring an import
-  // map and inline the fetched source into the bundle.
+  // network-dependent; guards the first-class jsr: contract: deno bundle
+  // resolves jsr: without an import map and inlines the fetched source
   const tsCode = `
 import { z } from "npm:zod@4";
 import { parse } from "jsr:@std/semver@1.0.8";
@@ -827,16 +799,12 @@ export const model = {
   await withTempFile(tsCode, async (path) => {
     const js = await bundleExtension(path, DENO_PATH);
 
-    // No jsr: specifier should remain in the bundle — proves resolution, not
-    // pass-through.
     assertEquals(
       js.includes('from "jsr:'),
       false,
       "jsr: specifier should be resolved, not passed through",
     );
 
-    // The inlined source carries a deno:https://jsr.io header comment. Its
-    // presence is the strongest signal jsr code is actually inlined.
     assertEquals(
       js.includes("deno:https://jsr.io/@std/semver"),
       true,
@@ -846,8 +814,8 @@ export const model = {
 });
 
 Deno.test("bundleExtension resolves and inlines https: specifiers", async () => {
-  // Network-dependent. Parity proof: https: is treated identically to jsr:
-  // and npm: — resolved and inlined by deno bundle.
+  // network-dependent; https: is resolved and inlined by deno bundle just like
+  // jsr: and npm:
   const tsCode = `
 import { z } from "npm:zod@4";
 import { delay } from "https://deno.land/std@0.224.0/async/delay.ts";
@@ -877,9 +845,8 @@ export const model = {
 });
 
 Deno.test("rewriteZodImports leaves jsr: inlined content untouched", async () => {
-  // Regression: rewriteZodImports' regex is zod-specific and must not
-  // coincidentally match jsr: identifiers in inlined source. A combined
-  // npm:zod + jsr:@std/semver fixture pins this down.
+  // the rewriteZodImports regex is zod-specific and must not match jsr:
+  // identifiers in inlined source
   const tsCode = `
 import { z } from "npm:zod@4";
 import { parse } from "jsr:@std/semver@1.0.8";
@@ -892,7 +859,6 @@ export const check = (v: string) => parse(v).major;
     const js = await bundleExtension(path, DENO_PATH);
     const rewritten = rewriteZodImports(js);
 
-    // Zod was rewritten to globalThis.__swamp_zod.
     assertEquals(
       rewritten.includes("globalThis.__swamp_zod"),
       true,
@@ -904,7 +870,6 @@ export const check = (v: string) => parse(v).major;
       "no npm:zod import should remain after rewrite",
     );
 
-    // jsr: inlined content is still present and untouched.
     assertEquals(
       rewritten.includes("deno:https://jsr.io/@std/semver"),
       true,
@@ -918,7 +883,6 @@ Deno.test("bundleExtension uses deno.json config when denoConfigPath provided", 
   const tsPath = join(dir, "test_ext.ts");
   const denoJsonPath = join(dir, "deno.json");
 
-  // Write a minimal deno.json with an import map for zod
   await Deno.writeTextFile(
     denoJsonPath,
     JSON.stringify({
@@ -928,7 +892,6 @@ Deno.test("bundleExtension uses deno.json config when denoConfigPath provided", 
     }),
   );
 
-  // Use bare "zod" specifier (resolved via import map, not npm: prefix)
   await Deno.writeTextFile(
     tsPath,
     'import { z } from "zod";\n\nexport const schema = z.object({ name: z.string() });\n',
@@ -940,7 +903,6 @@ Deno.test("bundleExtension uses deno.json config when denoConfigPath provided", 
     });
     assertEquals(js.length > 0, true);
 
-    // Should be importable and working
     const mod = await importBundled(js);
     assertEquals(mod.schema instanceof z.ZodType, true);
   } finally {
@@ -949,13 +911,11 @@ Deno.test("bundleExtension uses deno.json config when denoConfigPath provided", 
 });
 
 Deno.test("uint8ArrayToBase64 handles large input without stack overflow", () => {
-  // 1MB of data — would blow the stack with String.fromCharCode(...bytes)
   const size = 1_000_000;
   const bytes = new Uint8Array(size);
   for (let i = 0; i < size; i++) {
     bytes[i] = i % 256;
   }
-  // Should not throw RangeError: Maximum call stack size exceeded
   const result = uint8ArrayToBase64(bytes);
   assertEquals(typeof result, "string");
   assertEquals(result.length > 0, true);
@@ -975,12 +935,9 @@ export type Status = "running" | "stopped";
   await withTempFile(tsCode, async (path) => {
     const js = await bundleExtension(path, DENO_PATH);
 
-    // Should return a minimal module instead of throwing
     assertEquals(js, "export {};\n");
   });
 });
-
-// --- isExpectedBundleFailure unit tests ---
 
 Deno.test("isExpectedBundleFailure: returns true for bare specifiers without deno.json", async () => {
   const repoDir = await Deno.makeTempDir({ prefix: "swamp_expected_test_" });
@@ -990,7 +947,6 @@ Deno.test("isExpectedBundleFailure: returns true for bare specifiers without den
     const source = `import { z } from "zod";\nexport const x = z;`;
     const filePath = extDir + "/model.ts";
     await Deno.writeTextFile(filePath, source);
-    // No deno.json anywhere — bare specifier + no config = expected failure
     assertEquals(isExpectedBundleFailure(filePath, repoDir), true);
   } finally {
     await Deno.remove(repoDir, { recursive: true });
@@ -999,7 +955,6 @@ Deno.test("isExpectedBundleFailure: returns true for bare specifiers without den
 
 Deno.test("isExpectedBundleFailure: returns false when deno.json exists", async () => {
   const repoDir = await Deno.makeTempDir({ prefix: "swamp_expected_test_" });
-  // Simulate realistic layout: source in a subdirectory, deno.json alongside it
   const extDir = repoDir + "/extensions/models/myext";
   await Deno.mkdir(extDir, { recursive: true });
   try {
@@ -1007,7 +962,6 @@ Deno.test("isExpectedBundleFailure: returns false when deno.json exists", async 
     const filePath = extDir + "/model.ts";
     await Deno.writeTextFile(filePath, source);
     await Deno.writeTextFile(extDir + "/deno.json", "{}");
-    // deno.json exists — failure is unexpected even with bare specifiers
     assertEquals(isExpectedBundleFailure(filePath, repoDir), false);
   } finally {
     await Deno.remove(repoDir, { recursive: true });
@@ -1022,7 +976,6 @@ Deno.test("isExpectedBundleFailure: returns false for npm-only imports without d
     const source = `import { z } from "npm:zod@4";\nexport const x = z;`;
     const filePath = extDir + "/model.ts";
     await Deno.writeTextFile(filePath, source);
-    // No bare specifiers — failure is unexpected regardless of deno.json
     assertEquals(isExpectedBundleFailure(filePath, repoDir), false);
   } finally {
     await Deno.remove(repoDir, { recursive: true });
@@ -1034,9 +987,8 @@ Deno.test("isExpectedBundleFailure: returns false for generated imports without 
   const extDir = repoDir + "/extensions/models/myext";
   await Deno.mkdir(extDir, { recursive: true });
   try {
-    // Codegen only — the module itself has no bare specifiers, so a rebundle
-    // failure here is a real failure and must not be silenced by the cache
-    // (swamp-club#1490).
+    // codegen only: the module has no bare specifiers, so a rebundle failure is
+    // real and must not be silenced by the cache
     const source =
       `export const script = \`import * as s from "\${pkg}";\`;\nexport const x = 1;`;
     const filePath = extDir + "/model.ts";
@@ -1183,10 +1135,9 @@ const RACE_OUTPUT =
   "to /c/dl/esbuild-0.25.5-1/.esbuild-1.tmp (os error 2)";
 
 /**
- * A fake `deno bundle`: writes the `-o` file, or answers with the esbuild
- * install race while `loses()` holds. Records how many run at once. With
- * `holdUntilPeak`, each run waits until that many have run at once, so
- * overlap never depends on how long each caller takes to reach the spawn.
+ * fake `deno bundle` that writes the -o file or answers with the esbuild
+ * install race while loses() holds; holdUntilPeak makes each run wait until
+ * that many overlap
  */
 function fakeBundler(loses: () => boolean, holdUntilPeak?: number) {
   const state = { running: 0, peak: 0, runs: 0 };
@@ -1253,7 +1204,6 @@ Deno.test("bundleExtension: an error other than the esbuild race is not retried"
 Deno.test("bundleExtension: no bundle on the same cache starts beside the first one or its retry", async () => {
   await withTempFile("export const x = 1;\n", async (path) => {
     let lost = 0;
-    // The first run loses the race; its retry and every later run succeed.
     const { state, handler } = fakeBundler(() => lost++ === 0);
     const env = { DENO_DIR: `/cache-${crypto.randomUUID()}` };
     await withMockedCommand(handler, async () => {
@@ -1300,9 +1250,9 @@ Deno.test("isEsbuildInstallRace: matches only the esbuild copy failure", () => {
   );
 });
 
-// Deno 2.9.7's --frozen refusal, colours and all, as `deno bundle` and
-// `deno info` print it. If an embedded Deno bump changes this text, the
-// stale-lock message falls back to the generic failure: update it here.
+// deno's --frozen refusal text as `deno bundle` and `deno info` print it; if an
+// embedded Deno bump changes it, the stale-lock message falls back to the
+// generic failure
 const STALE_LOCK_OUTPUT = "\u001b[0m\u001b[1m\u001b[31merror\u001b[0m: " +
   "Prepare module load error\n\nCaused by:\n    The lockfile is out of " +
   "date. Run `deno install --frozen=false`, or rerun with `--frozen=false` " +
@@ -1549,7 +1499,6 @@ Deno.test("bundleExtension: readOnlyLock bundles with --frozen and reports a sta
               denoConfigPath: join(path, "..", "deno.json"),
               readOnlyLock: { lockPath },
               env: { DENO_DIR: `/cache-${crypto.randomUUID()}` },
-              // The caller's resolutions: the bundle is the only deno call.
               bareImports: [],
             }),
           UserError,
@@ -1578,8 +1527,6 @@ Deno.test("bundleExtension: without readOnlyLock a stale-lock failure is the gen
     );
   });
 });
-
-// --- zod externalization under the project config (swamp-club#3612) ---
 
 Deno.test("sharedZodTargets: the targets of a bare zod every module resolves to zod 4", () => {
   assertEquals(
@@ -1627,7 +1574,6 @@ Deno.test("sharedZodTargets: none when any module's bare zod is not zod 4, so th
   assertEquals(sharedZodTargets([]), []);
 });
 
-/** A fake deno: `info` answers `infoJson`, `bundle` writes a bundle. */
 function fakeDenoWithInfo(infoJson: unknown) {
   const calls: string[][] = [];
   const handler = async (_cmd: string, args: string[]) => {
@@ -1756,7 +1702,6 @@ Deno.test("bundleExtension: a scope sending zod to zod 3 in one module keeps the
           },
         ],
       }));
-    // The caller's resolutions are used: deno runs once, for the bundle.
     assertEquals(calls.length, 1);
     assertEquals(calls[0][0], "bundle");
     assertEquals(calls[0].includes("zod"), false);
@@ -1783,7 +1728,6 @@ Deno.test("bundleExtension: a graph read that fails falls back to the config's o
     try {
       await run(JSON.stringify({ imports: { zod: "npm:zod@4" } }));
       assertStringIncludes(calls[1].join(" "), "--external zod");
-      // A config with no zod 4 entry gives nothing to fall back to.
       calls.length = 0;
       await run(JSON.stringify({ imports: { zod: "npm:zod@3.23.8" } }));
       assertEquals(calls[1].includes("zod"), false);

@@ -17,22 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * The stream directories on v3 (swamp-club#3278): `audit`, `telemetry`,
- * `logs` and `files` are repo-local, on v3 as on v2.
- *
- * - Two checkouts share one datastore. What the first records (command
- *   audit, vault audit, telemetry and a workflow run's log) stays in its own
- *   `.swamp` or spool: no commit names it, the datastore never holds it, and
- *   the second checkout reads none of it. A v2 filesystem datastore gives
- *   the same observations.
- * - Chunk GC and history compaction leave the first checkout's stream files
- *   intact, and a checkout rebuilt from the compacted base materialises
- *   nothing into a stream directory.
- * - A commit whose key falls in a stream directory is indexed but never
- *   materialised, so it cannot overwrite a checkout's own audit trail.
- */
-
 import "../src/domain/models/models.ts";
 import { assert, assertEquals } from "@std/assert";
 import { ensureDir, exists } from "@std/fs";
@@ -107,19 +91,16 @@ const signal = () => AbortSignal.timeout(60_000);
 
 const STREAMS: readonly string[] = REPO_LOCAL_STREAM_SUBDIRS;
 
-/** Whether a cache-relative path is a stream file or a run log. */
 function isStreamPath(rel: string): boolean {
   return STREAMS.includes(rel.split("/")[0]) || rel.endsWith(".log");
 }
 
-/** The stream files and run logs under `root`. */
 async function streamFiles(root: string): Promise<string[]> {
   return [...(await readTree(root)).keys()].filter(isStreamPath);
 }
 
 const WriteArgs = z.object({ text: z.string() });
 
-/** A model type, registered once per test with a unique name. */
 function registerWriter(): ModelType {
   const type = ModelType.create(`test/v3-streams-${crypto.randomUUID()}`);
   modelRegistry.register({
@@ -150,14 +131,12 @@ function registerWriter(): ModelType {
   return type;
 }
 
-/** One checkout: its directory, repository context and workflow. */
 interface Checkout {
   readonly dir: string;
   readonly repo: RepositoryContext;
   readonly workflowId: WorkflowId;
 }
 
-/** A checkout in `dir` with the writer model and a one-step workflow. */
 async function checkout(
   dir: string,
   type: ModelType,
@@ -180,11 +159,6 @@ async function checkout(
   return { dir, repo, workflowId: workflow.id };
 }
 
-/**
- * Records a command-audit, a vault-audit and a telemetry entry through
- * their production repositories, as the CLI does for `repoDir`, with the
- * user-global telemetry spool at `spool`.
- */
 async function recordStreams(repoDir: string, spool: string): Promise<void> {
   await new JsonlAuditRepository(repoDir).append(
     createBashCommandEntry("session", "swamp model method run", repoDir),
@@ -210,7 +184,6 @@ async function recordStreams(repoDir: string, spool: string): Promise<void> {
   }));
 }
 
-/** What a checkout in `repoDir` reads of the streams, for `run`. */
 async function readsOf(
   repoDir: string,
   run: WorkflowRun,
@@ -231,7 +204,6 @@ async function readsOf(
   };
 }
 
-/** Runs the checkout's workflow to its end; returns the run id. */
 async function runFlow(
   ctx: LibSwampContext,
   at: Checkout,
@@ -258,7 +230,6 @@ async function findRun(
   return run;
 }
 
-/** Every record key a stored commit names. */
 async function committedKeys(env: V3Env): Promise<string[]> {
   const keys: string[] = [];
   for (const change of await env.store.changesSince(0, 10_000)) {
@@ -269,7 +240,6 @@ async function committedKeys(env: V3Env): Promise<string[]> {
   return keys;
 }
 
-/** Chunk GC past every grace period, as `datastore gc` will run it. */
 async function collectChunks(env: V3Env): Promise<void> {
   await new ChunkCollector({
     commitStore: env.store,
@@ -279,7 +249,6 @@ async function collectChunks(env: V3Env): Promise<void> {
   }).collect(SOLO_NAMESPACE, { signal: signal() });
 }
 
-/** A read model over a checkout of its own at `dir`. */
 function openCheckout(env: V3Env, dir: string) {
   const root = swampPath(dir);
   return {
@@ -291,7 +260,6 @@ function openCheckout(env: V3Env, dir: string) {
   };
 }
 
-/** What every checkout but the writer sees: nothing of the streams. */
 const NOTHING = { audit: 0, vaultAudit: 0, log: false };
 
 Deno.test("v3 stream directories: audit, telemetry and run logs stay in the checkout that wrote them", async () => {
@@ -321,7 +289,6 @@ Deno.test("v3 stream directories: audit, telemetry and run logs stay in the chec
       );
     });
 
-    // The writer reads its own streams; the run committed, its log did not.
     const own = await readsOf(
       aDir,
       await findRun(a.repo.workflowRunRepo, a, runId),
@@ -338,7 +305,6 @@ Deno.test("v3 stream directories: audit, telemetry and run logs stay in the chec
     const aStreamFiles = [...aStreams].filter(([rel]) => isStreamPath(rel));
     assert(aStreamFiles.length >= 3, "audit, vault audit and the run log");
 
-    // The second checkout catches up: the run, none of its streams.
     const b = openCheckout(env, join(env.dir, "b"));
     try {
       await b.readModel.catchUp(signal());
@@ -356,8 +322,6 @@ Deno.test("v3 stream directories: audit, telemetry and run logs stay in the chec
       NOTHING,
     );
 
-    // Compaction and chunk GC leave the writer's streams as they were, and
-    // a checkout rebuilt from the compacted base holds none of them.
     await env.store.compactHistory(
       (await env.store.changesSince(0, 10_000)).length,
     );
@@ -470,7 +434,6 @@ Deno.test("v3 stream directories: a commit keyed into a stream directory is inde
       assertEquals(await exists(join(env.cacheRoot(""), dir)), false, dir);
     }
 
-    // The compacted base folds the same way: indexed, not materialised.
     await env.store.compactHistory(1);
     await collectChunks(env);
     const fresh = openCheckout(env, join(env.dir, "fresh"));

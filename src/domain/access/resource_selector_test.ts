@@ -205,8 +205,8 @@ Deno.test("typePatternMatchesIgnoringAt: an @-only prefix is matched as written"
   assertEquals(typePatternMatchesIgnoringAt("@*", "@acme/deploy"), true);
   assertEquals(typePatternMatchesIgnoringAt("@*", "command/shell"), false);
   assertEquals(typePatternMatchesIgnoringAt("*", "command/shell"), true);
-  // A type that is only an @ has no name once the @ is set aside, and is
-  // still matched as written (swamp-club#3188).
+  // a type that is only an @ has no name once the @ is set aside, and is still
+  // matched as written
   assertEquals(typePatternMatchesIgnoringAt("@*", "@"), true);
   assertEquals(typePatternMatchesIgnoringAt("@", "@"), true);
   assertEquals(typePatternMatchesIgnoringAt("acme/*", "@"), false);

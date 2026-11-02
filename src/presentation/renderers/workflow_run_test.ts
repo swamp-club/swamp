@@ -780,8 +780,6 @@ Deno.test("ConsoleWorkflowRunRenderer: skipped job line names no step", async ()
   assertEquals(skippedLines(lines), ["notify │ skipped"]);
 });
 
-// --- JsonWorkflowRunRenderer tests ---
-
 Deno.test("JsonWorkflowRunRenderer: intermediate events produce no output", () => {
   const logs: string[] = [];
   const originalLog = console.log;
@@ -1034,10 +1032,6 @@ Deno.test("JsonWorkflowRunRenderer: suspended includes stepId and prompt", async
   }
 });
 
-/**
- * Renders a run that suspends on a nested run after `gates`, and returns the
- * suspended document.
- */
 async function renderNestedSuspension(
   gates: WorkflowRunEvent[],
   nested: { workflowName: string; runId: string },
@@ -1192,7 +1186,6 @@ Deno.test("ConsoleWorkflowRunRenderer: a step stranded by a workflow change poin
   );
   assertEquals(output.includes("To retry failed steps"), false);
   assertEquals(output.includes("history get"), false);
-  // The stranded step's own error is the one printed, so no second reason.
   assertEquals(output.includes("A step did not run"), false);
 });
 
@@ -1440,7 +1433,6 @@ Deno.test("ConsoleWorkflowRunRenderer: a parent waiting on a nested run names th
   );
   assertStringIncludes(output, "waits on nested workflow child run child-run");
   assertStringIncludes(output, "swamp workflow resume parent --run parent-run");
-  // Never the parent's name with the child's run id.
   assertEquals(output.includes("approve parent gate"), false);
 });
 
@@ -1757,7 +1749,6 @@ Deno.test("ConsoleWorkflowRunRenderer: a matching run kept because it waits for 
   assertEquals(output.includes("Superseded"), false);
 });
 
-/** Renders `events` in JSON mode and returns stdout and stderr documents. */
 async function renderJson(
   events: WorkflowRunEvent[],
 ): Promise<{ stdout: unknown[]; stderr: unknown[] }> {
@@ -1939,7 +1930,6 @@ Deno.test("JsonWorkflowRunRenderer: skipped supersedes go to stderr with their w
   }]);
 });
 
-/** A suspended run view whose `release` job has the given steps. */
 function waitingRunView(
   steps: WorkflowRunView["jobs"][number]["steps"],
 ): WorkflowRunView {
@@ -1965,7 +1955,6 @@ Deno.test("JsonWorkflowRunRenderer: a run with several waits lists every one in 
           status: "waiting",
           wait: { id: other, deadline: WAIT_DEADLINE },
         },
-        // Settled, so no longer something to signal.
         {
           name: "review-done",
           status: "succeeded",
@@ -2131,8 +2120,8 @@ const NESTED_WAIT = {
 };
 
 Deno.test("ConsoleWorkflowRunRenderer: a run on a server names a nested run's wait from the suspension, with a signal command for the server", async () => {
-  // A remote stream carries no signal_wait_requested: the suspended event's
-  // nestedSignalWaits is all the client is told (swamp-club#3110).
+  // a remote stream carries no signal_wait_requested, so the suspended event's
+  // nestedSignalWaits is all the client is told
   const renderer = createWorkflowRunRenderer("log", {
     workflowName: "parent",
     commandTarget: " --server ws://localhost:9090",
@@ -2517,8 +2506,6 @@ Deno.test("ConsoleWorkflowRunRenderer: a suspension whose step is not in the run
   assertStringIncludes(output, "awaiting approval on step gone");
 });
 
-// --- renderWorkflowRunAccepted tests (swamp-club#1090) ---
-
 Deno.test("renderWorkflowRunAccepted: json mode prints the run id and that the run is detached", async () => {
   const lines = await captureOutputAsync(() => {
     renderWorkflowRunAccepted(
@@ -2576,8 +2563,8 @@ Deno.test("renderWorkflowRunAccepted: log mode escapes control characters in the
   assertStringIncludes(output, "(run: run\\x1b]0;x\\x07)");
 });
 
-// swamp-club#3214: a keyed wait is signalled by key as well as by ID, and a
-// step refused with wait_key_held names the wait that holds the key.
+// a keyed wait is signalled by key as well as by ID, and a step refused with
+// wait_key_held names the wait that holds the key
 
 const KEY_TARGET = " --server ws://localhost:9090";
 const BY_KEY =
@@ -2660,7 +2647,6 @@ Deno.test("ConsoleWorkflowRunRenderer: a keyed wait prints the by-key command be
   for (const line of byKey) {
     assertStringIncludes(line, `Or by key:  ${BY_KEY}${KEY_TARGET}`);
   }
-  // Each by-key line follows its by-ID line.
   for (const line of byKey) {
     const at = lines.indexOf(line);
     assertStringIncludes(lines[at - 1], `signal ${WAIT_ID}`);
@@ -2881,7 +2867,6 @@ Deno.test("JsonWorkflowRunRenderer: a completed run carries the key holders its 
   ]);
   assertEquals(stdout, [{ ...run, waitKeyHolders: [HOLDER] }]);
 
-  // A failure with no holder named leaves the output as it was.
   const plain = await renderJson([
     keyHeldFailure(null),
     { kind: "completed", run },
@@ -2920,7 +2905,6 @@ Deno.test("JsonWorkflowRunRenderer: a suspended run carries the key holders a st
   assertEquals(parsed.waitKeyHolders, [HOLDER]);
   assert("signalRequired" in parsed);
 
-  // On a gate too.
   const gated = await renderJson([
     keyHeldFailure(),
     { kind: "suspended", run, jobId: "release", stepId: "gate", prompt: "ok" },

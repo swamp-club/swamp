@@ -17,11 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * When to poll the inbox and when to show the post-command notice. Pure
- * functions; `now` is always epoch milliseconds passed in by the caller.
- */
-
 import type {
   InboxSnapshot,
   InboxState,
@@ -32,16 +27,13 @@ import type {
 /** The server can lengthen the gap between polls but never shorten it below this. */
 export const MIN_POLL_INTERVAL_SECONDS = 900;
 
-/** A server with no inbox is asked again this long after it said so. */
 export const UNSUPPORTED_RETRY_SECONDS = 24 * 60 * 60;
 
 /** A misbehaving server cannot push the next poll further out than this. */
 export const MAX_POLL_INTERVAL_SECONDS = 7 * 24 * 60 * 60;
 
-/** A notice retires this long after it first showed, read or not. */
 export const NOTICE_LIFETIME_MS = 24 * 60 * 60 * 1000;
 
-/** What the post-command notice reports. */
 export interface InboxNotice {
   readonly unread: number;
 }
@@ -65,7 +57,6 @@ function backoffMs(retryAfterSeconds: number | undefined): number {
     1000;
 }
 
-/** Whether the inbox is due a poll. */
 export function shouldPoll(state: InboxState, now: number): boolean {
   const { lastPolledAt, nextPollAt, stop } = state.schedule;
   if (stop !== null) return false;
@@ -92,10 +83,9 @@ function stopAfterSuccess(
 }
 
 /**
- * Whichever snapshot was fetched later. A stored snapshot wins only when it
- * was fetched after the new one and not in the future: a clock that went
- * back must not freeze the cache, and a snapshot from before `fetchedAt`
- * existed orders first.
+ * a stored snapshot wins only when fetched after the new one and not in the
+ * future: a clock that went back must not freeze the cache; one from before
+ * fetchedAt existed orders first
  */
 function newerSnapshot(
   stored: InboxSnapshot | null,
@@ -174,11 +164,9 @@ export function applyPollOutcome(
 }
 
 /**
- * The notice to print after a command, or null. Shown for unread messages
- * newer than the last one announced, and again for the same message until
- * 24 hours after it first showed. An announcement dated after now means the
- * clock went back; it counts as retired rather than showing until the clock
- * catches up.
+ * shown for unread messages newer than the last announced, and again for the
+ * same message until its lifetime ends; an announcement dated after now means
+ * the clock went back and counts as retired
  */
 export function noticeToShow(
   state: InboxState,
@@ -201,8 +189,8 @@ export function noticeToShow(
 }
 
 /**
- * The state after the notice showed. The first showing of a message starts
- * its 24 hours; later showings of the same message leave them running.
+ * the first showing of a message starts its lifetime; later showings of the
+ * same message leave it running
  */
 export function recordNoticeShown(state: InboxState, now: number): InboxState {
   if (noticeToShow(state, now) === null) return state;

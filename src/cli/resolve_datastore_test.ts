@@ -48,9 +48,6 @@ import {
   withMockedEnv,
 } from "../infrastructure/persistence/path_test_helpers.ts";
 
-/**
- * Creates a stub DatastoreProvider for testing custom datastore resolution.
- */
 function createStubProvider(
   overrides?: Partial<DatastoreProvider>,
 ): DatastoreProvider {
@@ -77,7 +74,6 @@ function createStubProvider(
   };
 }
 
-/** Registers a test custom datastore type if not already registered. */
 function ensureTestType(
   type: string,
   opts?: { configSchema?: z.ZodTypeAny },
@@ -103,7 +99,6 @@ Deno.test("parseDatastoreEnvVar: parses filesystem path", async () => {
 });
 
 Deno.test("parseDatastoreEnvVar: s3 without extension throws UserError", async () => {
-  // Without the @swamp/s3-datastore extension installed, S3 env vars throw
   await assertRejects(
     () => parseDatastoreEnvVar("s3:my-bucket/my-prefix", "test-repo"),
     Error,
@@ -241,10 +236,6 @@ Deno.test("resolveDatastoreConfig: refuses a durable setting that is not a boole
   });
 });
 
-// ============================================================================
-// S3 marker tests (extension not installed — expect UserError)
-// ============================================================================
-
 Deno.test("resolveDatastoreConfig: S3 marker without extension throws UserError", async () => {
   await withMockedEnv({ SWAMP_DATASTORE: undefined }, async () => {
     const marker: RepoMarkerData = {
@@ -259,7 +250,6 @@ Deno.test("resolveDatastoreConfig: S3 marker without extension throws UserError"
         forcePathStyle: false,
       },
     };
-    // Without the @swamp/s3-datastore extension installed, S3 configs throw
     await assertRejects(
       () => resolveDatastoreConfig(marker, undefined, "/repo"),
       Error,
@@ -267,10 +257,6 @@ Deno.test("resolveDatastoreConfig: S3 marker without extension throws UserError"
     );
   });
 });
-
-// ============================================================================
-// Custom datastore type tests
-// ============================================================================
 
 Deno.test("parseDatastoreEnvVar: parses custom type with JSON config", async () => {
   ensureTestType("test-custom-env");
@@ -308,7 +294,6 @@ Deno.test("parseDatastoreEnvVar: custom type uses repoDir not repoId for path re
     "/actual/repo/dir",
   );
   const custom = config as CustomDatastoreConfig;
-  // Should use repoDir, not repoId
   assertPathEquals(custom.datastorePath, "/actual/repo/dir/.custom-store");
 });
 
@@ -386,21 +371,9 @@ Deno.test("resolveDatastoreConfig: YAML custom type with no config defaults to e
   });
 });
 
-// ============================================================================
-// resolveCachePath contract — lock single-path cache resolution (swamp-club#150)
-// ============================================================================
-
-// The #150 reporter claimed a missing `resolveCachePath` method and a method
-// returning `undefined` take different code paths in swamp core. They do not.
-// Every consumer uses `provider.resolveCachePath?.(x) ?? <fallback>` — the
-// codebase convention — which JavaScript evaluates identically for both
-// cases. See src/cli/resolve_datastore.ts and src/libswamp/datastores/setup.ts;
-// grep `resolveCachePath` to enumerate the call sites.
-//
-// These tests lock in the single-path runtime behavior: a provider that
-// returns `undefined` routes to core's repoId-keyed default, while a provider
-// that returns a concrete path uses that path. A future refactor that changes
-// the fallback or drops the `?.` must update these assertions deliberately.
+// every consumer uses provider.resolveCachePath?.(x) ?? fallback, which treats
+// a missing method and one returning undefined identically; these tests pin
+// that so changing the fallback or dropping ?. must update them deliberately
 
 Deno.test("resolveCachePath: undefined return routes to repoId-keyed default", async () => {
   const typeName = "test-cache-undefined";
@@ -449,10 +422,6 @@ Deno.test("resolveCachePath: concrete return is used as-is", async () => {
   assertPathEquals(custom.cachePath, "/my/repo/.test-explicit-cache");
 });
 
-// ============================================================================
-// Relative path resolution tests (swamp-club#560)
-// ============================================================================
-
 Deno.test("parseDatastoreEnvVar: resolves relative filesystem path against repoDir", async () => {
   const repoDir = resolve("/my/repo");
   const config = await parseDatastoreEnvVar(
@@ -499,17 +468,9 @@ Deno.test("resolveDatastoreConfig: preserves absolute YAML path as-is", async ()
   });
 });
 
-// ============================================================================
-// Renamed datastore type tests
-// ============================================================================
-
 Deno.test("RENAMED_DATASTORE_TYPES: maps s3 to @swamp/s3-datastore", () => {
   assertEquals(RENAMED_DATASTORE_TYPES["s3"], "@swamp/s3-datastore");
 });
-
-// ============================================================================
-// Type guard tests
-// ============================================================================
 
 Deno.test("isCustomDatastoreConfig: returns false for filesystem", () => {
   assertEquals(
@@ -519,7 +480,6 @@ Deno.test("isCustomDatastoreConfig: returns false for filesystem", () => {
 });
 
 Deno.test("isCustomDatastoreConfig: returns true for s3 (now custom)", () => {
-  // After Phase 3, S3 is no longer a built-in type — it's custom
   assertEquals(
     isCustomDatastoreConfig({
       type: "s3",
@@ -540,10 +500,6 @@ Deno.test("isCustomDatastoreConfig: returns true for custom type", () => {
     true,
   );
 });
-
-// ============================================================================
-// Expression resolution integration tests
-// ============================================================================
 
 Deno.test("resolveDatastoreConfig: resolves env expression in custom type YAML config", async () => {
   ensureTestType("@test/ds-expr", {
@@ -613,10 +569,6 @@ Deno.test("resolveDatastoreConfig: missing env expression in config throws UserE
     );
   });
 });
-
-// ============================================================================
-// Expression resolution in datastore-level fields (namespace, directories, etc.)
-// ============================================================================
 
 Deno.test("resolveDatastoreConfig: resolves env expression in namespace for custom type", async () => {
   ensureTestType("@test/ds-ns-expr");
@@ -753,10 +705,6 @@ Deno.test("resolveDatastoreConfig: non-expression fields pass through unchanged"
   });
 });
 
-// ============================================================================
-// managedConfig expression resolution
-// ============================================================================
-
 Deno.test("resolveDatastoreConfig: string managedConfig resolves and gates vault correctly", async () => {
   ensureTestType("@test/ds-mc-expr");
   await withMockedEnv({
@@ -809,28 +757,20 @@ Deno.test("resolveDatastoreConfig: managedConfig strict parsing — only true/1 
           config: {},
         },
       };
-      // If managedConfig resolves to true, vault expressions in config would
-      // be blocked. If false, they'd be allowed. We test indirectly via the
-      // fact that resolution succeeds (env expressions work either way).
+      // resolution succeeds either way: managedConfig only gates vault.get(),
+      // and env expressions work in both cases
       const config = await resolveDatastoreConfig(
         marker,
         undefined,
         "/tmp/test",
       );
-      // The config resolves successfully regardless — the managedConfig value
-      // only affects vault.get() gating, and we're using env expressions here.
       assertEquals(isCustomDatastoreConfig(config), true);
-      // Verify the boolean coercion didn't cause errors
       if (expected) {
         // When managedConfig is true, vault.get() would be blocked (tested separately)
       }
     });
   }
 });
-
-// ============================================================================
-// repoId expression resolution
-// ============================================================================
 
 Deno.test("resolveDatastoreConfig: resolves env expression in repoId", async () => {
   const typeName = "@test/ds-repoid-expr";
@@ -947,7 +887,6 @@ Deno.test("resolveDatastoreConfig: repoId expression does not mutate marker", as
   });
 });
 
-/** No-op auto-resolve output port. */
 const silentOutput: AutoResolveOutputPort = {
   searching: () => {},
   installing: () => {},
@@ -964,10 +903,6 @@ const silentOutput: AutoResolveOutputPort = {
   installedWithoutType: () => {},
 };
 
-/**
- * Installs an auto-resolver for `collective` that records every registry
- * lookup and finds nothing, runs `fn`, then restores the previous resolver.
- */
 async function withRecordingAutoResolver(
   collective: string,
   fn: (lookups: string[]) => Promise<void>,
@@ -1229,7 +1164,6 @@ Deno.test("resolveDatastoreConfig: a datastore written through serve never resol
     assertEquals(config.datastorePath, "/repo/.swamp/serve-root");
     assertEquals(config.namespace, "team");
     assertEquals(config.format, 3);
-    // Without serve the same type is unknown: the extension was never asked.
     await assertRejects(() =>
       resolveDatastoreConfig(marker, undefined, "/repo", {
         autoResolve: false,

@@ -26,10 +26,6 @@ import {
   resolve,
 } from "@std/path";
 
-/**
- * The built dashboard bundle (`packages/dashboard/dist`), resolved from this
- * file. Compiled binaries embed it with `--include`.
- */
 export const DASHBOARD_DIST_DIR = resolve(
   import.meta.dirname ?? ".",
   "..",
@@ -52,7 +48,6 @@ const MIME_TYPES: Record<string, string> = {
   ".ttf": "font/ttf",
 };
 
-/** True when the bundle's `index.html` is present. */
 export async function dashboardBundleExists(
   distDir: string = DASHBOARD_DIST_DIR,
 ): Promise<boolean> {
@@ -63,10 +58,6 @@ export async function dashboardBundleExists(
   }
 }
 
-/**
- * Serves one file from the bundle, or null when it does not exist. A path
- * that escapes the bundle gets a 403.
- */
 export async function serveDashboardFile(
   distDir: string,
   filePath: string,
@@ -99,11 +90,6 @@ export async function serveDashboardFile(
   }
 }
 
-/**
- * Answers a request under `/dashboard` from the bundle: the file when it
- * exists, else `index.html` (the SPA routes client-side). Returns null for
- * a path outside `/dashboard`.
- */
 export async function serveDashboardRoute(
   distDir: string,
   req: Request,

@@ -17,14 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Expression text is authorized against the principal who supplies it, when
- * they supply it (swamp-club#2755, swamp-club#2786, swamp-club#2672): a
- * writer adding expressions or workflow steps, and a caller passing
- * expressions in run inputs. Runs and evaluations of stored content are not
- * re-checked, and evaluate and validate never resolve env.
- */
-
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import { stringify as stringifyYaml } from "@std/yaml";
 import { z } from "zod";
@@ -59,7 +51,6 @@ import {
 
 await initializeLogging({});
 
-/** Allow everything, but deny reading prod-* data. */
 const GRANTS: Grant[] = [
   grant({ resource: { kind: "model", pattern: "*" } }),
   grant({ resource: { kind: "workflow", pattern: "*" } }),
@@ -71,7 +62,6 @@ const GRANTS: Grant[] = [
   }),
 ];
 
-/** The same, denying data by tag rather than name. */
 const TAG_GRANTS: Grant[] = [
   ...GRANTS.slice(0, 3),
   grant({
@@ -106,7 +96,6 @@ function request(type: string, payload: Record<string, unknown>) {
   return { type, id: crypto.randomUUID(), payload };
 }
 
-/** Saves `name` with `globalArguments`, as an admin would on disk. */
 async function saveWithArgs(
   repo: ServeRepo,
   name: string,
@@ -117,7 +106,6 @@ async function saveWithArgs(
   return definition;
 }
 
-/** A model.edit request replacing `definition`'s content. */
 function editRequest(definition: Definition, changes: Partial<DefinitionData>) {
   return request("model.edit", {
     modelIdOrName: definition.id,
@@ -360,7 +348,6 @@ Deno.test("serve expressions: workflow.edit refuses a step running a model the w
       "added prod step",
     );
 
-    // A step an admin already stored is not re-checked on an unrelated edit.
     const adminFlow = Workflow.create({
       name: "admin-flow",
       jobs: [
@@ -393,10 +380,6 @@ Deno.test("serve expressions: workflow.edit refuses a step running a model the w
   });
 });
 
-/**
- * Registers a type whose `echo` method takes a `note` and records the value
- * it was given, for input tests.
- */
 async function withEchoType(
   fn: (type: ModelType, notes: unknown[]) => Promise<void>,
 ): Promise<void> {
@@ -520,7 +503,6 @@ Deno.test("serve expressions: literalInputs runs untrusted text as data, unautho
               `literal ${note}`,
             );
           }
-          // The method received each text exactly; nothing was evaluated.
           assertEquals(notes, texts);
         });
       });
@@ -626,14 +608,12 @@ Deno.test("serve expressions: workflow.run inputs are values, never evaluated as
             inputs: { x: supplied },
           }),
         );
-        // The step ran and got the text it was given, unevaluated.
         assertEquals(notes, [supplied]);
       });
     });
   });
 });
 
-/** Grants for workflow-step tests: run denied on prod-* and locked-*. */
 const STEP_GRANTS: Grant[] = [
   grant({ resource: { kind: "model", pattern: "*" } }),
   grant({ resource: { kind: "workflow", pattern: "*" } }),
@@ -738,7 +718,6 @@ Deno.test("serve expressions: workflow.edit checks each kind of step it adds", a
       await editWorkflow(noDenies, f.flow, addStep(cases[2][1])),
       "computed model with no model denies",
     );
-    // An admin may add a computed target.
     assertAllowed(
       await editWorkflow(
         createServeCtx(f.repo),
@@ -812,7 +791,6 @@ Deno.test("serve expressions: workflow.edit checks assert predicates and the met
       ),
       "assert reading unreadable data",
     );
-    // locked-db's data is readable, but running it is denied.
     assertRefused(
       await editWorkflow(
         f.ctx,
@@ -835,7 +813,6 @@ Deno.test("serve expressions: workflow.edit checks assert predicates and the met
         'cel.bind(m, model, m.method("locked-db", "noop")) != null',
       ]
     ) {
-      // No data deny, so only the run check can refuse it.
       const runDenyOnly = createServeCtx(f.repo, [
         grant({ resource: { kind: "model", pattern: "*" } }),
         grant({ resource: { kind: "workflow", pattern: "*" } }),
@@ -1011,8 +988,6 @@ Deno.test("serve expressions: a self-computed step target placed in another step
         { type: "workflow", workflowIdOrName: "${{ self.e }}" },
       ]
     ) {
-      // An admin's workflow: step a runs a computed target over dev items,
-      // step b iterates prod items with a literal task.
       const flow = Workflow.fromData(
         {
           id: crypto.randomUUID(),
@@ -1101,7 +1076,6 @@ Deno.test("serve expressions: a stored literal reference sent somewhere new is c
       "an unrelated edit leaves it alone",
     );
 
-    // A model edit that moves it to another field is checked too.
     await saveWithArgs(f.repo, "holder", { dbPassword: creds });
     const holder = (await f.repo.repoContext.definitionRepo.findByNameGlobal(
       "holder",

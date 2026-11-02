@@ -23,13 +23,8 @@ import { join } from "@std/path";
 import { stringify as stringifyYaml } from "@std/yaml";
 import { YamlWorkflowRunRepository } from "../src/infrastructure/persistence/yaml_workflow_run_repository.ts";
 
-// Regression test for swamp-club#240: pin the mtime pre-filter on
-// `findAllGlobalSince`. Counts the number of files actually parsed vs the
-// number of files in the fixture; if the pre-filter ever stops working, the
-// parse count would jump back to N_TOTAL and this test would fail with a
-// concrete, deterministic error. Wall-clock is intentionally NOT asserted —
-// it's flaky across CI runners and we don't need it: the parse count is the
-// thing we actually care about.
+// pins the mtime pre-filter on findAllGlobalSince by counting parsed files, not
+// wall-clock time, which is flaky across CI runners
 
 const N_TOTAL = 500;
 const N_IN_WINDOW = 10;
@@ -97,10 +92,6 @@ async function seedWorkflowRuns(
   return { inWindow, outOfWindow };
 }
 
-/**
- * Counts every Deno.readTextFile call against the YAML run files. Wraps the
- * builtin so we don't need to plumb instrumentation through the repo class.
- */
 function instrumentReadCounter(): { count: () => number; restore: () => void } {
   const original = Deno.readTextFile.bind(Deno);
   let parses = 0;
@@ -126,7 +117,7 @@ Deno.test(
   "swamp-club#240: findAllGlobalSince mtime-pre-filter skips parse for out-of-window runs",
   async () => {
     await withTempDir(async (repoDir) => {
-      const cutoff = new Date(Date.now() - 60 * 60 * 1000); // 1 hour ago
+      const cutoff = new Date(Date.now() - 60 * 60 * 1000);
       const seeded = await seedWorkflowRuns(repoDir, cutoff);
       assertEquals(seeded.inWindow, N_IN_WINDOW);
       assertEquals(seeded.outOfWindow, N_TOTAL - N_IN_WINDOW);
@@ -136,7 +127,6 @@ Deno.test(
       try {
         const results = await repo.findAllGlobalSince(cutoff);
 
-        // Correctness: only in-window runs come back.
         assertEquals(results.length, N_IN_WINDOW);
 
         // Performance: the parse count stays bounded by in-window count.

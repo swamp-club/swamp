@@ -31,7 +31,6 @@ import {
   UsernameNotFoundError,
 } from "./oauth_client.ts";
 
-/** Start a simple mock HTTP server that returns canned responses. */
 function startMockServer(
   handler: (req: Request) => Response | Promise<Response>,
 ): { port: number; shutdown: () => Promise<void> } {
@@ -48,8 +47,6 @@ function startMockServer(
     },
   };
 }
-
-// ── startDeviceGrant ────────────────────────────────────────────────────
 
 Deno.test("startDeviceGrant: returns device grant response with camelCase fields", async () => {
   const mock = startMockServer((req) => {
@@ -176,8 +173,6 @@ Deno.test("startDeviceGrant: falls back to statusText for non-JSON body", async 
     await mock.shutdown();
   }
 });
-
-// ── pollForToken ────────────────────────────────────────────────────────
 
 Deno.test("pollForToken: returns access token on success", async () => {
   const mock = startMockServer((req) => {
@@ -362,8 +357,6 @@ Deno.test("pollForToken: throws DeviceGrantPollError with code 'unknown' for inv
     await mock.shutdown();
   }
 });
-
-// ── getUserInfo ─────────────────────────────────────────────────────────
 
 Deno.test("getUserInfo: returns user info with collectives", async () => {
   const mock = startMockServer((req) => {
@@ -600,8 +593,6 @@ Deno.test("getUserInfo: throws on HTTP error", async () => {
   }
 });
 
-// ── resolveUsername ────────────────────────────────────────────────────
-
 Deno.test("resolveUsername: returns sub on success", async () => {
   const mock = startMockServer(() =>
     Response.json({ sub: "6a4d58696938eea73751f36b" })
@@ -713,8 +704,6 @@ Deno.test("resolveUsername: sends Bearer auth header", async () => {
     await mock.shutdown();
   }
 });
-
-// ── registerInstance ───────────────────────────────────────────────────
 
 Deno.test("registerInstance: sends correct URL, headers, and body", async () => {
   let receivedPath = "";
@@ -832,8 +821,6 @@ Deno.test("registerInstance: throws with status text on non-JSON error body", as
     await mock.shutdown();
   }
 });
-
-// ── sendInstanceHeartbeat ─────────────────────────────────────────────
 
 Deno.test("sendInstanceHeartbeat: sends correct URL with encoded oauthClientId and auth header", async () => {
   let receivedPath = "";

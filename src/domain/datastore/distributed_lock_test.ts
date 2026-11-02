@@ -105,7 +105,6 @@ Deno.test("LockTimeoutError: namespaced filesystem path omits namespace hint", (
   assertEquals(error.message.includes("namespace set"), false);
 });
 
-/** Mirrors the error the S3 and GCS datastore extensions throw on timeout. */
 class ExtensionLockTimeoutError extends Error {
   override readonly name = "LockTimeoutError";
   readonly code = "LOCK_TIMEOUT" as const;

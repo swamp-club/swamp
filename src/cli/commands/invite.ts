@@ -22,18 +22,9 @@ import { groupCommandAction } from "../group_action.ts";
 import { inviteLinkCommand } from "./invite_link.ts";
 
 /**
- * The invite group — a pure group, matching the `issue.ts` idiom.
- *
- * An earlier revision carried an optional `[email]` positional that stood in
- * for a per-address email invite. It was removed deliberately: the recruit
- * link may well be enough on its own, and a surface that parses an address
- * only to say "not built yet" advertises something that does not exist.
- * Adding a positional later is additive; withdrawing one people have started
- * scripting against is not.
- *
- * The `first-rule` easter egg is the same command under a second name, but it
- * is mounted at the top level (`swamp first-rule`) rather than here — the joke
- * only lands as a bare two-word invocation. See `invite_link.ts`.
+ * a pure group with no [email] positional: one that only says not built yet
+ * advertises something that does not exist, and adding one later is additive.
+ * first-rule is mounted at the top level, not here.
  */
 export const inviteCommand = new Command()
   .name("invite")

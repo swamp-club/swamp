@@ -160,9 +160,6 @@ export function hello() { return "world"; }`;
   assertEquals(result.length, 0);
 });
 
-// ── Bare imports through the import map ─────────────────────────────────
-
-/** The audited specifiers, as `registry:name@version <- bare`. */
 function mappedOf(source: string, imports: ImportMap): string[] {
   return extractSpecifiersFromSource(
     source,

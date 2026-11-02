@@ -18,19 +18,9 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * Runs the @swamp-club/swamp-testing conformance suites against
- * LocalEncryptionVaultProvider — the same contract extension vault
- * authors are held to.
- *
- * Not run here:
- * - assertVaultExportConformance / assertVaultAnnotationExportConformance:
- *   built-in vaults are constructed through the factory switch in
- *   vault_provider_factory.ts, not the extension `export const vault`
- *   shape those suites verify.
- * - testTags: the suite's getStoredTags callback is synchronous, but this
- *   provider stores tags as encrypted annotations that can only be read
- *   asynchronously (getAnnotation). Tag pass-through is covered by the
- *   annotation conformance suite's label roundtrip instead.
+ * export suites and testTags are skipped: built-ins come from the factory
+ * switch, and tags live in async-only encrypted annotations, covered by the
+ * annotation suite's label roundtrip
  */
 
 import {

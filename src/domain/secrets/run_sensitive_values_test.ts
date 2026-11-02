@@ -51,7 +51,6 @@ Deno.test("RunSensitiveValues.addSecret: forwards every value to the redactor", 
   values.addSecret("no-source-value");
   assertEquals(redactor.redact("a hunter2-long b"), "a *** b");
   assertEquals(redactor.redact("no-source-value"), "***");
-  // Only values with a vault source are recorded.
   assertEquals(values.list().map((e) => e.value), ["hunter2-long"]);
 });
 
@@ -195,7 +194,6 @@ Deno.test("RunSensitiveValues: in a typed run, masks and stand-ins derive from r
     key: "legacy",
   });
   const other = `__SWAMP_VSEC_${"ab".repeat(16)}_0__`;
-  // No value was recorded; everything below comes from the registry.
   assertEquals(values.isEmpty, true);
   assertEquals(
     values.masked(`a ${vault} b ${data} c ${legacy} d ${other}`),
@@ -217,7 +215,6 @@ Deno.test("RunSensitiveValues: in a typed run, masks and stand-ins derive from r
     a: ["sensitive-prod.api"],
     n: 2,
   });
-  // The redactor masks the same sentinels, so logs and output agree.
   assertEquals(redactor.hasSecrets, true);
   assertEquals(redactor.redact(`log ${vault}`), "log ***");
 });
@@ -294,7 +291,6 @@ Deno.test("RunSensitiveValues.unreadReferenceFor: masks a recorded value in the 
     fieldPath: "ticket",
     reason: "provider echoed hunter2-secret",
   });
-  // Registered after the failure, as a later read of the run would.
   values.addSecret("hunter2-secret", { vaultName: "v", key: "k" });
 
   assertEquals(

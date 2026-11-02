@@ -23,18 +23,10 @@ import type { SourceDownloader } from "../../domain/source/mod.ts";
 import { UserError } from "../../domain/errors.ts";
 import { extractTarGz } from "../archive/tar_archive.ts";
 
-/**
- * HTTP adapter for downloading swamp source archives from GitHub.
- */
 export class HttpSourceDownloader implements SourceDownloader {
   private static readonly GITHUB_BASE =
     "https://github.com/swamp-club/swamp/archive/refs";
 
-  /**
-   * Get the GitHub archive URL for a version.
-   * For "main", uses heads/main.tar.gz
-   * For version tags, uses tags/{version}.tar.gz
-   */
   protected getArchiveUrl(version: string): string {
     if (!/^[a-zA-Z0-9._-]+$/.test(version)) {
       throw new UserError(
@@ -45,21 +37,16 @@ export class HttpSourceDownloader implements SourceDownloader {
     if (version === "main") {
       return `${HttpSourceDownloader.GITHUB_BASE}/heads/main.tar.gz`;
     }
-    // GitHub tags have a "v" prefix; add it if not already present
     const tag = version.startsWith("v") ? version : `v${version}`;
     return `${HttpSourceDownloader.GITHUB_BASE}/tags/${tag}.tar.gz`;
   }
 
-  /**
-   * Download and extract source archive for the given version.
-   */
   async downloadAndExtract(
     version: string,
     targetDir: string,
   ): Promise<number> {
     const url = this.getArchiveUrl(version);
 
-    // Ensure target directory exists
     await ensureDir(targetDir);
 
     const tempDir = await Deno.makeTempDir({ prefix: "swamp-source-" });
@@ -67,7 +54,6 @@ export class HttpSourceDownloader implements SourceDownloader {
     try {
       const tarballPath = join(tempDir, "source.tar.gz");
 
-      // Download the tarball
       let response: Response;
       try {
         response = await fetch(url);
@@ -96,7 +82,6 @@ export class HttpSourceDownloader implements SourceDownloader {
       try {
         await response.body.pipeTo(file.writable);
       } catch (error: unknown) {
-        // Clean up partial download
         try {
           await Deno.remove(tarballPath);
         } catch {
@@ -106,7 +91,6 @@ export class HttpSourceDownloader implements SourceDownloader {
         throw new UserError(`Download failed: ${message}`);
       }
 
-      // Extract the tarball to temp directory first
       const extractDir = join(tempDir, "extracted");
       await ensureDir(extractDir);
 
@@ -118,8 +102,6 @@ export class HttpSourceDownloader implements SourceDownloader {
         throw new UserError(`Failed to extract source archive: ${message}`);
       }
 
-      // GitHub archives have a top-level directory like "swamp-main" or "swamp-v1.2.3"
-      // Move contents to target directory
       const entries = [];
       for await (const entry of Deno.readDir(extractDir)) {
         entries.push(entry);
@@ -133,13 +115,11 @@ export class HttpSourceDownloader implements SourceDownloader {
 
       const sourceRoot = join(extractDir, entries[0].name);
 
-      // Move all contents from the extracted directory to the target
       let fileCount = 0;
       fileCount = await this.moveContents(sourceRoot, targetDir);
 
       return fileCount;
     } finally {
-      // Cleanup temp directory
       try {
         await Deno.remove(tempDir, { recursive: true });
       } catch {
@@ -148,13 +128,6 @@ export class HttpSourceDownloader implements SourceDownloader {
     }
   }
 
-  /**
-   * Recursively move contents from source to target directory.
-   * Returns the count of files moved.
-   *
-   * @param rootTargetDir The root extraction directory used to validate symlink
-   *   targets. Defaults to `targetDir` on the first (non-recursive) call.
-   */
   private async moveContents(
     sourceDir: string,
     targetDir: string,
@@ -174,12 +147,9 @@ export class HttpSourceDownloader implements SourceDownloader {
           resolvedTarget === effectiveRoot ||
           resolvedTarget.startsWith(effectiveRoot + SEPARATOR)
         ) {
-          // Resolve the link type from the source side, where the
-          // target already exists. Required by Deno.symlink on Windows
-          // when the target may not yet be present at the destination
-          // (different walk orders produce different timing). Defaults
-          // to "file" for broken symlinks; the type argument is ignored
-          // on POSIX.
+          // resolve the link type from the source side, where the target
+          // exists; Deno.symlink needs it on Windows. Broken symlinks default
+          // to file
           let linkType: "file" | "dir" = "file";
           try {
             const stat = await Deno.stat(sourcePath);

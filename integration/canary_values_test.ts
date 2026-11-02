@@ -52,7 +52,6 @@ Deno.test("generateCanary: short classes fall below the redactor minimum", () =>
     assert(belowRedactorMinimum(canary), canaryClass);
     assertEquals(canary.unique, false, canaryClass);
   }
-  // One astral character, two code units.
   const astral = generateCanary("astral-pair");
   assertEquals([...astral.value].length, 1);
   assertEquals(astral.value.length, 2);

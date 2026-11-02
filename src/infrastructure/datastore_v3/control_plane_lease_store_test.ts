@@ -21,7 +21,6 @@ import { assertEquals } from "@std/assert";
 import type { PersistedLease } from "../../domain/datastore_v3/persisted_lease.ts";
 import { ControlPlaneLeaseStore } from "./control_plane_lease_store.ts";
 
-/** A control-plane store in memory, recording the order of deletes. */
 function memoryControlPlane() {
   const records = new Map<string, Uint8Array>();
   const deletes: string[] = [];
@@ -65,7 +64,6 @@ Deno.test("ControlPlaneLeaseStore.adopt: copies the newest complete prefix under
   const store = new ControlPlaneLeaseStore(shared);
   await store.save(9, lease("data/a/1/.lock", 9));
   await shared.put("leases/9/complete", MARK);
-  // Fences compare as numbers: 10 is newer than 9.
   await store.save(10, lease("data/b/1/.lock", 10));
   await shared.put("leases/10/complete", MARK);
 
@@ -76,7 +74,6 @@ Deno.test("ControlPlaneLeaseStore.adopt: copies the newest complete prefix under
   const keys = [...shared.records.keys()];
   assertEquals(keys.filter((key) => !key.startsWith("leases/11/")), []);
   assertEquals(keys.includes("leases/11/complete"), true);
-  // Each older prefix lost its mark before its records.
   for (const fence of [9, 10]) {
     const ofPrefix = shared.deletes.filter((key) =>
       key.startsWith(`leases/${fence}/`)
@@ -90,7 +87,6 @@ Deno.test("ControlPlaneLeaseStore.adopt: a prefix with no mark, left by a crash 
   const store = new ControlPlaneLeaseStore(shared);
   await store.save(3, lease("data/a/1/.lock", 3));
   await shared.put("leases/3/complete", MARK);
-  // Leader 4 copied, then crashed before its mark.
   await store.save(4, lease("data/a/1/.lock", 4));
   await store.save(4, lease("data/z/1/.lock", 4));
 
@@ -122,7 +118,6 @@ Deno.test("ControlPlaneLeaseStore.adopt: an unreadable record, or one filed unde
   const store = new ControlPlaneLeaseStore(shared);
   await store.save(1, lease("data/a/1/.lock", 1));
   await shared.put("leases/1/garbage", new TextEncoder().encode("{"));
-  // A valid record under a key that is not its lock key's.
   const misfiled = new TextEncoder().encode(
     JSON.stringify(lease("data/m/1/.lock", 1)),
   );

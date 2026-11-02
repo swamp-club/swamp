@@ -562,8 +562,6 @@ Deno.test("decide: snapshot can be swapped atomically", () => {
   );
 });
 
-// --- Aggregate condition budget ---
-
 Deno.test("decide: normal decision with few conditions unaffected by aggregate budget", () => {
   const grants = Array.from({ length: 5 }, (_, i) =>
     makeGrant({
@@ -977,8 +975,6 @@ Deno.test("hasAnyGrantForKind: run implies approve", () => {
   );
 });
 
-// --- Model type fallback matching ---
-
 Deno.test("decide: matches model grant by extension type when instance name does not match", () => {
   const grant = makeGrant({
     actions: ["run"],
@@ -1125,8 +1121,6 @@ Deno.test("explain: includes model type fallback matches", () => {
   assertEquals(decisions.length, 1);
   assertEquals(decisions[0].effect, "allow");
 });
-
-// --- runImpliesApprove: false (approve requires an explicit grant) ---
 
 function strictService(
   grants: Grant[],
@@ -1471,8 +1465,6 @@ Deno.test("decide: a deny whose condition errors withholds the service default",
   );
 });
 
-// --- Missing condition fields (swamp-club#2675) ---
-
 function allowAndConditionalDeny(condition: string): Grant[] {
   return [
     makeGrant({ effect: "allow", resource: { kind: "model", pattern: "*" } }),
@@ -1601,8 +1593,6 @@ Deno.test("explain: reports a deny that fails closed on a missing field", () => 
   });
   assertEquals(decisions.map((d) => d.effect), ["deny", "allow"]);
 });
-
-// --- decideAll ---
 
 Deno.test("decideAll: allows when an allow covers every resource and no deny applies", () => {
   const service = new GrantBasedAccessDecisionService(
@@ -1764,8 +1754,6 @@ Deno.test("decideAll: a deny conditioned on the resource name or tags refuses", 
   }
 });
 
-// ── Control-plane records need admin (swamp-club#2756) ──────────────────
-
 const GRANT_RECORD: AccessResource = {
   kind: "access",
   name: "swamp/grant",
@@ -1908,8 +1896,6 @@ Deno.test("explain: reports the admin decision for a read of a control-plane rec
   assertEquals(decisions.map((d) => d.grantId), [adminGrant.id]);
 });
 
-// --- signal: its own action, implied by run unless runImpliesSignal is false ---
-
 function explicitSignalService(
   grants: Grant[],
 ): GrantBasedAccessDecisionService {
@@ -1973,7 +1959,6 @@ Deno.test("decide: run grant does not imply signal when runImpliesSignal is fals
     service.decide(makePrincipal("adam"), "signal", makeResource()),
     null,
   );
-  // The approve implication is a separate setting.
   assertEquals(
     service.decide(makePrincipal("adam"), "approve", makeResource())?.effect,
     "allow",
@@ -2048,8 +2033,6 @@ Deno.test("hasAnyGrantForKind: run implies signal unless runImpliesSignal is fal
   );
 });
 
-// --- tag: its own action, implied by write unless writeImpliesTag is false ---
-
 function explicitTagService(grants: Grant[]): GrantBasedAccessDecisionService {
   return new GrantBasedAccessDecisionService(
     new PolicySnapshot(grants, [], celEvaluator),
@@ -2122,7 +2105,6 @@ Deno.test("decide: write grant does not imply tag when writeImpliesTag is false"
     service.decide(makePrincipal("adam"), "tag", makeResource()),
     null,
   );
-  // The run implications are separate settings.
   assertEquals(
     service.decide(makePrincipal("adam"), "approve", makeResource())?.effect,
     "allow",
@@ -2327,8 +2309,7 @@ Deno.test("decide: a vault deny with a key condition decides by the request's ke
   assertEquals(decide({}), "allow");
 });
 
-// swamp-club#3130: a deny matches the type in any spelling; an allow only as
-// written.
+// a deny matches the type in any spelling; an allow only as written
 const SPELLINGS: ReadonlyArray<
   { pattern: string; modelType: string; label: string }
 > = [

@@ -26,41 +26,26 @@ import {
 import { bold, dim, getColorEnabled, red, yellow } from "@std/fmt/colors";
 import { mapControlCharacters } from "../../domain/control_characters.ts";
 
-// Leaf module: the single source of truth for swamp's log-line timestamp
-// format. Imported by both logger.ts (console/stderr sinks) and
-// run_file_sink.ts (persisted per-run logs). It imports neither of them, so
-// there is no import cycle — logger.ts already imports run_file_sink.ts.
+// leaf module, the single source of the log timestamp format; it imports
+// neither logger.ts nor run_file_sink.ts, so there is no import cycle
 
 /**
- * Timestamp format for every swamp log line. `"rfc3339"` renders a full
- * ISO-8601 UTC instant with a `Z` marker (e.g. `2026-07-15T09:48:19.080Z`),
- * so log lines are unambiguous about timezone and carry a date for
- * long-running daemons whose logs span multiple days.
+ * full UTC ISO-8601 instant with a Z marker, so lines are unambiguous about
+ * timezone and carry a date for daemons whose logs span days
  */
 export const TIMESTAMP_FORMAT = "rfc3339" as const;
 
 /**
- * Plain-text formatter sharing the RFC3339 timestamp. Used by every
- * non-interactive text sink: the console sink (non-TTY / `--no-color`), the
- * stderr-only sink (worker dispatch), and the persisted run-file sink.
- *
- * `getTextFormatter`'s default layout is already
- * `<timestamp> [<LEVEL>] <category>: <message>` and renders interpolated
- * values without ANSI color, so non-interactive output stays clean when piped
- * or redirected. Colored output is the pretty sink's job (TTY only).
+ * the default layout renders values without ANSI colour, so piped or redirected
+ * output stays clean; colour is the pretty sink's job
  */
 export function textFormatter(): TextFormatter {
   return getTextFormatter({ timestamp: TIMESTAMP_FORMAT });
 }
 
 /**
- * Serve-mode formatter: renders log records as `" system │ message"`,
- * matching the pipe-prefix style used by workflow and model-method runs.
- * No timestamp, level, or category — just the message with a fixed
- * "system" prefix padded to the current pipe width.
- *
- * Accepts a width getter so the caller (logger.ts) owns the mutable
- * width state and this module stays a leaf.
+ * takes a width getter so logger.ts owns the mutable width state and this
+ * module stays a leaf
  */
 export function serveTextFormatter(
   getWidth: () => number,
@@ -81,14 +66,11 @@ export function serveTextFormatter(
  */
 const GUTTER_WIDTH = 12;
 
-/** Info lines start in the column of the widest label, `Warning`. */
 const INFO_INDENT = " ".repeat(GUTTER_WIDTH - 1 - "Warning".length);
 
 /**
- * The gutter label and colour for each level, in `STATUS_COLORS` style.
- * Info has no label: it is the ordinary case, and many commands print their
- * result through it, so it reads as plain text starting where `Warning`
- * starts (see INFO_INDENT).
+ * info has no label since it is the ordinary case and carries command results,
+ * so it reads as plain text starting where Warning starts
  */
 const LEVEL_STATUS: Record<
   LogLevel,
@@ -103,22 +85,15 @@ const LEVEL_STATUS: Record<
 };
 
 export interface InteractiveFormatterOptions {
-  /** Append the record's category, e.g. ` · model.loader`. */
   showCategory: boolean;
-  /** Add one `key: value` line per record property. */
   showProperties: boolean;
-  /**
-   * The width of the `name │` column while a workflow run's pipe display is
-   * on screen, or `undefined` when none is.
-   */
   getPipeWidth: () => number | undefined;
 }
 
 /**
- * `text` with every control character but newline and tab written as a
- * visible `\xNN` escape. Interpolated values can carry text from outside
- * swamp (a remote error, a pulled extension's path), and printed raw an
- * escape sequence in one would drive the terminal.
+ * interpolated values can carry text from outside swamp, and a raw escape
+ * sequence would drive the terminal, so control characters but newline and tab
+ * print as visible escapes
  */
 function printable(text: string): string {
   return mapControlCharacters(
@@ -131,9 +106,8 @@ function printable(text: string): string {
 }
 
 /**
- * A string as it is; an error as its message with its stack frames dimmed
- * below, since the gutter already says it is an error; anything else as
- * `Deno.inspect` shows it. Strings are made printable first.
+ * an error prints as its message with stack frames dimmed below, since the
+ * gutter already says it is an error
  */
 function renderValue(value: unknown): string {
   if (typeof value === "string") return printable(value);
@@ -151,16 +125,8 @@ function renderValue(value: unknown): string {
 }
 
 /**
- * Formatter for log records shown in a terminal, in the layout the
- * `model method run` and `workflow run` renderers use: a Cargo-style status
- * gutter (`    Warning   message`), or a `system │` pipe line while a
- * workflow run's pipe display is active. No timestamp, and interpolated
- * strings print without quotes, so paths can be copied as they are. Lines
- * are not wrapped; the terminal wraps them.
- *
- * Colours come from `@std/fmt/colors`, so the CLI's colour policy
- * (`--no-color`, `NO_COLOR`, a non-terminal stdout) applies to log records
- * as it does to renderer output.
+ * interpolated strings print unquoted so paths can be copied; lines are not
+ * wrapped; colours come from @std/fmt/colors so the CLI colour policy applies
  */
 export function interactiveFormatter(
   options: InteractiveFormatterOptions,

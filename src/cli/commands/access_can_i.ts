@@ -96,8 +96,8 @@ export const accessCanICommand = new Command()
       "can-i",
     ]);
 
-    // Sent in the canonical spelling, so a server that predates the behavior
-    // spelling of a selector (swamp-club#3334) still reads it.
+    // sent in the canonical spelling so a server that predates the behavior
+    // spelling still reads it.
     const resource = options.on
       ? canonicalResourceSelectorString(options.on as string)
       : undefined;

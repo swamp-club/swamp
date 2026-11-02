@@ -53,10 +53,6 @@ const manifest: ExtensionManifest = {
   dependencies: [],
 };
 
-/**
- * Pushes through the real API client against a mock registry whose confirm
- * response carries `warnings`, and returns the run's last event.
- */
 async function pushAgainstRegistry(
   warnings: unknown,
 ): Promise<ExtensionPushEvent | undefined> {

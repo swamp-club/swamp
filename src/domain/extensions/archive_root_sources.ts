@@ -22,7 +22,6 @@ import {
   SHARED_ARCHIVE_DIR,
 } from "./source_archive_plan.ts";
 
-/** What an archive entry is, as its tar header records it. */
 export type ArchiveEntryKind =
   | "file"
   | "directory"
@@ -34,9 +33,8 @@ export type ArchiveEntryKind =
   | "unsupported";
 
 /**
- * Why each kind other than a file or directory refuses the archive. None
- * quotes anything from the header beyond the entry's own path: a link's
- * target is the archive author's text.
+ * none quotes anything from the header beyond the entry's own path, since a
+ * link's target is the archive author's text
  */
 const REFUSED_KIND_REASONS: Readonly<
   Record<Exclude<ArchiveEntryKind, "file" | "directory">, string>
@@ -52,27 +50,22 @@ const REFUSED_KIND_REASONS: Readonly<
     "only regular files and directories",
 };
 
-/** One entry of an extension archive. */
 export interface ArchiveEntry {
-  /** Forward-slash path inside the archive, e.g. `extension/lib/cmp.ts`. */
   path: string;
   kind: ArchiveEntryKind;
 }
 
-/** Why pull refuses an archive, naming the entry that decided it. */
 export interface ArchiveEntryRefusal {
   path: string;
   reason: string;
 }
 
-/** The directory every extension archive keeps its content under. */
 const ARCHIVE_ROOT = "extension";
 
 /**
- * Names that change how Deno or npm resolve the modules beside them. One
- * installed among shared sources would reconfigure the extension's source
- * when it is rebundled, so pull refuses it. Compared without case: on a
- * case-insensitive file system `Deno.json` is found as `deno.json`.
+ * these change how Deno or npm resolve neighbouring modules, so one among
+ * shared sources would reconfigure the extension on rebundle; compared without
+ * case since Deno.json is found as deno.json
  */
 const RESOLUTION_CONFIG_NAMES: ReadonlySet<string> = new Set([
   "deno.json",
@@ -91,19 +84,14 @@ function isSharedSourceRoot(name: string): boolean {
 }
 
 /**
- * Segments of `path` with any leading `./` and empty segments dropped.
- * Splits on `\` as well as `/`: a tar header may hold either, and on
- * Windows the extractor writes `\` as a separator, so classifying on `/`
- * alone would let `lib\deno.json` pass as one harmless segment.
+ * splits on backslash too: a tar header may hold either, and on Windows the
+ * extractor writes it as a separator, so lib\deno.json must not pass as one
+ * harmless segment
  */
 function segmentsOf(path: string): string[] {
   return path.split(/[\\/]/).filter((s) => s !== "" && s !== ".");
 }
 
-/**
- * The entry's path below `extension/` as segments, or undefined when the
- * entry lies outside it (pull reads nothing there).
- */
 function extensionSegments(path: string): string[] | undefined {
   const segments = segmentsOf(path);
   if (segments[0] !== ARCHIVE_ROOT || segments.length < 2) return undefined;
@@ -120,21 +108,9 @@ function aliasesReservedName(name: string): boolean {
 }
 
 /**
- * Why pull refuses an archive holding `entry`, or undefined when the entry
- * is acceptable. Decided from the tar header alone, so a caller can refuse
- * before the entry is written.
- *
- * - Anything but a regular file or directory anywhere in the archive: a
- *   symlink, hardlink, device, FIFO or unsupported entry type. Push writes
- *   only files and directories, and its safety gate refuses links in
- *   sources, so an installed extension never holds a link.
- * - Under a top-level entry holding shared sources (a name that is not
- *   reserved, or `_shared/`; swamp-club#3384): a backslash (push always
- *   writes `/`), a hidden or `..` segment, a Deno or npm resolution config
- *   file or `node_modules`, or a top-level name that differs from a
- *   reserved one only by case.
- *
- * Entries under reserved names keep the rules pull applied before.
+ * decided from the tar header alone so a caller can refuse before writing.
+ * Links and special entries are refused since push writes only files and
+ * directories; shared-source roots get extra path checks.
  */
 export function archiveEntryRefusal(
   entry: ArchiveEntry,
@@ -179,24 +155,15 @@ export function archiveEntryRefusal(
   return undefined;
 }
 
-/** What pull installs from the archive root, or why it refuses the archive. */
 export interface ArchiveRootSourcePlan {
-  /**
-   * Forward-slash paths below `extension/` of the shared source files to
-   * install at the same path under the extension's install root, sorted.
-   */
   sources: string[];
-  /** Every entry that refuses the archive, in archive order. */
   refusals: ArchiveEntryRefusal[];
 }
 
 /**
- * Plans the archive-root shared sources pull installs: every regular file
- * under `_shared/` or a top-level entry of `extension/` whose name is not
- * reserved (swamp-club#3384). Push places a shared module there when it sits outside
- * its kind's directory, so the installed source resolves as the archive
- * does. Directories install nothing of their own, so an empty legacy
- * directory adds nothing.
+ * push places a shared module under _shared/ or a non-reserved top-level name
+ * when it sits outside its kind's directory, so the installed source resolves
+ * as the archive does
  */
 export function planArchiveRootSources(
   entries: readonly ArchiveEntry[],

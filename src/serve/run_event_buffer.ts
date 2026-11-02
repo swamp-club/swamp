@@ -34,20 +34,17 @@ interface SequencedEvent {
   event: SerializedEvent;
 }
 
-/** The run events that report a run's outcome (swamp-club#3759). */
 const OUTCOME_EVENT_KINDS: ReadonlySet<string> = new Set([
   "completed",
   "cancelled",
   "suspended",
 ]);
 
-/** Options for a {@link RunEventBuffer}. */
 export interface RunEventBufferOptions {
   /**
-   * Holds the run's outcome event, and every event after it, until the
-   * buffer finishes (swamp-club#3759): a v3 run commits when its root ends,
-   * so followers see the outcome only with `done`, and never before an
-   * `error` that replaces it.
+   * holds the outcome event and all after it until the buffer finishes: a v3
+   * run commits when its root ends, so followers see the outcome only with
+   * done, never before an error that replaces it
    */
   readonly holdOutcome?: boolean;
 }
@@ -55,7 +52,6 @@ export interface RunEventBufferOptions {
 export class RunEventBuffer {
   readonly #capacity: number;
   readonly #holdOutcome: boolean;
-  /** Events held from the outcome on, delivered when the buffer is done. */
   #heldOutcome: SerializedEvent[] | undefined;
   #events: SequencedEvent[] = [];
   #firstIndex = 0;
@@ -88,11 +84,6 @@ export class RunEventBuffer {
     return this.#events[this.#firstIndex].seq;
   }
 
-  /**
-   * Adds an event and delivers it, and returns its sequence number. A held
-   * outcome event is delivered, numbered, when the buffer finishes `done`;
-   * until then it returns the number it will have if delivered.
-   */
   push(event: SerializedEvent): number {
     if (this.#terminal !== null) {
       throw new Error("Cannot push to a finished RunEventBuffer");

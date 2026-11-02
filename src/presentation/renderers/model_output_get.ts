@@ -65,7 +65,6 @@ export function createModelOutputGetRenderer(
   }
 }
 
-/** Standalone render function for use by un-migrated search commands. */
 export function renderModelOutputGet(
   data: ModelOutputGetData,
   mode: OutputMode,

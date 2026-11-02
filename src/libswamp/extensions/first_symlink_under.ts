@@ -21,10 +21,8 @@ import { join } from "@std/path";
 import { readDirSorted } from "../../infrastructure/persistence/sorted_dir_entries.ts";
 
 /**
- * The first symlink under `dir`, found without following any, reading
- * each directory in name order so the same tree always names the same
- * link. Push checks its staged tree with it before archiving, and pull the
- * extracted archive before installing: an extension never holds a link.
+ * reads each directory in name order so the same tree always names the same
+ * link; an extension never holds a link
  */
 export async function firstSymlinkUnder(
   dir: string,

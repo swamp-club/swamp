@@ -42,7 +42,6 @@ const KEY = recordKeyOf(["config", "workflows", "workflow-deploy.yaml"]);
 const STARTED = { sha256: "a".repeat(64) };
 const ON_DISK = { sha256: "b".repeat(64) };
 
-/** What the staged change expects, after a unit with `bases` staged it. */
 async function stagedExpect(
   change: TypedChange,
   stage: (fn: () => Promise<void>) => Promise<void>,

@@ -17,18 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * The writer lease and the commit store together, over random interleavings
- * of two or three writers acquiring, renewing, pausing past expiry, crashing,
- * releasing, being force-released and committing (swamp-club#3359). Each
- * writer is its own process with its own lease handle and its own
- * connection to one real `commits.db`. Two properties hold throughout:
- *
- * - no two acquisitions ever take the same fence;
- * - a commit by a writer that is not the current holder never lands, on any
- *   partition, whatever the writer itself knows.
- */
-
 import { assert, assertEquals } from "@std/assert";
 import { join } from "@std/path";
 import fc from "fast-check";
@@ -90,7 +78,6 @@ function arbCommand(writers: number): fc.Arbitrary<Command> {
   ) as fc.Arbitrary<Command>;
 }
 
-/** How often each interesting outcome happened, over every run. */
 const coverage = {
   takeovers: 0,
   zombieCommitsRefused: 0,
@@ -116,7 +103,6 @@ async function run(writerCount: number, commands: readonly Command[]) {
     let now = Date.parse("2026-10-13T12:00:00.000Z");
     const gone = new Set<number>();
     const fences: number[] = [];
-    /** The fence of the last acquisition that raised commits.db. */
     let current: number | undefined;
     let txn = 0;
     for (let i = 0; i < writerCount; i++) {
@@ -167,7 +153,6 @@ async function run(writerCount: number, commands: readonly Command[]) {
             break;
           }
           if (before === "held" || before === "expired") coverage.takeovers++;
-          // Property: a fence is never taken twice.
           assert(!fences.includes(hold.fence), `fence ${hold.fence} reused`);
           fences.push(hold.fence);
           try {
@@ -187,7 +172,6 @@ async function run(writerCount: number, commands: readonly Command[]) {
           if (outcome === "fenced") {
             coverage.fencedRenewals++;
           } else {
-            // Property: only the newest acquisition can still renew.
             assertEquals(w.hold.fence, fences[fences.length - 1]);
           }
           break;
@@ -232,7 +216,6 @@ async function run(writerCount: number, commands: readonly Command[]) {
             }
             landed = false;
           }
-          // Property: only the current holder's commit lands.
           assertEquals(
             landed,
             fence === current,
@@ -272,8 +255,8 @@ Deno.test("WriterLease with SqliteCommitStore: fences are unique, and only the c
     ),
     {
       numRuns: 400,
-      // One interleaving that reaches every outcome below, so the coverage
-      // check never rests on the random runs alone (swamp-club#3541).
+      // one interleaving that reaches every outcome below, so the coverage
+      // check never rests on the random runs alone
       examples: [[[2, [
         { kind: "acquire", writer: 0 },
         { kind: "commit", writer: 0 },
@@ -285,7 +268,6 @@ Deno.test("WriterLease with SqliteCommitStore: fences are unique, and only the c
       ]]]],
     },
   );
-  // The interleavings reached what the properties are about.
   for (const [outcome, count] of Object.entries(coverage)) {
     assert(count > 0, `no run produced any ${outcome}`);
   }

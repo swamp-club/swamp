@@ -91,13 +91,11 @@ Deno.test("WorkflowScheduler: start fires callback on cron match", async () => {
   const scheduler = new WorkflowScheduler();
   const fired: WorkflowId[] = [];
 
-  // Use per-second cron: fires every second
   scheduler.register(TEST_ID_1, "* * * * * *");
   scheduler.start((id) => {
     fired.push(id);
   });
 
-  // Wait for at least one fire
   await waitFor(() => fired.length > 0, "first cron fire");
   scheduler.stop();
 
@@ -106,16 +104,13 @@ Deno.test("WorkflowScheduler: start fires callback on cron match", async () => {
 });
 
 Deno.test("canonicalFireTime: snaps to cron grid regardless of sub-second offset", () => {
-  // Pattern fires at :00, :10, :20, :30, :40, :50 of each minute
   const cron = new Cron("*/10 * * * * *", { paused: true });
 
-  // Simulate wall-clock at :30.123 — should snap to :30.000
   const base = new Date("2026-08-01T12:00:30.000Z");
   const skewed = new Date(base.getTime() + 123);
   const result = canonicalFireTime(cron, skewed);
   assertEquals(result.getTime(), base.getTime());
 
-  // Simulate wall-clock at :30.999 — still snaps to :30.000
   const lateSkew = new Date(base.getTime() + 999);
   assertEquals(canonicalFireTime(cron, lateSkew).getTime(), base.getTime());
 
@@ -125,9 +120,7 @@ Deno.test("canonicalFireTime: snaps to cron grid regardless of sub-second offset
 Deno.test("canonicalFireTime: two instances with 500ms clock skew produce the same time", () => {
   const cron = new Cron("0 * * * *", { paused: true });
 
-  // Instance A fires at exactly the top of the hour
   const instanceA = new Date("2026-08-01T15:00:00.050Z");
-  // Instance B's clock is 500ms behind
   const instanceB = new Date("2026-08-01T15:00:00.550Z");
 
   const timeA = canonicalFireTime(cron, instanceA);
@@ -151,7 +144,6 @@ Deno.test("canonicalFireTime: handles per-second cron", () => {
 Deno.test("canonicalFireTime: snaps forward when timer fires early", () => {
   const cron = new Cron("0 * * * *", { paused: true });
 
-  // Timer fires 2ms before the scheduled hour boundary
   const earlyFire = new Date("2026-08-01T14:59:59.998Z");
   const result = canonicalFireTime(cron, earlyFire);
   assertEquals(result.toISOString(), "2026-08-01T15:00:00.000Z");

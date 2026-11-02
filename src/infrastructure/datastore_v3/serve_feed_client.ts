@@ -18,17 +18,9 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * A serve-mode checkout watching serve's commit feed while a long-running
- * command runs (swamp-club#4120), so what other callers commit reaches its
- * copy within about a second instead of at its next catch-up.
- *
- * The watch is a wake-up, not a second way to apply commits: it subscribes
- * to `commits.subscribe` from serve's head and, whenever a frame brings
- * commits, runs the checkout's own catch-up, which reads them through the
- * changes feed with its filtering, base loads and gap handling. A dropped
- * socket is opened again with a backoff until the watch stops.
- *
- * @module
+ * the watch is only a wake-up: each frame with commits runs the checkout's own
+ * catch-up, so filtering, base loads and gap handling stay in one place; a
+ * dropped socket reopens with backoff
  */
 
 import { getSwampLogger } from "../logging/logger.ts";
@@ -38,13 +30,10 @@ const logger = getSwampLogger(["datastore", "v3", "serve-feed"]);
 
 const MAX_BACKOFF_MS = 30_000;
 
-/** A running watch. */
 export interface ServeFeedWatch {
-  /** Stops watching and waits for a catch-up it started. */
   stop(): Promise<void>;
 }
 
-/** What {@link watchServeFeed} needs. */
 export interface ServeFeedWatchOptions {
   readonly target: Pick<
     ServeUpstreamTarget,
@@ -52,11 +41,9 @@ export interface ServeFeedWatchOptions {
   >;
   /** Runs the checkout's catch-up; called again only once it settled. */
   catchUp(): Promise<unknown>;
-  /** Replaced in tests. */
   readonly openSocket?: (url: string, headers: Headers) => WebSocket;
 }
 
-/** Watches serve's commit feed for `target` until stopped. */
 export function watchServeFeed(options: ServeFeedWatchOptions): ServeFeedWatch {
   let stopped = false;
   let socket: WebSocket | undefined;

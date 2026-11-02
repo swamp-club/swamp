@@ -16,18 +16,6 @@
 //
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
-// Architectural fitness test: every production ExtensionLoader that has a
-// catalog is built with a module graph reader.
-//
-// The loader records the module graph each bundle is built from, and the
-// freshness fingerprint hashes every module in it, so editing any local
-// module a bundle includes rebuilds it (swamp-club#3385). A loader built
-// without a reader records only the relative imports within the kind's
-// directory, which brings the bug back for every source it bundles. The
-// constructor argument is optional so tests need not pass it, so this rule
-// is what keeps a new production construction from omitting it. A loader
-// with no repository (fewer than five arguments) has no catalog to record
-// into.
 
 import { assert, assertEquals } from "@std/assert";
 import {
@@ -37,7 +25,6 @@ import {
   SRC_DIR,
 } from "./arch_fitness_helpers.ts";
 
-/** The position of the module graph reader in the constructor's arguments. */
 const READER_ARGUMENT = 6;
 
 Deno.test("extension loader: production constructions with a repository pass a module graph reader (swamp-club#3385)", async () => {

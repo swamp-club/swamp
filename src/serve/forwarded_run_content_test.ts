@@ -55,7 +55,6 @@ function record(fields: Record<string, unknown> = {}) {
   };
 }
 
-/** A context whose stored records are `stored`, deciding `allowed` actions. */
 function context(
   stored: Record<string, Uint8Array>,
   allowed: readonly string[],
@@ -443,7 +442,6 @@ Deno.test("checkRunRecord: a nested workflow output must be a child run whose re
     allowed = ["run", "read"],
   ) => await checkRunRecord(context(stored, allowed).context, op);
   assertEquals(await judged({ [childKey]: child(RUN) }), undefined);
-  // Another run's child, another step's, no child, or an unreadable workflow.
   assert(
     await judged({
       [childKey]: child("99999999-aaaa-4bbb-8ccc-dddddddddddd"),

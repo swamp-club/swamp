@@ -53,37 +53,29 @@ export interface AuditEmitterOptions {
   readonly hmacKeyRegistry?: HmacKeyRegistry;
   readonly alertEngine?: AlertRuleEngine;
   readonly sinkTimeoutMs?: number;
-  /** First retry delay for a failing non-durable sink; doubles per failure. */
   readonly sinkBackoffBaseMs?: number;
   readonly sinkBackoffMaxMs?: number;
-  /** Fixed delay before retrying a failed durable write. */
   readonly durableRetryMs?: number;
   readonly now?: () => number;
 }
 
 class SinkTimeoutError extends Error {}
 
-/** Delivery state for one sink object. */
 interface SinkDelivery {
-  /** The delivery loop, while one is running. */
   pump: Promise<void> | null;
   /** The sink's own write, until it settles — which a timeout does not do. */
   inFlight: Promise<void> | null;
   failures: number;
   retryAt: number;
   timer: ReturnType<typeof setTimeout> | null;
-  /** When the outstanding write timed out, until it settles. */
   stuckSince: number | null;
   stuckLoggedAt: number;
-  /** The last sequence in the outstanding write. */
   inFlightThroughSeq: number;
 }
 
 /**
- * Gives each sink the key its cursor and drop count are kept under: its name,
- * or for a later sink with the same name, the name with its position among
- * them (`webhook:siem.example.com#2`). Keys follow sink order, so hot-reload
- * hands each sink's cursor to its replacement.
+ * a later sink with the same name gets name#2 onwards; keys follow sink order
+ * so hot-reload hands each sink's cursor to its replacement
  */
 function deliveryKeys(sinks: readonly AuditSink[]): {
   keys: Map<AuditSink, string>;
@@ -192,19 +184,10 @@ export class AuditEmitter {
     this.#alertEngine = engine;
   }
 
-  /**
-   * Events a sink never received because it fell further behind than the
-   * buffer holds. Takes the sink's name, or `name#2` onwards for a later sink
-   * with the same name.
-   */
   droppedEvents(sinkName: string): number {
     return this.#dropped.get(sinkName) ?? 0;
   }
 
-  /**
-   * True while a durable sink has a write outstanding past the sink timeout.
-   * Nothing new reaches that sink until the write settles.
-   */
   get durableStalled(): boolean {
     return this.#sinks.some((sink) => this.#isStalled(sink));
   }
@@ -299,9 +282,8 @@ export class AuditEmitter {
   }
 
   /**
-   * Chains the buffered events that have not been chained yet. Each event
-   * passes through here exactly once, so HMAC, the chain and the alert rules
-   * see it once however many times a sink has to be retried.
+   * each event is chained exactly once so HMAC, the chain and alert rules see
+   * it once however many times a sink retries
    */
   async #chainNewEvents(): Promise<ChainedAuditEvent[]> {
     const { items, startSeq } = this.#buffer.readFrom(this.#chainedThroughSeq);
@@ -346,10 +328,6 @@ export class AuditEmitter {
     );
   }
 
-  /**
-   * Keys the current sinks, warning when sinks share a name — once per set of
-   * shared names, so a reload that changes nothing does not repeat it.
-   */
   #assignDeliveryKeys(): void {
     const { keys, shared } = deliveryKeys(this.#sinks);
     this.#keys = keys;
@@ -364,15 +342,10 @@ export class AuditEmitter {
     }
   }
 
-  /** The delivery key of a current sink; a sink hot-reload removed has none. */
   #keyOf(sink: AuditSink): string | undefined {
     return this.#keys.get(sink);
   }
 
-  /**
-   * Moves a sink that has fallen behind what is still held up to the oldest
-   * held event, counting the events it missed against that sink alone.
-   */
   #clampCursor(sink: AuditSink): number {
     const key = this.#keyOf(sink);
     if (key === undefined) return this.#chainedThroughSeq;
@@ -385,7 +358,6 @@ export class AuditEmitter {
     return oldestHeld - 1;
   }
 
-  /** The chained events a sink has not received yet. */
   #batchFor(
     sink: AuditSink,
   ): { events: ChainedAuditEvent[]; throughSeq: number } {
@@ -408,7 +380,6 @@ export class AuditEmitter {
     }
   }
 
-  /** Forgets chained events every sink has received or the buffer has lost. */
   #pruneChained(): void {
     let keepFrom = this.#chainedThroughSeq + 1;
     for (const key of this.#keys.values()) {
@@ -595,10 +566,6 @@ export class AuditEmitter {
     return delivery;
   }
 
-  /**
-   * Starts delivery to a non-durable sink unless it is already delivering,
-   * still has a write outstanding, or is backing off after a failure.
-   */
   #pump(sink: AuditSink): void {
     if (!this.#sinks.includes(sink)) return;
     const delivery = this.#deliveryFor(sink);
@@ -621,10 +588,6 @@ export class AuditEmitter {
     delivery.pump = pump;
   }
 
-  /**
-   * A sink whose write timed out and has still not settled receives nothing.
-   * Keeps its drop count moving and says so, at most once a minute.
-   */
   #reportStuck(sink: AuditSink, delivery: SinkDelivery): void {
     if (delivery.stuckSince === null) return;
     this.#clampCursor(sink);
@@ -648,11 +611,6 @@ export class AuditEmitter {
     }
   }
 
-  /**
-   * A durable write that outlived its timeout has settled: take a late
-   * success as delivered, then drain again so the sink catches up, or the
-   * failed batch is retried, without waiting for a new event.
-   */
   #resumeDurableAfterLateSettle(
     sink: AuditSink,
     delivery: SinkDelivery,
@@ -668,10 +626,6 @@ export class AuditEmitter {
     this.#drainSerialized();
   }
 
-  /**
-   * A write that outlived its timeout has settled: take a late success as
-   * delivered, then pick delivery back up without waiting for a new event.
-   */
   #resumeAfterLateSettle(
     sink: AuditSink,
     delivery: SinkDelivery,
@@ -817,7 +771,6 @@ export class AuditEmitter {
       });
     }
     await this.#drainPromise;
-    // Each delivery loop ends on its own: on success, failure or timeout.
     await Promise.all(
       [...this.#deliveries.values()].map((delivery) => delivery.pump),
     );
@@ -833,18 +786,15 @@ export class AuditEmitter {
     }
   }
 
-  /** Whether a durable sink has a write outstanding past the timeout. */
   #isStalled(sink: AuditSink): boolean {
     return sink.durable &&
       (this.#deliveries.get(sink)?.stuckSince ?? null) !== null;
   }
 
   /**
-   * At shutdown, a durable sink whose write is stalled — before close's flush
-   * or during it — is given up to the sink timeout to settle; if it does, one
-   * more drain delivers what it missed. A sink still stalled after that has
-   * the events after its stalled batch written on their own, so they reach
-   * the WAL without the stalled batch being sent twice.
+   * at shutdown a stalled durable sink gets up to the sink timeout to settle;
+   * if still stalled, later events are written on their own so they reach the
+   * WAL without resending the stalled batch
    */
   async #finishStalledDurableWrites(stalledBefore: AuditSink[]): Promise<void> {
     const stalled = new Set(stalledBefore);
@@ -868,7 +818,6 @@ export class AuditEmitter {
     }
   }
 
-  /** Writes the events after a stalled batch, then says what is unconfirmed. */
   async #writeAfterStalledBatch(sink: AuditSink): Promise<void> {
     const delivery = this.#deliveryFor(sink);
     const events: ChainedAuditEvent[] = [];
@@ -904,7 +853,6 @@ export class AuditEmitter {
     );
   }
 
-  /** Whether a promise that never rejects settles within the given time. */
   async #settlesWithin(promise: Promise<void>, ms: number): Promise<boolean> {
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {

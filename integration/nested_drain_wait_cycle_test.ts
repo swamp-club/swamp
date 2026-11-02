@@ -17,14 +17,9 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// Parallel runs in one process each hold a per-model lock and each start a
-// nested structural command. Each nested drain skips its own run's lock and
-// waits on the others', which are held until their own nested commands
-// exit, so without help they all wait until the lock timeout
-// (swamp-club#2981). Wires the real lock files written by acquireModelLocks,
-// the process marker's held-lock scopes, the env each child swamp would
-// inherit, and the drain-wait markers on disk, with no subprocess: each
-// child is a LockHolderMarker over that env.
+// parallel runs each hold a per-model lock and start a nested command whose
+// drain waits on the others' locks, so without help they all wait until the
+// lock timeout
 
 import { assertEquals, assertInstanceOf } from "@std/assert";
 import { join } from "@std/path";
@@ -86,7 +81,6 @@ async function initRepo(repoDir: string): Promise<FilesystemDatastoreConfig> {
   return datastoreConfig;
 }
 
-/** One run of the parent process: the lock it holds, released at most once. */
 interface Run {
   readonly modelId: string;
   readonly lock: ModelLockResult;
@@ -114,10 +108,6 @@ async function startRun(
   };
 }
 
-/**
- * The lock-holder marker of a swamp started from within the scopes of
- * `runs`, outermost first: it inherits the locks those runs hold.
- */
 async function childOf(
   pid: number,
   ...runs: Run[]
@@ -141,7 +131,6 @@ async function childOf(
   return child;
 }
 
-/** A nested structural command's drain, and how it ended once it has. */
 interface Drain {
   outcome: { error?: unknown } | undefined;
   readonly done: Promise<void>;
@@ -188,11 +177,6 @@ async function markerFiles(
   return names;
 }
 
-/**
- * The lock-holder marker of a swamp started by a step `run` dispatched to a
- * worker on another host: this process is not above it, and it knows the
- * run's lock only by the nonce the dispatch handed down.
- */
 async function childOnAnotherHost(
   pid: number,
   run: Run,
@@ -215,10 +199,6 @@ async function childOnAnotherHost(
   return child;
 }
 
-/**
- * Starts one nested drain per run, waits until all but one have given way,
- * ends the runs whose commands failed, and returns the drains.
- */
 async function drainUnderParallelRuns(
   datastoreConfig: FilesystemDatastoreConfig,
   runs: Run[],
@@ -236,13 +216,11 @@ async function drainUnderParallelRuns(
       "all but one nested drain to give way",
       { timeoutMs: 20_000 },
     );
-    // A step whose nested command failed ends and releases its lock.
     for (const [i, drain] of drains.entries()) {
       if (drain.outcome !== undefined) {
         await runs[i].release();
       }
     }
-    // The drain left waiting finishes without its own run ending.
     await Promise.all(drains.map((d) => d.done));
   } finally {
     await settle(runs, drains);
@@ -250,10 +228,6 @@ async function drainUnderParallelRuns(
   return drains;
 }
 
-/**
- * Ends every run still going and waits for every drain, so a failed
- * assertion never leaves a drain polling after its test.
- */
 async function settle(runs: Run[], drains: Drain[]): Promise<void> {
   await Promise.all(runs.map((run) => run.release()));
   await Promise.all(drains.map((drain) => drain.done));
@@ -279,7 +253,6 @@ Deno.test("nested drain wait cycle: of two parallel runs' nested commands one gi
         assertInstanceOf(error, LockWaitCycleError);
         assertEquals(error.code, "lock_wait_cycle");
         assertEquals(error.opponentPid, Deno.pid);
-        // It names the other run's lock, the one it could not outwait.
         const winner = runs[drains.findIndex((d) => !failed.includes(d))];
         assertEquals(error.message.includes(winner.modelId), true);
         assertEquals(await markerFiles(datastoreConfig), []);
@@ -355,8 +328,6 @@ Deno.test("nested drain wait cycle: a command nested deeper in the same run is w
       [SWAMP_LOCK_HOLDER_TOKENS]: undefined,
       SWAMP_LOCK_TIMEOUT_MS: "30000",
     }, async () => {
-      // The outer run starts a structural command, and also a model method
-      // run (the inner run) that starts one of its own.
       const outer = await startRun(datastoreConfig, repoDir);
       const inner = await startRun(datastoreConfig, repoDir);
       const unrelated = await startRun(datastoreConfig, repoDir);
@@ -383,7 +354,6 @@ Deno.test("nested drain wait cycle: a command nested deeper in the same run is w
         assertEquals(deep.outcome, {});
         assertEquals(shallow.outcome, undefined);
 
-        // The deep command exits, so the inner run ends.
         await inner.release();
         await shallow.done;
         assertEquals(shallow.outcome, {});

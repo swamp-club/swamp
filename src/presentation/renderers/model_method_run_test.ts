@@ -129,8 +129,6 @@ async function captureOutputAsync(
   return lines;
 }
 
-// --- ConsoleModelMethodRunRenderer tests ---
-
 Deno.test("ConsoleModelMethodRunRenderer: succeeded run shows Resolved, Executing, Completed", async () => {
   const renderer = createModelMethodRunRenderer("log", {
     modelName: "test-model",
@@ -348,8 +346,6 @@ Deno.test("ConsoleModelMethodRunRenderer: handles method_event types", () => {
   assertStringIncludes(output, "field required");
   assertStringIncludes(output, "Data name 'a:b' contains ':'");
 });
-
-// --- JsonModelMethodRunRenderer tests ---
 
 Deno.test("JsonModelMethodRunRenderer: intermediate events produce no output", () => {
   const logs: string[] = [];
@@ -705,12 +701,8 @@ Deno.test("ConsoleModelMethodRunRenderer: verbose renders the frame of a report 
   assertStringIncludes(output, "── Report: @test/quiet-report ");
 });
 
-// --- Surfaces (swamp-club#3331) ---
-
-/** The env-var warning libswamp's run generator yields, in both spellings. */
 const RUN_ENV_VAR_WARNING = envVarWarningText();
 
-/** A short warning in both spellings, marked the way libswamp marks it. */
 const SHORT_WARNING = wordedText((w) =>
   `Data stored under this ${w.noun} will vary.`
 );

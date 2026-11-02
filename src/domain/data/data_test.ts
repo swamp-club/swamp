@@ -141,7 +141,6 @@ Deno.test("Data.create requires type tag in tags", () => {
 
 Deno.test("Data.create validates duration lifetime format", () => {
   const owner = createTestOwner();
-  // Valid durations should work
   const dataHours = Data.create({
     name: "test-data",
     contentType: "text/plain",
@@ -275,24 +274,20 @@ Deno.test("Data.isOwnedBy validates ownerType and ownerRef", () => {
     ownerDefinition: owner1,
   });
 
-  // Same owner should match
   assertEquals(data.isOwnedBy(owner1), true);
 
-  // Different ownerRef should not match
   const owner2: OwnerDefinition = {
     ownerType: "model-method",
     ownerRef: "other/model:other-method",
   };
   assertEquals(data.isOwnedBy(owner2), false);
 
-  // Different ownerType should not match
   const owner3: OwnerDefinition = {
     ownerType: "workflow-step",
     ownerRef: "test/model:test-method",
   };
   assertEquals(data.isOwnedBy(owner3), false);
 
-  // Same ownerType + ownerRef matches even without definitionHash
   const owner4: OwnerDefinition = {
     ownerType: "model-method",
     ownerRef: "test/model:test-method",
@@ -476,8 +471,6 @@ Deno.test("Data.create uses provided streaming value", () => {
   assertEquals(data.streaming, true);
 });
 
-// --- Zero-duration lifetime normalization in Data.create ---
-
 Deno.test("Data.create normalizes '0h' lifetime to 'workflow'", () => {
   const owner = createTestOwner();
   const data = Data.create({
@@ -543,8 +536,6 @@ Deno.test("Data.create does not normalize non-zero durations", () => {
   assertEquals(data.lifetime, "7d");
 });
 
-// --- Zero-duration lifetime normalization in Data.fromData ---
-
 Deno.test("Data.fromData normalizes '0h' lifetime to 'workflow'", () => {
   const owner = createTestOwner();
   const original = Data.create({
@@ -556,7 +547,6 @@ Deno.test("Data.fromData normalizes '0h' lifetime to 'workflow'", () => {
     ownerDefinition: owner,
   });
 
-  // Simulate on-disk data that was saved with "0h" before the fix
   const persisted = original.toData();
   persisted.lifetime = "0h";
 
@@ -614,8 +604,6 @@ Deno.test("Data.fromData preserves 'workflow' lifetime", () => {
   assertEquals(restored.lifetime, "workflow");
 });
 
-// --- Roundtrip with zero-duration normalization ---
-
 Deno.test("Data roundtrip normalizes zero-duration: create with '0h' -> toData -> fromData -> 'workflow'", () => {
   const owner = createTestOwner();
   const data = Data.create({
@@ -635,8 +623,6 @@ Deno.test("Data roundtrip normalizes zero-duration: create with '0h' -> toData -
   const restored = Data.fromData(serialized);
   assertEquals(restored.lifetime, "workflow");
 });
-
-// --- Lifecycle tests ---
 
 Deno.test("Data.create defaults lifecycle to 'active'", () => {
   const owner = createTestOwner();
@@ -762,7 +748,6 @@ Deno.test("Data.fromData defaults lifecycle to 'active' when missing", () => {
     ownerDefinition: owner,
   });
 
-  // Simulate old on-disk data without lifecycle field
   const serialized = data.toData();
   delete serialized.lifecycle;
 
@@ -824,8 +809,6 @@ Deno.test("Data.withNewVersion preserves lifecycle", () => {
   const newVersion = data.withNewVersion({ version: 2 });
   assertEquals(newVersion.lifecycle, "deleted");
 });
-
-// --- Rename marker tests ---
 
 Deno.test("Data.withRenameMarker creates a deleted version with forward reference", () => {
   const owner = createTestOwner();

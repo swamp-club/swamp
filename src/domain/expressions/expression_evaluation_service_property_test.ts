@@ -69,8 +69,8 @@ Deno.test("resolveRuntimeExpressionsInData: nested issued references always refu
         );
         assertEquals(error.code, "secret_destination_refused");
         assertEquals(error.message.includes(sentinel), false);
-        // No vault is configured: attempting to load would fail the test with
-        // a different error. Even reference-shaped data remains inert.
+        // no vault is configured, so attempting to load would fail with a
+        // different error; reference-shaped data stays inert
         const ordinary = {
           plain,
           text: surrounding,

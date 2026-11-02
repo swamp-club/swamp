@@ -20,14 +20,11 @@
 import type { SafetyIssue } from "./extension_safety_analyzer.ts";
 
 /**
- * Thrown when a bundle built on this machine holds a safety error, before
- * the bundle is imported (swamp-club#3383). Whoever installs the bundle
- * catches it, undoes the install, and tells the user.
+ * thrown before the bundle is imported; whoever installs the bundle catches it,
+ * undoes the install and tells the user
  */
 export class BundleSafetyRefusal extends Error {
-  /** The errors, each naming the bundle and the module. */
   readonly errors: readonly SafetyIssue[];
-  /** Refused bundles that could not be deleted from disk. */
   readonly leftBehind: readonly string[];
 
   constructor(
@@ -44,7 +41,6 @@ export class BundleSafetyRefusal extends Error {
     this.leftBehind = leftBehind;
   }
 
-  /** One refusal carrying the errors and left-behind bundles of all. */
   static merge(refusals: readonly BundleSafetyRefusal[]): BundleSafetyRefusal {
     return new BundleSafetyRefusal(
       refusals.flatMap((r) => r.errors),

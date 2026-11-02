@@ -58,7 +58,6 @@ class MemoryWatermarks implements RetentionWatermarkRepository {
   }
 }
 
-/** A collector over `count` items, all older than any cutoff. */
 function countingCollector(
   kind: RetentionKind,
   count: number,
@@ -174,7 +173,6 @@ Deno.test("runRetentionPass: stops at a batch boundary when stopping, leaving th
   assertEquals(calls.length, 1);
   assertEquals(watermarks.records.get("outputs")?.complete, false);
   assertEquals(watermarks.records.get("outputs")?.deleted, 3);
-  // A kind the pass never reached keeps its previous watermark (none here).
   assertEquals(watermarks.records.has("data"), false);
 });
 
@@ -341,7 +339,6 @@ Deno.test("runRetentionPass: a pass past its budget stops at a batch boundary an
   );
 });
 
-/** The finished spans named `name`. */
 function named(spans: readonly ReadableSpan[], name: string): ReadableSpan[] {
   return spans.filter((s) => s.name === name);
 }
@@ -388,7 +385,6 @@ Deno.test("runRetentionPass: an outputs batch exports retention_batch and batch_
     assertEquals(phases[0].attributes["swamp.diagnostic.bytes_reclaimed"], 20);
     assertEquals(phases[0].attributes["swamp.diagnostic.more"], true);
     assertEquals(phases[1].attributes["swamp.diagnostic.more"], false);
-    // retention.deleted keeps its meaning: what that batch removed.
     assertEquals(batches[1].attributes["retention.deleted"], 2);
     assertEquals(batches[1].attributes["retention.bytes_reclaimed"], 20);
     assertEquals(batches[1].attributes["retention.more"], true);

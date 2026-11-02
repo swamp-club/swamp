@@ -133,18 +133,15 @@ Deno.test("InputOverrideValidationService handles optional fields", () => {
     optional: z.string().optional(),
   });
 
-  // Valid with optional field
   const result1 = service.validate(
     { message: "hello", optional: "world" },
     schema,
   );
   assertEquals(result1.valid, true);
 
-  // Valid without optional field
   const result2 = service.validate({ message: "hello" }, schema);
   assertEquals(result2.valid, true);
 
-  // Optional field with wrong type still fails
   const result3 = service.validate(
     { message: "hello", optional: 123 },
     schema,
@@ -159,16 +156,13 @@ Deno.test("InputOverrideValidationService handles arrays", () => {
     items: z.array(z.string()),
   });
 
-  // Valid array
   const result1 = service.validate({ items: ["a", "b", "c"] }, schema);
   assertEquals(result1.valid, true);
 
-  // Invalid: not an array
   const result2 = service.validate({ items: "not an array" }, schema);
   assertEquals(result2.valid, false);
   assertEquals(result2.errors[0].key, "items");
 
-  // Invalid: wrong element type
   const result3 = service.validate({ items: [1, 2, 3] }, schema);
   assertEquals(result3.valid, false);
   assertEquals(result3.errors[0].key, "items");
@@ -183,14 +177,12 @@ Deno.test("InputOverrideValidationService handles nested objects", () => {
     }),
   });
 
-  // Valid nested object
   const result1 = service.validate(
     { config: { host: "localhost", port: 8080 } },
     schema,
   );
   assertEquals(result1.valid, true);
 
-  // Invalid nested object
   const result2 = service.validate(
     { config: { host: 123, port: "not a number" } },
     schema,
@@ -225,7 +217,6 @@ Deno.test("InputOverrideValidationService handles schema with defaults", () => {
     count: z.number().default(0),
   });
 
-  // Valid override of defaulted field
   const result = service.validate({ message: "override" }, schema);
   assertEquals(result.valid, true);
 });
@@ -234,11 +225,9 @@ Deno.test("InputOverrideValidationService handles record schemas", () => {
   const service = new InputOverrideValidationService();
   const schema = z.record(z.string(), z.number());
 
-  // Valid: any string key with number value
   const result1 = service.validate({ foo: 1, bar: 2 }, schema);
   assertEquals(result1.valid, true);
 
-  // Invalid: wrong value type
   const result2 = service.validate({ foo: "not a number" }, schema);
   assertEquals(result2.valid, false);
 });
@@ -249,15 +238,12 @@ Deno.test("InputOverrideValidationService handles union schemas", () => {
     value: z.union([z.string(), z.number()]),
   });
 
-  // Valid: string
   const result1 = service.validate({ value: "hello" }, schema);
   assertEquals(result1.valid, true);
 
-  // Valid: number
   const result2 = service.validate({ value: 42 }, schema);
   assertEquals(result2.valid, true);
 
-  // Invalid: boolean
   const result3 = service.validate({ value: true }, schema);
   assertEquals(result3.valid, false);
 });
@@ -268,15 +254,12 @@ Deno.test("InputOverrideValidationService handles nullable fields", () => {
     message: z.string().nullable(),
   });
 
-  // Valid: string
   const result1 = service.validate({ message: "hello" }, schema);
   assertEquals(result1.valid, true);
 
-  // Valid: null
   const result2 = service.validate({ message: null }, schema);
   assertEquals(result2.valid, true);
 
-  // Invalid: number
   const result3 = service.validate({ message: 123 }, schema);
   assertEquals(result3.valid, false);
 });
@@ -287,11 +270,9 @@ Deno.test("InputOverrideValidationService handles enum validation", () => {
     level: z.enum(["low", "medium", "high"]),
   });
 
-  // Valid enum value
   const result1 = service.validate({ level: "medium" }, schema);
   assertEquals(result1.valid, true);
 
-  // Invalid enum value
   const result2 = service.validate({ level: "invalid" }, schema);
   assertEquals(result2.valid, false);
   assertEquals(result2.errors[0].key, "level");

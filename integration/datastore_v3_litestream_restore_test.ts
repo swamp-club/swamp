@@ -18,11 +18,9 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * Restore, refresh and takeover from the v3 replica (swamp-club#3482,
- * Phase 4 D2), against a real Litestream with a file replica. Each
- * "machine" is a worker with its own module state, host name and checkout,
- * on one filesystem-v3 datastore: two checkouts behave like two machines
- * on a bucket. Ignored without `SWAMP_LITESTREAM_PATH`, and on Windows.
+ * each machine is a worker with its own module state, host name and checkout on
+ * one filesystem v3 datastore, so two checkouts behave like two machines on a
+ * bucket
  */
 
 import {
@@ -66,18 +64,11 @@ import type {
 
 const ignore = SIDECAR_TESTS_IGNORED;
 
-/**
- * How long a stalled machine stops: past its 1.5 s lease, plus the 10 s
- * the lease allows for clock skew (`WRITER_LEASE_CLOCK_SKEW_MS`).
- */
 const STALL_MS = 14_000;
 
-/** A machine: requests run one at a time, in order. */
 interface Machine {
   send(request: MachineRequest): Promise<unknown>;
-  /** Ends the worker as a crash would: no teardown. */
   crash(): Promise<void>;
-  /** Kills the sidecars this machine launched, as an idle exit ends them. */
   stopSidecars(): Promise<void>;
 }
 
@@ -89,28 +80,16 @@ interface World {
   machine(
     name: string,
     options?: {
-      /** The namespace its datastore config names. */
       readonly namespace?: string;
-      /** Its replica setting; "" for a machine that does not replicate. */
       readonly replica?: string;
-      /** Whose checkout it uses; its own by default. */
       readonly checkout?: string;
-      /** Its Litestream lookups wait on gate files (see the worker). */
       readonly gated?: boolean;
-      /** It keeps its datastore warnings for a `warnings` request. */
       readonly captureWarnings?: boolean;
-      /** How long it waits for a lock; 30 s by default. */
       readonly lockTimeoutMs?: number;
-      /** Its Litestream binary cannot be found. */
       readonly binaryMissing?: boolean;
     },
   ): Promise<Machine>;
-  /** What the published lineages say, as a reader sees them. */
   lineages(): Promise<{ current?: number; newestStarted?: number }>;
-  /**
-   * Whether the lineage at `fence` is still registered: a collection removes
-   * its records only once its replica path is gone.
-   */
   registered(fence: number): Promise<boolean>;
 }
 
@@ -244,7 +223,6 @@ async function withMachines(
       await remember().catch(() => {});
       worker.terminate();
     }
-    // Every supervisor any machine launched, with its Litestream.
     for (const pid of pids) killSidecarAtTeardown(pid);
     await waitFor(
       () => [...pids].every((pid) => !hostLitestreamProcesses.isAlive(pid)),
@@ -296,7 +274,6 @@ Deno.test({
       );
       assertEquals(refused.code, "datastore_claimed");
       await b.send({ kind: "close" });
-      // Reads stay allowed, and the refused write landed nothing.
       assertEquals((await read(b)).commits, 1);
       await a.send({ kind: "release" });
       await b.send({ kind: "write", commits: 1, close: true });
@@ -341,10 +318,8 @@ Deno.test({
       const a = await world.machine("a");
       const b = await world.machine("b");
       await a.send({ kind: "claim", address: "https://swamp.example.com" });
-      // B's copy now shows the claim.
       await read(b);
       await a.send({ kind: "release" });
-      // Another process holds the lease while B writes.
       await a.send({ kind: "lease", ttlMs: 60_000 });
       const refused = await assertRejects(
         () => b.send({ kind: "write", commits: 1, close: true }),
@@ -398,7 +373,6 @@ Deno.test({
       );
       const c = await world.machine("c");
       assertEquals((await read(c)).commits, 3);
-      // The first writer writes again: it restores the takeover's lineage.
       await a.send({ kind: "write", commits: 1, close: true });
       assertEquals((await read(c)).commits, 4);
     });
@@ -413,7 +387,6 @@ Deno.test({
     await withMachines(async (world) => {
       const a = await world.machine("a");
       await a.send({ kind: "write", commits: 2, close: true });
-      // A short lease, then a commit its sidecar uploads, then a stall.
       await a.send({ kind: "lease", ttlMs: 1_500 });
       await a.send({ kind: "write", commits: 1, close: false });
       // Its read model applies the zombie commit, at the cursor the
@@ -438,10 +411,9 @@ Deno.test({
       const c = await world.machine("c");
       assertEquals((await read(c)).commits, 3);
       assertEquals((await read(b)).commits, 3);
-      // The zombie's own checkout: its copy is restored from the takeover's
-      // lineage, where the commit at its read model's cursor is another
-      // one, so the read model replays (ADV-7) and holds the acknowledged
-      // records only.
+      // the zombie's copy is restored from the takeover's lineage, where the
+      // commit at its read model's cursor differs, so the read model replays
+      // and holds only acknowledged records
       assertEquals((await read(a)).commits, 3);
       const files = await a.send({ kind: "files" }) as string[];
       assertEquals(files.length, 3);
@@ -481,9 +453,6 @@ Deno.test({
     await withMachines(async (world) => {
       const a = await world.machine("a");
       await a.send({ kind: "write", commits: 2, close: true });
-      // Serve's request, under a short lease so the takeover need not wait
-      // long: it commits, confirms, answers, then dies before any probe or
-      // shutdown publishes a head.
       await a.send({ kind: "lease", ttlMs: 1_500 });
       await a.send({ kind: "write", commits: 1, close: false });
       await a.send({ kind: "confirm" });
@@ -505,8 +474,6 @@ Deno.test({
       const b = await world.machine("b");
       await a.send({ kind: "write", commits: 1, close: true });
       await b.send({ kind: "write", commits: 1, close: true });
-      // The first machine takes the lease without writing, as a read-only
-      // recovery does, on a copy that is behind.
       await a.send({ kind: "lease", ttlMs: 30_000 });
       await a.send({ kind: "close" });
       await a.send({ kind: "write", commits: 1, close: true });
@@ -526,7 +493,6 @@ Deno.test({
       await serve.send({ kind: "lease", ttlMs: 1_500, retake: true });
       await serve.send({ kind: "write", commits: 1, close: false });
       await serve.send({ kind: "upkeep", probeMs: 300 });
-      // The probe publishes serve's passive commit.
       await waitFor(
         async () => (await world.lineages()).current !== undefined,
         "serve's head",
@@ -536,16 +502,13 @@ Deno.test({
       const other = await world.machine("other");
       await other.send({ kind: "write", commits: 2, close: true });
       await paused;
-      // Serve's renewal finds the lease lost and retakes it, restoring the
-      // other writer's lineage into its open store. A write that started
-      // before the renewal noticed is refused, as its copy is behind while
-      // serve still holds its sidecar; on a loaded host that renewal lands
-      // late (swamp-club#3497).
+      // serve's renewal finds the lease lost and retakes it, restoring the
+      // other lineage; a write started before the renewal noticed is refused,
+      // as its copy is behind while serve holds its sidecar
       await waitFor(
         async () => (await serve.send({ kind: "fence" }) as number) > fence,
         "serve's retake",
       );
-      // Serve writes on top of the restored lineage.
       await serve.send({ kind: "write", commits: 1, close: false });
       await serve.send({ kind: "stopUpkeep" });
       await serve.send({ kind: "close" });
@@ -572,7 +535,6 @@ Deno.test({
       const paused = serve.send({ kind: "pause", ms: STALL_MS });
       const other = await world.machine("other");
       await other.send({ kind: "write", commits: 2, close: true });
-      // Serve's restore after its retake waits on this lock.
       const lock = await Deno.open(
         await serve.send({ kind: "restoreLock" }) as string,
         { read: true, write: true, create: true },
@@ -588,7 +550,6 @@ Deno.test({
           const refused = await serve.send({ kind: "tryCommit" });
           return typeof refused === "string" &&
             refused.includes("took over") && !refused.includes("(fence ") &&
-            // swamp-club#3491: it says serve holds the lease again.
             refused.includes("still being brought up to date") &&
             !refused.includes("Another swamp process");
         }, "a commit refused after the retake");
@@ -617,7 +578,6 @@ Deno.test({
   async fn() {
     await withMachines(async (world) => {
       const a = await world.machine("a");
-      // Two commands, fences 1 and 2, one lineage at fence 1.
       await a.send({ kind: "write", commits: 1, close: true });
       await a.send({ kind: "write", commits: 1, close: true });
       const first = (await world.lineages()).current!;
@@ -724,15 +684,11 @@ Deno.test({
   ignore,
   async fn() {
     await withMachines(async (world) => {
-      // Commits made before replication was turned on, in the datastore's
-      // shared commits.db.
       const before = await world.machine("before", { replica: "" });
       await before.send({ kind: "write", commits: 3, close: true });
-      // The first writer once it is on, in the same checkout.
       const first = await world.machine("first", { checkout: "before" });
       await first.send({ kind: "write", commits: 1, close: true });
       assertEquals((await read(first)).commits, 4);
-      // A fresh checkout restores the first lineage: every commit is there.
       const fresh = await world.machine("fresh");
       assertEquals((await read(fresh)).commits, 4);
     });
@@ -747,9 +703,7 @@ Deno.test({
     await withMachines(async (world) => {
       const a = await world.machine("a");
       await a.send({ kind: "write", commits: 2, close: true });
-      // The next command's hold, on the confirmed lineage.
       await a.send({ kind: "write", commits: 0, close: false });
-      // Only the current lineage is restorable: collection runs.
       assertEquals(await a.send({ kind: "gc" }), null);
       // A lineage another writer started, which it may yet confirm.
       const current = (await world.lineages()).current!;
@@ -789,7 +743,6 @@ Deno.test({
       const claimed = await world.lineages();
       assert(claimed.newestStarted !== undefined, "first claimed a lineage");
       assertEquals(claimed.current, undefined);
-      // Another checkout's writer seeds from the same shared commits.
       const other = await world.machine("other");
       await other.send({ kind: "write", commits: 1, close: true });
       const fresh = await world.machine("fresh");
@@ -798,7 +751,6 @@ Deno.test({
   },
 });
 
-/** Holds `name`'s Litestream lookups until {@link openGate}. */
 async function closeGate(world: World, name: string): Promise<void> {
   await Deno.writeTextFile(join(world.root, name), "");
 }
@@ -831,13 +783,9 @@ async function chmodTree(dir: string, mode: number): Promise<void> {
 }
 
 /**
- * Serve's replacement restores a lineage, stalls inside that restore, and
- * serve loses and retakes the lease while another checkout lands a commit on
- * a newer lineage (swamp-club#3565). The stale restore must never be marked
- * current nor start serve's lineage: serve's next commit goes on top of every
- * acknowledged commit. `keepStale` keeps the stale lineage restorable on a
- * file replica, where the other writer's collection would remove it; a
- * bucket replica without a bound path store never collects it.
+ * the stale restore must never be marked current nor start serve's lineage;
+ * keepStale keeps it restorable on a file replica, where the other writer's
+ * collection would remove it
  */
 async function retakeDuringStaleRestore(
   world: World,
@@ -852,7 +800,6 @@ async function retakeDuringStaleRestore(
     "serve's head",
   );
   const first = await serve.send({ kind: "fence" }) as number;
-  // The first retake's restore stalls once it has read the lineage.
   await closeGate(world, "machine-serve-gate-restore");
   const other = await world.machine("other");
   let paused = serve.send({ kind: "pause", ms: STALL_MS });
@@ -872,8 +819,6 @@ async function retakeDuringStaleRestore(
     );
     const retaken = await serve.send({ kind: "fence" }) as number;
     await gateEntered(world, "machine-serve-gate-restore");
-    // Serve loses the lease again; the other writer lands one more commit
-    // on a newer lineage, and serve retakes above it.
     paused = serve.send({ kind: "pause", ms: STALL_MS });
     await other.send({ kind: "write", commits: 1, close: true });
     await paused;
@@ -881,7 +826,6 @@ async function retakeDuringStaleRestore(
       async () => (await serve.send({ kind: "fence" }) as number) > retaken,
       "serve's second retake",
     );
-    // The stalled restore still reads a lineage the current one replaced.
     assert(await world.registered(stale), "the stale lineage is kept");
     assert((await world.lineages()).current! > stale);
     await openGate(world, "machine-serve-gate-restore");
@@ -895,17 +839,10 @@ async function retakeDuringStaleRestore(
   } finally {
     if (kept !== undefined) await chmodTree(kept, 0o755);
   }
-  // 1 + 2 + 1 + serve's 1: every acknowledged commit, in the current state.
   const c = await world.machine("c");
   assertEquals((await read(c)).commits, 5);
 }
 
-/**
- * Serve's probe replaces a dead sidecar, the replacement stalls starting the
- * new one, and serve retakes the lease meanwhile (swamp-club#3565, V3-54):
- * once the replacement settles, serve writes again instead of refusing every
- * commit until it restarts.
- */
 async function retakeDuringSidecarStart(world: World): Promise<void> {
   const serve = await world.machine("serve", { gated: true });
   await serve.send({ kind: "lease", ttlMs: 1_500, retake: true });
@@ -1000,8 +937,6 @@ Deno.test({
     await withMachines(async (world) => {
       const a = await world.machine("a", { captureWarnings: true });
       await a.send({ kind: "write", commits: 2, close: true });
-      // A third commit lands locally; its sidecar dies before the closing
-      // sync confirms it.
       await a.send({ kind: "write", commits: 1, close: false });
       const sidecars = await a.send({ kind: "pids" }) as number[];
       for (const pid of sidecars) {
@@ -1021,7 +956,6 @@ Deno.test({
         "if another checkout writes to the datastore first, they are lost",
       );
       await a.send({ kind: "warnings" });
-      // Another checkout writes first; A's next write restores over its copy.
       const b = await world.machine("b");
       await b.send({ kind: "write", commits: 1, close: true });
       await a.send({ kind: "write", commits: 1, close: true });
@@ -1032,7 +966,6 @@ Deno.test({
         ),
         `A's warnings: ${JSON.stringify(warned)}`,
       );
-      // 2 + B's 1 + A's last 1: the unconfirmed commit is gone.
       const c = await world.machine("c");
       assertEquals((await read(c)).commits, 4);
     });
@@ -1065,10 +998,8 @@ Deno.test({
 });
 
 /**
- * Makes the current lineage's replica path unreadable, as a bucket that
- * answers Litestream's reads with 404 does: the lineage records still name
- * it, so a restore is attempted and fails. `writer`'s sidecars are stopped
- * first, so none writes the path again.
+ * makes the lineage replica path unreadable like a bucket answering 404; the
+ * writer's sidecars stop first so none rewrites the path
  */
 async function hideCurrentLineage(
   world: World,
@@ -1098,7 +1029,6 @@ Deno.test({
           "Restoring the v3 datastore copy failed",
         );
       }
-      // A write fails the same way, as it did before.
       const write = await assertRejects(
         () => b.send({ kind: "write", commits: 1, close: true }),
         MachineError,
@@ -1171,7 +1101,6 @@ Deno.test({
       );
       await Deno.mkdir(dirname(copyDb), { recursive: true });
       const b = await world.machine("b", { lockTimeoutMs: 500 });
-      // That process holds the restore lock throughout.
       const lockPath = await b.send({ kind: "restoreLock" }) as string;
       await Deno.mkdir(dirname(lockPath), { recursive: true });
       const lock = await Deno.open(lockPath, {
@@ -1231,8 +1160,6 @@ Deno.test({
       await serve.send({ kind: "lease", ttlMs: 1_500, retake: true });
       await serve.send({ kind: "write", commits: 1, close: false });
       await serve.send({ kind: "confirm" });
-      // The probe never publishes: a commit serve applies now stays
-      // unconfirmed, and the other writer's lineage lacks it.
       await serve.send({ kind: "upkeep", probeMs: 60_000 });
       assertEquals(await serve.send({ kind: "tryCommit" }), null);
       await serve.send({ kind: "catchUp" });
@@ -1242,11 +1169,8 @@ Deno.test({
       const paused = serve.send({ kind: "pause", ms: STALL_MS });
       await other.send({ kind: "write", commits: 2, close: true });
       await paused;
-      // The retake's restore drops serve's unconfirmed commit, and stalls.
       await gateEntered(world, "machine-serve-gate-restore");
       const retaken = await serve.send({ kind: "fence" }) as number;
-      // A second retake while it is stalled, with no newer lineage: the
-      // next replacement finds the copy current and restores nothing.
       const planted = await plantV3WriterLease(world.datastorePath, {
         pid: Deno.ppid,
       });
@@ -1261,7 +1185,6 @@ Deno.test({
         "serve's commit after the replacement",
         { timeoutMs: 30_000 },
       );
-      // Once the replacement holds its sidecar again.
       await waitFor(
         () => serve.send({ kind: "confirm" }).then(() => true, () => false),
         "serve's commit confirmed",
@@ -1270,7 +1193,6 @@ Deno.test({
       const files = await serve.send({ kind: "files" }) as string[];
       await serve.send({ kind: "stopUpkeep" });
       await serve.send({ kind: "close" });
-      // Serve's checkout lists what the datastore holds: 1 + 2 + 1.
       const c = await world.machine("c");
       assertEquals((await read(c)).commits, 4);
       assertEquals(files, await c.send({ kind: "files" }));

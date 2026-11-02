@@ -21,7 +21,6 @@ import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
 
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
-/** A single extension entry in search results. */
 export interface ExtensionSearchItem {
   name: string;
   description: string;
@@ -41,21 +40,18 @@ export interface ExtensionSearchItem {
   supersededBy?: string | null;
 }
 
-/** Pagination metadata for search results. */
 export interface ExtensionSearchMeta {
   total: number;
   page: number;
   perPage: number;
 }
 
-/** Data payload for the completed event. */
 export interface ExtensionSearchData {
   query: string;
   results: ExtensionSearchItem[];
   meta: ExtensionSearchMeta;
 }
 
-/** Input parameters for extension search. */
 export interface ExtensionSearchInput {
   query?: string;
   collective?: string;
@@ -66,11 +62,9 @@ export interface ExtensionSearchInput {
   sort?: string;
   perPage?: number;
   page?: number;
-  /** Ask the registry for licensed extensions only. */
   licensed?: boolean;
 }
 
-/** Dependencies for the extension search operation. */
 export interface ExtensionSearchDeps {
   searchExtensions(params: {
     q?: string;
@@ -108,7 +102,6 @@ export type ExtensionSearchEvent =
   | { kind: "completed"; data: ExtensionSearchData }
   | { kind: "error"; error: SwampError };
 
-/** Searches the extension registry and yields results. */
 export async function* extensionSearch(
   _ctx: LibSwampContext,
   deps: ExtensionSearchDeps,

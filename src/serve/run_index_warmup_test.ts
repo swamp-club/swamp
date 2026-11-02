@@ -24,7 +24,6 @@ import { RunIndexWarmup, type RunIndexWarmupDeps } from "./run_index_warmup.ts";
 
 await initializeLogging({});
 
-/** Deps for a warm-up over `ids`, each with one run, under a 10-run cap. */
 function warmupDeps(
   ids: string[],
   overrides: Partial<RunIndexWarmupDeps> = {},
@@ -110,7 +109,6 @@ Deno.test("RunIndexWarmup: dispose resolves while the workflow in flight is stil
     release();
   }
   await loaded;
-  // b's load ended on its own after the warm-up let go of it; c never ran.
   await waitFor(
     () => Promise.resolve(warmed.length === 2),
     "the released load to end",
@@ -166,9 +164,8 @@ Deno.test("RunIndexWarmup: stop passes its signal to the load in flight", async 
 });
 
 Deno.test("RunIndexWarmup: finished does not wait for a load that ignores the signal", async () => {
-  // A plain index read, a load a request started, or a repair queued behind
-  // another reader: none of them watches the warm-up's signal
-  // (swamp-club#3468).
+  // a plain index read, a load a request started, or a repair queued behind
+  // another reader does not watch the warm-up's signal
   const warmed: string[] = [];
   const { promise: loaded, resolve: release } = Promise.withResolvers<void>();
   let reached = false;

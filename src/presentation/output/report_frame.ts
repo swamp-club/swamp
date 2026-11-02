@@ -20,16 +20,9 @@
 import { renderMarkdownToTerminal } from "../markdown_renderer.ts";
 
 /**
- * Formats a report's markdown as the framed block that log-mode run renderers
- * print after a method or workflow: a `── Report: <name> ───` header rule, the
- * markdown rendered for the terminal, and a closing rule. Both rules span
- * `columns`, so they match each other and the terminal width.
- *
- * Returns `undefined` when the markdown is empty or only whitespace, unless
- * `showEmpty` is set. A report signals "not applicable to this method" that
- * way, and the report execution service skips persisting it, so by default
- * there is nothing to show. Verbose output sets `showEmpty` so a reader can
- * see which reports ran.
+ * undefined for empty markdown unless showEmpty: an empty report means not
+ * applicable and is not persisted. Verbose output sets showEmpty so readers see
+ * which reports ran.
  */
 export function formatReportFrame(
   reportName: string,

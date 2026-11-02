@@ -17,10 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// The behavior spelling of grant selectors (swamp-club#3334): `behavior:` is
-// read as `model:` before anything else sees the selector, and every other
-// unknown kind still fails loudly.
-
 import {
   assert,
   assertEquals,

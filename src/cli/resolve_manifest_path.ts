@@ -28,7 +28,6 @@ import {
 } from "@std/path";
 import { markErrorPaths, UserError } from "../domain/errors.ts";
 
-/** Manifest file names a directory argument may hold, in lookup order. */
 export const MANIFEST_FILE_NAMES = [
   "manifest.yaml",
   "manifest.yml",
@@ -36,17 +35,12 @@ export const MANIFEST_FILE_NAMES = [
 ] as const;
 
 export interface ResolveManifestArgumentOptions {
-  /** The manifest argument exactly as the author typed it. */
   argument: string;
-  /** The directory the command was run from. */
   cwd: string;
-  /** The swamp repository directory (`--repo-dir`). */
   repoDir: string;
-  /** The extensions source root (`--extensions-dir`), when given. */
   extensionsDir?: string;
 }
 
-/** Which base a relative manifest argument was resolved against. */
 export type ManifestArgumentBase =
   | "absolute"
   | "cwd"
@@ -54,9 +48,7 @@ export type ManifestArgumentBase =
   | "repoDir";
 
 export interface ResolvedManifestArgument {
-  /** The manifest file the argument names. */
   absoluteManifestPath: string;
-  /** The base the argument matched under (swamp-club#3018). */
   base: ManifestArgumentBase;
 }
 
@@ -66,19 +58,9 @@ interface Candidate {
 }
 
 /**
- * Turn the manifest argument of `extension push`, `quality` and `fmt` into
- * the manifest file it names (swamp-club#3018, swamp-club#2747).
- *
- * An absolute argument is used as given. A relative argument is tried
- * against `--extensions-dir` when the author set it (the flag names the
- * tree the extension lives in, and the documented git-worktree setup runs
- * from the main checkout with the flag at the worktree, so the current
- * directory must not shadow it), then the current directory, then the repo
- * dir, so a path typed from where the author stands wins over the repo and
- * scripts that pass repo-relative paths with `--repo-dir` keep working. A
- * candidate matches when it is a file, or a directory holding one of
- * {@link MANIFEST_FILE_NAMES}; the first match wins. Every candidate is
- * `stat`ed, never read, so a directory can never reach `readTextFile`.
+ * a relative argument is tried against --extensions-dir first (the worktree
+ * setup runs from the main checkout), then cwd, then the repo dir; candidates
+ * are stat-ed, never read
  */
 export async function resolveManifestArgument(
   options: ResolveManifestArgumentOptions,
@@ -165,15 +147,9 @@ async function statOrNull(path: string): Promise<Deno.FileInfo | null> {
 }
 
 /**
- * `path` spelled under `repoDir` when it reaches the same repository through
- * another spelling, such as the real path of a repo the user entered through
- * a symlink (swamp-club#3536). Only the prefix naming the repository is
- * swapped: the shallowest ancestor of `path` whose real path is the repo
- * dir's is replaced by `repoDir`, and every component below it is kept as
- * written, so a symlink inside the repository, even one back to its root,
- * is never resolved away and the symlink check still sees it
- * (swamp-club#3421). A path already under `repoDir`, or
- * outside the repository, is returned unchanged.
+ * only the prefix naming the repository is swapped; components below it are
+ * kept as written so a symlink inside the repository, even one back to its
+ * root, is still seen by the symlink check
  */
 export async function respellUnderRepoDir(
   path: string,

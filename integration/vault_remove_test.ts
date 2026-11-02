@@ -17,13 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * `swamp vault remove` (swamp-club#3597) wired to real repositories on a
- * temp repo: the default vault and referenced vaults are refused, a removal
- * deletes the config and then the local secrets, and a committed config
- * whose name escapes the secrets root removes nothing.
- */
-
 import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
 import { dirname, join } from "@std/path";
 import { createRepositoryContext } from "../src/infrastructure/persistence/repository_factory.ts";
@@ -108,7 +101,6 @@ function depsFor({ repoDir, repoContext }: TestRepo) {
   });
 }
 
-/** Runs what the CLI runs: preview, the removal, then the secrets. */
 async function removeVault(repo: TestRepo, vaultName: string, force = false) {
   const ctx = createLibSwampContext();
   const deps = depsFor(repo);
@@ -159,7 +151,6 @@ Deno.test("vault remove: removes the config, then the vault's secrets and key", 
       null,
     );
     await assertRejects(() => Deno.lstat(directory), Deno.errors.NotFound);
-    // The default vault is untouched.
     assertEquals(
       (await repo.repoContext.vaultConfigRepo.findByName("default"))?.name,
       "default",
@@ -347,7 +338,6 @@ Deno.test("vault remove: a copied config that kept its source's id is refused an
       base_dir: repo.repoDir,
     });
     await keepProvider.put("K", "keep-secret");
-    // Clone a vault by copying its file and changing only the name.
     const keepPath = repo.repoContext.vaultConfigRepo.getPath(
       keep.type,
       keep.id,

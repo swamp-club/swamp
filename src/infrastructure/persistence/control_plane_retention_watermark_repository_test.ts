@@ -123,7 +123,6 @@ Deno.test("ControlPlaneRetentionWatermarkRepository.claimHourlyPass: a CLI claim
     // A CLI pass, capped by its budget, claims the hour first ...
     assertEquals(await repo.claimHourlyPass(hour, "cli:a", "cli"), true);
     assertEquals(await repo.claimHourlyPass(hour, "cli:b", "cli"), false);
-    // ... and serve's pass, which has no budget, still gets it.
     assertEquals(await repo.claimHourlyPass(hour, "serve-1", "serve"), true);
     assertEquals(await repo.claimHourlyPass(hour, "serve-2", "serve"), false);
   });

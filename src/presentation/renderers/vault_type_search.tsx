@@ -35,10 +35,6 @@ import type { OutputMode } from "../output/output.ts";
 import { UserError } from "../../domain/errors.ts";
 import { renderInteractivePicker } from "./components/search_picker.tsx";
 
-/**
- * Filters vault types by a query string (case-insensitive match on type, name,
- * or description).
- */
 function filterVaultTypes(
   types: VaultTypeSearchItem[],
   query: string,
@@ -140,11 +136,6 @@ export function createVaultTypeSearchRenderer(
   }
 }
 
-// ---------------------------------------------------------------------------
-// Rendering callbacks for the SearchPicker
-// ---------------------------------------------------------------------------
-
-/** Single-line result for the results list. */
 function renderVaultTypeResultLine(
   item: VaultTypeSearchItem,
 ): React.ReactElement {
@@ -155,7 +146,6 @@ function renderVaultTypeResultLine(
   );
 }
 
-/** Renders preview content for a vault type. */
 function renderVaultTypePreview(
   item: VaultTypeSearchItem,
   _detail: VaultTypeSearchItem | undefined,
@@ -172,7 +162,6 @@ function renderVaultTypePreview(
   );
 }
 
-/** Produces plain-text scrollback output for a selected vault type. */
 function renderVaultTypeScrollback(
   item: VaultTypeSearchItem,
   _detail: VaultTypeSearchItem | undefined,

@@ -50,12 +50,9 @@ export async function initializeControlPlaneVaultForCli(
   const caps = syncService?.capabilities?.();
   const hasRemote = !!(caps?.controlPlane && syncService?.controlPlaneStore);
 
-  // Bind the sync service's namespace before obtaining the control plane
-  // store. The S3/GCS extensions irrevocably bind namespace on the first
-  // call to any sync or control-plane method — calling controlPlaneStore()
-  // without a prior pullChanged({ namespace }) binds to root (undefined),
-  // causing all subsequent namespace-aware pushChanged calls to fail with
-  // "Namespace mismatch". This mirrors the serve.ts boot sequence.
+  // Bind the namespace before obtaining the control plane store: S3/GCS
+  // extensions bind irrevocably on first use, and binding to root breaks later
+  // pushes.
   if (hasRemote && options?.namespace) {
     try {
       await syncService!.pullChanged({ namespace: options.namespace });
@@ -73,16 +70,12 @@ export async function initializeControlPlaneVaultForCli(
       throw controlPlaneVaultInitError(err, true);
     }
   } else {
-    // Serve's on a v3 datastore is the datastore's (swamp-club#4096).
     store = await localServeControlPlane(repoDir);
   }
 
-  // The key source comes only from the repo's serve.yaml, read quietly so
-  // token commands don't repeat serve's config warnings. A file that can't
-  // be read or parsed is skipped with a warning: these commands never read
-  // it before, and a control plane already moved to an external key still
-  // fails closed without a key. An invalid token-secrets block is an error;
-  // it names the file and field, so it is not wrapped in the datastore hint.
+  // the key source comes only from serve.yaml, read quietly; an unreadable file
+  // is skipped with a warning, and a control plane already on an external key
+  // still fails closed without one
   let serveConfig: ServeConfigFile | null = null;
   try {
     serveConfig = await readServeConfigFile(repoDir);

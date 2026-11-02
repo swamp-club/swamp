@@ -240,7 +240,6 @@ Deno.test("JobRun: cancelling pending steps settles every named pending step and
 });
 
 Deno.test("JobRun: settling a never-started job is decided by its steps and leaves a started job alone", () => {
-  // A never-started job's steps are pending, cancelled (failed) or skipped.
   const SETTLED: ReadonlyArray<(step: StepRun) => void> = [
     () => {},
     (s) => s.fail(CANCELLED_STEP_ERROR),
@@ -271,7 +270,6 @@ Deno.test("JobRun: settling a never-started job is decided by its steps and leav
         } else {
           assertEquals(job.status, "skipped");
         }
-        // Steps are never changed by settling the job.
         assertEquals(job.steps.map((s) => s.status), statuses);
       },
     ),
@@ -346,15 +344,12 @@ Deno.test("WorkflowRun: reopening aborted work resets exactly the settled record
   );
 });
 
-// --- Nested run links (swamp-club#2736) -------------------------------------
-
 const arbUuid = fc.uuid();
 const arbValidNestedRef = fc.record({
   workflowId: arbUuid,
   workflowName: fc.constantFrom("child", "@acme/child", "deploy-child"),
   runId: arbUuid,
 });
-// Anything a hand-edited or stale record may hold where a link belongs.
 const arbRawLink = fc.oneof(
   arbValidNestedRef,
   fc.record({ runId: fc.string(), workflowId: fc.string() }),
@@ -464,11 +459,9 @@ Deno.test("WorkflowRun nested waits: a finished run never keeps a step waiting o
           if (NESTED_TRANSITIONS[op] === NESTED_TRANSITIONS[4]) {
             assertEquals(stepRun.nestedRun, undefined);
           }
-          // Ending the run (cancel, complete) settles every nested wait.
           if (op >= 6 && !ended && run.status !== "suspended") {
             assertEquals(run.findNestedWaits(), []);
           }
-          // A nested wait is never reported as an approval gate.
           const gate = run.findWaitingApprovalStep();
           if (gate) {
             assert(!run.getJob("main")!.getStep(gate.stepName)!.isNestedWait);
@@ -476,7 +469,6 @@ Deno.test("WorkflowRun nested waits: a finished run never keeps a step waiting o
           if (run.findNestedWaits().length > 0) {
             assertEquals(run.isAwaitingResume(), false);
           }
-          // Round-trips keep every link and flag.
           const restored = WorkflowRun.fromData(run.toData());
           assertEquals(restored.toData(), run.toData());
         }
@@ -493,7 +485,6 @@ const WAIT_SCHEMA = {
 };
 const WAIT_OPENED = new Date("2026-01-01T00:00:00.000Z");
 
-/** The outcome a signal with `payload` leaves for the wait `step` holds. */
 function accepted(step: StepRun, payload: Record<string, unknown>) {
   const wait = step.signalWait;
   return wait ? acceptedOutcomeFor(wait, payload) : undefined;
@@ -508,7 +499,6 @@ function apply(step: StepRun, outcome: WaitOutcome | undefined): boolean {
   return outcome !== undefined && step.applyWaitOutcome(outcome);
 }
 
-/** Every transition a step holding a wait can go through, in any order. */
 const WAIT_TRANSITIONS: ReadonlyArray<(step: StepRun) => void> = [
   ...TRANSITIONS,
   (s) => s.waitForSignal(SignalWait.open(WAIT_SCHEMA, 60, WAIT_OPENED)),
@@ -544,7 +534,6 @@ Deno.test("StepRun signal wait: only a waiting step takes an outcome, only one i
         const before = step.toData();
         const wait = step.signalWait;
         const waiting = WAITING.includes(step.status) && wait !== undefined;
-        // Built for the wait the step holds or, with none, for another.
         const outcome = acceptedOutcomeFor(
           wait ?? SignalWait.open(WAIT_SCHEMA, 60, WAIT_OPENED),
           payload,
@@ -591,7 +580,6 @@ Deno.test("StepRun signal wait: a settled wait never reopens, and resetToPending
           WAIT_TRANSITIONS[op](step);
           const wait = step.signalWait;
           if (settledId !== undefined && wait?.id === settledId) {
-            // Once a wait holds a receipt, that wait keeps it.
             assert(wait.isSettled);
             assert(!apply(step, accepted(step, { verdict: "fix" })));
             assert(!apply(step, unsignalled(step, "timed_out")));
@@ -599,7 +587,6 @@ Deno.test("StepRun signal wait: a settled wait never reopens, and resetToPending
           if (wait?.isSettled) settledId = wait.id;
         }
 
-        // Round-trips whatever state the sequence reached.
         assertEquals(
           WorkflowRun.fromData(run.toData()).toData().jobs,
           run.toData().jobs,
@@ -641,7 +628,6 @@ Deno.test("StepRun signal wait: timing out and cancelling only ever act on a wai
           }
           return;
         }
-        // An outcome settles only a waiting step whose wait can be read.
         const settles = wasWaiting && step.signalWait !== undefined;
         assertEquals(apply(step, unsignalled(step, how)), settles);
         if (settles) {

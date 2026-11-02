@@ -17,11 +17,5 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Domain Events module.
- *
- * Provides event types and infrastructure for repository event publishing.
- */
-
 export * from "./types.ts";
 export * from "./event_bus.ts";

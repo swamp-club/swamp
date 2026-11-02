@@ -35,16 +35,9 @@ interface Harness {
   ctx: ConnectionContext;
   registry: ActiveRunRegistry;
   pushes: number;
-  /** The paths asked of `hydrateFile`. */
   hydrated: string[];
 }
 
-/**
- * A serve context over the chain's in-memory repositories, with a real
- * active-run registry and a sync service that counts pushes. `hydrate`
- * stands in for the datastore fetch of one file; without it the context has
- * none, as on a datastore that is not synced.
- */
 function harness(
   built: NestedChain,
   options: {
@@ -98,7 +91,6 @@ function harness(
   return h;
 }
 
-/** The chain with its top run cancelled, as a run its abort ended is. */
 function abortedChain(levels = 2): NestedChain & { ended: WorkflowRun } {
   const built = nestedChain(levels);
   cancelAndSettle(built.chain[0], undefined, "aborted");
@@ -138,7 +130,6 @@ Deno.test("cascadeEndedRunAndPush: without a registry does nothing and pushes no
 });
 
 Deno.test("cascadeEndedRunAndPush: leaves the nested runs of a run that did not end cancelled, and of a run that is gone", async () => {
-  // Still suspended: the abort stopped nothing, so nothing ended.
   const built = nestedChain();
   const h = harness(built);
 
@@ -158,7 +149,6 @@ Deno.test("cascadeEndedRunAndPush: a cancelled run that waited on no nested run 
   const built = abortedChain();
   const h = harness(built);
 
-  // The innermost run waits at a gate, not on a nested run.
   const inner = built.chain[1];
   cancelAndSettle(inner, undefined, "aborted");
   built.runs.add(inner);

@@ -17,14 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * A coded UserError a model method throws reaches a workflow step with its
- * code, through the real WorkflowExecutionService, DefaultStepExecutor,
- * MethodExecutionService and InProcessExecutor (swamp-club#3773). The
- * execution_service_test case for swamp-club#3748 stubs the StepExecutor, so
- * it never crosses the executor result envelope that dropped the code.
- */
-
 import { assertEquals } from "@std/assert";
 import { z } from "zod";
 import { Definition } from "../src/domain/definitions/definition.ts";
@@ -46,18 +38,11 @@ import "../src/domain/models/models.ts";
 await initializeLogging({});
 
 interface StepFailure {
-  /** The errorCode on the step's step_failed event. */
   eventCode: string | undefined;
-  /** The errorCode on the step in the run record read back from disk. */
   recordCode: string | undefined;
-  /** The step's error message in the run record read back from disk. */
   recordError: string | undefined;
 }
 
-/**
- * Runs a one-step workflow whose model method throws `thrown`, and returns
- * what the step_failed event and the persisted run record say about it.
- */
 async function runFailingStep(thrown: Error): Promise<StepFailure> {
   const dir = await Deno.makeTempDir({ prefix: "swamp-3773-error-code-" });
   // Registered per run: the registry is process-global.

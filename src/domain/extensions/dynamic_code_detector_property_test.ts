@@ -21,7 +21,6 @@ import { assertEquals } from "@std/assert";
 import fc from "fast-check";
 import { findDynamicCodeExecution } from "./dynamic_code_detector.ts";
 
-/** Statements with no dynamic code, covering regex, division and templates. */
 const arbCleanStatement = fc.constantFrom(
   "const a = 1;",
   "let b = a / 2 / c;",
@@ -36,12 +35,10 @@ const arbCleanStatement = fc.constantFrom(
   "const q = c ? { a: 1 } : [2];",
 );
 
-// Each statement gets its own block so repeated declarations stay valid.
 const arbClean = fc.array(arbCleanStatement.map((s) => `{ ${s} }`), {
   maxLength: 8,
 });
 
-/** Text that would be dynamic code if it were read as code. */
 const arbHostileText = fc.oneof(
   fc.string(),
   fc.constantFrom(
@@ -63,7 +60,6 @@ function escapeForString(text: string, quote: string): string {
     .replaceAll("\u2029", "\\u2029");
 }
 
-/** Wraps text so that it is inert: a comment or a properly escaped literal. */
 const arbInert = fc
   .tuple(
     arbHostileText,

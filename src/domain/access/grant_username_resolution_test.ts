@@ -41,7 +41,6 @@ function entry(
   };
 }
 
-/** A resolver answering from a fixed table, recording each request. */
 function tableResolver(table: Record<string, string>) {
   const requests: UsernameResolutionRequest[] = [];
   const resolver: GrantUsernameResolver = {
@@ -105,7 +104,6 @@ Deno.test("resolveGrantFileUsernames: an unresolved name rejects the whole file,
   );
   const team = result.sources.get("team.yaml")!;
   assertEquals(team.entries, []);
-  // One error per name, however many entries name it.
   assertEquals(team.errors.length, 1);
   assertEquals(team.errors[0].filename, "team.yaml");
   assertStringIncludes(team.errors[0].message, 'Subject "username:mallory"');

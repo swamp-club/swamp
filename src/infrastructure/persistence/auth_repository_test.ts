@@ -34,10 +34,9 @@ const TEST_CREDENTIALS: AuthCredentials = {
   username: "testuser",
 };
 
-// All tests inject `configDir`, `getApiKey`, and `getServerUrl` directly
-// into the AuthRepository constructor instead of mutating Deno.env. The
-// previous `Deno.env.set/delete` pattern raced across files when
-// `deno test --parallel` ran auth-touching files concurrently — see PR #1266.
+// tests inject configDir, getApiKey and getServerUrl instead of mutating
+// Deno.env, which raced across files when auth-touching test files ran in
+// parallel
 
 Deno.test("AuthRepository - save and load round trip", async () => {
   const tmpDir = await Deno.makeTempDir();
@@ -100,7 +99,6 @@ Deno.test("AuthRepository - delete is idempotent (no error when missing)", async
       configDir: join(tmpDir, "swamp"),
     });
 
-    // Should not throw
     await repo.delete();
   } finally {
     await Deno.remove(tmpDir, { recursive: true });
@@ -158,14 +156,11 @@ Deno.test("AuthRepository - save sets restrictive file permissions", async () =>
     await repo.save(TEST_CREDENTIALS);
 
     const stat = await Deno.stat(join(tmpDir, "swamp", "auth.json"));
-    // mode 0o600 = owner read/write only
     assertEquals(stat.mode !== null && (stat.mode & 0o777) === 0o600, true);
   } finally {
     await Deno.remove(tmpDir, { recursive: true });
   }
 });
-
-// ── SWAMP_API_KEY override tests ─────────────────────────────────────
 
 Deno.test("AuthRepository - load returns env var credentials when SWAMP_API_KEY is set", async () => {
   const repo = new AuthRepository({
@@ -185,7 +180,6 @@ Deno.test("AuthRepository - load returns env var credentials when SWAMP_API_KEY 
 Deno.test("AuthRepository - SWAMP_API_KEY takes precedence over auth.json file", async () => {
   const tmpDir = await Deno.makeTempDir();
   try {
-    // First seed file-based credentials with API key off.
     const fileRepo = new AuthRepository({
       configDir: join(tmpDir, "swamp"),
       getApiKey: () => undefined,
@@ -193,7 +187,6 @@ Deno.test("AuthRepository - SWAMP_API_KEY takes precedence over auth.json file",
     });
     await fileRepo.save(TEST_CREDENTIALS);
 
-    // Now load with API key set — should take precedence.
     const envRepo = new AuthRepository({
       configDir: join(tmpDir, "swamp"),
       getApiKey: () => "swamp_env_override",
@@ -235,8 +228,6 @@ Deno.test("AuthRepository - empty SWAMP_API_KEY is treated as unset", async () =
     await Deno.remove(tmpDir, { recursive: true });
   }
 });
-
-// ── SWAMP_API_KEY identity cache ────────────────────────────────────────
 
 Deno.test("AuthRepository - load merges cached identity when fingerprint matches", async () => {
   const tmpDir = await Deno.makeTempDir();
@@ -298,7 +289,6 @@ Deno.test("AuthRepository - load treats a legacy 12-char prefix fingerprint as s
   const tmpDir = await Deno.makeTempDir();
   try {
     const configDir = join(tmpDir, "swamp");
-    // Written by CLIs that cached the key's first 12 characters.
     await new AuthRepository({ configDir, getApiKey: () => undefined })
       .saveIdentityCache(
         "https://swamp-club.com",
@@ -326,7 +316,6 @@ Deno.test("AuthRepository - load ignores identity in auth.json even when its fin
   const tmpDir = await Deno.makeTempDir();
   try {
     const configDir = join(tmpDir, "swamp");
-    // A login record an older CLI merged an env key's identity into.
     await new AuthRepository({ configDir, getApiKey: () => undefined }).save({
       ...TEST_CREDENTIALS,
       apiKeyFingerprint: await keyFingerprint("swamp_env_key_123"),
@@ -373,8 +362,6 @@ Deno.test("AuthRepository - load does not merge when no fingerprint cached", asy
   }
 });
 
-// ── saveIdentityCache ──────────────────────────────────────────────────
-
 Deno.test("AuthRepository - saveIdentityCache writes no auth.json when no login exists", async () => {
   const tmpDir = await Deno.makeTempDir();
   try {
@@ -399,7 +386,6 @@ Deno.test("AuthRepository - saveIdentityCache writes no auth.json when no login 
       authFileExists = false;
     }
     assertEquals(authFileExists, false);
-    // Without a key source there is no credential at all.
     assertEquals(await repo.load(), null);
 
     const loaded = await new AuthRepository({
@@ -501,7 +487,6 @@ Deno.test("AuthRepository - load serves an env key's identity cached beside a lo
     assertEquals(loaded.collectives, ["envorg"]);
     assertEquals(loaded.scopes, ["extensions:push"]);
 
-    // a different env key, or a different server, gets no cached identity
     for (
       const [key, server] of [
         ["swamp_other_env_key", "https://other.example.com"],
@@ -518,7 +503,6 @@ Deno.test("AuthRepository - load serves an env key's identity cached beside a lo
       assertEquals(other.collectives, undefined);
     }
 
-    // logout's delete clears the env identity cache too
     await fileRepo.delete();
     const afterDelete = await envRepo.load();
     assertExists(afterDelete);
@@ -561,8 +545,6 @@ Deno.test("AuthRepository - load matches cached identity across the legacy domai
   }
 });
 
-// ── Domain migration: legacy swamp.club → swamp-club.com ─────────────
-
 Deno.test("AuthRepository - load rewrites legacy https://swamp.club to new domain and persists", async () => {
   const tmpDir = await Deno.makeTempDir();
   try {
@@ -571,7 +553,6 @@ Deno.test("AuthRepository - load rewrites legacy https://swamp.club to new domai
       getApiKey: () => undefined,
     });
 
-    // Seed an auth.json carrying the legacy domain.
     await repo.save({
       ...TEST_CREDENTIALS,
       serverUrl: "https://swamp.club",
@@ -611,8 +592,6 @@ Deno.test("AuthRepository - load leaves custom server URLs untouched", async () 
     await Deno.remove(tmpDir, { recursive: true });
   }
 });
-
-// ── Scope cache tests ───────────────────────────────────────────────────
 
 Deno.test("AuthRepository - saveScopeCache and loadScopeCache round trip", async () => {
   const tmpDir = await Deno.makeTempDir();
@@ -796,7 +775,6 @@ Deno.test("AuthRepository - deleteCaches removes the caches and keeps auth.json"
       fingerprint,
     );
     await repo.deleteCaches();
-    // Idempotent when the caches are already gone.
     await repo.deleteCaches();
 
     assertEquals(await repo.load(), TEST_CREDENTIALS);

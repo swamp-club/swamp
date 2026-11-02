@@ -17,14 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Integration tests for duplicate grants (swamp-club#2822). Two serve
- * instances starting against one datastore each create their own copy of
- * every file and admin grant. Revoking through a grants file or --admins
- * must revoke every copy, in a real repository with the real stores and
- * policy snapshot.
- */
-
 import { join } from "@std/path";
 import { assertEquals, assertNotEquals } from "@std/assert";
 import { requireInitializedRepoUnlocked } from "../src/cli/repo_context.ts";
@@ -52,7 +44,6 @@ import {
 } from "../src/serve/grant_write_tracking.ts";
 import { createSyncGate } from "../src/serve/sync_gate.ts";
 
-// Import models barrel to trigger built-in registration.
 import "../src/domain/models/models.ts";
 import { initializeLogging } from "../src/infrastructure/logging/logger.ts";
 
@@ -130,15 +121,10 @@ function teamEntries(yaml: string) {
   return new Map([["team.yaml", principalEntries(parsed.entries)]]);
 }
 
-/** A peer that has not pulled this instance's grants sees none of them. */
 function peerFileStore(store: FileGrantStore): FileGrantStore {
   return { ...store, queryFileGrants: () => Promise.resolve(new Map()) };
 }
 
-/**
- * A peer's admin grant: its definition file shares the name-derived path,
- * so once both peers' writes meet, the peer's copy has no definition here.
- */
 function peerAdminStore(store: AdminGrantStore): AdminGrantStore {
   return {
     ...store,
@@ -180,7 +166,6 @@ Deno.test("duplicate file grants: removing an entry revokes every copy", async (
       store,
     );
 
-    // Two copies of the removed read grant, one duplicate of the run grant.
     assertEquals(result.totalRevoked, 3);
     assertEquals(await activeFileCopies(store), 1);
     assertNotEquals(
@@ -280,7 +265,6 @@ Deno.test("grant write commit: marks every grant write and pushes once inside th
     });
 
     assertEquals(pushes, [{ namespace: "infra", gateHeld: true }]);
-    // One admin and two file grants: a definition and a data dir each.
     assertEquals(marked.filter((p) => p.includes("grant-main")).length, 3);
     assertEquals(marked.length, 6);
 

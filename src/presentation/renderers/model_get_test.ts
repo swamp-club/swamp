@@ -206,18 +206,12 @@ Deno.test("formatSchemaAttributes: renders array-typed properties correctly", ()
   };
   const lines = formatSchemaAttributes(schema, "  ");
   assertEquals(lines.length, 2);
-  // The first line should contain 'name' and '(string)' and '*required'
   assertEquals(lines[0].includes("name"), true);
   assertEquals(lines[0].includes("(string)"), true);
   assertEquals(lines[0].includes("*required"), true);
-  // The second line should contain 'nickname' and '(string | null)'
   assertEquals(lines[1].includes("nickname"), true);
   assertEquals(lines[1].includes("(string | null)"), true);
 });
-
-// ---------------------------------------------------------------------------
-// Staleness surfacing (swamp-club#900)
-// ---------------------------------------------------------------------------
 
 const staleData = {
   ...testData,
@@ -267,8 +261,8 @@ Deno.test("LogModelGetRenderer - names a malformed type version and says runs wi
     typeVersion: "1.0",
     staleness: "invalid",
   });
-  // The bad value itself has to appear — `model get` is the command reached
-  // for to diagnose the definition a run just failed on (swamp-club#2412).
+  // the bad value itself must appear: model get is the command used to diagnose
+  // the definition a run just failed on
   assertStringIncludes(output, "1.0");
   assertStringIncludes(output, "malformed");
   assertStringIncludes(output, "YYYY.MM.DD.MICRO");
@@ -281,7 +275,6 @@ Deno.test("LogModelGetRenderer - stays quiet when the instance is current", asyn
     typeVersion: "2026.06.01.1",
     staleness: "current",
   });
-  // No warning, and no redundant second version line.
   assertEquals(output.includes("Current Type Version:"), false);
   assertEquals(output.includes("behind its model type"), false);
 });
@@ -305,12 +298,6 @@ Deno.test("JsonModelGetRenderer - carries typeVersion, currentTypeVersion and st
   }
 });
 
-// ---------------------------------------------------------------------------
-// Surfaces (swamp-club#3331): `swamp model get` keeps its exact text, which
-// swamp-uat asserts; `swamp behavior get` says behavior.
-// ---------------------------------------------------------------------------
-
-/** The stale-type warning lines of a rendering, colors stripped. */
 async function warningLines(
   staleness: StalenessState,
   surface?: CommandSurface,
@@ -345,7 +332,6 @@ Deno.test("LogModelGetRenderer - the behavior surface names the behavior type", 
     "  This instance is behind its behavior type and no upgrade entry covers the gap,",
     "  so nothing will migrate it. The extension must ship a version upgrade.",
   ]);
-  // Everything but the warning is the same on both surfaces.
   const withoutWarning = (text: string) =>
     text.split("\n").filter((line) => !line.includes("behind its"));
   assertEquals(

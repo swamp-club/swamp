@@ -54,10 +54,8 @@ export function inputDescriptionPaths(schema: unknown): Set<string> {
 }
 
 /**
- * Whether a path in a definition's data is prose a run never evaluates: the
- * definition's description or a description annotation of its input schema.
- * Text there may document expression syntax. Schema defaults are values the
- * run delivers, so a description key inside one is not prose.
+ * text there may document expression syntax; schema defaults are values the run
+ * delivers, so a description key inside one is not prose
  */
 export function definitionDescriptionPaths(
   definition: { inputs?: unknown },

@@ -96,7 +96,6 @@ export const extensionSourceAddCommand = new Command()
     const behaviorsDir = resolveBehaviorsDir(marker);
     const defaultKindDirs = [
       resolveModelsDir(marker),
-      // Auto-discovered like extensions/models/ (swamp-club#3338).
       ...(behaviorsDir === undefined ? [] : [behaviorsDir]),
       resolveVaultsDir(marker),
       resolveDatastoresDir(marker),
@@ -113,7 +112,7 @@ export const extensionSourceAddCommand = new Command()
 
     let only: ExtensionKind[] | undefined;
     if (options.only) {
-      // The behavior spelling (swamp-club#3410) is persisted as `models`.
+      // the behavior spelling is persisted as `models`.
       const kinds = canonicalExtensionKinds(
         (options.only as string).split(",").map((s: string) => s.trim()),
       );

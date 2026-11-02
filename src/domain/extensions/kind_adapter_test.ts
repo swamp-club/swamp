@@ -37,7 +37,6 @@ Deno.test("primaryExport: reads the key or its alias", () => {
   assertEquals(primaryExport({ behavior: def }, models), def);
   assertEquals(primaryExport({ extension: def }, models), undefined);
   assertEquals(primaryExport({}, models), undefined);
-  // An adapter without aliases ignores the name entirely.
   assertEquals(
     primaryExport({ behavior: def }, { primaryExportKey: "model" }),
     undefined,
@@ -72,9 +71,8 @@ Deno.test("primaryExport: an unrelated binding under the alias name is not a def
       def,
     );
   }
-  // Alone too, a binding without both type and methods is not a definition:
-  // a helper file that exported `behavior = { type: "retry" }` before the
-  // alias existed was skipped, and still is.
+  // a binding without both type and methods is not a definition, so a helper
+  // exporting `behavior = { type: "retry" }` is skipped
   for (
     const unrelated of [
       "strict",

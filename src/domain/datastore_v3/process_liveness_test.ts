@@ -95,7 +95,7 @@ Deno.test("judgeRecordedProcess: with no boot id on either side, the pid is judg
     judgeRecordedProcess(recorded, local({ 42: running() }, noBoot)),
     "unknown",
   );
-  // Windows: the host and pid decide, as before.
+  // windows: the host and pid decide
   assertEquals(
     judgeRecordedProcess(recorded, local({}, noBoot, false)),
     "gone",
@@ -132,14 +132,12 @@ Deno.test("judgeRecordedProcess: a pid reused by a process started at another ti
 
 Deno.test("judgeRecordedProcess: with the start time unreadable on either side, presence decides", () => {
   const { startTime: _, ...noStart } = HERE;
-  // Unreadable here (a failed probe, another user's process).
   const recorded = { pid: 42, process: { ...HERE, startTime: "t1" } };
   assertEquals(
     judgeRecordedProcess(recorded, local({ 42: running() })),
     "alive",
   );
   assertEquals(judgeRecordedProcess(recorded, local()), "gone");
-  // Unreadable where the record was written (Windows, a failed own read).
   const unstamped = { pid: 42, process: noStart };
   assertEquals(
     judgeRecordedProcess(unstamped, local({ 42: running("t9") })),
@@ -212,9 +210,7 @@ Deno.test("sameKernel: a container sharing the host's boot id is another namespa
     sameKernel({ ...HERE, host: "container#pid:[4026532001]" }, local()),
     false,
   );
-  // One side names a namespace, the other could not read one.
   assertEquals(sameKernel({ ...HERE, host: "shared-host" }, local()), false);
-  // Neither could: the hostname decides alongside the boot id.
   const unread = local({}, { ...HERE, host: "shared-host" });
   assertEquals(sameKernel({ ...HERE, host: "shared-host" }, unread), true);
   assertEquals(sameKernel({ ...HERE, host: "other-host" }, unread), false);

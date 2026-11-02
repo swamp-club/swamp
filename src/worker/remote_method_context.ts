@@ -17,18 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * The remote MethodContext (see design/enablers/remote-execution.md, "The remote
- * `MethodContext`" and "The capability protocol").
- *
- * Built from proxy adapters: metadata capability verbs ride the control
- * socket, artifact bytes ride the HTTP data plane, and writes flow through
- * orchestrator-side data writers (durable immediately). Method author APIs
- * are unchanged. Synchronous repository members and whole-store enumeration
- * cannot proxy and fail loudly with a clear unsupported-on-remote-worker
- * error — see the design doc's capability inventory.
- */
-
 import { join } from "@std/path";
 import { getSwampLogger } from "../infrastructure/logging/logger.ts";
 import type {
@@ -76,7 +64,6 @@ import type { DataPlaneClient, RemoteDataHandle } from "./data_plane_client.ts";
 
 const logger = getSwampLogger(["worker", "method-context"]);
 
-/** Raised when a method touches a capability that cannot proxy. */
 export class UnsupportedOnRemoteWorkerError extends Error {
   constructor(member: string) {
     super(
@@ -92,10 +79,6 @@ function unsupported(member: string): never {
   throw new UnsupportedOnRemoteWorkerError(member);
 }
 
-/**
- * The failure a remote worker returns for a context call that needs the
- * orchestrator, in behavior words with the model spelling (swamp-club#3437).
- */
 function remoteRefusal(call: string, what: string): { message: string } {
   const worded = wordedText((w) =>
     `${call} is not available in remote execution — ` +
@@ -123,32 +106,21 @@ export interface RemoteContextOptions {
   dispatch: DispatchParams;
   /** Per-dispatch scratch directory; doubles as the spool location. */
   scratchDir: string;
-  /** Local root the bundle's co-located assets were prefetched to. */
   extensionFilesDir?: string;
   /**
-   * The verified bundle's resource specs, so `readResource` resolves an
-   * untagged record's sensitive fields from the schema as a local run does
-   * (swamp-club#3530). The dispatch's own `resourceSpecs` carry descriptions
-   * only, so they cannot stand in.
+   * the verified bundle's resource specs; the dispatch's own resourceSpecs
+   * carry descriptions only, so they cannot resolve sensitive fields
    */
   resourceSpecs?: Record<string, ResourceOutputSpec>;
   signal: AbortSignal;
   onEvent?: MethodContext["onEvent"];
   /**
-   * The dispatch's redactor, when the caller owns it: the runner registers it
-   * as an active process redactor before anything runs, so its stderr is
-   * masked for the whole dispatch (swamp-club#3526). Secrets the context
-   * learns are added to it. Without one the context makes its own with
-   * {@link dispatchRedactor}.
+   * set when the caller owns the redactor and has registered it process-wide
+   * before anything runs; without one the context makes its own
    */
   redactor?: SecretRedactor;
 }
 
-/**
- * The data repository proxy: async reads ride the verbs + data plane; the
- * write path and synchronous members fail loudly (writes flow exclusively
- * through the remote writers below, never through raw repository saves).
- */
 function createRemoteDataRepository(
   options: RemoteContextOptions,
 ): UnifiedDataRepository {
@@ -279,21 +251,10 @@ function createRemoteDataRepository(
   } as UnifiedDataRepository;
 }
 
-/**
- * Whether `dispatch` carries vault references only, so its runner loads
- * every value through the protected route (typed-secrets 5.2).
- */
 export function loadsOwnSecrets(dispatch: DispatchParams): boolean {
   return shipsReferencesOnly(dispatch.execution.protocolVersion);
 }
 
-/**
- * The loader a protocol version 6 runner delivers its dispatch's references
- * through: one request to the protected route per attempt
- * (`POST /data/secrets`, design/enablers/typed-secrets.md Section 9), under
- * the dispatch credential `client` presents. Each value joins `redactor`
- * before the method receives it.
- */
 export function dispatchSecretLoader(
   client: DataPlaneClient,
   redactor: SecretRedactor,
@@ -306,14 +267,9 @@ export function dispatchSecretLoader(
 }
 
 /**
- * The vault proxy over the capability verbs. With `resource`, every value
- * read carries that claim: the reference is a tagged sensitive field of the
- * dispatch's own resource, which serve verifies against the record before
- * it answers (swamp-club#3529); a version 6 dispatch reads such a field
- * through the protected load route instead of `resolveSecret`
- * (design/enablers/typed-secrets.md Section 9). A method's own vault reads
- * carry no claim and take `resolveSecret` on either version, held to the
- * dispatch's allowlist as before.
+ * with resource, each read claims the dispatch's own resource record so serve
+ * can verify it; a version 6 dispatch reads such fields through the protected
+ * load route; a method's own vault reads carry no claim
  */
 function createRemoteVaultService(
   options: RemoteContextOptions,
@@ -346,9 +302,8 @@ function createRemoteVaultService(
           secretKey,
           ...(resource ? { resource } : {}),
         })).value as string;
-      // The worker has now received this value, so its redactor must know it
-      // before the method does: output lines and console output are scrubbed
-      // with it before they leave the worker (swamp-club#3527).
+      // the redactor learns the value before the method does, so output and
+      // console lines are scrubbed before they leave the worker
       if (typeof value === "string") redactor.addSecret(value);
       return value;
     },
@@ -593,21 +548,13 @@ function createRemoteWriters(options: RemoteContextOptions): RemoteWriters {
 
 export interface RemoteMethodContextResult {
   context: MethodContext;
-  /** Handles persisted so far — collected even when the method throws. */
   getHandles: () => DataHandle[];
-  /**
-   * Scrubs text with every secret this dispatch has learned so far. For
-   * output that leaves the worker outside the context, such as the console
-   * capture.
-   */
   redact: (text: string) => string;
 }
 
 /**
- * The per-dispatch redactor, holding the values the orchestrator resolved
- * before the dispatch (`secretValues`). The method context extends it with
- * what the method learns; the runner uses it from the first frame, so a
- * failure before the context exists is scrubbed too (swamp-club#3525).
+ * the runner uses it from the first frame, so a failure before the context
+ * exists is scrubbed too
  */
 export function dispatchRedactor(
   secretValues: readonly string[] | undefined,
@@ -619,7 +566,6 @@ export function dispatchRedactor(
   return redactor;
 }
 
-/** Whether the orchestrator shipped the step's secret bag (swamp-club#2760). */
 function shipsSecretBag(
   dispatch: DispatchParams,
 ): dispatch is DispatchParams & {
@@ -631,11 +577,9 @@ function shipsSecretBag(
 }
 
 /**
- * The method args to build the step's definition from. With a shipped
- * secret bag these are the unresolved args, so the method execution service
- * resolves them on the worker and a `command/shell` step gets its secrets as
- * environment variables, as in a local run. Otherwise the resolved args the
- * orchestrator sent.
+ * with a shipped secret bag these are the unresolved args, so the worker
+ * resolves them and command/shell steps get secrets as environment variables,
+ * as in a local run
  */
 export function dispatchMethodArgs(
   dispatch: DispatchParams,
@@ -645,11 +589,6 @@ export function dispatchMethodArgs(
     : dispatch.execution.methodArgs;
 }
 
-/**
- * Assemble the full remote MethodContext for one dispatch. The method
- * author API is identical to a local run; only the implementations behind
- * the handles differ.
- */
 export function createRemoteMethodContext(
   options: RemoteContextOptions,
 ): RemoteMethodContextResult {
@@ -686,11 +625,9 @@ export function createRemoteMethodContext(
 
   const redact = (text: string) =>
     redactor.hasSecrets ? redactor.redact(text) : text;
-  // The orchestrator writes output lines to the run log, and its run-log
-  // redactor knows only what it resolved before the dispatch. Secrets the
-  // method learns here (a value the vault proxy resolves, or a sensitive
-  // field of a resource it reads) are known to this redactor alone, so lines
-  // are scrubbed before they leave (swamp-club#3080, swamp-club#3527).
+  // the orchestrator's run-log redactor knows only pre-dispatch secrets; values
+  // the method learns are known to this redactor alone, so lines are scrubbed
+  // before they leave
   const onEvent: MethodContext["onEvent"] = options.onEvent
     ? (event) =>
       options.onEvent!(
@@ -700,9 +637,8 @@ export function createRemoteMethodContext(
       )
     : undefined;
 
-  // Share local parsing, schema fallback and malformed-tag handling
-  // (swamp-club#3530), with each vault read claiming the record that supplied
-  // its reference so serve can authorize it independently (swamp-club#3529).
+  // each vault read claims the record that supplied its reference so serve can
+  // authorize it independently
   const readResource = createResourceReader(
     dataRepository,
     modelType,
@@ -741,10 +677,9 @@ export function createRemoteMethodContext(
       return byName;
     }
 
-    // The name tag records the name at write time, so data written before
-    // the instance was renamed is also read by the definition's identity
-    // (swamp-club#3011). resolveModel also matches ids, so only a definition
-    // with this exact name counts.
+    // the name tag records the name at write time, so data written before a
+    // rename is also read by the definition's identity; only an exact name
+    // match counts since resolveModel also matches ids
     let identity: { modelType: string; modelId: string } | undefined;
     if (modelName === execution.definitionMeta.name) {
       identity = {
@@ -795,9 +730,8 @@ export function createRemoteMethodContext(
     outputRepository,
     vaultService,
     redactor,
-    // A version 6 dispatch ships its bag as references, which the runner
-    // loads before the method's parse (`executeDispatched`); a version 5
-    // one ships the values (swamp-club#2760).
+    // version 6 ships its bag as references loaded before the method's parse;
+    // version 5 ships the values
     vaultSecrets: loadsOwnSecrets(dispatch)
       ? VaultSecretBag.fromReferenceEntries(dispatch.referenceBag ?? [])
       : shipsSecretBag(dispatch)

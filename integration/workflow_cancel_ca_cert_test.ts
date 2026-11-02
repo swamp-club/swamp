@@ -17,11 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// `workflow cancel --server` trusts the CA from `--ca-cert` / `SWAMP_CA_CERT`
-// (swamp-club#3702), against a real TLS server whose certificate is signed by
-// a private CA. A test of `sendServerCancel` alone would pass with the command
-// never handing it the certificates, so one case runs the command itself.
-
 import "../src/domain/models/models.ts";
 import { join } from "@std/path";
 import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
@@ -40,13 +35,10 @@ import { generateCertChain, hasOpenssl } from "./private_ca_helpers.ts";
 await initializeLogging({});
 
 interface PrivateCaServer {
-  /** The private CA that signed the server's certificate, as a path and PEM. */
   caPath: string;
   caPem: string;
-  /** A second CA that signed nothing the server presents. */
   unrelatedCaPem: string;
   port: number;
-  /** The `METHOD path` of each request the server received. */
   requests: string[];
 }
 

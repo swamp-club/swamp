@@ -17,12 +17,9 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// On an extension datastore (S3, GCS) each clone allocates the next data
-// version from its own cache, and the model lock is what keeps two clones
-// from allocating the same one. After `swamp datastore lock release --force`
-// the old holder used to push anyway, over the version the new holder wrote
-// under the same key: both runs exited 0 and one write was lost
-// (swamp-club#3373). The old holder now refuses its push and fails.
+// each clone allocates the next data version from its own cache and the model
+// lock keeps two clones from allocating the same one; a holder whose lock was
+// force-released must refuse its push and fail
 
 import "../src/domain/models/models.ts";
 import {
@@ -80,14 +77,12 @@ async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
   }
 }
 
-/** Clone A's process; clone B's is pid + 1 on the same host. */
 const PROCESS_A = { holder: "sam@host", hostname: "host", pid: 4100 };
 
 /**
- * One bucket's lock objects: every clone's locks read and write it, as
- * S3Lock and GcsLock do the bucket. Both clones run in this test's process;
- * each stamps its lock bodies with the pid of the process it stands for.
- * `blind` locks read nothing, as a backend that cannot report its holder.
+ * one bucket's lock objects shared by every clone, as S3Lock and GcsLock share
+ * the bucket; blind locks read nothing, like a backend that cannot report its
+ * holder
  */
 class LockTable {
   readonly entries = new Map<string, LockInfo>();
@@ -148,7 +143,6 @@ class LockTable {
     };
   }
 
-  /** `swamp datastore lock release --force --model …`. */
   breakglass(modelId: string): void {
     const keys = [...this.entries.keys()].filter((k) => k.includes(modelId));
     assertEquals(keys.length, 1, "the model lock should be held");
@@ -177,12 +171,6 @@ async function initRepo(
 
 type Unlocked = Awaited<ReturnType<typeof requireInitializedRepoUnlocked>>;
 
-/**
- * Takes the model lock in `repoDir` (pulling) and saves `body` as a new
- * version of data "x", leaving the push to the caller: `flush` publishes
- * the version and releases the lock, `close` closes the catalog after.
- * `options.more` are saved as further versions in the same run.
- */
 async function lockAndSave(
   repoDir: string,
   modelId: string,
@@ -224,22 +212,17 @@ async function lockAndSave(
   return {
     version: written[0].version,
     flush: () => lock.flush(written),
-    /** An unlocked push of everything dirty, as `workflow run` ends with. */
     pushUnlocked: async () => {
       await ctx.syncService!.pushChanged();
     },
-    /** A pull, then a push, as a bare `swamp datastore sync` runs. */
     syncUnlocked: async () => {
       await ctx.syncService!.pullChanged();
       await ctx.syncService!.pushChanged();
     },
-    /** The versions of data "x" in this clone's cache. */
     localVersions: () =>
       ctx.repoContext.unifiedDataRepo.listVersions(modelType, modelId, "x"),
-    /** Data "x"'s directory in this clone's cache. */
     nameDir: () =>
       ctx.repoContext.unifiedDataRepo.getDataNameDir(modelType, modelId, "x"),
-    /** The content of `version` of data "x" in this clone's cache. */
     content: async (version: number) => {
       ctx.repoContext.catalogStore.invalidate();
       const bytes = await ctx.repoContext.unifiedDataRepo.getContent(
@@ -278,7 +261,6 @@ function item(): Data {
   });
 }
 
-/** The bodies of the remote's committed objects under the model. */
 function remoteBodies(remote: InMemoryRemote, modelId: string): string[] {
   const decoder = new TextDecoder();
   return [...remote.files()]
@@ -295,18 +277,14 @@ interface Clones {
   modelId: string;
 }
 
-/** Two clones of one repo on one remote and one lock table. */
 async function withClones(
   twoPhaseSync: boolean,
   fn: (clones: Clones) => Promise<void>,
   options: {
     blindA?: boolean;
     bSameProcess?: boolean;
-    /** Clone A's sync service has no `fetchContent`. */
     noFetchA?: boolean;
-    /** Clone A's sync service has no `clearDirty`. */
     noClearA?: boolean;
-    /** Clone A's datastore block sets `durable: true`. */
     durableA?: boolean;
   } = {},
 ): Promise<void> {
@@ -367,7 +345,6 @@ for (const twoPhaseSync of [true, false]) {
       assertEquals(remoteBodies(c.remote, c.modelId), ['{"by":"b"}']);
       assertEquals(c.locks.entries.size, 0, "B's push released its lock");
 
-      // A's next run pulls B's version over its own and publishes a new one.
       const next = await saveAndPush(c.repoA, c.modelId, '{"by":"a2"}');
       assertEquals(next, a.version + 1);
       assertEquals(
@@ -454,7 +431,6 @@ for (const twoPhaseSync of [true, false]) {
   });
 }
 
-/** The remote's latest marker of data "x" under the model. */
 function remoteLatest(remote: InMemoryRemote, modelId: string): string[] {
   const decoder = new TextDecoder();
   return [...remote.files()]
@@ -462,11 +438,9 @@ function remoteLatest(remote: InMemoryRemote, modelId: string): string[] {
     .map(([, bytes]) => decoder.decode(bytes).trim());
 }
 
-// A refusal used to rely on its refresh pull to replace the refused versions
-// in the cache. When the pull could not run, they stayed dirty and a later
-// push uploaded them (swamp-club#3485). The refusal now discards them, and
-// puts back the datastore's copy of each file, so a later push neither
-// uploads the refused write nor deletes another holder's same version.
+// a refusal discards the refused versions and puts back the datastore's copy of
+// each file, so a later push neither uploads the refused write nor deletes
+// another holder's same version
 for (const twoPhaseSync of [true, false]) {
   for (const later of ["push", "pull then push"] as const) {
     const sync = (
@@ -492,7 +466,6 @@ for (const twoPhaseSync of [true, false]) {
           await a.close();
         }
         assertEquals(remoteBodies(c.remote, c.modelId), []);
-        // B's next run finds no version of A's to build on.
         const bVersion = await saveAndPush(c.repoB, c.modelId, '{"by":"b"}');
         assertEquals(bVersion, 1);
         assertEquals(remoteBodies(c.remote, c.modelId), ['{"by":"b"}']);
@@ -544,7 +517,6 @@ for (const twoPhaseSync of [true, false]) {
   });
 }
 
-/** The local latest marker of data "x" in `nameDir`, or undefined. */
 async function localLatest(nameDir: string): Promise<string | undefined> {
   try {
     return (await Deno.readTextFile(join(nameDir, "latest"))).trim();
@@ -554,11 +526,6 @@ async function localLatest(nameDir: string): Promise<string | undefined> {
   }
 }
 
-/**
- * Restore hooks that log each file a refusal's restore syncs (`file:`) and
- * each directory (`dir:`), in order. `failFile` and `failDir` make a sync
- * throw.
- */
 function restoreSyncLog(
   options: {
     failFile?: (target: string) => boolean;
@@ -584,7 +551,6 @@ function restoreSyncLog(
   return { log, hooks };
 }
 
-/** The directories from `dir` up to the cache's `data` directory. */
 function dirsUpToDataRoot(dir: string): string[] {
   const dirs = [dir];
   while (basename(dir) !== "data" && dirname(dir) !== dir) {
@@ -594,11 +560,9 @@ function dirsUpToDataRoot(dir: string): string[] {
   return dirs;
 }
 
-// A refusal's restore wrote each file unsynced and in the order it was
-// removed, so a latest marker could reach the disk before the content it
-// names, and a marker naming a version the cache never held was restored
-// (swamp-club#4033). With durable writes, content now comes first, then its
-// directories, then the markers; a marker's version is restored with it.
+// a refusal's restore writes content first, then syncs its directories, then
+// the latest markers, so a marker never reaches disk before the content it
+// names
 for (const twoPhaseSync of [true, false]) {
   Deno.test(`acquireModelLocks: a durable refusal restores content, then syncs each directory once, then the latest marker (twoPhaseSync=${twoPhaseSync})`, async () => {
     await withClones(twoPhaseSync, async (c) => {
@@ -699,7 +663,6 @@ for (const twoPhaseSync of [true, false]) {
       try {
         c.locks.breakglass(c.modelId);
         await saveAndPush(c.repoB, c.modelId, '{"by":"b1"}');
-        // B publishes a marker naming version 3, which it never wrote.
         const b: Unlocked = await requireInitializedRepoUnlocked({
           repoDir: c.repoB,
           outputMode: "json",
@@ -830,7 +793,6 @@ for (const twoPhaseSync of [true, false]) {
   });
 }
 
-/** The versions of data "x" the remote holds under the model, sorted. */
 function remoteVersions(remote: InMemoryRemote, modelId: string): number[] {
   return [...remote.files().keys()]
     .filter((key) =>
@@ -841,8 +803,8 @@ function remoteVersions(remote: InMemoryRemote, modelId: string): number[] {
 }
 
 /**
- * The warnings logged while `fn` runs, as text. LogTape's configuration is
- * process-global, so the normal setup is restored afterwards.
+ * LogTape's configuration is process-global, so the normal setup is restored
+ * afterwards
  */
 async function warningsDuring(fn: () => Promise<void>): Promise<string[]> {
   const captured: LogRecord[] = [];
@@ -865,7 +827,6 @@ async function warningsDuring(fn: () => Promise<void>): Promise<string[]> {
   );
 }
 
-/** The marks clone `repoDir` holds under data "x"'s directory. */
 async function marksUnderName(
   remote: InMemoryRemote,
   repoDir: string,
@@ -879,15 +840,9 @@ async function marksUnderName(
   );
 }
 
-// A refused push left its paths marked, the data-name directory among them
-// (a save marks it before allocating a version). A later push walked the
-// marked directory and deleted every version of the new holder's that the
-// cache lacked, and uploaded the stale latest marker over the holder's
-// (swamp-club#4091). The discard now clears those marks once its restore
-// matched the datastore. These pin the in-memory remote's scoped push,
-// which models swamp-extensions s3_cache_sync.ts collectPushWork: a marked
-// directory's remote entries the cache lacks are deleted, and a marked file
-// that differs is uploaded.
+// a refused push leaves its paths marked, the data-name directory included; a
+// later push would delete the new holder's versions the cache lacks, so the
+// discard clears those marks once the restore matches
 for (const twoPhaseSync of [true, false]) {
   for (const later of ["push", "pull then push"] as const) {
     const sync = (

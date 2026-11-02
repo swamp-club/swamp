@@ -31,18 +31,13 @@ import type { SwampError } from "../errors.ts";
 
 const logger = getLogger(["swamp", "retention"]);
 
-/** Where retention has reaped one kind up to, for a "not found" answer. */
 export interface ReapedBefore {
-  /** ISO timestamp: items of this kind before it have been reaped. */
   cutoff: string;
-  /** The retention timeframe the pass applied (e.g. `14d`). */
   retention: string;
 }
 
-/** How long a not-found answer waits for the retention watermark. */
 export const REAPED_LOOKUP_TIMEOUT_MS = 2_000;
 
-/** Resolves with `promise`, or null once `ms` pass first. */
 async function withDeadline<T>(
   promise: Promise<T>,
   ms: number,
@@ -60,11 +55,7 @@ async function withDeadline<T>(
   }
 }
 
-/**
- * The cutoff of the last finished retention pass for `kind`, or null when there is none,
- * no repository is given, or it cannot be read. Never throws: the answer only
- * enriches a not-found error or a listing.
- */
+/** never throws: the answer only enriches a not-found error or a listing */
 export async function findReapedBefore(
   watermarks: RetentionWatermarkRepository | undefined,
   kind: RetentionKind,
@@ -90,7 +81,6 @@ export async function findReapedBefore(
   }
 }
 
-/** What a not-found message calls the reaped items of each kind. */
 const REAPED_ITEMS: Record<RetentionKind, string> = {
   workflowRuns: "runs before {cutoff} have",
   evaluatedSnapshots: "evaluated snapshots before {cutoff} have",
@@ -100,7 +90,6 @@ const REAPED_ITEMS: Record<RetentionKind, string> = {
   bookkeeping: "records before {cutoff} have",
 };
 
-/** The `; <items> before <cutoff> have been reaped …` message suffix. */
 export function reapedSuffix(
   kind: RetentionKind,
   reaped: ReapedBefore,
@@ -111,11 +100,8 @@ export function reapedSuffix(
 }
 
 /**
- * Adds to a `not_found` error that retention has reaped `kind` before its
- * watermark: the message gains a suffix and the details gain `reapedBefore`
- * and `retention`. Any other error, or no watermark, is returned unchanged.
- * The code stays `not_found`: a run id does not tell whether that run was
- * reaped, only that runs older than the cutoff are gone.
+ * the code stays not_found: a run id does not tell whether that run was reaped,
+ * only that runs older than the cutoff are gone
  */
 export function decorateNotFound(
   error: SwampError,
@@ -143,10 +129,6 @@ export function decorateNotFound(
     : markModelWording(decorated, `${modelText}${suffix}`);
 }
 
-/**
- * Reads the watermark for `kind` and decorates `error` with it, when it is a
- * `not_found`. Never throws.
- */
 export async function withReapedHint(
   error: SwampError,
   kind: RetentionKind,

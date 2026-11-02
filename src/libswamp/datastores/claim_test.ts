@@ -35,7 +35,6 @@ import { datastoreRelease, type DatastoreReleaseEvent } from "./release.ts";
 
 const NOW = new Date("2026-10-28T12:00:00.000Z");
 
-/** A commit log in memory, recording what the claim did to it. */
 function memoryLog(
   owner?: DatastoreOwner,
 ): DatastoreClaimCommitLog & { calls: string[]; current?: DatastoreOwner } {

@@ -46,7 +46,6 @@ Deno.test("ROW_STATE_TAGS: enumerates all 7 tags exactly once", () => {
 });
 
 Deno.test("isVisibleToResolver: only Indexed is visible", () => {
-  // Build one fixture per tag to prove the predicate's exhaustiveness.
   const fixtures: RowState[] = [
     { tag: "Indexed", type: "@scope/foo/instance", bundle: BUNDLE },
     {
@@ -73,9 +72,8 @@ Deno.test("isVisibleToResolver: only Indexed is visible", () => {
 });
 
 Deno.test("RowState: switch over tag is exhaustive (compile-time check)", () => {
-  // This test exists to assert a compile-time guarantee: a switch over
-  // RowState.tag with no default branch must cover all 7 tags. If a new
-  // tag is added without updating consumers, this test will stop compiling.
+  // compile-time guarantee: a switch over RowState.tag with no default must
+  // cover every tag, so adding one without updating consumers stops compiling
   function describe(state: RowState): string {
     switch (state.tag) {
       case "Indexed":

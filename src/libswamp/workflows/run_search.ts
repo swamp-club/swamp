@@ -37,9 +37,6 @@ import {
   withSpan,
 } from "../../infrastructure/tracing/mod.ts";
 import { collectBounded, RUN_FANOUT_CONCURRENCY } from "./run_fanout.ts";
-/**
- * A single workflow run search result item.
- */
 export interface WorkflowRunSearchItem {
   runId: string;
   workflowId: string;
@@ -60,19 +57,13 @@ export interface WorkflowRunSearchItem {
    * on finished: it needs a resume.
    */
   awaitingResume?: boolean;
-  /** The run's workflow declares inputs, so a resume may need `--input`. */
   workflowHasInputs?: boolean;
-  /** On a nested workflow's run: the parent step that started it. */
   parentRun?: {
     workflowId: string;
     workflowName: string;
     runId: string;
     stepName: string;
   };
-  /**
-   * The nested runs this run's steps wait on, with each one's status when
-   * it was found among the searched runs (swamp-club#2736).
-   */
   nestedWaits?: {
     workflowId: string;
     workflowName: string;
@@ -81,15 +72,12 @@ export interface WorkflowRunSearchItem {
   }[];
 }
 
-/**
- * Data payload for the completed event.
- */
 export interface WorkflowRunSearchData {
   query: string;
   results: WorkflowRunSearchItem[];
   /**
-   * Set when retention has reaped runs: older runs than `cutoff` are gone,
-   * so the listing cannot show them (swamp-club#3473).
+   * set when retention has reaped runs older than `cutoff`, so the listing
+   * cannot show them
    */
   reapedBefore?: ReapedBefore;
 }
@@ -99,12 +87,7 @@ export type WorkflowRunSearchEvent =
   | {
     kind: "completed";
     data: WorkflowRunSearchData;
-    /**
-     * How many runs matched and are readable, before `offset` and `limit`
-     * cut out the page.
-     */
     total: number;
-    /** The resolved `since` bound as ISO, when one was given. */
     since?: string;
     /**
      * With `since`: the start time of the oldest of the `total` matches,
@@ -115,13 +98,8 @@ export type WorkflowRunSearchEvent =
   }
   | { kind: "error"; error: SwampError };
 
-/**
- * Dependencies for the workflow run search generator.
- */
 export interface WorkflowRunSearchDeps {
-  /** Every workflow, as listed. */
   findAllWorkflows(): Promise<readonly WorkflowListing[]>;
-  /** The run index snapshot of one workflow (swamp-club#3443). */
   runIndexOf(workflowId: string): Promise<RunIndexSnapshot>;
   /**
    * Whether the caller may read runs recorded under this workflow id and
@@ -129,26 +107,15 @@ export interface WorkflowRunSearchDeps {
    */
   isReadable?(workflowId: string, workflowName: string): Promise<boolean>;
   /**
-   * Where retention records how far it has reaped. With it the listing says
-   * that older runs have been reaped (swamp-club#3473).
+   * where retention records how far it has reaped; with it the listing says
+   * older runs have been reaped
    */
   retentionWatermarks?: RetentionWatermarkRepository;
 }
 
-/**
- * Input for the workflow run search generator.
- */
 export interface WorkflowRunSearchInput {
   query?: string;
-  /**
-   * Keeps runs started at or after this time: a duration back from now
-   * (`1h`, `7d`) or an ISO timestamp.
-   */
   since?: string;
-  /**
-   * Keeps runs started before this time (exclusive): a duration back from
-   * now or an ISO timestamp.
-   */
   until?: string;
   /**
    * Keeps runs with this status, ignoring case. `failed` also keeps
@@ -156,37 +123,17 @@ export interface WorkflowRunSearchInput {
    * summary's counts.
    */
   status?: string;
-  /** Keeps runs of the workflow with this name, ignoring case. */
   workflow?: string;
-  /**
-   * Keeps runs of any of these workflows, by exact name. An empty list
-   * filters nothing.
-   */
   workflows?: string[];
-  /** Keeps runs with this trigger source (`schedule`, `api`…), ignoring case. */
   triggerSource?: string;
-  /**
-   * Keeps runs with any of these statuses (each matched like `status`). An
-   * empty list filters nothing; with `status` both must hold.
-   */
   statuses?: string[];
-  /**
-   * Keeps runs with any of these trigger sources, ignoring case. An empty
-   * list filters nothing; with `triggerSource` both must hold.
-   */
   triggerSources?: string[];
   tags?: Record<string, string>;
   inputs?: Record<string, string>;
-  /** Runs to skip, newest first, before the page starts. */
   offset?: number;
   limit?: number;
 }
 
-/**
- * Resolves a run time bound to epoch milliseconds: a swamp duration (`1h`,
- * `7d`) counts back from `now`, anything else must parse as an ISO
- * timestamp.
- */
 export function parseRunTimeBound(value: string, now: number): number {
   if (/^\d+(mo|y|h|m|d|w)$/.test(value)) return now - parseDuration(value);
   const ms = /^\d{4}-\d{2}-\d{2}/.test(value) ? Date.parse(value) : NaN;
@@ -198,7 +145,6 @@ export function parseRunTimeBound(value: string, now: number): number {
   return ms;
 }
 
-/** The status groups the run summary counts runs in. */
 export type RunStatusBucket =
   | "succeeded"
   | "failed"
@@ -230,12 +176,6 @@ export function runStatusBucket(status: string): RunStatusBucket | undefined {
   }
 }
 
-/**
- * Whether a run's status matches a lower-cased status filter. A bucket name
- * matches every status in that bucket (`failed` also matches `interrupted`,
- * `running` also matches `pending`), so a filtered search agrees with the
- * run summary's counts; any other filter matches the status exactly.
- */
 function runStatusMatches(status: string, filter: string): boolean {
   const actual = status.toLowerCase();
   if (actual === filter) return true;
@@ -243,11 +183,8 @@ function runStatusMatches(status: string, filter: string): boolean {
     runStatusBucket(actual) === filter;
 }
 
-/** What {@link selectWorkflowRuns} keeps a run by. */
 export interface WorkflowRunFilter {
-  /** Keeps runs started at or after this epoch ms. */
   sinceMs?: number;
-  /** Keeps runs started before this epoch ms. */
   untilMs?: number;
   status?: string;
   workflow?: string;
@@ -260,23 +197,18 @@ export interface WorkflowRunFilter {
   query?: string;
 }
 
-/** The matching runs of one workflow, newest first. */
 export interface SelectedWorkflowRuns {
   workflowId: string;
   snapshot: RunIndexSnapshot;
   runs: RunIndexRun[];
 }
 
-/** The runs {@link selectWorkflowRuns} kept. */
 export interface WorkflowRunSelection {
-  /** One entry per workflow with a match, in the order the workflows came. */
   groups: SelectedWorkflowRuns[];
-  /** Every workflow's snapshot, by workflow id. */
   snapshots: ReadonlyMap<string, RunIndexSnapshot>;
   total: number;
 }
 
-/** A predicate over one run, from the filters that look at the run alone. */
 function runPredicate(
   filter: WorkflowRunFilter,
 ): (run: RunIndexRun) => boolean {
@@ -341,11 +273,6 @@ function runPredicate(
   return (run) => checks.every((check) => check(run));
 }
 
-/**
- * Whether a workflow can hold no match, from what its snapshot says of all
- * its runs: no recorded name passes a name filter, or no run started inside
- * the window.
- */
 function cannotMatch(
   snapshot: RunIndexSnapshot,
   filter: WorkflowRunFilter,
@@ -369,9 +296,8 @@ function cannotMatch(
 }
 
 /**
- * The runs worth testing against the filter: a full run id finds its run
- * directly, unless a recorded name or status could also contain it; any
- * other filter reads the time window.
+ * a full run id finds its run directly unless a recorded name or status could
+ * also contain it; any other filter reads the time window
  */
 function candidates(
   snapshot: RunIndexSnapshot,
@@ -391,10 +317,9 @@ function candidates(
 }
 
 /**
- * Selects the runs of `workflows` that pass `filter` and that the caller may
- * read (swamp-club#3443). Each workflow's runs come from its run index
- * snapshot, narrowed by name and time before any run is looked at, so the
- * cost follows the runs in the window, not the whole history.
+ * each workflow's runs come from its run index snapshot, narrowed by name and
+ * time before any run is looked at, so cost follows the runs in the window, not
+ * the whole history
  */
 export function selectWorkflowRuns(
   deps: Pick<WorkflowRunSearchDeps, "runIndexOf" | "isReadable">,
@@ -428,8 +353,6 @@ async function selectRuns(
   const readable = new Map<string, boolean>();
   const groups: SelectedWorkflowRuns[] = [];
   let total = 0;
-  // Counted for the span: run index entries tested against the filter, and
-  // the workflow id and name pairs the readability check refused.
   let scanned = 0;
   let denied = 0;
   for (const workflow of workflows) {
@@ -474,30 +397,25 @@ async function selectRuns(
   return { groups, snapshots, total };
 }
 
-/** The sort key of a run: its start time, or 0 without one. */
 function startKey(run: RunIndexRun): number {
   return run.startMs ?? 0;
 }
 
 /**
- * The selected runs from `offset`, at most `limit` of them, newest first
- * across workflows. Runs that started at the same moment keep the order of
- * their workflows, then their order within the workflow. A merge of the
- * per-workflow lists, so it reads only as far as the page reaches.
+ * newest first across workflows; ties keep workflow order, then order within
+ * the workflow. A merge of the per-workflow lists, so it reads only as far as
+ * the page reaches.
  */
 export function pageOfSelection(
   groups: readonly SelectedWorkflowRuns[],
   offset: number,
   limit: number | undefined,
 ): Array<{ run: RunIndexRun; group: SelectedWorkflowRuns }> {
-  // Bounds as Array.prototype.slice takes them, truncated toward zero, as
-  // the page was cut before (swamp-club#3443).
+  // bounds as Array.prototype.slice takes them, truncated toward zero
   const start = Math.trunc(offset);
   const end = limit === undefined ? Infinity : Math.trunc(offset + limit);
   const page: Array<{ run: RunIndexRun; group: SelectedWorkflowRuns }> = [];
   if (end <= start) return page;
-  // A binary heap of each workflow's next run: newest first, then the
-  // earlier workflow.
   const cursor = groups.map(() => 0);
   const heap: number[] = [];
   const before = (a: number, b: number): boolean => {
@@ -552,30 +470,18 @@ export function pageOfSelection(
   return page;
 }
 
-/** A run's duration, when it has both a start and a completion time. */
 export function runDuration(run: RunIndexRun): number | undefined {
   return run.startMs && run.completedMs
     ? run.completedMs - run.startMs
     : undefined;
 }
 
-/** The most characters of a search query recorded on the span. */
 const SEARCH_QUERY_ATTR_MAX = 256;
 
-/** Resolves an optional run time bound to epoch ms. */
 function boundMs(value: string | undefined, now: number): number | undefined {
   return value ? parseRunTimeBound(value, now) : undefined;
 }
 
-/**
- * Searches workflow runs across all workflows.
- *
- * Selects the matching runs from each workflow's run index snapshot
- * (filters: since, until, status, workflow, workflows, trigger source, tags,
- * inputs, query; then readability), and returns the page from `offset`,
- * at most `limit` runs, by startedAt descending (most recent first).
- * Search items are built for the page only.
- */
 export async function* workflowRunSearch(
   _ctx: LibSwampContext,
   deps: WorkflowRunSearchDeps,
@@ -622,9 +528,8 @@ export async function* workflowRunSearch(
           : {}),
       });
 
-      // A nested wait is resolved by finding the child in its workflow's
+      // a nested wait is resolved by finding the child in its workflow's
       // snapshot, its parentRun the back-link check, with no further reads
-      // (swamp-club#2736).
       const snapshotIds = new Map(
         [...selection.snapshots.keys()].map((id) => [id.toLowerCase(), id]),
       );

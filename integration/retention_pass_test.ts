@@ -17,15 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Automatic retention end to end on a real repository (swamp-club#3473):
- * the end-of-command pass a CLI runs after a writing command, through the
- * same lock path as any writing command, against runs, snapshots, outputs,
- * data, and the agent command log on the default filesystem datastore; its
- * hourly gate and `automatic` switch; and batching and the time budget of
- * the shared pass.
- */
-
 import "../src/domain/models/models.ts";
 import { assert, assertEquals } from "@std/assert";
 import { join } from "@std/path";
@@ -147,7 +138,6 @@ async function setGarbageCollection(
   );
 }
 
-/** Writes data through the real repository, then drops the catalog. */
 async function withDataRepo(
   repo: Repo,
   fn: (data: FileSystemUnifiedDataRepository) => Promise<void>,
@@ -208,7 +198,6 @@ Deno.test("runRetentionAtCommandEnd: reaps every kind past its retention and kee
       retention: "7d",
       automatic: true,
       evaluatedSnapshots: "2d",
-      // Data retention applies only when set on its own.
       data: "7d",
       audit: "3d",
     });
@@ -219,7 +208,6 @@ Deno.test("runRetentionAtCommandEnd: reaps every kind past its retention and kee
       ageMs,
     });
 
-    // Runs.
     const oldDone = await saveAgedRun(
       repo.runs,
       workflow,
@@ -248,8 +236,6 @@ Deno.test("runRetentionAtCommandEnd: reaps every kind past its retention and kee
       1 * DAY_MS,
       snap(1 * DAY_MS),
     );
-    // A finished run inside the run retention whose snapshot is past the
-    // snapshot retention.
     const keptRunOldSnapshot = await saveAgedRun(
       repo.runs,
       workflow,
@@ -258,7 +244,6 @@ Deno.test("runRetentionAtCommandEnd: reaps every kind past its retention and kee
       snap(3 * DAY_MS),
     );
 
-    // Outputs.
     const oldOutput = await saveAgedOutput(
       repo.outputs,
       OUTPUT_TYPE,
@@ -270,7 +255,6 @@ Deno.test("runRetentionAtCommandEnd: reaps every kind past its retention and kee
       1 * DAY_MS,
     );
 
-    // Data.
     let mixedVersions: number[] = [];
     await withDataRepo(repo, async (data) => {
       await saveAgedDataVersions(data, DATA_TYPE, "m-old", "only-old", [
@@ -288,7 +272,6 @@ Deno.test("runRetentionAtCommandEnd: reaps every kind past its retention and kee
       ]);
     });
 
-    // Agent command log.
     const auditDir = join(repo.repoDir, ".swamp", SWAMP_SUBDIRS.audit);
     const oldAudit = await writeAuditDay(auditDir, 5);
     const recentAudit = await writeAuditDay(auditDir, 1);
@@ -303,7 +286,6 @@ Deno.test("runRetentionAtCommandEnd: reaps every kind past its retention and kee
       ["workflowRuns", "evaluatedSnapshots", "outputs", "data", "audit"],
     );
 
-    // Runs: the old finished one goes with its snapshot and log.
     assertEquals(await pathExists(oldDone.yamlPath), false);
     assertEquals(await pathExists(oldDone.logPath), false);
     assertEquals(await pathExists(oldDone.snapshotPath!), false);
@@ -311,7 +293,6 @@ Deno.test("runRetentionAtCommandEnd: reaps every kind past its retention and kee
       assertEquals(await pathExists(kept.yamlPath), true, kept.yamlPath);
       assertEquals(await pathExists(kept.snapshotPath!), true);
     }
-    // The snapshot past its own retention goes; its run stays.
     assertEquals(await pathExists(keptRunOldSnapshot.yamlPath), true);
     assertEquals(await pathExists(keptRunOldSnapshot.snapshotPath!), false);
     assertEquals(
@@ -324,19 +305,16 @@ Deno.test("runRetentionAtCommandEnd: reaps every kind past its retention and kee
       ]),
     );
 
-    // Outputs.
     assertEquals(await pathExists(oldOutput.yamlPath), false);
     assertEquals(await pathExists(oldOutput.logPath), false);
     assertEquals(await pathExists(youngOutput.yamlPath), true);
     assertEquals(await pathExists(youngOutput.logPath), true);
 
-    // Data: a name whose latest is old goes whole, catalog rows included.
     assertEquals(
       await pathExists(dataVersionDir(repo, DATA_TYPE, "m-old", "only-old")),
       false,
     );
     assertEquals(catalogVersions(repo, "m-old", "only-old"), []);
-    // A name with a young latest keeps only it.
     const latest = mixedVersions[2];
     assertEquals(catalogVersions(repo, "m-mixed", "mixed"), [latest]);
     for (const version of mixedVersions) {
@@ -348,18 +326,15 @@ Deno.test("runRetentionAtCommandEnd: reaps every kind past its retention and kee
         `version ${version}`,
       );
     }
-    // Exempt access state is never touched.
     assertEquals(
       await pathExists(dataVersionDir(repo, EXEMPT_TYPE, "g-1", "grant", 1)),
       true,
     );
     assertEquals(catalogVersions(repo, "g-1", "grant"), [1]);
 
-    // Audit, by whole day.
     assertEquals(await pathExists(oldAudit), false);
     assertEquals(await pathExists(recentAudit), true);
 
-    // One watermark per kind the pass ran, in the datastore's control plane.
     const watermarkDir = join(
       repo.datastorePath,
       "_control",
@@ -421,7 +396,6 @@ Deno.test("runRetentionAtCommandEnd: runs at most once an hour per checkout, and
     assertEquals(await pathExists(first.yamlPath), false);
     assertEquals(await pathExists(gatePath), true);
 
-    // Within the hour: the repo-local gate stops the pass.
     const second = await saveAgedRun(
       repo.runs,
       workflow,
@@ -432,10 +406,8 @@ Deno.test("runRetentionAtCommandEnd: runs at most once an hour per checkout, and
     assertEquals(await runRetentionAtCommandEnd(), undefined);
     assertEquals(await pathExists(second.yamlPath), true);
 
-    // Nothing noted: nothing runs.
     assertEquals(await runRetentionAtCommandEnd(), undefined);
 
-    // Without `automatic`, the pass never starts, gate or not.
     await Deno.remove(gatePath);
     await setGarbageCollection(repo.repoDir, { retention: "7d" });
     noteRetentionCandidate(repo.repoDir);
@@ -443,7 +415,6 @@ Deno.test("runRetentionAtCommandEnd: runs at most once an hour per checkout, and
     assertEquals(await pathExists(second.yamlPath), true);
     assertEquals(await pathExists(gatePath), false);
 
-    // `automatic: false` is the same.
     await setGarbageCollection(repo.repoDir, {
       retention: "7d",
       automatic: false,
@@ -481,7 +452,6 @@ Deno.test("runRepoRetention: small batches drain every old run; a spent budget s
       },
     };
 
-    // A spent budget: no batch starts, and the watermark says so.
     const stopped = await runRepoRetention(deps, {
       policy,
       batchSize: 2,
@@ -491,10 +461,8 @@ Deno.test("runRepoRetention: small batches drain every old run; a spent budget s
     assertEquals(stopped.stoppedBy, "budget");
     assertEquals(batches, 0);
     assertEquals((await repo.runs.listRunIds()).size, 8);
-    // No batch ran, so no watermark was written.
     assertEquals(await watermarks.get("workflowRuns"), null);
 
-    // Stopping after two batches leaves the rest for the next pass.
     let checks = 0;
     const partial = await runRepoRetention(deps, {
       policy,
@@ -507,13 +475,10 @@ Deno.test("runRepoRetention: small batches drain every old run; a spent budget s
     assertEquals((await repo.runs.listRunIds()).size, 4);
     assertEquals((await watermarks.get("workflowRuns"))?.complete, false);
 
-    // An unbounded pass drains the rest across batches of two.
     batches = 0;
     const drained = await runRepoRetention(deps, { policy, batchSize: 2 });
     assertEquals(drained.complete, true);
     assertEquals(drained.kinds[0].deleted, 3);
-    // Two run batches, then the one sweep of orphaned snapshots, which
-    // follow the run retention.
     assertEquals(batches, 3);
     assertEquals(await repo.runs.listRunIds(), new Set([keep.runId]));
     for (const run of oldRuns) {

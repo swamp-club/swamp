@@ -72,7 +72,6 @@ export type Grant = z.infer<typeof GrantSchema>;
 
 const GRANT_DATA_NAME = "grant-main";
 
-/** What {@link checkGrantCreateInputs} reads from a grant create request. */
 export interface GrantCreateInputs {
   subject: string;
   effect: Effect;
@@ -82,11 +81,8 @@ export interface GrantCreateInputs {
 }
 
 /**
- * Checks the inputs of a grant create, throwing the error `create` refuses
- * them with. Callers that save anything before `create` runs (the
- * `access grant create` command saves its definition) call it first, so a
- * refused grant leaves nothing behind (swamp-club#3182). Returns the parsed
- * subject and selector, and the spelling findings that only warrant a warning.
+ * callers that save anything before create runs call this first, so a refused
+ * grant leaves nothing behind
  */
 export function checkGrantCreateInputs(
   inputs: GrantCreateInputs,
@@ -109,9 +105,8 @@ export function checkGrantCreateInputs(
     }
   }
 
-  // A condition literal no type is spelled as matches nothing, so a new grant
-  // with one is refused; a selector may also name instance names, so it is
-  // only warned about (swamp-club#3130).
+  // a condition literal no type is spelled as matches nothing, so a new grant
+  // with one is refused; a selector may name instance names, so it only warns
   const spelling = findGrantSpellingIssues(
     { effect: inputs.effect, resource, condition: inputs.condition },
     readConditionTypeLiterals,

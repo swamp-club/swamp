@@ -122,8 +122,6 @@ Deno.test("resolveRunGcInput: a request run retention drops the snapshot retenti
   );
 });
 
-// --- sync tests: data mutations must push to the remote datastore ---
-
 function createMockSocket(): WebSocket & { sent: string[] } {
   const sent: string[] = [];
   return {
@@ -181,11 +179,6 @@ interface SyncFixture {
   markDirtyCalls: DatastoreSyncOptions[];
 }
 
-/**
- * Builds a serve connection context over a temp repo holding one model
- * ("sync-model") with one data item ("result"). Dirty signals from the
- * repositories flow into the mock sync service, as in serve.
- */
 async function createSyncFixture(
   dir: string,
   options: { syncService?: boolean; pushError?: Error } = {},
@@ -283,11 +276,9 @@ Deno.test("handleDataDelete: pushes the deletion after per-path markDirty (no ba
     assertEquals(pushCalls[0].namespace, "shared");
     const bareCalls = markDirtyCalls.filter((c) => !c.relPath);
     assertEquals(bareCalls.length, 0, "bare markDirty() must not be called");
-    // Full delete emits per-version-directory signals + latest marker
-    // (swamp-club#2277), not a single data-name directory signal. The
-    // fixture hands the repository's absolute paths straight to the mock,
-    // so they use the platform separator; forward-slash normalization
-    // happens in the repo_context wiring and is pinned there.
+    // full delete emits per-version-directory signals plus a latest marker, not
+    // one data-name signal; the fixture passes absolute paths with the platform
+    // separator, normalized in the repo_context wiring
     assertEquals(
       markDirtyCalls.some((c) => c.relPath?.includes(`result${SEPARATOR}`)),
       true,

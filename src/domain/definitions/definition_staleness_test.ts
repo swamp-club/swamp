@@ -44,12 +44,11 @@ Deno.test("resolveStaleness: reports upgradable when the chain covers the gap", 
 });
 
 Deno.test("resolveStaleness: reports upgradable when only part of the chain applies", () => {
-  // Definition at V2, chain declares V2 and V3 — only V3 is newer than V2.
   assertEquals(resolveStaleness(V2, V3, [V2, V3]).state, "upgradable");
 });
 
 Deno.test("resolveStaleness: reports stranded when the model bumped with no upgrade chain", () => {
-  // The swamp-club#900 case: version moved, no VersionUpgrade shipped.
+  // the model's version moved but no VersionUpgrade shipped
   assertEquals(resolveStaleness(V1, V2, []).state, "stranded");
 });
 
@@ -96,10 +95,6 @@ Deno.test("resolveStaleness: carries both versions through on every state", () =
 });
 
 Deno.test("resolveStaleness: treats an unparseable version as invalid rather than throwing", () => {
-  // Reachable by hand-editing a definition under models/. `model get` must
-  // still describe the definition instead of failing on it, and it must say
-  // the version is malformed rather than conflating it with an unstamped
-  // definition (swamp-club#2412).
   for (const bad of ["1.0.0", "", "not-a-version", "2026.13", "1"]) {
     const result = resolveStaleness(bad, V2, [V2]);
     assertEquals(result.state, "invalid");

@@ -35,25 +35,14 @@ import { sanitizeReportNameForData } from "./report_data_name.ts";
 
 export { sanitizeReportNameForData };
 
-/**
- * Options for filtering which reports to execute.
- */
 export interface ReportFilterOptions {
-  /** Skip all reports. */
   skipAllReports?: boolean;
-  /** Skip specific reports by name. */
   skipReportNames?: string[];
-  /** Skip reports matching these labels. */
   skipReportLabels?: string[];
-  /** Only run these specific reports (inclusion filter). */
   reportNames?: string[];
-  /** Only run reports matching these labels (inclusion filter). */
   reportLabels?: string[];
 }
 
-/**
- * Result of a single report execution.
- */
 export interface ReportExecutionResult {
   name: string;
   scope: ReportScope;
@@ -64,43 +53,23 @@ export interface ReportExecutionResult {
   error?: string;
 }
 
-/**
- * Result of executing all applicable reports.
- */
 export interface ReportExecutionSummary {
   results: ReportExecutionResult[];
   failures: number;
 }
 
-/**
- * Gets the name from a ReportRef.
- */
 function getReportRefName(ref: ReportRef): string {
   return typeof ref === "string" ? ref : ref.name;
 }
 
-/**
- * Gets the method scoping from a ReportRef (undefined = all methods).
- */
 function getReportRefMethods(ref: ReportRef): string[] | undefined {
   return typeof ref === "string" ? undefined : ref.methods;
 }
 
 /**
- * Filters reports based on selection rules and CLI flags.
- *
- * Filtering logic:
- * 1. Build candidate set from model-type defaults + selection.require
- * 2. Definition/workflow-level skip always wins
- * 3. Respect YAML method scoping
- * 4. Required reports immune to CLI skip flags
- * 5. Honor CLI: --skip-reports, --skip-report, --skip-report-label
- * 6. Inclusion filters: --report, --report-label
- *
- * When `modelTypeReports` is provided (method/model scope), the candidate set
- * is reports whose name appears in modelTypeReports OR in selection.require.
- * When `modelTypeReports` is undefined (workflow scope), the candidate set
- * is reports in selection.require only.
+ * a definition or workflow skip always wins, required reports are immune to CLI
+ * skip flags; workflow scope (no modelTypeReports) has selection.require as its
+ * only candidates
  */
 export function filterReports(
   reports: Array<{ name: string; report: ReportDefinition }>,
@@ -113,11 +82,6 @@ export function filterReports(
   const requiredRefs = selection?.require ?? [];
   const requiredNames = new Set(requiredRefs.map(getReportRefName));
 
-  // Build the candidate set: model-type defaults + require
-  // When modelTypeReports is provided (method/model scope), candidates are
-  // reports in modelTypeReports OR in selection.require.
-  // When modelTypeReports is undefined (workflow scope), candidates are
-  // reports in selection.require only.
   const candidateNames = new Set<string>(requiredNames);
   if (modelTypeReports) {
     for (const name of modelTypeReports) {
@@ -126,7 +90,6 @@ export function filterReports(
   }
 
   if (filterOptions.skipAllReports) {
-    // Still allow required reports through
     return reports.filter(({ name, report }) =>
       report.scope === scope && requiredNames.has(name) &&
       candidateNames.has(name)
@@ -135,35 +98,27 @@ export function filterReports(
 
   const skippedNames = new Set(selection?.skip ?? []);
 
-  // Build method scoping map from required refs
   const methodScopingMap = new Map<string, string[] | undefined>();
   for (const ref of requiredRefs) {
     methodScopingMap.set(getReportRefName(ref), getReportRefMethods(ref));
   }
 
   return reports.filter(({ name, report }) => {
-    // Only include reports matching the requested scope
     if (report.scope !== scope) return false;
 
-    // Only include candidates (model-type defaults + require)
     if (!candidateNames.has(name)) return false;
 
-    // Definition-level skip always wins
     if (skippedNames.has(name)) return false;
 
-    // Respect method scoping from YAML
     if (methodName && methodScopingMap.has(name)) {
       const methods = methodScopingMap.get(name);
       if (methods && !methods.includes(methodName)) return false;
     }
 
-    // Required reports are immune to CLI skip flags
     if (requiredNames.has(name)) return true;
 
-    // CLI skip by name
     if (filterOptions.skipReportNames?.includes(name)) return false;
 
-    // CLI skip by label
     if (
       filterOptions.skipReportLabels &&
       report.labels?.some((l) => filterOptions.skipReportLabels!.includes(l))
@@ -171,7 +126,6 @@ export function filterReports(
       return false;
     }
 
-    // Inclusion filters (narrow to subset)
     if (filterOptions.reportNames && filterOptions.reportNames.length > 0) {
       if (!filterOptions.reportNames.includes(name)) return false;
     }
@@ -188,11 +142,8 @@ export function filterReports(
 }
 
 /**
- * Persists report results as data artifacts.
- *
- * Stores two artifacts per report:
- * - Markdown: data name `report-{reportName}`, contentType `text/markdown`
- * - JSON: data name `report-{reportName}-json`, contentType `application/json`
+ * two artifacts per report: report-{reportName} (text/markdown) and
+ * report-{reportName}-json (application/json)
  */
 async function persistReportData(
   repo: UnifiedDataRepository,
@@ -219,7 +170,6 @@ async function persistReportData(
     ? `report-${sanitized}-${varySuffix}`
     : `report-${sanitized}`;
 
-  // Persist markdown artifact
   const mdWriter = new DefaultDataWriter(
     repo,
     modelType,
@@ -237,7 +187,6 @@ async function persistReportData(
   const mdHandle = await mdWriter.writeText(markdown);
   handles.push(mdHandle);
 
-  // Persist JSON artifact
   const jsonWriter = new DefaultDataWriter(
     repo,
     modelType,
@@ -258,9 +207,6 @@ async function persistReportData(
   return handles;
 }
 
-/**
- * Event callback for report execution progress.
- */
 export interface ReportEventCallback {
   onReportStarted(reportName: string, scope: ReportScope): void;
   onReportCompleted(
@@ -278,9 +224,6 @@ export interface ReportEventCallback {
   ): void;
 }
 
-/**
- * Builds a redactSensitiveArgs helper bound to the given report context.
- */
 function buildRedactSensitiveArgs(
   context: ReportContext,
 ): (
@@ -303,9 +246,6 @@ function buildRedactSensitiveArgs(
   };
 }
 
-/**
- * Executes applicable reports and persists their results.
- */
 export async function executeReports(
   registry: ReportRegistry,
   context: ReportContext,
@@ -323,25 +263,13 @@ export async function executeReports(
     ? context.workflowName
     : context.definition.name;
 
-  // Promote lazy-registered reports for every candidate name before calling
-  // getAll(). getAll() only returns fully-loaded entries from the registry's
-  // `reports` Map; lazy entries in `lazyTypes` are excluded. Without this
-  // step, user extension reports registered lazily from the bundle catalog
-  // (second+ process run) would be silently filtered out of the applicable
-  // set — the regression fixed by #81 after the lazy loading rework in
+  // promote lazy-registered reports for every candidate name before getAll(),
+  // which excludes lazy entries; otherwise user extension reports from the
+  // bundle catalog would be silently filtered out
   // #1089.
-  //
-  // We promote every candidate name unconditionally, including ones whose
-  // scope will end up mismatched by filterReports() below. We cannot inspect
-  // `report.scope` until the bundle is imported, and extending
-  // LazyReportEntry with scope would duplicate the bundle catalog and
-  // defeat the point of lazy loading for scope-mismatched reports anyway.
-  // Wasted imports are bounded by |selection.require ∪ modelTypeReports|
-  // and only happen once per process — ensureTypeLoaded() dedupes concurrent
-  // callers via typeLoadPromises, and is a no-op for already-loaded and
-  // unknown names. Errors from ensureTypeLoaded() propagate unchanged: a
-  // broken bundle for a required report must fail loudly rather than be
-  // silently skipped.
+  // promoted unconditionally, scope-mismatched ones included, since scope is
+  // unknown until import; wasted imports are bounded and once per process; load
+  // errors propagate so a broken required bundle fails loudly
   const candidateNames = new Set<string>();
   for (const ref of selection?.require ?? []) {
     candidateNames.add(getReportRefName(ref));
@@ -358,17 +286,9 @@ export async function executeReports(
   const results: ReportExecutionResult[] = [];
   let failures = 0;
 
-  // A required report still absent from the registry after the promotion
-  // pass is unresolvable — no loaded or lazy-indexed report matches the
-  // name (missing pull, typo, or broken catalog entry). `require` is a
-  // contract: fail loudly instead of silently dropping the name from the
-  // candidate set. Counted in `failures` so the surrounding run reports as
-  // failed, matching required reports that load and then throw — and like
-  // that path, repeated runs accumulate error-artifact versions. Names in
-  // selection.skip are exempt (skip wins over require, so the report was
-  // never going to run). Callers that invoke executeReports more than once
-  // with the same selection set emitUnresolvableRequireFailures on exactly
-  // one call to avoid duplicate failures.
+  // a required report still absent after promotion fails loudly and counts in
+  // failures, since require is a contract; skipped names are exempt; callers
+  // emit this on exactly one call per selection
   if (emitUnresolvableRequireFailures) {
     const skipNames = new Set(selection?.skip ?? []);
     const seen = new Set<string>();
@@ -514,7 +434,6 @@ export async function executeReports(
         : String(error);
       const errorStack = error instanceof Error ? error.stack : undefined;
 
-      // Persist a fallback error artifact so diagnostic data is not lost.
       let errorDataHandles: DataHandle[] | undefined;
       try {
         const fallback = buildReportErrorResult(

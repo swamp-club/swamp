@@ -75,7 +75,6 @@ export function createExtensionYankRenderer(
   }
 }
 
-/** Renders cancellation when user declines the prompt. */
 export function renderExtensionYankCancelled(mode: OutputMode): void {
   if (mode === "json") {
     console.log(JSON.stringify({ status: "cancelled" }));

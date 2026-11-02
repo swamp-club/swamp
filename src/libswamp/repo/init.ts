@@ -37,14 +37,9 @@ import { YamlVaultConfigRepository } from "../../infrastructure/persistence/yaml
 
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
 /**
- * Data structure for the repo init output.
- *
- * `tools` is the canonical multi-tool field. `tool` is the deprecated
- * single-tool field — always present (never omitted), set to the primary
- * tool when `tools.length === 1`, explicit `null` when `tools.length !== 1`,
- * so SDK consumers cannot silently miss a multi-tool repo.
- *
- * @deprecated `tool` field — read `tools` instead.
+ * tools is the canonical field; tool is deprecated and always present: the
+ * primary tool when tools.length === 1, null otherwise, so SDK consumers cannot
+ * silently miss a multi-tool repo
  */
 export interface RepoInitData {
   path: string;
@@ -62,7 +57,6 @@ export interface RepoInitData {
    * to set one up.
    */
   vault: { name: string; type: string; created: boolean } | null;
-  /** @deprecated Read `tools` instead. `null` when not single-tool. */
   tool: string | null;
 }
 
@@ -72,30 +66,24 @@ export type RepoInitEvent =
   | { kind: "error"; error: SwampError };
 
 /**
- * Input for the repo init operation.
- *
- * Provide `tools` for multi-tool support; the deprecated `tool` is accepted
- * for backwards compat (single-tool callers) and wraps to `[tool]`. When both
- * are passed, `tools` wins.
+ * the deprecated tool is accepted for single-tool callers and wraps to [tool];
+ * when both are passed, tools wins
  */
 export interface RepoInitInput {
   path: string;
   force: boolean;
   tools?: string[];
-  /** @deprecated Pass `tools` instead. */
   tool?: string;
   version: string;
   serverAddress?: string;
   /**
-   * Whether to set up the repository's default vault: a local_encryption
-   * vault named `default`, recorded as `defaultVault` (swamp-club#3259).
-   * Defaults to true, so every new repository has one; pass false to skip
-   * it (`swamp repo init --no-vault`).
+   * whether to set up the default vault: a local_encryption vault named
+   * default, recorded as defaultVault. Defaults to true so every new repository
+   * has one; false skips it
    */
   vault?: boolean;
 }
 
-/** Dependencies for the repo init operation. */
 export interface RepoInitDeps {
   init: (
     repoPath: RepoPath,
@@ -103,13 +91,11 @@ export interface RepoInitDeps {
       force?: boolean;
       tools?: string[];
       serverAddress?: string;
-      /** Set up the default vault (see {@link RepoInitInput.vault}). */
       defaultVault?: boolean;
     },
   ) => Promise<RepoInitResult>;
 }
 
-/** Wires real infrastructure into RepoInitDeps. */
 export function createRepoInitDeps(version: string): RepoInitDeps {
   const service = new RepoService(version);
   return {
@@ -129,7 +115,6 @@ export function createRepoInitDeps(version: string): RepoInitDeps {
   };
 }
 
-/** Initializes a new swamp repository. */
 export async function* repoInit(
   ctx: LibSwampContext,
   deps: RepoInitDeps,
@@ -185,10 +170,8 @@ export async function* repoInit(
 }
 
 /**
- * Resolves the input tools list, accepting either the new `tools` field or
- * the deprecated `tool` single-value field. `tools` wins when both are
- * supplied. Returns `undefined` when neither is given so the caller can
- * apply its own default (e.g. RepoService.init falls back to `["claude"]`).
+ * tools wins when both are supplied; undefined when neither is given so the
+ * caller applies its own default
  */
 function resolveToolsInput(
   tools: string[] | undefined,
@@ -204,14 +187,8 @@ function resolveToolsInput(
 }
 
 /**
- * Maps the canonical `tools` array onto the deprecated single-value `tool`
- * field for SDK backwards compat:
- *
- *  - `tools: []` (the `--tool none` case) → `"none"`, matching the legacy
- *    sentinel value the user passed and preserving the prior contract.
- *  - `tools: [X]` (single tool enrolled) → `X`, the primary tool.
- *  - `tools: [X, Y, ...]` (multi-tool) → `null` so SDK consumers cannot
- *    silently miss the second enrolled tool — they must read `tools`.
+ * tools [] maps to "none" (the legacy sentinel), one tool to that tool, several
+ * to null so SDK consumers cannot silently miss the second tool
  */
 function legacyToolField(tools: string[]): string | null {
   if (tools.length === 0) return "none";
@@ -219,20 +196,10 @@ function legacyToolField(tools: string[]): string | null {
   return null;
 }
 
-// --- Repo Upgrade ---
-
 /**
- * Data structure for the repo upgrade output.
- *
- * `tools` is the canonical multi-tool field; `addedTools` and `removedTools`
- * describe the diff against the previous marker. `extensionsToReinstall`
- * lists pulled extensions present in the previous primary tool's skills dir
- * that did NOT propagate to a newly-added tool's dir, so the consumer can
- * surface a "re-run `swamp extension pull <name>`" message. `tool` is the
- * deprecated single-value field — always present, `null` when not
- * single-tool.
- *
- * @deprecated `tool` field — read `tools` instead.
+ * addedTools and removedTools are the diff against the previous marker;
+ * extensionsToReinstall lists pulled extensions in the previous primary tool's
+ * skills dir that did not reach a newly added tool
  */
 export interface RepoUpgradeData {
   path: string;
@@ -243,17 +210,14 @@ export interface RepoUpgradeData {
   instructionsUpdated: boolean;
   settingsUpdated: boolean;
   gitignoreAction: string;
-  /** Enrolled tools as recorded by `marker.tools` BEFORE this upgrade. */
   previousTools: string[];
   tools: string[];
   addedTools: string[];
   removedTools: string[];
   extensionsToReinstall: { tool: string; names: string[] }[];
-  /** Local bundled skill copies that should be cleaned up. */
   localSkillCopies: { skillsDir: string; names: string[] }[];
-  /** Repo-relative paths of files modified during this upgrade. */
   changedFiles: string[];
-  /** Collectives referenced in the lockfile that are not trusted (swamp-club#1217). */
+  /** collectives referenced in the lockfile that are not trusted */
   untrustedCollectives: string[];
   /**
    * Present only when the untrusted-collectives check did not run because
@@ -262,22 +226,17 @@ export interface RepoUpgradeData {
    */
   untrustedCollectivesSkipped?: true;
   /**
-   * True when the extension install pass did not run because its
-   * dependencies could not be built (for example the managed config base is
-   * unresolved; swamp-club#2483).
+   * true when the extension install pass did not run because its dependencies
+   * could not be built (e.g. the managed config base is unresolved)
    */
   installSkipped: boolean;
-  /** Why the install pass was skipped, when it was. */
   installSkippedReason?: string;
-  /** @deprecated Read `tools` instead. `null` when not single-tool. */
   tool: string | null;
 }
 
 /**
- * Events yielded by `repoUpgrade`. The `extensions` variant wraps each
- * event from the extension install sub-stream so the renderer can
- * delegate to the install renderer without a bespoke vocabulary for
- * upgrade's installing/migrating progress.
+ * the extensions variant wraps the install sub-stream's events so the renderer
+ * can delegate to the install renderer
  */
 export type RepoUpgradeEvent =
   | { kind: "upgrading" }
@@ -286,26 +245,20 @@ export type RepoUpgradeEvent =
   | { kind: "error"; error: SwampError };
 
 /**
- * Input for the repo upgrade operation.
- *
- * Provide `tools` to set the full enrolled tool list (replace semantics).
- * The deprecated `tool` is accepted for backwards compat (single-tool
- * callers) and wraps to `[tool]`; `tools` wins when both are passed. Pass
- * neither to preserve `marker.tools` and just bump the swamp version.
+ * tools sets the full enrolled list (replace semantics); deprecated tool wraps
+ * to [tool], and tools wins when both are passed. Pass neither to keep
+ * marker.tools and just bump the version
  */
 export interface RepoUpgradeInput {
   path: string;
   tools?: string[];
-  /** @deprecated Pass `tools` instead. */
   tool?: string;
   includeGitignore?: boolean;
   version: string;
   /**
-   * Dependencies for the extension install pass that runs after the
-   * core upgrade. When absent, the install pass is skipped — useful for
-   * callers that do not have registry access wired (e.g. some tests).
-   * Production callers always supply this; the CLI builds it from the
-   * repo marker and registry client.
+   * dependencies for the extension install pass after the core upgrade; when
+   * absent the pass is skipped (callers without registry access, e.g. some
+   * tests)
    */
   extensionInstallDeps?: ExtensionInstallDeps;
   /**
@@ -320,7 +273,6 @@ export interface RepoUpgradeInput {
   lockfilePath?: string | null;
 }
 
-/** Dependencies for the repo upgrade operation. */
 export interface RepoUpgradeDeps {
   upgrade: (
     repoPath: RepoPath,
@@ -332,7 +284,6 @@ export interface RepoUpgradeDeps {
   ) => Promise<RepoUpgradeResult>;
 }
 
-/** Wires real infrastructure into RepoUpgradeDeps. */
 export function createRepoUpgradeDeps(version: string): RepoUpgradeDeps {
   const service = new RepoService(version);
   return {
@@ -341,17 +292,9 @@ export function createRepoUpgradeDeps(version: string): RepoUpgradeDeps {
 }
 
 /**
- * Upgrades an existing swamp repository, including migrating any
- * legacy-layout extensions to the current per-extension subtree
- * layout.
- *
- * The upgrade runs in two phases: (1) the domain `upgrade()` call that
- * refreshes the marker, skills, and tool-specific settings; (2) an
- * `extensionInstall` pass that brings the on-disk extension state into
- * alignment with the lockfile. Any entry tracked at a legacy (gen-1 or
- * gen-2) path is re-pulled into the per-extension subtree and the
- * legacy files are swept. On install failure, the legacy files are
- * preserved and the caller gets a clear error with a recovery command.
+ * two phases: domain upgrade() refreshes the marker, skills and tool settings;
+ * then extensionInstall re-pulls legacy-layout entries into the per-extension
+ * subtree and sweeps legacy files. On install failure the legacy files are kept
  */
 export async function* repoUpgrade(
   ctx: LibSwampContext,
@@ -387,14 +330,9 @@ export async function* repoUpgrade(
 
       ctx.logger.debug`Repository upgraded: ${result.path}`;
 
-      // Run the extension install pass so any legacy-layout entries
-      // tracked in the lockfile get re-pulled into the per-extension
-      // subtree and their legacy files swept. `extensionInstall` is
-      // idempotent: on repos with no legacy layout and no missing
-      // files, it's a no-op.
-      // A UserError from the install pass (e.g. its lockfile change was
-      // not published) is raised after the upgrade result is reported: the
-      // upgrade itself was applied (swamp-club#2838).
+      // the install pass re-pulls legacy-layout lockfile entries and sweeps
+      // their legacy files; idempotent. A UserError from it is raised after the
+      // upgrade result is reported
       let installError: UserError | undefined;
       if (input.extensionInstallDeps) {
         try {
@@ -407,12 +345,9 @@ export async function* repoUpgrade(
           if (error instanceof UserError) {
             installError = error;
           } else {
-            // extensionInstall catches per-entry failures internally;
-            // anything that reaches us here is an infrastructure error
-            // (corrupt lockfile JSON, permission error, filesystem issue).
-            // Surface it the same way deps.upgrade() failures are
-            // surfaced: a clean error event so the renderer throws a
-            // UserError rather than a raw stack trace.
+            // extensionInstall catches per-entry failures, so anything reaching
+            // here is an infrastructure error; surface it as an error event for
+            // the renderer.
             yield {
               kind: "error",
               error: validationFailed(

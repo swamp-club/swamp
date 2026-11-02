@@ -20,7 +20,6 @@
 /** Characters excluding ambiguous glyphs (0, O, 1, I, L). */
 const SAFE_CHARS = "ABCDEFGHJKMNPQRSTUVWXYZ23456789";
 
-/** Generate a device verification code in XXXX-XXXX format. */
 export function generateDeviceCode(): string {
   const bytes = new Uint8Array(8);
   crypto.getRandomValues(bytes);

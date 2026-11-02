@@ -122,8 +122,8 @@ export const vaultAuditTrailCommand = withRemoteOptions(
     return;
   }
 
-  // It only reads: it never takes the v3 writer lease, which would start a
-  // replication lineage on a bucket (swamp-club#3801).
+  // read-only: it never takes the v3 writer lease, which would start a
+  // replication lineage on a bucket
   const { repoDir } = await requireInitializedRepoReadOnly({
     repoDir: resolveRepoDir(options.repoDir),
     outputMode: cliCtx.outputMode,

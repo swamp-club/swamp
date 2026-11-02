@@ -30,22 +30,11 @@ import {
   explainVaultConfigIssues,
 } from "./vault_config_fields.ts";
 
-/**
- * Creates a VaultProvider instance for the given type, name, and config.
- *
- * Handles both built-in types (local_encryption, mock) and extension types
- * registered in the vault type registry. This factory is the single source
- * of truth for provider instantiation — used by VaultService.registerVault()
- * and the vault migrate operation.
- *
- * @throws Error if the type is unsupported or config validation fails
- */
 export function createVaultProvider(
   type: string,
   name: string,
   config: Record<string, unknown>,
 ): VaultProvider {
-  // Check registry for user-defined types with a createProvider factory
   const registeredType = vaultTypeRegistry.get(type);
   if (registeredType?.createProvider && !registeredType.isBuiltIn) {
     if (registeredType.configSchema) {
@@ -67,7 +56,6 @@ export function createVaultProvider(
     return provider;
   }
 
-  // Built-in types
   switch (type.toLowerCase()) {
     case "mock":
       return new MockVaultProvider(
@@ -89,10 +77,6 @@ export function createVaultProvider(
   }
 }
 
-/**
- * Validates that an object returned by a user-defined createProvider implements
- * the VaultProvider interface.
- */
 function assertVaultProvider(
   obj: unknown,
   vaultType: string,

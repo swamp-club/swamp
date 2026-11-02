@@ -146,7 +146,6 @@ async function withNamespaceTempDir(
   }
 }
 
-/** Runs `namespace list` on the datastore `config` names. */
 async function listFor(
   config: FilesystemDatastoreConfig,
 ): Promise<NamespaceListData> {

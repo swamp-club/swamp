@@ -66,10 +66,6 @@ function mockVaultFactory(
     } as unknown as VaultService);
 }
 
-// ============================================================================
-// No-op cases
-// ============================================================================
-
 Deno.test("resolveDatastoreExpressions: config with no expressions passes through unchanged", async () => {
   const config = { host: "localhost", port: 5432, ssl: true };
   const result = await resolveDatastoreExpressions(config, baseContext());
@@ -86,10 +82,6 @@ Deno.test("resolveDatastoreExpressions: config with only primitives passes throu
   const result = await resolveDatastoreExpressions(config, baseContext());
   assertEquals(result, { count: 42, enabled: false, label: null });
 });
-
-// ============================================================================
-// env.VAR resolution
-// ============================================================================
 
 Deno.test("resolveDatastoreExpressions: resolves env expression in flat config", async () => {
   await withMockedEnv(
@@ -172,10 +164,6 @@ Deno.test("resolveDatastoreExpressions: throws UserError for empty env var", asy
   });
 });
 
-// ============================================================================
-// vault.get() resolution
-// ============================================================================
-
 Deno.test("resolveDatastoreExpressions: resolves vault.get with quoted args", async () => {
   const ctx = baseContext({
     vaultServiceFactory: mockVaultFactory({
@@ -235,10 +223,6 @@ Deno.test("resolveDatastoreExpressions: throws UserError when secret not found",
   );
 });
 
-// ============================================================================
-// Mixed expressions
-// ============================================================================
-
 Deno.test("resolveDatastoreExpressions: resolves both env and vault in different fields", async () => {
   await withMockedEnv({ SWAMP_TEST_DS_EXPR_MIX: "env-val" }, async () => {
     const ctx = baseContext({
@@ -270,10 +254,6 @@ Deno.test("resolveDatastoreExpressions: interpolates env and vault in one string
   });
 });
 
-// ============================================================================
-// Error cases
-// ============================================================================
-
 Deno.test("resolveDatastoreExpressions: throws UserError for unsupported expression", async () => {
   const config = { val: "${{ foo.bar }}" };
   await assertRejects(
@@ -304,10 +284,6 @@ Deno.test("resolveDatastoreExpressions: managedConfig allows env expressions", a
     assertEquals(result, { token: "allowed" });
   });
 });
-
-// ============================================================================
-// Edge cases
-// ============================================================================
 
 Deno.test("resolveDatastoreExpressions: partial expression syntax passes through", async () => {
   const config = { val: "token-${{ env.X" };

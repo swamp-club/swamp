@@ -22,17 +22,9 @@ import { markErrorPaths } from "../../domain/errors.ts";
 import { describeTypeClaimant } from "../../domain/extensions/duplicate_type_user_error.ts";
 
 /**
- * Carries enough information to point a user at both Sources sharing
- * the conflicting `(kind, typeNormalized)` so they can resolve the
- * conflict by hand.
- *
- * Both `firstSource` and `secondSource` MUST be populated — naming both
- * paths is a hard requirement of the design. Naming only one is the
- * "first-wins" silent corruption W1b is closing.
- *
- * When exactly one side belongs to the save that failed, `firstSource`
- * is the occupant already in the catalog and `secondSource` the one
- * being saved. Otherwise the two are in catalog order.
+ * both sources must be populated so the user can resolve by hand; when one side
+ * belongs to the failed save, first is the existing occupant, otherwise catalog
+ * order
  */
 export interface DuplicateTypeOccupant {
   readonly extensionName: string;
@@ -40,20 +32,6 @@ export interface DuplicateTypeOccupant {
   readonly canonicalPath: string;
 }
 
-/**
- * Thrown by `ExtensionRepository.saveAll` when two non-Tombstoned
- * Sources across the post-save catalog state share the same
- * `(kind, typeNormalized)` tuple. The transaction is rolled back before
- * the throw, so the catalog is left in its pre-save state.
- *
- * The day-to-day case for I-Repo-1 firing legitimately is exactly the
- * upgrade-as-atomic-transition transaction:
- * `saveAll([vN.tombstoneAll(), vN+1])`. When that transaction succeeds,
- * v1's Sources are Tombstoned in the post-state and only v2 occupies
- * the type slot. If the lifecycle service forgets the `tombstoneAll()`
- * step, this error fires — naming both v1's and v2's source paths so
- * the developer can see what happened.
- */
 export class DuplicateTypeError extends Error {
   readonly kind: ExtensionKind;
   readonly typeNormalized: string;
@@ -84,7 +62,3 @@ export class DuplicateTypeError extends Error {
     ]);
   }
 }
-
-// `DuplicateTypeUserError` (the user-facing wrapper) lives in
-// `src/domain/extensions/duplicate_type_user_error.ts` so the
-// presentation layer can import it without violating DDD layer rules.

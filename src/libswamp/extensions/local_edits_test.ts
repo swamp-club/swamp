@@ -105,7 +105,6 @@ Deno.test("detectLocalEditsForExtension: no-anchor when lockfile entry lacks fil
     await writeLockfile(lockfilePath, {
       version: "1.0.0",
       pulledAt: new Date().toISOString(),
-      // Pre-anchor lockfile entry: no filesChecksum field.
     });
 
     const result = await detectLocalEditsForExtension(
@@ -159,8 +158,6 @@ Deno.test("LocalEditsError: message names the extension and the remediation", ()
   assert(err instanceof UserError);
 });
 
-// ---- nested entry roots (swamp-club#2723) ----
-
 async function writeNestedLockfile(
   lockfilePath: string,
   parentChecksum: string,
@@ -193,7 +190,6 @@ Deno.test("detectLocalEditsForExtension: a nested entry's files do not count as 
     assert(anchor !== null);
     await writeNestedLockfile(lockfilePath, anchor);
 
-    // Installing the nested entry adds files under the parent's root.
     await Deno.mkdir(join(extRoot, "child", "models"), { recursive: true });
     await Deno.writeTextFile(join(extRoot, "child", "models", "c.ts"), "c");
 
@@ -210,7 +206,6 @@ Deno.test("detectLocalEditsForExtension: a parent digest stored with its nested 
     await Deno.writeTextFile(join(extRoot, "models", "foo.ts"), "content");
     await Deno.mkdir(join(extRoot, "child", "models"), { recursive: true });
     await Deno.writeTextFile(join(extRoot, "child", "models", "c.ts"), "c");
-    // Stored before nested roots were left out: the whole tree.
     const legacy = await readInstalledExtensionDigest(extRoot);
     assert(legacy !== null);
     await writeNestedLockfile(lockfilePath, legacy);

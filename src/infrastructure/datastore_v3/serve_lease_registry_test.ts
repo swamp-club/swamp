@@ -82,17 +82,14 @@ Deno.test("dropUnconfirmedServeLease: forgets only that lease while it is unconf
   const lockKey = leaseLockKeyOfPartition(partition)!;
   const lease = { leaseId: "lease-1", fence: 2, floor: [] };
   try {
-    // A confirmed lease is never dropped.
     holdServeLease(root, lockKey, lease);
     dropUnconfirmedServeLease(root, partition, "lease-1");
     assertEquals(heldServeLeaseOf(root, partition)?.leaseId, "lease-1");
 
-    // Another lease id is never dropped.
     holdServeLease(root, lockKey, { ...lease, unconfirmed: true });
     dropUnconfirmedServeLease(root, partition, "lease-2");
     assertEquals(heldServeLeaseOf(root, partition)?.leaseId, "lease-1");
 
-    // A raised floor keeps the lease unconfirmed.
     raiseServeLeaseFloor(root, partition, "lease-1", [
       { name: "vpc", version: 1 },
     ]);
@@ -101,7 +98,6 @@ Deno.test("dropUnconfirmedServeLease: forgets only that lease while it is unconf
     dropUnconfirmedServeLease(root, partition, "lease-1");
     assertEquals(heldServeLeaseOf(root, partition), undefined);
 
-    // A lock acquire confirms it: the confirmed registration replaces it.
     holdServeLease(root, lockKey, { ...lease, unconfirmed: true });
     holdServeLease(root, lockKey, lease);
     dropUnconfirmedServeLease(root, partition, "lease-1");

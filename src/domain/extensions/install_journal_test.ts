@@ -158,8 +158,6 @@ function observe(
   };
 }
 
-// ---- staging names ----
-
 Deno.test("isStagingEntryName: matches the pulled-root dir and bundle siblings", () => {
   assertEquals(isStagingEntryName(STAGING_DIR_NAME), true);
   assertEquals(isStagingEntryName(bundleStagingDirName(STAGING_ID)), true);
@@ -198,8 +196,6 @@ Deno.test("rootStagingPaths: keeps each root's staging next to its live dir", ()
   assertEquals(bundle.new, join(bundle.stagingDir, "new", "2"));
   assertEquals(bundle.discard, join(bundle.stagingDir, "discard", "2"));
 });
-
-// ---- parseInstallJournal ----
 
 Deno.test("parseInstallJournal: accepts a journal built from the layout", () => {
   const journal = makeJournal();
@@ -262,7 +258,6 @@ Deno.test("parseInstallJournal: rejects staging paths off the layout", () => {
   assertRejected(manifest, "manifest paths");
 });
 
-/** `journal` as an install in a repo at `from` wrote it. */
 function writtenUnder(journal: InstallJournal, from: string): InstallJournal {
   const move = (path: string) => join(from, relative(REPO, path));
   return {
@@ -329,7 +324,6 @@ Deno.test("parseInstallJournal: the rebase accepts only paths on the current lay
     "not a lockfile of this repository",
   );
 
-  // A root outside the recorded repo dir is not rebased.
   const outside = writtenUnder(makeJournal(), MOVED_FROM);
   outside.roots[0] = {
     ...outside.roots[0],
@@ -337,7 +331,6 @@ Deno.test("parseInstallJournal: the rebase accepts only paths on the current lay
   };
   assertRejected(outside, "extension root");
 
-  // A staging path off the layout stays off it after the rebase.
   const offLayout = writtenUnder(makeJournal(), MOVED_FROM);
   offLayout.roots[0] = {
     ...offLayout.roots[0],
@@ -370,7 +363,6 @@ Deno.test("parseInstallJournal: accepts a bundle root with nothing before or fro
   const empty = makeJournal({ bundle: { liveExisted: false, hasNew: false } });
   assertEquals(parseInstallJournal(empty, bounds, STAGING_ID).ok, true);
 
-  // The extension root always has a new version.
   const noNewExt = makeJournal();
   noNewExt.roots[0] = { ...noNewExt.roots[0], hasNew: false };
   assertRejected(noNewExt, "extension root has no new version");
@@ -383,7 +375,6 @@ Deno.test("planRecovery: a bundle root with nothing before or from the archive i
   });
   const bundle = journal.roots[1];
 
-  // A loader wrote bundles into it after the swap: roll-back discards them.
   const loaderWrote = planRecovery(
     journal,
     observe({
@@ -400,7 +391,6 @@ Deno.test("planRecovery: a bundle root with nothing before or from the archive i
     );
   }
 
-  // Nothing was written: no rename for the bundle root.
   const untouched = planRecovery(
     journal,
     observe({
@@ -414,7 +404,6 @@ Deno.test("planRecovery: a bundle root with nothing before or from the archive i
     assertEquals(untouched.renames.some((r) => r.from === bundle.live), false);
   }
 
-  // Rolling forward, the cache dir's presence does not matter.
   for (const live of ["dir", "absent"] as const) {
     assertEquals(
       planRecovery(
@@ -449,8 +438,6 @@ Deno.test("parseInstallJournal: rejects a nested root that is not an entry path"
   journal.nestedRoots = [{ relDir: "../escape", strategy: "copied" }];
   assertRejected(journal, "nested root");
 });
-
-// ---- planRecovery: rolling back ----
 
 interface BackRow {
   name: string;
@@ -693,8 +680,6 @@ Deno.test("planRecovery: leaves a journal with an unobserved root", () => {
   assertEquals(plan.direction, "leave");
 });
 
-// ---- planRecovery: a symlinked extension root ----
-
 interface LinkRow {
   name: string;
   state: ObservedRoot;
@@ -774,8 +759,6 @@ Deno.test("planRecovery: rolls forward past a moved-aside link", () => {
   assertEquals(plan, { direction: "forward" });
 });
 
-// ---- planRecovery: rolling forward ----
-
 Deno.test("planRecovery: rolls forward a swapped journal whose lockfile entry landed", () => {
   const plan = planRecovery(
     makeJournal({ phase: "swapped" }),
@@ -816,7 +799,6 @@ Deno.test("planRecovery: rolls forward a removed bundle root that is gone", () =
 });
 
 Deno.test("planRecovery: rolls forward past a bundle cache dir a loader rebuilt or evicted", () => {
-  // Rebuilt: the new version shipped no bundles, yet the dir is back.
   assertEquals(
     planRecovery(
       makeJournal({
@@ -831,7 +813,6 @@ Deno.test("planRecovery: rolls forward past a bundle cache dir a loader rebuilt 
     ),
     { direction: "forward" },
   );
-  // Evicted: the new bundles went in, then a layout eviction removed them.
   assertEquals(
     planRecovery(
       makeJournal({ phase: "swapped" }),
@@ -894,8 +875,6 @@ Deno.test("planRecovery: leaves a forward journal whose live manifest is not its
     "leave",
   );
 });
-
-// ---- nestedEntryRelDirs ----
 
 Deno.test("nestedEntryRelDirs: returns child entries relative to the parent", () => {
   assertEquals(

@@ -17,14 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Integration tests for the approval policy (swamp-club#2384): a run
- * suspended at a manual_approval gate, decided through the serve handlers,
- * with grants loaded from a grants file into a real repository on disk. By
- * default a run grant also permits deciding the gate; with
- * approveRequiresExplicitGrant a principal needs a grant that names approve.
- */
-
 import { join } from "@std/path";
 import { assertEquals, assertStringIncludes } from "@std/assert";
 import type { WorkflowRunEvent } from "../src/libswamp/workflows/run.ts";
@@ -58,7 +50,6 @@ import {
 import { PolicySnapshotLoader } from "../src/domain/access/policy_snapshot_loader.ts";
 import { validateGrantCondition } from "../src/infrastructure/cel/grant_condition_environment.ts";
 
-// Import models barrel to trigger built-in registration.
 import "../src/domain/models/models.ts";
 import { initializeLogging } from "../src/infrastructure/logging/logger.ts";
 
@@ -66,7 +57,6 @@ await initializeLogging({});
 
 const GATE = "approve-deploy";
 
-/** The reporter's shape: a machine principal granted run and read only. */
 const GRANTS_FILE = `grants:
   - subject: user:swamp-resumer
     effect: allow
@@ -122,11 +112,6 @@ interface Harness {
   loader: PolicySnapshotLoader;
 }
 
-/**
- * Loads the grants file the way serve does, runs the workflow until it
- * suspends at its gate, and builds a token-mode connection context whose
- * policy loader applies the given approval policy.
- */
 async function suspendAtGate(
   repoDir: string,
   approveRequiresExplicitGrant: boolean,
@@ -203,7 +188,6 @@ async function suspendAtGate(
     repoDir: resolved,
     repoContext,
     datastoreConfig,
-    // A reject settles the run against its evaluated snapshot.
     datastoreResolver,
     authConfig,
     policySnapshotLoader: loader,

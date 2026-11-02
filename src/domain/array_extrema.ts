@@ -18,15 +18,10 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * Largest and smallest value of a collection of any size.
- *
- * `Math.max(...values)` spreads every element onto the call stack as an
- * argument, and V8 throws `RangeError: Maximum call stack size exceeded`
- * once that passes roughly 125k elements (swamp-club#2565). These walk the
- * values in a loop instead, so they work at any size.
+ * Math.max(...values) puts every element on the call stack and V8 throws
+ * RangeError past roughly 125k elements, so these walk the values in a loop
  */
 
-/** Returns the largest value, or `undefined` when there are none. */
 export function maxOf(values: Iterable<number>): number | undefined {
   let result: number | undefined;
   for (const value of values) {
@@ -35,7 +30,6 @@ export function maxOf(values: Iterable<number>): number | undefined {
   return result;
 }
 
-/** Returns the smallest value, or `undefined` when there are none. */
 export function minOf(values: Iterable<number>): number | undefined {
   let result: number | undefined;
   for (const value of values) {

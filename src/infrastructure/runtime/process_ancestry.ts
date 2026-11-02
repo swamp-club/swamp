@@ -18,36 +18,25 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * Read-only inspection of this process's live ancestry: who its parent is,
- * that parent's parent, and so on, and which executable each one runs. The
- * auth gate uses it to accept a nested pass only from a live swamp ancestor
- * (design/surfaces/auth-gate.md, "Nested runs").
- *
- * Linux reads /proc and macOS asks libproc, both through libc over FFI:
- * Deno only lets a process read /proc/<pid> with --allow-all, which the
- * compiled binary does not have, while --allow-ffi it does. Windows is not
- * supported and always answers `unknown`, which callers must treat as a
- * failed check.
+ * Linux reads /proc and macOS libproc via libc FFI, as Deno refuses /proc
+ * without --allow-all; Windows always answers unknown, which callers must treat
+ * as a failed check
  */
 
-/** How many hops up the parent chain the walk goes before giving up. */
 const MAX_DEPTH = 64;
 
 export type AncestryResult =
   | {
     readonly kind: "ancestor";
     readonly executablePath: string;
-    /** When the ancestor started, in Unix seconds. */
     readonly startedAt: number;
   }
   | { readonly kind: "not_ancestor" }
   | { readonly kind: "unknown"; readonly reason: string };
 
 /**
- * Whether `pid` is a live ancestor of this process, and if so the path of
- * the executable it runs. The walk follows the live parent chain upward
- * from this process, so a pid that was reused, or a parent that exited and
- * left this process reparented, can never be reported as an ancestor.
+ * the walk follows the live parent chain upward, so a reused pid or a
+ * reparented orphan can never be reported as an ancestor
  */
 export function findAncestor(pid: number): AncestryResult {
   if (!isInspectable()) {
@@ -84,10 +73,6 @@ export function findAncestor(pid: number): AncestryResult {
   }
 }
 
-/**
- * The parent pid of `pid`, or undefined when it cannot be read (the process
- * is gone, belongs to another user, or the platform is unsupported).
- */
 export function parentPidOf(pid: number): number | undefined {
   switch (Deno.build.os) {
     case "linux":
@@ -115,10 +100,6 @@ export function executablePathOf(pid: number): string | undefined {
   }
 }
 
-/**
- * When `pid` started, in Unix seconds (whole seconds), or undefined when it
- * cannot be read.
- */
 export function startTimeOf(pid: number): number | undefined {
   switch (Deno.build.os) {
     case "linux":
@@ -130,9 +111,7 @@ export function startTimeOf(pid: number): number | undefined {
   }
 }
 
-/** What {@link processStateOf} reads about a running or unreaped process. */
 export interface ProcessState {
-  /** Whether it has exited and waits to be reaped. */
   readonly zombie: boolean;
   /**
    * When it started, exactly enough to tell it from a later process given
@@ -141,11 +120,6 @@ export interface ProcessState {
   readonly startTime: string;
 }
 
-/**
- * Whether `pid` is a zombie, and when it started, or undefined when either
- * cannot be read (no such process, a hidden or unreadable /proc entry, an
- * unsupported platform). It sends no signal.
- */
 export function processStateOf(pid: number): ProcessState | undefined {
   switch (Deno.build.os) {
     case "linux":
@@ -157,11 +131,6 @@ export function processStateOf(pid: number): ProcessState | undefined {
   }
 }
 
-/**
- * The arguments `pid` was started with, its executable first, or undefined
- * when they cannot be read. Linux only, from /proc/<pid>/cmdline; other
- * platforms return undefined.
- */
 export function commandLineOf(pid: number): string[] | undefined {
   if (Deno.build.os !== "linux") return undefined;
   return withLibc((lib) => {
@@ -172,7 +141,6 @@ export function commandLineOf(pid: number): string[] | undefined {
   });
 }
 
-/** The arguments in the NUL-separated text of /proc/<pid>/cmdline. */
 export function parseProcCmdline(text: string): string[] {
   const args = text.split("\0");
   if (args.at(-1) === "") args.pop();
@@ -190,7 +158,6 @@ function procStatFieldsAfterName(stat: string): string[] | undefined {
   return stat.slice(end + 1).trim().split(/\s+/);
 }
 
-/** Field `n` (1-based, as proc(5) numbers them) of /proc/<pid>/stat. */
 function procStatField(stat: string, n: number): number | undefined {
   const fields = procStatFieldsAfterName(stat);
   if (!fields) return undefined;
@@ -198,31 +165,20 @@ function procStatField(stat: string, n: number): number | undefined {
   return Number.isSafeInteger(value) && value >= 0 ? value : undefined;
 }
 
-/** The parent pid (field 4) from the text of /proc/<pid>/stat. */
 export function parseProcStatParentPid(stat: string): number | undefined {
   return procStatField(stat, 4);
 }
 
-/**
- * The start time (field 22) from the text of /proc/<pid>/stat, in clock
- * ticks after boot.
- */
 export function parseProcStatStartTicks(stat: string): number | undefined {
   return procStatField(stat, 22);
 }
 
-/**
- * Whether the state (field 3) in the text of /proc/<pid>/stat is a process
- * that has exited: `Z` (zombie) or `X` (dead), or undefined when the field
- * is missing.
- */
 export function parseProcStatExited(stat: string): boolean | undefined {
   const state = procStatFieldsAfterName(stat)?.[0];
   if (state === undefined || state === "") return undefined;
   return state === "Z" || state === "X";
 }
 
-/** The boot time (`btime`, Unix seconds) from the text of /proc/stat. */
 export function parseProcBootTime(stat: string): number | undefined {
   const match = /^btime\s+(\d+)\s*$/m.exec(stat);
   if (!match) return undefined;
@@ -247,13 +203,10 @@ function isInspectable(): boolean {
   return Deno.build.os === "linux" || Deno.build.os === "darwin";
 }
 
-// libc (Linux), for reading /proc past Deno's --allow-all requirement.
 const O_RDONLY = 0;
 /** Linux x86_64 and aarch64; keeps the fd out of any child spawned mid-read. */
 const O_CLOEXEC = 0o2000000;
-/** Comfortably more than any /proc/<pid>/stat line. */
 const PROC_STAT_MAXSIZE = 4096;
-/** PATH_MAX. */
 const PATH_MAXSIZE = 4096;
 
 const LIBC_SYMBOLS = {
@@ -264,9 +217,7 @@ const LIBC_SYMBOLS = {
   sysconf: { parameters: ["i32"], result: "i64" },
 } as const;
 
-/** _SC_CLK_TCK in glibc's <bits/confname.h>. */
 const SC_CLK_TCK = 2;
-/** Ample for /proc/stat, whose interrupt line grows with the hardware. */
 const PROC_FILE_MAXSIZE = 1024 * 1024;
 
 type Libc = Deno.DynamicLibrary<typeof LIBC_SYMBOLS>;
@@ -291,7 +242,6 @@ function cString(value: string): Uint8Array<ArrayBuffer> {
   return new TextEncoder().encode(`${value}\0`);
 }
 
-/** Read a whole /proc file, or undefined when it cannot be opened or read. */
 function readProcFile(
   lib: Libc,
   path: string,
@@ -362,22 +312,15 @@ function linuxExecutablePath(lib: Libc, pid: number): string | undefined {
 // flavor, unlike PROC_PIDTBSDINFO, answers for other users' processes (an
 // sshd-session owned by root, say), so the walk can climb past them.
 const PROC_PIDT_SHORTBSDINFO = 13;
-/** sizeof(struct proc_bsdshortinfo). */
 const PROC_BSDSHORTINFO_SIZE = 64;
-/** offsetof(struct proc_bsdshortinfo, pbsi_pid). */
 const PBSI_PID_OFFSET = 0;
-/** offsetof(struct proc_bsdshortinfo, pbsi_ppid). */
 const PBSI_PPID_OFFSET = 4;
 // The full BSD info flavor carries the start time. Unlike the short one it
 // answers only for this user's processes, which a swamp ancestor is.
 const PROC_PIDTBSDINFO = 3;
-/** sizeof(struct proc_bsdinfo). */
 const PROC_BSDINFO_SIZE = 136;
-/** offsetof(struct proc_bsdinfo, pbi_pid). */
 const PBI_PID_OFFSET = 12;
-/** offsetof(struct proc_bsdinfo, pbi_start_tvsec). */
 const PBI_START_TVSEC_OFFSET = 120;
-/** PROC_PIDPATHINFO_MAXSIZE: 4 * MAXPATHLEN. */
 const PROC_PIDPATH_MAXSIZE = 4096;
 
 const LIBPROC_SYMBOLS = {
@@ -467,17 +410,11 @@ function resolveIfPossible(path: string): string {
 const CTL_KERN = 1;
 const KERN_PROC = 14;
 const KERN_PROC_PID = 1;
-/** sizeof(struct kinfo_proc) on x86_64 and arm64. */
 const KINFO_PROC_SIZE = 648;
-/** offsetof(struct kinfo_proc, kp_proc.p_starttime.tv_sec). */
 const P_STARTTIME_SEC_OFFSET = 0;
-/** offsetof(struct kinfo_proc, kp_proc.p_starttime.tv_usec). */
 const P_STARTTIME_USEC_OFFSET = 8;
-/** offsetof(struct kinfo_proc, kp_proc.p_stat). */
 const P_STAT_OFFSET = 36;
-/** offsetof(struct kinfo_proc, kp_proc.p_pid). */
 const P_PID_OFFSET = 40;
-/** SZOMB in <sys/proc.h>. */
 const SZOMB = 5;
 
 const SYSCTL_SYMBOLS = {

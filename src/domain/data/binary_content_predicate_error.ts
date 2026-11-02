@@ -19,7 +19,6 @@
 
 import { UserError } from "../errors.ts";
 
-/** The data item whose content a query predicate tried to read as text. */
 export interface BinaryContentItem {
   modelName: string;
   name: string;
@@ -28,10 +27,9 @@ export interface BinaryContentItem {
 }
 
 /**
- * A query predicate read `content` on an item whose content type is not
- * text. `content` in a predicate is text, and binary bytes have none to
- * match against, so the query fails instead of silently skipping the item
- * (swamp-club#2959). A projection may still read the bytes.
+ * content in a predicate is text and binary bytes have none to match, so the
+ * query fails instead of silently skipping the item; a projection may still
+ * read the bytes
  */
 export class BinaryContentPredicateError extends UserError {
   constructor(readonly item: BinaryContentItem) {

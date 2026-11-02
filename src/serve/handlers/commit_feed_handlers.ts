@@ -18,20 +18,9 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * The v3 commit feed over serve's WebSocket (swamp-club#4120).
- *
- * `commits.subscribe` reads the commit log from a cursor, then waits for
- * more and sends each batch as it lands, filtered per caller exactly as
- * `GET changes` filters it: a fresh filter per batch, so a changed grant
- * takes effect on the next one. A team peer (a follower) gets every commit
- * of serve's namespace. A replicating leader sends only what it published.
- * A frame with no changes goes out at least every few seconds, so a
- * subscriber can tell a quiet feed from a dead one. A subscriber that falls
- * behind what the socket can buffer is ended with a resumable
- * `commits_lagged` error; a cursor below the compaction point ends with
- * `commits_compacted`, as `GET changes` answers it with a 410.
- *
- * @module
+ * an empty frame goes out every few seconds so a subscriber can tell a quiet
+ * feed from a dead one; the grant filter is fresh per batch so a changed grant
+ * applies next; a lagging subscriber is ended resumably
  */
 
 import { CommitsCompactedError } from "../../domain/datastore_v3/commit_store.ts";
@@ -47,21 +36,16 @@ import {
   sendError,
 } from "./shared.ts";
 
-/** How often a quiet feed says it is live. */
 export const COMMIT_FEED_HEARTBEAT_MS = 5_000;
 
-/** The most commits one frame reads from the log. */
 export const COMMIT_FEED_PAGE = 500;
 
-/** How much a subscriber's socket may hold unsent before it is ended. */
 export const COMMIT_FEED_MAX_BUFFERED_BYTES = 8 * 1024 * 1024;
 
-/** The most commit feed subscriptions one connection may hold. */
 export const MAX_COMMIT_FEED_SUBSCRIPTIONS = 4;
 
 const subscriptions = new WeakMap<WebSocket, number>();
 
-/** `commits.head`. */
 export function handleCommitsHead(
   socket: WebSocket,
   ctx: ConnectionContext,
@@ -80,7 +64,6 @@ export function handleCommitsHead(
   return Promise.resolve();
 }
 
-/** `commits.subscribe`: runs until `signal` aborts or the feed ends. */
 export async function handleCommitsSubscribe(
   socket: WebSocket,
   ctx: ConnectionContext,
@@ -108,10 +91,9 @@ export async function handleCommitsSubscribe(
   const access = isPeerSocket(socket)
     ? "unrestricted" as const
     : accessCallerOf(socket, principal);
-  // A subscription's features are fixed when it starts, so this is read
-  // once: a subscriber that does not name lease ops (a follower from before
-  // them) is sent commits without them, as GET changes sends them
-  // (swamp-club#4168).
+  // a subscription's features are fixed when it starts, so read once: a
+  // subscriber that does not name lease ops (an older follower) is sent commits
+  // without them, as GET changes sends them
   const leaseOps = payload.features?.includes(LEASE_OPS_FEATURE) === true;
   let cursor = payload.cursor;
   let wake: (() => void) | undefined;
@@ -119,8 +101,8 @@ export async function handleCommitsSubscribe(
   try {
     let lastSent = 0;
     while (!signal.aborted && socket.readyState === WebSocket.OPEN) {
-      // A follower's copy too old to read from ends the stream, as a new
-      // subscribe or GET changes is refused (swamp-club#4148).
+      // a follower's copy too old to read from ends the stream, as a new
+      // subscribe or GET changes is refused
       const gate = ctx.followerGate;
       if (gate?.role === "follower" && gate.isStale()) {
         const refusal = new ServeNotLeaderError(gate.leader(), true);
@@ -133,8 +115,8 @@ export async function handleCommitsSubscribe(
         );
         return;
       }
-      // Fail-secure audit refuses reads it cannot record, as GET changes
-      // does, for a subscription already running too.
+      // fail-secure audit refuses reads it cannot record, as GET changes does,
+      // for a subscription already running too
       if (auditUnavailable(ctx)) {
         sendError(
           socket,
@@ -186,7 +168,7 @@ export async function handleCommitsSubscribe(
             });
           }
         }
-        // Past filtered rows too, and past a gap up to the head.
+        // past filtered rows too, and past a gap up to the head
         cursor = inBound.at(-1)?.cursor ?? head;
         if (signal.aborted) return;
         send(socket, {

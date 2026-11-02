@@ -17,40 +17,14 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Datastore health check types and interfaces.
- *
- * Every CLI command that calls `requireInitializedRepo()` verifies
- * the configured datastore is accessible before proceeding.
- */
-
-/**
- * Result of a datastore health check.
- */
 export interface DatastoreHealthResult {
-  /** Whether the datastore is healthy and accessible */
   readonly healthy: boolean;
-  /** Human-readable status message */
   readonly message: string;
-  /** Latency of the health check in milliseconds */
   readonly latencyMs: number;
-  /** Datastore type that was checked */
   readonly datastoreType: string;
-  /** Additional details (e.g., path, bucket name) */
   readonly details?: Record<string, string>;
 }
 
-/**
- * Interface for verifying datastore accessibility.
- */
 export interface DatastoreVerifier {
-  /**
-   * Verifies the datastore is accessible and writable.
-   *
-   * - Filesystem: checks directory exists and is writable
-   * - S3: issues a HeadBucket request
-   *
-   * @returns Health check result
-   */
   verify(): Promise<DatastoreHealthResult>;
 }

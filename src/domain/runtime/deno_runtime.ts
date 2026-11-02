@@ -17,21 +17,12 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Port (interface) for the deno runtime manager.
- *
- * Provides access to a deno binary for bundling extensions.
- * In dev mode this returns the running deno; in compiled mode
- * it extracts the embedded binary to ~/.swamp/deno/.
- */
 export interface DenoRuntime {
-  /** Returns the absolute path to a usable deno binary. */
   ensureDeno(): Promise<string>;
 
   /**
-   * Returns subprocess environment variables with DENO_DIR scoped to the
-   * swamp data directory, preventing the embedded deno binary from writing
-   * to `$HOME/Library/Caches/deno/` (macOS TCC trigger).
+   * scopes DENO_DIR to the swamp data directory so the embedded deno does not
+   * write to the macOS cache dir (TCC trigger)
    */
   getDenoEnv(): Record<string, string>;
 }

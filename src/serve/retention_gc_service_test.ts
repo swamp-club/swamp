@@ -152,7 +152,6 @@ Deno.test("RetentionGcService.runOnce: a busy mutex leaves the hour unclaimed", 
     assertEquals(await busy.runOnce(), undefined);
     release();
     await manual;
-    // Another serve can still take this hour's pass.
     const other = service(config, {
       passes,
       instanceId: "other",

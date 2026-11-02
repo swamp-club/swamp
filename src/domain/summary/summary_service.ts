@@ -38,12 +38,6 @@ import type {
   WorkflowRunGroup,
 } from "./summary_types.ts";
 
-/**
- * SummaryService aggregates repo activity into a single overview.
- *
- * Takes repository interfaces (not concrete implementations) so it
- * can be tested with in-memory mocks.
- */
 export class SummaryService {
   constructor(
     private readonly outputRepo: OutputRepository,
@@ -54,14 +48,8 @@ export class SummaryService {
   ) {}
 
   /**
-   * Produces an activity summary for everything since the given cutoff date.
-   *
-   * @param cutoffDate Earliest startedAt/createdAt to include (inclusive).
-   * @param options.limit If set, caps each per-group `runs[]` array to N
-   *   most-recent entries. Counts (succeeded/failed/total) always reflect
-   *   ALL matching runs in the window — `limit` only bounds the detail
-   *   array. When truncation occurs, the group's optional `truncated` flag
-   *   is set to `true`.
+   * counts always reflect all matching runs in the window; limit only bounds
+   * the detail array, and truncation sets the group's truncated flag
    */
   async summarise(
     cutoffDate: Date,
@@ -83,13 +71,11 @@ export class SummaryService {
       this.workflowRepo?.findAll() ?? Promise.resolve([]),
     ]);
 
-    // Build definition ID → name lookup
     const defNames = new Map<string, string>();
     for (const { definition } of allDefinitions) {
       defNames.set(definition.id, definition.name);
     }
 
-    // Build workflowId → { stepName → modelName } lookup
     const workflowStepModels = new Map<string, Map<string, string>>();
     for (const workflow of allWorkflows) {
       const stepMap = new Map<string, string>();
@@ -109,21 +95,18 @@ export class SummaryService {
       workflowStepModels.set(workflow.id, stepMap);
     }
 
-    // Group method executions
     const methodExecutions = this.groupMethodExecutions(
       filteredOutputs,
       defNames,
       options.limit,
     );
 
-    // Group workflow runs
     const workflows = this.groupWorkflowRuns(
       filteredRuns,
       workflowStepModels,
       options.limit,
     );
 
-    // Summarise data
     const dataSummary = this.summariseData(filteredData);
 
     return {
@@ -139,7 +122,6 @@ export class SummaryService {
     defNames: Map<string, string>,
     limit?: number,
   ): ModelExecutionGroup[] {
-    // Group by model (definitionId), then by method within each model
     const models = new Map<
       string,
       { type: string; modelName: string; methods: Map<string, MethodGroup> }
@@ -188,15 +170,12 @@ export class SummaryService {
       methodGroup.runs.push(detail);
     }
 
-    // Build final groups
     const result: ModelExecutionGroup[] = [];
     for (const model of models.values()) {
       const methods = [...model.methods.values()].sort((a, b) =>
         b.total - a.total
       );
 
-      // Sort runs within each method by startedAt descending, then truncate
-      // if a limit was supplied. Counts already reflect all matching runs.
       for (const m of methods) {
         m.runs.sort((a, b) =>
           new Date(b.startedAt).getTime() - new Date(a.startedAt).getTime()
@@ -221,7 +200,6 @@ export class SummaryService {
       });
     }
 
-    // Sort models by total count descending
     result.sort((a, b) => b.total - a.total);
 
     return result;
@@ -255,12 +233,10 @@ export class SummaryService {
         group.failed++;
       }
 
-      // The step a failed run reports as failed
       const firstFailedStep = run.status === "failed"
         ? run.failureInfo().failedStep
         : undefined;
 
-      // Build step summaries
       const stepModels = workflowStepModels.get(workflowId) ??
         new Map<string, string>();
       const steps: StepRunSummary[] = [];
@@ -292,11 +268,8 @@ export class SummaryService {
       group.runs.push(detail);
     }
 
-    // Sort groups by total count descending
     const sorted = [...groups.values()].sort((a, b) => b.total - a.total);
 
-    // Sort runs within each group by startedAt descending, then truncate
-    // if a limit was supplied. Counts already reflect all matching runs.
     for (const group of sorted) {
       group.runs.sort((a, b) => {
         const aTime = a.startedAt ? new Date(a.startedAt).getTime() : 0;
@@ -318,7 +291,6 @@ export class SummaryService {
     const modelSet = new Set<string>();
     let totalVersions = 0;
 
-    // Group by model type for breakdown
     const typeGroups = new Map<string, { items: number; versions: number }>();
 
     for (const { data: item, modelType, modelId } of data) {

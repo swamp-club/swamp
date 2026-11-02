@@ -59,7 +59,6 @@ async function withStores(
   }
 }
 
-/** A lease-only commit to another model's partition. */
 function otherLease(seq: number): Commit {
   return modelCommit(seq, [leaseOp({ holder: "serve", fence: 1 })], {
     partition: partitionOf({
@@ -85,7 +84,6 @@ Deno.test("SqliteCommitStore.appendFromLeader: keeps the leader's cursors, and r
     for (let seq = 1; seq <= 3; seq++) await leader.append(await save(seq));
     const changes = await leader.changesSince(0, 10);
     await follower.appendFromLeader(changes[0]);
-    // The partition is at seq 1: seq 3 cannot land before seq 2.
     await assertRejects(
       () => follower.appendFromLeader(changes[2]),
       FeedDivergedError,
@@ -106,7 +104,6 @@ Deno.test("SqliteCommitStore.appendFromLeader: a cursor skipped by the feed stil
     await leader.append(otherLease(1));
     await leader.append(await save(2, "a"));
     const changes = await leader.changesSince(0, 10);
-    // The other partition's commit is not sent: the feed skips its cursor.
     await follower.appendFromLeader(changes[0]);
     await follower.appendFromLeader(changes[2]);
     assertEquals(
@@ -186,10 +183,9 @@ Deno.test("SqliteCommitStore.onHeadMoved: called after an append and a leader's 
 });
 
 Deno.test("SqliteCommitStore.append: a serve-mode copy takes a commit another process keeps landing commits around, however often its partition goes stale (swamp-club#4207)", async () => {
-  // Every CLI process reading through serve catches the same copy up from
-  // serve's feed, none holding the writer lock: between this process's
-  // rebuild of a stale partition and its transaction, another may land
-  // more commits, more than once.
+  // every CLI process reading through serve catches the same copy up with no
+  // writer lock, so another may land more commits between a stale partition's
+  // rebuild and its transaction, repeatedly
   const dir = await Deno.makeTempDir({ prefix: "swamp-commit-feed-" });
   const path = join(dir, "commits.db");
   const here = SqliteCommitStore.open(path, { follower: true });

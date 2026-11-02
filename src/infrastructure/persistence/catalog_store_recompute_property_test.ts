@@ -18,12 +18,9 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * Differential property test of the catalog's latest-flag recompute
- * (swamp-club#3803). `recomputeGroupFlags` moved into SQL; the recompute it
- * replaced is kept here as the oracle: page the group's promoted rows into
- * JavaScript, run `computeLatestFlags`, write the rows whose flags changed.
- * Two stores get the same random adds, pending writes, settles and removals
- * over two groups; after every step every row's flags must agree.
+ * differential test: the SQL latest-flag recompute must match a JS oracle
+ * (computeLatestFlags over paged rows) after every random add, pending write,
+ * settle and removal across two groups
  */
 
 import { assertEquals } from "@std/assert";
@@ -121,7 +118,6 @@ const arbStep: fc.Arbitrary<Step> = fc.oneof(
   },
 );
 
-/** The recompute `recomputeGroupFlags` ran before swamp-club#3803. */
 function oracleRemoveVersions(
   store: CatalogStore,
   dataName: string,

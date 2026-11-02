@@ -42,9 +42,6 @@ import {
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
 
-/**
- * Template for security reports.
- */
 const SECURITY_TEMPLATE = `
 # Security Report
 
@@ -75,10 +72,6 @@ const SECURITY_TEMPLATE = `
 
 `.trimStart();
 
-/**
- * Parses the security report content from the editor.
- * Returns null if the content is empty or unchanged from the template.
- */
 export function parseSecurityContent(
   content: string,
   template: string = SECURITY_TEMPLATE,

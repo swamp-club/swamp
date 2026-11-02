@@ -281,9 +281,6 @@ Deno.test("whoami does not persist credentials when saveCredentials is a no-op",
     username: "",
   };
 
-  // Simulate env-var auth: createAuthDeps makes saveCredentials a no-op
-  // when SWAMP_API_KEY is set. Verify that the whoami generator still
-  // completes successfully and the real save is never called.
   const deps: AuthDeps = {
     loadCredentials: () => Promise.resolve(envCredentials),
     saveCredentials: () => {
@@ -294,7 +291,6 @@ Deno.test("whoami does not persist credentials when saveCredentials is a no-op",
     serverUrlOverride: undefined,
   };
 
-  // Replace saveCredentials with a no-op (as production code does for env-var auth)
   const noOpDeps: AuthDeps = {
     ...deps,
     saveCredentials: () => Promise.resolve(),
@@ -426,7 +422,6 @@ Deno.test("whoami: refresh rewrites a stored username that differs from the serv
   const saved: AuthCredentials[] = [];
   const stored = {
     ...testCredentials,
-    // An older version merged an env key's identity over this login.
     username: "otheruser",
   };
   for (
@@ -468,11 +463,11 @@ Deno.test("createAuthDeps: saveCredentials writes file when SWAMP_API_KEY is not
   }
 });
 
-// --- entitlement mapping (issue #1544) ---
-
-/** The exact JSON a current swamp-club returns for an owner. Kept in step with
- * `tests/fixtures/whoami-owner-response.json` in the swamp-club repo, which a
- * server test asserts against — so a field rename there breaks a test here. */
+/**
+ * kept in step with tests/fixtures/whoami-owner-response.json in the swamp-club
+ * repo, which a server test asserts against, so a field rename there breaks a
+ * test here
+ */
 const ownerFixture: WhoamiResponse = JSON.parse(
   await Deno.readTextFile(
     new URL("./whoami_response.fixture.json", import.meta.url),
@@ -647,8 +642,6 @@ Deno.test("whoami: SWAMP_API_KEY takes precedence over a login, reporting the en
     await Deno.remove(tmpDir, { recursive: true });
   }
 });
-
-// --- rollUpPlanName (swamp-club#3947) ---
 
 function rollUpIdentity(
   plan: string | undefined,

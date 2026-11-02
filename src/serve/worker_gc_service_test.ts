@@ -277,7 +277,6 @@ Deno.test("bookkeepingGracePeriodMs: with automatic on, only the bookkeeping key
     bookkeepingGracePeriodMs(undefined),
     DEFAULT_WORKER_GC_GRACE_PERIOD_MS,
   );
-  // The shared default never shortens the worker grace.
   assertEquals(
     bookkeepingGracePeriodMs({ automatic: true, retention: "2d" }),
     DEFAULT_WORKER_GC_GRACE_PERIOD_MS,

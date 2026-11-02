@@ -31,9 +31,7 @@ import type {
 } from "./repo_unit_of_work.ts";
 import { WorkflowRunCheckpointer } from "./workflow_run_checkpointer.ts";
 
-/** A root's end that failed to commit. */
 const ROOT_FAILED = new Error("the end commit failed");
-/** A root that committed, then threw (a settled refusal). */
 const COMMITTED_THEN_THREW = new Error("refused, settled and committed");
 
 function newRun(): WorkflowRun {
@@ -49,7 +47,6 @@ function newRun(): WorkflowRun {
   }));
 }
 
-/** An engine whose checkpoints answer from `answer`, counting the calls. */
 function engine(
   answer: () => Promise<OpenUnitCheckpoint>,
 ): CommitLogEngine & { readonly calls: () => number } {
@@ -69,7 +66,6 @@ function engine(
   };
 }
 
-/** A tracker that records which rows were reopened. */
 function tracker(): {
   reopened: string[];
   reopenCompleted(runId: string, pid: number, hostname: string): boolean;
@@ -124,7 +120,6 @@ Deno.test("WorkflowRunCheckpointer: saves made while a checkpoint runs share the
   release();
   await Promise.all(saves);
   assertEquals(commitLog.calls(), 2);
-  // Every save was committed, so a failed end leaves nothing to reopen.
   assertEquals(
     await checkpointer.restoreUncommittedRuns(() => tracker(), ROOT_FAILED),
     [],
@@ -214,7 +209,6 @@ Deno.test("WorkflowRunCheckpointer: within the interval a save waits for one tra
   await waitFor(() => commitLog.calls() === 2, "the trailing checkpoint");
   await checkpointer.close();
   assertEquals(commitLog.calls(), 2);
-  // The trailing checkpoint covered the later saves.
   assertEquals(
     await checkpointer.restoreUncommittedRuns(() => tracker(), ROOT_FAILED),
     [],
@@ -232,7 +226,6 @@ Deno.test("WorkflowRunCheckpointer: close cancels a trailing checkpoint not yet 
   await checkpointer.close();
   await checkpointer.checkpoint(run);
   assertEquals(commitLog.calls(), 1);
-  // The saves after the first were never committed by a checkpoint.
   const rows = tracker();
   assertEquals(
     await checkpointer.restoreUncommittedRuns(() => rows, ROOT_FAILED),
@@ -344,7 +337,6 @@ Deno.test("WorkflowRunCheckpointer.committedUnknownSteps: names the steps in fli
   // commit store never takes.
   cutMidStep.jobs[0].steps[0].start();
   await checkpointer.checkpoint(cutMidStep);
-  // Saved and committed once its step had ended.
   cutBetweenSteps.jobs[0].steps[0].start();
   cutBetweenSteps.jobs[0].steps[0].succeed();
   await checkpointer.checkpoint(cutBetweenSteps);

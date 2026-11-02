@@ -60,12 +60,10 @@ import {
   pendingWorkflowPrefix,
 } from "../../domain/workflows/pending_signal.ts";
 
-/** A control-plane store that can create a record only if it is absent. */
 export type AtomicControlPlaneStore =
   & ControlPlaneStore
   & Required<Pick<ControlPlaneStore, "putIfAbsent">>;
 
-/** True when `store` has the atomic create that wait records need. */
 export function isAtomicControlPlaneStore(
   store: ControlPlaneStore,
 ): store is AtomicControlPlaneStore {
@@ -78,12 +76,6 @@ export function isAtomicControlPlaneStore(
  */
 const HIGHEST_KEY_RECORD_READS = 4;
 
-/**
- * {@link SignalWaitStore} over a {@link ControlPlaneStore}: registrations
- * under `waits/`, outcomes under `wait-outcomes/`, key records under
- * `wait-keys/` and pending signals under `wait-pending/`, each written with
- * `putIfAbsent` so the first writer of a key holds it.
- */
 export class ControlPlaneSignalWaitStore implements SignalWaitStore {
   readonly #store: AtomicControlPlaneStore;
   pendingTaken?: PendingSignalTakenListener;
@@ -307,7 +299,6 @@ export class ControlPlaneSignalWaitStore implements SignalWaitStore {
     );
   }
 
-  /** The wait ids under a key family; keys that name no wait are skipped. */
   async #waitIds(prefix: string): Promise<string[]> {
     const ids: string[] = [];
     for (const key of await this.#store.list(prefix)) {

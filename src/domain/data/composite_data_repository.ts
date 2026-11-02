@@ -36,7 +36,6 @@ import type {
 
 export class CompositeUnifiedDataRepository implements UnifiedDataRepository {
   readonly namespace: Namespace;
-  // Foreign rows are catalog-only and never ephemeral.
   readonly fetchForeignContent?: ForeignContentFetcher;
 
   // Which repository issued each unsettled deferred version. A receipt
@@ -74,10 +73,6 @@ export class CompositeUnifiedDataRepository implements UnifiedDataRepository {
     }
   }
 
-  /**
-   * The receipts `repo` issued, each once. A receipt nothing recorded belongs
-   * to the persistent repository.
-   */
   private receiptsIssuedBy(
     repo: UnifiedDataRepository,
     receipts: DeferredWriteReceipt[],
@@ -98,8 +93,6 @@ export class CompositeUnifiedDataRepository implements UnifiedDataRepository {
       this.deferredIssuers.delete(deferredKey(receipt));
     }
   }
-
-  // --- Write Operations ---
 
   save(
     type: ModelType,
@@ -237,8 +230,6 @@ export class CompositeUnifiedDataRepository implements UnifiedDataRepository {
     }
     return this.persistent.rename(type, modelId, oldName, newName);
   }
-
-  // --- Read Operations (ephemeral-first fallback) ---
 
   async findByName(
     type: ModelTypeInput,
@@ -430,11 +421,6 @@ export class CompositeUnifiedDataRepository implements UnifiedDataRepository {
     return repo.isContentAcceptedSync(type, modelId, dataName, version, size);
   }
 
-  /**
-   * Whether the ephemeral store holds the version a content read would read
-   * from it, as {@link getContent} tries the ephemeral store for that exact
-   * version first. Without a version, its latest.
-   */
   private holdsEphemerally(
     type: ModelType,
     modelId: string,
@@ -462,8 +448,6 @@ export class CompositeUnifiedDataRepository implements UnifiedDataRepository {
     yield* this.persistent.stream(type, modelId, dataName, version);
   }
 
-  // --- Path Operations ---
-
   getPath(
     type: ModelType,
     modelId: string,
@@ -488,13 +472,9 @@ export class CompositeUnifiedDataRepository implements UnifiedDataRepository {
     return this.persistent.getContentPath(type, modelId, dataName, version);
   }
 
-  // --- Identity ---
-
   nextId(): DataId {
     return this.persistent.nextId();
   }
-
-  // --- Sync Read Methods ---
 
   getLatestVersionSync(
     type: ModelType,
@@ -638,9 +618,8 @@ export class CompositeUnifiedDataRepository implements UnifiedDataRepository {
   }
 
   /**
-   * Promotes each receipt in the repository that issued it, persistent first:
-   * a persistent failure then leaves nothing promoted. A failure keeps the
-   * receipts' issuers, so the rollback that follows still finds them.
+   * promotes persistent first so a persistent failure leaves nothing promoted;
+   * a failure keeps the receipts' issuers so the rollback still finds them
    */
   async advanceLatestMarkers(
     receipts: DeferredWriteReceipt[],
@@ -653,9 +632,8 @@ export class CompositeUnifiedDataRepository implements UnifiedDataRepository {
   }
 
   /**
-   * Rolls each receipt back in the repository that issued it. Both
-   * repositories are attempted, so one failing never strands the other's
-   * deferred versions.
+   * both repositories are attempted, so one failing never strands the other's
+   * deferred versions
    */
   async rollbackVersions(
     receipts: DeferredWriteReceipt[],

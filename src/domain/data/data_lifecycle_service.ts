@@ -32,9 +32,6 @@ import {
 
 const logger = getLogger(["swamp", "domain", "data", "lifecycle"]);
 
-/**
- * Information about data that has expired.
- */
 export interface ExpiredDataInfo {
   type: ModelType;
   modelId: string;
@@ -43,10 +40,6 @@ export interface ExpiredDataInfo {
   reason: "duration-expired" | "workflow-deleted" | "job-deleted";
 }
 
-/**
- * A (modelType, modelId) pair that would have versions pruned by version GC,
- * with the counts computed via a dry-run against the repository.
- */
 export interface VersionGcPreviewInfo {
   type: ModelType;
   modelId: string;
@@ -54,19 +47,11 @@ export interface VersionGcPreviewInfo {
   bytesWouldBeReclaimed: number;
 }
 
-/**
- * Result of garbage collection operation.
- */
 export interface LifecycleGCResult {
-  /** Number of expired data entries hard-deleted */
   dataEntriesExpired: number;
-  /** Number of versions hard-deleted (expired + GC) */
   versionsDeleted: number;
-  /** Bytes reclaimed from hard-deleting expired data and version GC */
   bytesReclaimed: number;
-  /** Whether this was a dry run */
   dryRun: boolean;
-  /** List of data marked as expired */
   expiredEntries: Array<{
     type: string;
     modelId: string;
@@ -76,74 +61,57 @@ export interface LifecycleGCResult {
   }>;
 }
 
-/**
- * Result of {@link DataLifecycleService.deleteDataOlderThan}.
- */
 export interface DataRetentionResult {
-  /** Data names deleted whole: every version was older than the cutoff. */
   entriesDeleted: number;
-  /** Versions deleted, counting those of whole names. */
   versionsDeleted: number;
-  /** Bytes the deleted versions held, as recorded when they were written. */
   bytesReclaimed: number;
-  /** True when the run stopped at its limit with candidates left. */
   more: boolean;
   /**
-   * Names whose deletion failed and were skipped (logged). Retention left
-   * them in place, so a caller must not report the cutoff as applied.
+   * names whose deletion failed and were skipped; retention left them in place,
+   * so a caller must not report the cutoff as applied
    */
   failed: number;
-  /** Whether this was a dry run. */
   dryRun: boolean;
 }
 
-/** Options for {@link DataLifecycleService.deleteDataOlderThan}. */
 export interface DeleteDataOlderThanOptions {
   dryRun: boolean;
   /**
-   * Most versions to delete in this call. A name deleted whole counts all
-   * its versions and is never split, so a call can go past the limit by the
-   * versions of its last name.
+   * a name deleted whole counts all its versions and is never split, so a call
+   * can pass the limit by the versions of its last name
    */
   limit?: number;
   /**
-   * Whether data of a (normalized) model type is never deleted by
-   * retention. Injected so the data context stays independent of the
-   * retention context, which owns the exemption list.
+   * injected so the data context stays independent of the retention context,
+   * which owns the exemption list
    */
   isExempt: (modelType: string) => boolean;
   /**
-   * The exempt model types, when the caller can list them: the repository
-   * then leaves them out of its candidates. `isExempt` is still checked.
+   * lets the repository leave exempt types out of its candidates; isExempt is
+   * still checked
    */
   exemptTypes?: readonly string[];
   /**
-   * Scan state a caller keeps across the batches of one pass, so each batch
-   * resumes where the last stopped instead of re-reading every name it kept
-   * from the oldest row. Absent, the call scans from the start.
+   * kept across the batches of one pass so each batch resumes where the last
+   * stopped instead of re-reading every kept name; absent, the call scans from
+   * the start
    */
   scan?: DataRetentionScan;
 }
 
-/** Where a batched data retention pass has got to (see `scan`). */
 export interface DataRetentionScan {
-  /** The page the last batch stopped in; absent before the first. */
   cursor?: string;
-  /** Names already settled: deleted, kept, exempt or skipped. */
   readonly settledNames: Set<string>;
   /** Versions already counted (a dry run lists them again). */
   readonly countedVersions: Set<string>;
 }
 
-/** Versions read from the repository per page of retention candidates. */
 const RETENTION_PAGE_SIZE = 500;
 
 /**
- * Predicate answering whether a model definition still exists for the given
- * (type, modelId). Injected as a port so the lifecycle service stays decoupled
- * from the definition repository — the libswamp layer wires this using the same
- * definition lookup that `swamp model get` uses (covering both `models/` and
- * `.swamp/auto-definitions/`).
+ * injected as a port so the service stays decoupled from the definition
+ * repository; libswamp wires it with the same lookup swamp model get uses,
+ * covering models/ and auto-definitions
  */
 export type IsModelLive = (
   type: ModelType,
@@ -151,38 +119,24 @@ export type IsModelLive = (
 ) => Promise<boolean>;
 
 /**
- * A model's orphaned data — data whose owning model definition no longer exists
- * in its namespace. Aggregated per (type, modelId); every data name under an
- * orphaned model is orphaned together.
+ * data whose owning model definition does not exist; aggregated per (type,
+ * modelId), so every data name under an orphaned model is orphaned together
  */
 export interface OrphanedDataInfo {
   type: ModelType;
   modelId: string;
-  /** Human-readable model name, from the data tags (may be absent on old data). */
   modelName?: string;
-  /** Distinct data names owned by the orphaned model. */
   dataNames: string[];
-  /** Total versions across all data names. */
   versionCount: number;
-  /** Bytes on disk across all versions. */
   bytesReclaimed: number;
 }
 
-/**
- * Result of orphaned-data reclamation.
- */
 export interface OrphanReclamationResult {
-  /** Number of orphaned models whose data was reclaimed. */
   modelsReclaimed: number;
-  /** Number of data entries (distinct data names) reclaimed. */
   dataEntriesReclaimed: number;
-  /** Number of versions hard-deleted. */
   versionsDeleted: number;
-  /** Bytes reclaimed. */
   bytesReclaimed: number;
-  /** Whether this was a dry run. */
   dryRun: boolean;
-  /** The orphaned models that were (or would be) reclaimed. */
   reclaimedModels: Array<{
     type: string;
     modelId: string;
@@ -193,84 +147,37 @@ export interface OrphanReclamationResult {
   }>;
 }
 
-/**
- * Service for managing data lifecycle and garbage collection.
- */
 export interface DataLifecycleService {
-  /**
-   * Finds all expired data entries.
-   */
   findExpiredData(): Promise<ExpiredDataInfo[]>;
 
-  /**
-   * Previews version-based garbage collection across all unique models without
-   * deleting anything. Returns one entry per (modelType, modelId) that has
-   * versions to prune.
-   */
   previewVersionGarbage(): Promise<VersionGcPreviewInfo[]>;
 
-  /**
-   * Deletes expired data and applies version garbage collection.
-   *
-   * @param options - Options for the operation
-   * @returns Statistics about the operation
-   */
   deleteExpiredData(options?: {
     dryRun?: boolean;
   }): Promise<LifecycleGCResult>;
 
   /**
-   * Deletes every version of model data created before `cutoff`, including
-   * a data name's latest version (strict retention). A name whose latest
-   * version is older than the cutoff is deleted whole; otherwise only its
-   * older versions go. Model types exempt from retention, and names with an
-   * in-flight deferred write, are left alone.
+   * strict retention: a name whose latest version is older than the cutoff is
+   * deleted whole, otherwise only its older versions go; exempt model types and
+   * names with an in-flight deferred write are left alone
    */
   deleteDataOlderThan(
     cutoff: Date,
     options: DeleteDataOlderThanOptions,
   ): Promise<DataRetentionResult>;
 
-  /**
-   * Finds all orphaned data — data whose owning model definition no longer
-   * exists, per the injected `isModelLive` predicate. Results are aggregated
-   * per (type, modelId).
-   */
   findOrphanedData(isModelLive: IsModelLive): Promise<OrphanedDataInfo[]>;
 
-  /**
-   * Reclaims orphaned data (all versions of every data name owned by a model
-   * with no live definition).
-   *
-   * @param options - The `isModelLive` predicate and an optional `dryRun` flag
-   * @returns Statistics about the operation
-   */
   deleteOrphanedData(options: {
     isModelLive: IsModelLive;
     dryRun?: boolean;
   }): Promise<OrphanReclamationResult>;
 
-  /**
-   * Checks if a data entry has expired.
-   *
-   * @param data - The data to check
-   * @returns True if the data has expired
-   */
   isExpired(data: Data): Promise<boolean>;
 
-  /**
-   * Calculates the expiration date for a lifetime.
-   *
-   * @param lifetime - The lifetime configuration
-   * @param createdAt - When the data was created
-   * @returns The expiration date, or null if it doesn't expire
-   */
   calculateExpiration(lifetime: Lifetime, createdAt: Date): Date | null;
 }
 
-/**
- * Default implementation of DataLifecycleService.
- */
 export class DefaultDataLifecycleService implements DataLifecycleService {
   constructor(
     private readonly dataRepo: UnifiedDataRepository,
@@ -279,7 +186,7 @@ export class DefaultDataLifecycleService implements DataLifecycleService {
 
   calculateExpiration(lifetime: Lifetime, createdAt: Date): Date | null {
     if (lifetime === "infinite") {
-      return null; // Never expires
+      return null;
     }
 
     if (lifetime === "ephemeral") {
@@ -289,11 +196,9 @@ export class DefaultDataLifecycleService implements DataLifecycleService {
     }
 
     if (lifetime === "job" || lifetime === "workflow") {
-      // These are handled separately via dependency tracking
       return null;
     }
 
-    // Duration-based lifetime
     try {
       const durationMs = parseDataDuration(lifetime);
       return new Date(createdAt.getTime() + durationMs);
@@ -313,7 +218,6 @@ export class DefaultDataLifecycleService implements DataLifecycleService {
     );
 
     if (data.lifetime === "workflow" || data.lifetime === "job") {
-      // Check if the workflow run still exists
       const workflowId = data.ownerDefinition.workflowId;
       const workflowRunId = data.ownerDefinition.workflowRunId;
 
@@ -330,7 +234,7 @@ export class DefaultDataLifecycleService implements DataLifecycleService {
           createWorkflowId(workflowId),
           createWorkflowRunId(workflowRunId),
         );
-        return workflowRun === null; // Expired if workflow run is deleted
+        return workflowRun === null;
       } catch (error) {
         logger.error(
           "Error checking workflow run {workflowId}/{workflowRunId}",
@@ -341,7 +245,7 @@ export class DefaultDataLifecycleService implements DataLifecycleService {
     }
 
     if (expiration === null) {
-      return false; // No expiration
+      return false;
     }
 
     return Date.now() > expiration.getTime();
@@ -384,7 +288,6 @@ export class DefaultDataLifecycleService implements DataLifecycleService {
             error,
           },
         );
-        // Continue with other data
       }
     }
 
@@ -433,7 +336,6 @@ export class DefaultDataLifecycleService implements DataLifecycleService {
     // and version GC's unique-model iteration
     const allData = await this.dataRepo.findAllGlobal();
 
-    // Phase 1: Detect expired data (inline logic from findExpiredData)
     const expiredData: ExpiredDataInfo[] = [];
     for (const { data, modelType, modelId } of allData) {
       if (data.isDeleted) continue;
@@ -471,7 +373,6 @@ export class DefaultDataLifecycleService implements DataLifecycleService {
     for (const expired of expiredData) {
       const { type, modelId, dataName } = expired;
 
-      // Count versions before GC
       const versions = await this.dataRepo.listVersions(
         type,
         modelId,
@@ -507,10 +408,6 @@ export class DefaultDataLifecycleService implements DataLifecycleService {
       });
     }
 
-    // Phase 2: Version-based garbage collection on all unique models.
-    // Reuses the allData result from the single findAllGlobal() call. Runs in
-    // both dry-run and real mode — the repository computes would-be counts
-    // without deleting when dryRun is true.
     const seen = new Set<string>();
     for (const { modelType, modelId } of allData) {
       const key = `${modelType.toDirectoryPath()}/${modelId}`;
@@ -579,7 +476,6 @@ export class DefaultDataLifecycleService implements DataLifecycleService {
       });
       cursor = page.cursor;
 
-      // Group the page's versions by data name, oldest name first.
       const groups = new Map<string, typeof page.versions>();
       for (const aged of page.versions) {
         const key = [aged.type.normalized, aged.modelId, aged.dataName].join(
@@ -632,10 +528,9 @@ export class DefaultDataLifecycleService implements DataLifecycleService {
           ) {
             const sizes = new Map(group.map((v) => [v.version, v.size]));
             const versions = await repo.listVersions(type, modelId, dataName);
-            // Version by version, never the name's directory: a writer
-            // without the global lock (a serve run) may add a version
-            // after this read, and the per-version path keeps whatever
-            // was not listed here, re-pointing latest at it.
+            // delete version by version, never the name's directory: a writer
+            // without the global lock may add a version after this read, and
+            // the per-version path keeps it and re-points latest
             const listed = versions.filter((v) => v <= latestVersion)
               .sort((a, b) => a - b);
             let bytes = 0;
@@ -646,9 +541,9 @@ export class DefaultDataLifecycleService implements DataLifecycleService {
                 0;
             }
             if (!dryRun) {
-              // Recorded first: a write after the name is emptied continues
-              // above its last number, never reusing one another clone may
-              // still hold.
+              // recorded first, so a write after the name is emptied continues
+              // above its last number and never reuses one another clone may
+              // hold
               const newest = maxOf(listed);
               if (newest !== undefined) {
                 await repo.raiseVersionFloor?.(

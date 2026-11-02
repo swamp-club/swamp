@@ -17,13 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Model-based property tests for the partition aggregate: random command
- * sequences run against {@link Partition} and against a small reference
- * model written directly from the rules, and the two must agree after every
- * command. The invariants are also checked on the partition alone.
- */
-
 import { assert, assertEquals } from "@std/assert";
 import fc from "fast-check";
 import type { Commit } from "./commit.ts";
@@ -43,7 +36,6 @@ import {
 } from "./v3_test_helpers.ts";
 import { modelCommit, modelPartition, savePut } from "./v3_test_helpers.ts";
 
-/** How often each refusal came up, over every run of a property. */
 const refusals = new Map<string, number>();
 
 async function run(commands: readonly Command[]): Promise<void> {
@@ -73,12 +65,10 @@ async function run(commands: readonly Command[]): Promise<void> {
     const reference = await modelAppend(model, commit, command.ops);
     model = reference.model;
 
-    // The partition agrees with the reference model.
     assertEquals(actual, reference.result);
     const after = observe(partition);
     assertEquals(after, expected(model));
 
-    // And the invariants hold on the partition alone.
     if (actual.kind === "appended") {
       assertEquals(after.seq, before.seq + 1);
       used.push(txnId);
@@ -106,7 +96,6 @@ Deno.test("Partition.append: agrees with the reference model over random command
     ),
     { numRuns: 200 },
   );
-  // The reuse rule was really exercised (swamp-club#3532).
   assert(
     (refusals.get("version-reused") ?? 0) > 20,
     `version-reused came up ${refusals.get("version-reused") ?? 0} times`,
@@ -145,7 +134,6 @@ Deno.test("Partition.append: a replayed commit never changes the partition", asy
   );
 });
 
-/** Runs `apply`, reporting a refusal as a result rather than a throw. */
 function attempt(apply: () => ModelResult): ModelResult {
   try {
     return apply();
@@ -174,7 +162,6 @@ Deno.test("Partition.appendObserved: over gapped seqs of the commits a writer la
           const plain = modelCommit(gapless.seq + 1, ops, props);
           const observed = modelCommit(follower.seq + 1 + gap, ops, props);
 
-          // Plain append refuses the gapped seq and changes nothing.
           if (gap > 0) {
             const before = observe(follower);
             assertEquals(attempt(() => follower.append(observed)), {
@@ -241,7 +228,6 @@ Deno.test("Partition.appendObserved: accepts every strictly increasing seq seque
   );
 });
 
-/** Applies a commit, reporting a refusal as a result rather than a throw. */
 function tryAppend(partition: Partition, commit: Commit): ModelResult {
   try {
     return partition.append(commit);

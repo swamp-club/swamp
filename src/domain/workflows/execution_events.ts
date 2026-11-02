@@ -25,16 +25,8 @@ import type { AssertSeverity } from "./step_task.ts";
 import { WorkflowRun } from "./workflow_run.ts";
 
 /**
- * Events emitted by the workflow execution generator.
- *
- * These events use `kind` as their discriminant field. The domain execution
- * service throws errors rather than yielding an `error` terminal — the
- * libswamp layer catches thrown errors and wraps them as
- * `{ kind: "error", error: SwampError }` for the consumer.
- */
-/**
- * Lightweight job metadata emitted with the `started` event so renderers
- * can display the full tree skeleton before any jobs begin executing.
+ * the domain execution service throws errors rather than yielding an error
+ * terminal; libswamp wraps them as an error event
  */
 export interface WorkflowJobInfo {
   id: string;
@@ -47,10 +39,8 @@ export type WorkflowExecutionEvent =
     kind: "started";
     runId: string;
     /**
-     * Set when a nested workflow step started this run: the id of the run
-     * whose step called it. The parent forwards its child's events into its
-     * own stream, so consumers that track a run by id act only on a started
-     * event without it.
+     * the parent forwards its child's events into its own stream, so consumers
+     * that track a run by id act only on a started event without this
      */
     parentRunId?: string;
     workflowName: string;
@@ -72,14 +62,12 @@ export type WorkflowExecutionEvent =
     jobId: string;
     stepId: string;
     /**
-     * The run that owns this step. Differs from the top-level run for events
-     * a nested workflow step forwards, whose job and step names can repeat the
-     * parent's. Domain-internal: mapWorkflowExecutionEvent strips it from the
-     * published event.
+     * differs from the top-level run for events a nested workflow step
+     * forwards, whose names can repeat the parent's; domain-internal, stripped
+     * from the published event
      */
     runId: string;
     dataHandles?: DataHandle[];
-    /** "loopback" or the worker name that executed the step's method. */
     executor?: string;
     forEachTemplate?: string;
     forEachIndex?: number;
@@ -98,8 +86,8 @@ export type WorkflowExecutionEvent =
     kind: "approval_requested";
     runId: string;
     /**
-     * The workflow the gate belongs to. A nested workflow's gate reaches the
-     * parent's stream with the child's workflow and run (swamp-club#2736).
+     * a nested workflow's gate reaches the parent's stream with the child's
+     * workflow and run
      */
     workflowName?: string;
     jobId: string;
@@ -114,14 +102,8 @@ export type WorkflowExecutionEvent =
     workflowName?: string;
     jobId: string;
     stepId: string;
-    /** The id a signal names to settle this wait. */
     waitId: string;
-    /** When the wait stops accepting a signal, as an ISO timestamp. */
     deadline: string;
-    /**
-     * The key the step declared, if any, so the wait can be signalled by
-     * workflow and key (swamp-club#3214).
-     */
     key?: string;
   }
   | {
@@ -129,52 +111,37 @@ export type WorkflowExecutionEvent =
     jobId: string;
     stepId: string;
     /**
-     * The run that owns this step. Differs from the top-level run for events
-     * a nested workflow step forwards, whose job and step names can repeat the
-     * parent's. Domain-internal: mapWorkflowExecutionEvent strips it from the
-     * published event.
+     * differs from the top-level run for events a nested workflow step
+     * forwards, whose names can repeat the parent's; domain-internal, stripped
+     * from the published event
      */
     runId: string;
     error: string;
-    /** Stable code carried by a model-method UserError, when supplied. */
     errorCode?: string;
     allowedFailure?: boolean;
     /**
-     * Populated only when the failing step represents a model-method task
-     * (the runStep model-method catch site). Workflow-task failures and
-     * structural failures (cycle, max nesting depth) leave these
-     * undefined — the libswamp telemetry bridge keys off their presence
-     * to synthesize a child entry for failures that occur BEFORE the
-     * `method_executing` event was yielded.
+     * set only for model-method tasks; the telemetry bridge keys off their
+     * presence to synthesize a child entry for failures before method_executing
+     * was yielded; structural failures leave them undefined
      */
     modelName?: string;
     methodName?: string;
     /**
-     * The nested workflow a nested workflow step's failure names in `error`,
-     * set when the step settles on its nested run (swamp-club#2736), so a
-     * server can hide the error from a caller who may not read it.
+     * set when the step settles on its nested run, so a server can hide the
+     * error from a caller who may not read it
      */
     nestedRun?: { workflowId: string; workflowName: string };
-    /**
-     * Data a failing model-method step persisted before it threw, so the
-     * workflow summary can point at it. Set only at the model-method catch
-     * site, and only when there is such data.
-     */
     dataHandles?: DataHandle[];
     /**
-     * Filesystem paths the step's error marked (see `markErrorPaths`), so
-     * telemetry can remove them exactly from `error` (swamp-club#2830). Set
-     * only at the model-method catch site. Domain-internal:
-     * mapWorkflowExecutionEvent strips it from the published event.
+     * lets telemetry remove them exactly from error; set only at the
+     * model-method catch site; domain-internal, stripped from the published
+     * event
      */
     errorPaths?: string[];
     /**
-     * The open wait that holds the key a `wait_key_held` failure was refused
-     * for, read from that wait's own registration (swamp-club#3214). Set
-     * only when the registration was found and names the workflow, the key
-     * and the run of the claim that refused the step; the step's error stays
-     * the bare `wait_key_held`. A server can hide it from a caller who may
-     * not read the holder's workflow.
+     * set only when the registration names the workflow, key and run of the
+     * refusing claim; the step's error stays the bare wait_key_held; a server
+     * can hide it from a caller who may not read the holder's workflow
      */
     waitKeyHolder?: WaitKeyHolder;
     forEachTemplate?: string;
@@ -185,10 +152,9 @@ export type WorkflowExecutionEvent =
     jobId: string;
     stepId: string;
     /**
-     * The run that owns this step. Differs from the top-level run for events
-     * a nested workflow step forwards, whose job and step names can repeat the
-     * parent's. Domain-internal: mapWorkflowExecutionEvent strips it from the
-     * published event.
+     * differs from the top-level run for events a nested workflow step
+     * forwards, whose names can repeat the parent's; domain-internal, stripped
+     * from the published event
      */
     runId: string;
     modelName: string;
@@ -209,10 +175,9 @@ export type WorkflowExecutionEvent =
     jobId: string;
     stepId: string;
     /**
-     * The run that owns this step. Differs from the top-level run for events
-     * a nested workflow step forwards, whose job and step names can repeat the
-     * parent's. Domain-internal: mapWorkflowExecutionEvent strips it from the
-     * published event.
+     * differs from the top-level run for events a nested workflow step
+     * forwards, whose names can repeat the parent's; domain-internal, stripped
+     * from the published event
      */
     runId: string;
     modelName: string;
@@ -291,43 +256,29 @@ export type WorkflowExecutionEvent =
     prompt: string;
     timeout?: number;
     /**
-     * Set when the run suspended on a nested workflow step rather than a
-     * gate of its own: the child run the step waits on (swamp-club#2736).
-     * `jobId` and `stepId` are then the nested step.
+     * set when the run suspended on a nested workflow step rather than a gate
+     * of its own; jobId and stepId are then the nested step
      */
     nested?: { workflowName: string; runId: string };
-    /**
-     * Set when the run suspended on a step waiting for a signal rather than
-     * a gate: the wait a signal names. `jobId` and `stepId` are that step.
-     * `key` is the key the step declared, if any (swamp-club#3214).
-     */
     wait?: { id: string; deadline: string; key?: string };
     /**
-     * The open waits for a signal that nested runs of this run hold, each at
-     * the innermost run that has to act: one per nested run still waited on,
-     * and none for a nested run that has a gate to decide first. Set
-     * whichever step `jobId` and `stepId` name.
+     * each at the innermost run that has to act; none for a nested run that has
+     * a gate to decide first; set whichever step jobId and stepId name
      */
     nestedSignalWaits?: NestedSignalWait[];
   };
 
-/** An open wait for a signal held by a nested run, as a suspension names it. */
 export interface NestedSignalWait {
-  /** The workflow the wait belongs to, which is the nested run's. */
   workflowId: string;
   workflowName: string;
   runId: string;
   jobId: string;
   stepId: string;
-  /** The id `workflow signal` names to settle the wait. */
   waitId: string;
-  /** When the wait stops accepting a signal, as an ISO timestamp. */
   deadline: string;
-  /** The key the wait's step declared, if any (swamp-club#3214). */
   key?: string;
 }
 
-/** The open wait that holds a key another step was refused (swamp-club#3214). */
 export interface WaitKeyHolder {
   workflowId: string;
   workflowName: string;

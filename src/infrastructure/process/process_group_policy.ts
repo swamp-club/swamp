@@ -22,26 +22,15 @@ import { getLogger } from "@logtape/logtape";
 const logger = getLogger(["process", "group"]);
 
 /**
- * When a spawn that asked for its process tree to be terminated gets its own
- * process group on POSIX.
- *
- * - `auto`: only when swamp has no controlling terminal (CI, agents, system
- *   services). A child in its own session cannot open `/dev/tty`, so
- *   interactive runs keep terminal prompts and the kernel's Ctrl-C delivery to
- *   the whole tree.
- * - `always`: regardless of the terminal. Set by processes whose runs are
- *   triggered remotely, so nobody at their terminal answers prompts: the
- *   `swamp serve` action and the worker `exec-dispatch` runner.
+ * auto isolates only without a controlling terminal, so interactive runs keep
+ * prompts and Ctrl-C to the tree; always is for remotely triggered runs (serve
+ * action, worker exec-dispatch) where nobody answers prompts
  */
 export type ProcessGroupIsolation = "auto" | "always";
 
 let isolation: ProcessGroupIsolation = "auto";
 let controllingTerminal: boolean | undefined;
 
-/**
- * Sets the process-wide isolation policy. Returns the previous policy so
- * callers (tests) can restore it.
- */
 export function setProcessGroupIsolation(
   mode: ProcessGroupIsolation,
 ): ProcessGroupIsolation {
@@ -64,7 +53,6 @@ export function resolveProcessGroupIsolation(options: {
   return !options.hasControllingTerminal();
 }
 
-/** Applies the current policy to this process. */
 export function shouldIsolateProcessGroup(): boolean {
   return resolveProcessGroupIsolation({
     mode: isolation,
@@ -74,10 +62,9 @@ export function shouldIsolateProcessGroup(): boolean {
 }
 
 /**
- * Whether this process has a controlling terminal, probed once by opening
- * `/dev/tty`. `Deno.stdin.isTerminal()` is not a substitute: it reports false
- * for piped stdin while a terminal is still attached. Any error counts as no
- * terminal, so an unknown environment isolates rather than orphaning.
+ * probed once via /dev/tty, since stdin.isTerminal() is false for piped stdin
+ * with a terminal attached; any error counts as no terminal, so an unknown
+ * environment isolates rather than orphaning
  */
 function hasControllingTerminal(): boolean {
   if (controllingTerminal === undefined) {

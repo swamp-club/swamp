@@ -43,10 +43,8 @@ import { SyncTimeoutError } from "../../domain/datastore/datastore_sync_service.
 import { UserError } from "../../domain/errors.ts";
 import { withMockedEnv } from "./path_test_helpers.ts";
 
-// Initialize logging for tests
 await initializeLogging({});
 
-/** Fake lock that tracks acquire/release calls. */
 class FakeLock implements DistributedLock {
   acquired = false;
   released = false;
@@ -125,12 +123,10 @@ Deno.test("multiple named entries can coexist", async () => {
   assertEquals(lock2.acquired, true);
   assertEquals(lock3.acquired, true);
 
-  // Flush one
   await flushDatastoreSyncNamed("model/b");
   assertEquals(lock2.released, true);
   assertEquals(getRegisteredLockKeys().length, 2);
 
-  // Flush all remaining
   await flushDatastoreSync();
   assertEquals(lock1.released, true);
   assertEquals(lock3.released, true);
@@ -189,8 +185,6 @@ Deno.test("registerDatastoreSync enriches pullChanged failure with SDK metadata"
   assertStringIncludes(thrown.message, "requestId=TEST-REQ-123");
   assertStringIncludes(thrown.message, "code=AccessDenied");
 
-  // `.cause` preserves the original error object so a later renderer
-  // improvement can walk the cause chain for any future consumer.
   assertEquals(thrown.cause, opaqueError);
 });
 
@@ -217,18 +211,12 @@ Deno.test("flushDatastoreSync swallows pushChanged failures (warn-only)", async 
 });
 
 Deno.test("SyncTimeoutError is a UserError so the CLI error boundary renders message only", () => {
-  // If this regresses, renderError's else-branch fires and dumps a stack
-  // trace that buries the actionable `swamp datastore lock release --force`
-  // hint — see swamp#1216 review feedback.
+  // if this regresses, renderError dumps a stack trace that buries the
+  // actionable lock-release hint
   const err = new SyncTimeoutError("@test/x", "push", 1000);
   assertEquals(err instanceof UserError, true);
 });
 
-/**
- * A push that ignores its abort signal and never settles. Records each
- * call's signal, so a test can tell the coordinator gave up on the push
- * (by aborting it) rather than the push finishing.
- */
 function hangingPush(): {
   service: {
     pullChanged: () => Promise<number>;
@@ -265,17 +253,13 @@ Deno.test("flushDatastoreSync: hanging pushChanged surfaces SyncTimeoutError ins
     SyncTimeoutError,
   );
 
-  // The push was called once and never settled; the coordinator ended
-  // the flush by aborting it at the timeout.
   assertEquals(hanging.signals.length, 1);
   assertEquals(hanging.signals[0]?.aborted, true);
   assertInstanceOf(hanging.signals[0]?.reason, SyncTimeoutError);
   assertEquals(err.label, "@test/hang");
   assertEquals(err.direction, "push");
   assertEquals(err.timeoutMs, 120);
-  // Actionable escape hatch in the message.
   assertStringIncludes(err.message, "swamp datastore lock release --force");
-  // Coordinator state is clean after the throw.
   assertEquals(getRegisteredLockKeys().length, 0);
 });
 
@@ -329,8 +313,8 @@ Deno.test("flushDatastoreSync: releases lock even when push times out", async ()
 
   await assertRejects(() => flushDatastoreSync(), SyncTimeoutError);
 
-  // Lock MUST be released even on timeout — otherwise the next run
-  // walks into a stale lock, which is the bug we're fixing.
+  // the lock must be released even on timeout, or the next run walks into a
+  // stale lock
   assertEquals(lock.released, true);
   assertEquals(lock.releaseCount, 1);
 });
@@ -355,16 +339,14 @@ Deno.test("registerDatastoreSync: hanging pullChanged surfaces SyncTimeoutError"
   );
   assertEquals(err.direction, "pull");
   assertEquals(err.timeoutMs, 120);
-  // Register does not persist state on failure, but be defensive.
   await flushDatastoreSync();
   assertEquals(getRegisteredLockKeys().length, 0);
 });
 
 Deno.test("registerDatastoreSyncNamed: pull timeout cleans up entry and releases lock", async () => {
-  // Regression guard: if this fails, the runCli error handler at
-  // cli/mod.ts will hit the hung entry again via flushDatastoreSync,
-  // doubling the user-visible timeout wait and shadowing the original
-  // error (see swamp#1216 review — double-timeout bug).
+  // if this fails, the CLI error handler hits the hung entry again via
+  // flushDatastoreSync, doubling the timeout wait and shadowing the original
+  // error
   const hanging = {
     pullChanged: () => new Promise<number>(() => {}),
     pushChanged: () => Promise.resolve(0),
@@ -383,14 +365,10 @@ Deno.test("registerDatastoreSyncNamed: pull timeout cleans up entry and releases
     SyncTimeoutError,
   );
 
-  // Entry removed from the map — a subsequent flushDatastoreSync() in
-  // the outer error handler must not re-encounter this hung service.
   assertEquals(getRegisteredLockKeys().includes("entry-cleanup"), false);
-  // Lock released so the next run isn't stranded.
   assertEquals(lock.released, true);
   assertEquals(lock.releaseCount, 1);
 
-  // And confirm: a flush right now is a clean no-op, not another hang.
   await flushDatastoreSync();
 });
 
@@ -465,8 +443,6 @@ Deno.test("resolveSyncTimeoutMs: config field overrides env and default", () => 
     datastorePath: "/tmp/x",
     syncTimeoutMs: 555,
   };
-  // Direct import rather than end-to-end coordinator test — proves the
-  // config→timeout resolver plumbing independently of runBoundedSync.
   assertEquals(resolveSyncTimeoutMs(cfg), 555);
 });
 
@@ -493,10 +469,8 @@ Deno.test("resolveSyncTimeoutMs: invalid env falls back to default", () => {
 });
 
 Deno.test("flushDatastoreSync: one entry's timeout still flushes other entries", async () => {
-  // Regression guard: before the loop was wrapped in try/catch, a
-  // SyncTimeoutError from one entry would abort the for-loop and strand
-  // later entries with held locks — recreating the stuck-lock bug this
-  // coordinator is hardened against.
+  // one entry's SyncTimeoutError must not abort the loop and strand later
+  // entries with held locks
   const hanging = {
     pullChanged: () => Promise.resolve(0),
     pushChanged: () => new Promise<number>(() => {}),
@@ -559,16 +533,11 @@ Deno.test("flushDatastoreSync: config timeout is honored end-to-end", async () =
     () => flushDatastoreSync(),
     SyncTimeoutError,
   );
-  // Proves config → resolveSyncTimeoutMs → registerDatastoreSync →
-  // runBoundedSync: the error carries the configured bound, and the flush
-  // ended by aborting the still-pending push.
   assertEquals(err.timeoutMs, 150);
   assertEquals(err.label, cfg.type);
   assertEquals(hanging.signals.length, 1);
   assertEquals(hanging.signals[0]?.aborted, true);
 });
-
-// --- Namespace threading ---
 
 Deno.test("registerDatastoreSyncNamed: namespace is passed to pullChanged", async () => {
   let pullOptions: DatastoreSyncOptions | undefined;
@@ -640,8 +609,6 @@ Deno.test("registerDatastoreSyncNamed: no namespace means pull/push omit it", as
 
   assertEquals(pushOptions?.namespace, undefined);
 });
-
-// --- Slow-lock warning namespace guard (#1981) ---
 
 Deno.test("registerDatastoreSyncNamed: slow lock with namespace suppresses contention warning", async () => {
   const captured: LogRecord[] = [];
@@ -749,12 +716,6 @@ Deno.test("registerDatastoreSyncNamed: slow lock without namespace emits content
   }
 });
 
-// --- Slow-lock advice by lock scope (swamp-club#2941) ---
-
-/**
- * Registers `key` with a lock whose acquisition appears to take 6 s and
- * returns the warning messages logged under datastore·lock.
- */
 async function slowLockWarnings(
   key: string,
   options: Omit<Parameters<typeof registerDatastoreSyncNamed>[1], "lock">,

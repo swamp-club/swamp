@@ -17,23 +17,15 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 /**
- * The variables a grant condition may reference, per resource kind — the one
- * definition both the validation environment and the runtime evaluator use
- * (swamp-club#2675).
- *
- * A resource field describes the resource itself and is always part of the
- * resource a handler authorizes; a deny that needs one the resource does not
- * carry fails closed. A request field describes the request (only method
- * requests have a `methodName`); when absent it is evaluated as its zero
- * value, so a condition on it simply does not match.
+ * a resource field describes the resource and a deny needing one it lacks fails
+ * closed; a request field is evaluated as its zero value when absent, so a
+ * condition on it does not match
  */
 
 import type { ResourceKind } from "./resource_selector.ts";
 
-/** The CEL type a condition variable is declared with. */
 export type ConditionFieldType = "string" | "map";
 
-/** Whether a variable describes the resource or the request. */
 export type ConditionFieldRole = "resource" | "request";
 
 export interface ConditionField {
@@ -41,8 +33,8 @@ export interface ConditionField {
   readonly type: ConditionFieldType;
   readonly role: ConditionFieldRole;
   /**
-   * False for a variable that is declared but that no handler supplies yet.
-   * New grant conditions may not reference it.
+   * false for a variable declared but not yet supplied by any handler; new
+   * grant conditions may not reference it
    */
   readonly supplied: boolean;
 }
@@ -78,28 +70,24 @@ export const CONDITION_FIELDS: Readonly<
     field("owner", "map", "resource", false),
   ],
   access: [field("name", "string")],
-  // A vault grant names the vault; `key` is the secret a request names
-  // (put, read-secret, delete, ...), evaluated as "" when it names none, so
-  // a key condition never fails closed on a request without a key.
+  // key is the secret a request names, evaluated as empty when none, so a key
+  // condition never fails closed on a request without a key
   vault: [
     field("name", "string"),
     field("key", "string", "request"),
   ],
 };
 
-/** The zero value a request field is evaluated as when a request lacks it. */
 export function conditionFieldZeroValue(type: ConditionFieldType): unknown {
   return type === "map" ? {} : "";
 }
 
-/** The resource fields of `kind` that handlers supply. */
 export function suppliedResourceFields(kind: ResourceKind): string[] {
   return CONDITION_FIELDS[kind]
     .filter((f) => f.role === "resource" && f.supplied)
     .map((f) => f.name);
 }
 
-/** The comprehension macros whose first argument binds a variable. */
 const BINDING_MACROS = new Set([
   "all",
   "exists",
@@ -118,9 +106,8 @@ function isNode(value: unknown): value is Node {
 }
 
 /**
- * The condition variables of `kind` that a parsed condition references
- * (the `ast` of a cel-js parse). Names bound by a comprehension macro are
- * excluded, so `tags.exists(owner, ...)` does not reference `owner`.
+ * names bound by a comprehension macro are excluded, so tags.exists(owner, ...)
+ * does not reference owner
  */
 export function referencedConditionFields(
   ast: unknown,
@@ -173,9 +160,8 @@ export function referencedConditionFields(
 }
 
 /**
- * Thrown by a condition evaluator when a condition references a resource
- * field the resource does not carry. A deny that cannot be evaluated for
- * that reason fails closed.
+ * a deny that cannot be evaluated because the resource lacks a referenced field
+ * fails closed
  */
 export class MissingConditionFieldError extends Error {
   constructor(readonly fields: readonly string[]) {

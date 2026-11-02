@@ -35,8 +35,6 @@ const arbSafeName = fc
   )
   .filter((s) => !s.includes(".."));
 
-// Names built from a dot-heavy alphabet so single dots and dot-separated
-// segments are exercised without ever forming "..".
 const arbDottedName = fc
   .array(
     fc.stringOf(fc.constantFrom(..."abc123".split("")), {
@@ -47,7 +45,6 @@ const arbDottedName = fc
   )
   .map((segments) => segments.join("."));
 
-// Arbitrary for names containing path traversal characters
 const arbPathTraversalName = fc.oneof(
   fc.constant("foo/../bar"),
   fc.constant("foo/bar"),
@@ -110,7 +107,6 @@ const arbTags = fc.dictionary(
   { minKeys: 0, maxKeys: 3 },
 ).map((tags) => ({ ...tags, type: "resource" }));
 
-/** Everything about a Data entity except its name. */
 const arbDataShape = fc.record({
   contentType: fc.constantFrom(
     "text/plain",
@@ -163,8 +159,6 @@ Deno.test("property: path traversal is always rejected", () => {
 });
 
 Deno.test("property: single dots in names are accepted", () => {
-  // Production rejects only the ".." traversal sequence, not lone dots, so
-  // "config.json"-style names must survive creation unchanged.
   fc.assert(
     fc.property(arbDottedName, (name) => {
       const data = Data.create(makeDataProps({ name }));
@@ -206,12 +200,8 @@ Deno.test("property: isOwnedBy is reflexive and ignores provenance fields", () =
         const data = Data.create(
           makeDataProps({ name, ownerDefinition: owner }),
         );
-        // Reflexive: data is always owned by its own owner definition.
         assert(data.isOwnedBy(data.ownerDefinition));
         assert(data.isOwnedBy(owner));
-        // Only ownerType + ownerRef participate: swapping every other field
-        // (workflow ids, step names, definition hash) must not change the
-        // verdict.
         assert(data.isOwnedBy({
           ...provenance,
           ownerType: owner.ownerType,
@@ -359,8 +349,6 @@ Deno.test("property: deletion markers tombstone without changing identity", () =
   );
 });
 
-// --- dataNamePortability (swamp-club#3568) ---
-
 const OSES = ["linux", "darwin", "windows", "freebsd"] as const;
 const WINDOWS_FORBIDDEN = ["<", ">", ":", '"', "|", "?", "*"];
 const CONTROL = Array.from(
@@ -404,7 +392,6 @@ Deno.test("dataNamePortability: refuses on windows exactly when a forbidden char
           dataNamePortability(name, "windows").kind === "refuse",
           hasForbidden,
         );
-        // Every os agrees on whether the name is portable at all.
         const kinds = OSES.map((os) => dataNamePortability(name, os).kind);
         assert(kinds.every((k) => (k === "ok") === (kinds[0] === "ok")));
       },

@@ -17,24 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Integration test for definition staleness across a bundle upgrade
- * (swamp-club#900).
- *
- * Wires the real YAML definition repository on a temp filesystem against the
- * real model registry and upgrade service, and walks the sequence that used to
- * strand an instance permanently:
- *
- * 1. An instance is created against v1 of a model type.
- * 2. The extension ships v2 with a changed default but no upgrade entry.
- * 3. Something performs an ordinary save — `model edit`, the serve API, a
- *    workflow auto-definition.
- * 4. The extension later ships the upgrade entry it should have shipped.
- *
- * Before the fix, step 3 restamped typeVersion to v2 without migrating the
- * arguments, so the upgrade in step 4 could never run.
- */
-
 import { assertEquals, assertThrows } from "@std/assert";
 import { ensureDir } from "@std/fs";
 import { join } from "@std/path";
@@ -69,8 +51,8 @@ async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
     await fn(dir);
   } finally {
     if (Deno.build.os === "windows") {
-      // Best-effort: EBUSY can fire when V8 hasn't GC'd native
-      // sqlite handles yet. Temp dir is ephemeral, OS reclaims.
+      // EBUSY can fire on windows before V8 frees native sqlite handles; the
+      // temp dir is ephemeral
       await Deno.remove(dir, { recursive: true }).catch(() => {});
     } else {
       await Deno.remove(dir, { recursive: true });
@@ -78,7 +60,6 @@ async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
   }
 }
 
-/** Registers the type at `version`, replacing any previous registration. */
 function installBundle(version: string, withUpgrade: boolean): void {
   modelRegistry.invalidateType(TYPE);
   modelRegistry.register({
@@ -104,7 +85,6 @@ Deno.test("definition staleness: an ordinary save does not strand an instance ac
     installBundle(V1, false);
     const repo = new YamlDefinitionRepository(dir, undefined, undefined, false);
 
-    // 1. Instance created against v1, carrying v1's defaulted arguments.
     const created = Definition.create({
       name: "factory",
       type: TYPE.normalized,
@@ -113,7 +93,6 @@ Deno.test("definition staleness: an ordinary save does not strand an instance ac
     });
     await repo.save(TYPE, created);
 
-    // 2. The extension ships v2 with no upgrade entry.
     installBundle(V2, false);
 
     const beforeSave = await repo.findByName(TYPE, "factory");
@@ -123,7 +102,6 @@ Deno.test("definition staleness: an ordinary save does not strand an instance ac
       "v2 with no upgrade entry leaves the instance stranded",
     );
 
-    // 3. An ordinary save — the step that used to silently restamp.
     await repo.save(TYPE, beforeSave!);
 
     const afterSave = await repo.findByName(TYPE, "factory");
@@ -137,7 +115,6 @@ Deno.test("definition staleness: an ordinary save does not strand an instance ac
       fields: ["name", "path"],
     });
 
-    // 4. The extension ships the upgrade entry it should have shipped.
     installBundle(V2, true);
 
     const reloaded = await repo.findByName(TYPE, "factory");
@@ -158,7 +135,6 @@ Deno.test("definition staleness: an ordinary save does not strand an instance ac
     });
     assertEquals(result.definition.typeVersion, V2);
 
-    // The migrated definition round-trips, and is now current.
     await repo.save(TYPE, result.definition);
     const migrated = await repo.findByName(TYPE, "factory");
     assertEquals(migrated!.typeVersion, V2);
@@ -172,16 +148,9 @@ Deno.test("definition staleness: an ordinary save does not strand an instance ac
 });
 
 /**
- * A hand-authored definition under `models/` carries whatever its author wrote,
- * and `typeVersion` is the one field they are most likely to leave out — it
- * records an internal versioning concept, not anything about their
- * configuration. The upgrade service must not read that omission as "predates
- * the chain, apply all of it": the arguments below are already in the shape the
- * current version expects, and running the chain would strip the field the
- * upgrade adds (swamp-club#2412).
- *
- * Written as YAML on disk rather than through `Definition.create` so the test
- * exercises the same load path a checked-in file takes.
+ * a hand-authored definition without typeVersion must not be read as predating
+ * the chain: its arguments are already current and running the chain would
+ * strip the field the upgrade adds
  */
 const HAND_AUTHORED_TYPE = ModelType.create("test/hand-authored-definition");
 
@@ -213,7 +182,6 @@ Deno.test("definition upgrade: a hand-authored definition with no typeVersion is
         HAND_AUTHORED_TYPE.toDirectoryPath(),
       );
       await Deno.mkdir(typeDir, { recursive: true });
-      // No `typeVersion:` line — exactly what a person writes by hand.
       await Deno.writeTextFile(
         join(typeDir, "factory.yaml"),
         [
@@ -263,9 +231,8 @@ Deno.test("definition upgrade: a hand-authored definition with no typeVersion is
         "skipping is not migrating, so nothing may stamp the definition",
       );
 
-      // And the file still records no typeVersion after an ordinary save:
-      // backfilling would claim a version nothing verified the arguments
-      // against.
+      // no typeVersion is backfilled on save: it would claim a version nothing
+      // verified the arguments against
       await repo.save(HAND_AUTHORED_TYPE, result.definition);
       const yaml = await Deno.readTextFile(join(typeDir, "factory.yaml"));
       assertEquals(yaml.includes("typeVersion"), false);
@@ -291,8 +258,8 @@ Deno.test("definition upgrade: a hand-authored definition with a malformed typeV
         HAND_AUTHORED_TYPE.toDirectoryPath(),
       );
       await Deno.mkdir(typeDir, { recursive: true });
-      // Someone meant to record a version and used the wrong format. Reading
-      // that as "records nothing" would throw away what they wrote.
+      // a wrongly formatted version must not be read as recording nothing,
+      // which would throw away what the author wrote
       await Deno.writeTextFile(
         join(typeDir, "factory.yaml"),
         [
@@ -314,7 +281,6 @@ Deno.test("definition upgrade: a hand-authored definition with a malformed typeV
         false,
       );
       const loaded = await repo.findByName(HAND_AUTHORED_TYPE, "factory");
-      // The value survives loading, so `model get` can name it.
       assertEquals(loaded!.typeVersion, "1.0");
       assertEquals(
         resolveStaleness(loaded!.typeVersion, V2, []).state,
@@ -337,14 +303,9 @@ Deno.test("definition upgrade: a hand-authored definition with a malformed typeV
 });
 
 /**
- * The lazy upgrade persists the definition on any method run, read-only ones
- * included. A definition still in a legacy uuid-named file moves to its
- * name-based file in that same write, and the move must carry the file's
- * comments and layout with it rather than re-serializing the data from scratch
- * (swamp-club#3012).
- *
- * Runs the method through the real execution service against the real
- * repository, the path `swamp model method run` takes.
+ * the lazy upgrade persists the definition on any method run, read-only
+ * included; a legacy uuid-named file moves to its name-based file in that write
+ * and must keep its comments and layout
  */
 const COMMENTED_TYPE = ModelType.create("test/commented-definition");
 
@@ -455,7 +416,6 @@ Deno.test("definition upgrade: a read-only method run keeps a legacy definition 
         "the legacy uuid-named file is gone and nothing else was written",
       );
 
-      // The upgrade ran once: a second run has nothing to persist.
       await Deno.utime(namePath, new Date(0), new Date(0));
       await run();
       assertEquals(await Deno.readTextFile(namePath), migrated);

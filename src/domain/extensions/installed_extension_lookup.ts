@@ -24,22 +24,12 @@ import {
   parseExtensionManifest,
 } from "./extension_manifest.ts";
 
-/** Shape of a per-entry record in upstream_extensions.json. */
 interface UpstreamExtensionEntry {
   version: string;
 }
 
 const SCOPED_NAME_PATTERN = /^@[a-z0-9_-]+\/[a-z0-9_-]+(\/[a-z0-9_-]+)*$/;
 
-/**
- * Reads the read-only manifest copy written by `swamp extension pull` at
- * `<pulledExtRoot>/<name>/manifest.yaml`. Returns null when the extension
- * has never been pulled (file not present).
- *
- * The caller resolves `pulledExtRoot` (typically `swampPath(repoDir,
- * "pulled-extensions")`) — this module does not touch infrastructure
- * paths so tests stay hermetic.
- */
 export async function loadInstalledExtensionManifest(
   pulledExtRoot: string,
   name: string,
@@ -56,14 +46,6 @@ export async function loadInstalledExtensionManifest(
   return parseExtensionManifest(content);
 }
 
-/**
- * Looks up the installed version of `name` in the upstream_extensions.json
- * lockfile. Returns null when the extension has no entry.
- *
- * The caller resolves `lockfilePath` — typically
- * `<models-dir>/upstream_extensions.json`, mirroring how
- * `extension_pull.ts` assembles the path.
- */
 export async function readInstalledExtensionVersion(
   lockfilePath: string,
   name: string,
@@ -82,29 +64,17 @@ export async function readInstalledExtensionVersion(
   return map[name]?.version ?? null;
 }
 
-/**
- * Extracts the collective slug from a scoped extension name.
- * `@adam/cfgmgmt` → `adam`; `@foo/bar/baz` → `foo`.
- *
- * Throws UserError for malformed names via {@link validateExtensionName}.
- */
 export function extractCollective(name: string): string {
   validateExtensionName(name);
   const slashIdx = name.indexOf("/");
-  // validateExtensionName guarantees the shape @collective/name[/...].
   return name.slice(1, slashIdx);
 }
 
-/** True when the extension's collective is the `@swamp` organization. */
 export function isSwampCollective(name: string): boolean {
   return extractCollective(name) === "swamp";
 }
 
-/**
- * Validates a scoped extension name. Mirrors the check used by
- * `swamp extension pull` so error messages stay consistent across
- * commands.
- */
+/** mirrors the check in swamp extension pull so error messages stay consistent */
 export function validateExtensionName(name: string): void {
   if (!SCOPED_NAME_PATTERN.test(name)) {
     throw new UserError(

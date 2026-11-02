@@ -17,13 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * The v3 copy restorer (swamp-club#3482) against a stand-in for the
- * Litestream binary: a script that answers `restore` the way Litestream
- * does, so the fallback, truncation and refusal paths run without a
- * replica whose TXIDs were compacted away. Ignored on Windows.
- */
-
 import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
 import { join } from "@std/path";
 import { DatabaseSync } from "node:sqlite";
@@ -49,11 +42,6 @@ const ignore = Deno.build.os === "windows";
 
 type Mode = "exact" | "fallback" | "fail" | "slow";
 
-/**
- * A fake `litestream`: copies `source` to the `-o` path. In "fallback" a
- * `-txid` restore answers as Litestream does for a TXID inside a range
- * compaction merged; "fail" always fails; "slow" hangs.
- */
 async function fakeBinary(dir: string, source: string, mode: Mode) {
   const script = join(dir, "litestream");
   await Deno.writeTextFile(
@@ -89,7 +77,6 @@ async function withDir(fn: (dir: string) => Promise<void>): Promise<void> {
   }
 }
 
-/** A store at `path` with commits 1..`count`, closed and checkpointed. */
 async function storeWith(path: string, count: number): Promise<void> {
   const store = SqliteCommitStore.open(path);
   try {
@@ -321,8 +308,8 @@ Deno.test({
             install: installByRename(target),
             deadlineMs: 30_000,
           }),
-        // SQLite fails the integrity check itself with SQLITE_NOTADB: a
-        // damaged restore, which marks the lineage broken (swamp-club#3935).
+        // SQLite fails the integrity check itself with SQLITE_NOTADB: a damaged
+        // restore, which marks the lineage broken
         V3RestoredDatabaseCorruptError,
       );
       assertEquals(count(target), 2);

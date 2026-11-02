@@ -29,7 +29,6 @@ import { runCommandInRootUnit } from "./command_root_unit.ts";
 
 await initializeLogging({});
 
-/** A mark hook and push/release steps that record what ran, in order. */
 function recorder(
   options: { failPush?: string; failRelease?: string } = {},
 ) {

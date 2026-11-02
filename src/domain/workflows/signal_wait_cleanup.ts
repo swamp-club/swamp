@@ -18,11 +18,8 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * How the records of signal waits follow their runs (swamp-club#3093).
- *
- * A step is settled only from its wait's stored outcome. A registration is
- * removed when its run ends. An outcome lives as long as its run record, so
- * a late retry of a signal is answered from it, and is removed with the run.
+ * a step is settled only from its wait's stored outcome; an outcome lives as
+ * long as its run so a late retry of a signal is answered from it
  */
 
 import type { StepRun, WorkflowRun } from "./workflow_run.ts";
@@ -49,19 +46,16 @@ import {
 } from "./pending_signal.ts";
 
 /**
- * How long after its deadline a record is kept when its run is confirmed
- * absent. Age alone never proves absence from a shared datastore: an
- * accepted outcome may still be needed by a run this host has not synced.
+ * age alone never proves absence from a shared datastore: an accepted outcome
+ * may still be needed by a run this host has not synced
  */
 export const ORPHAN_WAIT_RECORD_GRACE_MS = 24 * 60 * 60 * 1000;
 
-/** True for a run status nothing continues from without a new attempt. */
 export function isEndedRunStatus(status: string): boolean {
   return status === "succeeded" || status === "failed" ||
     status === "cancelled";
 }
 
-/** The wait `step` of `run` holds, as the facts an outcome is built from. */
 export function waitRefOf(
   run: WorkflowRun,
   step: StepRun,
@@ -81,15 +75,9 @@ export function waitRefOf(
 }
 
 /**
- * The outcome of a wait, settling it as timed out first when it has none
- * and its deadline has passed. A deadline is enforced here, lazily, by
- * whoever looks: the create decides between this timeout and a signal that
- * arrives at the same moment.
- *
- * A wait whose step set `acceptEarly` is first given its key's pending
- * signal, whether its deadline has passed or not (swamp-club#3212): a
- * signaller that stopped after storing one leaves the wait to its next
- * reader, and a signal received before the deadline is never timed out.
+ * the deadline is enforced lazily by whoever looks; a wait with acceptEarly is
+ * given its key's pending signal first, so a signal received before the
+ * deadline is never timed out
  */
 export async function outcomeAt(
   store: SignalWaitStore,
@@ -107,7 +95,6 @@ export async function outcomeAt(
   return belongsTo(ref, await store.settle(timedOutOutcome(ref, now)));
 }
 
-/** An outcome that names another run is not this wait's outcome. */
 function belongsTo(
   ref: WaitRef,
   stored: StoredWaitRecord<WaitOutcome>,
@@ -118,11 +105,9 @@ function belongsTo(
 }
 
 /**
- * Makes `registration` the wait's registration unless a readable one is
- * stored already, and returns the one that holds. A stored registration
- * that cannot be read is replaced: the caller built this one from the run
- * record, which still holds the whole wait, so a damaged file does not
- * leave a wait nothing can signal.
+ * an unreadable stored registration is replaced, since the run record still
+ * holds the whole wait and a damaged file must not leave a wait nothing can
+ * signal
  */
 export async function ensureRegistered(
   store: SignalWaitStore,
@@ -139,10 +124,9 @@ export async function ensureRegistered(
 }
 
 /**
- * The registration a step of a run already made, if any. A process that
- * died after registering a wait and before saving its run leaves one behind;
- * the step that runs again takes that wait over instead of opening another,
- * so a signal accepted for it in between is applied, not lost.
+ * a process that died after registering and before saving its run leaves one
+ * behind; the re-run step takes it over so a signal accepted in between is
+ * applied, not lost
  */
 export async function findRegistrationOfStep(
   store: SignalWaitStore,
@@ -159,21 +143,12 @@ export async function findRegistrationOfStep(
   return undefined;
 }
 
-/** A step of a run still waiting on a wait nothing has settled. */
 export interface OpenWaitRef {
   jobName: string;
   stepName: string;
-  /**
-   * The wait's id, when it stops accepting a signal, as an ISO timestamp,
-   * and the key its step declared, if any (swamp-club#3214).
-   */
   wait: { id: string; deadline: string; key?: string };
 }
 
-/**
- * The wait of an {@link OpenWaitRef}. The key is read from the step's wait:
- * a ref carries it only for a step that set `acceptEarly`.
- */
 function openWaitOf(ref: WaitRef, step: StepRun): OpenWaitRef["wait"] {
   const key = step.signalWait?.key;
   return {
@@ -184,13 +159,8 @@ function openWaitOf(ref: WaitRef, step: StepRun): OpenWaitRef["wait"] {
 }
 
 /**
- * The first wait of `run` that nothing has settled and whose deadline has
- * not passed. Reads only: for telling a caller what a run still waits on.
- *
- * A wait whose key holds an applicable pending signal is not waiting
- * (swamp-club#3309): a signaller that stopped after storing one left the
- * wait with its signal, and the resume that follows takes it under the
- * run's claim.
+ * reads only; a wait whose key holds an applicable pending signal is not
+ * waiting, since the resume that follows takes it under the run's claim
  */
 export async function findUnsettledWait(
   store: SignalWaitStore,
@@ -216,17 +186,9 @@ export async function findUnsettledWait(
 }
 
 /**
- * Settles as timed out each wait of `run` that is past its deadline, has no
- * outcome and is still registered, and returns how many it settled
- * (swamp-club#3109). For a caller nobody asked to look: the sweep of
- * `swamp serve`. The run record is not changed; the resume that follows
- * fails the steps.
- *
- * The deadline is read from the run record first, so a wait still open
- * costs no read. A wait with no readable registration is left alone: a
- * registration is removed when its run ends or is deleted, so a suspended
- * copy of such a run is behind, and an outcome created for it would outlive
- * the run.
+ * a wait with no readable registration is left alone: its run ended or was
+ * deleted, so a suspended copy is behind and an outcome made for it would
+ * outlive the run
  */
 export async function settleExpiredWaits(
   store: SignalWaitStore,
@@ -254,12 +216,8 @@ export async function settleExpiredWaits(
 }
 
 /**
- * Gives each wait of `run` that has no outcome and is still registered the
- * pending signal of its key, where one applies, and returns how many took
- * one (swamp-club#3212). For the sweep of `swamp serve`: a signaller that
- * stopped between storing its signal and reading the key again leaves a wait
- * open that nothing else would look at before its deadline. The run record
- * is not changed; the resume that follows succeeds the steps.
+ * a signaller that stopped between storing its signal and reading the key again
+ * leaves a wait open that nothing else would look at before its deadline
  */
 export async function takePendingSignalsOfRun(
   store: SignalWaitStore,
@@ -284,14 +242,8 @@ export async function takePendingSignalsOfRun(
 }
 
 /**
- * Applies the accepted signals of a suspended run's waits to their steps,
- * and returns the first wait that is still open, if any. Called by a resume
- * under the run's claim, the only place a wait changes the run record.
- *
- * A wait that timed out, was cancelled or cannot be read is left waiting:
- * the walk fails its step when it re-enters it (see
- * {@link settleReenteredWait}), so `failed` handlers and `allowFailure`
- * apply as for any other failed step.
+ * a timed out, cancelled or unreadable wait is left waiting so the walk fails
+ * its step on re-entry and failed handlers and allowFailure apply as usual
  */
 export async function applyAcceptedSignals(
   store: SignalWaitStore,
@@ -321,12 +273,6 @@ export async function applyAcceptedSignals(
   return open;
 }
 
-/**
- * Settles a waiting step the walk re-entered: `failed` when its wait timed
- * out, was cancelled, or holds an outcome that cannot be read or applied;
- * `open` when nothing has settled the wait yet, or a signal has and the
- * next resume applies it.
- */
 export async function settleReenteredWait(
   store: SignalWaitStore,
   run: WorkflowRun,
@@ -343,8 +289,8 @@ export async function settleReenteredWait(
     return "failed";
   }
   if (stored.record.kind === "accepted") {
-    // Applied by a resume's takeover; one that cannot be applied never
-    // will be, so the step fails instead of waiting for good.
+    // applied by a resume's takeover; an outcome that cannot be applied never
+    // will be, so the step fails instead of waiting for good
     if (step.canApplyWaitOutcome(stored.record)) return "open";
     step.failUnusableOutcome();
     return "failed";
@@ -353,11 +299,6 @@ export async function settleReenteredWait(
   return "failed";
 }
 
-/**
- * Closes the wait `step` holds before the step leaves it: a wait nothing
- * settled is settled as cancelled, so a signal for it is answered closed,
- * and its registration is removed. The outcome is kept.
- */
 export async function closeStepWait(
   store: SignalWaitStore,
   run: WorkflowRun,
@@ -366,9 +307,8 @@ export async function closeStepWait(
 ): Promise<void> {
   const ref = waitRefOf(run, step);
   if (!ref) return;
-  // A wait with no registration was closed already, or never registered.
-  // An ended run is saved more than once, and each save comes here, so
-  // this costs one read where there is nothing left to do.
+  // no registration means closed already or never registered; an ended run is
+  // saved more than once, so this keeps repeat saves to one read
   if ((await store.findRegistration(ref.waitId)).kind === "absent") return;
   if (!step.signalWait?.receipt) {
     await store.settle(cancelledOutcome(ref, now));
@@ -377,9 +317,8 @@ export async function closeStepWait(
 }
 
 /**
- * Closes every wait a run holds, for a run that has ended or is about to be
- * saved as ended. Called before that save, so no signal is accepted for a
- * wait of a run already recorded as over.
+ * called before the save so no signal is accepted for a wait of a run already
+ * recorded as over
  */
 export async function closeRunWaits(
   store: SignalWaitStore,
@@ -394,10 +333,8 @@ export async function closeRunWaits(
 }
 
 /**
- * What a run repository does before it writes a run: a run about to be
- * saved as ended closes its waits. One hook covers every writer that ends
- * a run (cancel, reject, supersede, abort, the executor), none of which has
- * to remember it.
+ * one hook covers every writer that ends a run (cancel, reject, supersede,
+ * abort, the executor) so none has to remember to close waits
  */
 export function closeWaitsOfEndedRun(
   store: SignalWaitStore,
@@ -408,7 +345,6 @@ export function closeWaitsOfEndedRun(
   };
 }
 
-/** The ids of the waits the steps of `runs` hold or held. */
 export function waitIdsOf(runs: Iterable<WorkflowRun>): string[] {
   const ids: string[] = [];
   for (const run of runs) {
@@ -421,7 +357,6 @@ export function waitIdsOf(runs: Iterable<WorkflowRun>): string[] {
   return ids;
 }
 
-/** Removes the registration and the outcome of each wait. */
 export async function removeWaitRecords(
   store: SignalWaitStore,
   waitIds: Iterable<string>,
@@ -433,12 +368,8 @@ export async function removeWaitRecords(
 }
 
 /**
- * Removes the wait records of runs that were deleted, by run id. Returns
- * how many waits had a record removed.
- *
- * The key claims of those runs go first (swamp-club#3209): a claim whose
- * outcome is gone would read as an open wait. One that is the highest of
- * its key is superseded by a release, not just deleted.
+ * key claims go first because a claim whose outcome is gone would read as an
+ * open wait; the highest of its key is superseded by a release, not deleted
  */
 export async function removeWaitRecordsOfRuns(
   store: SignalWaitStore,
@@ -459,11 +390,9 @@ export async function removeWaitRecordsOfRuns(
 }
 
 /**
- * True when the run record here says the run ended after the wait was
- * registered. A failed run can be retried under the same id, and a run
- * record reaches another host later than its wait records do, so a record
- * here that says ended may predate a retry whose new wait is already
- * registered. Such a wait is live and must not be closed.
+ * a failed run can be retried under the same id and its record reaches another
+ * host after its wait records, so an ended record here may predate a retry
+ * whose live wait must not be closed
  */
 function endedAfterRegistering(
   run: WorkflowRun,
@@ -474,24 +403,16 @@ function endedAfterRegistering(
     run.completedAt.getTime();
 }
 
-/** What a sweep removed. */
 export interface WaitRecordSweep {
   registrations: number;
   outcomes: number;
-  /** Key claims of runs that are gone, and releases since superseded. */
   keyRecords: number;
-  /** Pending signals no wait took, and records in slots nothing reads. */
   pendingSignals: number;
 }
 
 /**
- * Removes the pending signal `stored` was stored over: the record one number
- * below it in its slot. Only the highest record of a slot is read, and
- * `stored` is above that one, so nothing reads it again; the highest is
- * never deleted, and no number comes back into use. Whoever stores a signal
- * calls this once it is stored, so a slot does not keep every signal that
- * aged out in it until a sweep. What a caller that stopped in between left
- * is removed by {@link sweepPendingSignals}.
+ * only the highest record of a slot is read, so the one below it is dead; the
+ * highest is never deleted and no number comes back into use
  */
 export async function removeSupersededPendingSignal(
   store: Pick<PendingSignalRecords, "removePendingRecord">,
@@ -507,22 +428,9 @@ export async function removeSupersededPendingSignal(
 }
 
 /**
- * Removes the pending signals nothing will take (swamp-club#3212), and
- * returns how many records it removed. It reads key records and never a run
- * record, so it is safe on every datastore.
- *
- * A slot the key has passed, whose claim is gone, is removed whole. Whether a
- * claim still reads such a slot is answered by {@link claimsReadingSlot}, in
- * at most two reads of the slot's own key: the sweep never lists the key
- * records of other workflows (swamp-club#3308). A slot is left as it is when
- * one of those two records cannot be read. In a slot
- * the next claim will still read, a pending signal past its age limit plus
- * {@link PENDING_SIGNAL_LAPSE_GRACE_MS} is superseded by a lapse at the next
- * number, and the numbers below the slot's highest are then removed. The
- * highest record of such a slot is never deleted: a number that came back
- * into use would let a signaller that read the old highest and one that read
- * after the delete both store a signal. A slot whose highest record cannot
- * be read is left as it is.
+ * reads key records, never a run record, so it is safe on every datastore; a
+ * slot's highest record is never deleted, since a reused number would let two
+ * signallers both store a signal
  */
 export async function sweepPendingSignals(
   store: SignalWaitStore,
@@ -543,10 +451,8 @@ export async function sweepPendingSignals(
       (generation === slot && highest.kind === "found" &&
         highest.record.kind === "release");
     if (!live) {
-      // A claim that reads this slot exists by now or never will:
-      // generations only grow, and a claim reads no further than one below
-      // its own. So no claim made after the read above is missed here, and
-      // one that is the key's highest record is not read a second time.
+      // a claim that reads this slot exists by now or never will: generations
+      // only grow and a claim reads no further than one below its own
       const readers = await claimsReadingSlot(
         store,
         { workflowId, key, slot },
@@ -591,26 +497,9 @@ export async function sweepPendingSignals(
 }
 
 /**
- * The safety net for wait records nothing else removed, on a datastore
- * where the run records this host reads are the datastore's own
- * (`localRunAbsenceIsAuthoritative`). There it closes the registration of
- * a run that ended after the wait was registered, and removes a
- * registration or an outcome whose run is gone once the wait's deadline
- * plus {@link ORPHAN_WAIT_RECORD_GRACE_MS} has passed. An outcome whose run
- * exists is never removed here: it lives as long as the run. A key claim
- * goes by the same rule as an outcome, and before it.
- *
- * Anywhere else it removes only the pending signals nothing will take
- * ({@link sweepPendingSignals}), which no run record is read for. A run record that reaches this host later
- * than the wait's records, or not at all, says nothing true about the wait:
- * a stale `failed` record hides a retry whose new wait is live, and a run
- * kept in another repository looks deleted. Acting on either would cancel a
- * live wait or delete an accepted signal. Such records are closed by the
- * host that ends the run, and removed with the run by its garbage
- * collection or its workflow's deletion.
- *
- * A run that cannot be read is skipped, so one damaged run file does not
- * stop the sweep or fail the command that runs it.
+ * outside a datastore whose local run records are authoritative, run records
+ * say nothing true about a wait (stale failed hides a live retry), so only
+ * pending signals are swept and the ending host closes the rest
  */
 export async function sweepWaitRecords(
   store: SignalWaitStore,
@@ -633,8 +522,8 @@ export async function sweepWaitRecords(
   const orphaned = (ref: { deadline: string }) =>
     now.getTime() >
       new Date(ref.deadline).getTime() + ORPHAN_WAIT_RECORD_GRACE_MS;
-  // `unreadable` when the run file is there and cannot be parsed: nothing
-  // is known about that run, so its records are left as they are.
+  // unreadable means the run file is there but cannot be parsed: nothing is
+  // known about that run, so its records are left as they are
   const lookUp = async (
     ref: { workflowId: string; runId: string },
   ): Promise<WorkflowRun | null | "unreadable"> => {

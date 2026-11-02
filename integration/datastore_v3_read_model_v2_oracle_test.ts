@@ -17,22 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * The v3 read model against v2 (swamp-club#3239). A v2 repository saves,
- * deletes, renames, expires and garbage-collects data; each step's change to
- * its files becomes one v3 commit, appended straight to `commits.db`. A read
- * model in a second repository then catches up, and its files and v3
- * catalog must equal what v2 wrote.
- *
- * The commits follow the save mapping in "v3 domain model"
- * (`design/enablers/datastores.md`): a save puts the raw content, its
- * `metadata.yaml` and the latest marker, and records a `data-version`; a
- * versioned delete or gc tombstones each file of the version; a rename is
- * one `data.rename` commit. The real repository-to-op mapping belongs to the
- * commit-log unit-of-work issue; this test's mapping is derived from v2's own
- * file changes so it cannot drift from what v2 does.
- */
-
 import { assertEquals } from "@std/assert";
 import { join } from "@std/path";
 import { parse as parseYaml } from "@std/yaml";
@@ -79,13 +63,11 @@ const PARTITION = partitionOf({
 });
 const MODEL_PREFIX = `data/${MODEL_TYPE.normalized}/${MODEL_ID}/`;
 
-/** The v2 operation a commit stands for, which decides its intents. */
 type Action =
   | { kind: "save" }
   | { kind: "delete" | "gc" | "expire" }
   | { kind: "rename"; from: string; to: string };
 
-/** A v2 repository in its own temp repo, and the v3 commits it stands for. */
 class V2Oracle {
   readonly repo: FileSystemUnifiedDataRepository;
   readonly catalogPath: string;
@@ -111,7 +93,6 @@ class V2Oracle {
     );
   }
 
-  /** Runs a v2 step and appends the commit for the files it changed. */
   async step(action: Action, run: () => Promise<unknown>): Promise<void> {
     const before = await readFiles(this.root);
     await run();
@@ -177,7 +158,6 @@ class V2Oracle {
         return intent({
           kind: "data.save",
           name,
-          // The latest marker holds the version it points at.
           version: version ?? Number(new TextDecoder().decode(bytes)),
         });
       case "rename":
@@ -199,7 +179,6 @@ function intent(fields: Record<string, unknown>): Intent {
   return createIntent({ ...fields, model: modelRef(MODEL_TYPE, MODEL_ID) });
 }
 
-/** Splits `data/<type>/<model>/<name>/<version>/<file>` or `.../<name>/latest`. */
 function parsePath(path: string): { name: string; version?: number } {
   if (!path.startsWith(MODEL_PREFIX)) {
     throw new Error(`Unexpected path ${path}`);
@@ -235,7 +214,6 @@ function text(value: string): Uint8Array {
   return new TextEncoder().encode(value);
 }
 
-/** Content above the inline limit, so it is stored as several chunks. */
 function large(seed: string): Uint8Array {
   const bytes = new Uint8Array(20 * 1024);
   for (let i = 0; i < bytes.length; i++) {
@@ -284,15 +262,12 @@ for (const namespace of ["", "infra"]) {
       await save("d", text("d1"));
       await assertMatchesV2(env, oracle);
 
-      // A versioned delete below the top.
       await oracle.step(
         { kind: "delete" },
         () => repo.delete(type, MODEL_ID, "a", 1),
       );
       await assertMatchesV2(env, oracle);
 
-      // A rename, a save to the renamed name, and deletes that expose the
-      // rename marker and then the version before the rename.
       await oracle.step(
         { kind: "rename", from: "b", to: "e" },
         () => repo.rename(type, MODEL_ID, "b", "e"),
@@ -310,14 +285,12 @@ for (const namespace of ["", "infra"]) {
       );
       await assertMatchesV2(env, oracle);
 
-      // Garbage collection keeps one version of c.
       await oracle.step(
         { kind: "gc" },
         () => repo.collectGarbage(type, MODEL_ID),
       );
       await assertMatchesV2(env, oracle);
 
-      // A whole-name delete, then expiry.
       await oracle.step(
         { kind: "delete" },
         () => repo.delete(type, MODEL_ID, "d"),

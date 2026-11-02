@@ -25,16 +25,12 @@ import {
 } from "../src/domain/extensions/extension_auto_resolver.ts";
 import { ExtensionApiClient } from "../src/infrastructure/http/extension_api_client.ts";
 
-// Regression guard for swamp-club#3246: auto-resolution installed the first
-// registry search hit for a type without checking that it provides the type,
-// so a made-up type or a typo installed an unrelated extension and wrote it to
-// the lockfile. This wires the real client into the real resolver the way
-// src/cli/mod.ts does, with only fetch replaced, so the check reads the
-// registry's own /latest response shape.
+// the resolver must check a search hit provides the type before installing;
+// real client and resolver, only fetch replaced, so the check reads the
+// registry's own /latest shape
 
 const VERSION = "2026.09.29.1";
 
-/** Output port that records the events the resolver emits. */
 function recordingOutput(): AutoResolveOutputPort & { events: string[] } {
   const events: string[] = [];
   const record = (event: string) => (extension?: unknown) => {
@@ -60,7 +56,6 @@ function recordingOutput(): AutoResolveOutputPort & { events: string[] } {
   };
 }
 
-/** Installer that records installs; an install provides the requested type. */
 function recordingInstaller(): ExtensionInstallerPort & { installs: string[] } {
   const installs: string[] = [];
   return {
@@ -80,11 +75,6 @@ function recordingInstaller(): ExtensionInstallerPort & { installs: string[] } {
   };
 }
 
-/**
- * A registry with no extension named after the type, whose search returns
- * `hits` in rank order; each hit's latest version publishes the model types
- * listed for it.
- */
 function registry(
   hits: Record<string, string[]>,
 ): (url: string | URL) => Promise<Response> {

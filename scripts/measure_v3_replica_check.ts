@@ -17,42 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * What one writer's replica check costs (swamp-club#4261): the full restore
- * `verifyReplica` runs, and the snapshot listing that now decides when one
- * runs. For each backend and size it builds a `commits.db`, replicates it
- * with the pinned Litestream straight to the emulator, then runs one check
- * and one listing through a counting TCP proxy, and reports:
- *
- * - bytes downloaded and uploaded, and HTTP requests by method;
- * - wall time;
- * - Litestream's peak resident memory during the restore (`time -l`) and
- *   how much this process's grew during the check (the integrity check runs
- *   here);
- * - the largest the restored temp file got beside `commits.db`.
- *
- * Bytes and request counts do not depend on the emulator, so they carry
- * over to real buckets; times do not.
- *
- *   docker run -d --name ministack-m -p 47391:4566 ministackorg/ministack:latest
- *   docker run -d --name fakegcs-m -p 47392:4443 \
- *     fsouza/fake-gcs-server:1.56.1 -scheme http -port 4443 \
- *     -public-host 127.0.0.1:47393
- *   curl -X PUT localhost:47391/measure
- *   curl -X POST 'localhost:47392/storage/v1/b?project=test' \
- *     -d '{"name":"measure"}'
- *   AWS_ACCESS_KEY_ID=test AWS_SECRET_ACCESS_KEY=test \
- *   SWAMP_LITESTREAM_PATH=<binary> deno run -A \
- *     scripts/measure_v3_replica_check.ts --sizes 10,100 \
- *     --s3 http://localhost:47391 --gcs localhost:47392 --bucket measure
- *
- * fake-gcs serves downloads only when the Host header names its public
- * host, so GCS goes through the proxy on that host's port (`--gcs-proxy-port`,
- * 47393 by default) the whole time, replication included; only the check
- * and the listing are counted.
- *
- * macOS only, for `time -l`.
- */
 
 import { parseArgs } from "@std/cli/parse-args";
 import { join } from "@std/path";
@@ -88,7 +52,6 @@ const root = await Deno.realPath(
   await Deno.makeTempDir({ dir: "/tmp", prefix: "swamp-measure-check-" }),
 );
 
-/** Bytes and requests that crossed one proxy. */
 interface Traffic {
   up: number;
   down: number;
@@ -96,7 +59,6 @@ interface Traffic {
   requests: Record<string, number>;
 }
 
-/** A TCP proxy to `upstream` that counts what crosses it. */
 function countingProxy(upstreamPort: number, port = 0): {
   port: number;
   traffic: Traffic;
@@ -176,7 +138,6 @@ function countingProxy(upstreamPort: number, port = 0): {
   };
 }
 
-/** A commits.db of about `mb` megabytes, in inline commits of about 8 KB. */
 async function build(path: string, mb: number): Promise<void> {
   const store = SqliteCommitStore.open(path);
   try {
@@ -213,7 +174,6 @@ function settingFor(
     : { type: "gcs", bucket: args.bucket, path };
 }
 
-/** Runs `fn` with STORAGE_EMULATOR_HOST pointing at `host`, for GCS. */
 async function withEmulatorHost<T>(
   backend: "s3" | "gcs",
   host: string,
@@ -247,7 +207,6 @@ async function measure(backend: "s3" | "gcs", mb: number) {
     backend === "gcs" ? Number(args["gcs-proxy-port"]) : 0,
   );
   const host = `127.0.0.1:${proxy.port}`;
-  // Replicate outside the count: straight to S3, through the proxy to GCS.
   const direct = settingFor(backend, upstream, prefix);
   const repConfig = join(dir, "replicate.yml");
   await Deno.writeTextFile(
@@ -269,7 +228,6 @@ async function measure(backend: "s3" | "gcs", mb: number) {
     }
   });
 
-  // The check, through the counting proxy.
   const proxied = settingFor(
     backend,
     `http://127.0.0.1:${proxy.port}`,
@@ -311,7 +269,6 @@ async function measure(backend: "s3" | "gcs", mb: number) {
       txid: listing.snapshot,
     });
 
-    // Litestream under `time -l`, for its peak memory.
     const timeFile = join(dir, "time.txt");
     const wrapper = join(dir, "litestream-timed");
     await Deno.writeTextFile(

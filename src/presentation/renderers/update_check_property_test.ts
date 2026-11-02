@@ -29,7 +29,6 @@ import {
   type UpdateCheckRendererOptions,
 } from "./update_check.ts";
 
-/** A complete color (SGR) sequence. */
 // deno-lint-ignore no-control-regex
 const SGR = /\x1b\[[0-9;]*m/g;
 
@@ -37,7 +36,6 @@ function visibleWidth(line: string): number {
   return line.replace(SGR, "").length;
 }
 
-/** True when no escape character is left once whole sequences are removed. */
 function escapesAreWhole(line: string): boolean {
   return !line.replace(SGR, "").includes("\x1b");
 }

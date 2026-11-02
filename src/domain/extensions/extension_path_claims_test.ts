@@ -33,7 +33,6 @@ Deno.test("canonicalClaimPath: normalises separators, case and trailing slash", 
 });
 
 Deno.test("canonicalClaimPath: NFC-normalises decomposed characters", () => {
-  // "é" as e + combining acute (NFD) vs the precomposed code point (NFC).
   assertEquals(
     canonicalClaimPath(".claude/skills/café"),
     canonicalClaimPath(".claude/skills/café"),

@@ -17,15 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Integration tests for `trigger.inputs` on scheduled/webhook workflows.
- *
- * Scheduled and webhook runs both flow through `executeWorkflowWithLocks` with
- * no caller-supplied inputs. These tests drive that function directly (rather
- * than waiting on a real cron tick) to verify that a workflow's declared
- * `trigger.inputs` are injected as baseline inputs at fire time.
- */
-
 import { assertEquals } from "@std/assert";
 import { consumeStream, withDefaults } from "../src/libswamp/stream.ts";
 import { createLibSwampContext } from "../src/libswamp/context.ts";
@@ -47,7 +38,6 @@ import {
   setActiveTelemetryService,
 } from "../src/cli/telemetry_integration.ts";
 
-// Import models barrel to trigger built-in registration.
 import "../src/domain/models/models.ts";
 import { initializeLogging } from "../src/infrastructure/logging/logger.ts";
 
@@ -113,10 +103,6 @@ async function runViaLocks(
   return events;
 }
 
-/**
- * Minimal spool that records what the run wrote, so the assertions can look
- * at real entries rather than at a mocked sink.
- */
 class RecordingRepository implements TelemetryRepository {
   saved: TelemetryEntry[] = [];
   save(entry: TelemetryEntry): Promise<void> {
@@ -149,10 +135,6 @@ class RecordingRepository implements TelemetryRepository {
   }
 }
 
-/**
- * Installs an active telemetry service for `fn`, mirroring what runCli does
- * for the lifetime of a `swamp serve` process.
- */
 async function withTelemetry(
   fn: (repo: RecordingRepository) => Promise<void>,
 ): Promise<void> {
@@ -252,10 +234,8 @@ Deno.test({
   sanitizeOps: false,
   sanitizeResources: false,
   fn: async () => {
-    // The whole point of swamp-club#1591: before this, a serve-executed run
-    // produced no telemetry at all. Driven through executeWorkflowWithLocks
-    // because the sink, the deps factory, and the run generator all have to
-    // agree — no unit test spans that.
+    // driven through executeWorkflowWithLocks because the sink, the deps
+    // factory and the run generator must all agree, which no unit test spans
     await withRepo(async (repoDir) => {
       const workflow = shellWorkflow("scheduled-telemetry", {
         schedule: "0 3 * * *",
@@ -277,8 +257,6 @@ Deno.test({
         assertEquals(parents[0].invocation.subcommand, "run");
         assertEquals(parents[0].result.status, "success");
 
-        // Every entry is attributed to the scheduler, and the children hang
-        // off this run rather than off the daemon's process invocation.
         for (const entry of repo.saved) {
           assertEquals(entry.triggerSource, "schedule");
         }

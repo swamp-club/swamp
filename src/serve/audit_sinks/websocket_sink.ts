@@ -46,9 +46,8 @@ export interface AuditSubscription {
 }
 
 /**
- * The filter with its actions and resource kind in the stored spelling, so a
- * behavior-spelled subscription receives the model-spelled events
- * (swamp-club#3334).
+ * puts actions and resource kind in the stored spelling, so a behavior-spelled
+ * subscription receives the model-spelled events
  */
 function canonicalSubscriptionFilter(
   filter: AuditSubscriptionFilter,

@@ -37,7 +37,6 @@ import { behaviorNotFound, notFound, type SwampError } from "../errors.ts";
 
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
 import { maxOf } from "../../domain/array_extrema.ts";
-/** Version information for a single data entry. */
 export interface DataVersionInfo {
   version: number;
   createdAt: string;
@@ -46,7 +45,6 @@ export interface DataVersionInfo {
   isLatest: boolean;
 }
 
-/** Data payload for the completed event. */
 export interface DataVersionsData {
   dataName: string;
   modelId: string;
@@ -63,21 +61,11 @@ export type DataVersionsEvent =
 
 export interface DataVersionsInput {
   modelIdOrName: string;
-  /**
-   * Treat `modelIdOrName` as a definition id the caller already resolved,
-   * and look it up by id only, so the operation acts on the model the caller
-   * authorized.
-   */
   byId?: boolean;
-  /**
-   * With `byId`, the name the caller authorized: ids are not guaranteed
-   * unique, so only a resource with this name and the id is accepted.
-   */
   expectedName?: string;
   dataName: string;
 }
 
-/** Data entry with version metadata. */
 interface DataEntry {
   version: number;
   createdAt: Date;
@@ -85,13 +73,10 @@ interface DataEntry {
   checksum?: string;
 }
 
-/** Dependencies for the data versions operation. */
 export interface DataVersionsDeps {
-  /** Looks up by name, then by exact id. */
   lookupDefinition: (
     idOrName: string,
   ) => Promise<{ definition: Definition; type: ModelType } | null>;
-  /** Looks up by exact id only; required for a `byId` request. */
   lookupDefinitionById?: (
     id: string,
     expectedName?: string,
@@ -109,7 +94,6 @@ export interface DataVersionsDeps {
   ) => Promise<DataEntry | null>;
 }
 
-/** Wires real infrastructure into DataVersionsDeps. */
 export function createDataVersionsDeps(
   repoDir: string,
   datastoreResolver?: DatastorePathResolver,
@@ -140,7 +124,6 @@ export function createDataVersionsDeps(
   };
 }
 
-/** Yields all versions of a specific data entry for a model. */
 export async function* dataVersions(
   _ctx: LibSwampContext,
   deps: DataVersionsDeps,
@@ -204,7 +187,6 @@ export async function* dataVersions(
         }
       }
 
-      // Sort versions descending (newest first)
       versions.sort((a, b) => b.version - a.version);
 
       yield {

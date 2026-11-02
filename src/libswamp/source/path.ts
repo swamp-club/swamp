@@ -24,21 +24,16 @@ import { JsonSourceMetadataRepository } from "../../infrastructure/source/json_s
 import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
 
-/**
- * Data structure for the source path output.
- */
 export type SourcePathData = SourceInfoResult;
 
 export type SourcePathEvent =
   | { kind: "completed"; data: SourcePathData }
   | { kind: "error"; error: SwampError };
 
-/** Dependencies for the source path operation. */
 export interface SourcePathDeps {
   getInfo: () => Promise<SourceInfoResult>;
 }
 
-/** Wires real infrastructure into SourcePathDeps. */
 export function createSourcePathDeps(): SourcePathDeps {
   const downloader = new HttpSourceDownloader();
   const repository = new JsonSourceMetadataRepository();
@@ -48,7 +43,6 @@ export function createSourcePathDeps(): SourcePathDeps {
   };
 }
 
-/** Retrieves source path and version information. */
 export async function* sourcePath(
   ctx: LibSwampContext,
   deps: SourcePathDeps,

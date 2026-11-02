@@ -57,7 +57,6 @@ import { writeOutput } from "../../infrastructure/logging/logger.ts";
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
 
-/** How {@link renderWaits} prints a listing. */
 export interface RenderWaitsOptions {
   /**
    * `--pending` was given. A listing without `pending` then came from a
@@ -162,7 +161,6 @@ export function renderWaits(
   }
 }
 
-/** The log-mode section listing held pending signals, by receipt. */
 function renderPending(
   cliCtx: CommandContext,
   pending: PendingSignalInfo[],
@@ -208,7 +206,6 @@ export function localWaitsDeps(
   );
 }
 
-/** Lists the waits of this repository. */
 export async function listLocalWaits(
   ctx: LibSwampContext,
   deps: WorkflowWaitsDeps,
@@ -230,7 +227,6 @@ export async function listLocalWaits(
   return data;
 }
 
-/** Sends one `workflow.waits` request to a server and returns its reply. */
 export type WaitsRequester = (request: {
   type: "workflow.waits";
   payload?: WorkflowWaitsPayload;

@@ -24,11 +24,9 @@ import { withExtensionMutation } from "./extension_reload.ts";
 const logger = getSwampLogger(["serve", "local-model-refresh"]);
 
 /**
- * Brings serve's model registry up to date with edited repo-local model
- * sources before a run resolves its models (swamp-club#3284), so both the
- * steps serve runs itself and the bundles it ships to workers carry the
- * current code. Takes its turn with a hot-reload. A failure is logged and
- * never fails the run: the run then resolves what is registered.
+ * refreshes edited repo-local model sources before a run so serve's steps and
+ * the bundles it ships to workers carry current code; a failure is logged and
+ * never fails the run
  */
 export async function refreshLocalModelsForRun(): Promise<void> {
   try {

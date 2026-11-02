@@ -127,8 +127,6 @@ function makeStore(
   };
 }
 
-// ── parseRecord tests ────────────────────────────────────────────────
-
 Deno.test("parseRecord: parses valid record with address", () => {
   const record = makeHeartbeat(
     "inst-1",
@@ -153,8 +151,6 @@ Deno.test("parseRecord: rejects record with non-string address", () => {
   const data = new TextEncoder().encode(JSON.stringify(raw));
   assertEquals(InstanceHeartbeatService.parseRecord(data), null);
 });
-
-// ── collectClusterInstances tests ────────────────────────────────────
 
 Deno.test("collectClusterInstances: healthy status for fresh heartbeat", async () => {
   const now = new Date().toISOString();
@@ -302,8 +298,6 @@ Deno.test("collectClusterInstances: multiple instances with mixed status", async
   assertEquals(inst1?.status, "healthy");
   assertEquals(inst2?.status, "unreachable");
 });
-
-// ── redactServeOptions tests ─────────────────────────────────────────
 
 Deno.test("redactServeOptions: verifies webhook secrets are not exposed", () => {
   const opts = {
@@ -493,10 +487,6 @@ function createRecordingSyncService(): {
   return { service, events };
 }
 
-/**
- * A repo whose datastore cache lives outside it, as with S3 or GCS, and a
- * serve connection context whose sync service records every mark and push.
- */
 async function createSyncRepo(dir: string, managedConfig: boolean) {
   const repoDir = join(dir, "repo");
   const cacheRoot = join(dir, "cache");
@@ -559,10 +549,6 @@ async function createSyncRepo(dir: string, managedConfig: boolean) {
   return { repoDir, datastoreResolver, ctx, events, cleanup };
 }
 
-/**
- * Registers `@test/remote`, the datastore type {@link createSyncRepo} uses,
- * with a global lock that records into `events`.
- */
 function registerRecordingLockProvider(events: SyncEvent[]): void {
   datastoreTypeRegistry.register({
     type: "@test/remote",
@@ -623,12 +609,9 @@ Deno.test("handleExtensionRm: fetches the lockfile under the global lock, then m
       );
 
       assertEquals(JSON.parse(socket.sent[0]).type, "extension.rm");
-      // The shared lockfile is fetched under the datastore global lock
-      // before the removal, so a stale cache cannot revert other
-      // instances' entries (swamp-club#2838). Extension sources still live
-      // outside the datastore tier (swamp-club#2612), so the lockfile is the
-      // only file to mark. A bare markDirty() would turn the push into a
-      // walk of the whole cache.
+      // the shared lockfile is pulled under the global lock before removal so a
+      // stale cache cannot revert other instances' entries; it is the only file
+      // to mark, as a bare markDirty() would walk the whole cache
       assertEquals(events, [
         { kind: "lock" },
         { kind: "pull", subdirs: ["config"] },
@@ -760,7 +743,6 @@ Deno.test("handleExtensionRm: a --hot-reload serve reloads after the removal and
         reloadedCount: 2,
         errors: [],
       });
-      // The reload runs once the removal is on disk.
       assert(lockfileAtReload !== undefined);
       assertEquals(lockfileAtReload.includes("@test/ext"), false);
     } finally {
@@ -968,9 +950,9 @@ Deno.test("handleVaultMigrate: marks the new and the old config path before the 
         const marks = events.flatMap((e) =>
           e.kind === "mark" ? [e.relPath] : []
         );
-        // The old path is marked so the scoped push sees it absent and
-        // deletes it remotely; a bare markDirty() would skip that. Each is
-        // marked before its write and again after it (swamp-club#2421).
+        // the old path is marked so the scoped push sees it absent and deletes
+        // it remotely, which a bare markDirty() would skip; each is marked
+        // before its write and again after
         assertEquals(
           marks.sort(),
           [
@@ -1083,7 +1065,6 @@ Deno.test("handleExtensionList: reads the managed lockfile and the transitional 
         join(repoDir, ".swamp", "config", "upstream_extensions.json"),
         JSON.stringify({ "@test/auto": entry }),
       );
-      // Installed on disk; one gone entirely would await reinstall instead.
       await ensureDir(
         join(repoDir, ".swamp", "config", "pulled-extensions", "@test", "auto"),
       );
@@ -1157,7 +1138,6 @@ Deno.test("handleDoctorWorkflows: checks the dirs the server loads workflows fro
       workflowsDir: extensionDir,
     });
     try {
-      // A reload points the extension repo at newly pulled dirs.
       await Deno.writeTextFile(
         join(pulledDir, "broken.yaml"),
         BROKEN_WORKFLOW_YAML,
@@ -1217,7 +1197,6 @@ Deno.test("handleRunDoctor: the fix's run saves stage into a root unit over the 
   const settled: string[] = [];
   const ctx = {
     instanceId: "self",
-    // Heartbeats are recorded, and the peer has none.
     controlPlaneStore: {
       get: (key: string) =>
         Promise.resolve(key === "heartbeats/self" ? new Uint8Array([1]) : null),
@@ -1240,7 +1219,6 @@ Deno.test("handleRunDoctor: the fix's run saves stage into a root unit over the 
             },
             workflowId: "wf-1",
           }]),
-        // As the run repository signals before it writes.
         save: () => signalChange(markDirty, { kind: "write", path: "run-1" }),
       },
     },
@@ -1301,7 +1279,6 @@ Deno.test("handleRunDoctor: fix settles an interrupted row whose renamed workflo
         heartbeatAt: now,
         status: "running",
       }));
-      // Reaped while its owner went on to finish the run.
       tracker.complete(run.id, "interrupted");
       const ctx = {
         repoDir: dir,
@@ -1351,7 +1328,6 @@ Deno.test("handleRunDoctor: fix settles an interrupted row whose renamed workflo
 /** A pid no process has: the largest a 32-bit pid_t holds. */
 const DEAD_PID = 2147483647;
 
-/** A run record left `running` under `pid` by serve instance `instanceId`. */
 function runningRecord(pid: number, instanceId: string): WorkflowRun {
   return WorkflowRun.fromData({
     id: crypto.randomUUID(),
@@ -1366,7 +1342,6 @@ function runningRecord(pid: number, instanceId: string): WorkflowRun {
   });
 }
 
-/** Registers the tracker row the owner of `run` wrote on this host. */
 function registerLocalRow(tracker: RunTrackerStore, run: WorkflowRun): void {
   const now = new Date().toISOString();
   tracker.register(ActiveRun.fromData({
@@ -1389,11 +1364,6 @@ interface DoctorReply {
   orphanedReaped: number;
 }
 
-/**
- * Runs `handleRunDoctor` as serve instance `self` over `runs`, with a control
- * plane holding a heartbeat for each of `heartbeats`. Returns the reply, the
- * ids of the runs saved and the control-plane keys read.
- */
 async function doctorScan(
   tracker: RunTrackerStore,
   runs: WorkflowRun[],
@@ -1503,7 +1473,6 @@ Deno.test("handleRunDoctor: without recorded heartbeats, fix interrupts a run wh
     assertEquals(report.reply.orphanedReaped, 0);
     assertEquals(report.saved, []);
 
-    // As a reap on heartbeat age leaves the row; only such a row is settled.
     tracker.complete(run.id, "interrupted");
     const fix = await doctorScan(tracker, [run], [], true);
     assertEquals(fix.reply.orphanedReaped, 1);
@@ -1577,8 +1546,6 @@ Deno.test("serveDatastoreSetupDeps: marks the open catalog for rebuild instead o
     await Deno.remove(repoDir, { recursive: true }).catch(() => {});
   }
 });
-
-// --- handleWorkerLeaseList (swamp-club#3356) ---
 
 const LEASE_VIEWER: Principal = { kind: "user", id: "viewer" };
 

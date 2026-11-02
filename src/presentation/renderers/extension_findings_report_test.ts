@@ -31,7 +31,6 @@ import {
 
 const DIR = resolve("/ext");
 
-/** Lines 1 to 20 of every source file the tests name take a comment, unindented. */
 const OPEN: Record<string, CommentSites> = Object.fromEntries(
   ["a.ts", "b.ts", "c.ts"].map((name) => [
     join(DIR, "models", name),
@@ -279,8 +278,6 @@ Deno.test("withAcceptance: attaches the acceptance to acceptable findings only, 
   assertEquals(field.remediation, "mark it sensitive");
   assertEquals("acceptance" in adversarial, false);
   assertEquals(adversarial.skeleton, review.skeleton);
-  // A collapsed finding stands for several files; each takes its own
-  // acceptance in the unresolved warnings.
   assertEquals("acceptance" in many, false);
 });
 

@@ -247,9 +247,7 @@ Deno.test("isAbsentFromDisk: gone only when the directory and every source file 
     );
     await Deno.writeTextFile(join(repo, skill), "x");
 
-    // The directory is present: a truncated tree, not gone.
     assertEquals(await isAbsentFromDisk(repo, "@a/here", withFiles()), false);
-    // Only regenerable bundle output remains.
     assertEquals(
       await isAbsentFromDisk(
         repo,
@@ -264,7 +262,6 @@ Deno.test("isAbsentFromDisk: gone only when the directory and every source file 
       await isAbsentFromDisk(repo, "@a/gone", withFiles(skill)),
       false,
     );
-    // Names and paths outside the repo are never reported as gone.
     assertEquals(await isAbsentFromDisk(repo, "../../x", withFiles()), false);
     assertEquals(
       await isAbsentFromDisk(repo, "@a/gone", withFiles("/etc/passwd")),
@@ -283,16 +280,11 @@ Deno.test("pathsToRemoveForReinstall: the extension directory, then its skill di
   const repo = join("/repo", crypto.randomUUID());
   const extensionDir = join(resolvePulledExtensionsRoot(repo), "@a", "x");
   const files = [
-    // Inside the extension directory (an unregistered repo's pulled root):
-    // covered by deleting it.
     ".swamp/pulled-extensions/@a/x/models/m.ts",
-    // Two files of one skill collapse to its skill dir.
     ".swamp/pulled-extensions/skills/foo/SKILL.md",
     ".swamp/pulled-extensions/skills/foo/ref.md",
-    // Regenerable, and outside the repo: never listed.
     ".swamp/bundles/abc/m.js",
     "../outside.ts",
-    // A stray file elsewhere in the repo is listed itself.
     "extensions/models/stray.ts",
   ];
   const paths = pathsToRemoveForReinstall(repo, "@a/x", {
@@ -363,8 +355,6 @@ Deno.test("readInstalledEntries: an auto-resolve lockfile written on Windows rea
     );
     assertEquals([...localOnly], ["@a/gone"]);
     assertEquals(entries["@a/gone"].files, [skill]);
-    // The skill survives on disk, so the extension is not gone, and the
-    // reinstall hint names its skill dir.
     assertEquals(
       await isAbsentFromDisk(repo, "@a/gone", entries["@a/gone"]),
       false,

@@ -21,31 +21,12 @@ import { dirname, join } from "@std/path";
 import { RepoRootNotFoundError } from "./repo_root_not_found_error.ts";
 
 /**
- * Walks the lexical ancestors of `start` looking for a directory that
- * contains a `.swamp/` subdirectory. Returns the first ancestor that does
- * — i.e. the **innermost** match — so a worktree nested inside a parent
- * swamp repo resolves to its own root, not the parent's.
- *
- * **Lexical only.** This function never calls realpath / lstat. It walks
- * `start → dirname(start) → dirname(dirname(start)) → …` until either:
- *   1. A directory containing `.swamp/` is found — return that directory.
- *   2. `dirname(p)` returns `p` (filesystem root reached) — throw
- *      {@link RepoRootNotFoundError}.
- *
- * The lexical-only contract matters for symlinked layouts: if `start` is
- * inside a symlinked directory tree, the walk stays within the symlinked
- * branch and never crosses into the symlink target's true ancestors. This
- * is intentional — the catalog and the lockfile both use the lexical path
- * as identity, so a realpath here would split those identities.
- *
- * The check itself uses {@link Deno.statSync} on the candidate
- * `<ancestor>/.swamp` path. Stat is required (we can't check existence
- * without it) but is not "realpath" — it does not resolve the ancestor
- * itself, only probes for the marker.
+ * lexical only, never realpath, since the catalog and lockfile use the lexical
+ * path as identity; innermost match wins so a nested worktree resolves to its
+ * own root
  */
 export function findRepoRoot(start: string): string {
   let current = start;
-  // Loop terminates: dirname is monotonic and idempotent at the FS root.
   while (true) {
     if (hasMarkerDir(current)) {
       return current;

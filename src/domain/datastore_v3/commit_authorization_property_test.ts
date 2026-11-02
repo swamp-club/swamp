@@ -49,7 +49,6 @@ const CONTROL_TYPES: Record<string, string> = {
 const NAMES = ["vpc", "web", "net", "shared"];
 const STAMP = "2026-01-01T00-00-00-000Z";
 
-/** A resolver whose answers come from the generated world. */
 class WorldResolver implements AggregateResourceResolver {
   constructor(
     private readonly known: boolean,
@@ -83,7 +82,6 @@ class WorldResolver implements AggregateResourceResolver {
   }
 }
 
-/** One intent of `kind` over the generated identities. */
 function intentOf(
   kind: Intent["kind"],
   type: string,
@@ -151,10 +149,6 @@ function intentOf(
   }
 }
 
-/**
- * Keys of every layout the repositories write, for any aggregate: the
- * binding picks the ones the intent owns.
- */
 function candidateKeys(
   type: string,
   id: string,
@@ -198,7 +192,6 @@ function candidateKeys(
 }
 
 Deno.test("baseRecordReadAccessOf: a compacted record always needs what the feed needs of the put that wrote it", async () => {
-  // Every intent kind that puts a record.
   const putting = INTENT_KINDS.filter((kind) =>
     !kind.endsWith(".delete") && kind !== "definition.rename-from"
   );
@@ -226,7 +219,6 @@ Deno.test("baseRecordReadAccessOf: a compacted record always needs what the feed
         const partition = intentPartition(intent);
         for (const raw of candidateKeys(type, id, name, version)) {
           const key = RecordKey.create(raw);
-          // Only a put leaves a record in the base.
           if (!bindKey(intent, "put", key).ok) continue;
           const op = await putOp({ intent, key, inline: base64("x") });
           const feed = await readAccessOf(op, resolver);
@@ -270,7 +262,6 @@ Deno.test("baseRecordReadAccessOf: a compacted record always needs what the feed
       ]),
     },
   );
-  // Every intent kind that puts a record was exercised with a key it owns.
   assert(checked > 0);
   assertEquals(
     putting.filter((kind) => !kinds.has(kind)),

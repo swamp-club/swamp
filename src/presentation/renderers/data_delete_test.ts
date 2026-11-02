@@ -36,10 +36,9 @@ import type {
 import { validationFailed } from "../../libswamp/errors.ts";
 import { UserError } from "../../domain/errors.ts";
 
-// noColor: true selects LogTape's text formatter, which produces a single
-// pre-rendered string per record — necessary for captureLog to see the
-// formatted output (the default formatter passes %c/%o placeholders that
-// the terminal expands at write time, bypassing console.info mocks).
+// noColor: true selects LogTape's text formatter, so captureLog sees one
+// pre-rendered string per record; the default formatter leaves placeholders the
+// terminal expands at write time
 await initializeLogging({ noColor: true });
 
 function captureStdout(fn: () => void): string {
@@ -58,9 +57,8 @@ function captureStdout(fn: () => void): string {
   return lines.join("\n");
 }
 
-// LogTape's console sink routes per-level (info → console.info,
-// warning → console.warn, error → console.error, etc.). Capture all
-// of them and strip ANSI for stable cross-terminal assertions.
+// LogTape's console sink routes per level, so capture every console method and
+// strip ANSI
 function captureLog(fn: () => void): string {
   const lines: string[] = [];
   const methods = ["log", "info", "warn", "error", "debug"] as const;
@@ -99,9 +97,8 @@ Deno.test("createDataDeleteRenderer: log mode handles full-artifact delete", () 
       },
     })
   );
-  // dataName must render with single-quote style (auto-quoted by LogTape),
-  // matching the modelName/modelType interpolations on the same line. The
-  // doubled-quote artifact (""my-data"") regresses issue swamp-club#230.
+  // dataName is auto-quoted by LogTape like the other interpolations on the
+  // line, so the doubled-quote form must not appear
   assertStringIncludes(out, 'of "my-data" for');
   assertFalse(out.includes('""my-data""'), `regression: ${out}`);
 });
@@ -194,8 +191,6 @@ Deno.test("renderDataDeleteCancelled: log mode does not write to console.log", (
   const out = captureStdout(() => renderDataDeleteCancelled("log"));
   assertEquals(out, "");
 });
-
-// --- Batch delete renderer tests ---
 
 function makeBatchCompletedEvent(
   overrides: Partial<

@@ -18,34 +18,9 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * The writer of a filesystem v3 datastore: its fenced writer lease
- * (swamp-club#3359), which replaced the Phase 3 writer lock
- * (swamp-club#3279). One process at a time may write a v3 datastore, and
- * every commit it makes names the fence its lease holds, so a process that
- * lost the lease (paused past its expiry, then woken after another writer
- * took over) lands nothing.
- *
- * The lease's records are files under `<datastore>/_control/writer/`,
- * created exclusively through `FileSystemControlPlaneStore`, or on a bucket
- * datastore (swamp-club#3534) the records under `_control/writer/` in its
- * provider's datastore-wide control plane; see `writer_lease.ts` for the
- * scheme. Taking it also raises the store-wide
- * writer fence in `commits.db`, which refuses any commit naming a lower
- * fence, inside the commit's own transaction.
- *
- * It is process-scoped. The first writer in a process takes it and the last
- * one to finish releases it: serve holds it from start-up to shutdown, a CLI
- * write command for as long as it runs, and both renew it every third of its
- * TTL. Roots never take it themselves, so a long workflow run does not queue
- * every other root in serve behind it. Read-only commands take it only to
- * recover a checkout whose writer ended without tearing down, without
- * waiting, and release it before they read (swamp-club#3299).
- *
- * A holder on another host is alive until its last renewal is older than its
- * TTL plus the clock-skew allowance, never judged by its pid. A holder on
- * this host whose process is gone is taken over at once.
- *
- * @module
+ * every commit names the fence its lease holds, so a process that lost the
+ * lease lands nothing; the lease is process-scoped, so roots never queue behind
+ * a long workflow run
  */
 
 import { join, resolve } from "@std/path";
@@ -78,19 +53,16 @@ import { getSwampLogger } from "../logging/logger.ts";
 
 const logger = getSwampLogger(["datastore", "v3"]);
 
-/** Where the lease's records live under the datastore root. */
 export const V3_WRITER_LEASE_DIR = join("_control", "writer");
 
 /**
- * The Phase 3 writer lock's key under the datastore root. A swamp from
- * before the lease may still hold it during an upgrade; the lease is
- * refused while it does.
+ * a swamp from before the lease may still hold it during an upgrade; the lease
+ * is refused while it does
  */
 export const V3_LEGACY_WRITER_LOCK_KEY = join("_control", "writer.lock");
 
 export { V3_WRITER_BUSY_CODE };
 
-/** Thrown when another process holds a v3 datastore's writer lease. */
 export class V3WriterBusyError extends UserError {
   constructor(datastorePath: string, cause: LockTimeoutError) {
     const holder = cause.holder;
@@ -108,10 +80,6 @@ export class V3WriterBusyError extends UserError {
   }
 }
 
-/**
- * The store-wide writer fence of the datastore's `commits.db`: the floor
- * for the next fence, raised once the lease is taken.
- */
 export interface V3WriterFenceStore {
   writerFence(): number | undefined;
   raiseWriterFence(fence: number): Promise<void>;
@@ -120,64 +88,40 @@ export interface V3WriterFenceStore {
 interface Held {
   hold?: WriterLeaseHold;
   refs: number;
-  /** The acquire in flight, which later callers in the process share. */
   acquiring?: Promise<void>;
   renewal?: ReturnType<typeof setInterval>;
   renewing?: Promise<void>;
-  /** A fresh lease being taken for a lost hold, which callers share. */
   retaking?: Promise<void>;
-  /** A move to the next fence, which callers share (swamp-club#3935). */
   advancing?: Promise<number | undefined>;
-  /** How this hold takes the lease. */
   take?: {
     readonly ttlMs: number;
     readonly fenceStore?: V3WriterFenceStore;
   };
   /**
-   * Whether a fresh lease is taken once this hold is lost, so a long-lived
-   * process (serve) writes again after another writer has finished. A
-   * one-shot command's hold just ends: its later commits are refused too,
-   * so it fails as a whole rather than landing part of itself.
+   * a one-shot command's hold just ends: its later commits are refused too, so
+   * it fails as a whole rather than landing part of itself
    */
   retakeLost: boolean;
 }
 
 const held = new Map<string, Held>();
 
-/** Options for {@link acquireV3WriterLock}. */
 export interface AcquireV3WriterLockOptions {
-  /** How long to wait for another process to finish (`SWAMP_LOCK_TIMEOUT_MS`). */
   readonly maxWaitMs?: number;
-  /** The lease's TTL; renewals keep it. */
   readonly ttlMs?: number;
   /**
-   * The datastore's `commits.db`. Without it the lease's fence is not
-   * recorded there, which only tests of the lease itself do.
+   * without it the lease's fence is not recorded there, which only tests of the
+   * lease itself do
    */
   readonly fenceStore?: V3WriterFenceStore;
-  /**
-   * Take a fresh lease once this hold is lost (serve's lifetime hold). The
-   * process's first acquire decides; later ones join its hold.
-   */
+  /** the process's first acquire decides; later ones join its hold */
   readonly retakeLost?: boolean;
 }
 
 /**
- * Takes the writer lease of the v3 datastore at `datastorePath` for this
- * process, or joins the hold it already has. Resolves with the release for
- * this caller; the lease is released when every caller has released.
- *
- * Taking the lease and raising the fence in `commits.db` are one step: when
- * either fails, the lease is released and nothing in the process holds it.
- *
- * A one-shot hold that was lost is never joined (swamp-club#3564): its
- * commits are refused anyway, and a caller that joined it would act as the
- * writer of a checkout another process now writes. The join checks the
- * lease's records too, since the renewal may not have noticed the loss.
- *
- * @throws V3WriterBusyError when another process holds it past the wait
- * @throws WriterFencedError when `commits.db` has seen a higher fence, or
- *   this process's one-shot hold was lost
+ * a lost one-shot hold is never joined: its commits are refused anyway, and a
+ * joiner would act as writer of a checkout another process now writes; the join
+ * checks the lease records since renewal may lag
  */
 export async function acquireV3WriterLock(
   datastorePath: string,
@@ -245,11 +189,8 @@ export async function acquireV3WriterLock(
 }
 
 /**
- * Throws when a one-shot hold a caller would join is lost: known lost, or
- * its fence overtaken or released in the lease's records. A check that
- * cannot read the records joins anyway: a fenced commit is still refused.
- *
- * @throws WriterFencedError
+ * a check that cannot read the records joins anyway: a fenced commit is still
+ * refused
  */
 async function assertJoinable(entry: Held): Promise<void> {
   const hold = entry.hold;
@@ -264,7 +205,6 @@ async function assertJoinable(entry: Held): Promise<void> {
   }
 }
 
-/** Ends the process's hold once no caller holds it. */
 async function endHold(key: string, entry: Held): Promise<void> {
   if (held.get(key) === entry) held.delete(key);
   if (entry.renewal !== undefined) clearInterval(entry.renewal);
@@ -272,7 +212,6 @@ async function endHold(key: string, entry: Held): Promise<void> {
   await entry.hold?.release();
 }
 
-/** A shared {@link retakeLease} for `entry`, cleared when it settles. */
 function retaking(
   entry: Held,
   datastorePath: string,
@@ -284,9 +223,8 @@ function retaking(
 }
 
 /**
- * Takes a fresh lease for `entry`, replacing a lost hold: its fence is
- * higher, so commits units made under the lost one still name the old fence
- * and are refused, while units opened from now on name the new one.
+ * its fence is higher, so commits units made under the lost hold still name the
+ * old fence and are refused, while new units name the new one
  */
 async function retakeLease(
   entry: Held,
@@ -313,13 +251,9 @@ async function retakeLease(
 }
 
 /**
- * Moves this process's shared hold of the v3 datastore at `datastorePath`
- * to the next fence without letting the lease go (swamp-club#3935), then
- * tells the listeners as a retake: serve, which holds one fence for its
- * whole life, uses it to start a new replication lineage at a fence it
- * never used. Commits made under the old fence are refused from then on,
- * as after any retake. Resolves with the new fence, or undefined when the
- * process holds no current lease (the renewal deals with a lost one).
+ * serve holds one fence for its whole life and uses the retake notice to start
+ * a new replication lineage at a fence it never used; commits made under the
+ * old fence are refused from then on
  */
 export function advanceV3WriterLease(
   datastorePath: string,
@@ -372,7 +306,6 @@ async function advanceHold(
   return advanced;
 }
 
-/** Called once this process's shared hold is the lease again, at `fence`. */
 export type V3HoldRetakenListener = (
   datastorePath: string,
   fence: number,
@@ -381,11 +314,8 @@ export type V3HoldRetakenListener = (
 const holdRetakenListeners = new Set<V3HoldRetakenListener>();
 
 /**
- * Calls `listener` each time this process's shared hold, lost to another
- * writer, takes the lease again (serve's retake), once the new hold has
- * replaced the lost one: unlike {@link onV3LeaseTaken}, never for a first
- * take or a read-only recovery's. One that throws is logged and the lease
- * is kept. Returns the unsubscribe.
+ * unlike onV3LeaseTaken, never for a first take or a read-only recovery's; a
+ * listener that throws is logged and the lease is kept
  */
 export function onV3HoldRetaken(listener: V3HoldRetakenListener): () => void {
   holdRetakenListeners.add(listener);
@@ -409,18 +339,14 @@ async function notifyHoldRetaken(
 }
 
 /**
- * Takes the writer lease of the v3 datastore at `datastorePath` without
- * waiting, for a read-only command that must recover an interrupted
- * writer's checkout (swamp-club#3299). Resolves with the release, or
- * undefined when another process holds the lease or this process already
- * does (its writer path recovers instead). The hold is not shared: nothing
- * else in the process joins it, and the caller releases it before reading.
+ * the hold is not shared: nothing else in the process joins it, and the caller
+ * releases it before reading; undefined when another process holds the lease or
+ * this one already does
  */
 export async function tryAcquireV3WriterLock(
   datastorePath: string,
   options: {
     readonly fenceStore?: V3WriterFenceStore;
-    /** The lease's TTL; renewals keep it while the recovery runs. */
     readonly ttlMs?: number;
   } = {},
 ): Promise<(() => Promise<void>) | undefined> {
@@ -456,10 +382,8 @@ export async function tryAcquireV3WriterLock(
 }
 
 /**
- * Whether this process holds the writer lease of the datastore at
- * `datastorePath` and has not found it lost: serve's leader in team mode
- * (swamp-club#4096). A hold another writer took over, which serve's renewal
- * may take back, is not current.
+ * a hold another writer took over, which serve's renewal may take back, is not
+ * current
  */
 export function holdsCurrentV3WriterLease(datastorePath: string): boolean {
   const entry = held.get(resolve(datastorePath));
@@ -467,28 +391,20 @@ export function holdsCurrentV3WriterLease(datastorePath: string): boolean {
     entry.hold.lost === undefined;
 }
 
-/** Whether this process holds the writer lease of the datastore at `datastorePath`. */
 export function holdsV3WriterLock(datastorePath: string): boolean {
   const entry = held.get(resolve(datastorePath));
   return entry !== undefined && entry.refs > 0;
 }
 
-/**
- * The fence this process's writer lease on the datastore at `datastorePath`
- * holds, or undefined when it holds none. Every commit names it, and
- * Litestream replicates under it (Phase 4).
- */
+/** every commit names it, and Litestream replicates under it */
 export function v3WriterFence(datastorePath: string): number | undefined {
   const entry = held.get(resolve(datastorePath));
   return entry !== undefined && entry.refs > 0 ? entry.hold?.fence : undefined;
 }
 
 /**
- * Throws when this process's writer lease on the datastore at
- * `datastorePath` was taken over or released since it was taken: checked
- * before each commit, so a holder that knows it lost the lease stops at once.
- *
- * @throws WriterFencedError
+ * checked before each commit, so a holder that knows it lost the lease stops at
+ * once
  */
 export function assertV3WriterCurrent(datastorePath: string): void {
   const lost = held.get(resolve(datastorePath))?.hold?.lost;
@@ -496,37 +412,25 @@ export function assertV3WriterCurrent(datastorePath: string): void {
 }
 
 /**
- * Checks the lease's records for a higher fence or this hold's release, and
- * throws when it finds either: the check a writer runs before it reports a
- * replicated commit (Phase 4). Resolves when this process holds no lease on
- * the datastore.
- *
- * @throws WriterFencedError
+ * the check a writer runs before it reports a replicated commit; resolves when
+ * this process holds no lease
  */
 export async function checkV3WriterLease(datastorePath: string): Promise<void> {
   await held.get(resolve(datastorePath))?.hold?.assertCurrent();
 }
 
-/** Who holds the highest fence of a v3 datastore's lease, and is it alive. */
 export interface V3WriterLeaseHolder {
   readonly fence: number;
-  /** Undefined while the fence record cannot be read. */
   readonly record?: FenceRecord;
-  /**
-   * Whether the holder's process runs, judged from this process
-   * (swamp-club#3564); undefined with no record to judge.
-   */
+  /** judged from this process; undefined with no record to judge */
   readonly process?: ProcessVerdict;
-  /** Whether the fence still keeps other writers out. */
   readonly state: WriterLeaseState;
 }
 
 /**
- * The highest fence of the lease on the v3 datastore at `datastorePath`,
- * whatever its state (a released fence included), or null when none was
- * ever taken. Unlike {@link v3WriterLockHandle}'s inspect, which reports
- * only a lease that keeps writers out, it lets a caller protect a released
- * holder's checkout until a higher fence exists.
+ * unlike the inspect of v3WriterLockHandle, which reports only a lease that
+ * keeps writers out, it lets a caller protect a released holder's checkout
+ * until a higher fence exists
  */
 export async function v3WriterLeaseHolder(
   datastorePath: string,
@@ -557,17 +461,14 @@ export async function v3WriterLeaseHolder(
   };
 }
 
-/** What `swamp datastore lock status|release` act on. */
 export type V3WriterLockHandle = Pick<
   DistributedLock,
   "inspect" | "forceRelease"
 >;
 
 /**
- * A handle on the writer lease of the v3 datastore at `datastorePath` for
- * inspecting or force-releasing it (`swamp datastore lock status|release`).
- * It never acquires. While a Phase 3 swamp holds the old writer lock, the
- * handle acts on that lock instead.
+ * it never acquires; while a swamp from before the lease holds the old writer
+ * lock, the handle acts on that lock instead
  */
 export function v3WriterLockHandle(datastorePath: string): V3WriterLockHandle {
   const lease = () => writerLease(datastorePath, DEFAULT_LOCK_TTL_MS);
@@ -602,8 +503,8 @@ async function takeLease(
     readonly fenceStore?: V3WriterFenceStore;
   },
 ): Promise<WriterLeaseHold> {
-  // A bucket datastore is known to be v3 before its lease is written
-  // (swamp-club#3534): every lease taker comes through here.
+  // a bucket datastore is known to be v3 before its lease is written: every
+  // lease taker comes through here
   await v3BucketBindingAt(datastorePath)?.confirmMarker();
   await refuseLiveV3LegacyWriter(datastorePath);
   let hold: WriterLeaseHold;
@@ -637,7 +538,6 @@ async function takeLease(
   return hold;
 }
 
-/** Called whenever this process takes a v3 datastore's writer lease. */
 export type V3LeaseTakenListener = (
   datastorePath: string,
   fence: number,
@@ -646,11 +546,9 @@ export type V3LeaseTakenListener = (
 const leaseTakenListeners = new Set<V3LeaseTakenListener>();
 
 /**
- * Calls `listener` each time this process takes a writer lease: the first
- * acquire, serve's retake of a lost lease, and a read-only command's
- * recovery hold (swamp-club#3416, where a Litestream lineage is recorded at
- * every fence). Listeners run after the fence is raised; one that throws is
- * logged and the lease is kept. Returns the unsubscribe.
+ * covers the first acquire, serve's retake of a lost lease and a read-only
+ * recovery hold; listeners run after the fence is raised, and one that throws
+ * is logged and the lease is kept
  */
 export function onV3LeaseTaken(listener: V3LeaseTakenListener): () => void {
   leaseTakenListeners.add(listener);
@@ -719,11 +617,9 @@ function writerLease(
 }
 
 /**
- * This process's writer lease over `store`, whose keys are relative to the
- * datastore-wide `_control/`. A filesystem datastore's store is its root
- * `_control/` directory; any other datastore's is its provider's writable
- * datastore-wide control plane (`datastoreWriterLeaseStore`), so the lease
- * is one per datastore whatever namespace a checkout syncs.
+ * a filesystem datastore's store is its root _control/ directory; any other's
+ * is its provider's datastore-wide control plane, so the lease is one per
+ * datastore whatever namespace a checkout syncs
  */
 export async function v3WriterLease(
   store: WriterLeaseStore,
@@ -743,7 +639,7 @@ export async function v3WriterLease(
     ttlMs,
     now: () => Date.now(),
     delay: (ms) => new Promise((done) => setTimeout(done, ms)),
-    // A holder is gone only when its own kernel says so (swamp-club#3564).
+    // a holder is gone only when its own kernel says so
     judgeHolder: (record) =>
       judgeRecordedProcess(
         {
@@ -788,12 +684,8 @@ function legacyLock(datastorePath: string): FileLock {
 }
 
 /**
- * Refuses the lease while a swamp from before it holds the Phase 3 writer
- * lock, so the two never write one datastore at once during an upgrade. A
- * holder is alive by Phase 3's own rule: within its TTL, and on this host
- * only while its process runs.
- *
- * @throws V3WriterBusyError
+ * the two never write one datastore at once during an upgrade; a legacy holder
+ * is alive within its TTL, and on this host only while its process runs
  */
 export async function refuseLiveV3LegacyWriter(
   datastorePath: string,

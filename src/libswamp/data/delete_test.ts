@@ -294,8 +294,6 @@ Deno.test("dataDeletePreview: returns version count without invoking delete", as
   assertEquals(deleteCalled, false);
 });
 
-// --- Batch delete tests ---
-
 Deno.test("dataBatchDelete: yields completed with aggregated stats", async () => {
   const deps = makeDeps();
 

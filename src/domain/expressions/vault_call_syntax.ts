@@ -18,9 +18,8 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * Vault call syntax shared by CEL evaluation and parse-only consumers. This
- * module depends on the lexer, never on the template scanner (which itself
- * calls the grammar). It knows references and source locations, not Secrets.
+ * depends on the lexer, never the template scanner (which calls this grammar);
+ * it knows references and source locations, not Secrets
  */
 import { type ASTNode, Environment } from "cel-js";
 import {
@@ -36,13 +35,11 @@ export interface SourceEdit {
   readonly text: string;
 }
 
-/** A rewritten expression with offsets mapped back to the authored text. */
 export interface MappedCelSource {
   readonly text: string;
   readonly originalOffset: (offset: number) => number;
 }
 
-/** Applies disjoint edits; offsets at either end of an edit remain exact. */
 export function editCelSource(
   source: string,
   edits: readonly SourceEdit[],
@@ -75,11 +72,8 @@ export function editCelSource(
 }
 
 /**
- * Whether an unquoted `vault.get` argument is evaluated as CEL before the
- * lookup. A simple bare name (`my-vault`, `API_KEY`) is used verbatim;
- * member access, calls, indexing and other computations are evaluated. The
- * resolver and the swamp-expression classifier both read an argument through
- * this one rule, so they always agree.
+ * the resolver and the swamp-expression classifier read an argument through
+ * this one rule, so they always agree
  */
 export function isDynamicVaultArgument(token: string): boolean {
   return token.includes(".") || /[\s()[\]{}'"]/.test(token);
@@ -185,9 +179,9 @@ function callSpans(source: string): CallSpan[] {
 }
 
 /**
- * Legacy literals retain their exact name, including backslashes: the old
- * resolver did not CEL-decode quoted names. Re-encoding a name is not a walk
- * of its contents, so text containing vault.get stays text.
+ * legacy literals keep their exact name, backslashes included, since the old
+ * resolver did not CEL-decode quoted names; text containing vault.get stays
+ * text
  */
 function literalArgument(text: string): string | undefined {
   const quoted = /^(['"`])(.+)\1$/.exec(text);
@@ -196,7 +190,6 @@ function literalArgument(text: string): string | undefined {
   return undefined;
 }
 
-/** Normalizes only arguments of direct calls, leaving all other text alone. */
 export function rewriteVaultArguments(source: string): MappedCelSource {
   const edits: SourceEdit[] = [];
   for (const call of callSpans(source)) {
@@ -217,7 +210,6 @@ export function rewriteVaultArguments(source: string): MappedCelSource {
   return editCelSource(source, edits);
 }
 
-/** The existing model-name rewrite, now with authored offsets retained. */
 export function rewriteHyphenatedModelRefs(source: string): MappedCelSource {
   const edits: SourceEdit[] = [];
   const pattern =
@@ -250,7 +242,6 @@ export function prepareVaultSource(source: string): MappedCelSource {
 
 export interface VaultCallArgument {
   readonly node: ASTNode;
-  /** Normalized CEL, ready for argument evaluation. */
   readonly text: string;
   readonly literal?: string;
 }
@@ -261,14 +252,12 @@ export interface VaultGetCall {
   readonly start: number;
   readonly end: number;
   readonly authored: string;
-  /** Arguments are checked outside surrounding comprehensions and cel.bind. */
   readonly usesLocalBinding: boolean;
 }
 
 export interface VaultCallAnalysis {
   readonly source: MappedCelSource;
   readonly ast: ASTNode;
-  /** Children before parents, so nested arguments can be checked first. */
   readonly calls: readonly VaultGetCall[];
   readonly invalidUses: readonly ASTNode[];
 }
@@ -277,7 +266,6 @@ const grammar = new Environment({
   unlistedVariablesAreDyn: true,
   enableOptionalTypes: true,
 });
-/** Shared by vault extraction and the parse-only free-root collector. */
 export const BINDING_MACROS: ReadonlySet<string> = new Set([
   "map",
   "filter",
@@ -286,7 +274,6 @@ export const BINDING_MACROS: ReadonlySet<string> = new Set([
   "exists_one",
 ]);
 
-/** One AST extractor, independent of whether an expression will be executed. */
 export function analyzeVaultCalls(expression: string): VaultCallAnalysis {
   const source = prepareVaultSource(expression);
   const ast = grammar.parse(source.text).ast;
@@ -376,14 +363,9 @@ export function analyzeVaultCalls(expression: string): VaultCallAnalysis {
 }
 
 /**
- * Why `vault` is used other than as the receiver of a direct two-argument
- * `vault.get` call that the up-front checks can evaluate, or undefined when
- * every use is direct (design/enablers/typed-secrets.md Section 4.4): an
- * alias such as `cel.bind(v, vault, v.get(...))`, a call with the wrong
- * arity, an argument that reads a comprehension or `cel.bind` local, or an
- * argument that would run `model.method` during checking. The typed
- * evaluator refuses these before it evaluates anything, and validate
- * refuses them the same way before its runtime pass.
+ * covers aliases, wrong arity, arguments reading a local binding, and arguments
+ * that would run model.method during checking; the typed evaluator and validate
+ * refuse these before evaluating anything
  */
 export function indirectVaultUse(
   analysis: VaultCallAnalysis,
@@ -407,7 +389,6 @@ export function indirectVaultUse(
   return undefined;
 }
 
-/** Whether a subtree calls the effectful receiver method, even when aliased. */
 function containsMethodCall(value: unknown): boolean {
   if (Array.isArray(value)) return value.some(containsMethodCall);
   if (

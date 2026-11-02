@@ -18,23 +18,9 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * Writes files so they survive a crash (swamp-club#3239, swamp-club#3337).
- * A {@link DurableWriteBatch} writes each file to a temp file in the target's
- * directory and renames it into place, so a reader sees the old file or the
- * new one, never a partial one. Nothing is durable until the batch's
- * {@link DurableWriteBatch.barrier}: it fsyncs every file written, then every
- * directory a write or removal changed, once each.
- *
- * Batching is what makes a sync affordable: on macOS an fsync flushes the
- * drive's cache, about 7.5 ms per file when each write syncs on its own, and
- * a fraction of that per file when one barrier syncs them together. A batch
- * made with `sync: false` writes and renames only: the read model's
- * catch-up uses one, and checks its files after a reboot instead.
- *
- * Unlike `atomicWriteFile` in `persistence/atomic_write.ts`, it streams its
- * content and fsyncs.
- *
- * @module
+ * nothing is durable until the batch barrier, which fsyncs every file then
+ * every changed directory once; sync: false only writes and renames, as
+ * read-model catch-up checks its files after a reboot
  */
 
 import { dirname, join } from "@std/path";
@@ -49,39 +35,30 @@ export { syncDirectory };
 /** Files a batch holds open before it syncs them early: under macOS's 256. */
 const DEFAULT_MAX_OPEN_FILES = 64;
 
-/** Syncs a batch runs at once. */
 const SYNC_PARALLELISM = 64;
 
-/** Options for {@link DurableWriteBatch}. */
 export interface DurableWriteBatchOptions {
   /**
-   * False writes and renames without syncing anything: the barrier does
-   * nothing. The read model's catch-up uses it and checks the files after a
-   * reboot instead (swamp-club#3337). True by default.
+   * false writes and renames without syncing, so the barrier does nothing;
+   * read-model catch-up uses it and checks the files after a reboot instead
    */
   readonly sync?: boolean;
-  /** Written files held open before the batch syncs them early. */
   readonly maxOpenFiles?: number;
-  /** How a written file is synced; `file.sync()` by default. */
   readonly syncFile?: (file: Deno.FsFile) => Promise<void>;
-  /** How a directory is synced; {@link syncDirectory} by default. */
   readonly syncDirectory?: (dir: string) => Promise<void>;
 }
 
 /**
- * Writes and removals made durable together at a {@link barrier}. Each
- * written file stays open until it is synced, so its fsync reports any
- * write-back error on the handle that wrote it. Call {@link discard} when
- * done, whatever happened.
+ * each written file stays open until synced, so its fsync reports any
+ * write-back error on the handle that wrote it; call discard when done,
+ * whatever happened
  */
 export class DurableWriteBatch {
   readonly #sync: boolean;
   readonly #maxOpenFiles: number;
   readonly #syncFile: (file: Deno.FsFile) => Promise<void>;
   readonly #syncDirectory: (dir: string) => Promise<void>;
-  /** Written files not yet synced, by path. */
   readonly #held = new Map<string, Deno.FsFile>();
-  /** Directories to sync at the barrier. */
   readonly #dirs = new Set<string>();
 
   constructor(options: DurableWriteBatchOptions = {}) {
@@ -92,15 +69,9 @@ export class DurableWriteBatch {
   }
 
   /**
-   * Writes `content` to `path` through a temp file and a rename, creating
-   * its directory. `options.absentDirectories`, the directories above `path`
-   * the caller just found absent, deepest first, saves looking them up; an
-   * empty list says the directory exists. `options.written` is handed the
-   * temp file's own stat once every byte is written, before the rename.
-   * `options.access` gives the temp file that access before the rename
-   * (swamp-club#3693), so the file is never at `path` without it; it is
-   * ignored on Windows. On failure, including an abort of `signal` while
-   * streaming, the temp file is removed and `path` is left as it was.
+   * options.access is applied to the temp file before the rename, so path never
+   * exists without it (ignored on Windows); on failure, including abort, the
+   * temp file is removed and path is left as it was
    */
   async write(
     path: string,
@@ -175,7 +146,6 @@ export class DurableWriteBatch {
     if (this.#held.size >= this.#maxOpenFiles) await this.#syncHeld();
   }
 
-  /** Whether the barrier syncs anything. */
   get syncs(): boolean {
     return this.#sync;
   }
@@ -196,15 +166,10 @@ export class DurableWriteBatch {
     }
   }
 
-  /** Records that an entry of `dir` was removed, so the barrier syncs it. */
   touch(dir: string): void {
     if (this.#sync) this.#dirs.add(dir);
   }
 
-  /**
-   * Makes every write and removal so far durable: syncs each written file,
-   * then each touched directory once, deepest first.
-   */
   async barrier(): Promise<void> {
     await this.#syncHeld();
     // A path is longer than any of its ancestors, so this puts each
@@ -214,7 +179,6 @@ export class DurableWriteBatch {
     await forEachBounded(dirs, (dir) => this.#syncDirectory(dir));
   }
 
-  /** Closes every file still held, without syncing it. */
   discard(): void {
     for (const file of this.#held.values()) file.close();
     this.#held.clear();
@@ -234,12 +198,6 @@ export class DurableWriteBatch {
   }
 }
 
-/**
- * Writes `content` to `path` durably: one {@link DurableWriteBatch} write and
- * its barrier. The read model writes through batches; this is the one-file
- * form. `options` replaces how the file and its directories are synced, for
- * tests.
- */
 export async function writeFileDurably(
   path: string,
   content: Uint8Array | ReadableStream<Uint8Array>,
@@ -255,10 +213,7 @@ export async function writeFileDurably(
   }
 }
 
-/**
- * Runs `fn` over `items`, {@link SYNC_PARALLELISM} at a time, in order of
- * start. Every item runs even after one fails; the first error is thrown.
- */
+/** every item runs even after one fails; the first error is thrown */
 async function forEachBounded<T>(
   items: readonly T[],
   fn: (item: T) => Promise<void>,
@@ -281,10 +236,6 @@ async function forEachBounded<T>(
   if (failure !== undefined) throw failure.error;
 }
 
-/**
- * The directories from `dir` up that do not exist yet, deepest first: the
- * ones `mkdir` with `recursive` creates.
- */
 async function missingDirectories(dir: string): Promise<string[]> {
   const missing: string[] = [];
   for (let current = dir;; current = dirname(current)) {

@@ -55,12 +55,10 @@ async function withTempRepo(
 ): Promise<void> {
   const dir = await Deno.makeTempDir({ prefix: "swamp-resolve-ext-test-" });
   try {
-    // Create a minimal .swamp.yaml marker so RepoMarkerRepository.read works
     await Deno.writeTextFile(
       join(dir, ".swamp.yaml"),
       stringifyYaml({ swampVersion: "0.1.0" }),
     );
-    // Create the default models dir
     await Deno.mkdir(join(dir, "extensions", "models"), { recursive: true });
     await fn(dir);
   } finally {
@@ -202,7 +200,6 @@ Deno.test("resolveExtensionFiles resolves additional files when present", async 
       'export const name = "my_model";',
     );
 
-    // Additional file lives relative to the manifest
     const readmePath = join(dir, "README.md");
     await Deno.writeTextFile(readmePath, "# My Extension");
 
@@ -232,7 +229,6 @@ Deno.test("resolveExtensionFiles resolves additional files when present", async 
 
 Deno.test("resolveExtensionFiles resolves vault files from manifest", async () => {
   await withTempRepo(async (dir) => {
-    // Create vaults dir and vault file
     const vaultsDir = join(dir, "extensions", "vaults");
     await Deno.mkdir(vaultsDir, { recursive: true });
     await Deno.writeTextFile(
@@ -583,7 +579,6 @@ Deno.test("resolveExtensionFiles: a symlinked additionalFiles entry is listed un
   });
 });
 
-/** Write a one-model manifest with `extra` merged in, under `dir`. */
 async function writeDirEntryManifest(
   dir: string,
   extra: Record<string, unknown>,
@@ -733,8 +728,6 @@ Deno.test("resolveExtensionFiles errors clearly when additionalFile missing", as
   });
 });
 
-// ── paths.base behavior ──────────────────────────────────────────────────
-
 Deno.test("resolveExtensionFiles default paths.base resolves models from typedDir", async () => {
   await withTempRepo(async (dir) => {
     const modelsDir = join(dir, "extensions", "models");
@@ -805,7 +798,6 @@ Deno.test("resolveExtensionFiles paths.base=manifest fails clearly when entry no
   await withTempRepo(async (dir) => {
     const subdir = join(dir, "extensions", "models", "myext");
     await Deno.mkdir(subdir, { recursive: true });
-    // File exists at the typedDir base but NOT under manifest dir.
     const modelsDir = join(dir, "extensions", "models");
     await Deno.writeTextFile(
       join(modelsDir, "stray.ts"),
@@ -940,7 +932,6 @@ Deno.test("resolveExtensionFiles paths.base=manifest resolves transitive imports
       moduleGraphReader: graphReader,
     });
 
-    // Both entry and helper should be in the resolved set, sorted.
     assertEquals(result.allModelFiles.length, 2);
     assertEquals(
       result.allModelFiles.includes(join(subdir, "entry.ts")),
@@ -986,8 +977,6 @@ Deno.test("resolveExtensionFiles default paths.base preserves swamp-extensions p
     assertEquals(result.modelEntryPoints, [join(modelsDir, "backups.ts")]);
   });
 });
-
-// ── isPulledExtensionManifest ──────────────────────────────────────────
 
 Deno.test("isPulledExtensionManifest: returns true for absolute path under .swamp/pulled-extensions", () => {
   const repoDir = "/repo";
@@ -1040,8 +1029,6 @@ Deno.test("isPulledExtensionManifest: returns false for path containing config b
   assertEquals(isPulledExtensionManifest(repoDir, manifestPath), false);
 });
 
-// ── .ts/.js file rejection ──────────────────────────────────────────────
-
 Deno.test("resolveExtensionFiles: rejects .ts file with UserError", async () => {
   await withTempRepo(async (dir) => {
     await assertRejects(
@@ -1075,8 +1062,6 @@ Deno.test("resolveExtensionFiles: rejects .js file with UserError", async () => 
     );
   });
 });
-
-// ── skill resolution with paths.base and multi-tool ──────────────────────
 
 async function withTempRepoWithTools(
   tools: string[],
@@ -1198,7 +1183,6 @@ Deno.test("resolveExtensionFiles paths.base=manifest prefers manifest-relative o
     const subdir = join(dir, "sub");
     await Deno.mkdir(subdir, { recursive: true });
 
-    // Skill exists in both locations
     await createSkillDir(join(dir, ".claude", "skills"), "shared-skill");
     await createSkillDir(join(subdir, ".claude", "skills"), "shared-skill");
 
@@ -1237,7 +1221,6 @@ Deno.test("resolveExtensionFiles paths.base=manifest prefers manifest-relative o
 
 Deno.test("resolveExtensionFiles multi-tool repo finds skill in secondary tool dir", async () => {
   await withTempRepoWithTools(["claude", "cursor"], async (dir) => {
-    // Skill only exists in .cursor/skills, not .claude/skills
     await createSkillDir(join(dir, ".cursor", "skills"), "cursor-skill");
 
     await Deno.writeTextFile(
@@ -1274,7 +1257,6 @@ Deno.test("resolveExtensionFiles multi-tool repo finds skill in secondary tool d
 });
 
 Deno.test("resolveExtensionFiles multi-tool deduplicates shared SKILL_DIRS paths", async () => {
-  // opencode and codex both map to .agents/skills
   await withTempRepoWithTools(["opencode", "codex"], async (dir) => {
     await createSkillDir(join(dir, ".agents", "skills"), "agent-skill");
 
@@ -1368,7 +1350,6 @@ Deno.test("resolveExtensionFiles paths.base=manifest prefers manifest-relative f
       join(subdir, "extensions", "models", "dummy.ts"),
       'export const name = "dummy";',
     );
-    // Workflow in manifest-relative location
     await Deno.mkdir(join(subdir, "extensions", "workflows"), {
       recursive: true,
     });
@@ -1376,7 +1357,6 @@ Deno.test("resolveExtensionFiles paths.base=manifest prefers manifest-relative f
       join(subdir, "extensions", "workflows", "shared.yaml"),
       "name: manifest-relative\njobs: {}",
     );
-    // Workflow with same name at repo root
     await Deno.mkdir(join(dir, "extensions", "workflows"), { recursive: true });
     await Deno.writeTextFile(
       join(dir, "extensions", "workflows", "shared.yaml"),
@@ -1587,12 +1567,8 @@ Deno.test("resolveExtensionFiles paths.base=typedDir allows models/ prefix in en
   });
 });
 
-// ── extensionsDir override (monorepo support) ────────────────────────────
-
 Deno.test("resolveExtensionFiles extensionsDir overrides repo root for typed-key resolution", async () => {
   await withTempRepo(async (dir) => {
-    // Simulate monorepo: extension lives in a subdirectory with its own
-    // extensions/<type>/ tree, separate from the repo root's tree.
     const extSubdir = join(dir, "my-datastore-ext");
     const datastoresDir = join(extSubdir, "extensions", "datastores");
     await Deno.mkdir(datastoresDir, { recursive: true });
@@ -1664,11 +1640,9 @@ Deno.test("resolveExtensionFiles without extensionsDir infers the extensions roo
   });
 });
 
-// --- Workflow archive names (swamp-club#2613) ---------------------------------
-//
-// Push writes each workflow to extension/workflows/<archiveName>. Several
-// manifest entries under one directory used to collapse to a single
-// <directory>.yaml, so the archive kept only the last file.
+// push writes each workflow to extension/workflows/<archiveName>; several
+// manifest entries under one directory must not collapse to a single
+// <directory>.yaml, or the archive keeps only the last file
 
 function recordingWorkflowRepoContext(asked: string[]): RepositoryContext {
   return {
@@ -2041,7 +2015,6 @@ Deno.test("planWorkflowArchiveNames: the source path keeps the entry's spelling;
     ["/repo/workflows/deploy.yaml", "deploy.yaml"],
   ]);
 
-  // The same file through two spellings is still one file listed twice.
   const err = assertThrows(
     () =>
       planWorkflowArchiveNames([
@@ -2083,14 +2056,6 @@ Deno.test("planWorkflowArchiveNames: a file listed twice is a duplicate entry, n
   assertStringIncludes(err.message, "deploy.yaml");
 });
 
-// ── extensions root selection, flag coverage and error wording (swamp-club#3018) ──
-
-/**
- * Stage an extension in the swamp-extensions layout under `root`: a model
- * at extensions/models/hello.ts, a workflow at
- * extensions/workflows/hello-wf/workflow.yaml and a skill at
- * .claude/skills/hello-skill. Returns the manifest path.
- */
 async function stageSubDirectoryExtension(
   root: string,
   name: string,
@@ -2335,7 +2300,6 @@ Deno.test("resolveExtensionFiles: without the flag a workflow present under both
     );
     assertStringIncludes(
       err.message,
-      // The message echoes the manifest's own ref, forward slashes and all.
       "Workflow file hello-wf/workflow.yaml exists under two roots",
     );
   });
@@ -2555,7 +2519,6 @@ Deno.test("resolveExtensionFiles: a skill present only under the home directory 
 
 Deno.test("resolveExtensionFiles: a typed-key miss names the looked-in path, the flag and the setting", async () => {
   await withTempRepo(async (dir) => {
-    // The appended-path mistake: --extensions-dir pointing at <ext>/extensions.
     const ext = join(dir, "ext", "sub");
     const manifestPath = await stageSubDirectoryExtension(ext, "@test/miss", {
       workflow: false,
@@ -2695,8 +2658,6 @@ Deno.test("inferExtensionsRoot: falls back to the manifest directory outside the
     const bare = join(outside, "bare");
     await Deno.mkdir(bare, { recursive: true });
     const root = await inferExtensionsRoot(bare, repo);
-    // Either the bare directory itself, or an ancestor that happens to be
-    // an extension root on this host; never the repo dir.
     assertEquals(bare.startsWith(root), true);
     assertEquals(root === repo, false);
   } finally {
@@ -2876,14 +2837,8 @@ Deno.test("resolveExtensionFiles lists a skill's files in per-level name order",
   });
 });
 
-// --- Symlinks in the module graph (swamp-club#3420) ---
-
 const SECRET = "SECRET-3420-target-content";
 
-/**
- * A module graph reader that returns a scripted graph per entry point and
- * records which entry points it was asked to read.
- */
 function scriptedReader(
   graphs: Record<string, SourceModuleGraph>,
 ): { reader: ModuleGraphReader; reads: string[] } {
@@ -2917,7 +2872,6 @@ function importEdge(importer: string, target: string, line: number) {
   };
 }
 
-/** Runs `fn` with a directory outside the repo holding a file with SECRET. */
 async function withOutsideTarget(
   fn: (target: string) => Promise<void>,
 ): Promise<void> {
@@ -3078,7 +3032,6 @@ Deno.test("resolveExtensionFiles: lenient resolution (fmt) leaves symlinks out, 
   });
 });
 
-/** A module graph reader whose every read fails with `errorFor(entryPoint)`. */
 function failingReader(errorFor: (entryPoint: string) => Error): {
   reader: ModuleGraphReader;
 } {
@@ -3170,7 +3123,6 @@ Deno.test("resolveExtensionFiles: strict resolution (push, quality) fails on a s
   });
 });
 
-/** A package.json project whose graph reports `stale` for its one model. */
 async function withStaleInstallProject(
   fn: (dir: string, model: string, reader: ModuleGraphReader) => Promise<void>,
 ): Promise<void> {
@@ -3293,9 +3245,6 @@ Deno.test("resolveExtensionFiles: the package.json bare-specifier scan does not 
   });
 });
 
-// --- Symlinks anywhere on an extension file's path (swamp-club#3421) ---
-
-/** Runs `fn` with a directory outside the repo holding target.ts with SECRET. */
 async function withOutsideDir(
   fn: (outside: string) => Promise<void>,
 ): Promise<void> {

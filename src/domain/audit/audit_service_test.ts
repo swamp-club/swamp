@@ -29,7 +29,6 @@ import {
 import type { AuditRepository } from "./audit_repository.ts";
 import type { BashCommandEntry } from "./audit_command_entry.ts";
 
-/** Mock audit repository */
 class MockAuditRepository implements AuditRepository {
   appendedEntries: BashCommandEntry[] = [];
   mockEntries: BashCommandEntry[] = [];
@@ -124,7 +123,6 @@ Deno.test("AuditService.getTimeline filters noise commands by default", async ()
     showAll: false,
   });
 
-  // Only terraform plan should remain
   assertEquals(timeline.totalDirect, 1);
   assertEquals(timeline.entries[0].summary, "terraform plan");
 });
@@ -320,7 +318,6 @@ Deno.test("AuditService.getTimeline excludes entries without sessionId when filt
       timestamp: "2025-01-15T10:05:00.000Z",
       command: "cargo build",
       cwd: "/repo",
-      // no sessionId — should be excluded when filtering by session
     },
   ];
 

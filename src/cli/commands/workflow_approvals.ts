@@ -172,12 +172,9 @@ export function renderApprovals(
             { inputs: inputsDigest },
           );
         }
-        // Commands go through writeOutput: LogTape quotes interpolated values
-        // and the pretty sink wraps long lines, and either breaks a
-        // copy-pasted command (swamp-club#2977). `--quiet` hides them, as it
-        // hides the logger's info lines.
-        // Step names are any non-empty string, so every name is
-        // shell-quoted; --server carries over the explicit flag.
+        // commands go through writeOutput because LogTape quotes values and the
+        // pretty sink wraps lines, breaking copy-pasted commands; step names
+        // are shell-quoted since any non-empty string is valid
         const quiet = cliCtx.verbosity === "quiet";
         const workflow = quoteShellWord(item.workflowName);
         const step = quoteShellWord(item.stepName);
@@ -185,8 +182,8 @@ export function renderApprovals(
         // it decides, so a record missing there may only not be local yet.
         const parentGone = item.parentMissing === true && server === undefined;
         if (item.parentEnded || parentGone) {
-          // The run above it ended, or its record is gone: the gate cannot
-          // be decided, so only the cancel is offered (swamp-club#2867).
+          // the run above it ended, or its record is gone: the gate cannot be
+          // decided, so only the cancel is offered
           if (!quiet) {
             writeOutput(
               `  ${
@@ -208,8 +205,6 @@ export function renderApprovals(
             `  After approval: swamp workflow resume ${workflow} --run ${item.runId}${target}`,
           );
         }
-        // A nested workflow's gate: its parent resumes after it
-        // (swamp-club#2736).
         if (item.parentRun) {
           if (parentGone) {
             cliCtx.logger.info(
@@ -307,8 +302,8 @@ export const workflowApprovalsCommand = withRemoteOptions(
     return;
   }
 
-  // It only reads: it never takes the v3 writer lease, which would start a
-  // replication lineage on a bucket (swamp-club#3801).
+  // read-only: it never takes the v3 writer lease, which would start a
+  // replication lineage on a bucket
   const { repoDir, repoContext, datastoreResolver } =
     await requireInitializedRepoReadOnly({
       repoDir: resolveRepoDir(options.repoDir),

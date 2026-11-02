@@ -17,9 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Serializable representation of a vault annotation.
- */
 export interface VaultAnnotationData {
   url?: string;
   notes?: string;
@@ -27,9 +24,6 @@ export interface VaultAnnotationData {
   updatedAt: string;
 }
 
-/**
- * Value object representing metadata attached to a vault secret.
- */
 export class VaultAnnotation {
   readonly url: string | undefined;
   readonly notes: string | undefined;
@@ -144,9 +138,6 @@ export interface VaultAnnotationProvider {
   listAnnotations(): Promise<Map<string, VaultAnnotation>>;
 }
 
-/**
- * Type guard to check if a vault provider supports annotations.
- */
 export function isVaultAnnotationProvider(
   provider: unknown,
 ): provider is VaultAnnotationProvider {

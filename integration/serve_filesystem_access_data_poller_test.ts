@@ -17,18 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// Two `swamp serve` instances on one v2 filesystem datastore
-// (swamp-club#3371). The grant and group files are shared, but each instance
-// holds its own in-memory policy snapshot, and a filesystem datastore has no
-// sync service to drive the AccessDataPoller. A grant or revoke made through
-// one instance therefore never applied on the other until `access reload` or
-// a restart: a revoked user kept access on every peer.
-//
-// Each test composes the serve side as serve.ts does: a manual-mode
-// PolicySnapshotLoader and the poller createAccessDataPoller picks for the
-// datastore. The writing side saves grant and group records as its model
-// runs do, and publishes the run's event on its own bus only.
-
 import "../src/domain/models/models.ts";
 import { assert, assertEquals } from "@std/assert";
 import { join } from "@std/path";
@@ -130,7 +118,6 @@ const LAYOUTS = [
   },
 ];
 
-/** Both instances, with the serve side of B built as serve.ts builds it. */
 async function withPair(
   layout: (typeof LAYOUTS)[number],
   fn: (ctx: {
@@ -203,7 +190,6 @@ function group(members: Group["members"]): Group {
   };
 }
 
-/** Saves a grant or group record as its model run does. */
 async function save(
   writer: Instance,
   type: ModelType,
@@ -230,7 +216,6 @@ async function save(
   return { name, version };
 }
 
-/** Saves the record and publishes the run's event on the writer's bus. */
 async function saveAsRun(
   writer: Instance,
   type: ModelType,
@@ -263,7 +248,6 @@ for (const layout of LAYOUTS) {
         modelId,
         grant(modelId, "active", user),
       );
-      // Negative control: B's policy is unchanged until a poll.
       assertEquals(decision(loaderB), "deny");
       pollerB.start();
       await untilDecision(loaderB, "allow", "B enforces A's grant");
@@ -304,10 +288,6 @@ for (const layout of LAYOUTS) {
   });
 }
 
-/**
- * A's serve side, with a counted change source so a test can wait for whole
- * poll cycles on A.
- */
 async function withCountedServeSide(
   instance: Instance,
   fn: (side: {
@@ -378,14 +358,9 @@ Deno.test("AccessDataPoller: in manual mode the writing instance keeps its own g
 });
 
 Deno.test("AccessDataPoller: a grant created by a real method run through A stays staged on A and reaches B", async () => {
-  // The run publishes ModelUpdated with the data versions it wrote, and it
-  // also writes its method-summary report into the grant's directory after
-  // that event. Neither may read as a peer change on A.
-  //
-  // A polls only once the run has finished. A cycle that lands between the
-  // run's write and its event counts the record as a peer change by design
-  // (the change source's unit tests pin that), so polling A during the run
-  // would race it (swamp-club#3393).
+  // A polls only after the run finishes: a cycle between the run's write and
+  // its event counts the record as a peer change by design, and the report
+  // written after the event must not read as one either
   await withPair(LAYOUTS[0], async ({ a, loaderB, pollerB }) => {
     await withCountedServeSide(
       a,
@@ -413,7 +388,6 @@ Deno.test("AccessDataPoller: a grant created by a real method run through A stay
           }),
         );
         assertEquals(events.filter((e) => e.kind === "error"), []);
-        // The report really landed beside grant-main, after the event.
         const grantDir = a.datastoreResolver.resolvePath(
           "data",
           "swamp",
@@ -445,8 +419,8 @@ Deno.test("AccessDataPoller: a grant created by a real method run through A stay
 });
 
 Deno.test("AccessDataPoller: a grant another process writes without an event (a local CLI) reaches serve", async () => {
-  // A local `swamp access grant` (no --server) writes the shared files from
-  // its own process, so serve treats it as a peer change, as on S3/GCS.
+  // a local swamp access grant without --server writes the shared files from
+  // its own process, so serve treats it as a peer change, as on S3/GCS
   await withPair(LAYOUTS[1], async ({ a, loaderB, pollerB }) => {
     const modelId = crypto.randomUUID();
     await save(
@@ -460,12 +434,8 @@ Deno.test("AccessDataPoller: a grant another process writes without an event (a 
   });
 });
 
-// --- Records that cannot be read (swamp-club#3386) ---
-
-/** chmod has no effect for root, and Windows has no POSIX modes. */
 const IGNORE_CHMOD = Deno.build.os === "windows" || Deno.uid() === 0;
 
-/** A path inside one grant record of the shared datastore. */
 function grantPath(instance: Instance, modelId: string, ...rest: string[]) {
   return instance.datastoreResolver.resolvePath(
     "data",
@@ -476,7 +446,6 @@ function grantPath(instance: Instance, modelId: string, ...rest: string[]) {
   );
 }
 
-/** Runs `fn` with `path` unreadable, restoring its mode afterwards. */
 async function whileUnreadable(
   path: string,
   fn: (restore: () => Promise<void>) => Promise<void>,

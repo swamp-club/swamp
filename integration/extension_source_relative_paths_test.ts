@@ -17,15 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// Relative .swamp-sources.yaml paths in a swamp repo nested below the git
-// root (swamp-club#4027, swamp-club#4026). The reporter's layout: the git
-// root is an extension checkout `ext/` with `extensions/models/`, and the
-// swamp repo is `ext/example`. Relative sources must resolve from the swamp
-// repo, in the main checkout and in a linked worktree, while sources that
-// earlier releases recorded relative to the git root keep loading. These
-// tests wire the real git probe, source add, source list and mounted-source
-// resolution together on a temp filesystem.
-
 import { assertEquals } from "@std/assert";
 import { join } from "@std/path";
 import { initializeLogging } from "../src/infrastructure/logging/logger.ts";
@@ -75,13 +66,9 @@ async function writeModel(dir: string): Promise<void> {
 }
 
 interface Layout {
-  /** Real path of the temp root, which holds `ext/` and `sibling/`. */
   root: string;
-  /** The git root and extension checkout. */
   ext: string;
-  /** The swamp repo below the git root. */
   repo: string;
-  /** A linked worktree of `ext`. */
   worktree: string;
 }
 
@@ -143,7 +130,6 @@ Deno.test("relative sources: a nested repo adds direct-content and standard-layo
       (await readSwampSources(repo))?.sources.map((s) => s.path),
       ["../extensions/models", ".."],
     );
-    // Both sources mount the same directory, listed once.
     assertEquals(await resolveMountedSourceDirs(repo), [
       join(ext, "extensions", "models"),
     ]);

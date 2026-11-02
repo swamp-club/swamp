@@ -68,8 +68,6 @@ Deno.test("vaultPutCommand: exposes the write-secret alias", () => {
   assertEquals(vaultPutCommand.getAliases().includes("write-secret"), true);
 });
 
-// resolveKeyValue tests
-
 Deno.test("resolveKeyValue - KEY=VALUE inline takes precedence over stdin", () => {
   const result = resolveKeyValue("API_KEY=inline-secret", "stdin-secret\n");
   assertEquals(result, { key: "API_KEY", value: "inline-secret" });

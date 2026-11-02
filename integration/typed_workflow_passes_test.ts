@@ -17,22 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Typed secrets in the workflow passes, end to end; the harness lives in
- * typed_workflow_harness.ts.
- */
-/**
- * Typed secrets in the workflow passes, end to end
- * (design/enablers/typed-secrets.md Sections 3.4, 5 and 7.1, typed-secrets
- * 4.1): guards, asserts, forEach items and identities, child workflow
- * bindings and the model.method consumer path run through a real
- * WorkflowExecutionService on a temp repository, against a vault that
- * answers existence itself and counts every value it hands out, so a load
- * is a load and a check costs nothing. The internal option is turned on by
- * passing the run its sensitive values over a typed registry, as only tests
- * may. Every scenario uses default production construction.
- */
-
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import "../src/domain/models/models.ts";
 import { Workflow } from "../src/domain/workflows/workflow.ts";
@@ -100,11 +84,10 @@ Deno.test("typed workflow passes: a guard whose result holds a secret refuses be
     }
     assertEquals(run.skipped.size, 0);
     assertEquals(f.received, []);
-    // No guard loaded: not the tagged field, not the vault key, and the
-    // write method's record is kept as stored for its step outputs, so
-    // nothing was read back either (typed-secrets 4.2).
+    // no guard loaded: not the tagged field, not the vault key, and the write
+    // method's record is kept as stored for its step outputs, so nothing was
+    // read back either
     assertEquals(f.loads, []);
-    // The vault.get guard cost one existence check, answered by has().
     assertEquals(f.checks, [TOKEN_KEY]);
     await assertNothingLeaked(f, run);
   });
@@ -247,7 +230,6 @@ Deno.test("typed workflow passes: forEach over tagged records binds each item as
       );
       assertEquals(name.includes(SENTINEL_MARK), false, name);
     }
-    // The item binds as a Secret in the guard: the comparison is refused.
     const compared = [...run.errors].filter(([step]) =>
       step.startsWith("compare-")
     );
@@ -392,7 +374,6 @@ Deno.test("typed workflow passes: a later step reads steps.<name>.outputs throug
     });
   await withFixture(async (f) => {
     const run = await f.run(workflow(f));
-    // The refused guard fails its step and the run; every delivery ran.
     assertEquals(run.status, "failed");
     assertEquals([...run.errors.keys()], ["compare"]);
     assertStringIncludes(
@@ -477,7 +458,6 @@ Deno.test("typed workflow passes: outputs reconstructed from the run record on r
         ],
       })],
     });
-  /** Runs to the approval, approves it in the record, and hands back the ids. */
   const suspend = async (
     f: Fixture,
   ): Promise<{ runId: string; workflow: Workflow }> => {

@@ -25,22 +25,13 @@ import type { WebhookHandler } from "./webhook_handler.ts";
  * stripe, ...) are not registered here — only extension types.
  */
 export interface WebhookTypeInfo {
-  /** The type identifier (e.g., "@swamp/telegram") */
   type: string;
-  /** Human-readable name */
   name: string;
-  /** Description of the webhook type */
   description: string;
-  /** Zod schema for validating the endpoint's `config` */
   configSchema?: z.ZodTypeAny;
-  /** Factory creating a handler for an endpoint's validated config */
   createHandler: (config: Record<string, unknown>) => WebhookHandler;
 }
 
-/**
- * Metadata for a lazily-indexed webhook type. The type is known to exist
- * (from the bundle catalog) but its bundle has not been imported yet.
- */
 export interface LazyWebhookEntry {
   type: string;
   bundlePath: string;
@@ -49,15 +40,6 @@ export interface LazyWebhookEntry {
   description?: string;
 }
 
-/**
- * Registry of available extension webhook types.
- * Map-backed singleton that allows registration and lookup by type identifier.
- *
- * Supports lazy loading of user extensions via {@link setLoader} and
- * {@link ensureLoaded}. With per-bundle lazy loading, the registry also
- * tracks "lazy entries" — types that are known to exist (from the bundle
- * catalog) but whose bundles have not been imported yet.
- */
 export class WebhookTypeRegistry {
   private readonly types = new Map<string, WebhookTypeInfo>();
   private readonly lazyTypes = new Map<string, LazyWebhookEntry>();
@@ -67,33 +49,24 @@ export class WebhookTypeRegistry {
   private typeLoadPromises = new Map<string, Promise<void>>();
   private typeLoader: ((type: string) => Promise<void>) | null = null;
 
-  /** Configures the lazy loader for user webhook extensions. */
   setLoader(loader: () => Promise<void>): void {
     this.extensionLoader = loader;
   }
 
-  /** Configures the per-type loader for on-demand bundle imports. */
   setTypeLoader(loader: (type: string) => Promise<void>): void {
     this.typeLoader = loader;
   }
 
-  /**
-   * Registers a lazy webhook entry — a type known to exist from the bundle
-   * catalog but not yet imported. Does nothing if the type is already
-   * registered (either fully loaded or lazy).
-   */
   registerLazy(entry: LazyWebhookEntry): void {
     const key = entry.type.toLowerCase();
     if (this.types.has(key) || this.lazyTypes.has(key)) return;
     this.lazyTypes.set(key, entry);
   }
 
-  /** Returns true if a type is registered as lazy (not yet imported). */
   isLazy(type: string): boolean {
     return this.lazyTypes.has(type.toLowerCase());
   }
 
-  /** Ensures user webhook extensions have been loaded. */
   async ensureLoaded(): Promise<void> {
     if (this.extensionsLoaded) return;
     if (!this.extensionLoader) return;
@@ -106,20 +79,14 @@ export class WebhookTypeRegistry {
     await this.extensionLoadPromise;
   }
 
-  /**
-   * Clears the extension-loaded flag so the next call to
-   * {@link ensureLoaded} re-runs the configured loader.
-   */
   resetLoadedFlag(): void {
     this.extensionsLoaded = false;
     this.extensionLoadPromise = null;
   }
 
   /**
-   * Test-only: removes the configured loaders and clears the loaded state,
-   * so loaders a test installed do not leak into later tests. It does not
-   * restore loaders set before the test, and does not clear
-   * already-registered types.
+   * test-only: does not restore loaders set before the test and does not clear
+   * already-registered types
    */
   clearLoadersForTesting(): void {
     this.extensionLoader = null;
@@ -128,10 +95,6 @@ export class WebhookTypeRegistry {
     this.extensionLoadPromise = null;
   }
 
-  /**
-   * Surgically removes a single type from the registry so it can be
-   * re-registered with updated metadata after a bundle upgrade.
-   */
   invalidateType(type: string): void {
     const key = type.toLowerCase();
     this.types.delete(key);
@@ -139,11 +102,6 @@ export class WebhookTypeRegistry {
     this.typeLoadPromises.delete(key);
   }
 
-  /**
-   * Ensures a specific webhook type's bundle has been imported.
-   * If the type is lazy, invokes the type loader to import just that bundle.
-   * Concurrent callers for the same type share the same promise.
-   */
   async ensureTypeLoaded(type: string): Promise<void> {
     const key = type.toLowerCase();
 
@@ -159,9 +117,9 @@ export class WebhookTypeRegistry {
     if (!promise) {
       const loader = this.typeLoader;
       promise = loader(key).then(() => {
-        // A loader that skipped a stale or broken bundle never promoted
-        // the type; drop the lazy entry so later lookups report it as
-        // unknown instead of retrying (swamp-club#2490).
+        // a loader that skipped a stale or broken bundle never promoted the
+        // type; drop the lazy entry so later lookups report it unknown instead
+        // of retrying
         if (!this.types.has(key)) {
           this.lazyTypes.delete(key);
         }
@@ -175,10 +133,6 @@ export class WebhookTypeRegistry {
     await promise;
   }
 
-  /**
-   * Promotes a lazy entry to a fully loaded type.
-   * Called by the type loader after importing a bundle.
-   */
   promoteFromLazy(info: WebhookTypeInfo): void {
     const key = info.type.toLowerCase();
     this.lazyTypes.delete(key);
@@ -187,9 +141,6 @@ export class WebhookTypeRegistry {
     }
   }
 
-  /**
-   * Registers a webhook type. Throws if the type is already registered.
-   */
   register(info: WebhookTypeInfo): void {
     const key = info.type.toLowerCase();
     if (this.types.has(key)) {
@@ -198,35 +149,22 @@ export class WebhookTypeRegistry {
     this.types.set(key, info);
   }
 
-  /**
-   * Gets a webhook type by its identifier. Returns undefined for lazy types.
-   */
   get(type: string): WebhookTypeInfo | undefined {
     return this.types.get(type.toLowerCase());
   }
 
-  /**
-   * Returns all fully loaded webhook types.
-   */
   getAll(): WebhookTypeInfo[] {
     return Array.from(this.types.values());
   }
 
-  /**
-   * Returns all lazy webhook entries (not yet imported).
-   */
   getAllLazy(): LazyWebhookEntry[] {
     return Array.from(this.lazyTypes.values());
   }
 
-  /**
-   * Checks if a webhook type is registered (either fully loaded or lazy).
-   */
   has(type: string): boolean {
     const key = type.toLowerCase();
     return this.types.has(key) || this.lazyTypes.has(key);
   }
 }
 
-/** Global webhook type registry singleton. */
 export const webhookTypeRegistry = new WebhookTypeRegistry();

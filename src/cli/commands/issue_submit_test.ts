@@ -123,7 +123,6 @@ Deno.test("resolveReportText: --title alone that the editor can't read back is r
       '--title without --body must be one line that does not start with "#" or "<". Pass --body as well, or type the title in the editor.',
     );
   }
-  // With --body the editor is skipped, so the same title is accepted.
   assertEquals(resolveReportText({ title: "#123 crash", body: "b" }, "log"), {
     kind: "flags",
     title: "#123 crash",
@@ -174,12 +173,9 @@ Deno.test("buildMailtoUrl: builds correct mailto URL for security", () => {
 
 Deno.test("buildMailtoUrl: handles special characters", () => {
   const url = buildMailtoUrl("bug", "Test & <stuff>", "Body with &amp;");
-  // Should be percent-encoded, not HTML-encoded
   assertEquals(url.includes("&amp;"), false);
   assertEquals(url.includes("%26"), true);
 });
-
-// ---- Reports that can't be filed ----
 
 const testCtx: CommandContext = {
   outputMode: "json",
@@ -322,8 +318,6 @@ Deno.test("submitIssue: leaves out the --email hint on the extension path, where
   assertStringIncludes(error.message, "swamp auth login");
   assertEquals(error.message.includes("--email"), false);
 });
-
-// --- Redaction prompt at the submission entry points (swamp-club#3686) ---
 
 const logCtx: CommandContext = { ...testCtx, outputMode: "log" };
 
@@ -496,7 +490,6 @@ async function dispatchAnswering(answer: string): Promise<{
     },
     { type: "bug", ...redactable },
     {
-      // gh is unavailable, so the report goes to the browser handoff.
       ghRunner: {
         run(args) {
           ghCalls.push(args);

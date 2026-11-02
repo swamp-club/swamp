@@ -17,15 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * The v3 commit feed over serve's WebSocket (swamp-club#4120), against a
- * real v3 datastore on port 0: a commit lands in a subscriber's stream as it
- * lands, filtered as `GET changes` filters it; a cursor below the compaction
- * point ends the stream with `commits_compacted`; a team peer reads the feed
- * whole but nothing else; and a follower's {@link FollowerFeed} applies what
- * the leader sends and keeps its copy fresh.
- */
-
 import { assert, assertEquals } from "@std/assert";
 import { waitFor } from "@swamp-club/swamp-testing";
 import { parsePrincipal } from "../src/domain/access/principal.ts";
@@ -50,7 +41,6 @@ import {
 
 const PEER_TOKEN = "swamp-peer.test";
 
-/** Serves the WebSocket over `server`'s context, with its commit feed. */
 async function withFeedSocket(
   server: Server,
   fn: (wsUrl: string) => Promise<void>,

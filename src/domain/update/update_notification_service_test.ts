@@ -58,7 +58,6 @@ function createMockChecker(
   };
 }
 
-// Helper: generate a version string for N days ago so tests don't rot
 function versionDaysAgo(days: number): string {
   const d = new Date();
   d.setDate(d.getDate() - days);
@@ -72,8 +71,6 @@ function versionDaysAgoAlt(days: number): string {
   const stamp = d.toISOString().replace(/[-T:Z]/g, "").substring(0, 8);
   return `${stamp}.120000.0-sha.def456`;
 }
-
-// --- getNotification ---
 
 Deno.test("getNotification returns null for dev build", async () => {
   const cacheRepo = createMockCacheRepo();
@@ -89,7 +86,6 @@ Deno.test("getNotification returns null for dev build", async () => {
 });
 
 Deno.test("getNotification returns version_stale when version is old", async () => {
-  // Version from Feb 6 2026, "now" is April 6 2026 (59 days old)
   const cacheRepo = createMockCacheRepo();
   const checker = createMockChecker();
   const service = new UpdateNotificationService(
@@ -98,12 +94,8 @@ Deno.test("getNotification returns version_stale when version is old", async () 
     checker,
   );
 
-  // We need to control "now" — the service uses new Date() internally.
-  // For this test, the version is old enough that any current date in 2026 will trigger staleness.
   const result = await service.getNotification();
 
-  // The version is from Jan 6, 2026. If we're past Feb 5, 2026 (>30 days), it should be stale.
-  // Since the test runs after March 2026, this should definitely be stale.
   assertEquals(result?.type, "version_stale");
   assertEquals(result?.currentVersion, "20260106.200442.0-sha.abc123");
   if (result?.type === "version_stale") {
@@ -112,8 +104,8 @@ Deno.test("getNotification returns version_stale when version is old", async () 
 });
 
 Deno.test("getNotification returns update_available when cache has newer version", async () => {
-  const currentVersion = versionDaysAgo(2); // 2 days old — well within 30-day window
-  const latestVersion = versionDaysAgoAlt(0); // today
+  const currentVersion = versionDaysAgo(2);
+  const latestVersion = versionDaysAgoAlt(0);
   const cache: UpdateCheckCacheData = {
     latestVersion,
     checkedAt: new Date().toISOString(),
@@ -135,16 +127,16 @@ Deno.test("getNotification returns update_available when cache has newer version
 });
 
 Deno.test("getNotification returns null when current version is newer than cache", async () => {
-  // User updated via another channel (e.g. deno run compile) to a version
-  // newer than what the background check last cached.
+  // user updated via another channel to a version newer than what the
+  // background check last cached
   const cache: UpdateCheckCacheData = {
-    latestVersion: versionDaysAgo(2), // older cached version
+    latestVersion: versionDaysAgo(2),
     checkedAt: new Date().toISOString(),
   };
   const cacheRepo = createMockCacheRepo(cache);
   const checker = createMockChecker();
   const service = new UpdateNotificationService(
-    versionDaysAgoAlt(1), // newer current version
+    versionDaysAgoAlt(1),
     cacheRepo,
     checker,
   );
@@ -154,7 +146,7 @@ Deno.test("getNotification returns null when current version is newer than cache
 });
 
 Deno.test("getNotification returns null when cache matches current version", async () => {
-  const version = versionDaysAgo(2); // recent enough to avoid staleness
+  const version = versionDaysAgo(2);
   const cache: UpdateCheckCacheData = {
     latestVersion: version,
     checkedAt: new Date().toISOString(),
@@ -170,7 +162,6 @@ Deno.test("getNotification returns null when cache matches current version", asy
 Deno.test("getNotification returns null when no cache exists and version is recent", async () => {
   const cacheRepo = createMockCacheRepo(null);
   const checker = createMockChecker();
-  // Use a very recent date so it won't be stale
   const recentVersion = `${
     new Date().toISOString().replace(/[-T:Z]/g, "").substring(0, 8)
   }.120000.0-sha.abc123`;
@@ -184,10 +175,8 @@ Deno.test("getNotification returns null when no cache exists and version is rece
   assertEquals(result, null);
 });
 
-// --- backgroundCheck ---
-
 Deno.test("backgroundCheck writes cache when stale", async () => {
-  const cacheRepo = createMockCacheRepo(null); // null = stale
+  const cacheRepo = createMockCacheRepo(null);
   const redirectUrl =
     "https://artifacts.swamp-club.com/swamp/20260301.120000.0-sha.def456/binary/darwin/aarch64/swamp.tar.gz";
   const checker = createMockChecker(redirectUrl);
@@ -201,7 +190,6 @@ Deno.test("backgroundCheck writes cache when stale", async () => {
 
   service.backgroundCheck(platform);
 
-  // Wait for the fire-and-forget async to complete
   await new Promise((resolve) => setTimeout(resolve, 50));
 
   assertEquals(
@@ -214,7 +202,7 @@ Deno.test("backgroundCheck writes cache when stale", async () => {
 Deno.test("backgroundCheck skips when cache is fresh", async () => {
   const freshCache: UpdateCheckCacheData = {
     latestVersion: "20260301.120000.0-sha.def456",
-    checkedAt: new Date().toISOString(), // just now
+    checkedAt: new Date().toISOString(),
   };
   const cacheRepo = createMockCacheRepo(freshCache);
   let checkerCalled = false;
@@ -267,7 +255,6 @@ Deno.test("backgroundCheck writes cache with current version on network error", 
     checker,
   );
 
-  // Should not throw, and should still write cache to respect 24h cooldown
   service.backgroundCheck(platform);
   await new Promise((resolve) => setTimeout(resolve, 50));
 

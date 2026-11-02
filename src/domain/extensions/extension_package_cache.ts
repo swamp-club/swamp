@@ -47,20 +47,9 @@ function encodeHex(bytes: Uint8Array): string {
 }
 
 /**
- * Content-hash-keyed cache for packaged extension tarballs.
- *
- * The cache is opportunistic: `swamp extension quality` packages once,
- * writes the tarball here, and `swamp extension push` can later reuse the
- * same bytes if the source inputs have not changed. The cache is a pure
- * optimization — cache misses fall back to fresh packaging.
- *
- * Cache entries live at:
- *   <cacheRoot>/<hash>/extension.tar.gz
- *   <cacheRoot>/<hash>/metadata.json
- *
- * The hash is a SHA-256 over the normalized manifest YAML plus the
- * contents of every file that ends up in the tarball — so any source
- * change invalidates the entry by construction.
+ * opportunistic: quality packages once and push reuses the bytes if inputs are
+ * unchanged, else packages afresh; the hash covers the manifest and every
+ * tarball file, so any change invalidates
  */
 
 /** Inputs used to compute the cache hash. All source-tree state that
@@ -68,15 +57,13 @@ function encodeHex(bytes: Uint8Array): string {
 export interface PackageCacheHashInput {
   manifest: ExtensionManifest;
   /**
-   * The extensions root. Every file is labelled by its path from here, so
-   * the hash is the same wherever the swamp repo sits: pushing from a sibling
-   * repo hashes like publish, which runs inside the extension directory.
+   * files are labelled by their path from here so the hash is the same wherever
+   * the repo sits: pushing from a sibling repo hashes like publish
    */
   rootDir: string;
   /**
-   * The manifest's directory. The `quality.yaml` sidecar beside it joins the
-   * hash, so a changed acceptance moves the content hash and the
-   * review-report path.
+   * the quality.yaml sidecar beside it joins the hash, so a changed acceptance
+   * moves the content hash and the review-report path
    */
   manifestDir: string;
   modelFilePaths: string[];
@@ -92,34 +79,29 @@ export interface PackageCacheHashInput {
   denoConfigPath: string | undefined;
   packageJsonPath: string | undefined;
   /**
-   * The lockfile the bundler runs `--frozen` against, when the project has
-   * one. The bundles, and the dependency audit record beside them
-   * (swamp-club#3662), ship the versions it locks, so a lock bump with no
-   * source change must not reuse an archive built against the old lock.
+   * the bundles and the dependency audit record ship the locked versions, so a
+   * lock bump with no source change must not reuse an archive built against the
+   * old lock
    */
   lockPath?: string;
   /**
-   * What Deno resolved each bare import to (swamp-club#3612). The archive's
-   * shipped source depends on these, and an `importMap` file or a workspace
-   * root can change them without changing `denoConfigPath`.
+   * the shipped source depends on these, and an importMap file or workspace
+   * root can change them without changing denoConfigPath
    */
   bareImports?: ResolvedBareImport[];
   /**
-   * The exact versions, unaudited code and package-lock.json validity the
-   * module graphs gave (swamp-club#3970). The shipped source pins these
-   * versions and the record lists them, so a lockless range that resolves
-   * to a new version today must not reuse an archive pinned to yesterday's.
+   * the shipped source pins these versions and the record lists them, so a
+   * lockless range resolving to a new version must not reuse an archive pinned
+   * to an old one
    */
   graphDependencies?: GraphDependencies;
   /**
-   * Files with a symlink on their path (swamp-club#3421). Each is hashed by
-   * its path alone, never read: the safety gate refuses it, and its target
-   * may be outside the repository, a device or a pipe.
+   * hashed by path alone, never read: the safety gate refuses them, and a
+   * target may be outside the repository, a device or a pipe
    */
   symlinkedPaths?: ReadonlySet<string>;
 }
 
-/** Cached per-entry metadata written alongside the tarball. */
 export interface CachedPackageMetadata {
   hash: string;
   extensionName: string;
@@ -128,21 +110,18 @@ export interface CachedPackageMetadata {
   cachedAt: string;
   rubricVersion: number;
   /**
-   * The swamp version that wrote the entry. An entry is reused only by the
-   * same version: a cached archive skips the fmt/lint gates, so a newer
-   * swamp, whose gates may have changed, packages and checks afresh.
-   * Absent on entries written before the field existed.
+   * an entry is reused only by the same swamp version: a cached archive skips
+   * the fmt/lint gates, so a newer swamp whose gates may have changed packages
+   * afresh
    */
   swampVersion?: string;
   /**
-   * The types the archive's sources register when loaded, recorded when the
-   * archive was packaged, so a cache hit need not load every source again
-   * to check their collective (swamp-club#3456). Absent on older entries.
+   * recorded at packaging so a cache hit need not load every source again to
+   * check their collective
    */
   archiveIndex?: StoredArchiveIndex;
 }
 
-/** The loaded types of a cached archive, as stored in its metadata. */
 export interface StoredArchiveIndex {
   sources: Array<{
     kindDir: string;
@@ -154,9 +133,8 @@ export interface StoredArchiveIndex {
 }
 
 /**
- * The stored index when `value` has its shape, else undefined. The
- * metadata file sits in the repository, so it is read as untrusted data: a
- * malformed index is dropped and the archive's sources are loaded again.
+ * the metadata file sits in the repository, so it is untrusted data: a
+ * malformed index is dropped and the sources are loaded again
  */
 export function parseStoredArchiveIndex(
   value: unknown,
@@ -180,17 +158,11 @@ export function parseStoredArchiveIndex(
   return value as StoredArchiveIndex;
 }
 
-/** A cached package retrieved from disk. */
 export interface CachedPackage {
   archiveBytes: Uint8Array;
   metadata: CachedPackageMetadata;
 }
 
-/**
- * Computes a deterministic SHA-256 hash over all inputs that would
- * affect the packaged tarball's contents. Uses the file paths as
- * deterministic labels and the file contents as the material to hash.
- */
 export async function computePackageCacheHash(
   input: PackageCacheHashInput,
 ): Promise<string> {
@@ -285,22 +257,17 @@ export async function computePackageCacheHash(
     parts.push("bare-imports");
     for (const line of unexplained) parts.push(line);
   }
-  // In a package.json project the shipped source names each installed
-  // package's version (swamp-club#3630), which reinstalling changes without
-  // changing any file hashed above. Only when present, so every other
-  // extension keeps its hash.
+  // in a package.json project the shipped source names each installed package's
+  // version, which reinstalling changes without changing any hashed file; only
+  // when present so other extensions keep their hash
   const installed = installedBareImports(input.bareImports ?? [], rootDir);
   if (installed.length > 0) {
     parts.push("installed-imports");
     for (const line of installed) parts.push(line);
   }
-  // What the source, config and lock above do not fix (swamp-club#3970):
-  // the version a lockless range resolved to today, which the shipped
-  // source pins and the record lists, so a new release misses the cache
-  // instead of reusing an archive pinned to yesterday's; the modules fetched
-  // by URL; and whether a package-lock.json counts as a lock. Only when
-  // present, so every other extension keeps its hash, which is also the
-  // content hash an adversarial-review report is keyed by.
+  // what source, config and lock do not fix: versions a lockless range resolved
+  // to (so a new release misses the cache), URL-fetched modules, package-lock
+  // validity; only when present, keeping other hashes
   const graph = input.graphDependencies;
   const lockless = input.lockPath
     ? []
@@ -328,8 +295,7 @@ export async function computePackageCacheHash(
     }
   }
   if (graph?.packageLock?.valid) parts.push("package-lock-valid");
-  // Only when present, like deno-config and package-json above, so every
-  // extension without a sidecar keeps its hash across this change.
+  // only when present, so every extension without a sidecar keeps its hash
   const sidecar = await computeFileContentHashIfExists(
     qualitySidecarPath(input.manifestDir),
   );
@@ -344,9 +310,8 @@ export async function computePackageCacheHash(
 }
 
 /**
- * Serialises the manifest fields relevant to the tarball into a stable
- * deterministic string. Field order is fixed; optional fields appear
- * only when set so equivalent-shaped manifests produce identical output.
+ * field order is fixed and optional fields appear only when set, so equivalent
+ * manifests serialize identically
  */
 function serializeManifestForHash(manifest: ExtensionManifest): string {
   const lines: string[] = [];
@@ -395,7 +360,6 @@ async function appendFileGroup(
   }
 }
 
-/** Each bare import resolved to an installed package, as a stable line. */
 function installedBareImports(
   bareImports: readonly ResolvedBareImport[],
   rootDir: string,
@@ -410,10 +374,6 @@ function installedBareImports(
     .sort();
 }
 
-/**
- * Each resolution in `bareImports` that the config's top-level `imports`
- * would not give, as a sorted line with paths relative to `rootDir`.
- */
 async function unexplainedBareImports(
   denoConfigPath: string,
   bareImports: readonly ResolvedBareImport[],
@@ -462,10 +422,6 @@ export async function computeFileContentHash(path: string): Promise<string> {
   return `sha256:${encodeHex(new Uint8Array(digest))}`;
 }
 
-/**
- * {@link computeFileContentHash}, or `null` when the file does not exist.
- * The config poller and extension writers compare lockfile versions with it.
- */
 export async function computeFileContentHashIfExists(
   path: string,
 ): Promise<string | null> {
@@ -484,13 +440,9 @@ async function readFileIfExists(path: string): Promise<string> {
 }
 
 /**
- * On-disk repository for cached extension tarballs. Construct with the
- * cache root directory (typically `<repoDir>/.swamp/cache/packages/`) and
- * the running swamp version: entries written by any other version, or
- * before entries recorded one, are misses.
- *
- * The version lives in the entry, not in the hash, because the hash is
- * also the content hash an adversarial-review report is keyed by.
+ * entries written by another swamp version, or before entries recorded one, are
+ * misses; the version lives in the entry, not the hash, which also keys an
+ * adversarial-review report
  */
 export class ExtensionPackageCache {
   constructor(
@@ -498,12 +450,10 @@ export class ExtensionPackageCache {
     private readonly swampVersion: string,
   ) {}
 
-  /** Returns the per-entry directory for a given hash. */
   entryDir(hash: string): string {
     return join(this.cacheRoot, hash);
   }
 
-  /** Retrieves a cached package, or returns null if not present. */
   async get(hash: string): Promise<CachedPackage | null> {
     const dir = this.entryDir(hash);
     const archivePath = join(dir, "extension.tar.gz");
@@ -536,7 +486,6 @@ export class ExtensionPackageCache {
     return { archiveBytes, metadata };
   }
 
-  /** Stores a package under the given hash. */
   async put(
     hash: string,
     archiveBytes: Uint8Array,
@@ -571,7 +520,6 @@ export class ExtensionPackageCache {
   }
 }
 
-/** Resolves the standard cache root inside a swamp repo. */
 export function defaultPackageCacheRoot(repoDir: string): string {
   return join(repoDir, ".swamp", "cache", "packages");
 }

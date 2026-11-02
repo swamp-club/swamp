@@ -28,7 +28,6 @@ import type { LibSwampContext } from "../context.ts";
 import { notFound, type SwampError, validationFailed } from "../errors.ts";
 
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
-/** Data payload for the completed event. */
 export interface VaultListKeysData {
   vaultName: string;
   vaultType: string;
@@ -45,20 +44,17 @@ export interface VaultListKeysInput {
   vaultName: string;
 }
 
-/** Vault config info returned by find operations. */
 interface VaultConfig {
   name: string;
   type: string;
 }
 
-/** Dependencies for the vault list-keys operation. */
 export interface VaultListKeysDeps {
   findVaultByName: (name: string) => Promise<VaultConfig | null>;
   findAllVaults: () => Promise<VaultConfig[]>;
   listKeys: (vaultName: string) => Promise<string[]>;
 }
 
-/** Wires real infrastructure into VaultListKeysDeps. */
 export async function createVaultListKeysDeps(
   repoDir: string,
   options?: { vaultsDir?: string },
@@ -78,7 +74,6 @@ export async function createVaultListKeysDeps(
   };
 }
 
-/** Yields all secret key names in a vault. */
 export async function* vaultListKeys(
   _ctx: LibSwampContext,
   deps: VaultListKeysDeps,

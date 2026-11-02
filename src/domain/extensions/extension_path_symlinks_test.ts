@@ -66,7 +66,6 @@ Deno.test("firstSymlinkedComponent: finds a symlinked directory between the root
     },
   );
   assertEquals(found, link);
-  // It stops at the first symlink: nothing below it is asked about.
   assertEquals(asked.includes(join(link, "foo.ts")), false);
 });
 

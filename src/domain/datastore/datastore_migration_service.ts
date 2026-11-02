@@ -26,31 +26,16 @@ import {
 } from "./datastore_config.ts";
 import type { DatastoreConfig } from "./datastore_config.ts";
 
-/**
- * Result of a datastore migration.
- */
 export interface MigrationResult {
-  /** Number of files copied */
   filesCopied: number;
-  /** Total bytes copied */
   bytesCopied: number;
-  /** Directories migrated */
   directoriesMigrated: string[];
-  /** Any errors encountered (non-fatal) */
   errors: string[];
 }
 
 /**
- * Migrates datastore-tier files from source to destination.
- *
- * Copies all files from the source directories (based on the
- * datastore config's directory list) to the destination path. Repo-local
- * stream directories and run logs are left behind: their writers and
- * readers only use the checkout's own `.swamp` (swamp-club#3281).
- *
- * @param skip Paths relative to `sourceDir` that are left behind: a
- *   skipped top-level subdir is not copied or reported as migrated, and a
- *   skipped nested path is left out of its subdir's copy.
+ * repo-local stream directories and run logs are left behind: their writers and
+ * readers only use the checkout's own .swamp
  */
 export async function migrateDatastore(
   sourceDir: string,
@@ -78,7 +63,6 @@ export async function migrateDatastore(
       const stat = await Deno.stat(srcPath);
       if (!stat.isDirectory) continue;
     } catch {
-      // Source directory doesn't exist, skip
       continue;
     }
 
@@ -97,15 +81,10 @@ export async function migrateDatastore(
   return result;
 }
 
-/** Resolves paths relative to `root` into a set of absolute paths. */
 function skipSet(root: string, skip: readonly string[]): Set<string> {
   return new Set(skip.map((p) => resolve(root, p)));
 }
 
-/**
- * Recursively copies a directory under the top-level datastore subdirectory
- * `subdir`, leaving its run logs behind.
- */
 async function copyDirectory(
   subdir: string,
   src: string,
@@ -137,10 +116,8 @@ async function copyDirectory(
         );
       }
     } else if (entry.isSymlink) {
-      // Convert symlinks to text files during migration
       try {
         const target = await Deno.readLink(srcPath);
-        // If it looks like a latest symlink (numeric target), write as text
         const numeric = parseInt(target.replace(/\/$/, ""), 10);
         if (!isNaN(numeric)) {
           await Deno.writeTextFile(destPath, numeric.toString());
@@ -171,19 +148,9 @@ async function copyDirectory(
 }
 
 /**
- * Verifies a migration by checking that every source file arrived at the
- * destination.
- *
- * A regular file must exist there with the same size. A symlink only has to
- * exist: {@link migrateDatastore} rewrites numeric symlinks as text files.
- * Files that only the destination holds are ignored. A `.swamp/` destination
- * keeps local files such as method-run logs, which a datastore path never
- * has (swamp-club#3238).
- *
- * @param skip The same relative paths passed to {@link migrateDatastore};
- *   they are left out of the check, as are the repo-local stream
- *   directories and run logs it leaves behind.
- * @returns `sourceCount` source files, of which `destCount` arrived.
+ * a symlink only has to exist, since numeric symlinks are rewritten as text;
+ * files only the destination holds are ignored, as a .swamp destination keeps
+ * local files such as method-run logs
  */
 export async function verifyMigration(
   sourceDir: string,
@@ -224,7 +191,6 @@ async function countArrived(
   try {
     entries = await Array.fromAsync(Deno.readDir(src));
   } catch {
-    // Directory doesn't exist
     return;
   }
   for (const entry of entries) {

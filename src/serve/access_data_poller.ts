@@ -49,11 +49,6 @@ const logger = getLogger(["swamp", "serve", "access-data-poller"]);
 
 const DEFAULT_ACCESS_DATA_POLL_INTERVAL_MS = 30_000;
 
-/**
- * Consecutive failed cycles after which each further failure is logged at
- * error rather than warning: peers' grant and revoke changes have stopped
- * reaching this instance (swamp-club#3386).
- */
 export const ACCESS_DATA_POLLER_ESCALATE_AFTER = 3;
 
 export const ACCESS_DATA_SUBDIRS: readonly string[] = [
@@ -69,11 +64,6 @@ interface AccessDataPollerCommonOptions {
   pollIntervalMs?: number;
 }
 
-/**
- * Where the poller learns of peers' grant and group changes: a pull from the
- * sync service, or, on a v2 filesystem datastore with nothing to pull, a
- * local change source over the shared directories (swamp-club#3371).
- */
 export type AccessDataPollerOptions =
   & AccessDataPollerCommonOptions
   & (
@@ -169,13 +159,6 @@ export class AccessDataPoller {
     );
   }
 
-  /**
-   * One cycle, exported as the access_poll diagnostic phases
-   * (design/enablers/serve-phase-telemetry.md): a `poll_cycle` holding
-   * `change_detection` on a local change source or `gate_wait` and
-   * `remote_pull` on a sync pull, then `catalog_invalidate` and the
-   * snapshot phases when it reloads.
-   */
   async #pullAndReloadPolicy(): Promise<void> {
     this.#pulling = true;
     const cycle = startDiagnosticPhase("poll_cycle");
@@ -183,7 +166,6 @@ export class AccessDataPoller {
       const pending = this.#needsReload;
       const detected = await cycle.run(() => this.#changedCount());
       const count = detected ?? 0;
-      // A pull that never ran checked nothing, so it reports no count.
       if (detected !== null) cycle.tally.add("changed", count);
       if (count > 0) {
         if (this.#changeSource) {
@@ -201,12 +183,9 @@ export class AccessDataPoller {
         );
         this.#needsReload = true;
       }
-      // A snapshot missing records it could not read is rebuilt every cycle
-      // until it is whole, whoever built it: the change source cannot see a
-      // file turning readable again (a mode change moves only its ctime),
-      // and a remote datastore's read can fail for one cycle. A corrupt
-      // record never reads by itself, and the write that fixes it is a
-      // change, so it is not retried.
+      // a snapshot missing unreadable records is rebuilt each cycle until
+      // whole, since the change source cannot see a file become readable;
+      // corrupt records are not retried
       const reason = count > 0
         ? "changed"
         : pending
@@ -219,9 +198,6 @@ export class AccessDataPoller {
         await cycle.run(() => this.#policySnapshotLoader.load());
         this.#needsReload = false;
       }
-      // A pull that never ran (the gate was busy, or stop() ended the wait)
-      // is a skip; a stop is also the cycle's cancellation, unless a reload
-      // it still ran was applied.
       const result: DiagnosticResult = reason !== "none"
         ? "applied"
         : detected === null
@@ -256,7 +232,6 @@ export class AccessDataPoller {
     }
   }
 
-  /** Records the snapshot is missing because they could not be read. */
   #unreadableRecords(tally: PhaseTally): number {
     const count =
       this.#policySnapshotLoader.unreadable.filter((record) =>
@@ -266,10 +241,6 @@ export class AccessDataPoller {
     return count;
   }
 
-  /**
-   * The number of records peers changed, or null when the sync pull never
-   * ran because the gate was not acquired.
-   */
   async #changedCount(): Promise<number | null> {
     const changeSource = this.#changeSource;
     if (changeSource) {
@@ -309,20 +280,11 @@ export interface CreateAccessDataPollerOptions
   syncGate?: SyncGate;
   namespace?: string;
   datastoreConfig: DatastoreConfig;
-  /** The engine serve resolved for the datastore; v3 gets no poller. */
   datastoreEngine: DatastoreEngine;
   datastoreResolver: DatastorePathResolver;
   eventBus: EventBus;
 }
 
-/**
- * The access data poller serve runs, or null when nothing can change access
- * data behind its back. A sync service pulls peers' changes. A v2
- * filesystem datastore has none, but its peers share the files, so a local
- * change source watches them; it is primed here, so call this before the
- * boot policy load. A v3 datastore allows one writer at a time and gets
- * none.
- */
 export async function createAccessDataPoller(
   options: CreateAccessDataPollerOptions,
 ): Promise<AccessDataPoller | null> {

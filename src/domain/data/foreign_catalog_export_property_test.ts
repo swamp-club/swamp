@@ -25,7 +25,6 @@ import { restoreNamespace } from "./namespace.ts";
 
 const PULLED = restoreNamespace("team-b");
 
-/** A row whose namespace field is anything an export could carry. */
 const arbRow: fc.Arbitrary<CatalogExportRow> = fc.record({
   namespace: fc.oneof(
     fc.constantFrom("team-b", "team-a", "", "team-c", "TEAM-B", " team-b"),

@@ -18,32 +18,9 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * The commit sink of a v3 checkout whose upstream is serve
- * (swamp-club#3985). It is the outbox sink of `outbox_commit_sink.ts` over
- * a commit store that forwards each commit to serve's
- * `POST partitions/{p}/commits` instead of appending it here: the outbox
- * still makes each commit durable until it landed, and the units above it
- * are unchanged.
- *
- * - **Head.** A commit is built on the higher of the copy's head and the
- *   head serve last reported: serve may hold commits this caller cannot
- *   read.
- * - **Chunks.** Serve is asked which of the commit's chunks it holds. Up to
- *   {@link MAX_CARRIED_CHUNKS} missing ones ride in the commit's frame,
- *   from the checkout's chunk cache; any more go first as
- *   `PUT chunks/{sha256}?partition=`, so no upload ever needs `admin`.
- * - **Landing.** Serve's reply (`{seq}`, or a duplicate's) lands the commit;
- *   the copy then reads the partition from serve, so it stores serve's
- *   stamped commit, never the one built here.
- * - **Stale seq.** Serve's head is recorded and the partition read, then the
- *   append is refused as a seq gap: the unit builds the commit again on the
- *   new head under the same txnId.
- * - **Unreachable.** A commit serve never received is refused with exit 75
- *   and its outbox entry discarded: nothing changed. One that may have
- *   reached serve keeps its entry, so the next recovery settles or sends it.
- *   Storage is never written instead.
- *
- * @module
+ * a commit is built on the higher of the copy's head and serve's last reported
+ * head; a commit serve never received is refused (exit 75) and discarded, one
+ * that may have reached it keeps its entry
  */
 
 import type { Commit } from "../../domain/datastore_v3/commit.ts";
@@ -76,7 +53,6 @@ import type { SqliteCommitStore } from "./sqlite_commit_store.ts";
 
 const logger = getSwampLogger(["datastore", "v3", "serve"]);
 
-/** The most chunks one commit request carries; serve's own limit. */
 export const MAX_CARRIED_CHUNKS = 1024;
 
 /**
@@ -85,13 +61,11 @@ export const MAX_CARRIED_CHUNKS = 1024;
  */
 export const SERVE_SEQ_GAP_ATTEMPTS = 8;
 
-/** What {@link createServeCommitSink} composes. */
 export interface ServeCommitSinkOptions {
   readonly client: Pick<
     ServeDatastoreClient,
     "hasChunks" | "putChunk" | "postCommit" | "baseUrl"
   >;
-  /** The checkout's follower copy of serve's log. */
   readonly commitStore: Pick<
     SqliteCommitStore,
     "head" | "headIdentity" | "dataHighWater" | "landedSeq"
@@ -100,42 +74,30 @@ export interface ServeCommitSinkOptions {
     ServeCatchUp,
     "catchUpPartition" | "headOf" | "recordServeHead"
   >;
-  /** The checkout's chunk cache, which every put of a unit lands in. */
   readonly chunkCache: Pick<DatastoreStorage, "get">;
   readonly outbox: CommitOutbox;
   readonly sweepBatch?: () => Promise<void>;
-  /** Bounds every request; aborted when the handle closes. */
   readonly signal: () => AbortSignal;
   readonly clock?: () => Date;
   /**
-   * The fenced model lease this process holds on a partition, if any
-   * (swamp-club#4121): its commits name it, its outbox entries record it,
-   * and its floor raises the partition's high-water marks.
+   * the fenced model lease held on a partition, if any: its commits name it,
+   * its outbox entries record it, and its floor raises the partition's
+   * high-water marks
    */
   readonly leaseOf?: (partition: PartitionKey) => HeldServeLease | undefined;
-  /**
-   * Forgets the unconfirmed lease `leaseId` on `partition` once serve has
-   * refused a commit under it (swamp-club#4167).
-   */
   readonly dropUnconfirmedLease?: (
     partition: PartitionKey,
     leaseId: string,
   ) => void;
-  /**
-   * Called once a commit naming lease `leaseId` has landed, with the data
-   * versions it recorded, so the lease's floor follows the holder's own
-   * writes (swamp-club#4121). A failure is the callback's to report.
-   */
   readonly onLeasedCommit?: (
     partition: PartitionKey,
     leaseId: string,
     landed: readonly LandedVersion[],
   ) => Promise<void>;
   /**
-   * The checkout's offline mode (swamp-club#4195): undefined while online.
-   * Offline, a commit is never sent; it is queued in the outbox when
-   * `queues` allows its partition (the backstop of the offline rules), and
-   * refused with the rules' error otherwise.
+   * undefined while online. Offline, a commit is never sent: it is queued when
+   * `queues` allows its partition (the backstop of the offline rules) and
+   * refused with the rules' error otherwise
    */
   readonly offline?: () =>
     | {
@@ -146,9 +108,9 @@ export interface ServeCommitSinkOptions {
 }
 
 /**
- * The commit store the serve sink's outbox sink composes: the copy's reads,
- * with appends forwarded to serve. Outbox recovery lands its entries
- * through it too, so a recovered commit reaches serve, never only the copy.
+ * the copy's reads with appends forwarded to serve; outbox recovery lands
+ * entries through it too, so a recovered commit reaches serve, never only the
+ * copy
  */
 export type ServeUpstreamCommitStore =
   & Pick<
@@ -157,9 +119,8 @@ export type ServeUpstreamCommitStore =
   >
   & {
     /**
-     * Sends `commit` naming the model lease `leaseId`, or none: what a
-     * recovery resends an outbox entry under, the lease it was built
-     * under rather than any this process holds now (swamp-club#4121).
+     * sends `commit` naming lease `leaseId` or none: a recovery resends an
+     * entry under the lease it was built under, not one this process holds now
      */
     appendUnderLease(
       commit: Commit,
@@ -167,12 +128,10 @@ export type ServeUpstreamCommitStore =
     ): Promise<CommitStoreAppendResult>;
   };
 
-/** A serve-mode handle's sink, and the store its outbox recovery uses. */
 export interface ServeCommitSink extends OutboxCommitSink {
   readonly upstream: ServeUpstreamCommitStore;
 }
 
-/** Builds the sink a serve-mode v3 handle gives every unit it opens. */
 export function createServeCommitSink(
   options: ServeCommitSinkOptions,
 ): ServeCommitSink {
@@ -200,7 +159,6 @@ export function createServeCommitSink(
     return chunks;
   };
 
-  /** The commit's chunks serve lacks, uploading any past the frame's cap. */
   const carried = async (
     commit: Commit,
     hashes: readonly string[],
@@ -230,9 +188,9 @@ export function createServeCommitSink(
   ): Promise<CommitStoreAppendResult> => {
     const signal = options.signal();
     const json = commit.toJSON() as { readonly ops: readonly unknown[] };
-    // Serve stamps the principal, writer and fence: the envelope names
-    // none. A commit made under a fenced lease names the lease's id; serve
-    // stamps its fence from its own record (swamp-club#4121).
+    // serve stamps the principal, writer and fence, so the envelope names none;
+    // a commit under a fenced lease names only the lease id and serve stamps
+    // the fence from its own record
     const envelope = {
       expectedSeq: commit.seq - 1,
       txnId: commit.txnId,
@@ -273,8 +231,8 @@ export function createServeCommitSink(
             signal,
           );
         } catch (caught) {
-          // Serve refused the commit, so it never landed: a recovery must
-          // not ask the serve it refused for it (swamp-club#4049).
+          // serve refused the commit, so it never landed: a recovery must not
+          // ask the serve that refused it
           if (caught instanceof ServeUpstreamDivergedError) {
             neverSent.add(commit.txnId);
           }
@@ -309,10 +267,9 @@ export function createServeCommitSink(
         signal,
       );
     } catch (error) {
-      // The commit is in serve's log either way: it is not failed. A serve
-      // that no longer holds the copy's head is said now, though, since
-      // this commit landed in a log the copy does not follow
-      // (swamp-club#4049); the next command refuses it.
+      // the commit is in serve's log either way, so it is not failed; a serve
+      // that does not hold the copy's head is warned about now, and the next
+      // command refuses it
       if (error instanceof ServeUpstreamDivergedError) {
         logger
           .warn`This change was saved to serve, but serve no longer holds the commits this checkout's copy follows: ${error.message}`;
@@ -339,10 +296,9 @@ export function createServeCommitSink(
       const seq = await catchUp.headOf(namespace, partition);
       return seq > local.seq ? { seq, txnId: undefined } : local;
     },
-    // A fenced lease's floor holds versions the copy may not: ones written
-    // by commits the caller cannot read (swamp-club#4121). Versions queued
-    // offline are not in the copy either: a command allocates above them
-    // too, so two offline commands never share one (swamp-club#4195).
+    // a fenced lease's floor holds versions from commits the caller cannot
+    // read, and versions queued offline are not in the copy; allocating above
+    // both keeps offline commands from sharing a version
     dataHighWater: async (namespace, partition, name) => {
       const copy = await commitStore.dataHighWater(namespace, partition, name);
       const floor = leaseOf(partition)?.floor.find((marks) =>
@@ -358,7 +314,7 @@ export function createServeCommitSink(
     landedSeq: async (namespace, partition, txnId) => {
       const local = await commitStore.landedSeq(namespace, partition, txnId);
       if (local !== undefined || neverSent.delete(txnId)) return local;
-      // Offline, nothing was sent (swamp-club#4195): serve cannot hold it.
+      // offline, nothing was sent, so serve cannot hold it
       if (options.offline?.() !== undefined) return local;
       // It may have landed at serve after the reply was lost: read the
       // partition. A failure is the caller's: the commit may land later.
@@ -366,8 +322,8 @@ export function createServeCommitSink(
       return await commitStore.landedSeq(namespace, partition, txnId);
     },
     append: async (commit) => {
-      // Offline for the rest of the command (swamp-club#4195): never sent,
-      // only queued, and only where the offline rules allow.
+      // offline for the rest of the command: never sent, only queued, and only
+      // where the offline rules allow
       const offline = options.offline?.();
       if (offline !== undefined) {
         const verdict = await offline.queues(commit.partition);
@@ -379,13 +335,9 @@ export function createServeCommitSink(
       try {
         return await forward(commit, lease?.leaseId);
       } catch (error) {
-        // A lease registered from the checkout's record, which serve has
-        // not vouched for in this process, may have ended with a serve
-        // that restarted (swamp-club#4167). Serve refused the commit before
-        // writing it, so it is sent again under no lease, which serve
-        // refuses only while another holder's lease covers the partition,
-        // as an outbox recovery does. A lease serve vouched for is never
-        // dropped: a commit refused under it is the caller's.
+        // An unconfirmed lease may have ended with a restarted serve, which
+        // refused before writing, so resend under no lease. A confirmed lease
+        // is kept.
         if (
           lease?.unconfirmed !== true ||
           !(error instanceof CommitRejectedError) ||
@@ -411,8 +363,8 @@ export function createServeCommitSink(
     ...sink,
     outbox: sink.outbox === undefined ? undefined : {
       ...sink.outbox,
-      // The entry records the lease it was built under, which its
-      // recovery names (swamp-club#4121).
+      // the entry records the lease it was built under, which its recovery
+      // names
       prepare: (preparation) => {
         const lease = leaseOf(preparation.commit.partition);
         return sink.outbox!.prepare(

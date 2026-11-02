@@ -17,15 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Integration test for webhook extension schemes (#2204).
- *
- * Wires a webhook extension type registered in the real registry through
- * startup resolution, WebhookService.handleRequest, the run tracker, and
- * workflow execution: the extension verifies a static token header, reshapes
- * the body, and returns a custom acknowledgement while still enqueueing.
- */
-
 import { assert, assertEquals } from "@std/assert";
 import { waitFor } from "@swamp-club/swamp-testing";
 import { join } from "@std/path";

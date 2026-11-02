@@ -66,10 +66,6 @@ export function createVaultDescribeRenderer(
   }
 }
 
-/**
- * Standalone render function for use by un-migrated search commands.
- * Accepts a VaultConfig domain object for backward compatibility.
- */
 export function renderVaultDescribe(
   config: VaultConfig,
   mode: OutputMode,

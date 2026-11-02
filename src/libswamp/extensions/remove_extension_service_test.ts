@@ -180,20 +180,6 @@ export const model = {
 };
 `;
 
-// =============================================================
-// swamp-club#201 lifecycle-layer reproducer
-// =============================================================
-//
-// Pre-W2 behaviour: `extension rm` deleted files + lockfile entry but
-// did NOT touch the catalog. Stale `(kind, type)` rows survived
-// removal — they only got pruned later when a NEXT install happened
-// to overwrite them. Visible symptom: `swamp model type search` still
-// returned the type after rm; `swamp doctor extensions` reported the
-// orphan rows.
-//
-// W2 contract: after rm, the catalog has zero rows for that
-// extension's name. This test pins it.
-
 Deno.test(
   "swamp-club#201: rm via service prunes catalog rows (lifecycle-layer reproducer)",
   async () => {
@@ -209,8 +195,6 @@ Deno.test(
           MINIMAL_MODEL_CODE(typeId),
         );
 
-        // Install via InstallExtensionService — populates catalog +
-        // lockfile.
         const installSvc = new InstallExtensionService({
           denoRuntime: testDenoRuntime,
           repository,
@@ -230,9 +214,6 @@ Deno.test(
           makeInstallContext(repoDir, lockfileRepository),
         );
 
-        // Pre-condition: catalog HAS rows for this extension; lockfile
-        // HAS the entry. This is the user-visible state W1b ships
-        // before W2 lands.
         assertEquals(
           repository.loadByName(extName).length,
           1,
@@ -244,7 +225,6 @@ Deno.test(
           "Pre-rm: lockfile must have the entry",
         );
 
-        // Remove via service.
         const removeSvc = new RemoveExtensionService({
           repository,
           lockfileRepository,
@@ -252,7 +232,6 @@ Deno.test(
         });
         const result = await removeSvc.execute(extName);
 
-        // The bug-closing assertions for swamp-club#201:
         assertEquals(
           repository.loadByName(extName).length,
           0,
@@ -274,10 +253,6 @@ Deno.test(
     );
   },
 );
-
-// =============================================================
-// Idempotency contract (plan v4 challenge #9)
-// =============================================================
 
 Deno.test(
   "RemoveExtensionService.execute: double-rm yields a clean UserError on the second call",
@@ -319,11 +294,8 @@ Deno.test(
           repoDir,
         });
 
-        // First rm succeeds.
         await removeSvc.execute(extName);
 
-        // Second rm errors with a clean message — neither silent
-        // success nor an ambiguous error.
         await assertRejects(
           () => removeSvc.execute(extName),
           UserError,
@@ -333,10 +305,6 @@ Deno.test(
     );
   },
 );
-
-// =============================================================
-// rm-of-never-installed extension throws clean UserError
-// =============================================================
 
 Deno.test(
   "RemoveExtensionService.execute: rm of never-installed extension throws UserError",
@@ -358,10 +326,6 @@ Deno.test(
     );
   },
 );
-
-// =============================================================
-// rm preserves other installed extensions
-// =============================================================
 
 Deno.test(
   "RemoveExtensionService.execute: rm of one extension does not touch others",
@@ -410,7 +374,6 @@ Deno.test(
         });
         await removeSvc.execute(extA);
 
-        // Only A is gone; B is intact.
         assertEquals(repository.loadByName(extA).length, 0);
         assertEquals(lockfileRepository.getEntry(extA), null);
         assertEquals(repository.loadByName(extB).length, 1);
@@ -420,15 +383,9 @@ Deno.test(
   },
 );
 
-// =============================================================
-// Crash-state recovery (W2 plan v4 step 10)
-// =============================================================
-//
-// Order: catalog tombstone-save → lockfile remove → FS delete. A fault
-// inside the catalog `saveAll` (the very FIRST mutation of rm) must
-// roll back via SQLite ROLLBACK so retry sees the extension still
-// installed. Lockfile + FS are not yet touched, so the retry is a
-// clean re-rm.
+// order is catalog tombstone-save, lockfile remove, FS delete; a fault in the
+// first rolls back and leaves the extension installed, so a retry is a clean
+// re-rm
 
 Deno.test(
   "RemoveExtensionService.execute: catalog saveAll fault leaves install state unchanged and retry succeeds",
@@ -445,8 +402,6 @@ Deno.test(
           MINIMAL_MODEL_CODE(typeId),
         );
 
-        // Install first via the real repository so the on-disk +
-        // lockfile + catalog state is real.
         const installSvc = new InstallExtensionService({
           denoRuntime: testDenoRuntime,
           repository,
@@ -468,12 +423,10 @@ Deno.test(
           makeInstallContext(repoDir, lockfileRepository),
         );
 
-        // Pre-fault snapshot.
         const preFaultRows = catalog.findAll().length;
         assertEquals(repository.loadByName(extName).length, 1);
         assertEquals(lockfileRepository.getEntry(extName)?.version, "1.0.0");
 
-        // Wrap the same catalog in a faulting repo for the rm path.
         const faultingRepo = new FaultingStubRepository({
           catalog,
           lockfileRepository,
@@ -489,10 +442,6 @@ Deno.test(
           repoDir,
         });
 
-        // First attempt: faults inside the tombstone saveAll. SQLite
-        // ROLLBACK preserves all rows; lockfile + FS untouched. The
-        // lifecycle service surfaces the failure as a UserError with a
-        // clean retry hint instead of a raw stack trace.
         const thrown = await assertRejects(
           () => removeSvc.execute(extName),
           UserError,
@@ -519,7 +468,6 @@ Deno.test(
         assertEquals(repository.loadByName(extName).length, 1);
         assertEquals(lockfileRepository.getEntry(extName)?.version, "1.0.0");
 
-        // Second attempt: no fault. Clean rm; everything cleared.
         await removeSvc.execute(extName);
         assertEquals(repository.loadByName(extName).length, 0);
         assertEquals(lockfileRepository.getEntry(extName), null);
@@ -528,27 +476,9 @@ Deno.test(
   },
 );
 
-// =============================================================
-// swamp-club#383: empty per-extension scaffold dirs left behind
-// =============================================================
-//
-// `pull` unconditionally `Deno.mkdir`s per-extension scaffold
-// dirs (`models`, `workflows`, `vaults`, `datastores`,
-// `reports`, `webhooks`, `files`) regardless of whether the extension ships
-// content for that kind. These dirs are never recorded in the
-// lockfile's tracked-file list. Pre-fix, `pruneEmptyDirs`'s upward
-// walk from tracked-file parents stopped at the extension root
-// because the un-tracked scaffolds made it appear non-empty —
-// leaving the entire per-extension subtree on disk after rm.
-//
-// The fix has RemoveExtensionService push the scaffold paths
-// into parentDirs so pruneEmptyDirs sweeps them too. These tests
-// pin (a) the canonical case, (b) sibling-extension safety, and
-// (c) flat (non-scoped) name handling.
-//
-// Tests intentionally hardcode the scaffold names rather than
-// importing PER_EXTENSION_SCAFFOLD_DIRS from production — a silent
-// shrinkage of that constant must show up as a regression here.
+// tests hardcode the scaffold names rather than importing
+// PER_EXTENSION_SCAFFOLD_DIRS, so a silent shrinkage of that constant shows up
+// as a regression
 
 async function stageScaffoldDirs(extRoot: string): Promise<void> {
   for (
@@ -612,17 +542,12 @@ Deno.test(
         });
         await removeSvc.execute(extName);
 
-        // The per-extension subtree must be entirely gone — neither
-        // the extension root nor any of the empty scaffold dirs may
-        // remain.
         await assertRejects(
           () => Deno.stat(extRoot),
           Deno.errors.NotFound,
           undefined,
           "Post-rm: per-extension subtree must be removed",
         );
-        // The `@scope/` dir is also gone since this fixture has no
-        // sibling extensions under `@test/`.
         const scopeDir = join(
           swampPath(repoDir, "pulled-extensions"),
           "@test",
@@ -692,15 +617,12 @@ Deno.test(
         });
         await removeSvc.execute(extA);
 
-        // A is gone — both subtree and scaffolds.
         await assertRejects(
           () => Deno.stat(extRootA),
           Deno.errors.NotFound,
           undefined,
           "Post-rm: extA subtree must be removed",
         );
-        // B is intact — including its scaffold dirs and its tracked
-        // model file.
         const bStat = await Deno.stat(extRootB);
         assertEquals(
           bStat.isDirectory,
@@ -715,8 +637,6 @@ Deno.test(
           true,
           "Post-rm: extB tracked file must be preserved",
         );
-        // The shared `@test/` scope dir is also preserved because B
-        // still lives inside it.
         const scopeStat = await Deno.stat(
           join(swampPath(repoDir, "pulled-extensions"), "@test"),
         );
@@ -787,23 +707,8 @@ Deno.test(
   },
 );
 
-// =============================================================
-// swamp-club#392: empty <kind>-bundles/<hash>/ dirs left behind
-// =============================================================
-//
-// `pull` unconditionally `Deno.mkdir`s bundle namespace dirs
-// (`bundles/<hash>/`, `vault-bundles/<hash>/`,
-// `datastore-bundles/<hash>/`, `report-bundles/<hash>/`,
-// `webhook-bundles/<hash>/`) regardless of
-// whether the extension ships content for that bundle kind. When the
-// source archive has no bundles for a kind, `copyDir` returns an empty
-// file list and nothing is tracked. `RemoveExtensionService` must push
-// these bundle namespace paths into `parentDirs` so `pruneEmptyDirs`
-// sweeps them.
-//
-// Tests intentionally hardcode the (sourceKind, bundleKind) pairs
-// rather than importing from production — a silent change to the
-// mapping must show up as a regression here.
+// tests hardcode the (sourceKind, bundleKind) pairs rather than importing them,
+// so a silent change to the mapping shows up as a regression
 
 const BUNDLE_MAPPINGS: ReadonlyArray<[string, string]> = [
   ["models", "bundles"],
@@ -915,7 +820,6 @@ Deno.test(
         });
         await removeSvc.execute(extA);
 
-        // A's bundle namespace dirs must be gone.
         for (const [sourceKind, bundleKind] of BUNDLE_MAPPINGS) {
           const hashA = bundleNamespace(
             join(extRootA, sourceKind),
@@ -929,7 +833,6 @@ Deno.test(
           );
         }
 
-        // B's bundle namespace dirs must be preserved.
         for (const [sourceKind, bundleKind] of BUNDLE_MAPPINGS) {
           const hashB = bundleNamespace(
             join(extRootB, sourceKind),
@@ -968,7 +871,6 @@ Deno.test(
         await stageScaffoldDirs(extRoot);
         await stageBundleNamespaceDirs(repoDir, extName);
 
-        // Place a compiled bundle file in bundles/<hash>/ and track it.
         const bundlesHash = bundleNamespace(
           join(extRoot, "models"),
           repoDir,
@@ -993,8 +895,6 @@ Deno.test(
         });
         await removeSvc.execute(extName);
 
-        // The tracked bundle file is deleted, and since the dir is now
-        // empty the namespace dir should also be pruned.
         await assertRejects(
           () =>
             Deno.stat(
@@ -1005,8 +905,6 @@ Deno.test(
           "Post-rm: bundles/<hash>/ must be pruned after tracked file deleted",
         );
 
-        // The empty bundle namespace dirs (vault-,
-        // datastore-, report-, webhook-) must also be pruned.
         for (
           const [sourceKind, bundleKind] of BUNDLE_MAPPINGS.filter(
             ([_, bk]) => bk !== "bundles",
@@ -1028,16 +926,6 @@ Deno.test(
   },
 );
 
-// =============================================================
-// swamp-club#574 cross-mount stale rows reproducer
-// =============================================================
-//
-// When the same repo is used from both a host shell and a container
-// that bind-mounts the repo at a different path, stale catalog rows
-// accumulate with container-path source_paths. These cause I-Repo-1
-// violations that block ALL catalog writes, including rm of unrelated
-// extensions.
-
 Deno.test(
   "swamp-club#574: rm succeeds when unrelated extension has stale cross-mount rows",
   async () => {
@@ -1049,7 +937,6 @@ Deno.test(
         const staleExt = `@test/stale-${ts}`;
         const staleType = `@test/stale-datastore-${ts}`;
 
-        // Install the extension we'll remove.
         const targetPath = await stageModel(
           repoDir,
           targetExt,
@@ -1076,10 +963,9 @@ Deno.test(
           makeInstallContext(repoDir, lockfileRepository),
         );
 
-        // Inject a stale row from a container session — source_path
-        // points at /workspace/... which doesn't exist on this host.
-        // Also inject the "real" host row for the same extension so
-        // they form an I-Repo-1 violation pair.
+        // a stale container-session row points at /workspace/..., absent on
+        // this host; the host row for the same extension forms an I-Repo-1
+        // violation pair with it
         const hostSourcePath = join(
           repoDir,
           ".swamp",
@@ -1118,10 +1004,6 @@ Deno.test(
           extension_version: "2025.12.01.1",
         });
 
-        // Before the fix, this would throw DuplicateTypeError wrapped
-        // in a UserError because the stale /workspace row and the host
-        // row form an I-Repo-1 violation. After the fix, the stale row
-        // is pruned before I-Repo-1 fires.
         const rmSvc = new RemoveExtensionService({
           repository,
           lockfileRepository,
@@ -1130,7 +1012,6 @@ Deno.test(
         const result = await rmSvc.execute(targetExt);
         assertEquals(result.filesDeleted > 0 || result.filesSkipped > 0, true);
 
-        // The stale /workspace row should have been pruned.
         const remaining = catalog.findAll();
         const stalePaths = remaining.filter((r) =>
           r.source_path.startsWith("/workspace")
@@ -1140,10 +1021,6 @@ Deno.test(
     );
   },
 );
-
-// =============================================================
-// swamp-club#2489: validate before mutating, keep going on errors
-// =============================================================
 
 async function installStubExtension(
   repoDir: string,
@@ -1199,8 +1076,6 @@ Deno.test(
           "lists 2 path(s) outside the repository",
         );
 
-        // Nothing changed: catalog rows, the lockfile entry on disk and
-        // the tracked file all survive.
         assertEquals(repository.loadByName(extName).length, 1);
         const onDisk = await LockfileRepository.create(
           lockfileRepository.lockfilePath,
@@ -1208,7 +1083,6 @@ Deno.test(
         assertEquals(onDisk.getEntry(extName)?.version, "1.0.0");
         assertEquals((await Deno.stat(modelPath)).isFile, true);
 
-        // A retry still sees the extension as installed.
         await assertRejects(
           () => removeSvc.execute(extName),
           UserError,
@@ -1319,8 +1193,6 @@ Deno.test(
     );
   },
 );
-
-// ===== Shared skill dirs (swamp-club#2494) =====
 
 async function exists(path: string): Promise<boolean> {
   try {
@@ -1492,10 +1364,6 @@ Deno.test(
   },
 );
 
-// =============================================================
-// Pulled-extensions lock (swamp-club#2709)
-// =============================================================
-
 Deno.test(
   "RemoveExtensionService.execute: reads claims from the lockfile on disk, not a stale snapshot",
   async () => {
@@ -1585,10 +1453,6 @@ Deno.test(
   },
 );
 
-// =============================================================
-// swamp-club#2723: rm recovers an interrupted install first
-// =============================================================
-
 Deno.test(
   "RemoveExtensionService.execute: rolls back an interrupted install before removing",
   async () => {
@@ -1601,7 +1465,6 @@ Deno.test(
           checksum: "sum-v1",
         });
 
-        // An upgrade dies after moving the live root aside.
         const roots = extensionInstallRoots(repoDir, extName);
         let renames = 0;
         const tx = await ExtensionInstallTransaction.begin({
@@ -1638,7 +1501,6 @@ Deno.test(
           repoDir,
         }).execute(extName);
 
-        // Recovery put v1 back, so rm removed the tracked file itself.
         assertEquals(result.filesDeleted, 1);
         await assertRejects(() => Deno.stat(v1Model), Deno.errors.NotFound);
         assertEquals(lockfileRepository.getEntry(extName), null);

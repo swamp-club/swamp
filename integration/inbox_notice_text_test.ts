@@ -17,10 +17,8 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// Drift guard: the inbox notice's text is pinned in three places that must
-// change together (design/surfaces/inbox.md, "The notice"). The renderer
-// prints it, the design doc pins it, and the `swamp` skill's rule 4 quotes the
-// second line so agents recognise the notice and relay it.
+// the inbox notice text is pinned in three places that must change together:
+// the renderer, design/surfaces/inbox.md, and rule 4 of the swamp skill
 
 import { assertEquals, assertStringIncludes } from "@std/assert";
 import { join } from "@std/path";

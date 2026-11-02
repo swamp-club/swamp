@@ -155,12 +155,8 @@ import { UserError } from "../domain/errors.ts";
 import { VERSION } from "./commands/version.ts";
 import { setOwnLockGate } from "../infrastructure/datastore_v3/own_lock_gate.ts";
 
-// Initialize logging for tests
 await initializeLogging({});
 
-/**
- * Helper to run tests with a temporary directory.
- */
 async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
   const dir = await Deno.makeTempDir({ prefix: "swamp-repo-context-" });
   try {
@@ -176,9 +172,6 @@ async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
   }
 }
 
-/**
- * Sets up a directory as an initialized swamp repository.
- */
 async function initializeRepo(dir: string): Promise<void> {
   const repoPath = RepoPath.create(dir);
   // Keep the global skill install inside `dir` — the ambient HOME is shared
@@ -190,10 +183,6 @@ async function initializeRepo(dir: string): Promise<void> {
   });
   await service.init(repoPath);
 }
-
-// ============================================================================
-// Non-Interactive Mode Tests
-// ============================================================================
 
 Deno.test("requireInitializedRepo - throws UserError in json mode for non-initialized repo", async () => {
   await withTempDir(async (dir) => {
@@ -240,21 +229,14 @@ Deno.test("requireInitializedRepo - error message includes the path", async () =
       UserError,
     );
 
-    // The error message should contain the resolved absolute path
     assertStringIncludes(error.message, dir);
   });
 });
 
-// ============================================================================
-// Initialized Repo Tests
-// ============================================================================
-
 Deno.test("requireInitializedRepo - returns context for initialized repo (json mode)", async () => {
   await withTempDir(async (dir) => {
-    // Initialize the repo first
     await initializeRepo(dir);
 
-    // Now requireInitializedRepo should succeed
     const result = await requireInitializedRepo({
       repoDir: dir,
       outputMode: "json",
@@ -264,7 +246,6 @@ Deno.test("requireInitializedRepo - returns context for initialized repo (json m
     assertEquals(result.repoContext.definitionRepo !== undefined, true);
     assertEquals(result.repoContext.workflowRepo !== undefined, true);
 
-    // Clean up datastore sync (releases lock + heartbeat)
     await flushDatastoreSync();
   });
 });
@@ -289,13 +270,11 @@ Deno.test("requireInitializedRepo - handles relative paths", async () => {
   await withTempDir(async (dir) => {
     await initializeRepo(dir);
 
-    // Use the full path (simulating a user passing a path)
     const result = await requireInitializedRepo({
       repoDir: dir,
       outputMode: "json",
     });
 
-    // Should resolve to the absolute path
     assertEquals(result.repoDir, dir);
 
     await flushDatastoreSync();
@@ -314,16 +293,11 @@ Deno.test("requireInitializedRepo - passes factory config", async () => {
       { enableIndexing: false },
     );
 
-    // Context should still be created
     assertEquals(result.repoContext !== undefined, true);
 
     await flushDatastoreSync();
   });
 });
-
-// ============================================================================
-// Edge Cases
-// ============================================================================
 
 Deno.test("requireInitializedRepo - handles nested directory paths", async () => {
   await withTempDir(async (baseDir) => {
@@ -342,10 +316,6 @@ Deno.test("requireInitializedRepo - handles nested directory paths", async () =>
   });
 });
 
-// ============================================================================
-// resolveDatastoreForRepo Tests
-// ============================================================================
-
 Deno.test("resolveDatastoreForRepo - returns config for initialized repo without acquiring lock", async () => {
   await withTempDir(async (dir) => {
     await initializeRepo(dir);
@@ -356,7 +326,6 @@ Deno.test("resolveDatastoreForRepo - returns config for initialized repo without
     assertEquals(result.datastoreConfig.type, "filesystem");
     assertEquals(result.marker !== null, true);
 
-    // flushDatastoreSync should be a no-op (no lock was acquired)
     await flushDatastoreSync();
   });
 });
@@ -392,7 +361,6 @@ Deno.test("resolveDatastoreForRepo - SWAMP_DATASTORE in a format-3 checkout with
     };
     setServeUpstreamCommandPath(["data", "get"]);
     try {
-      // Without the override, the same checkout writes through serve.
       const viaServe = await withMockedEnv(
         { ...env, SWAMP_DATASTORE: undefined },
         () => resolveDatastoreForRepo(dir),
@@ -421,10 +389,6 @@ Deno.test("resolveDatastoreForRepo - SWAMP_DATASTORE in a format-3 checkout with
   });
 });
 
-// ============================================================================
-// requireInitializedRepoReadOnly Tests
-// ============================================================================
-
 Deno.test("requireInitializedRepoReadOnly - returns context for initialized repo", async () => {
   await withTempDir(async (dir) => {
     await initializeRepo(dir);
@@ -438,7 +402,6 @@ Deno.test("requireInitializedRepoReadOnly - returns context for initialized repo
     assertEquals(result.repoContext.definitionRepo !== undefined, true);
     assertEquals(result.repoContext.workflowRepo !== undefined, true);
 
-    // flushDatastoreSync should be a no-op (no lock was acquired)
     await flushDatastoreSync();
   });
 });
@@ -453,7 +416,6 @@ Deno.test("requireInitializedRepoReadOnly - on a filesystem datastore, carries t
     });
 
     assertEquals(signalWaitsOf(repoContext).supported, true);
-    // A read-only context writes no wait record when it saves a run.
     assertEquals(repoContext.workflowRunRepo.beforeSave, undefined);
   });
 });
@@ -477,13 +439,11 @@ Deno.test("requireInitializedRepoReadOnly - does not block concurrent access", a
   await withTempDir(async (dir) => {
     await initializeRepo(dir);
 
-    // Acquire the lock via the write path
     const _writeResult = await requireInitializedRepo({
       repoDir: dir,
       outputMode: "json",
     });
 
-    // Read-only path should still succeed despite the lock being held
     const readResult = await requireInitializedRepoReadOnly({
       repoDir: dir,
       outputMode: "json",
@@ -492,7 +452,6 @@ Deno.test("requireInitializedRepoReadOnly - does not block concurrent access", a
     assertEquals(readResult.repoDir, dir);
     assertEquals(readResult.repoContext !== undefined, true);
 
-    // Clean up the write lock
     await flushDatastoreSync();
   });
 });
@@ -510,14 +469,8 @@ Deno.test("requireInitializedRepoReadOnly - passes factory config", async () => 
     );
 
     assertEquals(result.repoContext !== undefined, true);
-
-    // No flush needed — no lock acquired
   });
 });
-
-// ============================================================================
-// requireInitializedRepoReadOnly pull Tests (swamp-club#2151)
-// ============================================================================
 
 async function configureManagedConfigDatastore(
   dir: string,
@@ -699,10 +652,6 @@ Deno.test("requireInitializedRepoReadOnly - returns managedConfig state", async 
   });
 });
 
-// ============================================================================
-// Marker File Edge Cases
-// ============================================================================
-
 Deno.test("requireInitializedRepo - orphaned .swamp/ without marker reports distinct error", async () => {
   await withTempDir(async (dir) => {
     await ensureDir(join(dir, ".swamp"));
@@ -736,10 +685,6 @@ Deno.test("resolveDatastoreForRepo - orphaned .swamp/ without marker reports dis
   });
 });
 
-// ============================================================================
-// requireInitializedRepoUnlocked Tests
-// ============================================================================
-
 Deno.test("requireInitializedRepoUnlocked - returns context with datastoreConfig", async () => {
   await withTempDir(async (dir) => {
     await initializeRepo(dir);
@@ -752,8 +697,6 @@ Deno.test("requireInitializedRepoUnlocked - returns context with datastoreConfig
     assertEquals(result.repoDir, dir);
     assertEquals(result.repoContext !== undefined, true);
     assertEquals(result.datastoreConfig.type, "filesystem");
-
-    // No flush needed — no lock acquired
   });
 });
 
@@ -776,13 +719,11 @@ Deno.test("requireInitializedRepoUnlocked - does not acquire any lock", async ()
   await withTempDir(async (dir) => {
     await initializeRepo(dir);
 
-    // Call unlocked — should not acquire any lock
     const _result = await requireInitializedRepoUnlocked({
       repoDir: dir,
       outputMode: "json",
     });
 
-    // Now acquire the global lock — should succeed immediately (no contention)
     const writeResult = await requireInitializedRepo({
       repoDir: dir,
       outputMode: "json",
@@ -793,10 +734,6 @@ Deno.test("requireInitializedRepoUnlocked - does not acquire any lock", async ()
     await flushDatastoreSync();
   });
 });
-
-// ============================================================================
-// Foreign content fetcher wiring (swamp-club#3306)
-// ============================================================================
 
 Deno.test("repo contexts carry the sync service's foreign content fetcher on the data repository", async () => {
   const { datastoreTypeRegistry } = await import(
@@ -856,7 +793,6 @@ Deno.test("repo contexts carry the sync service's foreign content fetcher on the
         outputMode: "json",
         skipImplicitSync: true,
       }),
-    // The one `model method run`, `workflow run` and serve build.
     requireInitializedRepoUnlocked: (repoDir: string) =>
       requireInitializedRepoUnlocked({ repoDir, outputMode: "json" }),
   };
@@ -870,7 +806,6 @@ Deno.test("repo contexts carry the sync service's foreign content fetcher on the
 
         const { repoContext } = await build(dir);
         try {
-          // A row as `datastore catalog pull` writes it: no local content.
           repoContext.catalogStore.markPopulated();
           const modelId = crypto.randomUUID();
           repoContext.catalogStore.upsert({
@@ -902,8 +837,6 @@ Deno.test("repo contexts carry the sync service's foreign content fetcher on the
             source: "",
           });
 
-          // The context's own service, and one built from the context's
-          // repository the way every run-deps builder builds its own.
           for (
             const service of [
               repoContext.dataQueryService,
@@ -934,10 +867,6 @@ Deno.test("repo contexts carry the sync service's foreign content fetcher on the
   }
 });
 
-// ============================================================================
-// createModelLock Tests
-// ============================================================================
-
 Deno.test("createModelLock - creates lock with correct path for filesystem", async () => {
   await withTempDir(async (dir) => {
     await initializeRepo(dir);
@@ -945,7 +874,6 @@ Deno.test("createModelLock - creates lock with correct path for filesystem", asy
     const { datastoreConfig } = await resolveDatastoreForRepo(dir);
     const lock = await createModelLock(datastoreConfig, "aws-ec2", "my-server");
 
-    // Verify we can inspect (no lock held)
     const info = await lock.inspect();
     assertEquals(info, null);
   });
@@ -956,7 +884,6 @@ Deno.test("createModelLock - on a durable v2 filesystem datastore, syncs the dir
     const lockOf = async (config: DatastoreConfig) =>
       (await createModelLock(config, "aws-ec2", "my-server")) as FileLock;
     await withMockedEnv({ SWAMP_DATASTORE_DURABLE: undefined }, async () => {
-      // Durable writes are opt-in.
       assertEquals(
         (await lockOf({ type: "filesystem", path: dir }))
           .syncCreatedDirectories,
@@ -967,7 +894,6 @@ Deno.test("createModelLock - on a durable v2 filesystem datastore, syncs the dir
           .syncCreatedDirectories,
         true,
       );
-      // v3 does not sync its checkout's data directories.
       assertEquals(
         (await lockOf({
           type: "filesystem",
@@ -1004,7 +930,6 @@ Deno.test("createModelLock - on a durable v3 filesystem datastore that may keep 
       );
       // An exclude pattern may match data; the lock has no data name.
       assertEquals(await syncs({ durable: true, exclude: ["data/**"] }), true);
-      // Durable writes off: nothing syncs.
       assertEquals(
         await syncs({ directories: ["models", "workflows"] }),
         false,
@@ -1064,7 +989,6 @@ Deno.test("createWorkflowRunClaims - holds the run's lock for the callback and r
 
     const result = await claims.withClaim(runId, async () => {
       assertEquals((await observer.inspect())?.pid, Deno.pid);
-      // Another run's claim is free.
       assertEquals(await otherObserver.inspect(), null);
       return "done";
     });
@@ -1100,9 +1024,8 @@ Deno.test("createModelLock - retries promptly on brief contention", async () => 
     const { datastoreConfig } = await resolveDatastoreForRepo(dir);
     const lock = await createModelLock(datastoreConfig, "aws-ec2", "my-server");
 
-    // Per-model locks are brief, so the first retry must not sleep through
-    // a release. Asserted on configuration, not elapsed time — wall-clock
-    // assertions are banned by the repo's flakiness rules.
+    // per-model locks are brief, so the first retry must not sleep through a
+    // release; asserted on configuration, not elapsed time
     assertEquals(
       (lock as FileLock).retryIntervalMs,
       MODEL_LOCK_RETRY_INTERVAL_MS,
@@ -1117,19 +1040,15 @@ Deno.test("createModelLock - caps backoff so queued waiters stay near the releas
     const { datastoreConfig } = await resolveDatastoreForRepo(dir);
     const lock = await createModelLock(datastoreConfig, "aws-ec2", "my-server");
 
-    // A workflow step holds the per-model lock for its whole method run, so
-    // forEach iterations on one instance queue behind it. Without a small cap
-    // the tail waiter sleeps up to 8s after each release (swamp-club#2870).
+    // a workflow step holds the per-model lock for its whole method run, so
+    // forEach iterations queue behind it; without a small cap the tail waiter
+    // sleeps up to 8s after each release
     assertEquals(
       (lock as FileLock).maxBackoffMs,
       MODEL_LOCK_MAX_BACKOFF_MS,
     );
   });
 });
-
-// ============================================================================
-// acquireModelLocks Tests
-// ============================================================================
 
 Deno.test("acquireModelLocks: in serve, waits at the own-lock gate before taking a behavior's lock, and takes none while it is shut (swamp-club#4195)", async () => {
   await withTempDir(async (dir) => {
@@ -1151,7 +1070,6 @@ Deno.test("acquireModelLocks: in serve, waits at the own-lock gate before taking
         LockTimeoutError,
       );
       assertEquals(asked, ["data/aws-ec2/server-1/.lock"]);
-      // Nothing was taken while it was shut.
       const lock = await createModelLock(
         datastoreConfig,
         "aws-ec2",
@@ -1175,7 +1093,6 @@ Deno.test("acquireModelLocks - acquires and releases per-model locks", async () 
       { modelType: "aws-ec2", modelId: "server-2" },
     ], dir);
 
-    // Locks should be held — verify by inspecting
     const lock1 = await createModelLock(datastoreConfig, "aws-ec2", "server-1");
     const info1 = await lock1.inspect();
     assertEquals(info1 !== null, true);
@@ -1184,10 +1101,8 @@ Deno.test("acquireModelLocks - acquires and releases per-model locks", async () 
     const info2 = await lock2.inspect();
     assertEquals(info2 !== null, true);
 
-    // Release
     await lockResult.flush();
 
-    // Verify released
     const afterInfo = await lock1.inspect();
     assertEquals(afterInfo, null);
   });
@@ -1199,7 +1114,6 @@ Deno.test("acquireModelLocks - deduplicates same model", async () => {
 
     const { datastoreConfig } = await resolveDatastoreForRepo(dir);
 
-    // Pass the same model twice — should only acquire one lock
     const lockResult = await acquireModelLocks(datastoreConfig, [
       { modelType: "aws-ec2", modelId: "server-1" },
       { modelType: "aws-ec2", modelId: "server-1" },
@@ -1212,12 +1126,9 @@ Deno.test("acquireModelLocks - deduplicates same model", async () => {
 Deno.test(
   "acquireModelLocks - force-releases stale global lock instead of infinite-looping",
   async () => {
-    // Regression test for swamp-club#218. Before the fix, a stale global
-    // lock observed during per-model lock acquisition was bypassed but
-    // never deleted. The post-acquire TOCTOU re-check then re-detected
-    // the same stale lock and recursed forever. With the fix,
-    // acquireModelLocks force-releases the stale lock so subsequent
-    // inspects return null and the per-model loop completes normally.
+    // a stale global lock seen during per-model acquisition must be
+    // force-released, otherwise the post-acquire re-check finds it again and
+    // recurses forever
     await withTempDir(async (dir) => {
       await initializeRepo(dir);
 
@@ -1226,8 +1137,8 @@ Deno.test(
         throw new Error("expected filesystem datastore for this test");
       }
 
-      // Plant a stale global lock: acquiredAt 10 minutes ago, ttlMs 30s.
-      // The presence of `nonce` is what enables forceRelease to work.
+      // stale lock: acquired 10 minutes ago with a 30s ttl; the nonce is what
+      // lets forceRelease work
       const lockPath = join(datastoreConfig.path, ".datastore.lock");
       const tenMinutesAgo = new Date(Date.now() - 10 * 60 * 1000)
         .toISOString();
@@ -1243,8 +1154,7 @@ Deno.test(
         }),
       );
 
-      // Race acquireModelLocks against a 10s deadline. Without the fix
-      // the call deadlocks (recurses forever) and this throws.
+      // race against a 10s deadline so a recursion bug fails instead of hanging
       const acquirePromise = acquireModelLocks(datastoreConfig, [
         { modelType: "x", modelId: "y" },
       ], dir);
@@ -1269,34 +1179,24 @@ Deno.test(
         if (timeoutHandle.id !== undefined) clearTimeout(timeoutHandle.id);
       }
 
-      // Stale lock file should be gone.
       await assertRejects(
         () => Deno.stat(lockPath),
         Deno.errors.NotFound,
       );
 
-      // Clean up the per-model lock acquired by the call.
       await lockResult.flush();
     });
   },
 );
 
-// ============================================================================
-// skipImplicitSync Tests (lab #220)
-//
-// `swamp datastore sync` (push and default modes) acquires the lock but must
-// NOT run the coordinator's implicit pre-command pull — otherwise the
-// implicit pull silently moves files and the explicit pull fast-paths to 0,
-// causing `filesPulled: 0` to be reported even when data was hydrated.
-// ============================================================================
+// datastore sync takes the lock but must not run the coordinator's implicit
+// pre-command pull, or the explicit pull fast-paths to 0 and reports
+// filesPulled: 0 even when data was hydrated
 
 async function configureExtensionDatastore(
   dir: string,
   type: string,
 ): Promise<void> {
-  // Read the existing marker, append the datastore config, write it back.
-  // Mirrors what `swamp datastore setup extension` produces in the
-  // .swamp.yaml file.
   const markerPath = join(dir, ".swamp.yaml");
   const existing = await Deno.readTextFile(markerPath);
   const datastoreYaml = [
@@ -1396,8 +1296,6 @@ Deno.test("requireInitializedRepo - skipImplicitSync prevents coordinator pull",
 });
 
 Deno.test("requireInitializedRepo - default behavior still triggers coordinator pull", async () => {
-  // Sanity check that omitting skipImplicitSync preserves the existing
-  // implicit-pull behavior write commands depend on.
   const { datastoreTypeRegistry } = await import(
     "../domain/datastore/datastore_type_registry.ts"
   );
@@ -1468,12 +1366,9 @@ Deno.test("requireInitializedRepo - default behavior still triggers coordinator 
 Deno.test(
   "requireInitializedRepo - wiring forwards forward-slash cache-relative relPath to markDirty",
   async () => {
-    // End-to-end integration: a repository write under `requireInitializedRepo`
-    // should reach the sync service's `markDirty` with `options.relPath` set
-    // to a forward-slash cache-relative string. Pins the cacheRoot→relPath
-    // conversion in `buildMarkDirtyHook`. Uses a relPath that contains a
-    // directory separator so a regression that drops forward-slash
-    // normalization fails on the Windows CI runner.
+    // pins the cacheRoot to relPath conversion in buildMarkDirtyHook; the
+    // relPath contains a separator so a lost forward-slash normalization fails
+    // on Windows
     const { datastoreTypeRegistry } = await import(
       "../domain/datastore/datastore_type_registry.ts"
     );
@@ -1551,29 +1446,24 @@ Deno.test(
           new TextEncoder().encode("payload"),
         );
 
-        // save fires a markDirty call with the data-name directory as
-        // relPath before the write and another after it (swamp-club#2421).
+        // save fires markDirty with the data-name directory as relPath before
+        // the write and again after it
         assertEquals(markDirtyCalls.length, 2);
         assertEquals(markDirtyCalls[1], markDirtyCalls[0]);
         const relPath = markDirtyCalls[0].relPath;
         if (relPath === undefined) {
           throw new Error("expected relPath to be set");
         }
-        // Forward-slash normalized — the data-name directory under the cache
-        // root contains at least one separator (data/<type>/.../wiring-probe).
         if (relPath.includes("\\")) {
           throw new Error(
             `relPath must be forward-slash normalized, got: ${relPath}`,
           );
         }
-        // Cache-relative — must not start with the cache root or be absolute.
         if (relPath.startsWith("/") || relPath.includes(":")) {
           throw new Error(
             `relPath must be cache-relative, got: ${relPath}`,
           );
         }
-        // Must contain at least one separator (data-name dir lives under
-        // data/.../<dataName>) so the normalization is exercised.
         if (!relPath.includes("/")) {
           throw new Error(
             `relPath must contain a separator to exercise normalization, got: ${relPath}`,
@@ -1631,7 +1521,6 @@ Deno.test(
           markDirty: () => Promise.resolve(),
           hydrateFile: (relPath: string) => {
             hydrateFileCalls.push(relPath);
-            // Write the file so getContent retries successfully
             const absPath = join(cachePath, ...relPath.split("/"));
             Deno.mkdirSync(join(absPath, ".."), { recursive: true });
             Deno.writeFileSync(
@@ -1671,7 +1560,6 @@ Deno.test(
           },
         });
 
-        // Save data then delete the raw file to simulate lazy hydration state
         await repo.repoContext.unifiedDataRepo.save(
           testType,
           "model-h",
@@ -1686,7 +1574,6 @@ Deno.test(
         );
         await Deno.remove(contentPath);
 
-        // getContent should trigger hydrateFile through the wired hook
         const result = await repo.repoContext.unifiedDataRepo.getContent(
           testType,
           "model-h",
@@ -1697,17 +1584,14 @@ Deno.test(
         assertExists(result);
         assertEquals(new TextDecoder().decode(result), "hydrated");
 
-        // The hydrateFile call must receive a cache-relative, forward-slash path
         assertEquals(hydrateFileCalls.length, 1);
         const relPath = hydrateFileCalls[0];
 
-        // Must be cache-relative (not absolute)
         if (relPath.startsWith("/") || relPath.includes(":")) {
           throw new Error(
             `hydrateFile relPath must be cache-relative, got: ${relPath}`,
           );
         }
-        // Must be forward-slash normalized
         if (relPath.includes("\\")) {
           throw new Error(
             `hydrateFile relPath must be forward-slash normalized, got: ${relPath}`,
@@ -1715,7 +1599,6 @@ Deno.test(
         }
         // Must include the data/ prefix so extensions can map to S3 keys
         assertStringIncludes(relPath, "data/");
-        // Must end with /raw (the content file)
         assertStringIncludes(relPath, "/raw");
 
         await flushDatastoreSync();
@@ -1726,11 +1609,6 @@ Deno.test(
   },
 );
 
-/**
- * Runs `fn` against a repo on a lazy-capable extension datastore whose
- * `hydrateFile` is `hydrate`, with one data item saved and its `raw` file
- * removed, as lazy hydration leaves it.
- */
 async function withUnhydratedContent(
   hydrate: (cachePath: string, relPath: string) => boolean,
   fn: (
@@ -1888,7 +1766,7 @@ Deno.test(
   async () => {
     await withUnhydratedContent(
       (cachePath, relPath) => {
-        // The swamp-club#2404 shape: the first segment is doubled.
+        // a hydrate that doubles the first path segment
         const segments = relPath.split("/");
         writeHydrated(join(cachePath, segments[0], ...segments));
         return true;
@@ -1944,18 +1822,10 @@ Deno.test(
   },
 );
 
-// ============================================================================
-// waitForPerModelLocks Tests
-// ============================================================================
-//
-// `waitForPerModelLocks` is called twice by `requireInitializedRepo` —
-// once before acquiring the global lock, and once after — to close the
-// symmetric TOCTOU window between drain and global-lock acquisition that
-// caused issue #234 (data delete failing with ENOTEMPTY against a
-// concurrent writer). These tests exercise the polling primitive with an
-// injected scanner so the regression coverage is deterministic.
+// requireInitializedRepo drains per-model locks before and after taking the
+// global lock to close the TOCTOU window; these tests drive the polling with an
+// injected scanner
 
-/** A scan that counts `held` locks, none held for an ancestor's other run. */
 const heldCount = (held: number): PerModelLockScan => ({
   held,
   heldForOtherRuns: [],
@@ -1978,7 +1848,6 @@ Deno.test(
     });
     const elapsed = Date.now() - start;
 
-    // No polling loop entered — single scan call, no setTimeout delay.
     assertEquals(calls, 1);
     assertEquals(
       elapsed < 500,
@@ -1991,10 +1860,8 @@ Deno.test(
 Deno.test(
   "waitForPerModelLocks - polls until scanner reports no held locks",
   async () => {
-    // Sequence simulates a per-model lock that releases after the second
-    // poll: initial scan sees 1 (enter wait loop), first poll sees 1
-    // (keep polling), second poll sees 0 (exit). The drain must not
-    // return until the scanner reports 0.
+    // the lock releases after the second poll; the drain must not return until
+    // the scanner reports 0
     const sequence = [1, 1, 0];
     let i = 0;
     const scanner = (): Promise<PerModelLockScan> => {
@@ -2009,9 +1876,6 @@ Deno.test(
     });
     const elapsed = Date.now() - start;
 
-    // 3 calls: initial check + 2 polls (the second poll observes 0 and
-    // breaks). Polling cadence is 1s; allow some slack for scheduler
-    // overhead but require at least one poll interval.
     assertEquals(i, 3);
     assertEquals(
       elapsed >= 1_000,
@@ -2029,7 +1893,6 @@ Deno.test(
 
     await assertRejects(
       async () => {
-        // Force a short timeout via env var to keep the test fast
         await withMockedEnv(
           { SWAMP_LOCK_TIMEOUT_MS: "2000" },
           () =>
@@ -2212,12 +2075,7 @@ Deno.test(
     "appears between the first drain and the global lock acquisition " +
     "(regression for issue #234)",
   async () => {
-    // End-to-end coverage that the symmetric drain is wired through
-    // `requireInitializedRepo`. Higher-fidelity timing-driven coverage
-    // (a real concurrent writer racing a real delete) lives in
-    // integration/data_delete_test.ts; this test only verifies the
-    // wiring exists by writing a lock file and confirming
-    // `requireInitializedRepo` succeeds without skipping it.
+    // only verifies the drain is wired through requireInitializedRepo
     await withTempDir(async (dir) => {
       await initializeRepo(dir);
       const { datastoreConfig } = await resolveDatastoreForRepo(dir);
@@ -2225,10 +2083,8 @@ Deno.test(
         throw new Error("expected filesystem datastore for this test");
       }
 
-      // Pre-write a stale per-model lock file. Stale locks are ignored
-      // by the scanner (the bug is about *live* writers); this test
-      // confirms `requireInitializedRepo` traverses the symmetric drain
-      // code path twice without the stale lock blocking it.
+      // the scanner ignores stale locks (only live writers matter); this
+      // confirms the drain path runs twice without a stale lock blocking it
       const lockDir = join(
         datastoreConfig.path,
         "data",
@@ -2243,7 +2099,6 @@ Deno.test(
           holder: "stale@host",
           hostname: "host",
           pid: 1,
-          // 10 minutes old + 30s TTL = stale
           acquiredAt: new Date(Date.now() - 600_000).toISOString(),
           ttlMs: 30_000,
         }),
@@ -2259,14 +2114,8 @@ Deno.test(
   },
 );
 
-// ============================================================================
-// waitForPerModelLocks — Parent-Process Lock Awareness Tests
-// ============================================================================
-//
-// These tests use real lock files in a temp directory so the default scanner
-// exercises the PID-matching code path (the findModelLocksOverride seam
-// bypasses it).
-
+// real lock files, so the default scanner exercises PID matching (the
+// findModelLocks option bypasses it)
 Deno.test(
   "waitForPerModelLocks - skips locks held by parent process (SWAMP_LOCK_HOLDER_PID)",
   async () => {
@@ -2314,7 +2163,6 @@ Deno.test(
       const lockDir = join(dir, "data", "command-shell", "test-model");
       await ensureDir(lockDir);
       const lockFile = join(lockDir, ".lock");
-      // Write a fresh lock with a different PID
       const otherPid = 88888;
       await Deno.writeTextFile(
         lockFile,
@@ -2332,8 +2180,6 @@ Deno.test(
         [SWAMP_LOCK_ANCESTOR_PIDS]: undefined,
       }, async () => {
         const start = Date.now();
-        // The lock has a 2s TTL; the scanner will count it on the first
-        // pass, enter the wait loop, and eventually see it as stale.
         await waitForPerModelLocks(dir);
         const elapsed = Date.now() - start;
 
@@ -2406,10 +2252,9 @@ Deno.test(
           }),
         );
       };
-      // Two ancestors hold long-lived locks on this host. An unrelated
-      // writer, and a process on another host sharing the datastore with
-      // an ancestor's pid, hold locks that go stale shortly, ending the
-      // wait.
+      // two ancestors hold long-lived locks; an unrelated writer, and a process
+      // on another host with an ancestor's pid, hold locks that go stale
+      // shortly and end the wait
       await writeLock("grandparent-model", 11111, hostname(), 30_000);
       await writeLock("parent-model", 22222, hostname(), 30_000);
       await writeLock("other-model", 33333, hostname(), 1_500);
@@ -2441,7 +2286,6 @@ Deno.test(
   },
 );
 
-/** Writes a per-model lock file for `model` under `dir`. */
 async function writeModelLock(
   dir: string,
   model: string,
@@ -2463,7 +2307,6 @@ async function writeModelLock(
   );
 }
 
-/** Writes an empty per-model lock file for `model`, as a holder mid-write leaves it. */
 async function writeEmptyModelLock(
   dir: string,
   model: string,
@@ -2479,8 +2322,8 @@ Deno.test(
   "waitForPerModelLocks - waits on a fresh unreadable lock file until it is gone",
   async () => {
     await withTempDir(async (dir) => {
-      // A holder caught mid-write: the file exists but is empty
-      // (swamp-club#3148). The holder releases once the drain is waiting.
+      // a holder caught mid-write leaves an empty lock file; the holder
+      // releases once the drain is waiting
       const lockPath = await writeEmptyModelLock(dir, "writer-model");
 
       const messages: string[] = [];
@@ -2525,9 +2368,8 @@ Deno.test(
   "waitForPerModelLocks - skips the lock a parent holds for this run and waits on its other runs' locks",
   async () => {
     await withTempDir(async (dir) => {
-      // The parent (22222) runs two steps in parallel. This command was
-      // started by the step holding "run-a"; "run-b" is the sibling step's
-      // lock, which goes stale shortly and ends the wait.
+      // the parent runs two steps in parallel; run-b is the sibling step's
+      // lock, which goes stale shortly and ends the wait
       await writeModelLock(dir, "step-a-model", {
         pid: 22222,
         ttlMs: 30_000,
@@ -2570,8 +2412,8 @@ Deno.test(
   "waitForPerModelLocks - matches on the pid when the parent handed down no held locks",
   async () => {
     await withTempDir(async (dir) => {
-      // An older parent, or a spawn outside any held-lock scope: no list
-      // for 22222, so both of its locks are skipped, as before.
+      // an older parent, or a spawn outside any held-lock scope, hands down no
+      // list, so both of the parent's locks are skipped by pid
       await writeModelLock(dir, "step-a-model", {
         pid: 22222,
         ttlMs: 30_000,
@@ -2673,11 +2515,6 @@ Deno.test(
   },
 );
 
-// ============================================================================
-// waitForPerModelLocks — drain-wait cycle detection (swamp-club#2981)
-// ============================================================================
-
-/** A scan of a drain that skips "mine" and waits on "theirs". */
 const nestedScan = (): PerModelLockScan => ({
   held: 1,
   heldForOtherRuns: [],
@@ -2688,7 +2525,6 @@ const nestedScan = (): PerModelLockScan => ({
   }],
 });
 
-/** The other side of {@link nestedScan}: skips "theirs", waits on "mine". */
 function opponentWait(overrides: Partial<DrainWait> = {}): DrainWait {
   return {
     id: "opponent",
@@ -2703,7 +2539,6 @@ function opponentWait(overrides: Partial<DrainWait> = {}): DrainWait {
   };
 }
 
-/** In-memory drain-wait markers: this drain's own, plus `others()`. */
 function fakeDrainWaits(others: () => DrainWait[]): {
   waits: DrainWaits;
   published: DrainWait[];
@@ -2729,7 +2564,6 @@ function fakeDrainWaits(others: () => DrainWait[]): {
   };
 }
 
-/** A scanner that reports `scan` `times` times, then no held locks. */
 function scanTimes(
   scan: PerModelLockScan,
   times: number,
@@ -2741,7 +2575,6 @@ function scanTimes(
 Deno.test(
   "waitForPerModelLocks - gives way to an earlier drain it waits on and that waits on it",
   async () => {
-    // The opponent refreshes its marker between this drain's polls.
     let refreshes = 0;
     const base = Date.now() - 1_000;
     const markers = fakeDrainWaits(
@@ -2767,8 +2600,8 @@ Deno.test(
       join("data", "command-shell", "their-model", ".lock"),
     );
     assertStringIncludes(error.message, "one at a time");
-    // One sighting is not enough: it published once, saw the opponent,
-    // and gave way only after seeing it again with a newer marker.
+    // one sighting is not enough: the drain gives way only after seeing the
+    // opponent again with a newer marker
     assertEquals(markers.published.length, 2);
     assertEquals(markers.published[0].skipping, ["mine"]);
     assertEquals(markers.published[0].waitingOn, ["theirs"]);
@@ -2878,7 +2711,6 @@ Deno.test(
       pollIntervalMs: 0,
     });
 
-    // Published after the first scan, withdrawn after the second.
     assertEquals(ownAfterEachScan, [0, 1, 0, 0]);
   },
 );
@@ -2911,7 +2743,6 @@ Deno.test(
 Deno.test(
   "waitForPerModelLocks - keeps waiting when the markers cannot be written or read",
   async () => {
-    // An opponent this drain would give way to, if it could use markers.
     let refreshes = 0;
     const base = Date.now() - 1_000;
     const opponent = () => [opponentWait({ updatedAtMs: base + refreshes++ })];
@@ -2980,7 +2811,6 @@ Deno.test(
             progressWriter: () => {},
             drainWaits: {
               publish: (wait) => store.publish(wait),
-              // The sibling step ends once the marker has been read back.
               list: async (nowMs) => {
                 const waits = await store.list(nowMs);
                 onDisk.push(...waits);
@@ -3037,7 +2867,6 @@ Deno.test(
           waitForPerModelLocks(dir, undefined, {
             pollIntervalMs: 0,
             drainWaits: markers.waits,
-            // The unrelated run ends once this drain has begun to wait.
             progressWriter: (message) => {
               if (messages.push(message) === 1) {
                 Deno.removeSync(
@@ -3116,19 +2945,13 @@ Deno.test(
         }, consume),
         [{ [SWAMP_LOCK_HOLDER_TOKENS]: `${Deno.pid}:n1+n2` }],
       );
-      // A non-mutating run takes no lock and still gets a scope.
       assertEquals(await runUnderModelLocks(undefined, consume), [
         { [SWAMP_LOCK_HOLDER_TOKENS]: `${Deno.pid}:` },
       ]);
-      // Outside the helper nothing is handed down for this process.
       assertEquals(await consume(), [{}]);
     });
   },
 );
-
-// ============================================================================
-// acquireModelLocks — lock holder marker (swamp-club#2659)
-// ============================================================================
 
 Deno.test(
   "acquireModelLocks - keeps this process as the lock holder across overlapping holders' flushes",
@@ -3157,8 +2980,8 @@ Deno.test(
       );
       assertEquals(readMarker(), holding, "set while both hold locks");
 
-      // Flushing one holder used to delete the marker while the other
-      // still held its lock.
+      // flushing one holder must not delete the marker while another still
+      // holds its lock
       await first.flush();
       assertEquals(readMarker(), holding, "kept after the first flush");
 
@@ -3167,10 +2990,6 @@ Deno.test(
     });
   },
 );
-
-// ============================================================================
-// acquireModelLocks SyncCapabilities Tests
-// ============================================================================
 
 Deno.test("acquireModelLocks - scopedSync passes SyncContext to pull and push", async () => {
   const { datastoreTypeRegistry } = await import(
@@ -3260,10 +3079,6 @@ Deno.test("acquireModelLocks - scopedSync passes SyncContext to pull and push", 
   }
 });
 
-/**
- * Registers a sync-capable test datastore whose locks and sync calls append
- * to `events`, so a test can check what ran inside a `wrapSync` wrapper.
- */
 async function registerRecordingDatastore(
   events: string[],
   capabilities: { twoPhaseSync: boolean },
@@ -3625,7 +3440,6 @@ Deno.test("acquireModelLocks - scopedSync deduplicates models in context", async
       ], dir);
 
       assertEquals(lockResult.synced, true);
-      // unique deduplicates to 2 models, so 2 pull calls
       assertEquals(pullArgs.length, 2);
 
       const firstPull = pullArgs[0] as { context?: { models: unknown[] } };
@@ -3651,8 +3465,6 @@ Deno.test("acquireModelLocks - scopedSync deduplicates models in context", async
   }
 });
 
-// ── Giga-swamp per-namespace global lock (Phase 3) ──────────────────────────
-
 Deno.test("datastoreGlobalLockOptions: solo mode falls back to the single .datastore.lock", () => {
   const solo: DatastoreConfig = { type: "filesystem", path: "/ds" };
   const explicitEmpty: DatastoreConfig = {
@@ -3660,7 +3472,6 @@ Deno.test("datastoreGlobalLockOptions: solo mode falls back to the single .datas
     path: "/ds",
     namespace: "",
   };
-  // undefined → FileLock uses the default `.datastore.lock` key.
   assertEquals(datastoreGlobalLockOptions(solo), undefined);
   assertEquals(datastoreGlobalLockOptions(explicitEmpty), undefined);
 });
@@ -3689,8 +3500,6 @@ Deno.test("datastoreGlobalLockOptions: applies to custom datastores too", () => 
     namespace: "security",
   });
 });
-
-// ── Phase 6b: namespace-scoped sync regression gates ────────────────────────
 
 Deno.test("acquireModelLocks - namespace is threaded to pull and push", async () => {
   const { datastoreTypeRegistry } = await import(
@@ -3766,9 +3575,9 @@ Deno.test("acquireModelLocks - namespace is threaded to pull and push", async ()
         { modelType: "aws-ec2", modelId: "server-1" },
       ], dir);
 
-      // PR #1386 regression gate: synced must be true after namespace-scoped
-      // pull so callers fire catalogStore.invalidate(). A false here means
-      // pulled files land in cache but the catalog is never re-indexed.
+      // synced must be true after a namespace-scoped pull so callers invalidate
+      // the catalog; false would leave pulled files in the cache but never
+      // re-indexed
       assertEquals(lockResult.synced, true);
 
       assertEquals(pullArgs.length, 1);
@@ -3801,8 +3610,6 @@ Deno.test("acquireModelLocks - namespace is threaded to pull and push", async ()
     datastoreTypeRegistry.invalidateType(typeName);
   }
 });
-
-// ── swamp-club#2553: synced reflects whether the pull changed the cache ─────
 
 for (
   const [label, pullResult, expectedSynced] of [
@@ -3900,7 +3707,6 @@ Deno.test("acquireModelLocks - synced survives the global-lock retry after an ea
     ttlMs: 30_000,
   };
   let structuralReported = false;
-  // Model A's first pull writes files; every pull in the retry finds none.
   const pullResults = [5];
   let pullCount = 0;
 
@@ -3973,7 +3779,6 @@ Deno.test("acquireModelLocks - synced survives the global-lock retry after an ea
         { modelType: "aws-ec2", modelId: "b" },
       ], dir);
       try {
-        // A, then the retry's A and B: the retry really ran.
         assertEquals(structuralReported, true);
         assertEquals(pullCount, 3);
         assertEquals(lockResult.synced, true);
@@ -3986,25 +3791,13 @@ Deno.test("acquireModelLocks - synced survives the global-lock retry after an ea
   }
 });
 
-// ── Unwind on a failed acquisition (swamp-club#2901) ─────────────────────────
-
-/** Where the fake datastore of {@link withFailingAcquisition} fails. */
 interface AcquisitionFailure {
-  /** Rejects this pull (1-based). */
   pullAt?: number;
-  /** Rejects this per-model lock acquire (1-based). */
   acquireAt?: number;
-  /** Rejects the global lock inspect made after the first model lock. */
   postAcquireInspect?: boolean;
-  /** Rejects every per-model lock release. */
   release?: boolean;
 }
 
-/**
- * Locks models `a` and `b` on a fake sync-capable datastore that fails as
- * `failure` says, and returns the error with the per-model lock keys
- * acquired and the keys whose release was attempted, in order.
- */
 async function withFailingAcquisition(
   failure: AcquisitionFailure,
 ): Promise<{ error: Error; acquired: string[]; released: string[] }> {
@@ -4160,8 +3953,8 @@ Deno.test("acquireModelLocks: waits on a fresh unreadable global lock file until
     const { datastoreConfig } = await resolveDatastoreForRepo(dir);
     assert(!isCustomDatastoreConfig(datastoreConfig));
 
-    // A structural command caught mid-write: its global lock file exists
-    // but is empty (swamp-club#3148). It releases once the writer waits.
+    // a structural command caught mid-write leaves its global lock file empty;
+    // it releases once the writer waits
     const globalLockPath = join(datastoreConfig.path, ".datastore.lock");
     await ensureDir(datastoreConfig.path);
     await Deno.writeTextFile(globalLockPath, "");
@@ -4286,7 +4079,6 @@ Deno.test("acquireModelLocks: the re-check after a per-model lock sees a fresh u
           JSON.stringify(messages)
         }`,
       );
-      // Taken, given up for the structural command, then taken again.
       assertEquals(acquired.length, 2);
       assertEquals(released.length, 2);
     });
@@ -4307,8 +4099,6 @@ Deno.test("acquireModelLocks: a lock release failing during the unwind does not 
   assertEquals(acquired.length, 2);
   assertEquals(released, acquired);
 });
-
-// ── Two-Phase Sync Tests ─────────────────────────────────────────────────────
 
 function createMockConfig(namespace?: string): CustomDatastoreConfig {
   return {
@@ -4671,10 +4461,6 @@ Deno.test("acquireModelLocks: uses two-phase push when twoPhaseSync is advertise
   }
 });
 
-// ============================================================================
-// resolveManagedConfigPaths Tests
-// ============================================================================
-
 Deno.test("resolveManagedConfigPaths: null marker returns default lockfile path", () => {
   const repo = resolve("/repo");
   const { lockfilePath } = resolveManagedConfigPaths(repo, null);
@@ -4767,8 +4553,6 @@ Deno.test("resolveManagedConfigPaths: custom modelsDir is used when managedConfi
     join(repo, "custom", "models", "upstream_extensions.json"),
   );
 });
-
-// ── ensureManagedConfigBase Tests ────────────────────────────────────────────
 
 Deno.test("ensureManagedConfigBase: no-ops when managedConfig is false", async () => {
   const repo = resolve("/repo-no-managed");
@@ -4894,8 +4678,6 @@ Deno.test("ensureManagedConfigBase: explicit configBasePath still takes preceden
     await Deno.remove(tmpDir, { recursive: true }).catch(() => {});
   }
 });
-
-// ── assertManagedConfigWritable (swamp-club#2483) ───────────────────────────
 
 const unsetDatastoreEnv = () => undefined;
 
@@ -5087,10 +4869,6 @@ Deno.test("resolveManagedLockfileForWrite: refuses other targets while unresolve
   );
 });
 
-/**
- * Installs an auto-resolver for `collective` that records every registry
- * lookup and finds nothing, runs `fn`, then restores the previous resolver.
- */
 async function withRecordingAutoResolver(
   collective: string,
   fn: (lookups: string[]) => Promise<void>,
@@ -5118,7 +4896,6 @@ async function withRecordingAutoResolver(
         withInstallLock: (fn) => fn(),
         providesType: () => Promise.resolve(false),
       },
-      // A no-op for every output event.
       output: new Proxy({}, { get: () => () => {} }) as AutoResolveOutputPort,
     }),
   );
@@ -5204,8 +4981,6 @@ Deno.test("ensureManagedConfigBase: a failed attempt resets the datastore loader
     datastoreTypeRegistry.clearLoadersForTesting();
   }
 });
-
-// ── flushSinglePhasePush: catalog export ordering ──────────────────────────
 
 Deno.test("flushSinglePhasePush: writes catalog export before acquiring global lock", async () => {
   const events: string[] = [];
@@ -5316,9 +5091,9 @@ Deno.test("buildMarkDirtyHook: maps a repo .swamp path onto the cache layout", a
 });
 
 Deno.test("buildMarkDirtyHook: sends nothing for a path outside the cache and .swamp", async () => {
-  // Repo-local definitions without managedConfig are never synced. An
-  // escaping relPath would make the S3/GCS extensions fall back to a bulk
-  // push of the whole cache (swamp-club#2415).
+  // repo-local definitions without managedConfig are never synced; an escaping
+  // relPath would make the S3/GCS extensions fall back to a bulk push of the
+  // whole cache
   const base = resolve("mark-dirty-hook");
   const repoDir = join(base, "repo");
   const { service, marks } = createRecordingSyncService();
@@ -5345,8 +5120,7 @@ Deno.test("buildMarkDirtyHook: forwards an absent path as a bare call", async ()
 });
 
 Deno.test("buildMarkDirtyHook: marks a first segment that only starts with two dots", async () => {
-  // A name such as `..hidden` sits inside the root. Before the escape check
-  // compared whole segments, the hook dropped these marks.
+  // a name such as ..hidden sits inside the root and must still be marked
   const base = resolve("mark-dirty-hook");
   const cacheRoot = join(base, "cache");
   const repoDir = join(base, "repo");
@@ -5376,10 +5150,6 @@ Deno.test("buildMarkDirtyHook: sends nothing for a sibling whose name extends th
   assertEquals(marks, []);
 });
 
-/**
- * Registers a sync-capable datastore type that records lock and sync
- * events, optionally pushing two-phase and failing the push.
- */
 function registerRecordingLockType(
   events: string[],
   options: { twoPhase: boolean; failPush: boolean },
@@ -5468,7 +5238,6 @@ for (const twoPhase of [false, true]) {
           const { datastoreConfig } = await resolveDatastoreForRepo(dir);
           const models = [{ modelType: "test-type", modelId: "m1" }];
 
-          // Each run records only what happens after the locks are held.
           const run = async (
             end: (
               lock: Awaited<ReturnType<typeof acquireModelLocks>>,
@@ -5547,9 +5316,9 @@ Deno.test("acquireModelLocks: push leaves the locks held until release", async (
   }
 });
 
-// CLI commands stage their bare marks through a root unit over
-// repoContext.markDirty and push with syncService (swamp-club#3033), so a
-// sync service without a mark hook would push a change that was never marked.
+// CLI commands stage bare marks through a root unit over repoContext.markDirty
+// and push with syncService, so a sync service without a mark hook would push a
+// change never marked
 Deno.test("requireInitializedRepoUnlocked: returns a mark hook exactly when it returns a sync service", async () => {
   const events: string[] = [];
   const typeName = registerRecordingLockType(events, {
@@ -5594,7 +5363,6 @@ function waitRegistrationFor(runId: string): WaitRegistration {
   );
 }
 
-/** A control-plane store in memory that records each call it receives. */
 function recordingControlPlane(calls: string[]): ControlPlaneStore {
   const data = new Map<string, Uint8Array>();
   return {
@@ -5639,7 +5407,6 @@ function customConfig(namespace?: string): DatastoreConfig {
 
 Deno.test("resolveSignalWaitSupport: a filesystem datastore keeps wait records under its own path, shared by every repository on it", async () => {
   await withTempDir(async (datastore) => {
-    // Two repositories that share one datastore directory.
     const config: DatastoreConfig = { type: "filesystem", path: datastore };
     const one = resolveSignalWaitSupport(config, undefined, {
       runsInDatastore: true,
@@ -5695,7 +5462,6 @@ Deno.test("resolveSignalWaitSupport: a custom datastore without a shared control
   const { service: plain } = createRecordingSyncService();
   const noSync = resolveSignalWaitSupport(customConfig());
   const noCapability = resolveSignalWaitSupport(customConfig(), plain);
-  // Advertised without a store to hand out.
   const noStore = resolveSignalWaitSupport(customConfig(), {
     ...plain,
     capabilities: () => ({ controlPlane: true }),
@@ -5718,11 +5484,9 @@ Deno.test("resolveSignalWaitSupport: a store that cannot create a record atomica
   });
   assert(support.supported);
 
-  // What a workflow with a wait asks before it starts.
   const refused = await assertRejects(() => support.ready!(), Error);
   assertStringIncludes(refused.message, "putIfAbsent");
   assertStringIncludes(refused.message, '"@acme/bucket"');
-  // And no record is written through such a store.
   await assertRejects(
     () => support.store.register(waitRegistrationFor(crypto.randomUUID())),
     Error,
@@ -5778,14 +5542,12 @@ Deno.test("resolveSignalWaitSupport: the extension's store is not created until 
 
   const support = resolveSignalWaitSupport(customConfig("team-a"), sync);
   assert(support.supported);
-  // Building a repository context creates nothing and binds nothing.
   assertEquals(order, []);
 
   const registration = waitRegistrationFor(crypto.randomUUID());
   await support.store.register(registration);
 
   assertEquals(order, ["pull:team-a", "store:team-a"]);
-  // Written and listed under the same, namespaced prefix.
   assertEquals(await support.store.listRegistrations(), [registration]);
   assertEquals(order, ["pull:team-a", "store:team-a"]);
 });
@@ -5824,7 +5586,6 @@ Deno.test("resolveSignalWaitSupport: a custom datastore's store is bound to the 
   });
   assert(support.supported);
   assertEquals(support.localRunAbsenceIsAuthoritative, undefined);
-  // Resolving touches neither the store nor the remote.
   assertEquals(events, []);
   assertEquals(calls, []);
   const registration = waitRegistrationFor(crypto.randomUUID());
@@ -5900,12 +5661,10 @@ Deno.test("requireInitializedRepoUnlocked: gives the context wait support, and i
     });
     run.suspend();
 
-    // A suspended run keeps its wait open.
     await repoContext.workflowRunRepo.save(workflow.id, run);
     assertEquals((await support.store.findRegistration(wait.id)).kind, "found");
     assertEquals((await support.store.findOutcome(wait.id)).kind, "absent");
 
-    // Any writer that ends the run closes it, with nothing to remember.
     run.endAsCancelled("operator");
     await repoContext.workflowRunRepo.save(workflow.id, run);
     assertEquals(
@@ -5964,7 +5723,6 @@ Deno.test("attachSignalWaits: a wait store that cannot be reached does not stop 
       "cancelled",
     );
 
-    // Without support the hook is cleared, not left from an earlier call.
     attachSignalWaits({ workflowRunRepo: runRepo }, {
       supported: false,
       reason: "none",
@@ -5979,19 +5737,16 @@ Deno.test("runsLiveInDatastore: true only when run records are stored in the dat
   const resolverFor = (config: DatastoreConfig) =>
     new DefaultDatastorePathResolver(dir, config);
 
-  // The default layout keeps runs in the datastore.
   assertEquals(
     runsLiveInDatastore(resolverFor({ type: "filesystem", path })),
     true,
   );
-  // A datastore told to hold other directories only.
   assertEquals(
     runsLiveInDatastore(
       resolverFor({ type: "filesystem", path, directories: ["data"] }),
     ),
     false,
   );
-  // Or told to leave the runs out.
   assertEquals(
     runsLiveInDatastore(
       resolverFor({ type: "filesystem", path, exclude: ["workflow-runs"] }),
@@ -6014,11 +5769,6 @@ Deno.test("requireInitializedRepoUnlocked: the default datastore lets the sweep 
   });
 });
 
-// ============================================================================
-// Hand-off reclaim (swamp-club#3111)
-// ============================================================================
-
-/** A scan that skips `skipped` and waits on `held` locks. */
 const skippingScan = (
   skipped: readonly string[],
   held = 0,
@@ -6029,7 +5779,6 @@ const skippingScan = (
   waitedLocks: [],
 });
 
-/** Runs a drain over `scans`, recording scans and published lists in order. */
 async function drainPublishing(scans: PerModelLockScan[]) {
   const log: string[] = [];
   let i = 0;
@@ -6073,7 +5822,6 @@ Deno.test("waitForPerModelLocks: publishes the locks it skips, then confirms the
 Deno.test("waitForPerModelLocks: withdraws a re-keyed lock from the list before waiting on it", async () => {
   const { skipped, log } = await drainPublishing([
     skippingScan(["a", "b"]),
-    // The holder of b re-keyed it: no longer skipped, now waited on.
     skippingScan(["a"], 1),
     skippingScan(["a"], 1),
     skippingScan(["a"]),
@@ -6101,7 +5849,6 @@ Deno.test("waitForPerModelLocks: without a publisher it returns the skipped lock
   assertEquals(scans, 1);
 });
 
-/** A global lock as `reclaimModelLocks` reads it: one info per inspect. */
 function globalLockReturning(infos: Array<LockInfo | null>) {
   let inspects = 0;
   return {
@@ -6209,7 +5956,6 @@ Deno.test("reclaimModelLocks: throws LockTimeoutError when the structural comman
       LockTimeoutError,
     );
     assertStringIncludes(error.message, "ns/.datastore.lock");
-    // The lock is still re-keyed: nothing new can skip it.
     assertNotEquals(lock.heldNonce, retired);
     await lock.release();
   });
@@ -6232,7 +5978,6 @@ Deno.test("reclaimModelLocks: a cancelled run re-keys and does not wait on a str
       DOMException,
     );
     assertEquals(error.name, "AbortError");
-    // One read of the global lock, and no notice of a wait that never began.
     assertEquals(global.inspects(), 1);
     assertEquals(lines, []);
     // The lock is still re-keyed: nothing new can skip it.
@@ -6250,7 +5995,6 @@ Deno.test("reclaimModelLocks: a cancel during the wait ends it", async () => {
     let inspects = 0;
     const global = {
       inspect: () => {
-        // Cancelled while the second poll is being read.
         if (++inspects === 2) controller.abort();
         return Promise.resolve(working);
       },
@@ -6283,7 +6027,6 @@ Deno.test("reclaimModelLocks: a cancelled run reads a global lock caught mid-wri
       acquiredAt: new Date().toISOString(),
       ttlMs: 30_000,
     };
-    // Once readable, it is a command that skipped none of these locks.
     const global = globalLockReturning([midWrite, globalInfo(["other"])]);
 
     await reclaimModelLocks([lock], global, {
@@ -6329,7 +6072,6 @@ Deno.test("waitForPerModelLocks: a skipped set that never settles ends at the lo
       ),
     LockTimeoutError,
   );
-  // Paced by the poll interval after the first confirming scan.
   assert(scans < 30, `expected a paced drain, got ${scans} scans`);
 });
 
@@ -6419,7 +6161,6 @@ Deno.test("resolveContinuationClaims: a filesystem datastore keeps claims in the
     };
     assertEquals(await one.store.create(claim), true);
 
-    // Another process on the repository reads the same record.
     assertEquals(
       await two.store.find(claim.runId, claim.suspensionKey),
       claim,
@@ -6437,7 +6178,6 @@ Deno.test("resolveContinuationClaims: a custom datastore without a shared contro
     resolveContinuationClaims(customConfig(), "/repo", plain),
     undefined,
   );
-  // Advertised without a store to hand out.
   assertEquals(
     resolveContinuationClaims(customConfig(), "/repo", {
       ...plain,
@@ -6461,7 +6201,6 @@ Deno.test("resolveContinuationClaims: a custom datastore's claims go to its cont
     controlPlaneStore: () => remote,
   })!;
   assert(claims.holder.startsWith("local:"));
-  // Building a repository context opens nothing.
   assertEquals(calls, []);
 
   assertEquals(await claims.usable!(), true);
@@ -6477,7 +6216,6 @@ Deno.test("resolveContinuationClaims: a custom datastore's claims go to its cont
     "pull:team-a",
     `putIfAbsent:continuations/${claim.runId}/${claim.suspensionKey}/1`,
   ]);
-  // A serve instance with no heartbeat in that store is dead.
   assertEquals(await claims.liveness("serve:gone"), "dead");
 });
 
@@ -6504,7 +6242,6 @@ Deno.test("resolveContinuationClaims: a store that cannot create a record atomic
     controlPlaneStore: () => recordingControlPlane([]),
   })!;
   await assertRejects(() => flaky.usable!(), Error, "network down");
-  // The failed open is not kept: the next call tries again.
   assertEquals(await flaky.usable!(), true);
   assertEquals(pulls, 2);
 });
@@ -6567,20 +6304,15 @@ Deno.test("runRecordCurrencyOver: compares the cached run record with the remote
       bounded: true,
     }]);
 
-    // A peer ended the run: same length, other bytes.
     remote = encoder.encode("status: cancelled\n");
     assertEquals(await current(run), false);
-    // A longer record.
     remote = encoder.encode("status: suspended\nmore: 1\n");
     assertEquals(await current(run), false);
-    // The remote has no such run.
     remote = null;
     assertEquals(await current(run), false);
-    // This host has no record to resume from.
     remote = encoder.encode("status: suspended\n");
     await Deno.remove(runPath);
     assertEquals(await current(run), false);
-    // Nothing was written back to the cache.
     assertEquals(await exists(runPath), false);
   });
 });

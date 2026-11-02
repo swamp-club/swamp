@@ -17,14 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Integration test for swamp-club#3955: a v2 filesystem datastore whose
- * newest data versions an unclean shutdown left empty. The real repository,
- * catalog, doctor scan and libswamp repair are wired together: a read warns,
- * the scan reports the version, and the repair leaves the record's last
- * readable version latest on disk, in the catalog and through queries.
- */
-
 import { assert, assertEquals } from "@std/assert";
 import { join } from "@std/path";
 import { parse as parseYaml, stringify as stringifyYaml } from "@std/yaml";
@@ -97,16 +89,14 @@ async function withRepo(fn: (r: Repo) => Promise<void>): Promise<void> {
   }
 }
 
-/** Empties a version's files, as an unclean shutdown leaves them. */
 async function truncate(versionDir: string): Promise<void> {
   await Deno.writeFile(join(versionDir, "raw"), new Uint8Array());
   await Deno.writeFile(join(versionDir, "metadata.yaml"), new Uint8Array());
 }
 
 /**
- * Leaves version `version` of a data name as a save killed before it was
- * published: metadata copied from version `from` and renumbered, no raw
- * unless `complete`, no catalog row, and the marker left where it was.
+ * a save killed before publish: metadata copied from version from and
+ * renumbered, no raw unless complete, no catalog row, marker left where it was
  */
 async function writeCrashedSave(
   nameDir: string,
@@ -122,7 +112,6 @@ async function writeCrashedSave(
     join(nameDir, String(version), "metadata.yaml"),
     stringifyYaml({ ...metadata, version, id: crypto.randomUUID() }),
   );
-  // Killed after both files landed, before the marker moved.
   if (complete) {
     await Deno.copyFile(
       join(nameDir, String(from), "raw"),
@@ -131,7 +120,6 @@ async function writeCrashedSave(
   }
 }
 
-/** The libswamp repair over the real repository and catalog. */
 function repairDeps(r: Repo): RepairUnreadableVersionsDeps {
   const scan = () => scanUnreadableVersions(r.repo, r.catalog, SOLO_NAMESPACE);
   return {
@@ -183,17 +171,14 @@ Deno.test("doctor unreadable versions: a read warns, the scan reports, and the r
     assert(completed?.kind === "completed", JSON.stringify(events));
     assertEquals(completed.result.versionsRemoved, 1);
 
-    // On disk: the marker names version 2.
     assertEquals(
       await Deno.readTextFile(join(r.nameDir("state"), "latest")),
       "2",
     );
-    // In the catalog: version 2 is latest, and step latest for its step.
     const rows = [...r.catalog.iterateNamespace(SOLO_NAMESPACE)]
       .filter((row) => row.data_name === "state")
       .map((row) => [row.version, row.is_latest, row.is_step_latest]);
     assertEquals(rows.sort(), [[1, 0, 0], [2, 1, 1]]);
-    // Through reads and queries.
     assertEquals(
       (await r.repo.findByName(type, r.modelId, "state"))?.version,
       2,
@@ -278,8 +263,6 @@ Deno.test("doctor unreadable versions: a crashed save above an unreadable versio
     await withRepo(async (r) => {
       await r.write("state", 3);
       await truncate(join(r.nameDir("state"), String(unreadable)));
-      // A save killed after metadata.yaml landed: no raw, no catalog row,
-      // and the marker still names version 3.
       await writeCrashedSave(r.nameDir("state"), 2, 4);
 
       const events = await repair(r);
@@ -301,8 +284,8 @@ Deno.test("doctor unreadable versions: a crashed save above an unreadable versio
         r.catalog.versionKeys(SOLO_NAMESPACE).some((k) => k.version === 4),
         false,
       );
-      // A live repo's catalog is populated, so the query reads the rows
-      // above instead of rebuilding them from every directory on disk.
+      // a live repo's catalog is populated, so the query reads the rows above
+      // instead of rebuilding them from every directory on disk
       r.catalog.markPopulated();
       const records = await new DataQueryService(r.catalog, r.repo).query(
         'name == "state"',

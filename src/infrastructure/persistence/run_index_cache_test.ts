@@ -56,7 +56,6 @@ function stampAt(
   };
 }
 
-/** A cache over stamps the test sets, counting loads. */
 function harness(
   options: { maxRuns?: number; now?: number } = {},
 ) {
@@ -130,8 +129,8 @@ Deno.test("RunIndexCache: does not keep a snapshot whose stat is too recent or i
 });
 
 Deno.test("RunIndexCache: does not keep a snapshot whose index ctime is too recent, though its mtime is old", async () => {
-  // An in-place rewrite that sets the mtime back moves only the ctime,
-  // which Deno reports in whole seconds (swamp-club#3467).
+  // an in-place rewrite that sets the mtime back moves only the ctime, which
+  // Deno reports in whole seconds
   const stamp: RunIndexStamp = {
     index: { mtimeMs: OLD, size: 10, ctimeMs: NOW - 500, ino: 1 },
     dirMtimeMs: OLD,
@@ -172,7 +171,6 @@ Deno.test("RunIndexCache: does not keep a snapshot when the stamp moved during t
     return Promise.resolve({ snapshot: snapshotOf(1), fromIndex: true });
   });
   await h.cache.get("wf", h.load(snapshotOf(1)));
-  // The second read loads again, then keeps what it built.
   await h.cache.get("wf", h.load(snapshotOf(1)));
   assertEquals(h.loads, 1);
 });
@@ -182,7 +180,6 @@ Deno.test("RunIndexCache: evicts the least recently used workflows past the cap,
   for (const id of ["a", "b", "c"]) h.stamps.set(id, stampAt(OLD, OLD));
   await h.cache.get("a", h.load(snapshotOf(2)));
   await h.cache.get("b", h.load(snapshotOf(2)));
-  // Touch a so b is the least recently used.
   await h.cache.get("a", h.load(snapshotOf(2)));
   await h.cache.get("c", h.load(snapshotOf(2)));
   assertEquals(h.cache.runs, 4);
@@ -208,7 +205,6 @@ Deno.test("RunIndexCache: a failed load leaves no entry behind", async () => {
     h.cache.get("wf", () => Promise.reject(new Error("boom")))
   );
   assertEquals(h.cache.runs, 0);
-  // The old stamp coming back does not revive the dropped snapshot.
   h.stamps.set("wf", stampAt(OLD, OLD));
   await h.cache.get("wf", h.load(snapshotOf(1)));
   assertEquals(h.loads, 2);
@@ -224,7 +220,6 @@ Deno.test("RunIndexCache.delete: drops a workflow's snapshot", async () => {
   assertEquals(h.loads, 2);
 });
 
-/** A load the test finishes when it chooses, counting how many started. */
 function deferredLoads() {
   const releases: Array<(result: LoadedRunIndex | Error) => void> = [];
   return {
@@ -288,7 +283,6 @@ Deno.test("RunIndexCache: a read after a write does not wait on a load from befo
   assertStrictEquals(await second, fresh);
   d.releases[0]({ snapshot: stale, fromIndex: true });
   assertStrictEquals(await first, stale);
-  // Only the load whose stamp still holds is kept.
   assertEquals(h.cache.runs, 2);
   assertStrictEquals(await h.cache.get("wf", h.load(snapshotOf(5))), fresh);
 });

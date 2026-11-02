@@ -41,7 +41,6 @@ import { ActiveRun } from "../../domain/models/active_run.ts";
 import { RunTrackerStore } from "../../infrastructure/persistence/run_tracker_store.ts";
 import { swampPath } from "../../infrastructure/persistence/paths.ts";
 
-// Import models barrel to trigger self-registration
 import "../../domain/models/models.ts";
 
 await initializeLogging({});
@@ -61,7 +60,6 @@ async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
   }
 }
 
-/** Initializes `dir` as a swamp repo and returns its repository context. */
 async function initRepo(dir: string) {
   // Keep the global skill install inside `dir` — the ambient HOME is shared
   // with every other test file in the process.
@@ -78,7 +76,6 @@ async function initRepo(dir: string) {
   return repoContext;
 }
 
-/** A one-step workflow; the step carries a guard when `guard` is set. */
 function deployWorkflow(name: string, guard?: string): Workflow {
   return Workflow.create({
     name,
@@ -97,7 +94,6 @@ function deployWorkflow(name: string, guard?: string): Workflow {
   });
 }
 
-/** An interrupted run of `workflow`'s one step, as the crash reaper leaves it. */
 function interruptedRun(workflow: Workflow, startedAt: string): WorkflowRun {
   return WorkflowRun.fromData({
     id: crypto.randomUUID(),
@@ -121,7 +117,6 @@ function interruptedRun(workflow: Workflow, startedAt: string): WorkflowRun {
   });
 }
 
-/** Runs `workflow recover` with `args` and returns what it wrote to stdout. */
 async function recover(args: string[]): Promise<string[]> {
   const logs: string[] = [];
   const originalLog = console.log;
@@ -138,7 +133,6 @@ async function recover(args: string[]): Promise<string[]> {
   }
 }
 
-/** Parses the JSON document `workflow recover --json` wrote last. */
 function lastJson(logs: string[]): Record<string, unknown> {
   return JSON.parse(logs[logs.length - 1]) as Record<string, unknown>;
 }
@@ -196,7 +190,6 @@ Deno.test("workflowRecoverCommand: --assess-only in log mode names the way forwa
     run.captureRunPlan("evaluated-fp", run.id, "definition-fp-before-edit");
     await repoContext.workflowRunRepo.save(workflow.id, run);
 
-    // By ID, so the header shows the name rather than what was typed.
     const logs = await recover([
       workflow.id,
       "--assess-only",
@@ -373,7 +366,6 @@ Deno.test("workflowRecoverCommand: --run rejects a run that is not interrupted",
   });
 });
 
-/** A one-step workflow whose step input resolves `inputs.greeting`. */
 function greetingWorkflow(message: string, id?: string): Workflow {
   return Workflow.create({
     id,
@@ -424,8 +416,6 @@ Deno.test("workflowRecoverCommand: recovers a run of a workflow with an inputs e
     const noopExecutor: StepExecutor = {
       execute: () => Promise.resolve({ executed: true }),
     };
-    // The real evaluator records the run plan, and the repo context's own
-    // run repository persists it.
     const service = new WorkflowExecutionService(
       repoContext.workflowRepo,
       repoContext.workflowRunRepo,
@@ -449,8 +439,6 @@ Deno.test("workflowRecoverCommand: recovers a run of a workflow with an inputs e
     };
 
     const first = await runAndInterrupt();
-    // Evaluation resolved the inputs expression, so the evaluated
-    // fingerprint differs from the definition's.
     assertNotEquals(
       first.runPlan?.fingerprint,
       first.runPlan?.definitionFingerprint,
@@ -478,8 +466,6 @@ Deno.test("workflowRecoverCommand: recovers a run of a workflow with an inputs e
     );
     assertEquals(recovered?.status, "suspended");
 
-    // A second interrupted run, then an edit to the definition. Recovery
-    // moved the first run to suspended, so only the second is found.
     const second = await runAndInterrupt();
     await repoContext.workflowRepo.save(
       greetingWorkflow("${{ inputs.greeting }} again", workflow.id),
@@ -508,10 +494,6 @@ Deno.test("workflowRecoverCommand: recovers a run of a workflow with an inputs e
 // Far above any real pid_max, so never a live process.
 const DEAD_PID = 2147483647;
 
-/**
- * A run a force-exited `workflow run` left behind: recorded `running` under
- * a dead pid, its step in flight, and its tracker row still `running`.
- */
 function strandRun(
   dir: string,
   workflow: Workflow,
@@ -568,8 +550,6 @@ Deno.test("workflowRecoverCommand: --run recovers a run whose owning process die
         createWorkflowRunId(run.id),
       );
 
-    // The in-flight step becomes unknown, so recovery asks before it runs
-    // the step again.
     await assertRejects(
       () => recover(["stranded", "--run", run.id, "--json", "--repo-dir", dir]),
       UserError,

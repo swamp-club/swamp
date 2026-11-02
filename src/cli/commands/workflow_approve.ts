@@ -59,19 +59,13 @@ import { YamlEvaluatedWorkflowRepository } from "../../infrastructure/persistenc
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
 
-/**
- * Whether serve reported that it resumed the run itself after this approval
- * (the workflow opted into auto-resume and every gate is now decided).
- */
 export function serveIsResuming(data: Record<string, unknown>): boolean {
   return data.autoResumed === true;
 }
 
 /**
- * Renders an approval in log or JSON mode. The commands to run next go
- * through writeOutput, not the logger: LogTape quotes interpolated values and
- * the pretty sink wraps long lines, and either breaks a copy-pasted command
- * (swamp-club#2977). `--quiet` hides them, as it hides the logger's info lines.
+ * the next commands go through writeOutput, not the logger: LogTape quotes
+ * values and the pretty sink wraps lines, breaking copy-pasted commands
  */
 export function renderApproveResult(
   cliCtx: CommandContext,
@@ -202,9 +196,8 @@ export const workflowApproveCommand = withRemoteOptions(
       repoContext.workflowRunRepo,
       createWorkflowRunClaims(datastoreConfig),
     );
-    // A nested run nothing waits on is cancelled instead of approved
-    // (swamp-club#2867): settled against its own evaluated snapshot, and its
-    // tracker row closed.
+    // a nested run nothing waits on is cancelled instead of approved: settled
+    // against its own evaluated snapshot and its tracker row closed
     const runTracker = RunTrackerStore.fromSwampDir(swampPath(repoDir));
     deps.runTracker = runTracker;
     deps.findEvaluatedWorkflow = (runId) =>
@@ -214,8 +207,8 @@ export const workflowApproveCommand = withRemoteOptions(
       ).findByRunId(runId);
 
     try {
-      // A root of its own, so the result waits for the commit
-      // (swamp-club#3759); it pushes nothing, as the use case did not.
+      // a root of its own, so the result waits for the commit; it pushes
+      // nothing
       await runCommandInRootUnit(
         repoContext,
         { push: undefined },

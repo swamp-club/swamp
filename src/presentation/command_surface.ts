@@ -18,38 +18,26 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * The CLI spelling a command was reached through: the legacy `swamp model …`
- * tree or the preferred `swamp behavior …` tree (swamp-club#3331). Behavior
- * is the product term for a model (design/primitives/behaviors.md); the two
- * trees run the same application code, and only the words a person reads
- * differ: log-mode output, and the text of errors and warnings in both log
- * and JSON mode (swamp-club#3437, see domain/behavior_wording.ts). JSON field
- * names, error codes and log categories never depend on the surface.
+ * the CLI tree a command ran in; both run the same code and differ only in
+ * wording. JSON field names, error codes and log categories never depend on the
+ * surface.
  */
 export type CommandSurface = "model" | "behavior";
 
-/** The surface a renderer uses when none is given: the legacy wording. */
 export const DEFAULT_COMMAND_SURFACE: CommandSurface = "model";
 
-/** The noun for one instance on `surface`: `model` or `behavior`. */
 export function surfaceNoun(surface: CommandSurface): string {
   return surface;
 }
 
-/** The plural noun on `surface`: `models` or `behaviors`. */
 export function surfaceNounPlural(surface: CommandSurface): string {
   return `${surface}s`;
 }
 
-/** The noun capitalised for a label: `Model` or `Behavior`. */
 export function surfaceNounCapitalized(surface: CommandSurface): string {
   return surface === "model" ? "Model" : "Behavior";
 }
 
-/**
- * The words for a method on `surface`. The glossary renames "model method"
- * to plain "method", so the behavior surface drops the noun.
- */
 export function surfaceMethodNoun(surface: CommandSurface): string {
   return surface === "model" ? "model method" : "method";
 }

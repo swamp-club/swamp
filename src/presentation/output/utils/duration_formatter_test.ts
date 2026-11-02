@@ -60,8 +60,8 @@ Deno.test("formatDuration - hours", () => {
 });
 
 Deno.test("formatDuration - large values", () => {
-  assertEquals(formatDuration(86400000), "24h"); // 1 day
-  assertEquals(formatDuration(90061000), "25h 1m 1s"); // 1 day + 1 hour + 1 minute + 1 second
+  assertEquals(formatDuration(86400000), "24h");
+  assertEquals(formatDuration(90061000), "25h 1m 1s");
 });
 
 Deno.test("formatDuration - edge cases", () => {
@@ -70,19 +70,15 @@ Deno.test("formatDuration - edge cases", () => {
 });
 
 Deno.test("formatDuration - common workflow durations", () => {
-  // Quick tasks
   assertEquals(formatDuration(50), "50ms");
   assertEquals(formatDuration(250), "250ms");
 
-  // Short tasks
   assertEquals(formatDuration(1300), "1.3s");
   assertEquals(formatDuration(2500), "2.5s");
 
-  // Medium tasks
   assertEquals(formatDuration(30000), "30s");
   assertEquals(formatDuration(90000), "1m 30s");
 
-  // Long tasks
   assertEquals(formatDuration(300000), "5m");
   assertEquals(formatDuration(1800000), "30m");
   assertEquals(formatDuration(5400000), "1h 30m");

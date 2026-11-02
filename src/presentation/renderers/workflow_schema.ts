@@ -27,7 +27,6 @@ class LogWorkflowSchemaRenderer implements Renderer<WorkflowSchemaEvent> {
   handlers(): EventHandlers<WorkflowSchemaEvent> {
     return {
       completed: (e) => {
-        // Log mode currently does JSON.stringify — preserve existing behavior
         console.log(JSON.stringify(e.data, null, 2));
       },
       error: (e) => {

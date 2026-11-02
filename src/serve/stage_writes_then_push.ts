@@ -21,19 +21,9 @@ import type { RepositoryContext } from "../infrastructure/persistence/repository
 import { runInRootUnitOfWork } from "../infrastructure/persistence/repo_unit_of_work.ts";
 
 /**
- * Re-marks `paths` and then pushes once, through a root unit of work over
- * `repoContext.markDirty` whose flush is `options.flush` (swamp-club#3034).
- *
- * Serve's device auth mint, grant publishing and `access.reload` re-mark the
- * paths they wrote just before their push, so a push that landed in between
- * cannot leave a path behind. Each path is staged as a per-path write, in
- * order, never as a bare mark, which would turn the push into a walk of the
- * whole cache (swamp-club#2408, swamp-club#2415).
- *
- * The push runs only once every path was staged (`pushWhen: "completed"`). A
- * legacy root also flushes when it is abandoned, but a mark that failed
- * skipped the push before. The mark's error is thrown; so is the push's, and
- * the caller handles both as it did. With no paths it still pushes once.
+ * re-marks paths just before the push so one that landed in between leaves none
+ * behind; each is a per-path write, never a bare mark that would walk the whole
+ * cache. Pushes only once every path is staged
  */
 export async function stageWritesThenPush(
   repoContext: Pick<RepositoryContext, "markDirty">,

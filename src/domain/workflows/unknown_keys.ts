@@ -18,32 +18,21 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * User-facing authoring guard that rejects unknown keys on workflow, job,
- * and step objects.
- *
- * Zod strips unknown keys silently by default, which turns authoring
- * mistakes into fail-open behavior — a typo'd key passes validation and
- * the intended field is silently ignored (swamp-club#1240). Like
- * removed_driver_fields.ts, this hook runs in a `z.preprocess` wrapper
- * so the raw keys are seen before unknown-key stripping drops them.
+ * Zod strips unknown keys silently, so a typo'd key would pass and its field be
+ * ignored; runs in a z.preprocess so the raw keys are seen before stripping
  */
 
 import type { z } from "zod";
 import { findClosestMatch } from "../string_distance.ts";
 
-/** Entities whose schemas reject unknown keys. */
 export type WorkflowEntity = "workflow" | "job" | "step";
 
 /**
- * Fields owned by addRemovedDriverFieldIssues, which runs before this hook
- * and produces its own migration message.
+ * owned by addRemovedDriverFieldIssues, which runs first and gives its own
+ * migration message
  */
 const REMOVED_DRIVER_FIELDS = ["driver", "driverConfig"];
 
-/**
- * Builds the error message for an unknown key, with a did-you-mean
- * suggestion when a known key is close enough.
- */
 export function unknownKeyMessage(
   field: string,
   entity: WorkflowEntity,
@@ -58,12 +47,9 @@ export function unknownKeyMessage(
 }
 
 /**
- * Creates a Zod preprocess hook that reports each unknown key on a
- * workflow, job, or step object as a schema issue with an actionable
- * message, so the document fails like any other schema error instead of
- * throwing (swamp-club#3832). Chain it after addRemovedDriverFieldIssues so
- * `driver`/`driverConfig` keep their specific migration message:
- * `z.preprocess(addRemovedDriverFieldIssues, z.preprocess(rejectUnknownKeys(...), schema))`.
+ * chain after addRemovedDriverFieldIssues so driver and driverConfig keep their
+ * specific migration message; issues fail like any schema error instead of
+ * throwing
  */
 export function rejectUnknownKeys(
   entity: WorkflowEntity,

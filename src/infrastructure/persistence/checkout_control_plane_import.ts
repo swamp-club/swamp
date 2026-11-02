@@ -18,22 +18,9 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * Moves what a v3 datastore's serve kept in its checkout's control plane
- * into the datastore's shared one (swamp-club#4096), once per checkout:
- * before team mode, serve kept its control plane in `.swamp/_control/`, and
- * an upgrade must not sign every dashboard user out or lose server tokens.
- *
- * Only records that outlive one serve process move: token secrets, pending
- * runs, cron fire records, schedule pauses, dashboard sessions and audit
- * events kept in the control plane. Heartbeats, active runs
- * and claims name one process and are left behind. Every record is created
- * only where absent, so two nodes upgrading at once, or a node whose
- * records another already moved, change nothing that is there. Token
- * secrets move as a set: the checkout claims the key slot atomically, and
- * its values move only when the store keeps its key, since values
- * encrypted under another key could never be read.
- *
- * @module
+ * moves records outliving a serve process into the shared control plane, once;
+ * created only where absent; token secrets move as a set only if the store
+ * keeps its key, else they'd be unreadable
  */
 
 import type { ControlPlaneStore } from "../../domain/datastore/control_plane_store.ts";
@@ -42,7 +29,6 @@ import type { AtomicControlPlaneStore } from "./control_plane_signal_wait_store.
 
 const logger = getSwampLogger(["serve", "control-plane"]);
 
-/** The prefixes whose records outlive one serve process. */
 export const CHECKOUT_CONTROL_PLANE_IMPORT_PREFIXES: readonly string[] = [
   "pending-runs/",
   "fire-records/",
@@ -54,14 +40,8 @@ export const CHECKOUT_CONTROL_PLANE_IMPORT_PREFIXES: readonly string[] = [
 const TOKEN_SECRETS_PREFIX = "token-secrets/";
 const TOKEN_SECRETS_KEY = "token-secrets/encryption-key";
 
-/** Written to the checkout's store once its records are moved. */
 export const CHECKOUT_IMPORT_SENTINEL = "migration/imported-to-datastore";
 
-/**
- * Copies the checkout's lasting control-plane records into `shared`, once:
- * a checkout whose sentinel is set is skipped. Returns how many records were
- * created.
- */
 export async function importCheckoutControlPlane(
   checkout: ControlPlaneStore,
   shared: AtomicControlPlaneStore,
@@ -76,11 +56,9 @@ export async function importCheckoutControlPlane(
     ? await checkout.get(TOKEN_SECRETS_KEY)
     : null;
   if (key !== null) {
-    // The key slot is claimed first, atomically: of two checkouts moving
-    // their secrets at once, only the one whose key the store holds moves
-    // its values, so no value lands under a key the store does not keep.
-    // A key equal to the stored one (a checkout that moved before, or the
-    // same external key's marker) moves its values too.
+    // claim the key slot first, atomically: of two checkouts moving secrets at
+    // once, only the one whose key the store holds moves its values; an equal
+    // stored key moves them too
     const claimed = await shared.putIfAbsent(TOKEN_SECRETS_KEY, key);
     if (claimed) created++;
     const stored = claimed ? key : await shared.get(TOKEN_SECRETS_KEY);

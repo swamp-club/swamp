@@ -44,7 +44,6 @@ function resolverFor(
   return new DefaultDatastorePathResolver(REPO, config, { engine });
 }
 
-/** A file handle double that records whether it was fully synced. */
 function fakeFile(): { file: Deno.FsFile; synced: () => number } {
   let synced = 0;
   const file = {
@@ -56,10 +55,6 @@ function fakeFile(): { file: Deno.FsFile; synced: () => number } {
   return { file, synced: () => synced };
 }
 
-/**
- * Ordered hooks on a fake darwin host: every path is on device 1 unless
- * `devices` says otherwise, and the barrier answers `barrier`.
- */
 function darwinHooks(options: {
   barrier?: (path: string) => BarrierSyncResult;
   devices?: Record<string, number>;
@@ -85,8 +80,6 @@ function darwinHooks(options: {
 
 const TEMP = join(REPO, ".swamp", "data", "m", "id", "out", "1", ".x.tmp");
 const PATHS = { temp: TEMP, target: join(REPO, "raw") };
-
-// --- selectDurableWriteSync ---
 
 Deno.test("selectDurableWriteSync: no resolver orders against the catalog", () => {
   assertNotStrictEquals(
@@ -208,8 +201,6 @@ Deno.test("selectDurableWriteSync: an injected catalog store is synced in full",
     fullWriteSync,
   );
 });
-
-// --- orderedWriteSync ---
 
 Deno.test("orderedWriteSync: off macOS every sync is a full one", () => {
   for (const platform of ["linux", "windows"] as const) {

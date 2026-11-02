@@ -66,10 +66,6 @@ Deno.test("inbox read: takes an optional id and says it is never interactive", (
   ]);
 });
 
-/**
- * Runs `args` through `swamp inbox` built over recording stubs, under a root
- * that carries `--json` as the real CLI does. Returns the calls made, in order.
- */
 async function runInboxWith(
   args: string[],
   tty: { stdin: boolean; stdout: boolean },

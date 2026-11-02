@@ -17,14 +17,9 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// Stale extension-catalog rows after a managedConfig migration and an
-// `extension rm` (swamp-club#2490). `datastore config migrate` copies the
-// pulled tree instead of moving it, `extension install` re-extracts into
-// `.swamp/config/pulled-extensions/` and deletes the old sources without
-// touching the catalog, and `extension rm` could not identify rows under
-// the managed root. These tests wire the real loader, repository, catalog
-// and migration together on a temp filesystem and assert that no stale
-// row survives, crashes a type load, or blocks a later save.
+// extension install re-extracts under the managed root and deletes old sources
+// without touching the catalog; no stale row may survive, crash a type load or
+// block a later save
 
 import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
 import { configure, type LogRecord, reset } from "@logtape/logtape";
@@ -80,8 +75,10 @@ interface Repo {
   catalog: ExtensionCatalogStore;
 }
 
-/** A repo whose catalog lives for the whole test; loaders and
- *  repositories are built per step, as each CLI command builds its own. */
+/**
+ * the catalog lives for the whole test; loaders and repositories are built per
+ * step, as each CLI command builds its own
+ */
 async function withRepo(fn: (repo: Repo) => Promise<void>): Promise<void> {
   const repoDir = await Deno.makeTempDir({ prefix: "swamp_2490_" });
   const modelsDir = join(repoDir, "extensions", "models");
@@ -147,11 +144,6 @@ function typedRows(repo: Repo): string[] {
   );
 }
 
-/**
- * Pull, migrate, install: the reproduction from swamp-club#2490 up to the
- * point where the old sources are gone but their catalog row is not.
- * Returns the managed-root source and lockfile paths.
- */
 async function pullMigrateInstall(
   repo: Repo,
   name: string,
@@ -160,7 +152,6 @@ async function pullMigrateInstall(
   const legacySource = pulledModelPath(legacyRoot, name);
   const legacyLockfile = join(repo.modelsDir, "upstream_extensions.json");
 
-  // Pull while managedConfig is false.
   registerManagedConfig(repo.repoDir, false);
   await writeModel(legacySource, repo.type);
   const legacy = await repositoryFor(repo, legacyLockfile);
@@ -173,7 +164,6 @@ async function pullMigrateInstall(
   });
   assertEquals(typedRows(repo), [canonicalizePath(legacySource)]);
 
-  // `datastore config migrate` copies the tree and lockfile verbatim.
   const configRoot = join(repo.repoDir, "datastore", "config");
   await migrateConfigToDatastore(
     repo.repoDir,
@@ -214,7 +204,6 @@ Deno.test("catalog heal: a type loads from the managed root after migrate and in
       indexOnly: true,
     });
 
-    // The old row is gone, not merely typeless.
     assertEquals(repo.catalog.findAll().map((r) => r.source_path), [
       canonicalizePath(managedSource),
     ]);
@@ -234,7 +223,6 @@ Deno.test("catalog heal: a stale row is dropped at type-load time instead of cra
       pulledModelPath(swampPath(repo.repoDir, "pulled-extensions"), name),
     );
 
-    // Load the type straight from the stale row, before any index pass.
     const { repository } = await repositoryFor(repo, managedLockfile);
     const loader = loaderFor(repo, repository);
     await loader.loadSingleType(repo.type, {
@@ -245,7 +233,6 @@ Deno.test("catalog heal: a stale row is dropped at type-load time instead of cra
     assertEquals(typedRows(repo), []);
     assertEquals(modelRegistry.get(repo.type), undefined);
 
-    // The next index pass finds the live source.
     await loader.buildIndex(repo.modelsDir, {
       additionalDirs: [dirname(managedSource)],
       indexOnly: true,
@@ -363,7 +350,6 @@ Deno.test("catalog heal: two pulled rows never end up sharing a type", async () 
     for (const path of [first, second, local]) {
       await writeModel(path, repo.type);
     }
-    // An unrelated extension whose models are indexed after the loser's.
     const sibling = pulledModelPath(root, "@test/zzz");
     await writeModel(sibling, `${repo.type}-sibling`);
     const { repository, lockfileRepository } = await repositoryFor(
@@ -380,7 +366,6 @@ Deno.test("catalog heal: two pulled rows never end up sharing a type", async () 
       indexOnly: true,
     };
 
-    // Cold pass: the local override is the only claimant.
     await loaderFor(repo, repository).buildIndex(repo.modelsDir, dirs);
     assertEquals(typedRows(repo), [canonicalizePath(local)]);
 
@@ -393,7 +378,6 @@ Deno.test("catalog heal: two pulled rows never end up sharing a type", async () 
     await loaderFor(repo, repository).buildIndex(repo.modelsDir, dirs);
     assertEquals(typedRows(repo), [canonicalizePath(local)]);
 
-    // Removing the override restores exactly one pulled row, by path.
     await Deno.remove(local);
     await loaderFor(repo, repository).buildIndex(repo.modelsDir, dirs);
     assertEquals(typedRows(repo), [canonicalizePath(first)]);
@@ -411,10 +395,6 @@ Deno.test("catalog heal: two pulled rows never end up sharing a type", async () 
   });
 });
 
-/**
- * `@swamp/aws/cur` is pulled and indexed first; `@aaa/cur`, whose path
- * sorts first, is pulled later with the same type. Returns both sources.
- */
 async function pullIncumbentThenRival(
   repo: Repo,
   repository: ExtensionRepository,
@@ -513,7 +493,6 @@ Deno.test("catalog heal: a catalog with both pulled rows typed keeps the first a
   });
 });
 
-/** Imports cleanly but fails schema validation: `version` is missing. */
 const BROKEN_MODEL_CODE = (type: string) =>
   MODEL_CODE(type).replace(`  version: "2026.05.05.1",\n`, "");
 
@@ -525,12 +504,6 @@ interface Override {
   warmPass: () => Promise<void>;
 }
 
-/**
- * A pulled model and a local override of the same type, indexed cold so
- * the override is the only claimant, then warm-passed with an unrelated
- * typed local model so the typeless-row heal has run and set its marker.
- * Deleting `unrelated` re-arms the heal.
- */
 async function withIndexedOverride(repo: Repo): Promise<Override> {
   registerManagedConfig(repo.repoDir, false);
   const lockfilePath = join(repo.modelsDir, "upstream_extensions.json");
@@ -570,7 +543,6 @@ Deno.test("catalog heal: a broken local override does not hand its type to the p
     const { local, unrelated, repository, warmPass } =
       await withIndexedOverride(repo);
 
-    // The override breaks while the heal is already done.
     await Deno.writeTextFile(local, BROKEN_MODEL_CODE(repo.type));
     await warmPass();
     assertEquals(
@@ -590,7 +562,6 @@ Deno.test("catalog heal: a broken local override does not hand its type to the p
       "No catalog entry",
     );
 
-    // Fixing the override lets the heal finish, with the override winning.
     await writeModel(local, repo.type);
     await warmPass();
     assertEquals(typedRows(repo), [canonicalizePath(local)]);

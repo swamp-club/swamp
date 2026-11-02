@@ -18,18 +18,9 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * Integration tests for orphaned-data reclamation (`swamp data prune`),
- * reproducing swamp-club#1009.
- *
- * Exercises the full slice against a real FileSystemUnifiedDataRepository +
- * CatalogStore + YamlDefinitionRepository:
- * (a) data whose owning model definition is gone is reclaimed (disk + catalog)
- * (b) a model with a live definition is never touched (no false positives)
- * (c) a model whose definition lives ONLY in .swamp/auto-definitions/ is treated
- *     as live and never pruned — the ADV-1 correctness crux: the predicate must
- *     match `swamp model get` (findById covers models/ AND auto-definitions/),
- *     not `model search` (which skips auto-definitions)
- * (d) --dry-run reports the orphan but deletes nothing
+ * a model whose definition lives only in auto-definitions counts as live and is
+ * never pruned: the predicate must match model get (findById covers both), not
+ * model search
  */
 
 import { assertEquals } from "@std/assert";
@@ -88,9 +79,7 @@ interface Harness {
   service: DefaultDataLifecycleService;
   dataRepo: FileSystemUnifiedDataRepository;
   isModelLive: IsModelLive;
-  /** Definition repo scoped to models/ (primary). */
   modelsRepo: YamlDefinitionRepository;
-  /** Definition repo scoped to .swamp/auto-definitions/ (secondary). */
   autoDefsRepo: YamlDefinitionRepository;
 }
 
@@ -156,27 +145,22 @@ Deno.test("Data Prune: reclaims orphaned data, spares live and auto-definition m
 
     const type = ModelType.create("test/prune");
 
-    // 1. LIVE model — definition saved to models/
     const live = Definition.create({ name: "live-model" });
     await modelsRepo.save(type, live);
     await writeData(dataRepo, type, live.id, "state", 2);
 
-    // 2. AUTO-DEF model — definition saved ONLY to .swamp/auto-definitions/
     const auto = Definition.create({ name: "auto-model" });
     await autoDefsRepo.save(type, auto);
     await writeData(dataRepo, type, auto.id, "state", 2);
 
-    // 3. ORPHAN model — data written, but NO definition anywhere
     const orphanId = createDefinitionId(crypto.randomUUID());
     await writeData(dataRepo, type, orphanId, "result", 3);
 
-    // findOrphanedData returns exactly the orphan.
     const orphans = await service.findOrphanedData(isModelLive);
     assertEquals(orphans.length, 1);
     assertEquals(orphans[0].modelId, orphanId);
     assertEquals(orphans[0].versionCount, 3);
 
-    // --dry-run: nothing deleted.
     const dry = await service.deleteOrphanedData({ isModelLive, dryRun: true });
     assertEquals(dry.modelsReclaimed, 1);
     assertEquals(dry.dryRun, true);
@@ -185,23 +169,19 @@ Deno.test("Data Prune: reclaims orphaned data, spares live and auto-definition m
       3,
     );
 
-    // Real prune: orphan gone, live + auto-def intact.
     const result = await service.deleteOrphanedData({ isModelLive });
     assertEquals(result.modelsReclaimed, 1);
     assertEquals(result.dataEntriesReclaimed, 1);
     assertEquals(result.versionsDeleted, 3);
     assertEquals(result.bytesReclaimed > 0, true);
 
-    // Orphan removed from disk AND catalog.
     assertEquals(await dataRepo.listVersions(type, orphanId, "result"), []);
     assertEquals(await dataRepo.findByName(type, orphanId, "result"), null);
 
-    // Invariant (b): live model untouched.
     assertEquals(
       (await dataRepo.listVersions(type, live.id, "state")).length,
       2,
     );
-    // Invariant (c) — ADV-1: auto-definition-backed model untouched.
     assertEquals(
       (await dataRepo.listVersions(type, auto.id, "state")).length,
       2,
@@ -427,11 +407,9 @@ Deno.test("Data Prune: retyped model data is detected as orphaned (swamp-club#17
     const oldType = ModelType.create("test/old-type");
     const modelsRepo = new YamlDefinitionRepository(repoDir);
 
-    // 1. Save a definition under type "test/old-type"
     const def = Definition.create({ name: "story-analyzer" });
     await modelsRepo.save(oldType, def);
 
-    // 2. Write data under the old type
     const dataRepo = new FileSystemUnifiedDataRepository(
       repoDir,
       undefined,
@@ -439,7 +417,6 @@ Deno.test("Data Prune: retyped model data is detected as orphaned (swamp-club#17
     );
     await writeData(dataRepo, oldType, def.id, "analysis", 3);
 
-    // 3. Simulate a retype: edit the YAML in place to change type to "test/new-type"
     const defPath = join(
       repoDir,
       "models",
@@ -453,7 +430,6 @@ Deno.test("Data Prune: retyped model data is detected as orphaned (swamp-club#17
       yaml.replace("type: test/old-type", "type: test/new-type"),
     );
 
-    // 4. Prune via createDataPruneDeps — the production code path
     const deps = createDataPruneDeps(repoDir);
     const orphans = await deps.findOrphanedData();
     assertEquals(
@@ -465,7 +441,6 @@ Deno.test("Data Prune: retyped model data is detected as orphaned (swamp-club#17
     assertEquals(orphans[0].dataNames, ["analysis"]);
     assertEquals(orphans[0].versionCount, 3);
 
-    // 5. Prune reclaims the stranded data
     const result = await deps.deleteOrphanedData({ dryRun: false });
     assertEquals(result.modelsReclaimed, 1);
     assertEquals(result.versionsDeleted, 3);
@@ -491,7 +466,6 @@ Deno.test("Data Prune: retyped model with undefined type is treated as live (leg
     );
     await writeData(dataRepo, type, def.id, "state", 2);
 
-    // Remove the type field from the YAML to simulate a legacy definition
     const defPath = join(
       repoDir,
       "models",

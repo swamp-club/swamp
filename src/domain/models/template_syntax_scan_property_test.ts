@@ -22,10 +22,6 @@ import fc from "fast-check";
 import { scanTemplateSyntax } from "./template_syntax_scan.ts";
 import { parsesAsCel } from "../expressions/swamp_namespaces.ts";
 
-/**
- * Strings built from template-like fragments, so matches, near-matches and
- * unparseable inner text are common rather than rare.
- */
 const arbTemplateText = fc.oneof(
   fc.array(
     fc.constantFrom(
@@ -141,7 +137,6 @@ Deno.test("scanTemplateSyntax: an unclosed expression is never one that parses",
   );
 });
 
-/** Expressions that parse, some holding braces inside a CEL string. */
 const arbSoundExpression = fc.constantFrom(
   "${{ self.name }}",
   "${{ '{{' }}",
@@ -156,7 +151,6 @@ const arbSoundExpression = fc.constantFrom(
   "${{ literal('{{a}}') + ' on ' + literal('}}') }}",
 );
 
-/** Foreign text with no `$`, so it can never open or extend an expression. */
 const arbForeignText = fc.array(
   fc.constantFrom("{{", "}}", "{", "}", " ", "'", '"', "host.name", "\n"),
   { maxLength: 8 },

@@ -18,16 +18,9 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * Every `swamp behavior …` command is the preferred spelling of a `swamp
- * model …` command (swamp-club#3331). This drives both spellings in-process
- * against one temp repository — create, get, validate, evaluate, run,
- * history, output and delete — and checks that each gives the same JSON and
- * exit code, and that the --server path sends the same request. The run
- * leaves have their own parity file (behavior_run_parity_test.ts).
- *
- * `edit` is not driven here: it reads the new definition from stdin, which an
- * in-process test cannot feed. Its arguments, options and action are pinned
- * equal to its twin's in src/cli/commands/behavior_test.ts.
+ * drives both spellings in-process against one temp repo and checks the same
+ * JSON and exit code; edit is not driven because it reads stdin, which an
+ * in-process test cannot feed
  */
 
 import "../src/domain/models/models.ts";
@@ -79,7 +72,6 @@ async function initRepo(dir: string): Promise<string> {
   return repoDir;
 }
 
-/** The root as runCli wires it: both groups, the completion types, --json. */
 function root(): AnyCommand {
   return registerCompletionTypes(new Command())
     .globalOption("--json", "JSON output")
@@ -88,16 +80,13 @@ function root(): AnyCommand {
 }
 
 interface Result {
-  /** The last JSON document the command printed to stdout. */
   json: unknown;
   exitCode: number;
 }
 
 /**
- * Runs the given command words in-process with `--json` and returns what the
- * command printed and the exit code it set. Captures console.log the way
- * behavior_run_parity_test.ts does, which holds because Deno runs the tests
- * in a file one at a time.
+ * captures console.log, which holds because Deno runs the tests in a file one
+ * at a time
  */
 async function runJson(
   words: string[],
@@ -127,7 +116,6 @@ async function runJson(
   return { json: documents[documents.length - 1], exitCode };
 }
 
-/** A type whose method logs a line, in process. */
 function registerType(): ModelType {
   const type = ModelType.create(
     `@acme/behavior-parity-${crypto.randomUUID().slice(0, 8)}`,
@@ -150,7 +138,6 @@ function registerType(): ModelType {
   return type;
 }
 
-/** Replaces every occurrence of each key with its value, for ids and names. */
 function normalize(value: unknown, swaps: Record<string, string>): unknown {
   let text = JSON.stringify(value);
   for (const [from, to] of Object.entries(swaps)) {
@@ -170,7 +157,6 @@ Deno.test({
       const repo = ["--repo-dir", repoDir];
       const type = registerType();
       try {
-        // create: one definition through each spelling.
         const createdLegacy = await runJson(
           ["model", "create", type.normalized, "legacy-def"],
           repo,
@@ -194,7 +180,6 @@ Deno.test({
           }),
         );
 
-        // Read-only commands against the same definition: identical output.
         const pairs: ReadonlyArray<readonly [string[], string[]]> = [
           [["model", "get", "legacy-def"], ["behavior", "get", "legacy-def"]],
           [["model", "get", "legacy-def"], ["behaviour", "get", "legacy-def"]],
@@ -233,8 +218,6 @@ Deno.test({
           assertEquals(preferred, legacy, preferredWords.join(" "));
         }
 
-        // Errors read in the spelling the user typed (swamp-club#3437): the
-        // text the CLI boundary prints for each tree, with the same codes.
         const failure = async (words: string[]) => {
           const error = await assertRejects(() => runJson(words, repo));
           return messageFor(error as Error, commandSurfaceFromArgs(words));
@@ -256,7 +239,6 @@ Deno.test({
           "no-such-def",
         );
 
-        // run: one run through each spelling, against the same definition.
         const runLegacy = await runJson(
           ["model", "method", "run", "legacy-def", "ping"],
           repo,
@@ -280,7 +262,6 @@ Deno.test({
         assertEquals(runShape(runPreferred), runShape(runLegacy));
         assertEquals(runShape(runLegacy).status, "succeeded");
 
-        // history and output read the latest run: identical through both.
         const latest: ReadonlyArray<readonly [string[], string[]]> = [
           [
             ["model", "method", "history", "legacy-def"],
@@ -345,14 +326,11 @@ Deno.test({
           legacyLines.filter((line) => line.includes("ping answered")).length,
         );
 
-        // cancel with nothing running: the same JSON.
         assertEquals(
           await runJson(["behavior", "cancel", "--all"], repo),
           await runJson(["model", "cancel", "--all"], repo),
         );
 
-        // delete: one definition through each spelling, each given the
-        // same history first so the two deletes have the same to remove.
         for (
           const words of [
             ["model", "method", "run", "preferred-def", "ping"],
@@ -387,12 +365,6 @@ Deno.test({
     });
   },
 });
-
-// ---------------------------------------------------------------------------
-// The --server path: both spellings send the same request to a swamp serve
-// endpoint. A port-0 WebSocket server stands in for serve and answers each
-// request type with a canned response.
-// ---------------------------------------------------------------------------
 
 interface CapturedRequest {
   type: string;

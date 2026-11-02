@@ -76,7 +76,6 @@ function createSpySpinner(): { spinner: Spinner; calls: SpinnerCall[] } {
   const calls: SpinnerCall[] = [];
   const spinner = new Spinner();
 
-  // Override methods with spies (Spinner no-ops when stderr is not a TTY in tests)
   const originalStart = spinner.start.bind(spinner);
   spinner.start = (message: string) => {
     calls.push({ method: "start", message });
@@ -95,8 +94,6 @@ function createSpySpinner(): { spinner: Spinner; calls: SpinnerCall[] } {
 // The update pre-flight probes the binary's directory; a missing directory is
 // not a permission problem, so these tests never touch a real install dir.
 const missingBinaryPath = "/nonexistent-swamp-update-test/bin/swamp";
-
-// --- Spinner integration with update flow ---
 
 Deno.test("update flow starts and stops spinner around service.update()", async () => {
   const checker = createMockChecker(redirectUrl);
@@ -151,7 +148,6 @@ Deno.test("spinner.stop() is called even when service throws", async () => {
 });
 
 Deno.test("spinner is not created in json mode", () => {
-  // Simulates the guard: ctx.outputMode !== "json" ? new Spinner() : null
   const outputMode: string = "json";
   const spinner = outputMode !== "json" ? new Spinner() : null;
   assertEquals(spinner, null);
@@ -162,8 +158,6 @@ Deno.test("spinner is created in log mode", () => {
   const spinner = outputMode !== "json" ? new Spinner() : null;
   assertEquals(spinner instanceof Spinner, true);
 });
-
-// --- UpdateCheckRenderer.updated flag ---
 
 async function* fakeUpdateStream(
   status: "updated" | "up_to_date",
@@ -226,8 +220,6 @@ Deno.test("createUpdateCheckRenderer: newVersion is the installed version after 
     assertEquals(upToDate.newVersion, null);
   }
 });
-
-// --- Background update timeout (swamp-club#3447) ---
 
 Deno.test("updateWithin: a timed-out background update aborts its download", async () => {
   let downloadSignal: AbortSignal | undefined;

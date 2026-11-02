@@ -17,35 +17,16 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Works out which CLI commands a change can affect, from static imports.
- *
- * A root command (`vault`, `serve`, …) is affected when the module closure of
- * the file that defines it contains a changed file. A root's file imports its
- * subcommands, so its closure contains theirs: the list is per command family,
- * not per subcommand.
- *
- * Everything here is pure. The module graph, the command index and the changed
- * files are handed in by `build_attestation.ts`, which is what runs `deno
- * info` and git; this file only decides what they mean.
- *
- * The answer is derived from static imports and says so in the record. It
- * cannot see extension loading, registries, bundled assets or an import whose
- * path is computed at runtime, so an empty list is not proof of no effect.
- */
 
 import { fromFileUrl, relative, SEPARATOR } from "@std/path";
 
-// -- deno info --json shapes (only the fields this reads) --------------------
 
 interface DenoInfoResolved {
   specifier?: string;
 }
 
 interface DenoInfoDependency {
-  /** Present when the module is reached by a runtime import. */
   code?: DenoInfoResolved;
-  /** Present when the module is reached by `import type`. */
   type?: DenoInfoResolved;
 }
 
@@ -59,16 +40,13 @@ export interface DenoInfo {
   redirects?: Record<string, string>;
 }
 
-// -- Graph ------------------------------------------------------------------
 
 /**
- * Local modules and what each imports, keyed by path relative to the repo
- * root with forward slashes — the spelling `git diff --name-only` uses, so a
- * changed file can be looked up without translation.
+ * keyed by repo-relative forward-slash path, the spelling git diff --name-only
+ * uses
  */
 export type ImportGraph = ReadonlyMap<string, ReadonlySet<string>>;
 
-/** A `file:` specifier as a repo-relative path, or null when outside the repo. */
 function repoPath(specifier: string, repoRoot: string): string | null {
   if (!specifier.startsWith("file:")) return null;
   const path = relative(repoRoot, fromFileUrl(specifier));
@@ -77,13 +55,9 @@ function repoPath(specifier: string, repoRoot: string): string | null {
 }
 
 /**
- * The local import graph out of `deno info --json`.
- *
- * Both edge kinds are followed. A module reached only through `import type`
- * cannot change what a command does at runtime, but it can change whether the
- * command compiles, and counting it errs towards reporting a command rather
- * than missing one. Remote and npm modules are dropped: a change to those
- * arrives as a change to `deno.json` or `deno.lock`, which has its own rule.
+ * follows type imports too: they can break compile, and over-reporting beats
+ * missing a command. remote and npm modules are dropped; their changes arrive
+ * via deno.json or deno.lock
  */
 export function buildImportGraph(info: DenoInfo, repoRoot: string): ImportGraph {
   const redirects = info.redirects ?? {};
@@ -105,12 +79,6 @@ export function buildImportGraph(info: DenoInfo, repoRoot: string): ImportGraph 
   return graph;
 }
 
-/**
- * Every module reachable from `root`, itself included.
- *
- * `stopAt` names modules the walk does not enter — used to find what startup
- * reaches on its own, without following it into the commands.
- */
 export function closure(
   graph: ImportGraph,
   root: string,
@@ -129,19 +97,11 @@ export function closure(
   return seen;
 }
 
-// -- Changes outside the graph ----------------------------------------------
 
-/** The program's entry point; what `deno info` is run against. */
 export const ENTRY_POINT = "main.ts";
 
-/** Where command files live. Startup is what the entry reaches outside it. */
 export const COMMAND_DIR = "src/cli/commands/";
 
-/**
- * Files that are in no command's closure and shape every command anyway: the
- * import map, the lockfile, the two places the runtime version is pinned, and
- * the script that compiles the binary and sets the permissions it runs with.
- */
 const ALL_COMMANDS_FILES: ReadonlySet<string> = new Set([
   "deno.json",
   "deno.lock",
@@ -151,23 +111,15 @@ const ALL_COMMANDS_FILES: ReadonlySet<string> = new Set([
 ]);
 
 /**
- * Directories `scripts/compile.ts` embeds in the binary with `--include`, so
- * a change under them ships to users without any import naming it. Checked
- * before the no-commands directories, which would otherwise claim them.
- *
- * `.claude/skills` is embedded too and is deliberately absent: a skill-only
- * change was decided to select no command (swamp-club#3145), though `init`
- * and `repo` install the bundled skills.
+ * embedded in the binary, so a change ships without any import naming it;
+ * checked before the no-commands dirs. .claude/skills is deliberately absent: a
+ * skill-only change selects no command
  */
 const BUNDLED_DIRS: readonly string[] = ["packages/dashboard/"];
 
 /**
- * Top-level directories a change to which selects no command: prose, agent
- * configuration, verification and CI machinery, tests, and packages and
- * extensions published separately from the CLI.
- *
- * Only for files outside the module graph. A file under one of these that
- * the CLI imports is a module, and is looked up in the graph instead.
+ * only for files outside the module graph; a file here that the CLI imports is
+ * looked up in the graph instead
  */
 const NO_COMMANDS_DIRS: ReadonlySet<string> = new Set([
   ".agents",
@@ -184,7 +136,6 @@ const NO_COMMANDS_DIRS: ReadonlySet<string> = new Set([
   "verification",
 ]);
 
-/** Root files that are licence text or repository housekeeping. */
 const NO_COMMANDS_FILES: ReadonlySet<string> = new Set([
   ".gitattributes",
   ".gitignore",
@@ -194,20 +145,15 @@ const NO_COMMANDS_FILES: ReadonlySet<string> = new Set([
   "LICENSE",
 ]);
 
-/** What a changed file outside the module graph means for the command list. */
 export interface OutsideGraphEffect {
   effect: "all" | "none";
-  /** Which rule decided it, for the record. */
   rule: string;
 }
 
 /**
- * Classifies a changed file that is not a module in the graph.
- *
- * The last rule is the important one. A file nothing here recognises is
- * reported as affecting every command rather than none: an unknown file is
- * far likelier to be something this table has not caught up with than
- * something with no effect, and the two mistakes are not equally cheap.
+ * a file nothing here recognises selects every command: it more likely means
+ * the table is behind than that the file has no effect, and the two mistakes
+ * are not equally cheap
  */
 export function classifyOutsideGraph(path: string): OutsideGraphEffect {
   if (ALL_COMMANDS_FILES.has(path)) {
@@ -234,39 +180,29 @@ export function classifyOutsideGraph(path: string): OutsideGraphEffect {
   return { effect: "all", rule: "unclassified" };
 }
 
-// -- The record --------------------------------------------------------------
 
-/** Root command name to the repo-relative file that defines it. */
 export type CommandIndex = Readonly<Record<string, string>>;
 
-/** How many file names a list in the record carries before it is cut off. */
 const FILE_LIST_LIMIT = 50;
 
-/** A file list that states its full size and carries only the first few. */
 interface FileSample<T> {
   count: number;
   files: T[];
 }
 
 export interface AffectedCommands {
-  /** `root`: top-level command names, each standing for its subcommands. */
   granularity: "root";
   scope: "all" | "some" | "none";
-  /** Affected command names, sorted. */
   commands: string[];
   totalCommands: number;
   /**
-   * Changed files that every command runs at startup — reachable from the
-   * entry point without going through a command file. Reported beside the
-   * list rather than widening it, so a reader can decide what to make of it.
+   * reported beside the list rather than widening it, so a reader can decide
+   * what to make of it
    */
   startupPath: FileSample<string>;
-  /** Changed files that selected every command outright, and by which rule. */
   forcedAll: FileSample<{ file: string; rule: string }>;
   derivation: {
-    /** Says what an empty list does and does not mean. */
     method: "static-imports";
-    /** The commit the change was diffed against. */
     diffBase: string;
     edges: Array<"code" | "type">;
     changedFiles: number;
@@ -278,9 +214,8 @@ function sample<T>(files: T[]): FileSample<T> {
 }
 
 /**
- * Whether a deleted file could only have reached a command through imports:
- * source under `src/`, or the entry point. Source elsewhere — the compile
- * script, say — is not a CLI module, and its deletion is classified.
+ * deleted source under src/ or the entry point could only have reached a
+ * command by import; other deleted files are classified
  */
 function wasModule(path: string): boolean {
   return path === ENTRY_POINT ||
@@ -288,19 +223,9 @@ function wasModule(path: string): boolean {
 }
 
 /**
- * The commands a set of changed files can affect.
- *
- * Each changed file is either a module in the graph, where it selects the
- * commands whose closure contains it, or it is not, where
- * `classifyOutsideGraph` decides between every command and none.
- *
- * `deletedFiles` are files the change removed, which are in no graph built
- * from the tree after it. A deleted module is skipped: whatever imported it
- * had to change too, and is selected in its own right. Any other deleted file
- * is classified like a changed one — removing `deno.lock` or an embedded
- * asset reaches commands without an import to show for it. The cost of
- * telling the two apart by path is that deleting a `src/` file nothing
- * imported, such as a separate entry point, is skipped as well.
+ * a deleted module is skipped since its importers changed too; other deleted
+ * files are classified like changed ones. deleting a src/ file nothing imported
+ * is skipped as well
  */
 export function computeAffectedCommands(input: {
   graph: ImportGraph;

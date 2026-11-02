@@ -21,64 +21,37 @@ import { basename } from "@std/path";
 import { UserError } from "../../domain/errors.ts";
 import { defaultCommandResolver } from "../process/resolve_command.ts";
 
-/**
- * Result of opening a file in an editor.
- */
 export interface EditorResult {
   editor: string;
   path: string;
-  /**
-   * Whether the editor exited successfully, when its exit was waited for.
-   * A non-zero exit (vim's `:cq`) means the person abandoned the edit.
-   */
+  /** a non-zero exit (vim's :cq) means the person abandoned the edit */
   success?: boolean;
 }
 
-/**
- * A resolved editor process that can be announced before it is started.
- */
 export interface EditorLaunch {
   editor: string;
   waitsForExit: boolean;
-  /** The command line the launch runs, the file path last. */
   args?: readonly string[];
   /**
-   * Whether the editor is known to stay open until the file is closed: a
-   * terminal editor, or a GUI editor given its wait flag. An unknown
-   * editor is waited for, but may hand the file to another process and
-   * exit before the person has saved.
+   * an unknown editor is waited for, but may hand the file to another process
+   * and exit before the person has saved
    */
   waitConfirmed?: boolean;
   open: () => Promise<EditorResult>;
 }
 
-/**
- * Options for opening a file in an editor.
- */
 export interface OpenFileOptions {
-  /**
-   * Whether to wait for the editor to close before returning.
-   * If not specified, automatically detects based on editor type:
-   * - Terminal editors (vim, nvim, nano, etc.): wait
-   * - GUI editors (code, zed, subl, etc.): don't wait
-   */
   wait?: boolean;
   /**
-   * Wait for every editor, and refuse one that cannot be made to: a launcher
-   * that hands the file to another program and exits at once. A caller that
-   * reads the file back after the editor closes sets this (swamp-club#4107).
+   * wait for every editor, and refuse a launcher that hands the file to another
+   * program and exits at once; set by a caller that reads the file back after
+   * the editor closes
    */
   requireWait?: boolean;
 }
 
-/**
- * The list of fallback editors to try when $EDITOR is not set.
- */
 const FALLBACK_EDITORS = ["code", "zed", "nvim", "vim", "nano", "emacs"];
 
-/**
- * Terminal editors that run inside the terminal and require waiting.
- */
 const TERMINAL_EDITORS = new Set([
   "vim",
   "vi",
@@ -97,8 +70,8 @@ const TERMINAL_EDITORS = new Set([
 ]);
 
 /**
- * GUI editors that return at once unless passed a flag, and that flag.
- * Every other editor is waited for until its process exits.
+ * GUI editors that return at once unless passed a flag; every other editor is
+ * waited for until its process exits
  */
 const WAIT_FLAGS: Record<string, { flag: string; aliases: string[] }> = {
   code: { flag: "--wait", aliases: ["-w"] },
@@ -120,7 +93,6 @@ const WAIT_FLAGS: Record<string, { flag: string; aliases: string[] }> = {
  */
 const NON_WAITING_LAUNCHERS = new Set(["xdg-open", "gio", "start", "explorer"]);
 
-/** An editor's command name, without the directory it was given with. */
 function commandName(command: string): string {
   return basename(command).replace(/\.(exe|cmd|bat)$/i, "");
 }
@@ -136,30 +108,16 @@ function isNonWaitingLauncher(editorParts: string[]): boolean {
   return NON_WAITING_LAUNCHERS.has(base);
 }
 
-/**
- * Service for finding and launching the user's preferred editor.
- */
 export class EditorService {
-  /**
-   * Finds the user's preferred editor.
-   *
-   * Checks $EDITOR environment variable first, then falls back to common editors.
-   *
-   * @returns The name of the editor command
-   * @throws Error if no editor could be found
-   */
   async findEditor(): Promise<string> {
-    // First check $EDITOR environment variable
     const editorEnv = Deno.env.get("EDITOR");
     if (editorEnv) {
-      // Extract just the command name (in case it has arguments)
       const editorCmd = editorEnv.split(" ")[0];
       if (await this.isCommandAvailable(editorCmd)) {
         return editorEnv;
       }
     }
 
-    // Try fallback editors
     for (const editor of FALLBACK_EDITORS) {
       if (await this.isCommandAvailable(editor)) {
         return editor;
@@ -172,13 +130,6 @@ export class EditorService {
     );
   }
 
-  /**
-   * Opens a file in the user's preferred editor.
-   *
-   * @param filePath - The path to the file to edit
-   * @param options - Options for opening the file
-   * @returns Information about the editor that was launched
-   */
   async openFile(
     filePath: string,
     options: OpenFileOptions = {},
@@ -187,9 +138,6 @@ export class EditorService {
     return await launch.open();
   }
 
-  /**
-   * Resolves an editor launch without starting its process.
-   */
   async prepareOpenFile(
     filePath: string,
     options: OpenFileOptions = {},
@@ -206,7 +154,6 @@ export class EditorService {
       );
     }
 
-    // Determine whether to wait: use explicit option, or auto-detect based on editor type
     const shouldWait = options.requireWait ||
       (options.wait ?? this.isTerminalEditor(editor));
 
@@ -239,7 +186,6 @@ export class EditorService {
         });
 
         if (shouldWait) {
-          // Wait for the editor to close (terminal editors)
           const process = command.spawn();
           const status = await process.status;
           return {
@@ -248,7 +194,6 @@ export class EditorService {
             success: status.success,
           };
         }
-        // Spawn and return immediately (GUI editors)
         command.spawn();
         return {
           editor: this.getEditorDisplayName(editor),
@@ -258,24 +203,15 @@ export class EditorService {
     };
   }
 
-  /**
-   * Checks if an editor is a terminal-based editor that requires waiting.
-   */
   private isTerminalEditor(editor: string): boolean {
     return TERMINAL_EDITORS.has(commandName(editor.split(" ")[0]));
   }
 
-  /**
-   * Checks if a command is available in the system PATH.
-   */
   private async isCommandAvailable(cmd: string): Promise<boolean> {
     const path = await defaultCommandResolver().resolve(cmd);
     return path !== null;
   }
 
-  /**
-   * Builds the arguments array for launching the editor.
-   */
   private buildEditorArgs(
     editor: string,
     filePath: string,
@@ -283,7 +219,6 @@ export class EditorService {
   ): string[] {
     const args: string[] = [];
 
-    // Handle editors that may have arguments in $EDITOR
     const editorParts = editor.split(" ");
     args.push(...editorParts);
 
@@ -303,9 +238,6 @@ export class EditorService {
     return args;
   }
 
-  /**
-   * Gets a human-readable display name for an editor.
-   */
   private getEditorDisplayName(editor: string): string {
     const baseEditor = editor.split(" ")[0];
     const displayNames: Record<string, string> = {

@@ -17,11 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// The serve bookkeeping reaper against a real repository, catalog and query
-// service on disk, wired to a sync service through the same markDirty hook
-// serve uses and to a real sync gate. Records are written through the real
-// step-lease and pending-dispatch model methods (swamp-club#2262).
-
 import { assert, assertEquals, assertRejects } from "@std/assert";
 import { join } from "@std/path";
 import type { FilesystemDatastoreConfig } from "../src/domain/datastore/datastore_config.ts";
@@ -217,7 +212,6 @@ async function dataNames(
   return names.sort();
 }
 
-/** Saves a record directly, stamped with the context's namespace. */
 async function saveRecord(
   ctx: RepositoryContext,
   modelType: ModelType,
@@ -242,7 +236,6 @@ async function saveRecord(
   );
 }
 
-/** Catalog query with bodies loaded, as `workerQueueList` is wired. */
 function queryDeps(ctx: RepositoryContext) {
   return async (predicate: string) =>
     await ctx.dataQueryService.query(predicate, {
@@ -250,7 +243,6 @@ function queryDeps(ctx: RepositoryContext) {
     }) as DataRecord[];
 }
 
-/** The reaper's body-free catalog listing, wired exactly as serve wires it. */
 function reaperQuery(ctx: RepositoryContext) {
   return createBookkeepingRecordQuery(ctx.dataQueryService);
 }
@@ -292,8 +284,8 @@ Deno.test("reapEndedBookkeepingRecords: removes ended records past grace from di
       ) as DataRecord[])[0].modelId;
 
       events.length = 0;
-      // Each batch's deletes stage into a root unit, not through
-      // signalChange's fallback (swamp-club#3056).
+      // each batch's deletes stage into a root unit, not through signalChange's
+      // fallback
       const result = await withUnscopedWriteGuard(() =>
         reapEndedBookkeepingRecords(
           {
@@ -345,7 +337,6 @@ Deno.test("reapEndedBookkeepingRecords: removes ended records past grace from di
       }
       assert(gone, "lease-done directory should be removed from disk");
 
-      // Every deleted version was marked dirty, then one push committed them.
       const marks = events.filter((e) => e.kind === "mark");
       assert(marks.length > 0);
       assertEquals(events[events.length - 1], { kind: "push" });
@@ -365,7 +356,6 @@ Deno.test("reapEndedBookkeepingRecords: removes ended records past grace from di
         ),
       );
 
-      // The live queue view is unaffected.
       const queue: string[] = [];
       for await (
         const event of workerQueueList(createLibSwampContext({}), {
@@ -520,12 +510,8 @@ Deno.test("reapEndedBookkeepingRecords and workerGcListPredicate: ignore another
         "state-main",
         { name: "w2", status: "idle" },
       );
-      // Populate the catalog from disk before the foreign rows arrive, the
-      // way a running serve has already backfilled before a catalog pull.
       await ctx.dataQueryService.query(`name == "state-main"`);
 
-      // Rows from another namespace, as `datastore catalog pull` writes them:
-      // catalog-only, with content served by the foreign fetcher.
       ctx.catalogStore.bulkUpsertForeign("team-b", [
         foreignRow(STEP_LEASE_MODEL_TYPE, STEP_LEASE_INSTANCE_NAME, "lease-x"),
         foreignRow(WORKER_MODEL_TYPE, "worker-w1", "state-main"),
@@ -649,8 +635,6 @@ Deno.test("reapEndedBookkeepingRecords: on a v3 datastore the reap commits, and 
         await lease(repoA, ctx, "acquire", acquireInputs("live"));
       });
 
-      // Serve's reaper opens its root over the hook alone; on v3 that is a
-      // commit-log root.
       const result = await reapEndedBookkeepingRecords(
         {
           query: reaperQuery(ctx),

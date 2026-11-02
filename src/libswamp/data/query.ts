@@ -44,28 +44,16 @@ export type {
 
 const logger = getLogger(["swamp", "data", "query"]);
 
-/**
- * Projected data shape, determined by the first projected value's type.
- */
 export type ProjectedData =
   | { shape: "scalar"; values: unknown[] }
   | { shape: "map"; columns: string[]; rows: Record<string, unknown>[] }
   | { shape: "list"; rows: unknown[][] };
 
-/**
- * Points a query that matched no data instance name at the data whose spec
- * name it named. `suggestedPredicate` is a predicate that was verified to
- * match before it was suggested. `otherFiltersDropped` is true when the
- * query's conditions other than simple equalities were left out of it.
- */
 export interface SpecNameHint {
   suggestedPredicate: string;
   otherFiltersDropped: boolean;
 }
 
-/**
- * Data payload for the completed event.
- */
 export interface DataQueryData {
   predicate: string;
   select?: string;
@@ -73,7 +61,6 @@ export interface DataQueryData {
   projected?: ProjectedData;
   total: number;
   limited: boolean;
-  /** Set only when nothing matched and the spec-name fallback does. */
   specNameHint?: SpecNameHint;
   /**
    * With a sort, the cursor for the page after this one: set only when the
@@ -89,9 +76,6 @@ export type DataQueryEvent =
   | { kind: "completed"; data: DataQueryData }
   | { kind: "error"; error: SwampError };
 
-/**
- * Dependencies for the data query generator.
- */
 export interface DataQueryDeps {
   query(
     predicate: string,
@@ -115,16 +99,9 @@ export interface DataQueryDeps {
       after?: QueryCursorPosition;
     },
   ): Promise<{ results: DataRecord[] | unknown[]; last?: QueryCursorPosition }>;
-  /**
-   * Returns the spec-name counterpart of a predicate that matches one
-   * instance name exactly, or null. Without it, no hint is offered.
-   */
   specNameFallback?(predicate: string): SpecNameFallback | null;
 }
 
-/**
- * Input for the data query generator.
- */
 export interface DataQueryInput {
   predicate: string;
   select?: string;
@@ -134,7 +111,6 @@ export interface DataQueryInput {
    * instead of `completed`. Cannot be combined with `limit`.
    */
   single?: boolean;
-  /** Keeps only the matched records this accepts, before any projection. */
   include?: (record: DataRecord) => Promise<boolean>;
   /**
    * Orders the matches by `createdAt` or `tags.<key>`, compared as strings,
@@ -142,16 +118,9 @@ export interface DataQueryInput {
    * capped at MAX_QUERY_RESULTS. Cannot be combined with `single`.
    */
   sort?: { field: string; direction: string };
-  /** The `nextCursor` of the previous page of the same sorted query. */
   cursor?: string;
 }
 
-/**
- * Checks that a query matched exactly one data artifact. Returns the error to
- * report when it did not, or undefined when it did. Any count above one is
- * several matches; a missing count is none. A spec-name hint for a query that
- * matched nothing is carried into the no-match message.
- */
 export function requireSingleResult(
   data: { predicate: string; total: number; specNameHint?: SpecNameHint },
 ): SwampError | undefined {
@@ -182,9 +151,6 @@ export function requireSingleResult(
   };
 }
 
-/**
- * Determines the projected data shape from the first value's type.
- */
 function classifyProjection(
   value: unknown,
 ): "scalar" | "map" | "list" {
@@ -224,9 +190,6 @@ async function findSpecNameHint(
   }
 }
 
-/**
- * Queries data artifacts using a CEL predicate, with optional projection.
- */
 export async function* dataQuery(
   _ctx: LibSwampContext,
   deps: DataQueryDeps,
@@ -278,12 +241,8 @@ export async function* dataQuery(
         }
       }
 
-      // Unlimited by default — callers pass an explicit limit when they
-      // need a cap. `limited` in the completed event reflects whether
-      // the query service actually hit the supplied limit; the service fills
-      // a limited page from records that survive its stale-row check
-      // (swamp-club#2985). A single-result query stays unlimited.
-      // A sorted query is always bounded (swamp-club#4177).
+      // Unlimited by default; callers pass a limit to cap. limited reflects
+      // whether the service hit the limit. A sorted query is always bounded.
       const limit = input.single
         ? undefined
         : sort
@@ -337,7 +296,6 @@ export async function* dataQuery(
         }
 
         if (!input.select) {
-          // No projection — results are DataRecord[]
           const results = rawResults as DataRecord[];
           for (const record of results) {
             yield { kind: "match" as const, record };
@@ -356,7 +314,6 @@ export async function* dataQuery(
           return;
         }
 
-        // Projected results — classify shape for the renderer
         const projected = rawResults as unknown[];
         for (const value of projected) {
           yield { kind: "projected_match" as const, value };
@@ -408,8 +365,8 @@ export async function* dataQuery(
         yield {
           kind: "error" as const,
           error: {
-            // A record the datastore could not materialise keeps its own
-            // code, as `data get` reports it (swamp-club#3617).
+            // a record the datastore could not materialise keeps its own code,
+            // as data get reports it
             code: isUnreadableContentError(error)
               ? UNREADABLE_CONTENT_CODE
               : "QUERY_FAILED",

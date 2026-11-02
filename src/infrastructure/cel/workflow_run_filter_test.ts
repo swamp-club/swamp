@@ -39,8 +39,6 @@ const RUN: WorkflowRunFilterContext = {
   failureReason: "",
 };
 
-// --- Validation: valid expressions ---
-
 Deno.test("validateWorkflowRunFilter: simple string equality", () => {
   const result = validateWorkflowRunFilter('status == "succeeded"');
   assertEquals(result, { valid: true });
@@ -82,8 +80,6 @@ Deno.test("validateWorkflowRunFilter: matches with literal pattern", () => {
   assertEquals(result, { valid: true });
 });
 
-// --- Validation: invalid expressions ---
-
 Deno.test("validateWorkflowRunFilter: syntax error", () => {
   const result = validateWorkflowRunFilter("status ==");
   assertEquals(result.valid, false);
@@ -118,8 +114,6 @@ Deno.test("validateWorkflowRunFilter: catastrophic backtracking pattern rejected
   assertEquals(result.valid, false);
   assertStringIncludes(result.error!, "catastrophic backtracking");
 });
-
-// --- Evaluation: matching ---
 
 Deno.test("evaluateWorkflowRunFilter: matches on status", () => {
   assertEquals(
@@ -177,8 +171,6 @@ Deno.test("evaluateWorkflowRunFilter: startedAt lexicographic comparison", () =>
   );
 });
 
-// --- Evaluation: non-matching ---
-
 Deno.test("evaluateWorkflowRunFilter: does not match wrong status", () => {
   assertEquals(
     evaluateWorkflowRunFilter('status == "failed"', RUN),
@@ -192,8 +184,6 @@ Deno.test("evaluateWorkflowRunFilter: does not match wrong input", () => {
     false,
   );
 });
-
-// --- Evaluation: missing optional fields ---
 
 Deno.test("evaluateWorkflowRunFilter: missing optional fields default to empty", () => {
   const minimalRun: WorkflowRunFilterContext = {
@@ -213,8 +203,6 @@ Deno.test("evaluateWorkflowRunFilter: missing optional fields default to empty",
     true,
   );
 });
-
-// --- Evaluation: non-boolean result returns false ---
 
 Deno.test("evaluateWorkflowRunFilter: non-boolean result returns false", () => {
   assertEquals(
@@ -249,10 +237,9 @@ Deno.test("evaluateWorkflowRunFilter: every WorkflowRunFilterContext field resol
     failedStep: "lint",
     failureReason: "exit 1",
   };
-  // Typed against WorkflowRunFilterContext so a new field fails type
-  // checking until it is listed here, and a field named after a cel-js
-  // constant (cel, type, int, ...) fails instead of silently resolving to
-  // the built-in (swamp-club#2851).
+  // typed against WorkflowRunFilterContext so a new field fails type checking
+  // until listed here, and a field named like a cel-js constant fails instead
+  // of resolving to the built-in
   const predicates: Record<keyof WorkflowRunFilterContext, string> = {
     workflowName: 'workflowName == "verify-build"',
     status: 'status == "failed"',

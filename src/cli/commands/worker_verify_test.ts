@@ -22,17 +22,10 @@ import { Command } from "@cliffy/command";
 import { initializeLogging } from "../../infrastructure/logging/logger.ts";
 import type { WorkerVerifyData } from "../../serve/protocol.ts";
 
-// Import models barrel to trigger self-registration
 import "../../domain/models/models.ts";
 
-// Initialize logging for tests
 await initializeLogging({});
 
-/**
- * In-process serve endpoint answering every request frame with the given
- * payload — enough to drive the command's request/response --server path
- * without a subprocess.
- */
 function payloadServer(
   payload: Record<string, unknown>,
 ): { url: string; shutdown: () => Promise<void> } {
@@ -58,7 +51,6 @@ function payloadServer(
   };
 }
 
-/** Runs `worker verify` against a scripted probe result; returns Deno.exitCode. */
 async function runWorkerVerifyAgainst(
   data: WorkerVerifyData,
 ): Promise<number> {

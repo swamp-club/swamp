@@ -109,7 +109,6 @@ Deno.test("createModelMethodDescribeRenderer - factory returns correct type per 
   assertEquals(typeof jsonRenderer.handlers, "function");
 });
 
-/** The log-mode lines for `testData`, colors stripped. */
 function renderLines(surface?: CommandSurface): string[] {
   const lines: string[] = [];
   const originalLog = console.log;

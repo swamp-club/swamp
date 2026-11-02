@@ -54,13 +54,11 @@ import type { ModelGetResponse } from "../../serve/protocol.ts";
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
 
-/** The preferred spelling: `swamp behavior get`. */
 export const BEHAVIOR_GET_SYNTAX: CommandSyntax = {
   invocation: "swamp behavior get",
   surface: "behavior",
 };
 
-/** The legacy spelling: `swamp model get`. */
 export const MODEL_GET_SYNTAX: CommandSyntax = {
   invocation: "swamp model get",
   surface: "model",
@@ -132,7 +130,7 @@ export function createModelGetCommand(syntax: CommandSyntax) {
         modelGet(ctx, deps, modelIdOrName),
         {
           ...handlers,
-          // An edit of it now starts from this version (swamp-club#4097).
+          // an edit of it now starts from this version.
           completed: (e) => {
             markConfigLoaded(repoContext, "model", e.data.name);
             return handlers.completed(e);

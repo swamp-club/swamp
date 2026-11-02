@@ -18,59 +18,24 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * Partition keys for the v3 datastore (datastore rework Phase 3,
- * swamp-club#3233).
- *
- * A partition is the storage of one aggregate instance, and one commit is one
- * transaction on one partition. A key is derived only from the identity of
- * the aggregate it stores, through {@link partitionOf}:
- *
- * | Aggregate                 | Key                                     |
- * |---------------------------|-----------------------------------------|
- * | Model (and the control-plane models: grants, groups, tokens, workers) | `model--{type}--{modelId}` |
- * | WorkflowRun               | `run--{workflowId}--{runId}`            |
- * | Definition (managed config) | `config--{model\|workflow\|vault}--{name}` |
- * | Extension lockfile        | `config--lockfile--upstream_extensions` |
- * | AutoDefinition            | `definition--{id}`                      |
- *
- * The type and name segments are percent-encoded: a normalized model type
- * keeps `/` and `@`, and a definition name may hold `/` (scoped
- * `@collective/name`) or `--`. Flattening `/` to `-` would give `a-b/c` and
- * `a/b-c` one key. Ids are UUIDs, which never hold `--`, so a key parses back
- * without ambiguity.
- *
- * Nothing in production uses this module yet: it is the dormant domain model
- * later Phase 3 issues build on (`integration/datastore_v3_rules_test.ts`).
- *
- * @module
+ * type and name segments are percent-encoded since flattening / to - would give
+ * a-b/c and a/b-c one key; ids are UUIDs, which never hold --, so a key parses
+ * back without ambiguity
  */
 
 import { ModelType } from "../models/model_type.ts";
 
-/** The kinds of managed-config definition that are their own partition. */
 export const DEFINITION_KINDS = ["model", "workflow", "vault"] as const;
 
-/** A kind of managed-config definition. */
 export type DefinitionKind = typeof DEFINITION_KINDS[number];
 
-/** The name of the single extension lockfile partition. */
 export const LOCKFILE_NAME = "upstream_extensions";
 
-/** The longest partition key accepted, in UTF-16 code units. */
 export const MAX_PARTITION_KEY_LENGTH = 1024;
 
 /**
- * The identity of the aggregate a partition stores.
- *
- * - `model`: a model and everything it owns (data names and versions,
- *   outputs, its evaluated definition). `type` is the ModelType; only its
- *   normalized form reaches the key, so every spelling of one type gives one
- *   partition.
- * - `run`: one workflow run, with its jobs and steps.
- * - `config`: one model, workflow or vault definition under managed config,
- *   by name.
- * - `lockfile`: the managed-config extension lockfile, a single instance.
- * - `definition`: one auto-definition, by id.
+ * only a model type's normalized form reaches the key, so every spelling of one
+ * type gives one partition
  */
 export type AggregateIdentity =
   | { readonly kind: "model"; readonly type: ModelType; readonly id: string }
@@ -87,16 +52,10 @@ export type AggregateIdentity =
   | { readonly kind: "lockfile" }
   | { readonly kind: "definition"; readonly id: string };
 
-/**
- * The identity a parsed key holds. Like {@link AggregateIdentity}, except a
- * model's type is its normalized string: a key does not keep the raw
- * spelling.
- */
 export type PartitionIdentity =
   | { readonly kind: "model"; readonly type: string; readonly id: string }
   | Exclude<AggregateIdentity, { kind: "model" }>;
 
-/** Held only by this module, so no other code reaches the constructor. */
 const BUILD: unique symbol = Symbol("PartitionKey.build");
 
 /**
@@ -107,22 +66,12 @@ const BUILD: unique symbol = Symbol("PartitionKey.build");
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const UUID_LENGTH = 36;
 
-/**
- * Identifies one partition. Built only by {@link partitionOf} from an
- * aggregate's identity, or by {@link PartitionKey.parse} from a key string;
- * `parse(key.toString())` returns an equal key.
- */
 export class PartitionKey {
   private constructor(
     private readonly value: string,
-    /** The identity of the aggregate this partition stores. */
     readonly identity: PartitionIdentity,
   ) {}
 
-  /**
-   * Builds a key from a checked identity. `token` is module-private, so only
-   * {@link partitionOf} and {@link PartitionKey.parse} can call it.
-   */
   static fromIdentity(
     token: typeof BUILD,
     identity: PartitionIdentity,
@@ -137,12 +86,6 @@ export class PartitionKey {
     return new PartitionKey(value, identity);
   }
 
-  /**
-   * Parses a partition key string. Throws when it is not the canonical form
-   * {@link partitionOf} produces: an unknown kind, an id that is not a UUID,
-   * a type that is not a normalized model type, or a segment that is not
-   * canonically percent-encoded.
-   */
   static parse(value: string): PartitionKey {
     if (typeof value !== "string") {
       throw new TypeError("Partition key must be a string");
@@ -155,7 +98,6 @@ export class PartitionKey {
     return key;
   }
 
-  /** The aggregate kind this partition stores. */
   get kind(): PartitionIdentity["kind"] {
     return this.identity.kind;
   }
@@ -173,11 +115,6 @@ export class PartitionKey {
   }
 }
 
-/**
- * The partition that stores an aggregate: the only way to build a
- * {@link PartitionKey} from an identity. Ids are lowercased. Throws when an
- * id is not a UUID or a name is empty.
- */
 export function partitionOf(identity: AggregateIdentity): PartitionKey {
   switch (identity.kind) {
     case "model":
@@ -225,11 +162,6 @@ export function partitionOf(identity: AggregateIdentity): PartitionKey {
   }
 }
 
-/**
- * What the key of every run partition of a workflow starts with, for a
- * range over them: whether any run of a workflow id still has records
- * (swamp-club#3922). Throws when the id is not a UUID.
- */
 export function runPartitionsPrefix(workflowId: string): string {
   return `run--${canonicalUuid(workflowId, "workflow id")}--`;
 }
@@ -331,7 +263,6 @@ function decodeSegment(segment: string, key: string): string {
   return decoded;
 }
 
-/** An id in its canonical form: lowercased, then checked to be a UUID. */
 function canonicalUuid(id: string, label: string): string {
   const lowered = typeof id === "string" ? id.toLowerCase() : id;
   requireUuid(lowered, label);

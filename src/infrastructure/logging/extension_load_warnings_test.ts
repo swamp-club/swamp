@@ -25,10 +25,8 @@ import {
   resetExtensionLoadWarnings,
 } from "./extension_load_warnings.ts";
 
-// Every test in this file MUST call resetExtensionLoadWarnings() at the
-// start so the always-on capture array does not bleed warnings between
-// cases. The dedupe set already cleared per-case before the array was
-// added; the array makes the requirement load-bearing.
+// every test must call resetExtensionLoadWarnings() first so the always-on
+// capture array does not carry warnings between cases
 
 function makeCapture() {
   const lines: string[] = [];
@@ -68,7 +66,6 @@ Deno.test("emitExtensionLoadWarning: hint is emitted at most once per kind", () 
     { writer: cap.writer },
   );
 
-  // Two warnings + one hint = three lines total, not four.
   assertEquals(cap.lines.length, 3);
   assertEquals(
     cap.lines.filter((l) => l.includes("hint:")).length,
@@ -116,7 +113,6 @@ Deno.test("emitExtensionLoadWarning: de-duplicates on (kind, file, error)", () =
   emitExtensionLoadWarning(w, { writer: cap.writer });
   emitExtensionLoadWarning(w, { writer: cap.writer });
 
-  // One warning + one hint = two lines, not six.
   assertEquals(cap.lines.length, 2);
 });
 
@@ -133,7 +129,6 @@ Deno.test("emitExtensionLoadWarning: distinct errors for the same file are NOT d
     { writer: cap.writer },
   );
 
-  // Two distinct warnings + one hint = three lines.
   assertEquals(cap.lines.length, 3);
 });
 
@@ -187,11 +182,9 @@ Deno.test("resetExtensionLoadWarnings: clears dedupe and hint state", () => {
 
   const w = { kind: "model" as const, file: "/m.ts", error: "boom" };
   emitExtensionLoadWarning(w, { writer: cap.writer });
-  // Re-emit after reset: should produce a fresh warning + hint.
   resetExtensionLoadWarnings();
   emitExtensionLoadWarning(w, { writer: cap.writer });
 
-  // Two warning lines + two hint lines.
   assertEquals(cap.lines.length, 4);
 });
 

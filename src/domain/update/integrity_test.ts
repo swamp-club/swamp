@@ -26,8 +26,6 @@ import {
   verifyChecksum,
 } from "./integrity.ts";
 
-// --- validateRedirectUrl tests ---
-
 Deno.test("validateRedirectUrl accepts valid artifacts.swamp-club.com URL", () => {
   validateRedirectUrl(
     "https://artifacts.swamp-club.com/swamp/20260207.123456.0-sha.abc12345/binary/darwin/aarch64/swamp.tar.gz",
@@ -61,8 +59,6 @@ Deno.test("validateRedirectUrl rejects malformed URL", () => {
   );
 });
 
-// --- checksumUrlFromTarballUrl tests ---
-
 Deno.test("checksumUrlFromTarballUrl appends .sha256", () => {
   assertEquals(
     checksumUrlFromTarballUrl(
@@ -71,8 +67,6 @@ Deno.test("checksumUrlFromTarballUrl appends .sha256", () => {
     "https://artifacts.swamp-club.com/swamp/v1/binary/darwin/aarch64/swamp.tar.gz.sha256",
   );
 });
-
-// --- parseChecksumFile tests ---
 
 Deno.test("parseChecksumFile parses standard sha256sum format", () => {
   const content =
@@ -115,8 +109,6 @@ Deno.test("parseChecksumFile throws on short hash", () => {
     "Invalid checksum file format",
   );
 });
-
-// --- verifyChecksum tests ---
 
 Deno.test("verifyChecksum passes for matching checksums", () => {
   const hash =

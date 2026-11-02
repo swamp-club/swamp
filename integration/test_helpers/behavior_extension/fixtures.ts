@@ -18,27 +18,14 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * Model-spelled extension fixtures for the behavior-spelling compatibility
- * goldens (swamp-club#3338). Each fixture is an extension as an author keeps
- * it under `extensions/models/`: its manifest entries and its source files,
- * keyed by their path from the models directory. The shapes come from the
- * content extractor, catalog-gap and push tests, plus one multi-file model
- * extension (an entry point with helper imports, a nested entry point, an
- * `export const extension` add-on and an include file).
- *
- * The sources are strings, never modules: they are written to a temp repo
- * by the corpus and read back by the code under test.
+ * the sources are strings, never modules: the corpus writes them to a temp repo
+ * and the code under test reads them back
  */
 
-/** One extension fixture. */
 export interface ExtensionFixture {
-  /** Stable id, used as the golden key. */
   readonly id: string;
-  /** `models:` manifest entries, relative to the models directory. */
   readonly models: readonly string[];
-  /** `include:` manifest entries, relative to the models directory. */
   readonly include?: readonly string[];
-  /** Every file of the extension, keyed by path from the models directory. */
   readonly files: Readonly<Record<string, string>>;
 }
 

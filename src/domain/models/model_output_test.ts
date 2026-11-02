@@ -551,8 +551,6 @@ Deno.test("ModelOutput error getter returns copy", () => {
   assertEquals(output.error?.message, "original");
 });
 
-// computeDefinitionHash tests
-
 Deno.test("computeDefinitionHash produces consistent hash", async () => {
   const attributes = { name: "test", count: 42 };
 
@@ -560,7 +558,7 @@ Deno.test("computeDefinitionHash produces consistent hash", async () => {
   const hash2 = await computeDefinitionHash(attributes);
 
   assertEquals(hash1, hash2);
-  assertEquals(hash1.length, 64); // SHA-256 produces 64 hex chars
+  assertEquals(hash1.length, 64);
 });
 
 Deno.test("computeDefinitionHash is order-independent", async () => {
@@ -582,8 +580,6 @@ Deno.test("computeDefinitionHash different for different values", async () => {
 
   assertEquals(hash1 !== hash2, true);
 });
-
-// markCancelled tests
 
 Deno.test("ModelOutput.markCancelled: marks running output as cancelled", () => {
   const output = ModelOutput.create({
@@ -672,8 +668,6 @@ Deno.test("ModelOutput.isComplete: returns true for cancelled", () => {
   assertEquals(output.isComplete, true);
 });
 
-// bundleFingerprint provenance round-trip tests
-
 Deno.test("ModelOutput toData/fromData round-trips bundleFingerprint", () => {
   const provenance: ExecutionProvenance = {
     definitionHash: "hash123",
@@ -729,11 +723,9 @@ Deno.test("executionErrorFrom: passes the message and stack through the redactor
   assertEquals(clean.message, "token *** leaked");
   assertEquals(clean.stack?.includes("hunter2-long"), false);
   assertEquals(clean.stack?.includes("***"), true);
-  // A thrown non-Error has a message and no stack.
   assertEquals(executionErrorFrom("plain failure", redactor), {
     message: "plain failure",
   });
-  // A redactor holding nothing is not asked.
   const idle = {
     hasSecrets: false,
     redact: (): string => {
@@ -776,7 +768,6 @@ Deno.test("redactedError: a coded UserError that echoes a secret stays a UserErr
     [{ name: "d" }],
   );
   assertEquals(errorPaths(shown), ["/repo/a"]);
-  // The original is left as it was.
   assertEquals(error.message, "token hunter2-long rejected");
   assertEquals(errorPaths(error), ["/repo/a"]);
 });
@@ -790,9 +781,7 @@ Deno.test("redactedError: a UserError code that echoes a secret is redacted, and
   assertEquals(shown === error, false);
   assertEquals(shown.code, "auth_failed_***");
   assertEquals(shown.message, "denied");
-  // The original is left as it was.
   assertEquals(error.code, "auth_failed_hunter2-long");
-  // A code with nothing to hide leaves an error with nothing to hide as is.
   const clean = new UserError("denied", "auth_failed");
   assertEquals(redactedError(clean, secretRedactor), clean);
 });

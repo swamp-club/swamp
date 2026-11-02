@@ -218,8 +218,6 @@ Deno.test("auditDoctor: aborts mid-run when the signal is already aborted", asyn
     ]),
     abortSignal: controller.signal,
   }));
-  // Only the completed event fires — no check-started because the signal was
-  // aborted before the loop body ran.
   const completed = events.at(-1) as Extract<
     AuditDoctorEvent,
     { kind: "completed" }

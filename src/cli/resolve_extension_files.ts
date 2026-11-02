@@ -107,18 +107,11 @@ export interface ResolveExtensionFilesContext {
   repoContext: RepositoryContext;
   logger: Logger;
   extensionsDir?: string;
-  /**
-   * Reads each entry point's local module graph. The source copy, the
-   * content hash and every push gate take their files from it
-   * (swamp-club#3376).
-   */
   moduleGraphReader: ModuleGraphReader;
   /**
-   * For commands that only read the extension's files (`extension fmt`): a
-   * missing local module, a module outside the repository, a package.json
-   * project without node_modules, or a graph that cannot be read does not
-   * fail resolution, and no archive is planned (`sourcePlan` is empty).
-   * Push and quality leave this unset, so they fail as a push would.
+   * for commands that only read the extension's files (`extension fmt`):
+   * unreadable or missing modules do not fail resolution and no archive is
+   * planned; push and quality leave this unset so they fail as a push would
    */
   lenientSources?: boolean;
 }
@@ -127,45 +120,32 @@ export interface ResolvedExtensionFiles {
   manifest: ExtensionManifest;
   absoluteManifestPath: string;
   /**
-   * The extensions root: the directory swamp appends `extensions/<kind>`
-   * (the configured typed directories) to. `--extensions-dir` when given,
-   * else chosen by {@link selectExtensionsRoot}. Commands bound their
-   * `deno.json` walk-up here so a manifest outside the repo never walks to
-   * the filesystem root.
+   * commands bound their `deno.json` walk-up here so a manifest outside the
+   * repo never walks to the filesystem root
    */
   extensionsRoot: string;
   /**
-   * Effective base for `models` and `include`. Equals the configured
-   * `modelsDir` from the repo marker under `paths.base: typedDir`
-   * (default), and equals the manifest's own directory under
-   * `paths.base: manifest`. Push uses this base for the archive
-   * layout so archive sub-paths match the manifest entries verbatim.
+   * push uses this base for the archive layout so archive sub-paths match the
+   * manifest entries verbatim
    */
   modelsDir: string;
   /**
-   * Effective base for the model entry points when the manifest lists them
-   * under `behaviors:` (swamp-club#3338): the behaviors directory beside the
-   * default models directory, the configured models directory otherwise,
-   * or the manifest's directory under `paths.base: manifest`. Undefined for
-   * a `models:` manifest. Push packs files under it at `models/` by their
-   * path from it.
+   * base for model entry points listed under `behaviors:`; undefined for a
+   * `models:` manifest. Push packs files under it at `models/` by their path
+   * from it
    */
   behaviorsDir?: string;
   modelEntryPoints: string[];
   allModelFiles: string[];
-  /** Effective base for `vaults` — see {@link modelsDir}. */
   vaultsDir: string;
   vaultEntryPoints: string[];
   allVaultFiles: string[];
-  /** Effective base for `datastores` — see {@link modelsDir}. */
   datastoresDir: string;
   datastoreEntryPoints: string[];
   allDatastoreFiles: string[];
-  /** Effective base for `reports` — see {@link modelsDir}. */
   reportsDir: string;
   reportEntryPoints: string[];
   allReportFiles: string[];
-  /** Effective base for `webhooks` — see {@link modelsDir}. */
   webhooksDir: string;
   webhookEntryPoints: string[];
   allWebhookFiles: string[];
@@ -176,72 +156,45 @@ export interface ResolvedExtensionFiles {
   additionalFilePaths: string[];
   binaryFilePaths: string[];
   /**
-   * Local data modules (JSON, text or bytes imports) each kind reaches. They
-   * are packaged, hashed with their kind and safety-scanned, but never sent
-   * to fmt, lint or the TypeScript review rules, which `all<Kind>Files`
-   * feed.
+   * local data modules each kind reaches: packaged, hashed and safety-scanned,
+   * but never sent to fmt, lint or the TypeScript review rules
    */
   dataFilesByKind: Record<SourceArchiveKind, string[]>;
-  /** Where each local module goes in the archive, and the imports rewritten there. */
   sourcePlan: SourceArchivePlan;
-  /**
-   * Local modules an entry point imports that do not exist. Push and
-   * quality report them as compilation errors, as the bundler would.
-   */
   missingModules: MissingLocalModule[];
   /**
-   * Entry points whose module graph reaches a symlink. The bundler would
-   * follow it and quote the target in its errors, so they are never
-   * bundled (swamp-club#3420).
+   * never bundled: the bundler would follow the symlink and quote its target in
+   * its errors
    */
   entryPointsReachingSymlinks: string[];
   /**
-   * Extension files with a symlink on their path below the repository, the
-   * extensions root or the manifest directory, each mapped to the first
-   * symlinked component. They stay in their lists, unread, so the safety
-   * gate refuses each by the symlink rule (swamp-club#3421). A symlinked
-   * skill directory, or a symlink inside one, is listed here only.
+   * they stay in their lists, unread, so the safety gate refuses each by the
+   * symlink rule; a symlinked skill directory, or a symlink inside one, is
+   * listed here only
    */
   symlinkedPaths: Map<string, string>;
   /**
-   * Lockfiles fmt (lenient) found out of date with their project. Its graph
-   * read never rewrites the lock, so each entry point the lock refused is
-   * formatted alone; push and quality fail on a stale lock instead.
+   * fmt's graph read never rewrites the lock, so each entry point the lock
+   * refused is formatted alone; push and quality fail on a stale lock instead
    */
   staleLockfiles?: StaleLockfile[];
-  /** The project deno.json or deno.jsonc push bundles, formats and lints under. */
   denoConfigPath?: string;
-  /** The package.json project push bundles under, when the extension uses bare specifiers. */
   packageJsonDir?: string;
-  /**
-   * The workspace root `denoConfigPath` is a member of, whose lock push
-   * bundles against (swamp-club#3971).
-   */
   workspaceRootConfigPath?: string;
   /**
-   * Bundle with `--no-config`: the extension has no Deno config inside the
-   * repository, so none above it may apply (swamp-club#3971).
+   * bundle with `--no-config`: the extension has no Deno config inside the
+   * repository, so none above it may apply
    */
   noConfig?: boolean;
-  /** A workspace member's own lock, which Deno ignores (swamp-club#3971). */
+  /** a workspace member's own lock, which Deno ignores */
   ignoredMemberLock?: string;
-  /**
-   * What Deno resolved each bare import the extension's modules write to,
-   * read from the module graph under the project config (swamp-club#3612).
-   */
   bareImports: ResolvedBareImport[];
-  /**
-   * The exact versions, unaudited code and lock validity push ships from
-   * the module graphs (swamp-club#3970).
-   */
   graphDependencies: GraphDependencies;
 }
 
 /**
- * Normalize an additionalFiles entry so equivalent paths compare equal:
- * Unicode NFC form, forward slashes, collapse `./` segments, strip trailing
- * slash, case-fold. The NFC step ensures macOS APFS (decomposed) and Linux
- * ext4 (composed) don't mask true collisions.
+ * NFC form so macOS APFS (decomposed) and Linux ext4 (composed) do not mask
+ * true collisions
  */
 function normalizeAdditionalFileEntry(entry: string): string {
   const nfc = entry.normalize("NFC");
@@ -252,9 +205,7 @@ function normalizeAdditionalFileEntry(entry: string): string {
   return segments.join("/").toLowerCase();
 }
 
-/** A manifest `workflows` entry together with the file it resolved to. */
 export interface WorkflowManifestEntry {
-  /** The entry as written in the manifest. */
   ref: string;
   /**
    * The resolved path of the workflow file, or its own path when a symlink
@@ -262,36 +213,23 @@ export interface WorkflowManifestEntry {
    */
   realPath: string;
   /**
-   * The workflow file under the spelling of the directory it was found in,
-   * which is what push reports (swamp-club#3536); `realPath` when absent.
+   * the workflow file under the spelling of the directory it was found in,
+   * which is what push reports; `realPath` when absent
    */
   path?: string;
 }
 
-/** The archive and lookup names decided for one manifest workflow entry. */
 export interface PlannedWorkflowFile {
   ref: string;
   sourcePath: string;
-  /** File name under `extension/workflows/` in the archive. */
   archiveName: string;
-  /** Name the dependency resolver looks the workflow up by. */
   lookupName: string;
 }
 
 /**
- * Decide the archive file name and dependency-lookup name of every manifest
- * workflow entry.
- *
- * An entry whose manifest directory holds exactly one listed workflow is
- * named after that directory — the one-workflow-per-folder layout
- * (`namespace-debug/workflow.yaml` → `namespace-debug.yaml`), where file
- * basenames would all collide. A directory listed more than once keeps each
- * file's basename, as a bare entry always does. Two entries that still map to
- * the same archive name (compared NFC-normalized and case-insensitively, like
- * additionalFiles) are rejected: push writes every workflow to
- * `extension/workflows/<archiveName>`, and a clash would silently drop all
- * but the last file (swamp-club#2613). A file listed twice is rejected as a
- * duplicate entry rather than reported as a clash with itself.
+ * entries mapping to the same archive name (NFC-normalized, case-insensitive) are
+ * rejected: push writes each workflow to `extension/workflows/<archiveName>`, so
+ * a clash would silently drop all but the last
  */
 export function planWorkflowArchiveNames(
   entries: readonly WorkflowManifestEntry[],
@@ -322,8 +260,7 @@ export function planWorkflowArchiveNames(
     const refDir = dirname(entry.ref);
     const dirKey = dirKeyOf(entry.ref);
     const ownsDirectory = dirKey !== "" && entriesPerDir.get(dirKey) === 1;
-    // The raw directory keeps the names of already-published archives
-    // stable (a lone `./ns/workflow.yaml` has always become `.-ns.yaml`).
+    // the raw directory keeps the names of already-published archives stable
     const archiveName = ownsDirectory
       ? `${refDir.replace(/\//g, "-")}.yaml`
       : basename(entry.realPath);
@@ -355,7 +292,6 @@ export function planWorkflowArchiveNames(
   return planned;
 }
 
-/** Manifest fields whose entries resolve from a typed directory. */
 type TypedField =
   | "models"
   | "behaviors"
@@ -375,13 +311,10 @@ const TYPED_KIND: Record<TypedField, string> = {
   include: "Include file",
 };
 
-/** What a typed-key lookup needs to find a file and to explain a miss. */
 interface TypedLookup {
   extensionsRoot: string;
-  /** True when `--extensions-dir` named the root; the author chose it. */
   explicitRoot: boolean;
   manifestDir: string;
-  /** Configured typed directory per field, relative to the root. */
   typedDirs: Record<TypedField, string>;
   useManifestBase: boolean;
 }
@@ -397,10 +330,8 @@ interface SelectExtensionsRootOptions {
 }
 
 /**
- * A typed field's manifest entries. The model entry points are listed
- * under `models` or, behavior-spelled, under `behaviors` (swamp-club#3338),
- * never both, so each of the two fields holds them only when the author
- * used it.
+ * model entry points are listed under `models` or `behaviors`, never both, so
+ * each field holds them only when the author used it
  */
 function typedEntries(
   manifest: ExtensionManifest,
@@ -441,14 +372,8 @@ async function realPathOrNull(path: string): Promise<string | null> {
 }
 
 /**
- * The nearest directory, from the manifest's own directory upward, that
- * looks like an extension root: it holds an `extensions/` directory or a
- * `.swamp.yaml` marker. An in-repo walk stops at the repo dir, so a
- * manifest under `<repo>/extensions/models/x/` yields the repo dir; outside
- * the repo the walk stops at the filesystem root and falls back to the
- * manifest directory. The user's home directory is never a root, even when
- * it holds `~/extensions` or a marker: `~/.claude/skills` would otherwise
- * become a skill candidate again.
+ * the user's home directory is never a root, even with `~/extensions` or a
+ * marker, or `~/.claude/skills` would become a skill candidate
  */
 export async function inferExtensionsRoot(
   manifestDir: string,
@@ -478,29 +403,9 @@ function homeDirectoryOrNull(): string | null {
 }
 
 /**
- * Choose the extensions root, strictly additively (swamp-club#3018):
- *
- * - `--extensions-dir` wins outright, as it always has.
- * - Otherwise the root is inferred from the manifest's location
- *   ({@link inferExtensionsRoot}). When that is the repo dir, nothing
- *   changes.
- * - When it differs, the typed entries are probed under both. An entry
- *   present under both at different real paths is an error: the archive
- *   would silently come from one of two places. Otherwise, if any entry
- *   resolves under the repo dir, the repo dir stays the root, so every
- *   manifest that resolved before still resolves identically; only a
- *   manifest that found nothing under the repo dir moves to the inferred
- *   root.
- *
- * Under `paths.base: manifest` the typed entries resolve next to the
- * manifest regardless, so the inferred root is used as-is; it only adds
- * workflow and skill candidates after the manifest directory.
- *
- * The inferred root needs none of the `--extensions-dir` preflight in
- * mod.ts: it is an existing directory by construction, and an in-repo walk
- * can only yield the repo dir or an ancestor of the manifest, never a
- * directory under `.swamp/`, because a manifest there is a pulled extension
- * and refused earlier.
+ * `--extensions-dir` wins; otherwise the inferred root is used only when no
+ * entry resolves under the repo dir, so manifests that resolved before still
+ * do. An entry under both at different real paths is an error
  */
 async function selectExtensionsRoot(
   options: SelectExtensionsRootOptions,
@@ -571,13 +476,9 @@ function twoRootsError(
 }
 
 /**
- * Refuse a bundled entry (workflow or skill) found under both the inferred
- * extensions root and the repo dir at different real paths. The check is
- * skipped when `--extensions-dir` named the root (the author chose it, and
- * a git worktree holds every tracked file in both trees by design) and when
- * the entry was found in the manifest-relative candidate itself under
- * `paths.base: manifest` (neither contested copy is the one packaged). With
- * root == repoDir the two lists coincide and nothing can be ambiguous.
+ * an entry found under both roots at different real paths is refused, unless
+ * `--extensions-dir` named the root (a git worktree holds tracked files in both
+ * trees by design) or it came from the manifest-relative candidate
  */
 async function assertSingleRoot(
   lookup: TypedLookup,
@@ -605,7 +506,6 @@ async function assertSingleRoot(
   }
 }
 
-/** The sentence naming the flag or setting that fixes a typed-key miss. */
 function bundledHint(
   lookup: TypedLookup,
   field: string,
@@ -622,7 +522,6 @@ function bundledHint(
   }, or add paths.base: manifest to resolve ${ref} next to the manifest.`;
 }
 
-/** A further line when the missing entry sits next to the manifest. */
 async function nextToManifestHint(
   lookup: TypedLookup,
   ref: string,
@@ -634,9 +533,8 @@ async function nextToManifestHint(
 }
 
 /**
- * Reject a manifest file entry that is not a regular file. Packaging hashes
- * and copies each entry as a file, so a directory would otherwise crash
- * there with IsADirectory instead of failing here with the entry's name.
+ * packaging copies each entry as a file, so a directory would crash there with
+ * IsADirectory instead of failing here with the entry's name
  */
 function assertRegularFile(
   label: string,
@@ -654,7 +552,6 @@ function assertRegularFile(
   throw markErrorPaths(new UserError(message), [entry, path]);
 }
 
-/** Resolve one typed-key entry under `base`, or explain where it was sought. */
 async function findTypedEntry(
   lookup: TypedLookup,
   field: TypedField,
@@ -700,10 +597,8 @@ export function isPulledExtensionManifest(
 }
 
 /**
- * The module graph reader push, quality and fmt resolve files with: the
- * embedded deno, run with the environment the bundler gets. Push, quality
- * and fmt pass `readOnlyLock` so the read never writes the extension's
- * lockfile.
+ * the embedded deno, run with the environment the bundler gets; `readOnlyLock`
+ * keeps the read from writing the extension's lockfile
  */
 export async function createModuleGraphReader(
   options?: { readOnlyLock?: boolean },
@@ -721,10 +616,6 @@ export async function resolveExtensionFiles(
 ): Promise<ResolvedExtensionFiles> {
   const { repoDir, manifestPath, repoContext, logger } = ctx;
 
-  // 1. Find and parse the manifest. The argument may be a file or an
-  // extension directory, relative to --extensions-dir, cwd or the repo dir
-  // (swamp-club#3018); the helper stats every candidate and never reads a
-  // directory, and an absolute file path comes back unchanged.
   const { absoluteManifestPath } = await resolveManifestArgument({
     argument: manifestPath,
     cwd: Deno.cwd(),
@@ -735,10 +626,8 @@ export async function resolveExtensionFiles(
     await Deno.readTextFile(absoluteManifestPath),
   );
 
-  // 1b. Defensive path traversal check (belt-and-suspenders with Zod schema)
-  // The model entry points come from `models:` or, behavior-spelled, from
-  // `behaviors:` (swamp-club#3338); the field named in messages is the one
-  // the author wrote.
+  // defensive path traversal check on top of the Zod schema; messages name the
+  // field the author wrote (`models` or `behaviors`)
   const modelsField: "models" | "behaviors" = manifest.modelsKey === "behaviors"
     ? "behaviors"
     : "models";
@@ -769,23 +658,17 @@ export async function resolveExtensionFiles(
     }
   }
 
-  // 2. Resolve effective base for each typed-key category. Default mode
-  // (`paths.base: typedDir`) uses the configured directory from the repo
-  // marker — historical behavior, what every published manifest sees.
-  // Opt-in mode (`paths.base: manifest`) uses the manifest's own directory
-  // for typed keys plus `additionalFiles`, so authors with a per-extension-
-  // subdir layout can write bare basenames and the archive layout (which
-  // mirrors `relative(<typedDir>, file)` in push.ts) produces sub-paths
-  // matching the manifest entries verbatim.
+  // under `paths.base: manifest` typed keys resolve from the manifest's own
+  // directory so archive sub-paths (`relative(<typedDir>, file)` in push.ts)
+  // match manifest entries verbatim; the default uses the configured directory
   const repoPath = RepoPath.create(repoDir);
   const markerRepo = new RepoMarkerRepository();
   const marker = await markerRepo.read(repoPath);
   const manifestDir = dirname(absoluteManifestPath);
   const useManifestBase = manifest.paths.base === "manifest";
-  // `behaviors:` entries resolve from the behaviors directory while the
-  // models directory is the default, and from the configured models
-  // directory otherwise. Include files sit beside the model entry points,
-  // so they follow the same directory.
+  // `behaviors:` entries resolve from the behaviors directory while the models
+  // directory is the default, else from the configured models directory;
+  // include files sit beside the model entry points and follow it
   const behaviorsRel = resolveBehaviorsDir(marker) ?? resolveModelsDir(marker);
   const typedDirs: Record<TypedField, string> = {
     models: resolveModelsDir(marker),
@@ -825,14 +708,13 @@ export async function resolveExtensionFiles(
     typedDirs,
     useManifestBase,
   };
-  // Every file push collects is checked for a symlink on its path before
-  // anything reads it (swamp-club#3421).
+  // every file push collects is checked for a symlink on its path before
+  // anything reads it
   const probe = createSymlinkProbe([repoDir, extensionsRoot, manifestDir]);
 
-  // 2b. When paths.base=manifest, reject entries that start with their own
-  // archive directory prefix — the archive places each typed-key file under
-  // its directory name, so `models: [models/foo.ts]` would land at
-  // `extension/models/models/foo.ts` instead of `extension/models/foo.ts`.
+  // under paths.base=manifest, reject entries starting with their own archive
+  // directory prefix: `models: [models/foo.ts]` would land at
+  // `extension/models/models/foo.ts`
   if (useManifestBase) {
     const typedFieldPrefixes: Array<{ field: string; prefix: string }> = [
       { field: "models", prefix: "models/" },
@@ -855,9 +737,9 @@ export async function resolveExtensionFiles(
             new UserError(
               `Manifest field '${field}' entry '${entry}' starts with '${prefix}', ` +
                 (field === "behaviors"
-                  // Behavior files pack under models/, so nothing doubles;
-                  // the prefix names a typed directory the manifest base
-                  // does not use (swamp-club#3338).
+                  // behavior files pack under models/, so nothing doubles; the
+                  // prefix names a typed directory the manifest base does not
+                  // use
                   ? `a typed directory, but paths.base: manifest resolves entries from the manifest's own directory. `
                   : `which would double the archive path to ${prefix}${normalized}. `) +
                 `With paths.base: manifest, use the bare filename (e.g. '${
@@ -877,7 +759,6 @@ export async function resolveExtensionFiles(
     }
   }
 
-  // 3. Collect model files from manifest
   const modelEntryPoints: string[] = [];
   for (const modelRef of manifest.models) {
     modelEntryPoints.push(
@@ -885,11 +766,8 @@ export async function resolveExtensionFiles(
     );
   }
 
-  // 4. Model roots for the module graph: the manifest's models, plus the
-  // models workflows reference (merged in step 5).
   const modelRoots = [...modelEntryPoints];
 
-  // 5. Resolve workflow dependencies if workflows present
   const workflowFiles: Array<{ sourcePath: string; archiveName: string }> = [];
   if (manifest.workflows.length > 0) {
     const wfCandidateDirs: string[] = [];
@@ -900,9 +778,8 @@ export async function resolveExtensionFiles(
         wfCandidateDirs.push(dir);
       }
     };
-    // The extensions root comes before the repo dir so one flag relocates
-    // the whole extension (swamp-club#3031); with root == repoDir the list
-    // is exactly the historical one.
+    // the extensions root comes before the repo dir so one flag relocates the
+    // whole extension
     const workflowsDir = resolveWorkflowsDir(marker);
     if (useManifestBase) addWfCandidate(manifestDir);
     const rootWfDirs = [
@@ -915,7 +792,6 @@ export async function resolveExtensionFiles(
     ];
     for (const dir of [...rootWfDirs, ...repoWfDirs]) addWfCandidate(dir);
 
-    // Validate workflow files exist and resolve symlinks
     const wfEntries: WorkflowManifestEntry[] = [];
     // Real paths of the manifest's workflows, so the dependency resolver
     // cannot add a symlinked one's target as a second entry.
@@ -962,11 +838,9 @@ export async function resolveExtensionFiles(
       wfEntries.push({ ref: wfRef, realPath, path });
     }
 
-    // Push writes every workflow to extension/workflows/<archiveName>, so
-    // archive names must be pairwise distinct or files are silently lost
-    // (swamp-club#2613). planWorkflowArchiveNames rejects clashes between
-    // manifest entries; takenArchiveNames extends the check to the
-    // dependency-resolved workflows merged below.
+    // Archive names must be distinct or files are silently lost;
+    // takenArchiveNames extends the manifest clash check to dependency-resolved
+    // workflows.
     const wfNames: string[] = [];
     const takenArchiveNames = new Map<string, string>();
     for (const planned of planWorkflowArchiveNames(wfEntries)) {
@@ -981,14 +855,12 @@ export async function resolveExtensionFiles(
       );
     }
 
-    // Also resolve models referenced by workflows
     const depResult = await resolveWorkflowDependencies(wfNames, {
       workflowRepo: repoContext.workflowRepo,
       definitionRepo: repoContext.definitionRepo,
       modelsDir,
     });
 
-    // Merge auto-resolved model files (dedup, skip non-existent)
     const existingSet = new Set(modelRoots);
     for (const mf of depResult.modelFiles) {
       if (existingSet.has(mf)) continue;
@@ -1003,14 +875,9 @@ export async function resolveExtensionFiles(
       }
     }
 
-    // Merge workflow files from dependency resolution. The dep resolver
-    // reads the resolved repo dir, so each path is first spelled under the
-    // repo dir push was given (swamp-club#3536) and only then probed: the
-    // symlink check must see the path that is listed and packaged, with
-    // every component below the repo root, or a symlinked workflow would be
-    // read through (swamp-club#3421). Real paths match a dep-resolver path
-    // to a manifest entry however either is spelled (e.g. /tmp →
-    // /private/tmp on macOS).
+    // respell each dep-resolver path under the repo dir push was given before
+    // probing, so the symlink check sees the listed path; match by real path
+    // since /tmp may be /private/tmp on macOS
     const wfSet = new Set<string>();
     for (const wf of depResult.workflowFiles) {
       const spelled = resolve(await respellUnderRepoDir(wf, repoDir));
@@ -1018,10 +885,9 @@ export async function resolveExtensionFiles(
       try {
         realWf = await Deno.realPath(spelled);
       } catch {
-        continue; // Skip if the file doesn't exist
+        continue;
       }
       if (manifestWfReal.has(realWf)) continue;
-      // A symlinked workflow is listed by its own path, never followed.
       const symlinked = await probe.check(spelled) !== undefined;
       if (symlinked) realWf = spelled;
       const sourcePath = symlinked || isSameOrUnder(spelled, resolve(repoDir))
@@ -1049,7 +915,6 @@ export async function resolveExtensionFiles(
     }
   }
 
-  // 6. Collect vault files from manifest
   const vaultEntryPoints: string[] = [];
   for (const vaultRef of manifest.vaults) {
     const vaultPath = await findTypedEntry(
@@ -1061,7 +926,6 @@ export async function resolveExtensionFiles(
     vaultEntryPoints.push(vaultPath);
   }
 
-  // 8. Collect datastore files from manifest
   const datastoreEntryPoints: string[] = [];
   for (const datastoreRef of manifest.datastores) {
     const datastorePath = await findTypedEntry(
@@ -1073,7 +937,6 @@ export async function resolveExtensionFiles(
     datastoreEntryPoints.push(datastorePath);
   }
 
-  // 12. Collect report files from manifest
   const reportEntryPoints: string[] = [];
   for (const reportRef of manifest.reports) {
     const reportPath = await findTypedEntry(
@@ -1085,7 +948,6 @@ export async function resolveExtensionFiles(
     reportEntryPoints.push(reportPath);
   }
 
-  // 13a. Collect webhook files from manifest
   const webhookEntryPoints: string[] = [];
   for (const webhookRef of manifest.webhooks) {
     const webhookPath = await findTypedEntry(
@@ -1097,18 +959,14 @@ export async function resolveExtensionFiles(
     webhookEntryPoints.push(webhookPath);
   }
 
-  // 14. Resolve skill directories from manifest
   const skillDirs: Array<{ name: string; absolutePath: string }> = [];
   const allSkillFiles: string[] = [];
   const refusedSkillPaths = new Set<string>();
   if (manifest.skills.length > 0) {
     const tools = marker?.tools?.length ? marker.tools : ["claude"];
 
-    // Build deduplicated candidate base directories in priority order:
-    // manifest-relative (if paths.base=manifest) > extensions root >
-    // repo dir. The user's home skill directories are deliberately not
-    // searched: a skill is never packaged from a globally installed copy
-    // just because it has the same name (swamp-club#3018).
+    // Candidate bases in priority order: manifest-relative, extensions root,
+    // repo dir; home skill directories are not searched.
     const seen = new Set<string>();
     const candidateBases: string[] = [];
     const addCandidate = (dir: string) => {
@@ -1183,7 +1041,6 @@ export async function resolveExtensionFiles(
         repoSkillDirs.map((d) => join(d, skillName)),
         true,
       );
-      // A symlinked skill directory is refused unread.
       if (await probe.check(skillPath) !== undefined) {
         refusedSkillPaths.add(skillPath);
         continue;
@@ -1191,7 +1048,6 @@ export async function resolveExtensionFiles(
 
       skillDirs.push({ name: skillName, absolutePath: skillPath });
 
-      // Recursively collect all files, each level in name order
       const collectSkillFiles = async (dir: string): Promise<void> => {
         for (const entry of await readDirSorted(dir)) {
           const fullPath = join(dir, entry.name);
@@ -1210,7 +1066,6 @@ export async function resolveExtensionFiles(
     }
   }
 
-  // 15. Validate include files (resolved relative to modelsDir)
   const includeFilePaths: string[] = [];
   for (const inc of manifest.include) {
     const incPath = await findTypedEntry(
@@ -1233,7 +1088,6 @@ export async function resolveExtensionFiles(
     includeFilePaths.push(incPath);
   }
 
-  // 15. Validate additional files: uniqueness, symlink rejection, existence.
   const additionalFilePaths: string[] = [];
   const seenNormalized = new Map<string, string>();
   for (const af of manifest.additionalFiles) {
@@ -1279,8 +1133,8 @@ export async function resolveExtensionFiles(
     additionalFilePaths.push(afPath);
   }
 
-  // 16. Validate binary files: uniqueness, symlink rejection, existence.
-  // Also check for overlap with additionalFiles — both land in files/.
+  // binaries and additionalFiles both land in files/, so their entries are also
+  // checked for overlap
   const binaryFilePaths: string[] = [];
   const seenBinNormalized = new Map<string, string>();
   for (const bf of manifest.binaries) {
@@ -1329,9 +1183,9 @@ export async function resolveExtensionFiles(
     binaryFilePaths.push(bfPath);
   }
 
-  // 16a. Symlinked entry points, found before anything reads them: neither
-  // the bare-specifier scan nor the module graph reader nor the bundler
-  // follows one to its target (swamp-club#3420).
+  // symlinked entry points are found before anything reads them: the
+  // bare-specifier scan, graph reader and bundler never follow one to its
+  // target
   const symlinkedRoots = new Set<string>();
   for (
     const ep of new Set([
@@ -1345,9 +1199,8 @@ export async function resolveExtensionFiles(
     if (await probe.check(ep) !== undefined) symlinkedRoots.add(ep);
   }
 
-  // 17. Project config: the deno.json, or the package.json project when the
-  // extension uses bare specifiers, that push bundles under. The module
-  // graph is read under the same config, so it is the bundle's graph.
+  // the module graph is read under the same project config push bundles under,
+  // so it is the bundle's graph
   const project = await detectExtensionProject({
     manifestDir,
     extensionsRoot,
@@ -1373,9 +1226,9 @@ export async function resolveExtensionFiles(
     await requireNodeModules(packageJsonDir);
   }
 
-  // 18. Local modules, from each entry point's module graph — the graph the
-  // bundler follows — so the source copy holds every local module the
-  // bundle was built from, wherever it lives (swamp-club#3376).
+  // local modules come from each entry point's module graph, which the bundler
+  // follows, so the source copy holds every module the bundle was built from,
+  // wherever it lives
   const sources = await resolveSourceModules({
     reader: ctx.moduleGraphReader,
     symlinkedRoots,
@@ -1458,8 +1311,8 @@ export async function resolveExtensionFiles(
     sourcePlan: sources.plan,
     missingModules: sources.missing,
     entryPointsReachingSymlinks: sources.entryPointsReachingSymlinks,
-    // Only paths push lists: a module only a symlink reaches was found by
-    // reading the target, so it is never named (swamp-club#3420).
+    // only paths push lists: a module only a symlink reaches was found by
+    // reading the target, so it is never named
     symlinkedPaths: new Map(
       [...probe.found].filter(([path]) =>
         listed.has(path) || refusedSkillPaths.has(path)
@@ -1479,12 +1332,9 @@ export async function resolveExtensionFiles(
 }
 
 /**
- * Refuses what Deno would take from above swamp's boundary
- * (swamp-club#3971): an ancestor config that would resolve one of the
- * extension's bare imports the project inside the repository leaves
- * unresolved, an ancestor workspace root, and a package read from a
- * node_modules above the repository. Also refuses a JSR dist-tag, which
- * Deno cannot resolve, with the fix rather than the bundler's error.
+ * refuses what Deno would take from above swamp's boundary: an ancestor config,
+ * an ancestor workspace root, a node_modules above the repository; also a JSR
+ * dist-tag, with the fix instead of the bundler's error
  */
 async function refuseInputsFromAbove(options: {
   project: ExtensionProject;
@@ -1539,10 +1389,6 @@ async function refuseInputsFromAbove(options: {
   }
 }
 
-/**
- * Fails when a package.json project has no node_modules: bundling and the
- * module graph read both resolve bare specifiers from it.
- */
 async function requireNodeModules(projectDir: string): Promise<void> {
   const nodeModulesPath = join(projectDir, "node_modules");
   try {
@@ -1582,16 +1428,12 @@ interface ResolvedSourceModules {
   codeFilesByKind: Record<SourceArchiveKind, string[]>;
   dataFilesByKind: Record<SourceArchiveKind, string[]>;
   plan: SourceArchivePlan;
-  /** Stale lockfiles a lenient graph read went past; empty otherwise. */
   staleLockfiles: StaleLockfile[];
   graphDependencies: GraphDependencies;
-  /** Installed package directories the graphs read (swamp-club#3971). */
   nodeModulesPackageDirs: string[];
-  /** `jsr:` imports naming a dist-tag (swamp-club#3971). */
   jsrDistTags: DistTaggedJsrImport[];
 }
 
-/** The real path of `path`, or `path` itself when it cannot be resolved. */
 async function realPathOr(path: string): Promise<string> {
   try {
     return await Deno.realPath(path);
@@ -1601,10 +1443,9 @@ async function realPathOr(path: string): Promise<string> {
 }
 
 /**
- * The real path of `path`, resolving its nearest existing ancestor when the
- * file itself does not exist: a missing module under a repository reached
- * through a symlinked parent (macOS `/tmp`) still resolves inside it, and
- * one behind a symlinked directory still resolves outside.
+ * resolves the nearest existing ancestor when the file is missing: a missing
+ * module under a repository reached through a symlinked parent (macOS /tmp)
+ * still resolves inside it, one behind a symlinked directory outside
  */
 async function realPathThroughAncestors(path: string): Promise<string> {
   const rest: string[] = [];
@@ -1621,14 +1462,8 @@ async function realPathThroughAncestors(path: string): Promise<string> {
   }
 }
 
-/** Finds extension files with a symlink on their path (swamp-club#3421). */
 interface SymlinkProbe {
-  /**
-   * The first symlinked component of `path` below its root, or undefined.
-   * A path with one is recorded in {@link found}.
-   */
   check(path: string): Promise<string | undefined>;
-  /** Each path checked that has a symlink on it, to that symlink. */
   found: Map<string, string>;
 }
 
@@ -1659,12 +1494,9 @@ function createSymlinkProbe(roots: readonly string[]): SymlinkProbe {
 }
 
 /**
- * Reads the module graph of every entry point, fails on a local module the
- * graph cannot load or whose real path leaves the repository and the
- * extensions root, and plans the archive's source copy. Symlinks are taken
- * out of each graph before it is used: a symlinked entry point is never
- * read, and the safety gate refuses every symlink by the symlink rule
- * (swamp-club#3420).
+ * symlinks are taken out of each graph before it is used: a symlinked entry
+ * point is never read, and the safety gate refuses every symlink by the symlink
+ * rule
  */
 async function resolveSourceModules(options: {
   reader: ModuleGraphReader;
@@ -1704,9 +1536,9 @@ async function resolveSourceModules(options: {
   }
   const graph = mergeSourceGraphs(kindGraphs.map((g) => g.graph));
 
-  // A module the graph cannot load is not packaged; push reports it as a
-  // compilation error, as the bundler did before (swamp-club#3376), and
-  // imports of it are left out of the plan.
+  // a module the graph cannot load is not packaged; push reports it as a
+  // compilation error, as the bundler would, and imports of it are left out of
+  // the plan
   const missingPaths = new Set(graph.missing.map((m) => m.path));
   graph.edges = graph.edges.filter((e) => !missingPaths.has(e.target));
 
@@ -1756,9 +1588,9 @@ async function resolveSourceModules(options: {
     k,
     paths: new Set(g.modules.map((m) => m.path)),
   }));
-  // A module outside a kind's own directory is listed (and hashed, and sent
-  // to each gate) once: with the kind whose directory holds it, as it
-  // always was, or else with the first kind that reaches it.
+  // a module outside a kind's own directory is listed (hashed, sent to each
+  // gate) once: with the kind whose directory holds it, else the first kind
+  // that reaches it
   const insideKind = (k: SourceModuleKindRoots, path: string) =>
     [k.dir, ...(k.extraDirs ?? [])].some((d) =>
       isSameOrUnder(resolve(path), resolve(d))
@@ -1839,8 +1671,8 @@ async function resolveSourceModules(options: {
     throw staleInstallError(options.project.packageJsonDir, staleInstalls);
   }
   if (options.project.packageJsonDir && !options.project.denoConfigPath) {
-    // A package-lock.json counts as a lock only when node_modules matches
-    // it, so it describes what the bundle holds (swamp-club#3970).
+    // a package-lock.json counts as a lock only when node_modules matches it,
+    // so it describes what the bundle holds
     const lock = await readPackageLockValidity(
       options.project.packageJsonDir,
       graph.installedPackages ?? [],
@@ -1871,12 +1703,7 @@ async function resolveSourceModules(options: {
   };
 }
 
-/**
- * The error for a package.json project whose node_modules does not hold a
- * dependency it declares, or holds it outside the declared range: push and
- * quality read node_modules as installed and never install into it
- * (swamp-club#3630).
- */
+/** push and quality read node_modules as installed and never install into it */
 function staleInstallError(
   projectDir: string,
   stale: readonly StaleInstalledImport[],
@@ -1910,13 +1737,9 @@ function staleInstallError(
 }
 
 /**
- * `graph` with each path that reaches the repository or the extensions root
- * through another spelling put back in theirs. Below a node_modules, deno
- * info reports modules by real path, so a repo dir given through a symlink
- * (macOS /var) would see its own modules as outside it (swamp-club#3794).
- * Only the prefix naming the root is swapped ({@link respellUnderRepoDir}),
- * and a path already under a root costs nothing. Used only for a graph read
- * by real path.
+ * below a node_modules deno info reports modules by real path, so a repo dir
+ * given through a symlink (macOS /var) would see its own modules as outside it;
+ * only the prefix naming the root is swapped
  */
 async function respellGraphUnderRoots(
   graph: SourceModuleGraph,
@@ -1989,9 +1812,9 @@ async function respellGraphUnderRoots(
 }
 
 /**
- * One entry point's module graph with its symlinks taken out. A symlinked
- * entry point is not read at all; any other symlink is removed before the
- * graph is used, with what it alone reaches and any error recorded for it.
+ * a symlinked entry point is not read at all; any other symlink is removed
+ * before the graph is used, with what it alone reaches and any error recorded
+ * for it
  */
 async function readSymlinkFreeGraph(
   root: string,
@@ -2004,7 +1827,6 @@ async function readSymlinkFreeGraph(
     extensionsRoot: string;
     lenient: boolean;
     logger: Logger;
-    /** Where a lenient read records the stale lockfiles it goes past. */
     staleLocks?: StaleLockfileError[];
   },
 ): Promise<SymlinkFreeGraph> {
@@ -2013,9 +1835,9 @@ async function readSymlinkFreeGraph(
     return withoutSymlinkedModules(empty, root, options.symlinkedRoots);
   }
   let graph: SourceModuleGraph;
-  // An entry point reached through a symlink above a node_modules is read
-  // by real path, and its graph put back in the repo dir's spelling; any
-  // other is read and used as given (swamp-club#3794).
+  // an entry point reached through a symlink above a node_modules is read by
+  // real path and its graph put back in the repo dir's spelling; any other is
+  // read and used as given
   const readAt = await denoInfoEntryPoint(root);
   try {
     graph = await options.reader.read(readAt, options.project);
@@ -2032,8 +1854,8 @@ async function readSymlinkFreeGraph(
       .debug`Module graph of ${root} unavailable, using the entry point alone: ${error}`;
     graph = { ...empty, modules: [{ path: root, kind: "code" }] };
   }
-  // A module behind a symlinked directory counts as a symlink too: deno info
-  // followed it, so its target was read (swamp-club#3421).
+  // a module behind a symlinked directory counts as a symlink too: deno info
+  // followed it, so its target was read
   const symlinks = new Set<string>();
   for (
     const path of new Set([

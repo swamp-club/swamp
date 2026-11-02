@@ -17,30 +17,16 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * How an import specifier is spelled: the one classifier push, quality, fmt
- * and the loader read specifiers with (swamp-club#3969). An `npm:` or
- * `jsr:` specifier's package is read by the shared scorer's
- * `parseSpecifier` (`@swamp-club/extension-scoring/dependency-audit`), as
- * the registry reads it.
- */
-
 import { tryParseRange } from "@std/semver";
 
 /**
- * Whether a specifier is bare: one only a project config (an import map, a
- * package.json) resolves. Everything but a relative path, `npm:`, `jsr:`,
- * `http(s):` and `node:` counts, so `file:`, an absolute path and `data:`
- * are bare too, as push has always read them.
- *
- * The bundler resolves every other kind without a config: a relative path
- * by path, `npm:`, `jsr:` and URLs by fetching and inlining, and `node:` by
- * passing it through.
+ * bare means only a project config resolves it: everything but relative paths,
+ * npm:, jsr:, http(s): and node: counts, so file:, absolute paths and data: are
+ * bare too
  */
 export function isBareSpecifier(specifier: string): boolean {
-  // A specifier carrying a `${...}` placeholder is interpolated at runtime, not
-  // a package name: `import x from "${pkg}"` is valid TypeScript at the top
-  // level, since double quotes do not interpolate.
+  // a ${...} placeholder is interpolated at runtime, not a package name; double
+  // quotes do not interpolate, so this is valid at top level
   if (specifier.includes("${")) return false;
   if (specifier.startsWith(".")) return false;
   if (specifier.startsWith("npm:")) return false;
@@ -51,12 +37,7 @@ export function isBareSpecifier(specifier: string): boolean {
   return true;
 }
 
-/**
- * The dist-tag a `jsr:` specifier names in place of a version
- * (`jsr:@std/assert@latest` names `latest`), or undefined when it names a
- * version, a range or none. JSR has no dist-tags, so Deno cannot resolve
- * one (swamp-club#3971).
- */
+/** JSR has no dist-tags, so Deno cannot resolve one */
 export function jsrDistTag(specifier: string): string | undefined {
   const match = /^jsr:\/?@[^/@]+\/[^/@]+@([^/]+)/.exec(specifier);
   const version = match?.[1];

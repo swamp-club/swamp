@@ -306,7 +306,6 @@ Deno.test("workerPrune: skips binding prune when resolveStaleBindings is not pro
         pruned.push(token);
         return successPruneStream();
       },
-      // no resolveStaleBindings → bindings skipped
     },
   );
   const ctx = createLibSwampContext();
@@ -319,9 +318,6 @@ Deno.test("workerPrune: skips binding prune when resolveStaleBindings is not pro
   assertEquals(pruned.length, 0);
 });
 
-// ── Diagnostic phases (swamp-club#4003) ─────────────────────────────
-
-/** A delete stream under its own swamp.model.delete span, as modelDelete has. */
 function spannedDeleteStream(): AsyncIterable<ModelDeleteEvent> {
   return withGeneratorSpan(
     "swamp.model.delete",
@@ -398,7 +394,6 @@ Deno.test("workerPrune: exports each stage as a worker_delete phase with its cou
     assertEquals(deletes.length, 2);
     for (const del of deletes) assert(isChildOf(del, loop));
 
-    // Cleanup is the loop's sibling, not part of it, and ended after it.
     assert(!isChildOf(cleanup, loop));
     assert(spans.indexOf(loop) < spans.indexOf(cleanup));
     assertEquals(attr(cleanup, "affected_tokens"), 1);
@@ -453,7 +448,6 @@ Deno.test("workerPrune: a failed worker delete leaves the loop and pass partial"
     assertEquals(attr(loop, "result"), "partial");
     assertEquals(loop.attributes["swamp.outcome"], "ok");
     assertEquals(attr(phase(spans, "prune_pass"), "result"), "partial");
-    // No resolver: cleanup is reported skipped, not silently absent.
     assertEquals(attr(phase(spans, "binding_cleanup"), "result"), "skipped");
   });
 });
@@ -574,7 +568,6 @@ Deno.test("workerPrune: phases record whether the caller's cancel was seen", asy
     );
     assertEquals(attr(phase(spans, "eligibility"), "cancel_observed"), false);
     assertEquals(attr(phase(spans, "delete_loop"), "cancel_observed"), true);
-    // Observed only: the prune still deleted every eligible worker.
     assertEquals(attr(phase(spans, "delete_loop"), "deleted"), 2);
   });
 });

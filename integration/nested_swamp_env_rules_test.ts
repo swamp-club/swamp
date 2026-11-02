@@ -17,10 +17,9 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// Pins the method-to-child allow list (NESTED_SWAMP_ENV_VARS) to the owners
-// of the names on it, so a name dropped from the list would silently
-// re-break nested swamp; and no credential may ever join the list
-// (swamp-club#2032, design/enablers/remote-execution.md).
+// pins the method-to-child allow list to the owners of its names, so a dropped
+// name cannot silently re-break nested swamp; no credential may ever join the
+// list
 
 import { assert, assertEquals } from "@std/assert";
 import { NESTED_SWAMP_ENV_VARS } from "../src/domain/remote/environment_snapshot.ts";

@@ -17,18 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Prune stale worker records and their enrollment-token bindings (see
- * design/enablers/remote-execution.md, "Worker state is swamp data").
- *
- * Ephemeral worker fleets (e.g. Kubernetes pods) accumulate disconnected
- * worker records and stale token bindings that are never reaped because
- * both resources declare `lifetime: "infinite"`. This service identifies
- * workers that have been disconnected past a configurable grace period,
- * deletes them via the shared `modelDelete` path, and prunes the
- * corresponding bindings from their enrollment tokens.
- */
-
 import type { LibSwampContext } from "../context.ts";
 import { withUnitOfWork } from "../unit_of_work.ts";
 import type { SwampError } from "../errors.ts";
@@ -43,7 +31,6 @@ import {
 import type { ModelMethodRunEvent } from "../models/run.ts";
 import type { ModelDeleteEvent } from "../models/delete.ts";
 
-/** A worker record eligible for pruning consideration. */
 export interface PrunableWorker {
   readonly name: string;
   readonly definitionName: string;
@@ -52,13 +39,11 @@ export interface PrunableWorker {
   readonly disconnectedAt: string | undefined;
 }
 
-/** An enrollment token with its bindings. */
 export interface PrunableToken {
   readonly name: string;
   readonly bindings: ReadonlyArray<{ machineId: string }>;
 }
 
-/** Result of a prune operation. */
 export interface WorkerPruneResult {
   readonly workersDeleted: number;
   readonly workersFailed: number;
@@ -100,7 +85,6 @@ export interface WorkerPruneInput {
   signal?: AbortSignal;
 }
 
-/** Dependencies for the worker prune operation. */
 export interface WorkerPruneDeps {
   listWorkers(): Promise<PrunableWorker[]>;
   listTokens(): Promise<PrunableToken[]>;
@@ -112,10 +96,8 @@ export interface WorkerPruneDeps {
     machineIds: string[],
   ): AsyncIterable<ModelMethodRunEvent>;
   /**
-   * Given a token and the set of remaining worker names for that token,
-   * returns the machineIds of bindings that should be pruned. This is
-   * the serve-side hook that uses fleetMemberSuffix to match bindings
-   * to workers. Returns null to skip binding cleanup (CLI fallback).
+   * serve-side hook that matches bindings to the remaining workers by
+   * fleetMemberSuffix; null skips binding cleanup (CLI fallback)
    */
   resolveStaleBindings?(
     token: PrunableToken,
@@ -124,7 +106,6 @@ export interface WorkerPruneDeps {
   now?: () => number;
 }
 
-/** Why a worker is kept, or undefined when it may be pruned. */
 function pruneSkipReason(
   worker: PrunableWorker,
   gracePeriodMs: number,
@@ -136,13 +117,6 @@ function pruneSkipReason(
   return (nowMs - disconnectedMs) >= gracePeriodMs ? undefined : "within_grace";
 }
 
-/**
- * Prunes stale disconnected workers and their enrollment-token bindings.
- *
- * Exported as the worker_delete diagnostic area
- * (design/enablers/serve-phase-telemetry.md): every stage is a phase under
- * prune_pass, and each worker's swamp.model.delete nests under delete_loop.
- */
 export async function* workerPrune(
   ctx: LibSwampContext,
   deps: WorkerPruneDeps,
@@ -229,7 +203,6 @@ async function* pruneStages(
     return;
   }
 
-  // Sequential: one worker record at a time.
   const deletion = yield* withGeneratorDiagnosticPhase(
     "delete_loop",
     {
@@ -239,7 +212,6 @@ async function* pruneStages(
     (phase) => deleteWorkers(deps, prunable, phase),
   );
 
-  // Timed apart from the deletions it follows.
   const cleanup = yield* withGeneratorDiagnosticPhase(
     "binding_cleanup",
     { "swamp.diagnostic.affected_tokens": deletion.affectedTokens.size },

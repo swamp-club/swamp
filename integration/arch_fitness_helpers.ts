@@ -17,40 +17,26 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// Shared import-scanning helpers for the architectural fitness tests
-// (architecture_boundary_test.ts, ddd_layer_rules_test.ts).
-//
-// Every path this module hands back is normalised to forward slashes and
-// expressed relative to the repository root, so the pinned ratchet lists in
-// the fitness tests are byte-identical on Linux, macOS and Windows. Path
-// arithmetic goes through @std/path — never `lastIndexOf("/")` or
-// `split("/")`, which silently match nothing on Windows and turn the
-// fitness tests into vacuous passes.
+// paths are normalised to forward slashes relative to the repo root so pinned
+// lists match on every OS; use @std/path, since `lastIndexOf("/")` or
+// `split("/")` match nothing on Windows and make the tests pass vacuously
 
 import { AssertionError } from "@std/assert";
 import { walk } from "@std/fs/walk";
 import { dirname, join, relative, SEPARATOR } from "@std/path";
 
-/** Repository root — the directory containing `integration/`. */
 export const ROOT = join(import.meta.dirname!, "..");
 
-/** Absolute path to `src/`. */
 export const SRC_DIR = join(ROOT, "src");
 
-/** Normalise a native path to forward slashes. */
 export function toPosixPath(path: string): string {
   return SEPARATOR === "/" ? path : path.replaceAll(SEPARATOR, "/");
 }
 
-/** A repo-root-relative, forward-slash path for `filePath`. */
 export function repoRelative(filePath: string): string {
   return toPosixPath(relative(ROOT, filePath));
 }
 
-/**
- * Extract import specifiers from a TypeScript source file.
- * Matches `from "..."` and `from '...'` patterns.
- */
 export function extractImports(source: string): string[] {
   const importRegex = /from\s+["']([^"']+)["']/g;
   const imports: string[] = [];
@@ -76,16 +62,10 @@ export function resolveImport(
   return rel;
 }
 
-/** True when `rel` is `prefix` itself or lives beneath it. */
 export function isUnder(rel: string, prefix: string): boolean {
   return rel === prefix || rel.startsWith(`${prefix}/`);
 }
 
-/**
- * True when `importPath`, resolved from `filePath`, lands inside
- * `src/<targetLayer>/`. `targetLayer` may be multi-segment, e.g.
- * "infrastructure/logging".
- */
 export function importsLayer(
   filePath: string,
   importPath: string,
@@ -96,10 +76,6 @@ export function importsLayer(
   return isUnder(rel, `src/${targetLayer}`);
 }
 
-/**
- * Walk the production TypeScript sources under `dir`: both `.ts` and `.tsx`,
- * excluding `_test.ts` and `_test.tsx`.
- */
 export async function* productionSourceFiles(
   dir: string,
 ): AsyncGenerator<string> {
@@ -114,11 +90,6 @@ export async function* productionSourceFiles(
   }
 }
 
-/**
- * Collect the distinct import edges under `dir` for which `matches` holds,
- * formatted as `<source file> -> <imported module>` with both sides
- * repo-root-relative. Sorted, so it can be compared against a pinned list.
- */
 export async function collectImportEdges(
   dir: string,
   matches: (filePath: string, importPath: string) => boolean,
@@ -137,16 +108,8 @@ export async function collectImportEdges(
 }
 
 /**
- * Assert that the live scan result exactly equals the pinned ratchet list.
- *
- * Set equality — not a count — is what makes these ratchets meaningful:
- * a count-only ratchet lets one violation be traded for another, and a
- * `<=` comparison lets a fixed violation be silently replaced by a new one.
- *
- * @param actual  scan result, sorted
- * @param pinned  the checked-in allowlist
- * @param label   short description used in the failure message
- * @param policy  what a reader should do about a NEW entry
+ * set equality, not a count: a count or `<=` comparison lets one violation be
+ * traded for another
  */
 export function assertPinnedSet(
   actual: readonly string[],
@@ -195,15 +158,10 @@ export function assertPinnedSet(
 export const TOP_LEVEL_DECLARATION =
   /^(?:export )?(?:async )?(?:function\s*\*?\s*|const |let |class )(\w+)/;
 
-/** Whether a line is a `//`, `/*` or ` *` comment line. */
 export function isCommentLine(line: string): boolean {
   return /^\s*(\/\/|\/\*|\*)/.test(line);
 }
 
-/**
- * The top-level declaration that contains each line: the most recent
- * {@link TOP_LEVEL_DECLARATION} at or above it, or `<module>`.
- */
 export function topLevelOwners(lines: readonly string[]): string[] {
   let owner = "<module>";
   return lines.map((line) => {
@@ -213,18 +171,14 @@ export function topLevelOwners(lines: readonly string[]): string[] {
   });
 }
 
-/** One `new <className>(...)` in a source file. */
 export interface ConstructorCall {
-  /** Zero-based line of the `new` keyword. */
   line: number;
-  /** Top-level argument texts, trimmed. */
   args: string[];
 }
 
 /**
- * Every `new <className>(...)` in `code`, including ones that span lines or
- * pass generic type arguments. Comment lines are blanked first, so line
- * numbers still match the source.
+ * handles calls that span lines or pass generics; comment lines are blanked
+ * first so line numbers still match the source
  */
 export function constructorCalls(
   code: string,
@@ -264,15 +218,13 @@ export function constructorCalls(
   return calls;
 }
 
-/** Top-level argument lists of every `new <className>(...)` in `code`. */
 export function constructorArgs(code: string, className: string): string[][] {
   return constructorCalls(code, className).map((call) => call.args);
 }
 
 /**
- * Turns one key per occurrence into a sorted pinned-list form: a key seen N
- * times becomes `"<key> (xN)"`, so a second occurrence under an already
- * pinned owner still changes the list.
+ * a key seen N times becomes `<key> (xN)`, so a second occurrence under an
+ * already pinned owner still changes the list
  */
 export function countedKeys(keys: readonly string[]): string[] {
   const counts = new Map<string, number>();

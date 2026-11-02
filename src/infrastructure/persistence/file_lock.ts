@@ -17,14 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * File-based distributed lock using advisory lockfiles.
- *
- * Uses `Deno.open({ createNew: true })` for atomic check-and-create.
- * Includes a self-contained heartbeat that extends the lock by rewriting
- * the lockfile with a fresh timestamp.
- */
-
 import { hostname } from "node:os";
 import { dirname, join } from "@std/path";
 import { ensureDir } from "@std/fs";
@@ -53,7 +45,6 @@ import {
 // A process ID alone cannot distinguish concurrent runs in one serve process.
 const observedOwners = new Map<string, string>();
 
-/** TTL of a {@link FileLock} created without a `ttlMs` option. */
 export const DEFAULT_LOCK_TTL_MS = 30_000;
 const DEFAULT_RETRY_INTERVAL_MS = 1_000;
 const DEFAULT_MAX_WAIT_MS = 60_000;
@@ -61,38 +52,26 @@ const DEFAULT_LOCK_PATH = ".datastore.lock";
 const DEFAULT_MAX_BACKOFF_MS = 8_000;
 const JITTER_FACTOR = 0.25;
 
-/** {@link LockOptions} plus settings that only apply to {@link FileLock}. */
 export interface FileLockOptions extends LockOptions {
-  /** Ceiling for the doubling retry backoff in ms (default: 8_000). */
   maxBackoffMs?: number;
   /**
-   * Judge a holder on another host by its TTL alone, never by whether its
-   * pid runs here: on a shared mount another host's pid means nothing on
-   * this one. The v3 writer lock sets it (swamp-club#3279); other locks keep
-   * clearing a holder whose pid is not running.
+   * judge a holder on another host by TTL alone, since on a shared mount its
+   * pid means nothing here; the v3 writer lock sets it, other locks clear a
+   * holder whose pid is not running
    */
   sameHostPidCheck?: boolean;
-  /**
-   * What the lock guards, as the bounded `swamp.diagnostic.lock_kind` of its
-   * wait and hold phases (default: `file`). Never the lock path.
-   */
   diagnosticKind?: "auto_definition" | "file";
   /**
-   * Create the lock's directory one level at a time and sync the parent of
-   * each directory created, so its entry is durable (swamp-club#4017). The
-   * per-model lock sets it on a durable v2 datastore: it creates a new
-   * model's data directories before the data repository writes under them.
+   * create the lock directory one level at a time, syncing each created
+   * directory's parent so its entry is durable; the per-model lock sets it on a
+   * durable v2 datastore
    */
   syncCreatedDirectories?: boolean;
 }
 
 /**
- * Computes one retry of the acquire loop's jittered exponential backoff.
- *
- * `jitterSample` is a value in [0, 1) that scales the backoff by ±25%. The
- * jittered sleep is clamped to both `remainingMs` and `maxBackoffMs`, so no
- * sleep exceeds the cap or overshoots the wait budget. The next backoff
- * doubles up to `maxBackoffMs`.
+ * jitter scales the backoff by plus or minus 25%; the sleep is clamped to the
+ * remaining wait and the cap, and the next backoff doubles up to the cap
  */
 export function nextBackoffSleep(
   currentBackoffMs: number,
@@ -112,7 +91,6 @@ export function nextBackoffSleep(
   };
 }
 
-/** Build a LockInfo for the current process. */
 function buildLockInfo(
   ttlMs: number,
   nonce: string,
@@ -131,21 +109,15 @@ function buildLockInfo(
   };
 }
 
-/** What a lock file on disk means to a reader. */
 export type LockFileState =
   | { kind: "absent" }
   | { kind: "readable"; info: LockInfo }
-  /** Exists but is empty, partial or corrupt. */
   | { kind: "unreadable"; fresh: boolean; mtimeMs: number };
 
 /**
- * Reads a {@link FileLock} lock file and says what it means.
- *
- * A live holder's file is briefly empty between create and write, and empty
- * or partial during each heartbeat rewrite. So an unreadable file is `fresh`,
- * and must be counted as held, until it has gone untouched for a full
- * `ttlMs`: reading it as no lock skips the mutual exclusion the lock is for
- * (swamp-club#2571, swamp-club#3148).
+ * a live holder's file is briefly empty or partial around create and each
+ * heartbeat rewrite, so an unreadable file counts as held until untouched for a
+ * full ttl
  */
 export async function readLockFileState(
   path: string,
@@ -169,12 +141,9 @@ export async function readLockFileState(
 }
 
 /**
- * What a failed exclusive create of `lockPath` means. On Windows, creating a
- * file another process is deleting or replacing fails with Access Denied
- * rather than AlreadyExists: that is contention while the lock file still
- * exists (or cannot be stat'ed for the same reason), and worth one more
- * create when it is gone, since it may have finished deleting after the
- * create failed. `isWindows` is a parameter so tests cover both branches.
+ * on Windows, creating a file another process is deleting fails with Access
+ * Denied, not AlreadyExists: contention while the file exists, one more create
+ * once it is gone
  */
 export async function classifyLockCreateError(
   error: unknown,
@@ -196,9 +165,8 @@ export async function classifyLockCreateError(
 }
 
 /**
- * Creates `lockPath` exclusively. Resolves to null when another holder has
- * the lock. A Windows Access Denied with no lock file left is retried once;
- * a genuine permission error fails the second create too and is thrown.
+ * a Windows Access Denied with no lock file left is retried once; a genuine
+ * permission error fails the second create too and is thrown
  */
 export async function createLockFileExclusive(
   lockPath: string,
@@ -223,33 +191,27 @@ export async function createLockFileExclusive(
 }
 
 /**
- * File-based distributed lock using advisory lockfiles.
- *
- * Acquire uses `Deno.open({ createNew: true })` for atomic creation.
- * Heartbeat runs as a background interval, rewriting the lockfile content
- * with a fresh timestamp every ttlMs/3.
- * Staleness: if `acquiredAt + ttlMs < now`, the lock holder is assumed crashed.
+ * staleness: if acquiredAt + ttlMs < now the holder is assumed crashed; the
+ * heartbeat rewrites the file every ttlMs/3
  */
 export class FileLock implements DistributedLock {
   private readonly lockPath: string;
   private readonly ttlMs: number;
-  /** Initial backoff before the first retry. Readable so callers' lock
-   * policy can be asserted without timing the acquire loop. */
+  /**
+   * readable so callers' lock policy can be asserted without timing the acquire
+   * loop
+   */
   readonly retryIntervalMs: number;
-  /** Ceiling for the doubling backoff. Readable for the same reason. */
   readonly maxBackoffMs: number;
   private readonly maxWaitMs: number;
   private readonly sameHostPidCheck: boolean;
   private readonly diagnosticKind: "auto_definition" | "file";
-  /** See {@link FileLockOptions.syncCreatedDirectories}. Readable so the
-   * per-model lock's policy can be asserted. */
   readonly syncCreatedDirectories: boolean;
   private heartbeatId: ReturnType<typeof setInterval> | undefined;
   private held = false;
   private releasing = false;
   private nonce: string | undefined;
   private skipping: readonly string[] | undefined;
-  /** Serializes the rewrites of a held lock file; see {@link rewriting}. */
   private rewrites: Promise<unknown> = Promise.resolve();
 
   constructor(basePath: string, options?: FileLockOptions) {
@@ -268,7 +230,6 @@ export class FileLock implements DistributedLock {
     this.syncCreatedDirectories = options?.syncCreatedDirectories ?? false;
   }
 
-  /** Creates the directory the lock file goes in. */
   private async ensureLockDir(): Promise<void> {
     const dir = dirname(this.lockPath);
     if (this.syncCreatedDirectories) {
@@ -308,7 +269,6 @@ export class FileLock implements DistributedLock {
     }
   }
 
-  /** Waits for the lock, counting the attempts that found it held. */
   private async acquireObserved(
     details: { holderRunId?: string },
     attempts: { retries: number },
@@ -324,7 +284,7 @@ export class FileLock implements DistributedLock {
     let currentBackoff = this.retryIntervalMs;
 
     while (true) {
-      // Check timeout on every iteration — including retries after stale lock cleanup
+      // checked on every iteration, including retries after stale lock cleanup
       const elapsed = Date.now() - startTime;
       if (elapsed >= this.maxWaitMs) {
         const existing = await this.readLockFile();
@@ -348,7 +308,7 @@ export class FileLock implements DistributedLock {
       attempts.retries = retryCount;
 
       const holder = await this.clearStaleHolder();
-      if (holder === "cleared") continue; // Retry create (timeout checked at top of loop)
+      if (holder === "cleared") continue;
       details.holderRunId = holder !== "unreadable" && holder.nonce
         ? observedOwners.get(holder.nonce)
         : undefined;
@@ -361,7 +321,6 @@ export class FileLock implements DistributedLock {
         contentionLogged = true;
       }
 
-      // Jittered exponential backoff, clamped to remaining budget
       const remaining = this.maxWaitMs - (Date.now() - startTime);
       const { sleepMs, nextBackoffMs } = nextBackoffSleep(
         currentBackoff,
@@ -376,13 +335,6 @@ export class FileLock implements DistributedLock {
     }
   }
 
-  /**
-   * Makes one attempt to take the lock, without waiting. Returns true
-   * and starts the heartbeat when it is taken; returns false while a
-   * live holder has it. A stale holder is cleared the same way
-   * {@link acquire} clears one, and the create is retried once. Never
-   * throws {@link LockTimeoutError}.
-   */
   async tryAcquire(): Promise<boolean> {
     this.releasing = false;
     await this.ensureLockDir();
@@ -393,8 +345,8 @@ export class FileLock implements DistributedLock {
   }
 
   async release(): Promise<void> {
-    // Set releasing flag BEFORE stopping heartbeat so any in-flight
-    // extend() sees it and skips writing — prevents orphaned lock files.
+    // set releasing before stopping the heartbeat so an in-flight extend sees
+    // it and skips writing, which would orphan the lock file
     this.releasing = true;
     this.stopHeartbeat();
     // Let a rewrite already under way finish first. One that replaced the
@@ -412,8 +364,8 @@ export class FileLock implements DistributedLock {
       await Deno.remove(this.lockPath);
     } catch (error) {
       if (!(error instanceof Deno.errors.NotFound)) {
-        // NotFound is expected (file already gone), but other errors
-        // indicate a real problem — log so operators can investigate
+        // NotFound is expected; other errors are logged so operators can
+        // investigate
         const logger = getSwampLogger(["datastore", "lock"]);
         logger.warn(
           "Failed to delete lock {path} during release: {error}",
@@ -437,23 +389,13 @@ export class FileLock implements DistributedLock {
     }
   }
 
-  /**
-   * The nonce written to the lock file while this instance holds it, or
-   * undefined when it does not (never acquired, released, or self-revoked
-   * after another process took the lock). The heartbeat rewrites the file
-   * with the same nonce; only {@link rekey} changes it during a hold.
-   */
   get heldNonce(): string | undefined {
     return this.held ? this.nonce : undefined;
   }
 
   /**
-   * Gives the held lock a fresh nonce and returns the one it retires, or
-   * undefined when this instance does not hold the lock. A swamp that was
-   * handed the retired nonce no longer matches the lock file and waits on
-   * the lock like any other (design/enablers/datastores.md, "Parent-Process
-   * Lock Awareness"). The file is replaced whole, never rewritten in place:
-   * a reader that catches a lock file mid-write takes the lock for absent.
+   * the file is replaced whole, never rewritten in place, since a reader
+   * catching it mid-write would take the lock for absent
    */
   rekey(): Promise<string | undefined> {
     return this.rewriting(async () => {
@@ -472,13 +414,6 @@ export class FileLock implements DistributedLock {
     });
   }
 
-  /**
-   * Records in the held lock file the per-model lock nonces its holder, a
-   * structural command, skipped; the heartbeat keeps the list. At most
-   * {@link MAX_LOCK_SKIPPING} are written. Does nothing when this instance
-   * does not hold the lock. The file is replaced whole, as {@link rekey}
-   * does.
-   */
   async publishSkipping(nonces: readonly string[]): Promise<void> {
     await this.rewriting(async () => {
       if (!await this.stillOwned()) return;
@@ -491,9 +426,9 @@ export class FileLock implements DistributedLock {
   }
 
   /**
-   * Runs one rewrite of the held lock file after any already under way, so
-   * the heartbeat never compares the file against a nonce that
-   * {@link rekey} is changing and revokes a lock this instance still holds.
+   * runs after any rewrite under way so the heartbeat never compares the file
+   * against a nonce rekey is changing and revokes a lock this instance still
+   * holds
    */
   private rewriting<T>(fn: () => Promise<T>): Promise<T> {
     const run = this.rewrites.then(fn, fn);
@@ -501,11 +436,6 @@ export class FileLock implements DistributedLock {
     return run;
   }
 
-  /**
-   * True while the lock file still carries this instance's nonce. When
-   * another process has taken the lock (this one was paused past its ttl)
-   * the instance revokes itself, as the heartbeat does.
-   */
   private async stillOwned(): Promise<boolean> {
     if (!this.held || !this.nonce || this.releasing) return false;
     const current = await this.readLockFile();
@@ -519,9 +449,9 @@ export class FileLock implements DistributedLock {
   }
 
   /**
-   * Replaces the lock file through a temp file and a rename, so a reader
-   * never sees it partly written. Windows can refuse a rename onto a file
-   * another process has open; the file is then rewritten in place.
+   * replaced through a temp file and rename so a reader never sees it partly
+   * written; if Windows refuses the rename onto an open file, it is rewritten
+   * in place
    */
   private async replaceLockFile(info: LockInfo): Promise<void> {
     const content = JSON.stringify(info, null, 2);
@@ -533,10 +463,6 @@ export class FileLock implements DistributedLock {
     }
   }
 
-  /**
-   * False when release() ran while a write was in flight: the lock file
-   * that write put back is removed so it is not orphaned.
-   */
   private async keptAfterWrite(): Promise<boolean> {
     if (this.held) return true;
     try {
@@ -548,10 +474,9 @@ export class FileLock implements DistributedLock {
   }
 
   /**
-   * Reads the lock without acquiring it. A lock file its holder is still
-   * writing cannot name that holder, so it is reported as held by an
-   * unknown holder rather than as no lock; it carries no nonce and is
-   * marked `holderUnknown`.
+   * a lock file its holder is still writing cannot name that holder, so it is
+   * reported as held by an unknown holder (holderUnknown, no nonce) rather than
+   * as no lock
    */
   async inspect(): Promise<LockInfo | null> {
     const state = await readLockFileState(this.lockPath, this.ttlMs);
@@ -582,11 +507,6 @@ export class FileLock implements DistributedLock {
     return true;
   }
 
-  /**
-   * Atomically creates the lock file for `nonce`. Returns false when it
-   * already exists; on success marks the lock held and starts the
-   * heartbeat.
-   */
   private async tryCreate(nonce: string): Promise<boolean> {
     const content = JSON.stringify(buildLockInfo(this.ttlMs, nonce), null, 2);
     const file = await createLockFileExclusive(
@@ -612,19 +532,14 @@ export class FileLock implements DistributedLock {
   }
 
   /**
-   * Inspects an existing lock file and removes it when its holder is
-   * stale. Returns "cleared" when the caller should retry the create
-   * (removed, or gone meanwhile), the live holder's info, or
-   * "unreadable" for a fresh file a holder is still writing.
-   *
-   * Best-effort: if we accidentally delete a fresh lock, the nonce
-   * fencing in extend() ensures the old holder self-revokes.
+   * best-effort: if a fresh lock is deleted by accident, nonce fencing in
+   * extend() makes the old holder self-revoke
    */
   private async clearStaleHolder(): Promise<
     "cleared" | "unreadable" | LockInfo
   > {
     const state = await readLockFileState(this.lockPath, this.ttlMs);
-    if (state.kind === "absent") return "cleared"; // Removed meanwhile
+    if (state.kind === "absent") return "cleared";
     if (state.kind === "readable") {
       const existing = state.info;
       const pidDead = this.sameHostPidCheck && existing.hostname !== hostname()
@@ -640,11 +555,8 @@ export class FileLock implements DistributedLock {
       }
       return "cleared";
     }
-    // Lock file exists on disk but is unreadable (0 bytes, corrupt
-    // JSON, or partial write). A live holder's file is briefly empty
-    // between create and write, and during each heartbeat rewrite, so
-    // only a file untouched for a full TTL is stale: removing a fresh
-    // one lets two holders in at once (swamp-club#2571).
+    // an unreadable file may be a live holder mid-write, so only one untouched
+    // for a full TTL is stale: removing a fresh one lets two holders in at once
     if (!state.fresh) {
       const logger = getSwampLogger(["datastore", "lock"]);
       logger
@@ -656,15 +568,13 @@ export class FileLock implements DistributedLock {
       }
       return "cleared";
     }
-    // Fresh: a holder is mid-write. Back off like any held lock.
     return "unreadable";
   }
 
   private extend(): Promise<void> {
     return this.rewriting(async () => {
-      // Verify we still own the lock before extending (fencing).
-      // If another process acquired the lock (e.g., after we were paused
-      // beyond TTL), the nonce will differ and we must self-revoke.
+      // fencing: if another process took the lock (e.g. after we were paused
+      // past TTL) the nonce differs and we must self-revoke
       if (!await this.stillOwned()) return;
 
       // Replaced whole, like every rewrite of a held lock: a reader that
@@ -673,8 +583,8 @@ export class FileLock implements DistributedLock {
         buildLockInfo(this.ttlMs, this.nonce!, this.skipping),
       );
 
-      // If release() was called while the write was in flight,
-      // clean up the lock we just wrote so we don't orphan it.
+      // if release ran while the write was in flight, remove the lock just
+      // written so it is not orphaned
       await this.keptAfterWrite();
     });
   }

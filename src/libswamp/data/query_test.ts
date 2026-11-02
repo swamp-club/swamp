@@ -468,7 +468,6 @@ Deno.test("requireSingleResult: treats a missing count as no match", () => {
   assertEquals(error?.code, "QUERY_NO_MATCH");
 });
 
-/** Deps whose fallback is fixed and whose query answers per predicate. */
 function fallbackDeps(
   answers: Record<string, unknown[] | Error>,
   calls: Array<{ predicate: string; options?: unknown }> = [],
@@ -485,7 +484,6 @@ function fallbackDeps(
   };
 }
 
-/** The domain fallback for each predicate these tests run. */
 const FALLBACKS: Record<string, SpecNameFallback> = {
   'name == "classification"': {
     specNamePredicate: 'specName == "classification"',

@@ -17,15 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * swamp-club#4004: an output-retention batch exports its phases through the
- * real OTLP exporter, with parentage, value types, outcomes and counts
- * intact. Runs the real retention pass and collectors over a real repository,
- * each batch wrapped as serve wraps it (the sync gate, then a root unit of
- * work whose flush stands in for the push); spans are exported over HTTP to
- * a port-0 collector (design/enablers/serve-phase-telemetry.md).
- */
-
 import "../src/domain/models/models.ts";
 import { assert, assertEquals } from "@std/assert";
 import { join } from "@std/path";
@@ -88,11 +79,6 @@ interface OtlpRequest {
   resourceSpans: { scopeSpans: { spans: OtlpSpan[] }[] }[];
 }
 
-/**
- * Runs `fn` with spans exported over HTTP by {@link FetchOtlpExporter} to a
- * port-0 collector, and hands back every span it received. With `sampler`,
- * the provider samples by it instead of always.
- */
 async function withExportedSpans(
   fn: () => Promise<void>,
   sampler?: Sampler,
@@ -146,7 +132,6 @@ function intOf(span: OtlpSpan, key: string): number | undefined {
   return value === undefined ? undefined : Number(value);
 }
 
-/** A number exported as an int or a double, whichever it happened to be. */
 function numberOf(span: OtlpSpan, key: string): number | undefined {
   const value = attribute(span, key);
   return value?.doubleValue ?? intOf(span, key);
@@ -163,7 +148,6 @@ function childOf(child: OtlpSpan, parent: OtlpSpan): boolean {
     child.traceId === parent.traceId;
 }
 
-/** Every span under `root`, `root` excluded. */
 function descendants(spans: OtlpSpan[], root: OtlpSpan): OtlpSpan[] {
   const below = spans.filter((s) => childOf(s, root));
   return below.flatMap((s) => [s, ...descendants(spans, s)]);
@@ -209,10 +193,6 @@ async function initRepo(dir: string): Promise<Repo> {
   };
 }
 
-/**
- * One output-retention pass with each batch wrapped as serve wraps it: the
- * sync gate, then a root unit of work whose flush is the push.
- */
 function runOutputRetention(
   repo: Repo,
   markDirty: MarkDirtyHook,
@@ -240,7 +220,6 @@ function runOutputRetention(
 
 const noDirtyMarks: MarkDirtyHook = () => Promise.resolve();
 
-/** The outputs batch and its `retention_batch` phase. */
 function outputBatch(spans: OtlpSpan[]): {
   batch: OtlpSpan;
   phase: OtlpSpan;
@@ -284,8 +263,6 @@ Deno.test("output retention phases: a batch exports its stages through OTLP with
     assertEquals(phase.status?.code, 1);
     assertEquals(intOf(phase, "swamp.diagnostic.deleted"), 3);
 
-    // The gate wait is the existing gate span, tagged; every stage is a
-    // child of the batch phase.
     const gateWait = only(spans, "swamp.serve.sync_gate.wait");
     assertEquals(
       attribute(gateWait, "swamp.diagnostic.phase")?.stringValue,
@@ -340,7 +317,6 @@ Deno.test("output retention phases: a batch exports its stages through OTLP with
       5,
     );
 
-    // No exported value carries a path.
     for (const span of spans) {
       for (const { value } of span.attributes) {
         assert(!(value.stringValue ?? "").includes(dir));
@@ -386,7 +362,6 @@ Deno.test("output retention phases: a batch that fails after deleting some outpu
         .length,
       0,
     );
-    // The unit was abandoned, which still pushes: its commit stage ran.
     const commit = only(spans, "swamp.diagnostic.batch_commit");
     assertEquals(
       attribute(commit, "swamp.diagnostic.disposition")?.stringValue,

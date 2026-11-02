@@ -30,11 +30,9 @@ import type { DenoRuntime } from "../src/domain/runtime/deno_runtime.ts";
 import { createTarGz } from "../src/infrastructure/archive/tar_archive.ts";
 import { readUpstreamExtensions } from "../src/infrastructure/persistence/upstream_extensions.ts";
 
-// swamp-club#2571: concurrent auto-resolves of one uninstalled extension in
-// one repo. Each resolver gets its own installer adapter, standing in for a
-// separate process. The install lock must let exactly one of them install;
-// the other waits, then loads the installed extension instead of failing
-// with a file conflict.
+// each resolver gets its own installer adapter, standing in for a separate
+// process; the install lock must let one install while the other waits, then
+// loads it
 
 const testDenoRuntime: DenoRuntime = {
   ensureDeno: () => Promise.resolve(Deno.execPath()),

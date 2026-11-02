@@ -17,7 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/** Response from the OAuth device authorization endpoint. */
 export interface DeviceGrantResponse {
   readonly deviceCode: string;
   readonly userCode: string;
@@ -27,7 +26,6 @@ export interface DeviceGrantResponse {
   readonly interval: number;
 }
 
-/** Successful token response from the OAuth token endpoint. */
 export interface OAuthTokenResponse {
   readonly accessToken: string;
   readonly tokenType: string;
@@ -36,18 +34,15 @@ export interface OAuthTokenResponse {
   readonly scope?: string;
 }
 
-/** User information retrieved from the OAuth provider's userinfo endpoint. */
 export interface OAuthUserInfo {
   readonly sub: string;
   readonly email: string;
   readonly name?: string;
-  /** The provider's `preferred_username` claim, when it sends one. */
   readonly username?: string;
   readonly collectives: string[];
   readonly groups: string[];
 }
 
-/** Error codes returned by the OAuth token endpoint during device grant polling. */
 export type DeviceGrantPollErrorCode =
   | "authorization_pending"
   | "slow_down"
@@ -55,10 +50,6 @@ export type DeviceGrantPollErrorCode =
   | "access_denied"
   | "unknown";
 
-/**
- * Error thrown when polling the OAuth token endpoint during the device
- * authorization flow returns an expected error code rather than a token.
- */
 export class DeviceGrantPollError extends Error {
   readonly code: DeviceGrantPollErrorCode;
 
@@ -276,12 +267,9 @@ export async function sendInstanceHeartbeat(
 }
 
 /**
- * Error thrown by {@link resolveUsername} when the provider reports that the
- * username does not exist (HTTP 404). A refusal of the credential (401 or
- * 403) throws {@link UsernameLookupRefusedError}. Any other failure — a
- * non-2xx status, a network error or a timeout — throws a plain `Error`, so
- * callers can tell "this user does not exist" apart from "the provider could
- * not answer".
+ * 404 means the user does not exist; a 401 or 403 throws
+ * UsernameLookupRefusedError; any other failure throws a plain Error so callers
+ * can tell absent from unanswered
  */
 export class UsernameNotFoundError extends Error {
   readonly username: string;
@@ -296,10 +284,9 @@ export class UsernameNotFoundError extends Error {
 }
 
 /**
- * Error thrown by {@link resolveUsername} when the provider refuses the
- * credential (HTTP 401 or 403). The message names the scope a collective
- * API token needs, without claiming which credential was used: startup may
- * look names up with a login token from the device grant instead.
+ * the message names the scope a collective API token needs without claiming
+ * which credential was used, since startup may use a login token from the
+ * device grant
  */
 export class UsernameLookupRefusedError extends Error {
   readonly username: string;

@@ -29,8 +29,6 @@ import {
   OutputLifetimeSchema,
 } from "./data_metadata.ts";
 
-// --- normalizeLifetime: zero-duration strings become "workflow" ---
-
 Deno.test("normalizeLifetime - converts '0h' to 'workflow'", () => {
   assertEquals(normalizeLifetime("0h"), "workflow");
 });
@@ -55,8 +53,6 @@ Deno.test("normalizeLifetime - converts '0y' to 'workflow'", () => {
   assertEquals(normalizeLifetime("0y"), "workflow");
 });
 
-// --- normalizeLifetime: leading zeros that still equal zero ---
-
 Deno.test("normalizeLifetime - converts '00d' to 'workflow'", () => {
   assertEquals(normalizeLifetime("00d"), "workflow");
 });
@@ -72,8 +68,6 @@ Deno.test("normalizeLifetime - converts '00mo' to 'workflow'", () => {
 Deno.test("normalizeLifetime - converts '0000w' to 'workflow'", () => {
   assertEquals(normalizeLifetime("0000w"), "workflow");
 });
-
-// --- normalizeLifetime: non-zero durations pass through unchanged ---
 
 Deno.test("normalizeLifetime - passes through '1h' unchanged", () => {
   assertEquals(normalizeLifetime("1h"), "1h");
@@ -107,8 +101,6 @@ Deno.test("normalizeLifetime - passes through '100d' unchanged", () => {
   assertEquals(normalizeLifetime("100d"), "100d");
 });
 
-// --- normalizeLifetime: leading zeros on non-zero values pass through ---
-
 Deno.test("normalizeLifetime - passes through '01d' unchanged (value is 1)", () => {
   assertEquals(normalizeLifetime("01d" as Lifetime), "01d");
 });
@@ -116,8 +108,6 @@ Deno.test("normalizeLifetime - passes through '01d' unchanged (value is 1)", () 
 Deno.test("normalizeLifetime - passes through '007h' unchanged (value is 7)", () => {
   assertEquals(normalizeLifetime("007h" as Lifetime), "007h");
 });
-
-// --- normalizeLifetime: special lifetime values pass through unchanged ---
 
 Deno.test("normalizeLifetime - passes through 'ephemeral' unchanged", () => {
   assertEquals(normalizeLifetime("ephemeral"), "ephemeral");
@@ -134,8 +124,6 @@ Deno.test("normalizeLifetime - passes through 'job' unchanged", () => {
 Deno.test("normalizeLifetime - passes through 'workflow' unchanged", () => {
   assertEquals(normalizeLifetime("workflow"), "workflow");
 });
-
-// --- GarbageCollectionSchema: rejects zero-duration strings ---
 
 Deno.test("GarbageCollectionSchema - rejects '0h'", () => {
   const result = GarbageCollectionSchema.safeParse("0h");
@@ -177,8 +165,6 @@ Deno.test("GarbageCollectionSchema - rejects '000w'", () => {
   assertEquals(result.success, false);
 });
 
-// --- GarbageCollectionSchema: rejects zero as a number ---
-
 Deno.test("GarbageCollectionSchema - rejects 0 (number)", () => {
   const result = GarbageCollectionSchema.safeParse(0);
   assertEquals(result.success, false);
@@ -188,8 +174,6 @@ Deno.test("GarbageCollectionSchema - rejects negative numbers", () => {
   const result = GarbageCollectionSchema.safeParse(-1);
   assertEquals(result.success, false);
 });
-
-// --- GarbageCollectionSchema: accepts valid values ---
 
 Deno.test("GarbageCollectionSchema - accepts positive integer", () => {
   const result = GarbageCollectionSchema.safeParse(5);
@@ -221,8 +205,6 @@ Deno.test("GarbageCollectionSchema - accepts '10y'", () => {
   assertEquals(result.success, true);
 });
 
-// --- GarbageCollectionSchema: accepts leading-zero non-zero values ---
-
 Deno.test("GarbageCollectionSchema - accepts '01d' (leading zero, value is 1)", () => {
   const result = GarbageCollectionSchema.safeParse("01d");
   assertEquals(result.success, true);
@@ -232,8 +214,6 @@ Deno.test("GarbageCollectionSchema - accepts '007h' (leading zeros, value is 7)"
   const result = GarbageCollectionSchema.safeParse("007h");
   assertEquals(result.success, true);
 });
-
-// --- DataLifecycleSchema ---
 
 Deno.test("DataLifecycleSchema - accepts 'active'", () => {
   const result = DataLifecycleSchema.safeParse("active");
@@ -251,13 +231,10 @@ Deno.test("DataLifecycleSchema - rejects invalid value", () => {
 });
 
 Deno.test("DataLifecycleSchema - accepts undefined (optional in metadata)", () => {
-  // When used as .optional(), undefined should work
   const optionalSchema = DataLifecycleSchema.optional();
   const result = optionalSchema.safeParse(undefined);
   assertEquals(result.success, true);
 });
-
-// --- lifetimeToMs ---
 
 Deno.test("lifetimeToMs: converts duration strings to milliseconds", () => {
   assertEquals(lifetimeToMs("1h"), 60 * 60 * 1000);
@@ -275,8 +252,6 @@ Deno.test("lifetimeToMs: returns null for non-duration lifetimes", () => {
   assertEquals(lifetimeToMs("workflow"), null);
   assertEquals(lifetimeToMs("job"), null);
 });
-
-// --- OutputLifetimeSchema ---
 
 Deno.test("OutputLifetimeSchema: accepts duration strings", () => {
   assertEquals(OutputLifetimeSchema.safeParse("1d").success, true);

@@ -61,18 +61,12 @@ Deno.test("diagnoseSecretMisuse: the allowed set passes, and so do the pinned ce
       "vault.get('v', 'k') == null",
       "vault.get('v', 'k') != null",
       "vault.get('v', 'k') == null ? 'a' : 'b'",
-      // A dyn operand escapes the type check; with a scalar literal beside
-      // it the container rule has nothing to say either.
       "dyn(vault.get('v', 'k')) == 'x'",
       "inputs.x == 'a' && vault.get('v', 'k') != null",
-      // A map literal keyed by the result escapes it too.
       "{vault.get('v', 'k'): 1}",
-      // type() checks as valid and reveals nothing.
       "type(vault.get('v', 'k'))",
-      // Containers that hold the result are not comparisons.
       "[vault.get('v', 'k')]",
       "{'a': vault.get('v', 'k')}",
-      // Legacy bare-token names are literals.
       "vault.get(my-vault, KEY) + '-x'",
     ]
   ) {
@@ -83,9 +77,7 @@ Deno.test("diagnoseSecretMisuse: the allowed set passes, and so do the pinned ce
 Deno.test("diagnoseSecretMisuse: a type error that names no Secret type is not the secret's", () => {
   for (
     const expression of [
-      // has() on a call result fails for its own invalid_macro_argument reason.
       "has(vault.get('v', 'k').x)",
-      // An error unrelated to the secret.
       "vault.get('v', 'k') + 'x' + ('a' + 1)",
       "vault.get('v', 'k') == null && size(1)",
     ]
@@ -100,9 +92,8 @@ Deno.test("diagnoseSecretMisuse: a container comparison in an expression that ca
       "vault.get('v', 'k') != null && self.item in ['a']",
       "vault.get('v', 'k') != null && inputs.a == self.item",
       "[vault.get('v', 'k')] == [vault.get('v', 'k')]",
-      // The type check lets a dyn operand through; the container rule does
-      // not, since neither operand is a scalar literal or null, and the run
-      // refuses it the same way.
+      // the type check lets a dyn operand through; the container rule does not,
+      // since neither operand is a scalar literal or null
       "inputs.x == vault.get('v', 'k')",
       "self.globalArguments.t == vault.get('v', 'k')",
     ]
@@ -116,7 +107,6 @@ Deno.test("diagnoseSecretMisuse: a container comparison in an expression that ca
     assertEquals(findings[0].code, SECRET_OPERATION_UNSUPPORTED);
     assertEquals(findings[0].location.startsWith(`${AT}:1:`), true);
   }
-  // A scalar comparison beside the call is not a container comparison.
   assertEquals(reasons("vault.get('v', 'k') != null && inputs.a == 'x'"), []);
 });
 
@@ -184,13 +174,11 @@ Deno.test("diagnoseSecretMisuse: a ternary with a Secret branch is an escape, as
       "inputs.flag ? vault.get('v', 'k') : 'none'",
       "false ? vault.get('v', 'k') : 'none'",
       "inputs.flag ? vault.get('v', 'k') + '-x' : 'none'",
-      // What follows the ternary is refused only at run time.
       "(inputs.flag ? vault.get('v', 'k') : 'none') == 'x'",
     ]
   ) {
     assertEquals(reasons(expression), [], expression);
   }
-  // A misuse before the ternary is still reported.
   assertEquals(
     reasons("size(vault.get('v', 'k')) > 1 ? vault.get('v', 'j') : 'none'")
       .length,

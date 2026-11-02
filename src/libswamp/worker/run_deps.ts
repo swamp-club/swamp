@@ -17,15 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Internal factory that builds ModelMethodRunDeps for the worker CLI
- * operations (enrollment-token mint/revoke). Mirrors the deps construction
- * in `src/cli/commands/model_method_run.ts`, including the direct type
- * execution hooks (`createAndSaveDefinition` / `getDefinitionPath`) so
- * `swamp worker token create <name>` can auto-create the
- * `swamp/enrollment-token` model instance.
- */
-
 import { join } from "@std/path";
 import type { RepositoryContext } from "../../infrastructure/persistence/repository_factory.ts";
 import type { ModelMethodRunDeps } from "../models/run.ts";
@@ -49,14 +40,9 @@ import { vaultTypeRegistry } from "../../domain/vaults/vault_type_registry.ts";
 import { reportRegistry } from "../../domain/reports/report_registry.ts";
 
 /**
- * Builds the full ModelMethodRunDeps needed to run methods on the built-in
- * worker models, with direct type execution enabled.
- *
- * With `definitionType`, a definition is looked up by that type and name
- * only: in `models/<type>` first, then the auto-definitions directory. Serve
- * runs these methods for every enrollment and dispatch, and the name-only
- * lookup parses every definition under `models/` on each call
- * (swamp-club#3405).
+ * with definitionType, a definition is looked up by that type and name only,
+ * since the name-only lookup parses every definition under models/ and serve
+ * runs these on every enrollment and dispatch
  */
 export async function createWorkerModelRunDeps(
   repoDir: string,

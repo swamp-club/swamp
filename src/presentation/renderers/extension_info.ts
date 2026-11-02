@@ -125,12 +125,9 @@ function renderContentMetadata(
 }
 
 /**
- * Prints what the author acknowledged for the latest version, after a blank
- * line, in the push report's line format; prints nothing when no usable
- * acceptances are declared. Read through the registry parser so data relayed
- * by a remote serve is checked here too; every author-supplied value has its
- * control characters escaped, and each line is escaped for LogTape (reasons
- * carry braces).
+ * read through the registry parser so data relayed by a remote serve is checked
+ * here too; author-supplied values have control characters escaped, and each
+ * line is escaped for LogTape (reasons carry braces)
  */
 export function renderAcceptedWarnings(logger: Logger, raw: unknown): void {
   const acceptances = parseRegistryAcceptances(raw);

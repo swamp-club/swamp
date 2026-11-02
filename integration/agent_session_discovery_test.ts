@@ -17,16 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * The agent session discovery contract (swamp-club#4154, swamp-club#4178): a
- * session written through the resource writer with the output spec's `type`
- * tag and the list tags from agentSessionTags is listed by the dashboard's
- * existing `data.query`. Top-level sessions and one session's children each
- * come from one predicate over tags, so neither query loads a record body,
- * and a viewer without read on the owning behavior sees none of it, filtered
- * before the limit. No dedicated query filter exists for sessions.
- */
-
 import { assert, assertEquals } from "@std/assert";
 import { z } from "zod";
 import "../src/domain/models/models.ts";
@@ -149,10 +139,6 @@ async function writeSession(
   );
 }
 
-/**
- * Replaces a session's stored body with a directory, so any query that reads
- * the body fails instead of quietly returning it.
- */
 async function makeBodyUnreadable(contentPath: string): Promise<void> {
   await Deno.remove(contentPath);
   await Deno.mkdir(contentPath);
@@ -198,7 +184,6 @@ Deno.test("agent session discovery: data.query lists sessions by the type tag th
     const importer = await saveModel(repo, "agent-sessions");
     await writeSession(repo, importer, "session-a", "user-a");
     await writeSession(repo, importer, "session-b", "user-b");
-    // Ordinary data beside the sessions is not listed.
     await saveData(repo, importer, "state");
 
     const found = await query(createServeCtx(repo, [ALLOW_DATA]));
@@ -210,7 +195,6 @@ Deno.test("agent session discovery: data.query lists sessions by the type tag th
       ],
     );
     for (const record of found.results) {
-      // The spec's tag replaced the writer's own `type: resource`.
       assertEquals(record.tags.type, AGENT_SESSION_TYPE_TAG);
       assert(record.tags[AGENT_SESSION_USER_ID_TAG]);
     }
@@ -235,7 +219,6 @@ Deno.test("agent session discovery: a viewer without read on the owning behavior
       all.results.map((r) => r.name),
       [agentSessionDataName("claude-code", "session-shared")],
     );
-    // A page of one still finds the readable session, whatever sorts first.
     const page = await query(ctx, 1, AGENT_SESSION_TOP_LEVEL_PREDICATE);
     assertEquals(page.total, 1);
     assertEquals(
@@ -280,7 +263,6 @@ Deno.test("agent session discovery: top-level sessions and one session's childre
       await writeSession(repo, importer, childB, "user-a", "parent-b"),
     ];
     const ctx = createServeCtx(repo, [ALLOW_DATA]);
-    // A query that read a body would now fail rather than return it.
     for (const body of bodies) await makeBodyUnreadable(body);
 
     const topLevel = await list(ctx, AGENT_SESSION_TOP_LEVEL_PREDICATE);
@@ -298,7 +280,6 @@ Deno.test("agent session discovery: top-level sessions and one session's childre
       [agentSessionDataName("claude-code", childA)],
     );
     assertEquals(children[0].tags[AGENT_SESSION_PARENT_TAG], "parent-a");
-    // The behavior name is what data.get needs to open a listed session.
     for (const row of [...topLevel, ...children]) {
       assertEquals(row.modelName, importer.name);
     }
@@ -323,8 +304,6 @@ Deno.test("agent session discovery: a list without the select reads the bodies i
       id: crypto.randomUUID(),
       payload: { predicate: AGENT_SESSION_TOP_LEVEL_PREDICATE },
     });
-    // The unreadable body shows the query read it: the select above is what
-    // keeps the list off the bodies.
     assert(errorFrame(frames), JSON.stringify(frames));
   });
 });
@@ -357,7 +336,6 @@ Deno.test("agent session discovery: a listed session opens with data.get from it
     const reading = readAgentSessionRecord(JSON.parse(opened.content));
     assertEquals(reading.kind, "record");
 
-    // Hiding the page is not access control: a direct read is refused too.
     const refused = await getSession(createServeCtx(repo, []), row);
     assert(errorFrame(refused.frames), JSON.stringify(refused.frames));
   });

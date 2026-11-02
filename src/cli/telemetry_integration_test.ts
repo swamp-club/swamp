@@ -123,10 +123,8 @@ Deno.test("extractCommandInfo handles option=value syntax", () => {
   assertEquals(info.subcommand, "create");
   assertEquals(info.optionKeys, ["--repo-dir"]);
 
-  // The same option *before* the command. This position is the one that used
-  // to break: an attached value was not recognised, so the parser skipped the
-  // next argument as the option's value and ate the command word. The case
-  // above passes either way, which is how it went unnoticed.
+  // an option=value before the command must not make the parser skip the next
+  // argument as its value and eat the command word
   const leading = extractCommandInfo([
     "--repo-dir=/path/to/repo",
     "model",
@@ -138,9 +136,8 @@ Deno.test("extractCommandInfo handles option=value syntax", () => {
 });
 
 Deno.test("extractCommandInfo: a leading option=value does not swallow the command", () => {
-  // Each pair is the same invocation written both ways. They must parse
-  // identically — the space-separated form always did, and it passing is what
-  // made the attached form look covered (swamp-club#2254).
+  // each pair is the same invocation written both ways and must parse
+  // identically
   const equivalents: Array<{ attached: string[]; spaced: string[] }> = [
     {
       attached: ["--log-level=debug", "invite", "link"],
@@ -163,8 +160,8 @@ Deno.test("extractCommandInfo: a leading option=value does not swallow the comma
     assertEquals(fromAttached.subcommand, fromSpaced.subcommand);
   }
 
-  // A single-word command has no subcommand to lose, so it loses the command
-  // itself — this parsed as command "" before the fix.
+  // a single-word command has no subcommand to lose, so a swallowed value would
+  // lose the command itself
   const egg = extractCommandInfo(["--log-level=debug", "first-rule"]);
   assertEquals(egg.command, "first-rule");
   assertEquals(egg.subcommand, undefined);
@@ -401,7 +398,6 @@ Deno.test("extractCommandInfo handles --streaming as boolean flag", () => {
 });
 
 Deno.test("projectEnvSnapshot picks up whitelist keys present on Deno.env", () => {
-  // Mock one whitelist key so the projection has something to capture.
   const sentinel = "swamp-test-claude";
   withMockedEnv({ CLAUDE_CODE_ENTRYPOINT: sentinel }, () => {
     const snapshot = projectEnvSnapshot();
@@ -410,7 +406,6 @@ Deno.test("projectEnvSnapshot picks up whitelist keys present on Deno.env", () =
 });
 
 Deno.test("projectEnvSnapshot does not include keys outside the whitelist", () => {
-  // Set a non-whitelist key and assert it does not appear in the projection.
   withMockedEnv(
     { AWS_SECRET_ACCESS_KEY: "AKIA-test-secret-do-not-leak" },
     () => {
@@ -631,9 +626,9 @@ Deno.test("extractCommandInfo: --log is a boolean flag and does not swallow the 
 });
 
 Deno.test("extractCommandInfo: behavior history and output never record a name, under both spellings (swamp-club#3331)", () => {
-  // Both groups take a name as their shorthand positional, so neither slot
-  // may be categorical. The legacy model schemas record these slots; the
-  // behavior entries do not copy that.
+  // both groups take a name as their shorthand positional, so neither slot may
+  // be categorical; unlike the legacy model schemas, behavior entries do not
+  // record these slots
   const cases: ReadonlyArray<readonly string[]> = [
     ["history", "my-server"],
     ["history", "get", "my-server"],
@@ -721,7 +716,6 @@ Deno.test("extractCommandInfo: every behavior path is classified like its model 
     }
   }
 
-  // `behavior describe` / `history` take the slots after `model method <word>`.
   const legacyDescribe = extractCommandInfo([
     "model",
     "method",

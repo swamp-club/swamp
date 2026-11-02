@@ -89,7 +89,6 @@ Deno.test("VersionRanges: matches a plain set over random adds and deletes", () 
         for (let v = 0; v <= 21; v++) assertEquals(ranges.has(v), plain.has(v));
         assertEquals(ranges.max, Math.max(0, ...plain));
         assertEquals(ranges.isEmpty, plain.size === 0);
-        // Normalised: equal sets have equal ranges.
         assertEquals(
           VersionRanges.of([...plain].map((v) => [v, v])).ranges,
           ranges.ranges,

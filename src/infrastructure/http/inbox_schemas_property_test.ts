@@ -32,11 +32,9 @@ const ANY_CONTROL_RE = /[\x00-\x1f\x7f-\x9f]/;
 const BODY_FORBIDDEN_RE = /[\x00-\x08\x0b-\x1f\x7f-\x9f]/;
 const INVISIBLE_RE =
   /[\u061c\u200b-\u200f\u202a-\u202e\u2060\u2066-\u2069\ufeff]/;
-/** Less the joiners, which prose (the body and the title) keeps. */
 const PROSE_INVISIBLE_RE =
   /[\u061c\u200b\u200e\u200f\u202a-\u202e\u2060\u2066-\u2069\ufeff]/;
 
-/** Text dense in escapes and control characters. */
 const arbHostileText = fc.array(
   fc.oneof(
     fc.string(),
@@ -114,7 +112,6 @@ Deno.test("parseInboxMessage: one-line fields never hold a control character", (
   );
 });
 
-/** Words mixing plain characters with shell syntax. */
 const arbShellishCommand = fc.array(
   fc.oneof(
     fc.stringMatching(/^[a-z0-9-]{1,8}$/),
@@ -187,7 +184,6 @@ Deno.test("parseInboxMessagePage: a kept nextCursor is always an upper-case ULID
   );
 });
 
-/** Commands built from the allow-list's own words and near misses. */
 const arbNearAllowedCommand = fc.array(
   fc.constantFrom(
     "update",

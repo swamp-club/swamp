@@ -32,12 +32,9 @@ import type { SwampError } from "../errors.ts";
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
 export type { LockInfo } from "../../domain/datastore/distributed_lock.ts";
 
-// ── Lock-key construction ─────────────────────────────────────────────
-
 /**
- * Constructs the canonical per-model lock key, optionally scoped under a
- * namespace. Uses `/` (not SEPARATOR) since lock keys are passed as opaque
- * strings to custom providers (e.g. S3 object keys).
+ * uses / rather than SEPARATOR because lock keys are opaque strings to custom
+ * providers, such as S3 object keys
  */
 export function modelLockKey(
   namespace: string | undefined,
@@ -49,10 +46,9 @@ export function modelLockKey(
 }
 
 /**
- * Constructs the lock key of a workflow run's claim, optionally scoped under
- * a namespace. It sits outside `data/` and `workflow-runs/`, so neither the
- * per-model lock scan nor the run repository's directory reads see it, and
- * the file is named `.lock`, the one name datastore sync never transfers.
+ * sits outside data/ and workflow-runs/ so neither the per-model lock scan nor
+ * the run repository sees it, and is named .lock, the one name datastore sync
+ * never transfers
  */
 export function workflowRunLockKey(
   namespace: string | undefined,
@@ -62,13 +58,7 @@ export function workflowRunLockKey(
   return namespace ? `${namespace}/${base}` : base;
 }
 
-/**
- * Strips a leading `{namespace}{SEPARATOR}` from a filesystem-relative path
- * so that `parseModelLockKey` can parse it. Uses SEPARATOR because this
- * operates on paths produced by `relative()` from `@std/path`.
- * Returns the input unchanged when namespace is empty or the prefix doesn't
- * match.
- */
+/** uses SEPARATOR because the path comes from relative() in @std/path */
 export function stripNamespacePrefix(
   namespace: string | undefined,
   rel: string,
@@ -78,21 +68,10 @@ export function stripNamespacePrefix(
   return rel.startsWith(prefix) ? rel.slice(prefix.length) : rel;
 }
 
-// ── Lock-key parsing ───────────────────────────────────────────────────
-
 /**
- * Parses a per-model lock key (relative path under the datastore root) into
- * its modelType and modelId components.
- *
- * Lock keys have the form `data/<modelType>/<modelId>/.lock`, where
- * `<modelType>` may itself contain `/` for scoped extension types
- * (e.g. `@hivemq/harvester-host-kernel`). Returns null for keys that do
- * not match this shape.
- *
- * Splits on the platform path separator since `relative()` from
- * `@std/path` returns native-separated paths. The returned `modelType`
- * is always `/`-joined (the canonical key form), regardless of the
- * platform the path came from.
+ * modelType may contain / for scoped extension types; splits on the platform
+ * separator since relative() returns native paths, and modelType is always
+ * /-joined
  */
 export function parseModelLockKey(
   rel: string,
@@ -112,13 +91,8 @@ export function parseModelLockKey(
 }
 
 /**
- * Parses a `<modelType>/<modelId>` CLI argument (e.g. the `--model` flag
- * to `swamp datastore lock release`).
- *
- * The modelType may itself contain `/` for scoped extension types, so
- * parsing is right-anchored: the last `/` separates modelType from
- * modelId, everything before is modelType. Returns null for inputs with
- * no separator, an empty modelType, or an empty modelId.
+ * right-anchored, because modelType may itself contain /: the last / separates
+ * modelType from modelId
  */
 export function parseModelSpec(
   spec: string,
@@ -131,11 +105,7 @@ export function parseModelSpec(
   };
 }
 
-/**
- * Whether the type a `--behavior type/id` spec names is `foundType`, the
- * normalized type of the behavior its id or name found: a spec whose type
- * names another type never acts on the behavior found (swamp-club#4195).
- */
+/** a spec whose type names another type never acts on the behavior found */
 export function modelSpecTypeMatches(
   specType: string,
   foundType: string,
@@ -147,26 +117,17 @@ export function modelSpecTypeMatches(
   }
 }
 
-// ── Lock status ────────────────────────────────────────────────────────
-
-/** Output data for a single lock status check. */
 export interface DatastoreLockStatusData {
   held: boolean;
   info?: LockInfo;
   datastoreType: string;
-  /** If set, identifies this as a per-model lock (e.g. "aws-ec2/my-server"). */
   lockScope?: string;
 }
 
-/**
- * A lease serve holds on a behavior's lock or a run's claim, as a
- * serve-mode checkout sees it (swamp-club#4121): who holds it only as
- * `caller` or `other`, never who.
- */
+/** who holds the lease is reported only as caller or other, never who */
 export interface ServeLeaseStatusData {
   lockKey: string;
   heldBy: "caller" | "other";
-  /** When it ends unless renewed, by serve's clock. */
   expiresAt: string;
 }
 
@@ -180,17 +141,11 @@ export type DatastoreLockStatusEvent =
   }
   | { kind: "error"; error: SwampError };
 
-/** Input for lock status. */
 export interface DatastoreLockStatusInput {
   datastoreType: string;
-  /**
-   * Kept for callers; per-model locks are reported for every datastore type
-   * since swamp-club#3372.
-   */
   isFilesystemDatastore: boolean;
 }
 
-/** Dependencies for lock status. */
 export interface DatastoreLockStatusDeps {
   inspectGlobalLock: () => Promise<LockInfo | null>;
   scanModelLocks: () => Promise<
@@ -201,17 +156,12 @@ export interface DatastoreLockStatusDeps {
       info: LockInfo;
     }>
   >;
-  /**
-   * The leases serve holds on locks the caller could take, for a
-   * serve-mode checkout (swamp-club#4121); undefined from an older serve.
-   */
   listServeLeases?: () => Promise<
     | { leases: readonly ServeLeaseStatusData[]; truncated: boolean }
     | undefined
   >;
 }
 
-/** Checks the current datastore lock status. */
 export async function* datastoreLockStatus(
   ctx: LibSwampContext,
   deps: DatastoreLockStatusDeps,
@@ -225,7 +175,6 @@ export async function* datastoreLockStatus(
 
       const info = await deps.inspectGlobalLock();
 
-      // Per-model locks are yielded first
       const modelLocks = await deps.scanModelLocks();
       for (const ml of modelLocks) {
         yield {
@@ -270,7 +219,6 @@ export async function* datastoreLockStatus(
         };
       }
 
-      // Yield the global status as the final completed event
       yield {
         kind: "completed",
         data: {
@@ -283,17 +231,10 @@ export async function* datastoreLockStatus(
   );
 }
 
-// ── Lock release ───────────────────────────────────────────────────────
-
-/** Output data for a lock release operation. */
 export interface DatastoreLockReleaseData {
   released: boolean;
   reason?: string;
   previousHolder?: LockInfo;
-  /**
-   * Who held the lease serve ended, for a serve-mode checkout's behavior
-   * (swamp-club#4195).
-   */
   leaseHolder?: string;
 }
 
@@ -301,24 +242,16 @@ export type DatastoreLockReleaseEvent =
   | { kind: "completed"; data: DatastoreLockReleaseData }
   | { kind: "error"; error: SwampError };
 
-/** Input for lock release (reserved for future options). */
 export type DatastoreLockReleaseInput = Record<string, never>;
 
-/** Dependencies for lock release. */
 export interface DatastoreLockReleaseDeps {
   inspectLock: () => Promise<LockInfo | null>;
   forceRelease: (nonce: string) => Promise<boolean>;
-  /**
-   * For a behavior of a checkout written through serve (swamp-club#4195):
-   * asks serve to end the lease it holds on the behavior's lock, whoever
-   * holds it, in place of inspecting and releasing a lock here.
-   */
   releaseServeLease?: () => Promise<
     { readonly released: boolean; readonly heldBy?: string }
   >;
 }
 
-/** Force-releases a stuck datastore lock. */
 export async function* datastoreLockRelease(
   ctx: LibSwampContext,
   deps: DatastoreLockReleaseDeps,
@@ -360,8 +293,8 @@ export async function* datastoreLockRelease(
         return;
       }
 
-      // A lock its holder is still writing has no nonce to fence on, and
-      // forceRelease would report it as a changed holder (swamp-club#3152).
+      // a lock its holder is still writing has no nonce to fence on, and
+      // forceRelease would report it as a changed holder
       if (info.holderUnknown) {
         yield {
           kind: "completed",
@@ -402,12 +335,6 @@ export async function* datastoreLockRelease(
   );
 }
 
-// ── Factory functions ─────────────────────────────────────────────────
-
-/**
- * Scans the datastore for per-model lock files.
- * Only works for filesystem datastores.
- */
 async function scanModelLocks(
   datastorePath: string,
   namespace?: string,
@@ -456,31 +383,21 @@ async function scanModelLocks(
   return results;
 }
 
-/** At most this many per-model lock inspects run at once on a custom datastore. */
 const CUSTOM_MODEL_LOCK_INSPECT_CONCURRENCY = 16;
 
 /**
- * Where a custom datastore's per-model locks come from. A bucket has no
- * directory to walk, so each of the repo's models has its lock built the way
- * a run builds it and inspected.
- *
- * Only models this checkout lists are inspected, so a lock is missed for a
- * model this checkout does not know yet: a git-tracked definition not pulled
- * here, another clone's auto-definition before this clone's next sync, or a
- * model deleted here.
+ * only models this checkout lists are inspected, so a lock is missed for a
+ * model it does not know yet: not pulled here, another clone's auto-definition,
+ * or deleted here
  */
 export interface CustomModelLockSource {
-  /** The repo's models, as the modelType/modelId pairs runs lock on. */
   listModels: () => Promise<Array<{ modelType: string; modelId: string }>>;
-  /** Builds the datastore's lock for a per-model lock key. */
   createLock: (lockKey: string) => DistributedLock;
 }
 
 /**
- * Inspects each listed model's lock through the custom datastore's own lock,
- * with bounded concurrency. A failed inspect fails the scan: reporting the
- * model as unlocked would be the wrong answer for a lock that could not be
- * read.
+ * a failed inspect fails the scan: reporting the model as unlocked would be
+ * wrong for a lock that could not be read
  */
 async function scanCustomModelLocks(
   source: CustomModelLockSource,
@@ -541,12 +458,6 @@ async function scanCustomModelLocks(
   return results.sort((a, b) => scope(a) < scope(b) ? -1 : 1);
 }
 
-/**
- * Wires real infrastructure into DatastoreLockStatusDeps.
- *
- * A custom datastore reports per-model locks only when `customModelLocks`
- * is given.
- */
 export function createDatastoreLockStatusDeps(
   globalLock: Pick<DistributedLock, "inspect">,
   config: DatastoreConfig,
@@ -568,10 +479,6 @@ export function createDatastoreLockStatusDeps(
   };
 }
 
-/**
- * DatastoreLockReleaseDeps for a behavior of a checkout written through
- * serve (swamp-club#4195): serve ends the lease it holds on the behavior.
- */
 export function createServeLeaseReleaseDeps(
   release: () => Promise<
     { readonly released: boolean; readonly heldBy?: string }
@@ -584,7 +491,6 @@ export function createServeLeaseReleaseDeps(
   };
 }
 
-/** Wires real infrastructure into DatastoreLockReleaseDeps. */
 export function createDatastoreLockReleaseDeps(
   lock: Pick<DistributedLock, "inspect" | "forceRelease">,
 ): DatastoreLockReleaseDeps {

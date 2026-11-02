@@ -18,20 +18,9 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * Fitness test for workflow run claims (swamp-club#2919):
- *
- *   1. Only the pinned files name `unclaimedRuns`, the claims that exclude
- *      nobody.
- *   2. Only the pinned files take a claim with `withClaim`.
- *
- * A command that loads a suspended run, changes it and saves it must hold the
- * run's claim across all three, or a concurrent command saves over it and one
- * of them has reported a result that no longer holds. `unclaimedRuns` opts a
- * path out, which is right only where something else already keeps other
- * writers off the run. Pinning both sets makes every new opt-out, and every
- * new claimed path, a change someone reviews.
- *
- * Static — no subprocesses, nothing is executed.
+ * a command that loads, changes and saves a suspended run must hold its claim
+ * or a concurrent save overwrites it; unclaimedRuns opts out only where
+ * something else excludes other writers
  */
 
 import { assertEquals } from "@std/assert";
@@ -42,7 +31,6 @@ import {
   SRC_DIR,
 } from "./arch_fitness_helpers.ts";
 
-/** True when a line of `source` outside a comment matches `pattern`. */
 function mentions(source: string, pattern: RegExp): boolean {
   return source.split("\n").some((line) => {
     const trimmed = line.trimStart();
@@ -58,7 +46,6 @@ function mentions(source: string, pattern: RegExp): boolean {
 
 const UNCLAIMED_RUNS = /\bunclaimedRuns\b/;
 
-/** A call of `withClaim`, not its declaration on the port or an adapter. */
 const WITH_CLAIM_CALL = /\.withClaim\s*\(/;
 
 Deno.test("mentions: matches code lines, not comments or declarations", () => {
@@ -97,19 +84,8 @@ async function filesMentioning(pattern: RegExp): Promise<string[]> {
 }
 
 /**
- * The production files that name `unclaimedRuns`:
- *
- * - `run_claim.ts` declares it.
- * - `execution_service.ts` defaults to it, for a service nothing resumes
- *   with. `workflow resume` and a resume through `swamp serve` both replace
- *   the default with lock-backed claims (swamp-club#3108): serve's run
- *   reservation is local to one process, and two serve instances can share
- *   a datastore.
- * - `workflow_handlers.ts` passes it to approve and reject after reserving
- *   the run in serve's active-run registry.
- * - `nested_run_cascade.ts` passes it to the cascade, which reserves each
- *   nested run in that registry before cancelling it, as a serve cancel of
- *   that run does (swamp-club#2867).
+ * resume uses lock-backed claims because serve's run reservation is local to
+ * one process; the other pinned files reserve the run in serve's registry first
  */
 const UNCLAIMED_PINNED = [
   "src/domain/workflows/execution_service.ts",
@@ -131,11 +107,8 @@ Deno.test("unclaimedRuns is named only where another claim already holds", async
 });
 
 /**
- * The production files that load, change and save a run under its claim.
- *
- * `workflow signal` is not one of them (swamp-club#3093): it creates the
- * wait's outcome record and never writes a run, so it has nothing to claim.
- * `integration/signal_wait_records_rules_test.ts` holds it to that.
+ * workflow signal is not one of them: it creates the wait's outcome record and
+ * never writes a run, so it has nothing to claim
  */
 const CLAIMED_PINNED = [
   "src/cli/commands/workflow_cancel.ts",

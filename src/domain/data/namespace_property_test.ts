@@ -34,7 +34,6 @@ import {
 
 const SLUG_CHARS = "abcdefghijklmnopqrstuvwxyz0123456789-".split("");
 
-/** Well-formed slugs: reserved names mixed in so both branches are hit. */
 const arbSlug = fc.oneof(
   fc.constantFrom(...RESERVED_NAMESPACE_NAMES),
   fc.stringOf(fc.constantFrom(...SLUG_CHARS), { minLength: 1, maxLength: 64 })
@@ -77,8 +76,8 @@ const LAYOUT_NAMES: readonly string[] = [
   ...ALWAYS_LOCAL_SUBDIRS,
 ];
 
-// Only the layout directories make an existing v2 binding collide; the wider
-// reserved set applies to new claims and to v3 (swamp-club#3691).
+// only the layout directories make an existing v2 binding collide; the wider
+// reserved set applies to new claims and to v3
 Deno.test("namespaceCollidesWithLayout: is layout-or-listed for any directory list", () => {
   fc.assert(
     fc.property(arbSlug, fc.array(arbSlug, { maxLength: 5 }), (slug, dirs) => {
@@ -92,11 +91,9 @@ Deno.test("namespaceCollidesWithLayout: is layout-or-listed for any directory li
 });
 
 /**
- * The first-level `.swamp/` names swamp uses, gathered independently of the
- * reserved list under test (swamp-club#3691): the first segments of the
- * infrastructure's `SWAMP_SUBDIRS`, and the names written out by hand at
- * their call sites (the package cache, start sessions, and the `~/.swamp`
- * names a checkout at the home directory shares).
+ * first-level .swamp/ names swamp uses, gathered independently of the reserved
+ * list under test: SWAMP_SUBDIRS first segments plus names written out at their
+ * call sites
  */
 const SWAMP_OWNED_ORACLE: readonly string[] = [
   ...new Set([

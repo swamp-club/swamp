@@ -18,11 +18,9 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * Runs the @swamp-club/swamp-testing verifier conformance suite against
- * FilesystemDatastoreVerifier — the same DatastoreVerifier contract
- * extension datastore authors are held to. The suite validates the
- * result shape only, so it is run for both the healthy and unhealthy
- * paths; the healthy flag itself is asserted alongside.
+ * runs the verifier conformance suite for both healthy and unhealthy paths,
+ * since the suite validates only the result shape; the healthy flag is asserted
+ * alongside
  */
 
 import { assertEquals } from "@std/assert";

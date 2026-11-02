@@ -24,7 +24,6 @@ import type { OutputMode } from "../output/output.ts";
 import { getSwampLogger } from "../../infrastructure/logging/logger.ts";
 import { UserError } from "../../domain/errors.ts";
 
-/** Extended renderer interface with dependency warning support. */
 export interface ExtensionRmRenderer extends Renderer<ExtensionRmEvent> {
   renderDependencyWarning(dependents: string[]): void;
 }
@@ -126,7 +125,6 @@ export function createExtensionRmRenderer(
   }
 }
 
-/** Renders cancellation when user declines the prompt. */
 export function renderExtensionRmCancelled(mode: OutputMode): void {
   if (mode === "json") {
     console.log(JSON.stringify({ status: "cancelled" }));

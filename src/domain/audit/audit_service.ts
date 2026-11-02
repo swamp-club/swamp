@@ -25,11 +25,6 @@ import {
   createSwampAuditEntry,
 } from "./audit_entry.ts";
 
-/**
- * Commands that are filtered out by default as noise.
- * These are informational/read-only shell commands that don't
- * represent infrastructure changes.
- */
 const NOISE_COMMAND_PREFIXES: string[] = [
   "ls",
   "cat",
@@ -76,24 +71,18 @@ const NOISE_COMMAND_PREFIXES: string[] = [
 
 const logger = getLogger(["swamp", "audit"]);
 
-/** Default retention period in days for audit data */
 export const DEFAULT_AUDIT_RETENTION_DAYS = 7;
 
 const MS_PER_DAY = 86_400_000;
 
 /**
- * Converts a retention in milliseconds to whole days, rounding up: audit
- * files are named by day, so a partial day keeps that day's file.
+ * rounds up to whole days: audit files are named by day, so a partial day keeps
+ * that day's file
  */
 export function retentionMsToWholeDays(retentionMs: number): number {
   return Math.ceil(retentionMs / MS_PER_DAY);
 }
 
-/**
- * The number of days audit data is kept: the repo's audit retention
- * (`garbageCollection.audit`, else `garbageCollection.retention`) rounded
- * up to whole days, or {@link DEFAULT_AUDIT_RETENTION_DAYS} when unset.
- */
 export function auditRetentionDays(retentionMs: number | undefined): number {
   return retentionMs === undefined
     ? DEFAULT_AUDIT_RETENTION_DAYS
@@ -101,9 +90,8 @@ export function auditRetentionDays(retentionMs: number | undefined): number {
 }
 
 /**
- * The retention in days for a serve audit store: the store's own
- * `retention.days` from serve.yaml when set, else the repo's audit retention
- * rounded up to whole days, else undefined (the store is never pruned).
+ * the store's own retention.days when set, else the repo's audit retention
+ * rounded up to whole days, else undefined (never pruned)
  */
 export function resolveAuditStoreRetentionDays(
   explicitDays: number | undefined,
@@ -115,9 +103,6 @@ export function resolveAuditStoreRetentionDays(
     : retentionMsToWholeDays(repoRetentionMs);
 }
 
-/**
- * Merged audit timeline result.
- */
 export interface AuditTimeline {
   entries: AuditEntry[];
   totalSwamp: number;
@@ -125,44 +110,28 @@ export interface AuditTimeline {
   hoursAnalyzed: number;
 }
 
-/**
- * Options for building the audit timeline.
- */
 export interface AuditTimelineOptions {
   hours: number;
   showAll: boolean;
   sessionId?: string;
   /**
-   * When true, include rows written by `swamp doctor audit`'s smoke-test
-   * check. Default false — those rows are reserved diagnostic output and
-   * would otherwise pollute the user's timeline.
+   * doctor smoke-test rows are reserved diagnostic output and would pollute the
+   * timeline, so they are excluded unless this is true
    */
   includeDiagnostic?: boolean;
 }
 
 /**
- * Reserved command prefix for rows written by the doctor smoke-test.
- * Kept in audit_service because it's filtered here; the corresponding
- * payload in `doctor/synthetic_payloads.ts` imports it to guarantee the
- * writer and reader agree on the sentinel.
+ * kept here because it is filtered here; the doctor payload imports it so
+ * writer and reader agree on the sentinel
  */
 export const DIAGNOSTIC_COMMAND_PREFIX = "echo swamp-doctor-smoke-test";
 
-/**
- * Service that categorizes hook-captured bash commands
- * into a unified audit timeline.
- *
- * Commands starting with "swamp" are tagged as source "swamp".
- * Everything else is tagged as source "direct".
- */
 export class AuditService {
   constructor(
     private readonly auditRepository: AuditRepository,
   ) {}
 
-  /**
-   * Builds an audit timeline from hook-captured bash command logs.
-   */
   async getTimeline(options: AuditTimelineOptions): Promise<AuditTimeline> {
     const endTime = new Date();
     const startTime = new Date(endTime.getTime() - options.hours * 3600_000);
@@ -184,7 +153,6 @@ export class AuditService {
         }
       }
 
-      // Filter doctor smoke-test rows unless opted-in
       if (
         !options.includeDiagnostic &&
         trimmedCommand.startsWith(DIAGNOSTIC_COMMAND_PREFIX)
@@ -210,7 +178,6 @@ export class AuditService {
         continue;
       }
 
-      // Filter noise commands unless --all
       if (!options.showAll && isNoiseCommand(trimmedCommand)) {
         continue;
       }
@@ -225,7 +192,6 @@ export class AuditService {
       );
     }
 
-    // Sort by timestamp ascending
     auditEntries.sort((a, b) => a.timestamp.localeCompare(b.timestamp));
 
     return {
@@ -236,10 +202,7 @@ export class AuditService {
     };
   }
 
-  /**
-   * Deletes audit data older than `retentionDays`. Never rejects: a failed
-   * cleanup is only logged.
-   */
+  /** never rejects: a failed cleanup is only logged */
   async cleanupOldAuditData(
     retentionDays: number = DEFAULT_AUDIT_RETENTION_DAYS,
   ): Promise<void> {
@@ -255,9 +218,8 @@ export class AuditService {
 }
 
 /**
- * Checks if a command matches the noise filter.
- * A command is noise if it starts with any of the known noise prefixes,
- * followed by a space, pipe, semicolon, or end of string.
+ * a command is noise if it starts with a known prefix followed by a space,
+ * pipe, semicolon or end of string
  */
 export function isNoiseCommand(command: string): boolean {
   for (const prefix of NOISE_COMMAND_PREFIXES) {

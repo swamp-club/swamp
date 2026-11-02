@@ -47,26 +47,11 @@ import { datastoreTypeRegistry } from "../../domain/datastore/datastore_type_reg
 type AnyOptions = any;
 
 /**
- * Upper bound on the `--timeout` flag in seconds. Six hours is generous
- * enough for realistic one-off scenarios (initial seeding from a slow link,
- * bulk recovery after an outage, 100k-file repo moves) while still rejecting
- * effectively-unbounded misconfigs (`--timeout 99999999`).
- *
- * The env var (`SWAMP_DATASTORE_SYNC_TIMEOUT_MS`) is intentionally
- * uncapped because it is shell-session-scoped knob for operators who know
- * what they want; the CLI flag is a one-off user-facing override and is
- * worth guarding against fat-fingered values.
+ * six hours covers slow seeding and bulk recovery but rejects absurd values;
+ * the env var is left uncapped as an operator knob.
  */
 const SYNC_TIMEOUT_CLI_MAX_SECONDS = 21_600;
 
-/**
- * Validate and normalize the `--timeout` CLI flag. Cliffy parses
- * `--timeout <seconds:integer>` as a number; we reject non-positive and
- * out-of-range values here so the user sees a clean `UserError` at the
- * CLI boundary rather than a confusing coordinator timeout surprise.
- *
- * Exported for unit tests; not part of the public CLI surface.
- */
 export function parseTimeoutFlag(raw: unknown): number {
   if (
     typeof raw !== "number" || !Number.isFinite(raw) || !Number.isInteger(raw)
@@ -90,9 +75,6 @@ export function parseTimeoutFlag(raw: unknown): number {
   return raw * 1000;
 }
 
-/**
- * Manual sync command for S3 datastores.
- */
 export const datastoreSyncCommand = new Command()
   .description("Sync local cache with S3 datastore")
   .example("Full sync", "swamp datastore sync")
@@ -136,11 +118,9 @@ export const datastoreSyncCommand = new Command()
       ? "pull" as const
       : "sync" as const;
 
-    // Pull-only mode uses read-only init (no lock). Push and default
-    // modes use skipImplicitSync — see RequireRepoOptions JSDoc. A v3
-    // datastore is never sync-capable, so it is refused below whatever the
-    // mode: open it read-only, so the refusal takes no writer lease and
-    // leaves the datastore as it was (swamp-club#3359).
+    // pull-only uses read-only init (no lock); a v3 datastore is never
+    // sync-capable, so it is opened read-only and the refusal takes no writer
+    // lease.
     const repoDirOption = resolveRepoDir(options.repoDir);
     const engine = await peekRepoDatastoreEngine(repoDirOption);
     const { repoDir, datastoreResolver } = mode === "pull" || engine === "v3"

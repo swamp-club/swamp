@@ -86,27 +86,23 @@ const GrantFileRawSchema = z.object({
 });
 
 /**
- * The prefix of a grant-file subject that names an OAuth user by username
- * (swamp-club#3123). It exists only in grant files: serve resolves the name
- * to its OAuth subject and pins it, and the stored grant names `user:<sub>`.
+ * exists only in grant files: serve resolves the name to its OAuth subject and
+ * pins it, and the stored grant names user:<sub>
  */
 export const USERNAME_SUBJECT_PREFIX = "username:";
 
 const MAX_USERNAME_LENGTH = 255;
 
-/** A grant-file subject naming an OAuth user by username, not yet resolved. */
 export interface UsernameSubject {
   kind: "username";
   name: string;
 }
 
-/** A subject as written in a grant file. */
 export type GrantFileSubject = Subject | UsernameSubject;
 
 /**
- * A grant-file entry whose subject is a principal subject. Only these are
- * reconciled into stored grants; an entry that names a username becomes one
- * once the name is resolved (see grant_username_resolution.ts).
+ * only these are reconciled into stored grants; an entry naming a username
+ * becomes one once the name is resolved
  */
 export interface GrantFileEntry {
   subject: Subject;
@@ -117,7 +113,6 @@ export interface GrantFileEntry {
   methods?: string[];
 }
 
-/** A grant-file entry as parsed, which may still name a username. */
 export interface ParsedGrantFileEntry extends Omit<GrantFileEntry, "subject"> {
   subject: GrantFileSubject;
 }
@@ -126,15 +121,12 @@ export interface GrantFileError {
   filename: string;
   entryIndex?: number;
   message: string;
-  /** Set when the file could not be read at all, rather than parsed. */
   unreadable?: true;
 }
 
 /**
- * A grant-file entry that loads but spells a type no type is stored in
- * (swamp-club#3130). Never an error: a file with errors stops serve starting
- * and is held back from auto-reload, which must not happen to a working
- * grant over its spelling.
+ * never an error: a file with errors stops serve starting and blocks
+ * auto-reload, which must not happen to a working grant over its spelling
  */
 export interface GrantFileWarning {
   filename: string;
@@ -164,9 +156,8 @@ export function entryIdentityKey(entry: ParsedGrantFileEntry): string {
 }
 
 /**
- * Parses one grant-file subject. `username:<name>` is accepted here and
- * nowhere else: it is not a subject kind, so the grants API and stored
- * grants never carry it.
+ * username:<name> is accepted here and nowhere else: it is not a subject kind,
+ * so the grants API and stored grants never carry it
  */
 export function parseGrantFileSubject(value: string): GrantFileSubject {
   if (!value.startsWith(USERNAME_SUBJECT_PREFIX)) return parseSubject(value);
@@ -263,9 +254,9 @@ export function parseGrantFile(
       : raw.resources!;
 
     if (raw.resources) {
-      // Compared as parsed, so `model:x` and `behavior:x`, one selector in
-      // two spellings, collide (swamp-club#3334). A selector that does not
-      // parse is compared as written; its parse error is reported below.
+      // compared as parsed, so model:x and behavior:x, one selector in two
+      // spellings, collide; a selector that does not parse is compared as
+      // written and its error is reported below
       const seen = new Set<string>();
       let hasDuplicate = false;
       for (const r of raw.resources) {
@@ -319,9 +310,9 @@ export function parseGrantFile(
         warnings.push({ filename, entryIndex: i, message: finding.message });
       }
 
-      // The resource is parsed and its condition validated once, before the
+      // the resource is parsed and its condition validated once, before the
       // subjects loop, so a bad resource reports one error however many
-      // subjects the entry lists.
+      // subjects the entry lists
       for (const subject of subjects) {
         const entry: ParsedGrantFileEntry = {
           subject,
@@ -410,9 +401,9 @@ export async function readGrantFiles(
   return results;
 }
 
-// A relative grants-file or grants-dir resolves against the repository
-// directory, whether it came from a flag, an env var or serve.yaml, so the
-// same configuration loads the same grants wherever serve was started from.
+// a relative grants-file or grants-dir resolves against the repository
+// directory, so the same configuration loads the same grants wherever serve was
+// started from
 export function resolveExternalGrantsFile(
   repoDir: string,
   configuredGrantsFile: string | undefined,
@@ -421,9 +412,9 @@ export function resolveExternalGrantsFile(
   return resolve(repoDir, configuredGrantsFile);
 }
 
-// The repository grants directory is always read, so a grants-dir that is the
-// same directory is dropped: reading it again would reconcile each file under
-// two sources, `file:<name>` and `file:<full path>`.
+// the repository grants directory is always read, so a grants-dir that is the
+// same directory is dropped: reading it twice would reconcile each file under
+// two sources
 export async function resolveExternalGrantsDir(
   repoDir: string,
   configuredGrantsDir: string | undefined,

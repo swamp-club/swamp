@@ -37,7 +37,6 @@ Deno.test("modeWithAccess: never widens and keeps the owner's read and write", (
   fc.assert(
     fc.property(arbMode, arbAccess, (created, access) => {
       const mode = modeWithAccess(created, access);
-      // Read and write bits are only ever kept or cleared, never added.
       assertEquals(mode & 0o666 & ~created, 0);
       assertEquals(mode & 0o600, created & 0o600);
       if (access === "private" || access === "private-executable") {

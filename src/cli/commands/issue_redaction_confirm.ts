@@ -18,9 +18,9 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * Asks the author what to do with redacted issue content before it is sent,
- * so a redaction that destroyed the evidence a report exists to carry can be
- * undone without retyping the report (swamp-club#3686).
+ * asks the author what to do with redacted content before it is sent, so a
+ * redaction that destroyed the evidence a report carries can be undone without
+ * retyping.
  */
 
 import type { RedactionSummary } from "../../domain/issues/content_redactor.ts";
@@ -28,13 +28,10 @@ import type { OutputMode } from "../../presentation/output/output.ts";
 import { renderRedactionSkipped } from "../../presentation/renderers/issue_create.ts";
 import { promptLine } from "../prompt_helpers.ts";
 
-/** What to submit: the redacted text, the text as written, or nothing. */
 export type RedactionDecision = "redacted" | "as-written" | "cancel";
 
 export interface RedactionConfirmDeps {
-  /** Whether stdin is a terminal a person can answer from. */
   isInteractive: () => boolean;
-  /** Writes the question to stderr and returns the trimmed answer ("" on EOF). */
   ask: (message: string) => Promise<string>;
 }
 
@@ -52,10 +49,9 @@ const defaultDeps: RedactionConfirmDeps = {
 };
 
 /**
- * Called after the redaction notice has listed every change. Asks only when
- * something was redacted, the output mode is log, and stdin is a terminal;
- * json mode and scripted runs submit the redacted text as before, since the
- * notice already reports each change. Any answer other than y or w cancels.
+ * asks only when something was redacted, in log mode, with stdin a terminal;
+ * json and scripted runs submit the redacted text since the notice already
+ * reports each change. Any answer other than y or w cancels.
  */
 export async function confirmRedactions(
   summary: RedactionSummary,
@@ -72,11 +68,6 @@ export async function confirmRedactions(
   return "cancel";
 }
 
-/**
- * Picks the content to submit once the redaction notice has been shown:
- * the redacted content, the original when the author answers w (which is
- * logged like --no-redact), or null when they cancel.
- */
 export async function chooseSubmittedContent<T>(
   summary: RedactionSummary,
   mode: OutputMode,

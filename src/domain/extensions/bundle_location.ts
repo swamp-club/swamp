@@ -21,23 +21,15 @@ import { canonicalizePath } from "../../infrastructure/persistence/canonicalize_
 import type { SourceFingerprint } from "./source_fingerprint.ts";
 
 /**
- * Locates an on-disk bundle artifact for a Source. Carries the
- * fingerprint the bundle was built against — the pair `(canonicalPath,
- * fingerprint)` is what makes a bundle stale-detectable: if the source
- * fingerprint moves but the bundle's still points at the old hash, the
- * bundle is stale and must be rebuilt.
- *
- * Equality is by both fields — a bundle at the same path with a different
- * fingerprint is a different value (different content).
+ * the pair (canonicalPath, fingerprint) makes a bundle stale-detectable: if the
+ * source fingerprint moves while the bundle's points at the old hash, it must
+ * be rebuilt
  */
 export interface BundleLocation {
   readonly canonicalPath: string;
   readonly fingerprint: SourceFingerprint;
 }
 
-/**
- * Constructs a BundleLocation, canonicalizing the bundle path.
- */
 export function makeBundleLocation(
   bundlePath: string,
   fingerprint: SourceFingerprint,
@@ -48,9 +40,6 @@ export function makeBundleLocation(
   };
 }
 
-/**
- * Equality by canonicalPath AND fingerprint.
- */
 export function bundleLocationEquals(
   a: BundleLocation,
   b: BundleLocation,

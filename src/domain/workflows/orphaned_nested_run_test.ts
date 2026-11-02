@@ -426,10 +426,8 @@ Deno.test("NestedRunLink.signalWaitsBelow: lists the waits of unfinished runs at
     (await link.signalWaitsBelow(chain[0])).map((ref) => ref.wait?.id),
     [wait.id],
   );
-  // The run's own waits are not below it.
   assertEquals(await link.signalWaitsBelow(chain[2]), []);
 
-  // A gate holds no signal wait.
   const gated = nestedChain(3);
   assertEquals(
     await new NestedRunLink({

@@ -17,21 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Client for running workflows and model methods through a `swamp serve`
- * server (`--server`). Speaks the serve WebSocket protocol
- * (`src/serve/protocol.ts`): sends one request, yields the deserialized run
- * events for the same renderers a local run uses, and finishes on the
- * server's terminal `done` frame. Ctrl-C (signal abort) sends `cancel` and
- * drains until the server confirms.
- *
- * Authentication: when `--auth-mode token` is active on the server, the
- * client sends the token via the `Authorization: Bearer` header on the
- * WebSocket upgrade request. The token comes from (in precedence order):
- * the `--token` flag, the `SWAMP_SERVER_TOKEN` env var, or the
- * `~/.config/swamp/servers.json` file via `ServerCredentialRepository`.
- */
-
 import type { Command } from "@cliffy/command";
 import { getLogger } from "@logtape/logtape";
 import { errorPaths, markErrorPaths, UserError } from "../domain/errors.ts";
@@ -66,38 +51,32 @@ const logger = getLogger(["swamp", "cli", "remote-run"]);
 
 let _cachedMarkerServerAddress: string | undefined;
 
-/** Called once from the CLI entry point after the marker is read. */
 export function setMarkerServerAddress(value: string | undefined): void {
   _cachedMarkerServerAddress = value;
 }
 
-/** Test-only: resets the cached marker server address between test cases. */
 export function resetMarkerServerAddress(): void {
   _cachedMarkerServerAddress = undefined;
 }
 
 /**
- * Whether an address from the environment or `.swamp.yaml` sends this
- * command to serve over its WebSocket API. Off for a command that runs
- * locally with serve as its v3 datastore's upstream (swamp-club#3985):
- * only an explicit `--server` then runs it remotely.
+ * off for a command that runs locally with serve as its v3 datastore's
+ * upstream: only an explicit --server then runs it remotely
  */
 let _implicitServeRouting = true;
 
-/** Called once from the CLI entry point once the command is known. */
 export function setImplicitServeRouting(on: boolean): void {
   _implicitServeRouting = on;
 }
 
-/** Test-only: restores implicit routing between test cases. */
 export function resetImplicitServeRouting(): void {
   _implicitServeRouting = true;
 }
 
 /**
- * Precedence: flag > SWAMP_SERVE_URL > SWAMP_SERVER_URL > .swamp.yaml serverAddress.
- * Only the flag counts for a command that runs locally with serve as its
- * datastore upstream ({@link setImplicitServeRouting}).
+ * precedence: flag > SWAMP_SERVE_URL > SWAMP_SERVER_URL > .swamp.yaml
+ * serverAddress; only the flag counts for a command running locally with serve
+ * as its datastore upstream
  */
 export function resolveServeUrl(
   flagValue: string | undefined,
@@ -107,10 +86,6 @@ export function resolveServeUrl(
   return _implicitServeRouting ? implicitServeUrl(markerValue) : undefined;
 }
 
-/**
- * The serve address the environment or `.swamp.yaml` configures, whether or
- * not it routes this command: SWAMP_SERVE_URL > SWAMP_SERVER_URL > marker.
- */
 export function implicitServeUrl(markerValue?: string): string | undefined {
   return Deno.env.get("SWAMP_SERVE_URL") ??
     Deno.env.get("SWAMP_SERVER_URL") ?? markerValue ??
@@ -118,14 +93,9 @@ export function implicitServeUrl(markerValue?: string): string | undefined {
 }
 
 /**
- * The target arguments to append to a follow-up command that this command
- * prints, so the printed command reaches the same server or repository.
- *
- * Takes only the explicit `--server` and `--repo-dir` flag values:
- * environment variables and the repository marker already carry over in the
- * same shell. The server URL loses its userinfo, query string, and fragment,
- * since serve accepts a token as a query parameter; an unparseable URL is
- * left out. Returns "" or a string starting with a space.
+ * takes only explicit flag values, since env vars and the repo marker already
+ * carry over; the server URL loses userinfo, query and fragment because serve
+ * accepts a token as a query parameter
  */
 export function formatCommandTarget(
   flags: { server?: string; repoDir?: string },
@@ -178,55 +148,39 @@ function formatServerError(
 }
 
 /**
- * An error a server answered a request with. It is the UserError the message
- * and code alone made, and also keeps the error's `details`, which a command
- * may read for what the message does not say. The details are the server's
- * and untrusted.
+ * keeps the error's details for a command to read; they are the server's and
+ * untrusted
  */
 export class ServerResponseError extends UserError {
   readonly details: unknown;
 
   constructor(error: { code: string; message: string; details?: unknown }) {
     super(formatServerError(error), error.code);
-    // Reported under the name it had before it kept the details.
     this.name = "UserError";
     this.details = error.details;
   }
 }
 
-/** How long to keep draining after sending `cancel` before giving up. */
 const CANCEL_DRAIN_MS = 10_000;
 
-/** How long to wait for the WebSocket to open. */
 const CONNECT_TIMEOUT_MS = 15_000;
 
-/** Max reconnection attempts after a WebSocket drop with a known runId. */
 const MAX_RECONNECT_RETRIES = 5;
 
-/** Max retries when the server responds with run.elsewhere. */
 const MAX_ELSEWHERE_RETRIES = 10;
 
-/** Base delay (ms) between run.elsewhere retries. */
 const ELSEWHERE_RETRY_DELAY_MS = 1_500;
 
 export interface ServerRunOptions {
-  /** Server URL: ws://, wss://, http://, or https://. */
   server: string;
-  /** Server token (`<name>.<secret>`) for authentication. */
   token?: string;
   signal?: AbortSignal;
-  /** Extra headers for proxy/tunnel pass-through (env: SWAMP_SERVE_EXTRA_HEADERS). */
   headers?: Record<string, string>;
-  /** PEM-encoded CA certificates to trust for TLS connections. */
   caCerts?: string[];
-  /** Test seam: WebSocket factory. */
   createSocket?: (url: string, headers?: Record<string, string>) => WebSocket;
 }
 
-/**
- * Converts ws(s) URLs to http(s) for credential lookup — stored credentials
- * are keyed by http(s) URL, but `--server` flags often use ws(s).
- */
+/** stored credentials are keyed by http(s) URL, but --server often uses ws(s) */
 function toHttpUrl(serverUrl: string): string {
   try {
     const parsed = new URL(serverUrl);
@@ -271,11 +225,8 @@ export async function readTokenFile(
 }
 
 /**
- * Whether `SWAMP_SERVER_TOKEN_FILE` is bound to `key`: one of the addresses
- * the user named (the `--server` flag, `SWAMP_SERVE_URL`,
- * `SWAMP_SERVER_URL`) normalizes to it. An unset, empty or unparseable
- * address names nothing, so a `.swamp.yaml` serverAddress alone never binds
- * it.
+ * an unset, empty or unparseable address names nothing, so a .swamp.yaml
+ * serverAddress alone never binds the token file
  */
 export function tokenFileBoundTo(
   key: string,
@@ -292,11 +243,9 @@ export function tokenFileBoundTo(
 }
 
 /**
- * Warns, once per address, that `SWAMP_SERVER_TOKEN_FILE` was not sent to
- * `key` and no other source supplied a token, and records it so a 401 from
- * that address says why. Names the normalized address only, never the
- * file's path or contents. Callers call it only when no token was found, so
- * a stored credential that authenticates raises no warning.
+ * warns once per address that the token file was not sent and no other source
+ * supplied a token, and records it so a 401 says why. names only the normalized
+ * address, never the file's path or contents
  */
 export function warnWithheldTokenFile(
   key: string,
@@ -308,25 +257,9 @@ export function warnWithheldTokenFile(
 }
 
 /**
- * Resolves the server token for authentication. Precedence:
- * 1. Explicit token value (from `--token` flag or `--token-file` read)
- * 2. `SWAMP_SERVER_TOKEN_FILE` env var (read from file), only when
- *    `serverFlag`, `SWAMP_SERVE_URL` or `SWAMP_SERVER_URL` normalizes to
- *    `serverUrl`
- * 3. `SWAMP_SERVER_TOKEN` env var (via ServerCredentialRepository)
- * 4. Stored credential in `~/.config/swamp/servers.json`
- *
- * `serverFlag` is the raw `--server` value as the user typed it, never the
- * resolved URL: a `.swamp.yaml` serverAddress passed there would receive a
- * token file meant for another server (swamp-club#4012).
- *
- * The server URL is validated first, whichever source supplies the token,
- * so an unsupported scheme or unparseable value fails with a UserError
- * before any credential lookup.
- *
- * Callers that have Cliffy `options` should use
- * `resolveServerTokenFromOptions()` which handles `--token` / `--token-file`
- * mutual exclusivity and file reading before delegating here.
+ * serverFlag is the raw --server value, never the resolved URL: a .swamp.yaml
+ * serverAddress passed there would receive a token file meant for another
+ * server
  */
 export async function resolveServerToken(
   serverUrl: string,
@@ -355,12 +288,8 @@ export async function resolveServerToken(
 }
 
 /**
- * Resolves the server token from Cliffy command options.
- * Handles `--token` / `--token-file` mutual exclusivity and reads the
- * token from file when `--token-file` is provided, then delegates to
- * `resolveServerToken()` for env var and stored credential fallbacks.
- * `options.server` must be the `--server` flag as parsed, not overwritten
- * with the resolved URL: it is what binds `SWAMP_SERVER_TOKEN_FILE`.
+ * options.server must be the --server flag as parsed, not the resolved URL: it
+ * is what binds SWAMP_SERVER_TOKEN_FILE
  */
 export async function resolveServerTokenFromOptions(
   serverUrl: string,
@@ -385,11 +314,7 @@ export async function resolveServerTokenFromOptions(
   );
 }
 
-/**
- * Normalizes the server URL to its http(s) credential form, throwing a
- * UserError that never echoes credentials (userinfo, `?token=`) when the
- * value is unparseable or its scheme is not http(s) or ws(s).
- */
+/** the UserError never echoes credentials (userinfo, ?token=) */
 function parseServerFlag(server: string): string {
   try {
     return normalizeServerUrlForCredentials(server);
@@ -403,11 +328,6 @@ function parseServerFlag(server: string): string {
   }
 }
 
-/**
- * Normalizes a server URL to a WebSocket URL (ws/wss).
- * Accepts http(s) and ws(s) inputs. Uses the domain normalizeServerUrl
- * for canonical normalization, then converts http→ws / https→wss.
- */
 export function toWebSocketUrl(server: string): string {
   const parsed = new URL(parseServerFlag(server));
   if (parsed.protocol === "http:") {
@@ -419,10 +339,8 @@ export function toWebSocketUrl(server: string): string {
 }
 
 /**
- * Adds the held-lock list this process inherited to a run request. When the
- * server is the swamp whose step started this process, a nested swamp under
- * the requested run then skips that step's lock instead of waiting on it
- * (design/enablers/datastores.md, "Parent-Process Lock Awareness").
+ * when the server is the swamp whose step started this process, a nested swamp
+ * under the requested run skips that step's lock instead of waiting on it
  */
 function withForwardedLocks<P extends { lockHolderTokens?: string }>(
   payload: P,
@@ -437,11 +355,9 @@ export function runWorkflowOverServer(
   options: ServerRunOptions & {
     payload: WorkflowRunPayload;
     /**
-     * Stop listening once the server has started the run: the stream ends
-     * after the run's own `started` event and the socket closes without a
-     * `cancel`, so the run carries on in the server (swamp-club#1090). The
-     * request forwards no locks. Forwarding tells the server the run stays
-     * under the step that holds them, and a detached run outlives that step.
+     * stop listening once the server has started the run; the socket closes
+     * without a cancel so the run carries on. No locks are forwarded, since a
+     * detached run outlives the step that holds them
      */
     detach?: boolean;
   },
@@ -459,9 +375,8 @@ export function runWorkflowOverServer(
 }
 
 /**
- * Yields a run's events up to and including its own `started` event, then
- * stops. A nested workflow's `started` carries `parentRunId` and does not end
- * it.
+ * a nested workflow's started event carries parentRunId and does not end the
+ * stream
  */
 async function* untilRunStarted(
   stream: AsyncIterable<{ kind: string; [key: string]: unknown }>,
@@ -490,7 +405,6 @@ export function resumeWorkflowOverServer(
   });
 }
 
-/** Default timeout for request-response operations (30 seconds). */
 const DEFAULT_TIMEOUT_MS = 30_000;
 
 function resolveRequestTimeoutMs(): number {
@@ -503,10 +417,9 @@ function resolveRequestTimeoutMs(): number {
 }
 
 /**
- * {@link requestServerResponse} for a request type older servers do not
- * know. Such a server answers `invalid_request`, which says nothing useful
- * to the user, so it is reported as a server that needs an upgrade. The
- * caller must send a well-formed request, or its own mistake reads the same.
+ * an older server answers invalid_request, which says nothing useful, so it is
+ * reported as needing an upgrade; the caller must send a well-formed request or
+ * its own mistake reads the same
  */
 export async function requestNewerServerResponse<T>(
   feature: string,
@@ -530,18 +443,15 @@ export interface RequestResponseOptions {
   server: string;
   token?: string;
   signal?: AbortSignal;
-  /** Extra headers for proxy/tunnel pass-through (env: SWAMP_SERVE_EXTRA_HEADERS). */
   headers?: Record<string, string>;
-  /** PEM-encoded CA certificates to trust for TLS connections. */
   caCerts?: string[];
   createSocket?: (url: string, headers?: Record<string, string>) => WebSocket;
   timeoutMs?: number;
 }
 
 /**
- * Asks serve to send large responses as gzip-compressed binary frames. Older
- * servers ignore the parameter and keep sending text frames, which are still
- * handled.
+ * older servers ignore the parameter and keep sending text frames, which are
+ * still handled
  */
 function withCompressionOptIn(url: string): string {
   const parsed = new URL(url);
@@ -967,24 +877,16 @@ export async function* subscribeServerEvents(
 type AnyCommand = Command<any, any, any, any, any, any, any, any>;
 
 /**
- * The `--ca-cert` option. Every command that takes `--server` must declare
- * it: the TLS UnknownIssuer guidance tells users to pass it, and
- * `resolveCaCertPath` reads it from `Deno.args` once Cliffy accepts it
- * (swamp-club#2360).
+ * every command that takes --server must declare it: the TLS UnknownIssuer
+ * guidance tells users to pass it, and resolveCaCertPath reads it from
+ * Deno.args once Cliffy accepts it
  */
 export const CA_CERT_FLAG = "--ca-cert <path:string>";
-/** `--token-file` help, shared by every command that resolves a server token. */
 export const TOKEN_FILE_DESCRIPTION =
   "Path to a file containing the server token; mutually exclusive with --token (env: SWAMP_SERVER_TOKEN_FILE, used only for the server named by --server, SWAMP_SERVE_URL or SWAMP_SERVER_URL)";
 export const CA_CERT_DESCRIPTION =
   "Path to PEM-encoded CA certificate to trust for TLS connections to the server (env: SWAMP_CA_CERT)";
 
-/**
- * Adds `--server`, `--token`, `--token-file` and `--ca-cert` options to a
- * Cliffy command. New remote-capable commands should use this instead of
- * duplicating the option definitions from model_method_run.ts /
- * workflow_run.ts.
- */
 export function withRemoteOptions<T extends AnyCommand>(command: T): T {
   return command
     .option(
@@ -1002,32 +904,16 @@ export function withRemoteOptions<T extends AnyCommand>(command: T): T {
     .option(CA_CERT_FLAG, CA_CERT_DESCRIPTION) as T;
 }
 
-/**
- * The `swamp serve reload` command to print for a server. The URL loses its
- * userinfo, query string and fragment, and is left out when it does not
- * parse.
- */
 export function serverReloadCommand(server: string): string {
   return `swamp serve reload${formatCommandTarget({ server })}`;
 }
 
-/** Timeout for the handshake probe on connection failure (ms). */
 const HANDSHAKE_PROBE_TIMEOUT_MS = 3_000;
 
 /**
- * Repeats a failed WebSocket handshake as an HTTP/1.1 request and returns the
- * status the server answers with — or `undefined` when it does not answer.
- *
- * Over TLS, Deno's WebSocket client negotiates HTTP/2, and a handshake the
- * server rejects (401, 429, …) surfaces as an opaque stream error with no
- * status in it (swamp-club#1482). Over HTTP/1.1 the same rejection comes back
- * as a status (swamp-club#3276).
- *
- * The probe never sends the `Authorization` header — the other headers (proxy
- * pass-through) are kept. Serve rejects a tokenless handshake before its
- * per-token rate limit and audit log, so the probe spends no login attempt
- * and cannot lock a token out. A server that needs no token accepts the
- * probe (101) and the session closes as soon as the client does.
+ * over TLS Deno's WebSocket negotiates HTTP/2, which hides a rejected
+ * handshake's status; HTTP/1.1 shows it. The probe omits Authorization so it
+ * cannot lock a token out
  */
 export async function probeHandshakeStatus(
   wsUrl: string,
@@ -1069,7 +955,6 @@ export async function probeHandshakeStatus(
   }
 }
 
-/** A random base64 `Sec-WebSocket-Key` (RFC 6455: 16 random bytes). */
 function randomWebSocketKey(): string {
   let binary = "";
   for (const byte of crypto.getRandomValues(new Uint8Array(16))) {
@@ -1078,10 +963,6 @@ function randomWebSocketKey(): string {
   return btoa(binary);
 }
 
-/**
- * The message for a handshake the server answered with `statusCode`.
- * Statuses with no guidance of their own keep the original message.
- */
 function describeHandshakeStatus(
   wsUrl: string,
   statusCode: number,
@@ -1104,15 +985,9 @@ function authFailedMessage(wsUrl: string): string {
 }
 
 /**
- * The message for a handshake that failed with no status in its error, given
- * what the tokenless probe got back (`undefined`: no answer).
- *
- * A 401/403 to the probe only shows the server wants a token. When the
- * failed handshake sent none, that is the cause. When it sent one over
- * `ws://`, a rejection of that token would have carried its own status, so
- * the failure was something else. Over `wss://` the token may have been
- * rejected behind HTTP/2, so the auth guidance stays, with the original error
- * kept beside it so a transient failure is still visible (swamp-club#3276).
+ * a 401/403 to the tokenless probe only shows the server wants a token; over
+ * ws:// a rejected token would have carried its own status, over wss:// it may
+ * be hidden behind HTTP/2, so auth guidance stays
  */
 export function describeStatuslessFailure(
   wsUrl: string,
@@ -1139,8 +1014,8 @@ async function classifyConnectionError(
 ): Promise<string> {
   const statusMatch = originalMessage.match(/Invalid status code: (\d+)/);
   if (statusMatch) {
-    // The server answered with a status of its own; the probe below only
-    // covers connections that never got one (swamp-club#2383).
+    // the server answered with a status of its own; the probe below only covers
+    // connections that never got one
     return describeHandshakeStatus(
       wsUrl,
       parseInt(statusMatch[1], 10),
@@ -1161,16 +1036,9 @@ async function classifyConnectionError(
 }
 
 /**
- * Creates an HTTP client, turning an unreadable OS certificate store into
- * guidance instead of an uncaught error.
- *
- * Every client shares the process-wide rustls root store, which swamp points
- * at `system,mozilla` (see `infrastructure/runtime/tls_trust.ts`). `caCerts`
- * are added *on top of* those roots, so a `--ca-cert` bundle does not avoid
- * the failing store read — only `DENO_TLS_CA_STORE=mozilla` does.
- *
- * `create` is injected only so the failure path can be tested; Deno's own
- * factory cannot be made to throw on demand.
+ * every client shares the process-wide rustls root store; caCerts are added on top,
+ * so --ca-cert does not avoid a failing store read, only DENO_TLS_CA_STORE=mozilla
+ * does. create is injected so the failure path can be tested
  */
 export function createTlsHttpClient(
   options: Deno.CreateHttpClientOptions = {},
@@ -1193,12 +1061,8 @@ export function createTlsHttpClient(
 let wsHttpClient: Deno.HttpClient | undefined;
 
 /**
- * The default HTTP client, created on first use.
- *
- * Creating it at module load crashed the whole CLI — including offline
- * commands like `swamp help` and `swamp model search` — on machines where
- * the platform certificate store cannot be read (swamp-club#2293). Deferring
- * it keeps that failure on the commands that actually talk to a server.
+ * created on first use: creating it at module load crashed offline commands on
+ * machines whose platform certificate store cannot be read
  */
 export function getDefaultHttpClient(): Deno.HttpClient {
   if (!wsHttpClient) wsHttpClient = createTlsHttpClient();
@@ -1207,15 +1071,11 @@ export function getDefaultHttpClient(): Deno.HttpClient {
 
 let resolvedEnvCaCerts: string[] | undefined;
 
-/**
- * Precedence: `--ca-cert` flag > `SWAMP_CA_CERT` env. An empty value from
- * either source counts as unset.
- */
+/** an empty value from either source counts as unset */
 export function resolveCaCertPath(
   args: readonly string[],
   envPath: string | undefined,
 ): string | undefined {
-  // Handle both --ca-cert value and --ca-cert=value forms
   for (let i = 0; i < args.length; i++) {
     let flagPath: string | undefined;
     if (args[i] === "--ca-cert" && i + 1 < args.length) {
@@ -1255,9 +1115,8 @@ export function getEnvCaCerts(): string[] | undefined {
 }
 
 /**
- * Test seam: forgets the certificates {@link getEnvCaCerts} read, so a test
- * that points `SWAMP_CA_CERT` at a fresh CA reads it on every run
- * (`deno test --repeats`).
+ * forgets the certificates read, so a test that points SWAMP_CA_CERT at a fresh
+ * CA reads it on every repeat
  */
 export function resetEnvCaCertsForTesting(): void {
   resolvedEnvCaCerts = undefined;
@@ -1290,16 +1149,11 @@ function createSocket(
 }
 
 /**
- * Close code serve uses when it revokes a session's credential (token revoked,
- * rotated or deleted, or the principal deprovisioned).
+ * close code serve uses when it revokes a session's credential (token revoked,
+ * rotated or deleted, or principal deprovisioned)
  */
 const SESSION_REVOKED_CLOSE_CODE = 4003;
 
-/**
- * Formats why the server closed the socket, e.g. ` (code 4003: Session
- * revoked: token revoked)`, so the user learns a token was revoked or expired.
- * Empty for a normal close with no reason.
- */
 function describeServerClose(event: CloseEvent): string {
   const parts: string[] = [];
   if (event.code !== 1000 && event.code !== 1005) {
@@ -1311,11 +1165,6 @@ function describeServerClose(event: CloseEvent): string {
   return parts.length > 0 ? ` (${parts.join(": ")})` : "";
 }
 
-/**
- * Matches known TLS error patterns in the WebSocket error message and
- * returns user-friendly guidance. Returns `undefined` when the message
- * does not look like a TLS error.
- */
 export function diagnoseTlsMessage(
   message: string,
 ): string | undefined {
@@ -1367,11 +1216,7 @@ type StreamOutcome =
   | { kind: "elsewhere"; instanceId: string }
   | { kind: "interrupted"; instanceId: string; reason: string };
 
-/**
- * Single-connection event stream. Yields deserialized run events and returns
- * an outcome indicating why the connection ended. The `state` object tracks
- * the runId and last seen seq across reconnections.
- */
+/** the state object tracks the runId and last seen seq across reconnections */
 async function* singleConnectionStream(
   options: ServerRunOptions,
   request: OutboundRequest | {
@@ -1532,10 +1377,10 @@ async function* singleConnectionStream(
         }
         if (message.type === "event") {
           const event = deserializeEvent(message.event);
-          // A nested workflow's started event carries the child's run id;
-          // a reconnect reattaches to the run this request started. An older
+          // a nested workflow's started event carries the child's run id; a
+          // reconnect reattaches to the run this request started. an older
           // serve sends no parentRunId and keys the run on the child, which
-          // this then follows.
+          // this then follows
           if (
             typeof event === "object" && event !== null && "kind" in event &&
             "runId" in event && !("parentRunId" in event)
@@ -1598,11 +1443,6 @@ async function* singleConnectionStream(
   }
 }
 
-/**
- * One request, one event stream with automatic reconnection. The generator
- * completes on `done`, throws UserError on an `error` frame, and reconnects
- * transparently when the socket drops mid-run (if a runId is known).
- */
 async function* streamServerRun(
   options: ServerRunOptions,
   request: OutboundRequest,
@@ -1616,8 +1456,8 @@ async function* streamServerRun(
     payload: { runId: string; afterSeq: number };
   } = request;
   const logger = getReconnectLogger();
-  // Why the server closed the last connection (e.g. ` (code 4002: Session
-  // expired: token expired, …)`), so a reconnect that fails can say why.
+  // why the server closed the last connection, so a reconnect that fails can
+  // say why
   let lastCloseDetail = "";
 
   while (true) {
@@ -1705,7 +1545,6 @@ async function* streamServerRun(
       continue;
     }
 
-    // disconnected — attempt reconnection
     if (outcome.closeDetail) lastCloseDetail = outcome.closeDetail;
     reconnectRetries++;
     if (reconnectRetries > MAX_RECONNECT_RETRIES) {

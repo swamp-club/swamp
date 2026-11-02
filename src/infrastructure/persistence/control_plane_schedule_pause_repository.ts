@@ -37,9 +37,8 @@ const PAUSE_DIR = "schedule-pauses";
 const PAUSE_PREFIX = `${PAUSE_DIR}/`;
 
 /**
- * How long one pause read may take. Serve reads a workflow's pause before
- * each of its fires, so a slow remote control plane must not hold a fire
- * longer than a drain waits for one.
+ * serve reads a workflow's pause before each fire, so a slow remote control
+ * plane must not hold a fire longer than a drain waits
  */
 export const SCHEDULE_PAUSE_READ_TIMEOUT_MS = 5_000;
 
@@ -47,10 +46,9 @@ const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 
 /**
- * Keeps schedule pauses in the datastore's control plane
- * (`_control/schedule-pauses/` of the repository's namespace), so every serve
- * instance sharing the datastore, and the CLI, see the same pauses. The
- * workflow definition and serve.yaml are never touched.
+ * the control plane lets every serve instance sharing the datastore, and the
+ * CLI, see the same pauses; the workflow definition and serve.yaml are never
+ * touched
  */
 export class ControlPlaneSchedulePauseRepository
   implements SchedulePauseRepository {
@@ -115,10 +113,9 @@ export class ControlPlaneSchedulePauseRepository
 }
 
 /**
- * The record key of a workflow's pause. The id is percent-encoded, so no id
- * can name a key outside the prefix or a nested path; the characters
- * `encodeURIComponent` leaves alone are encoded too, since a Windows
- * filesystem control plane cannot hold `*`.
+ * the id is percent-encoded so none can name a key outside the prefix;
+ * characters encodeURIComponent leaves alone are encoded too, as a Windows
+ * filesystem control plane can't hold *
  */
 function keyFor(workflowId: WorkflowId): string {
   const encoded = encodeURIComponent(workflowId).replace(
@@ -128,7 +125,6 @@ function keyFor(workflowId: WorkflowId): string {
   return `${PAUSE_PREFIX}${encoded}`;
 }
 
-/** The workflow id a listed key names, or null for a key that is not one. */
 function workflowIdOf(key: string): WorkflowId | null {
   const at = key.lastIndexOf(PAUSE_PREFIX);
   if (at === -1) return null;

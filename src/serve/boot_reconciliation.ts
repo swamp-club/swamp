@@ -87,22 +87,19 @@ export interface SweepResult {
   workers: number;
 }
 
-// ── Startup Cache Hydration ─────────────────────────────────────────
-
 export interface HydrateLocalCacheDeps {
   syncService: DatastoreSyncService;
   catalogInvalidate: () => void;
   signal?: AbortSignal;
   namespace?: string;
   /**
-   * Makes hydration a startup requirement: a failed pull is retried, and the
-   * last failure is thrown instead of logged. Unset, one failed pull is
-   * logged and serve starts on whatever the cache holds.
+   * makes hydration a startup requirement: a failed pull is retried and the
+   * last failure thrown; unset, one failed pull is logged and serve starts on
+   * the cache
    */
   required?: RequiredHydration;
 }
 
-/** How many times a required boot hydration is tried before serve gives up. */
 export const REQUIRED_HYDRATION_ATTEMPTS = 3;
 
 export interface RequiredHydration {
@@ -111,15 +108,12 @@ export interface RequiredHydration {
    * hydration timeout. Replaces {@link HydrateLocalCacheDeps.signal}.
    */
   attemptSignal: () => AbortSignal;
-  /** Defaults to {@link REQUIRED_HYDRATION_ATTEMPTS}. */
   attempts?: number;
-  /** Waits before the attempt after `failedAttempt`. Injected by tests. */
   backoff?: (failedAttempt: number) => Promise<void>;
 }
 
 export interface HydrateResult {
   pulled: number;
-  /** False when the pull failed, so the local cache may be out of date. */
   ok: boolean;
 }
 
@@ -198,10 +192,8 @@ function writeData(
 }
 
 /**
- * Sweeps stale step leases, pending dispatches and workers in a root unit of
- * work with no push, so their saves stage into it instead of reaching the
- * hook through signalChange's fallback (swamp-club#3056). Nothing pushes, as
- * before.
+ * sweeps in a root unit of work with no push, so saves stage into it instead of
+ * reaching the hook through signalChange's fallback
  */
 export function sweepStaleRecords(
   deps: BootReconciliationDeps,
@@ -273,9 +265,6 @@ async function sweepStaleRecordsInRoot(
     }
   }
 
-  // Mirrors worker_model.ts setStatus (lines 141–162): disconnecting
-  // clears activeDispatchIds, sets disconnectedAt, clears
-  // verifyFailureReason, and updates lastSeenAt.
   for (
     const { attrs, modelId, data: existing } of await loadAttrsForType(
       repo,
@@ -329,10 +318,9 @@ export async function replayPendingRuns(
 ): Promise<number> {
   const localPending = deps.runTracker.findAllPendingRuns();
 
-  // Merge remote entries from the control-plane store when available.
-  // Remote entries that already exist locally (by id) are skipped.
-  // Track the source key for remote entries so discard deletes the
-  // actual key, not a key reconstructed from the entry's own id.
+  // remote entries already present locally are skipped; the source key is
+  // tracked so discard deletes the actual key, not one rebuilt from the entry
+  // id
   const pending: PendingRunEntry[] = [...localPending];
   const remoteSourceKeys = new Map<string, string>();
   if (deps.controlPlaneStore) {
@@ -538,30 +526,22 @@ export async function replayPendingRuns(
   return replayed;
 }
 
-// ── Remote Interrupted Run Reconciliation ─────────────────────────────
-
 export const CLAIM_TTL_MS = 5 * 60 * 1000;
 
 /**
- * How many passes may fail to read or fetch a claimed instance's workflow
- * runs before that instance is cleaned up anyway. A lasting failure, such
- * as a record that cannot be parsed or a refused fetch, would otherwise keep
- * every peer reclaiming it on every pass (swamp-club#3958).
+ * passes allowed to fail reading a claimed instance's runs before cleanup
+ * anyway; a lasting failure would otherwise make every peer reclaim it on every
+ * pass
  */
 export const MAX_RECONCILE_ATTEMPTS = 5;
 
-/**
- * How long a count of failed passes is kept without a new failure: past it,
- * {@link cleanupExpiredClaims} removes one an instance no longer needs.
- */
 export const RECONCILE_ATTEMPTS_TTL_MS = 60 * 60 * 1000;
 
 const RECONCILE_ATTEMPTS_PREFIX = "claims/reconcile-attempts/";
 
 /**
- * Counts one more failed pass for `instanceId` and returns the count. A
- * count that cannot be read starts again at one; one that cannot be written
- * is logged, so a store that keeps failing still retries.
+ * a count that cannot be read starts again at one; one that cannot be written
+ * is logged, so a failing store still retries
  */
 async function countFailedAttempt(
   store: ControlPlaneStore,
@@ -600,14 +580,11 @@ async function countFailedAttempt(
 }
 
 /**
- * How often a live owner refreshes its tracker rows (the interval the
- * workflow execution service heartbeats on). A row owned on another host is
- * only judged once it has missed two of these, however small `--stale-ttl`
- * is.
+ * a row owned on another host is judged only after missing two heartbeats,
+ * however small --stale-ttl is
  */
 const TRACKER_ROW_HEARTBEAT_MS = 30_000;
 
-/** What a method run's output is cancelled with when its instance is gone. */
 const INSTANCE_GONE_REASON =
   "cancelled: the serve instance running this method run is gone";
 
@@ -615,75 +592,44 @@ export interface ReconcileRemoteInterruptedRunsDeps {
   controlPlaneStore: ControlPlaneStore;
   instanceId: string;
   /**
-   * Whether the peer a heartbeat names is gone, so its runs are settled.
-   * Defaults to its heartbeat being stale. Serve's leader in team mode also
-   * counts a peer that still records active runs as gone (swamp-club#4096):
-   * only the leader runs work, so a live peer's runs are fenced.
+   * defaults to a stale heartbeat; the team-mode leader also counts a peer
+   * still recording active runs as gone, since only the leader runs work
    */
   isPeerGone?: (record: HeartbeatRecord) => Promise<boolean>;
   runTracker:
     import("../infrastructure/persistence/run_tracker_store.ts").RunTrackerStore;
   staleTtlMs?: number;
   workflowRunRepo?: WorkflowRunRepository;
-  /**
-   * The mark hook `workflowRunRepo` was built over (`repoContext.markDirty`).
-   * The run saves run in a root unit of work over it with no push
-   * (swamp-club#3056).
-   */
+  /** the run saves run in a root unit of work over this hook with no push */
   markDirty?: MarkDirtyHook;
   /**
-   * Where method-run outputs are read and cancelled. Without it a dead
-   * instance's method-run rows are interrupted but left unsettled: nothing
-   * here retries them, but a settled row would hide a `running` output from
-   * the dead-owner settle that boot and `run doctor --fix` run for rows
-   * owned on this host.
+   * without it a dead instance's method-run rows are interrupted but left
+   * unsettled; a settled row would hide a running output from the dead-owner
+   * settle
    */
   outputRepo?: MethodRunOutputs;
   /**
-   * How a tracker row's host and pid are judged. Defaults to this host's
-   * name and `isProcessGone`: the pass runs on every tick against pids that
-   * may have been reused, so the probe must not disturb the process.
+   * the pass runs every tick against pids that may have been reused, so the
+   * probe must not disturb the process
    */
   ownerLiveness?: Pick<OwnerLiveness, "hostname" | "isDead">;
-  /** This process's pid. Defaults to `Deno.pid`. */
   selfPid?: number;
-  /**
-   * Resolves a workflow name to its id, for an active-run record that names
-   * its workflow only by name (a scheduled run's).
-   */
   resolveWorkflowId?: (name: string) => Promise<string | undefined>;
   /**
-   * Brings one workflow run record of a claimed instance into the cache
-   * from the remote datastore, when the cache holds none. This instance's
-   * cache holds another instance's run only if it hydrated after the run
-   * started, so without it only the runs the cache holds are settled
-   * (swamp-club#3958).
+   * the cache holds another instance's run only if it hydrated after the run
+   * started, so without this only cached runs are settled
    */
   refreshRunRecord?: (
     workflowId: WorkflowId,
     runId: WorkflowRunId,
   ) => Promise<void>;
-  /**
-   * Pushes the workflow runs the pass interrupted, so the datastore does not
-   * keep them `running`. Called once, when the pass interrupted any; a
-   * failure is logged, not thrown.
-   */
   pushReaped?: () => Promise<void>;
 }
 
 /**
- * How serve's leader in team mode on a v3 datastore judges other instances
- * (swamp-club#4096). Only the leader runs work, and every other instance's
- * commits are fenced, so:
- *
- * - `isAlive`, for the boot reaper's heartbeat lookup: only this instance
- *   is alive, so a workflow run any other instance left running is settled
- *   whatever its heartbeat says;
- * - `isPeerGone`, for {@link reconcileRemoteInterruptedRuns}: a peer whose
- *   heartbeat is stale, or that still records active runs. A follower
- *   records none, so its heartbeat is left alone. With `ownFence`, a peer
- *   the leader record names at a higher fence is never gone: it took the
- *   lead from this node, which has not noticed yet.
+ * only the leader runs work and other commits are fenced: isAlive is only this
+ * instance; isPeerGone is a stale heartbeat or still recording active runs,
+ * never a peer at a higher fence
  */
 export function teamModeRunLiveness(
   instanceId: string,
@@ -717,21 +663,9 @@ export function teamModeRunLiveness(
 }
 
 /**
- * Scan heartbeats from the control-plane store and interrupt runs
- * belonging to instances that have gone stale (crashed / lost network).
- *
- * Runs in the local tracker whose instance has no heartbeat at all are
- * interrupted too (see {@link goneInstanceIds}): a peer that claimed the
- * instance first deleted its heartbeat without seeing these runs
- * (swamp-club#3355).
- *
- * When putIfAbsent is available, claims each stale instance before
- * reaping to prevent multiple instances from reconciling the same peer.
- * Heartbeat deletion is deferred until after runs are reaped so that
- * a crash mid-reconciliation leaves the heartbeat for another instance
- * to pick up once the claim expires.
- *
- * Returns the number of runs reaped.
+ * claims each stale instance before reaping so peers do not reconcile the same
+ * one; heartbeat deletion waits until runs are reaped so a crash leaves it for
+ * another instance
  */
 export async function reconcileRemoteInterruptedRuns(
   deps: ReconcileRemoteInterruptedRunsDeps,
@@ -871,7 +805,6 @@ export async function reconcileRemoteInterruptedRuns(
         );
         for (const { runId, record } of records) {
           if (record.runKind === "method-run") continue;
-          // A scheduled run's record names its workflow only by name.
           const workflowId = record.resourceId ??
             (deps.resolveWorkflowId && typeof record.resourceName === "string"
               ? await deps.resolveWorkflowId(record.resourceName).catch(
@@ -913,10 +846,9 @@ export async function reconcileRemoteInterruptedRuns(
     const workflowRunRepo = deps.workflowRunRepo;
     for (const { instanceId, workflowId, runId } of claimedWorkflowRuns) {
       try {
-        // A record the cache holds is never replaced: it may carry a change
-        // not pushed yet, such as the interrupt a restarted checkout's
-        // previous instance could not push. It is still read by id, since
-        // the status index may not name it.
+        // a record the cache holds is never replaced, as it may carry an
+        // unpushed change; it is read by id since the status index may not name
+        // it
         let run = await workflowRunRepo.findById(workflowId, runId);
         if (!run && deps.refreshRunRecord) {
           await deps.refreshRunRecord(workflowId, runId);
@@ -991,9 +923,9 @@ export async function reconcileRemoteInterruptedRuns(
       await runInRootUnitOfWork(
         { markDirty: deps.markDirty },
         {
-          // One push of what the pass interrupted, so the datastore does not
-          // keep those runs running (swamp-club#3958). It also carries the
-          // method-run cancellations staged before it.
+          // one push of what the pass interrupted, so the datastore does not
+          // keep those runs running; it also carries the staged method-run
+          // cancellations
           flush: pushReaped
             ? async () => {
               if (yamlReaped === 0) return;
@@ -1013,9 +945,9 @@ export async function reconcileRemoteInterruptedRuns(
           pushWhen: "completed",
         },
         async () => {
-          // Whatever their age: a run resumed long after it started is as
-          // orphaned as a recent one (swamp-club#2518). The status index
-          // may not name a run just refreshed, so those are read directly.
+          // whatever their age, as a run resumed long after it started is as
+          // orphaned as a recent one; runs just refreshed are read directly
+          // since the status index may not name them
           const yamlRuns = await workflowRunRepo.findGlobalByStatus(
             "running",
           );
@@ -1059,10 +991,9 @@ export async function reconcileRemoteInterruptedRuns(
         },
       );
     });
-    // In team mode a peer judged gone may be alive and keep its instance
-    // id, as a demoted leader does: its claim goes once it is settled, so a
-    // later pass can claim it again (swamp-club#4096). A dead instance's
-    // claim is left to expire, as before.
+    // in team mode a peer judged gone may be alive and keep its instance id, so
+    // its claim is released once settled and a later pass can claim it again; a
+    // dead instance's claim expires
     if (deps.isPeerGone !== undefined) {
       const claimKey = `claims/reconcile-instance/${claimedInstanceIds[index]}`;
       await deps.controlPlaneStore.delete(claimKey).catch((err: unknown) => {
@@ -1079,8 +1010,6 @@ export async function reconcileRemoteInterruptedRuns(
 
   return reaped;
 }
-
-// ── Reconciliation Claim Cleanup ────────────────────────────────────
 
 export interface CleanupExpiredClaimsDeps {
   controlPlaneStore: ControlPlaneStore;
@@ -1110,7 +1039,6 @@ export async function cleanupExpiredClaims(
       cleaned++;
     }
   }
-  // Counts of failed passes for instances no pass has failed on lately.
   for (
     const key of await deps.controlPlaneStore.list(RECONCILE_ATTEMPTS_PREFIX)
   ) {
@@ -1134,8 +1062,6 @@ export async function cleanupExpiredClaims(
   }
   return cleaned;
 }
-
-// ── Token Durability Health Check ───────────────────────────────────
 
 export interface TokenHealthCheckDeps {
   tokenSecretsProvider: VaultProvider & VaultDeleteProvider & {
@@ -1208,8 +1134,6 @@ export async function checkTokenHealth(
 
   return result;
 }
-
-// ── Three-Layer Token Consistency Sweep ─────────────────────────────
 
 export interface TokenConsistencyDeps {
   repoContext: RepositoryContext;
@@ -1431,8 +1355,8 @@ async function loadAttrsForType(
     try {
       content = await repo.getContent(mt, modelId, data.name);
     } catch (error) {
-      // One record the datastore could not materialise is left out, as a
-      // listing does, rather than stopping the sweep (swamp-club#3617).
+      // a record the datastore could not materialise is left out, as a listing
+      // does, rather than stopping the sweep
       if (!isUnreadableContentError(error)) throw error;
       logger.warn("Skipping unreadable {kind} record {dataName}: {error}", {
         kind: mt.normalized,

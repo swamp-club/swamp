@@ -296,8 +296,6 @@ Deno.test("resolveWorkflowTarget: a broken workflow file is authorized on the na
       assertEquals(resolution.status, "broken", idOrName);
       if (resolution.status !== "broken") continue;
       assertEquals(resolution.resource.name, "prod-broken");
-      // Passed by the id and name it declares, so the operation reaches this
-      // file and no other.
       assertEquals(targetArgument(resolution, idOrName), {
         idOrName: id,
         byId: true,
@@ -343,9 +341,6 @@ Deno.test("resolveWorkflowTarget: a broken workflow file without an id is passed
   });
 });
 
-// Output and run reads (swamp-club#2673).
-
-/** Copies `source`'s file under another name; the copy keeps its id. */
 async function copyDefinitionFile(
   repo: YamlDefinitionRepository,
   source: Definition,
@@ -376,7 +371,6 @@ Deno.test("resolveOutputAccess: an output is authorized on every definition decl
       tags: { env: "prod" },
     });
     await repo.save(SHELL, prod);
-    // A copied file keeps the id, so the copy shares the output.
     await copyDefinitionFile(repo, prod, "safe-model");
 
     const access = await resolveOutputAccess(
@@ -492,7 +486,6 @@ Deno.test("resolveOutputAccess: an unmatched argument is authorized as sent", as
   }
 });
 
-/** Counts the by-id lookups `repo` answers. */
 function countingDefinitionRepo(
   repo: YamlDefinitionRepository,
 ): { repo: DefinitionRepository; lookups: () => number } {
@@ -515,7 +508,6 @@ function countingDefinitionRepo(
 const PROD_ID = "00000000-0000-4000-8000-0000000000aa";
 const DEV_ID = "00000000-0000-4000-8000-0000000000bb";
 
-/** An ambiguous reference to two prod outputs and one dev output. */
 function ambiguousOutputs() {
   const matches = [
     { output: { definitionId: PROD_ID }, type: SHELL },
@@ -564,7 +556,6 @@ Deno.test("resolveOutputAccess: an ambiguous prefix is authorized on each match'
       ],
     );
     assertEquals(lookups(), 2);
-    // Matches with the same owners share one array, decided once.
     assertStrictEquals(access.candidates[0], access.candidates[2]);
   });
 });
@@ -649,7 +640,6 @@ Deno.test("resolveRunAccess: a run of a renamed workflow is authorized on both n
   );
 });
 
-/** Counts every lookup `workflows` answers. */
 function countingWorkflowRepo(
   workflows: Workflow[],
 ): { repo: WorkflowRepository; lookups: () => number } {
@@ -743,7 +733,6 @@ Deno.test("resolveRunAccess: a workflow read authorizes the workflow and its lat
   );
 });
 
-/** A socket that records what serve sends. */
 function recordingSocket(): { socket: WebSocket; sent: unknown[] } {
   const sent: unknown[] = [];
   return {
@@ -776,15 +765,12 @@ Deno.test("authorizeReferenceAccess: a failed lookup replies with the failed cod
   );
 });
 
-// Ambiguous prefixes (swamp-club#2743).
-
 const PRINCIPAL = { kind: "user" as const, id: "adam" };
 
 function modelResource(name: string): AccessResource {
   return { kind: "model", name, fields: { name } };
 }
 
-/** A policy context allowing model:* and denying model:prod-*. */
 function policyCtx(
   mode: "none" | "token" = "token",
 ): { ctx: ConnectionContext; audit: AuditEvent[] } {
@@ -816,7 +802,6 @@ function policyCtx(
   return { ctx, audit };
 }
 
-/** An ambiguous access over `names`, narrowing to the readable names. */
 function ambiguousAccess(names: string[]): ReferenceAccess<string[]> {
   return {
     status: "ambiguous",
@@ -1007,8 +992,6 @@ Deno.test("authorizeReferenceAccess: an ambiguous prefix lists every match when 
   assertEquals(sent, []);
   assertEquals(audit, []);
 });
-
-// --- CanonicalResources (swamp-club#2675) ---
 
 Deno.test("CanonicalResources.modelOwners: every definition sharing the id, with full fields", async () => {
   await withTempDir(async (dir) => {
@@ -1257,8 +1240,6 @@ Deno.test("CanonicalResources: one definition scan serves every id in a request"
   assertEquals(perIdScans, 0);
 });
 
-// ── Control-plane records are owned by the access kind (swamp-club#2756) ──
-
 const GRANT_TYPE = ModelType.create("swamp/grant");
 const GRANT_RECORD: AccessResource = {
   kind: "access",
@@ -1383,7 +1364,6 @@ Deno.test("resolveOutputAccess: an output of a deleted control-plane model stays
 Deno.test("CanonicalResources: a user definition reusing a control-plane record's id does not own it alone", async () => {
   await withTempDir(async (dir) => {
     const repo = new YamlDefinitionRepository(dir);
-    // A user model that happens to declare the id a deleted grant had.
     const user = Definition.create({ name: "mine", globalArguments: {} });
     await repo.save(SHELL, user);
     const canonical = new CanonicalResources(repo, workflowRepo([]));
@@ -1402,7 +1382,6 @@ Deno.test("CanonicalResources: a user definition reusing a control-plane record'
       modelType: "swamp/grant",
       tags: {},
     });
-    // A live control-plane owner is not doubled.
     const grant = Definition.create({ name: "grant-abc", globalArguments: {} });
     await saveAutoDefinition(dir, GRANT_TYPE, grant);
     assertEquals(
@@ -1456,12 +1435,10 @@ Deno.test("recordedRunModel: records the definition's name and a control-plane t
     definition: Definition.create({ name: "grant-abc", globalArguments: {} }),
     type: GRANT_TYPE,
   };
-  // A direct-type run of a control-plane type against a user model's name.
   assertEquals(recordedRunModel(user, "raw", "swamp.Server-Token"), {
     name: "user-db",
     type: "swamp/server-token",
   });
-  // A user typeArg against a control-plane model.
   assertEquals(recordedRunModel(grant, "raw", "command/shell"), {
     name: "grant-abc",
     type: "swamp/grant",
@@ -1470,7 +1447,6 @@ Deno.test("recordedRunModel: records the definition's name and a control-plane t
     name: "user-db",
     type: "command/shell",
   });
-  // No definition yet: the requested name and the executed type.
   assertEquals(recordedRunModel(null, "new-grant", "@swamp/grant"), {
     name: "new-grant",
     type: "swamp/grant",
@@ -1480,8 +1456,6 @@ Deno.test("recordedRunModel: records the definition's name and a control-plane t
     type: undefined,
   });
 });
-
-// ── Authorize span (swamp-club#3741) ────────────────────────────────────
 
 Deno.test("resolveRunAccess: collects owners in a swamp.serve.authorize span counting distinct resources", async () => {
   await withCapturedSpans(async (spans) => {
@@ -1583,14 +1557,12 @@ Deno.test("resolveRunAccess: a failing lookup opens no authorize span", async ()
   });
 });
 
-/** A connection context whose repository holds `workflowRepo`. */
 function repoCtx(workflowRepo: WorkflowRepository): ConnectionContext {
   return {
     repoContext: { definitionRepo: {} as DefinitionRepository, workflowRepo },
   } as unknown as ConnectionContext;
 }
 
-/** An ExtensionWorkflowRepository that counts its full walks. */
 class CountingExtensionWorkflowRepository extends ExtensionWorkflowRepository {
   walks = 0;
 
@@ -1600,7 +1572,6 @@ class CountingExtensionWorkflowRepository extends ExtensionWorkflowRepository {
   }
 }
 
-/** Writes `workflow` as an extension workflow file in `dir`. */
 async function writeExtensionWorkflow(
   dir: string,
   workflow: Workflow,
@@ -1734,7 +1705,6 @@ Deno.test("CanonicalResources.workflowOwners: resolves extension workflows as th
     );
     const canonical = canonicalResources(repoCtx(repo));
 
-    // Shadowed by name, but still found by id.
     assertEquals(await canonical.workflowOwners(extensionShared.id, "shared"), [
       {
         kind: "workflow",
@@ -1742,7 +1712,6 @@ Deno.test("CanonicalResources.workflowOwners: resolves extension workflows as th
         fields: { name: "shared", tags: { src: "extension" } },
       },
     ]);
-    // Recorded under an old name: counts under both.
     assertEquals(await canonical.workflowOwners(renamed.id, "old-name"), [
       {
         kind: "workflow",
@@ -1755,7 +1724,6 @@ Deno.test("CanonicalResources.workflowOwners: resolves extension workflows as th
         fields: { name: "new-name", tags: { env: "prod" } },
       },
     ]);
-    // Gone: judged on its recorded name.
     assertEquals(
       await canonical.workflowOwners(crypto.randomUUID(), "deleted"),
       [{
@@ -1823,7 +1791,6 @@ Deno.test("CanonicalResources: inside a diagnostic phase, counts owner lookups a
         );
         const [walk] = diagnosticPhases(spans, "output_walk");
         assertEquals(walk.attributes["swamp.diagnostic.owner_lookups"], 5);
-        // Without an index, one scan answers every id after the first.
         assertEquals(
           walk.attributes["swamp.diagnostic.owner_lookups_reused"],
           ownerIndex ? 2 : 3,
@@ -1861,8 +1828,6 @@ Deno.test("CanonicalResources.modelName: names after the first definition of the
     const shared = Definition.create({ name: "primary", globalArguments: {} });
     const repo = new YamlDefinitionRepository(dir);
     await repo.save(SHELL, shared);
-    // An auto-definition of the same type and id, and a definition of another
-    // type that shares the id.
     await saveAutoDefinition(
       dir,
       SHELL,

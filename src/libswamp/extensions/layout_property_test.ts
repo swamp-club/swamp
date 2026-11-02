@@ -17,10 +17,8 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// Property of classifyExtensionFile (swamp-club#3271): the layout
-// generation depends on a path's segments, not on which separator joins
-// them, so a lockfile written on Windows classifies like one written on
-// POSIX.
+// layout generation depends on a path's segments, not the separator, so a
+// Windows-written lockfile classifies like a POSIX one
 
 import { assertEquals } from "@std/assert";
 import fc from "fast-check";

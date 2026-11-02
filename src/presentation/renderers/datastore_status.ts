@@ -25,7 +25,6 @@ import type { OutputMode } from "../output/output.ts";
 import { UserError } from "../../domain/errors.ts";
 import { writeOutput } from "../../infrastructure/logging/logger.ts";
 
-/** An outbox entry's state, colored. */
 function stateLabel(state: "offline" | "rejected" | "quarantined"): string {
   switch (state) {
     case "offline":

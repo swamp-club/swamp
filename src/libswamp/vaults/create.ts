@@ -60,9 +60,6 @@ import type { SwampError } from "../errors.ts";
 import { alreadyExists, validationFailed } from "../errors.ts";
 
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
-/**
- * Data structure for the vault create output.
- */
 export interface VaultCreateData {
   id: string;
   name: string;
@@ -76,7 +73,6 @@ export type VaultCreateEvent =
   | { kind: "completed"; data: VaultCreateData }
   | { kind: "error"; error: SwampError };
 
-/** Input for the vault create operation. */
 export interface VaultCreateInput {
   vaultType: string;
   name: string;
@@ -84,32 +80,26 @@ export interface VaultCreateInput {
   repoDir: string;
   auditReads?: boolean;
   /**
-   * Accept a local_encryption config that names its own key source (key
-   * file, SSH key, storage directory). Only a caller that already owns the
-   * host sets this: the local CLI. Without it, such fields are refused
-   * unless they match the server defaults, which are always applied
-   * (swamp-club#2690).
+   * accepts a local_encryption config that names its own key source (key file,
+   * SSH key, storage dir); only the local CLI, which owns the host, sets this.
+   * Otherwise such fields are refused unless they match the server defaults
    */
   trustKeySource?: boolean;
 }
 
-/** Dependencies for the vault create operation. */
 export interface VaultCreateDeps {
-  /** Loads a lazily-indexed type if needed and says whether it is known. */
   isVaultTypeLoaded: (type: string) => Promise<boolean>;
   /**
-   * The config fields the registry publishes for an extension type that is
-   * not installed yet, so the CLI can ask for the missing ones before the
-   * install (swamp-club#3003).
+   * the config fields the registry publishes for an extension type not
+   * installed yet, so the CLI can ask for the missing ones before the install
    */
   findRegistryConfigFields: RegistryConfigFieldsLookup;
   resolveExtensionVaultType: (type: string) => Promise<void>;
   getVaultTypeInfo: (type: string) => VaultTypeInfo | undefined;
   findByName: (name: string) => Promise<boolean>;
   /**
-   * The storage directory a local_encryption vault of this name and config
+   * the storage directory a local_encryption vault of this name and config
    * would read, when an earlier vault left a key or secrets there
-   * (swamp-club#3614).
    */
   findLeftoverSecrets: (
     name: string,
@@ -159,16 +149,12 @@ export async function createVaultCreateDeps(
   };
 }
 
-/**
- * Resolves provider-specific configuration for built-in vault types.
- */
 function resolveBuiltInProviderConfig(
   vaultType: string,
 ): Record<string, unknown> {
   return isLocalEncryptionType(vaultType) ? defaultLocalEncryptionConfig() : {};
 }
 
-/** How to try the creation again once the config is complete. */
 function createRerunHint(vaultType: string, name: string): RerunHint {
   return (example, missing) =>
     missing.length > 0
@@ -179,8 +165,8 @@ function createRerunHint(vaultType: string, name: string): RerunHint {
 }
 
 /**
- * Refuses a local_encryption vault whose storage directory already holds an
- * earlier vault's key or secrets (swamp-club#3614). Shared with vault migrate.
+ * refuses a local_encryption vault whose storage directory already holds an
+ * earlier vault's key or secrets; shared with vault migrate
  */
 export function leftoverSecretsError(
   action: "create" | "migrate",
@@ -200,7 +186,6 @@ export function leftoverSecretsError(
   };
 }
 
-/** Creates a new vault configuration. */
 export async function* vaultCreate(
   ctx: LibSwampContext,
   deps: VaultCreateDeps,
@@ -218,10 +203,8 @@ export async function* vaultCreate(
 
         const rerunHint = createRerunHint(input.vaultType, input.name);
 
-        // Auto-resolve extension vault types if not already registered
         await deps.resolveExtensionVaultType(input.vaultType);
 
-        // Validate the vault type
         const typeInfo = deps.getVaultTypeInfo(input.vaultType);
         if (!typeInfo) {
           const renamed = RENAMED_VAULT_TYPES[input.vaultType.toLowerCase()];
@@ -244,7 +227,6 @@ export async function* vaultCreate(
           return;
         }
 
-        // Validate vault name format
         if (!isValidVaultName(input.name)) {
           yield {
             kind: "error",
@@ -255,7 +237,6 @@ export async function* vaultCreate(
           return;
         }
 
-        // Check name uniqueness
         const exists = await deps.findByName(input.name);
         if (exists) {
           yield {
@@ -265,14 +246,11 @@ export async function* vaultCreate(
           return;
         }
 
-        // Resolve provider configuration
         let providerConfig: Record<string, unknown>;
 
         if (!typeInfo.isBuiltIn && typeInfo.createProvider) {
-          // Extension vault type: use provided config, defaulting to {}
           providerConfig = input.config ?? {};
 
-          // Validate against configSchema if provided
           if (typeInfo.configSchema) {
             const result = typeInfo.configSchema.safeParse(providerConfig);
             if (!result.success) {
@@ -314,10 +292,8 @@ export async function* vaultCreate(
           }
           providerConfig = withServerDefaultKeySource(input.config);
         } else if (input.config) {
-          // Built-in type with explicit config
           providerConfig = input.config;
         } else {
-          // Built-in vault type: resolve defaults
           providerConfig = resolveBuiltInProviderConfig(input.vaultType);
         }
 
@@ -341,7 +317,6 @@ export async function* vaultCreate(
           }
         }
 
-        // Create and save
         const vaultId = createVaultConfigId(crypto.randomUUID());
         const vaultConfig = VaultConfig.create(
           vaultId,

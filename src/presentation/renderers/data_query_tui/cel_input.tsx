@@ -22,22 +22,13 @@ import React from "react";
 import { Box, Text } from "ink";
 
 export interface CelInputProps {
-  /** Label shown before the input (e.g., "QUERY", "SELECT"). */
   label: string;
-  /** Current text content. */
   text: string;
-  /** Current cursor position (character index). */
   cursorPos: number;
-  /** Whether this input is focused. */
   focused: boolean;
-  /** Optional status text shown after the input. */
   status?: string;
 }
 
-/**
- * Single-line text input with cursor position tracking.
- * The parent component manages state and key handling.
- */
 export function CelInput(props: CelInputProps): React.ReactElement {
   const { label, text, cursorPos, focused, status } = props;
 
@@ -66,10 +57,6 @@ export function CelInput(props: CelInputProps): React.ReactElement {
   );
 }
 
-/**
- * Applies a character insertion at the cursor position.
- * Returns the new text and cursor position.
- */
 export function insertAtCursor(
   text: string,
   cursorPos: number,
@@ -81,10 +68,6 @@ export function insertAtCursor(
   };
 }
 
-/**
- * Applies a backspace at the cursor position.
- * Returns the new text and cursor position.
- */
 export function deleteBeforeCursor(
   text: string,
   cursorPos: number,

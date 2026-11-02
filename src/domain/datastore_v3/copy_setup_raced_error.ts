@@ -18,22 +18,15 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * A checkout-local v3 copy that two commands set up at once
- * (swamp-club#4253). Swamp creates a serve-mode checkout's copy by itself on
- * first use, so a command that loses the race to write the copy's format
- * marker uses the marker the winner wrote. Only a marker it cannot read as
- * a v3 one yet (a filesystem without hard links shows it part-written for a
- * moment) refuses, as a temporary failure: a retry finds it whole.
- *
- * @module
+ * a command that loses the setup race uses the winner's format marker; only one
+ * not yet readable as v3 (part-written without hard links) refuses, as
+ * temporary, so a retry finds it whole
  */
 
 import { UserError } from "../errors.ts";
 
-/** Error code for a copy another command is still setting up. */
 export const V3_COPY_SETUP_RACED_CODE = "datastore_v3_copy_setup_raced";
 
-/** Another command in this checkout is setting up the same local copy. */
 export class V3CopySetupRacedError extends UserError {
   constructor(path: string) {
     super(

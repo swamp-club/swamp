@@ -17,37 +17,9 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// Every file a hooked repository creates, changes or deletes in the datastore
-// cache must be covered by a markDirty call: the file's own cache-relative
-// path, or an ancestor directory of it (swamp-club#2855). A dropped mark
-// leaves the change on one machine, because the sync service only pushes and
-// deletes what it was told about.
-//
-// Each row builds a fresh repository with the real markDirty hook wired to a
-// recording sync service, snapshots the cache (size and sha256 of every file),
-// runs one write or delete method, and diffs the cache. A mark covers a
-// changed file only when the absolute path the repository passed to the hook
-// lies inside the cache root. The hook also forwards paths under <repo>/.swamp
-// relative to that directory, whose layout mirrors the cache's, so judging by
-// the forwarded relPath alone would let a repo-local mark hide a cache gap.
-// Changed paths no mark covers are collected as "<Repository>.<method>: <normalised path>" and
-// checked against KNOWN_UNMARKED, so a new gap fails and a fixed gap fails
-// until it is removed from the list.
-//
-// Only the cache is walked. The catalog database, the run index and the run
-// logs are repo-local and never synced.
-//
-// Not in the table:
-// - LockfileRepository takes no hook; its callers mark the lockfile by path
-//   (src/libswamp/extensions/managed_lockfile_transaction.ts:384,
-//   src/cli/managed_config_sync.ts:159-195). The use-case characterisation
-//   tests cover it.
-// - Audit repositories: always repo-local.
-// - The namespace manifest.
-//
-// pruneExcessVersions (UnifiedData), deleteExpired and sweepOrphanLogs
-// (Output) are private; they are reached through save with autoGc, and
-// through Output deleteOlderThan / deleteByMethodLifetime.
+// every file a hooked repository changes in the datastore cache must be covered
+// by a markDirty call for its path or an ancestor directory; a dropped mark
+// leaves the change on one machine
 
 import "../src/domain/models/models.ts";
 import { assert, assertEquals } from "@std/assert";
@@ -98,62 +70,33 @@ import type { CatalogStore } from "../src/infrastructure/persistence/catalog_sto
 await initializeLogging({});
 
 /**
- * Changed cache paths no mark covers today. Each entry names the source line
- * that writes or removes the file without a mark (line numbers at the commit
- * that added this test). Fix a gap and its entry must go; open a new one and
- * the test fails until it is pinned here on purpose.
+ * changed cache paths no mark covers; fixing a gap removes its entry, and a new
+ * gap fails the test until it is pinned here on purpose
  */
 const KNOWN_UNMARKED: readonly string[] = [
-  // delete(version) marks only the version directory (:913). Removing the
-  // latest version rewrites `latest` (:940, via updateLatestMarker). Removing
-  // the last one marks `latest` too since swamp-club#3473, as retention
-  // empties names that way.
   "UnifiedData.delete(version,latest-of-two): data/command/shell/<id>/item/latest",
-  // advanceLatestMarkers writes `latest` with no mark (:1352); it relies on
-  // the saveDeferred mark of the same cycle.
   "UnifiedData.advanceLatestMarkers: data/command/shell/<id>/item/latest",
-  // rollbackVersions removes the version directory with no mark (:1385).
   "UnifiedData.rollbackVersions: data/command/shell/<id>/item/<v>/metadata.yaml",
   "UnifiedData.rollbackVersions: data/command/shell/<id>/item/<v>/raw",
-  // finalizeVersion marks only the version directory but rewrites `latest`
-  // (:1264). In production allocateVersion marks the data-name directory in
-  // the same cycle, which hides it; kept because Phase 1 may split them.
   "UnifiedData.finalizeVersion(standalone): data/command/shell/<id>/item/latest",
-  // YamlDefinitionRepository.cleanupOldPaths removes the previous-name file
-  // (:1096) and the legacy <id>.yaml file (:1114) with no mark; save marks
-  // only the new target path.
   "Definition.save(rename): config/models/command/shell/probe.yaml",
   "Definition.save(legacy): config/models/command/shell/<id>.yaml",
-  // YamlWorkflowRepository.save removes the previous-name file (:284) and the
-  // legacy file (:303) with no mark; delete marks one resolved path and
-  // removes the other pathsToTry entries unmarked (:372).
   "Workflow.save(rename): config/workflows/workflow-probe.yaml",
   "Workflow.save(legacy): config/workflows/workflow-<id>.yaml",
   "Workflow.delete(dual-file): config/workflows/workflow-probe.yaml",
-  // YamlEvaluatedDefinitionRepository: save removes the previous-name file
-  // (:395) and the legacy file (:407) unmarked; delete removes the other
-  // pathsToTry entries unmarked (:441).
   "EvaluatedDefinition.save(rename): definitions-evaluated/command/shell/probe.yaml",
   "EvaluatedDefinition.save(legacy): definitions-evaluated/command/shell/<id>.yaml",
   "EvaluatedDefinition.delete(dual-file): definitions-evaluated/command/shell/probe.yaml",
-  // YamlEvaluatedWorkflowRepository: save removes the previous-name file
-  // (:298) and the legacy file (:310) unmarked; delete removes the other
-  // pathsToTry entries unmarked (:337).
   "EvaluatedWorkflow.save(rename): workflows-evaluated/workflow-probe.yaml",
   "EvaluatedWorkflow.save(legacy): workflows-evaluated/workflow-<id>.yaml",
   "EvaluatedWorkflow.delete(dual-file): workflows-evaluated/workflow-probe.yaml",
-  // YamlWorkflowRunRepository.deleteOlderThan marks the run YAML but removes
-  // its .log unmarked: terminal runs (:766), unparseable run files (:720).
-  // It also removes a legacy cache-side .runs-index.json unmarked (:799).
   "WorkflowRun.deleteOlderThan(terminal): workflow-runs/<id>/workflow-run-<id>.log",
   "WorkflowRun.deleteOlderThan(unparseable): workflow-runs/<id>/workflow-run-<id>.log",
   "WorkflowRun.deleteOlderThan(legacy-index): workflow-runs/<id>/.runs-index.json",
 ];
 
 const UUID = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/g;
-/** The start-time stamp in an output file name. */
 const OUTPUT_STAMP = /\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-\d{3}Z/g;
-/** An atomicWrite temp file: `.<uuid>.tmp`. */
 const ATOMIC_TEMP = /^\.[0-9a-f-]{36}\.tmp$/;
 
 const TYPE = ModelType.create("command/shell");
@@ -179,10 +122,6 @@ async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
   }
 }
 
-/**
- * Points every pending catalog row of `modelId` at a pid no process can hold,
- * as if the deferred write's process had died before promoting it.
- */
 function orphanPendingRows(catalogStore: CatalogStore, modelId: string): void {
   for (const row of [...catalogStore.iterate()]) {
     if (row.model_id === modelId && row.is_pending === 1) {
@@ -191,7 +130,6 @@ function orphanPendingRows(catalogStore: CatalogStore, modelId: string): void {
   }
 }
 
-/** The repositories one context exposes, plus the hand-built one. */
 interface Repos {
   ctx: RepositoryContext;
   evaluatedWorkflowRepo: YamlEvaluatedWorkflowRepository;
@@ -202,38 +140,23 @@ interface Harness extends Repos {
   cacheRoot: string;
   definitionsDir: string;
   workflowsDir: string;
-  /** The recording hook every repository in this harness was built with. */
   markDirty: MarkDirtyHook;
-  /** A cold second context on the same repo and cache, same hook. */
   fresh(): Repos;
 }
 
 interface Row {
   repo: string;
   method: string;
-  /** Builds prior state and returns the act. Marks are cleared after it. */
   prepare: (h: Harness) => Promise<() => Promise<unknown>>;
-  /** False for rows that must leave the cache untouched (dry runs). */
   changesCache?: boolean;
   autoGc?: boolean;
-  /**
-   * The act marks from parallel tasks, so its mark order varies from run to
-   * run (collectGarbage removes versions in Promise.allSettled batches,
-   * src/infrastructure/persistence/unified_data_repository.ts:1821).
-   */
+  /** the act marks from parallel tasks, so its mark order varies from run to run */
   parallelMarks?: boolean;
 }
 
-/** What the hook saw (absolute paths) and what it forwarded (relPaths). */
 interface Marks {
-  /** Absolute paths the repositories passed to the hook; undefined is bare. */
   abs: Array<string | undefined>;
-  /** relPaths the hook forwarded to the sync service. */
   forwarded: Array<string | undefined>;
-  /**
-   * Whether each `abs` path existed on disk when its mark arrived, at the same
-   * index as the path in `abs`.
-   */
   existed: boolean[];
 }
 
@@ -251,10 +174,9 @@ async function withHarness(
     const hook = buildMarkDirtyHook(service, cacheRoot, repoDir);
     const abs: Array<string | undefined> = [];
     const existed: boolean[] = [];
-    // Record the absolute path and whether it exists, then delegate to the
-    // real hook. The existence check is written at the path's index: marks
-    // from parallel tasks (collectGarbage) finish their checks out of order,
-    // and appending would pair a path with another mark's result.
+    // existence is written at the path's index: marks from parallel tasks
+    // finish their checks out of order, and appending would pair a path with
+    // another mark's result
     const markDirty: MarkDirtyHook = async (absPath?: string) => {
       const index = abs.push(absPath) - 1;
       existed[index] = absPath !== undefined && await pathExists(absPath);
@@ -266,9 +188,8 @@ async function withHarness(
       datastorePath: join(dir, "remote"),
       cachePath: cacheRoot,
     });
-    // Definitions, workflows and vault configs under the cache config/ tier, as
-    // managedConfig wires them (src/cli/repo_context.ts:1220-1231). Repo-local,
-    // the hook drops their marks and the rows would prove nothing.
+    // definitions, workflows and vault configs sit under the cache config tier;
+    // repo-local, the hook drops their marks and the rows would prove nothing
     const configBase = resolver.resolvePath("config");
     const definitionsDir = join(configBase, "models");
     const workflowsDir = join(configBase, "workflows");
@@ -287,7 +208,6 @@ async function withHarness(
         autoGc,
       });
       opened.push(ctx);
-      // The factory does not build this one.
       const evaluatedWorkflowRepo = new YamlEvaluatedWorkflowRepository(
         repoDir,
         resolver.resolvePath("workflows-evaluated"),
@@ -297,10 +217,9 @@ async function withHarness(
     };
     try {
       const first = build();
-      // A hooked write from production code that takes signalChange's hook
-      // fallback fails the test (swamp-club#3056). The rows' deliberate
-      // no-scope runs call repositories from this file, which the guard
-      // leaves alone.
+      // a hooked write from production code that takes signalChange's hook
+      // fallback fails the test; the rows' deliberate no-scope runs call
+      // repositories from this file, which the guard leaves alone
       await withUnscopedWriteGuard(() =>
         fn({
           ...first,
@@ -319,14 +238,8 @@ async function withHarness(
 }
 
 /**
- * Cache-relative forward-slash path to `size:sha256`, files only.
- *
- * Empty directories are ignored on purpose: the sync service pushes and
- * deletes files, so a leftover or newly created empty directory never reaches
- * the remote and needs no mark. A rewrite with identical bytes keeps the same
- * hash and is not a change: the remote already holds those bytes, so a
- * dropped mark loses nothing. Both would otherwise flag gaps that cannot
- * diverge two machines.
+ * empty directories and rewrites with identical bytes are ignored: the sync
+ * service pushes and deletes files, so neither can diverge two machines
  */
 async function snapshot(root: string): Promise<Map<string, string>> {
   const files = new Map<string, string>();
@@ -367,10 +280,6 @@ function normalise(relPath: string): string {
     .join("/");
 }
 
-/**
- * Cache-relative forward-slash form of an absolute mark path, or undefined
- * when the path lies outside the cache root (repo-local marks included).
- */
 function cacheRelative(cacheRoot: string, absPath: string): string | undefined {
   const rel = relative(cacheRoot, absPath);
   if (rel === ".." || rel.startsWith(".." + SEPARATOR) || isAbsolute(rel)) {
@@ -379,16 +288,11 @@ function cacheRelative(cacheRoot: string, absPath: string): string | undefined {
   return rel.split(SEPARATOR).join("/");
 }
 
-/** The exact file, or an ancestor directory on a segment boundary. */
 function isCovered(path: string, marks: readonly string[]): boolean {
   return marks.some((mark) =>
     mark === "" || path === mark || path.startsWith(mark + "/")
   );
 }
-
-// ---------------------------------------------------------------------------
-// Fixtures
-// ---------------------------------------------------------------------------
 
 function makeData(
   overrides: {
@@ -450,7 +354,6 @@ function makeOutput(status: "succeeded" | "running" = "succeeded") {
   });
 }
 
-/** Rewrites a saved version's metadata createdAt into the past. */
 async function backdateVersion(
   h: Harness,
   modelId: string,
@@ -472,12 +375,7 @@ async function backdateVersion(
   await Deno.writeTextFile(path, stringifyYaml(metadata));
 }
 
-/** A cutoff after everything the row wrote. */
 const futureCutoff = () => new Date(Date.now() + 60_000);
-
-// ---------------------------------------------------------------------------
-// Rows
-// ---------------------------------------------------------------------------
 
 const unifiedDataRows: Row[] = [
   {
@@ -511,7 +409,6 @@ const unifiedDataRows: Row[] = [
       await h.ctx.unifiedDataRepo.save(TYPE, modelId, data, bytes("v2"));
       return async () => {
         await h.ctx.unifiedDataRepo.save(TYPE, modelId, data, bytes("v3"));
-        // pruneExcessVersions ran: v1 is gone.
         assertEquals(
           await h.ctx.unifiedDataRepo.listVersions(TYPE, modelId, "item"),
           [2, 3],
@@ -608,8 +505,6 @@ const unifiedDataRows: Row[] = [
     },
   },
   {
-    // finalizeVersion on its own, with allocateVersion and the content write
-    // done in setup, so only finalizeVersion's own marks count.
     repo: "UnifiedData",
     method: "finalizeVersion(standalone)",
     prepare: async (h) => {
@@ -816,7 +711,6 @@ const definitionRows: Row[] = [
     },
   },
   {
-    // Same id, new name, on the warm instance that knows the old path.
     repo: "Definition",
     method: "save(rename)",
     prepare: async (h) => {
@@ -827,7 +721,6 @@ const definitionRows: Row[] = [
     },
   },
   {
-    // A legacy <id>.yaml file, saved through a cold instance.
     repo: "Definition",
     method: "save(legacy)",
     prepare: async (h) => {
@@ -844,8 +737,6 @@ const definitionRows: Row[] = [
     },
   },
   {
-    // A definition that lives only in the auto-definitions directory is
-    // saved back there.
     repo: "Definition",
     method: "save(auto-definitions)",
     prepare: async (h) => {
@@ -884,9 +775,6 @@ const definitionRows: Row[] = [
     },
   },
   {
-    // Name file and an identical copy at the <id>.yaml path. Both declare
-    // this definition, so declaresOther skips neither; a cold delete marks
-    // the resolved path and then each other path it removes.
     repo: "Definition",
     method: "delete(dual-file)",
     prepare: async (h) => {
@@ -955,8 +843,6 @@ const workflowRows: Row[] = [
     },
   },
   {
-    // Name file and legacy file for one id; a cold delete resolves the
-    // legacy one first.
     repo: "Workflow",
     method: "delete(dual-file)",
     prepare: async (h) => {
@@ -1046,8 +932,6 @@ const workflowRunRows: Row[] = [
     },
   },
   {
-    // A cache-side .runs-index.json from before the index moved repo-local.
-    // A second, live run keeps the directory from being cleaned up.
     repo: "WorkflowRun",
     method: "deleteOlderThan(legacy-index)",
     prepare: async (h) => {
@@ -1291,7 +1175,6 @@ const evaluatedWorkflowRows: Row[] = [
   },
 ];
 
-/** Saves an output and plants its run log beside it in the cache. */
 async function saveOutputWithCacheLog(h: Harness): Promise<ModelOutput> {
   const output = makeOutput();
   await h.ctx.outputRepo.save(TYPE, "execute", output);
@@ -1481,7 +1364,6 @@ Deno.test("markDirty: every cache file a hooked repository changes is covered by
             `expected a cache-relative forward-slash mark, got ${mark}`,
           );
         }
-        // Only marks whose absolute path resolves inside the cache count.
         const pathMarks = marks.abs
           .map((m) =>
             m === undefined ? undefined : cacheRelative(h.cacheRoot, m)
@@ -1516,14 +1398,12 @@ Deno.test("markDirty: every cache file a hooked repository changes is covered by
   );
 });
 
-/** A mark's absolute path made comparable across harnesses; null is bare. */
 function comparableMark(h: Harness, mark: string | undefined): string | null {
   if (mark === undefined) return null;
   const rel = relative(dirname(h.cacheRoot), mark).split(SEPARATOR).join("/");
   return normalise(rel);
 }
 
-/** The marks one run of `row`'s act sends, and what a scope staged. */
 async function marksOf(
   row: Row,
   scoped: boolean,
@@ -1565,7 +1445,6 @@ Deno.test("unit of work: every repository sends the same marks inside a legacy u
           "expected the same marks in the same order",
         );
       }
-      // Within one run, the unit records each change just before it marks.
       assertEquals(
         scoped.staged,
         scoped.marks,
@@ -1575,31 +1454,21 @@ Deno.test("unit of work: every repository sends the same marks inside a legacy u
   }
 });
 
-/**
- * Repositories that stage typed changes at each call site rather than through
- * a private notifyDirty (datastore rework Phase 1 repository moves). Every
- * repository with rows here is listed; a row of an unlisted one is skipped
- * below.
- */
 const MOVED_REPOSITORIES: ReadonlySet<string> = new Set([
-  // swamp-club#2979, move A.
   "UnifiedData",
   "Output",
-  // swamp-club#2980, move B.
   "Definition",
   "Workflow",
   "EvaluatedDefinition",
   "EvaluatedWorkflow",
-  // swamp-club#2992, move C1.
   "WorkflowRun",
-  // swamp-club#2995, move C2.
   "VaultConfig",
 ]);
 
 /**
- * Moved-repository rows whose act changes the cache but marks nothing, so
- * they stage nothing either. Each is a KNOWN_UNMARKED gap this move must not
- * fix; fixing one makes the row stage a change and this entry must go.
+ * moved-repository rows whose act changes the cache but marks nothing; they are
+ * known unmarked gaps this move must not fix, so fixing one means its entry
+ * must go
  */
 const UNSTAGED_ROWS: ReadonlySet<string> = new Set([
   "UnifiedData.advanceLatestMarkers",
@@ -1665,10 +1534,9 @@ Deno.test("markDirty: each path a repository marks is marked again once its fina
         marks.existed.length = 0;
         await act();
         assert(marks.abs.length > 0, "expected the act to mark a path");
-        // The last mark of each path: a push that ran before it can have
-        // uploaded the old bytes and cleared an earlier mark, so it must
-        // see the path as the act left it, present after a write and gone
-        // after a remove.
+        // the last mark of each path: an earlier push may have uploaded old
+        // bytes and cleared a mark, so it must see the path as the act left it,
+        // present after a write and gone after a remove
         const last = new Map<string, boolean>();
         marks.abs.forEach((path, i) => {
           if (path !== undefined) last.set(path, marks.existed[i]);

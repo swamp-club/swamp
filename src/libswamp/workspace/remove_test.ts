@@ -72,7 +72,6 @@ Deno.test("workspaceRemove: an unknown name is not_found", async () => {
 
 Deno.test("workspaceRemove: a workspace only adopted so far stays removed", async () => {
   await withWorkspaceFixture(async (f) => {
-    // Folders swamp start made before the registry existed.
     await f.makeRepo(join(f.dataDir, "workspaces", "first-workspace"));
     await f.makeRepo(join(f.dataDir, "workspaces", "second"));
     await completed(

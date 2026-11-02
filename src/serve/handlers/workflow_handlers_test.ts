@@ -97,8 +97,6 @@ function makeWorkflowRepo(
   } as unknown as WorkflowRepository;
 }
 
-// ── applyTriggerOverrides ────────────────────────────────────────────
-
 Deno.test("applyTriggerOverrides: calls updateTriggerOverrides with overrides from config", async () => {
   let capturedOverrides: ReadonlyMap<string, TriggerOverride> | undefined;
   const ctx = {
@@ -170,8 +168,6 @@ Deno.test("applyTriggerOverrides: catches and logs errors from updateTriggerOver
   });
 });
 
-// ── workflow.search / workflow.run.search pagination ─────────────────────
-
 interface SentFrame {
   type: string;
   payload?: {
@@ -221,13 +217,6 @@ function readGrant(id: string, pattern: string): Grant {
   };
 }
 
-/**
- * `workflowCount` (default five) workflows, wf-0 (newest runs) … wf-4,
- * `runsPerWorkflow` runs each;
- * wf-i has i + 1 steps.
- * With `grants` the context enforces token-mode authorization; without,
- * mode none.
- */
 function makeSearchCtx(
   grants?: Grant[],
   runsPerWorkflow = 1,
@@ -313,7 +302,6 @@ Deno.test("handleWorkflowSearch: returns every workflow when no limit is sent", 
 
 Deno.test("handleWorkflowSearch: pages after authorization so hidden workflows do not shorten a page", async () => {
   const { socket, frames } = makeSearchSocket();
-  // wf-1 is not granted; a page of two must still hold two readable items.
   const ctx = makeSearchCtx([
     readGrant("g0", "wf-0"),
     readGrant("g2", "wf-2"),
@@ -347,7 +335,6 @@ Deno.test("handleWorkflowRunSearch: pages newest-first runs and reports total be
   assertEquals(names(frames[0], "workflowName"), ["wf-2", "wf-3"]);
   assertEquals(frames[0].payload?.total, 5);
   assertEquals("total" in (frames[0].payload?.data ?? {}), false);
-  // No since bound: no window to age out of.
   assertEquals("since" in (frames[0].payload ?? {}), false);
   assertEquals("oldestStartedAt" in (frames[0].payload ?? {}), false);
 });
@@ -363,7 +350,6 @@ Deno.test("handleWorkflowRunSearch: with since, sends it and the oldest match's 
     { since: "2026-01-07T00:00:00Z", limit: 1 },
   );
 
-  // wf-1..wf-3 match (wf-4 is before since); the page holds wf-0 only.
   assertEquals(names(frames[0], "workflowName"), ["wf-0"]);
   assertEquals(frames[0].payload?.total, 4);
   assertEquals(frames[0].payload?.since, "2026-01-07T00:00:00.000Z");
@@ -440,7 +426,6 @@ Deno.test("handleWorkflowRunSearch: workflows, until and triggerSource filter be
     null,
     {
       workflows: ["wf-1", "wf-3", "wf-4"],
-      // wf-4's runs start on 2026-01-06, before this bound; wf-1's after.
       until: "2026-01-09T00:00:00Z",
       limit: 2,
     },
@@ -543,7 +528,6 @@ Deno.test("handleWorkflowRunSummary: since, until and workflows narrow the count
   );
 
   const data = (frames[0] as unknown as SummaryFrame).payload!.data;
-  // wf-0 starts on the exclusive until bound; wf-4 is before since.
   assertEquals(data.workflows.map((w) => w.workflowName), ["wf-1"]);
   assertEquals(data.totals.runs, 1);
   assertEquals(data.oldestStartedAt, "2026-01-09T00:00:00.000Z");
@@ -565,8 +549,6 @@ Deno.test("handleWorkflowRunSummary: an unreadable time is refused as validation
   assertEquals(frame.error?.code, "workflow_run_summary_failed");
   assertEquals(frame.error?.details?.reason, "validation_failed");
 });
-
-// --- workflow.history.get step outputs ---
 
 const HISTORY_MODEL_TYPE = "command/shell";
 const WRITER_ID = "0b8a3c1e-4f1d-4c7a-9a55-000000000001";
@@ -605,11 +587,6 @@ function historyResource(name: string, modelId: string, modelName: string) {
   };
 }
 
-/**
- * Persists a run of `history-wf` whose one step wrote a resource for the
- * `writer` model and one for the `secrets` model, with their contents in the
- * datastore, and returns the workflow.
- */
 async function seedHistoryRun(dir: string): Promise<Workflow> {
   const workflow = Workflow.create({
     name: "history-wf",
@@ -782,9 +759,6 @@ Deno.test("handleWorkflowHistoryGet: leaves out outputs of models the principal 
   });
 });
 
-// ── definition index (swamp-club#3968) ─────────────────────────────────
-
-/** A definition named `name` that declares `id`. */
 function definitionOf(
   id: string,
   name: string,
@@ -796,12 +770,6 @@ function definitionOf(
   });
 }
 
-/**
- * `makeHistoryCtx` with serve's definition index over real definition files:
- * `writer` (tagged `env: dev`), `secrets`, and `unrelated` definitions that
- * own nothing the run wrote. Reads of definition files are counted, and a
- * scan of every definition through the repository fails the test.
- */
 async function makeIndexedHistoryCtx(
   dir: string,
   workflow: Workflow,
@@ -817,7 +785,6 @@ async function makeIndexedHistoryCtx(
   }
   const counts = { reads: 0, scans: 0 };
   const ctx = makeHistoryCtx(dir, workflow, grants);
-  // Grants with conditions decide on the owners' tags.
   const snapshot = new PolicySnapshot(grants, [], createConditionEvaluator());
   ctx.policySnapshotLoader = {
     snapshot,
@@ -837,7 +804,6 @@ async function makeIndexedHistoryCtx(
       counts.reads++;
       return repo.readDefinitionFile(path, segments, isSymlink);
     },
-    // Every stat the test's writes set is old enough to trust.
   }, { now: () => Date.now() + 60_000 });
   return { ctx, repo, counts };
 }
@@ -862,7 +828,6 @@ Deno.test("handleWorkflowHistoryGet: reads only the owners' definition files per
       stdout: "hello",
       apiKey: "not-for-you",
     });
-    // The one listing of all 52 definitions, then the two owners read.
     assertEquals(counts.reads, 52 + 2);
 
     for (let i = 0; i < 5; i++) await historyGet(ctx, searchPrincipal);
@@ -945,12 +910,6 @@ Deno.test("handleWorkflowHistoryGet: a cancelled request replies cancelled witho
   });
 });
 
-// ── nested run links (swamp-club#2736) ─────────────────────────────────
-
-/**
- * Persists a run of `history-wf` cancelled while its one step waited on a
- * run of `secret-wf`, which detaches the step with an error naming that run.
- */
 async function seedDetachedNestedRun(
   dir: string,
   secretRunId: string,
@@ -1120,8 +1079,6 @@ Deno.test("handleWorkflowHistoryGet: forwards reason and entity type for an unkn
   });
 });
 
-// --- handleWorkflowEdit (swamp-club#2426) ---
-
 const WORKFLOW_EDITOR: Principal = { kind: "user", id: "editor" };
 
 function workflowGrant(overrides: Partial<Grant>): Grant {
@@ -1151,7 +1108,6 @@ function editSocket(): WebSocket & { sent: string[] } {
   } as unknown as WebSocket & { sent: string[] };
 }
 
-/** An edit context over a real workflow repository in `repoDir`. */
 function workflowEditCtx(
   repoDir: string,
   workflowRepo: YamlWorkflowRepository,
@@ -1340,9 +1296,6 @@ Deno.test("handleWorkflowEdit: a retag into a denied scope sends one error and w
   });
 });
 
-// --- handleWorkflowEdit retag needs tag (swamp-club#3085) ---
-
-/** Write on every workflow; tag only on team-a ones; write does not imply tag. */
 function teamTagWorkflowCtx(
   dir: string,
   repo: YamlWorkflowRepository,
@@ -1584,15 +1537,12 @@ Deno.test("handleWorkflowEdit: reports an unknown workflow as not found", async 
   });
 });
 
-// ── workflow.cancel (swamp-club#2651) ────────────────────────────────
-
 interface CancelFrame {
   type: string;
   payload?: { data: { runId: string; workflowName: string; status: string } };
   error?: { code: string; message: string };
 }
 
-/** A registered run of `deploy` whose abort runs `onAbort`. */
 function cancellableRun(
   runId: string,
   onAbort: () => void,
@@ -1612,11 +1562,6 @@ function cancellableRun(
   };
 }
 
-/**
- * A cancel context over `deploy`. With `suspendedRunId`, the run repository
- * holds that run persisted as suspended, as a resume leaves it when it saves
- * the run at its next gate: the cancel locates it before reserving the id.
- */
 function makeCancelCtx(
   registry: ActiveRunRegistry,
   suspendedRunId?: string,
@@ -1682,7 +1627,6 @@ Deno.test("handleWorkflowCancel: reports busy when another operation takes the i
   registry.register(run);
 
   try {
-    // The aborted resume saved the run suspended at its next gate.
     const frames = await cancelRun(registry, runId, undefined, true);
 
     assertEquals(abortMessage(run), "cancelled by anonymous");
@@ -1697,11 +1641,6 @@ Deno.test("handleWorkflowCancel: reports busy when another operation takes the i
   }
 });
 
-/**
- * A registry in which a resume registers `replacement` under the id just as
- * the cancel reserves it: after the aborted run left, before the persisted
- * cancel can claim the id.
- */
 class ResumeRaceRegistry extends ActiveRunRegistry {
   replacement: ActiveRun | undefined;
 
@@ -1723,7 +1662,6 @@ Deno.test("handleWorkflowCancel: aborts a run a resume registered again after th
   registry.replacement = replacement;
 
   try {
-    // The aborted resume saved the run suspended at its next gate.
     const frames = await cancelRun(registry, runId, undefined, true);
 
     assertEquals(abortMessage(run), "cancelled by anonymous");
@@ -1742,7 +1680,6 @@ Deno.test("handleWorkflowCancel: aborts a run a resume registered again after th
 Deno.test("handleWorkflowCancel: a run its abort ended has its suspended nested runs cancelled and listed in the reply", async () => {
   const built = nestedChain();
   const [parent, child] = built.chain;
-  // The parent was resumed and is running here: its abort settles it.
   const registry = new ActiveRunRegistry();
   const run = {
     ...cancellableRun(parent.id, () => {
@@ -1951,11 +1888,8 @@ Deno.test("handleWorkflowEdit: an allowed rename onto another workflow's name le
   });
 });
 
-// --- principal on the libswamp spans (swamp-club#3593) ---
-
 const TRACED_EDITOR: Principal = { kind: "user", id: "editor" };
 
-/** A context whose datastore paths resolve under `repoDir`, for deletes. */
 function tracedWorkflowCtx(
   repoDir: string,
   workflowRepo: YamlWorkflowRepository,
@@ -2045,13 +1979,6 @@ Deno.test("handleWorkflowDelete: records the deleted workflow and the requesting
   });
 });
 
-// --- traced WebSocket reads (swamp-club#3741) ---
-
-/**
- * Runs `fn` inside the `swamp.serve.request` span connection.ts opens for a
- * WebSocket request, so the handler's spans have the parent they have in
- * serve.
- */
 function tracedRequest(
   type: string,
   socket: WebSocket,
@@ -2068,10 +1995,6 @@ function tracedRequest(
   }, fn);
 }
 
-/**
- * Asserts each of `children` is one span started directly under `parent`,
- * and returns `parent`.
- */
 function assertChildren(
   spans: readonly ReadableSpan[],
   parent: string,
@@ -2173,7 +2096,6 @@ Deno.test("handleWorkflowHistoryGet: records the error code of an unknown run on
         request.attributes["swamp.serve.response.error_code"],
         "workflow_history_get_failed",
       );
-      // A run that is not found is the caller's error, not the server's.
       assertEquals(
         request.attributes["swamp.serve.response.error_reason"],
         "not_found",
@@ -2329,12 +2251,6 @@ Deno.test("handleWorkflowApprovals: traces the approvals read, its definitions l
   });
 });
 
-// --- handleWorkflowApprovals canDecide (swamp-club#3697) ---
-
-/**
- * Saves a workflow with one manual_approval gate and a run suspended at it,
- * started by `user:alice`.
- */
 async function seedGatedRun(
   dir: string,
   repo: YamlWorkflowRepository,
@@ -2423,7 +2339,6 @@ Deno.test("handleWorkflowApprovals: canDecide says whether this caller holds app
     ]);
     const approvals = await listApprovals(ctx, WORKFLOW_EDITOR);
     const byName = new Map(approvals.map((a) => [a.workflowName, a]));
-    // The unreadable workflow's gate is dropped before any flag is set.
     assertEquals([...byName.keys()].sort(), ["team-a-deploy", "team-b-deploy"]);
     assertEquals(byName.get("team-a-deploy")?.canDecide, true);
     assertEquals(byName.get("team-b-deploy")?.canDecide, false);
@@ -2461,7 +2376,6 @@ Deno.test("handleWorkflowApprovals: with authorization off every gate can be dec
   });
 });
 
-/** Records the signal each findByStatus is given, then reads as usual. */
 class SignalRecordingRunRepository extends YamlWorkflowRunRepository {
   readonly signals: Array<AbortSignal | undefined> = [];
 
@@ -2505,10 +2419,6 @@ Deno.test("handleWorkflowApprovals: a request cancelled during its suspended-run
       );
       controller.abort();
 
-      // Answered while the share is still held: the read gave up its place
-      // rather than waiting for a permit. The handler replies only once the
-      // read has settled, so no listing or record read outlives the reply.
-      // A read that kept waiting fails here rather than hanging the test.
       await waitFor(() => frames.length > 0, "the cancelled reply");
       await request;
       assertEquals(runRepo.signals, [controller.signal]);

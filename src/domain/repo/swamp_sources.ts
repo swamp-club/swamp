@@ -25,9 +25,6 @@ import {
   MODEL_EXTENSION_KIND,
 } from "../terminology/behavior_aliases.ts";
 
-/**
- * The kinds of extensions that a source can provide.
- */
 export type ExtensionKind =
   | "models"
   | "vaults"
@@ -45,57 +42,36 @@ export const EXTENSION_KINDS: readonly ExtensionKind[] = [
   "workflows",
 ] as const;
 
-/**
- * An extension kind or registry content type in its stored spelling:
- * `behaviors` becomes `models` (swamp-club#3410), and every other value is
- * returned unchanged.
- */
+/** behaviors is stored as models; every other value is returned unchanged */
 export function canonicalExtensionKind(kind: string): string {
   return kind === BEHAVIOR_EXTENSION_KIND ? MODEL_EXTENSION_KIND : kind;
 }
 
 /**
- * A list of extension kinds or content types in their stored spelling. A
- * list with no behavior spelling comes back unchanged, element for element;
- * otherwise each `behaviors` becomes `models` and repeats are dropped, so
- * `behaviors,models` names `models` once.
+ * a list with no behaviors comes back unchanged; otherwise behaviors becomes
+ * models and repeats are dropped
  */
 export function canonicalExtensionKinds(kinds: readonly string[]): string[] {
   if (!kinds.includes(BEHAVIOR_EXTENSION_KIND)) return [...kinds];
   return [...new Set(kinds.map(canonicalExtensionKind))];
 }
 
-/**
- * A single source entry from `.swamp-sources.yaml`.
- */
 export interface SwampSource {
-  /** Filesystem path (may contain `~`, `$VAR`, or glob patterns). */
   path: string;
-  /** Optional filter — only load these extension kinds from this source. */
   only?: ExtensionKind[];
-  /** Skill directory names installed from this source's manifest. */
   installedSkills?: string[];
 }
 
-/**
- * The parsed contents of `.swamp-sources.yaml`.
- */
 export interface SwampSourcesConfig {
   sources: SwampSource[];
 }
 
-/**
- * Resolved extension directories for a single source.
- * Each field is an absolute directory path, or undefined if not applicable
- * (either the directory doesn't exist or is filtered out by `only`).
- */
 export interface ResolvedSourceDirs {
-  /** The original source path (for diagnostics). */
   sourcePath: string;
   modelsDir?: string;
   /**
-   * The source's `extensions/behaviors/`, the behavior-spelled sibling of
-   * its default models directory (swamp-club#3338). Loaded as models.
+   * the source's extensions/behaviors/, the behavior-spelled sibling of its
+   * models directory; loaded as models
    */
   behaviorsDir?: string;
   vaultsDir?: string;
@@ -131,13 +107,6 @@ const SwampSourcesConfigSchema = z.object({
   sources: z.array(SwampSourceSchema).min(1, "At least one source is required"),
 });
 
-/**
- * Parses and validates YAML content as a `.swamp-sources.yaml` file.
- *
- * @param yamlContent - Raw YAML string
- * @returns Validated sources config
- * @throws UserError if the YAML is invalid or does not match the schema
- */
 export function parseSwampSources(yamlContent: string): SwampSourcesConfig {
   const raw = parseYaml(yamlContent);
 
@@ -162,30 +131,20 @@ export function parseSwampSources(yamlContent: string): SwampSourcesConfig {
   return result.data;
 }
 
-/**
- * Checks whether a path string contains glob characters.
- */
 export function isGlobPattern(path: string): boolean {
   return /[*?{]/.test(path);
 }
 
 /**
- * Mapping from extension kind to the `export const <name>` identifiers a
- * loader will accept. Must stay in sync with each loader's pre-bundle regex
- * (e.g. `UserModelLoader` checks for `model|extension`, `UserVaultLoader`
- * checks for `vault`). The content pre-scan in
- * `resolveExtensionKindsForSource` uses this map so pre-scan detection
- * equals loader acceptance — avoid silent divergence.
- *
- * Workflows are YAML files, not TS modules, so this map has no entry for
- * them — workflow detection is filename-based (`.yaml`/`.yml` with a
- * top-level `jobs:` key).
+ * must stay in sync with each loader's pre-bundle regex so pre-scan detection
+ * equals loader acceptance; workflows are YAML, detected by filename and a
+ * top-level jobs: key
  */
 export const EXTENSION_EXPORT_NAMES: Record<
   Exclude<ExtensionKind, "workflows">,
   readonly string[]
 > = {
-  // `behavior` is the other spelling of `model` (swamp-club#3338).
+  // behavior is the other spelling of model
   models: ["model", "behavior", "extension"],
   vaults: ["vault"],
   datastores: ["datastore"],
@@ -194,14 +153,9 @@ export const EXTENSION_EXPORT_NAMES: Record<
 } as const;
 
 /**
- * Examines a `.ts` file's source text and returns the extension kind it
- * declares, or undefined if no known extension export is present. Uses the
- * same `export\s+const\s+<name>\s*[=:]` shape the loaders use for their
- * pre-bundle skip check so detection matches load-time acceptance.
- *
- * Returns the first matching kind encountered — files that declare more
- * than one extension kind in a single module are malformed and outside the
- * pre-scan's responsibility; the loader catches that downstream.
+ * uses the loaders' export shape so detection matches load-time acceptance;
+ * returns the first match, since a module declaring several kinds is malformed
+ * and the loader catches it downstream
  */
 export function detectKindFromSource(
   sourceText: string,

@@ -18,21 +18,9 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * Which view of a v3 datastore built a checkout's projection
- * (swamp-club#3985). The projection (the record files under `.swamp/`), the
- * v3 catalog and the read model's state are one per checkout, but the commit
- * log they are built from is not: a solo checkout reads the datastore's own
- * log (or its copy of it), and a serve-mode checkout reads its follower copy
- * of serve's log under a root keyed by serve's address and namespace, which
- * holds only what its token may read. A projection built from one of these
- * and caught up from another shows records the new view does not hold, and
- * its cursor is another log's, so the new log's commits may never apply.
- *
- * So the checkout records the view its projection was built from, in its
- * read-model state directory, and a context opened with another view
- * rebuilds the projection from the new one first ({@link alignCheckoutView}).
- *
- * @module
+ * a projection built from one commit-log view and caught up from another shows
+ * records the new view does not hold and has another log's cursor, so a context
+ * opened with another view rebuilds the projection first
  */
 
 import { createHash } from "node:crypto";
@@ -52,26 +40,15 @@ import {
 } from "./v3_datastore.ts";
 import { acquireV3WriterLock } from "./v3_writer_lock.ts";
 
-/** The file, in the checkout's read-model state directory. */
 export const CHECKOUT_VIEW_FILE = "checkout_view.json";
 
-/**
- * A view of a v3 datastore a checkout's projection is built from: serve's,
- * through the local root of a serve address and namespace, for the caller
- * a token fingerprint names; or the datastore's own, at its path, for a
- * namespace.
- */
 export type CheckoutView =
   | {
     readonly kind: "serve";
     readonly root: string;
-    /**
-     * The copy's id (swamp-club#4049): a copy moved aside and started
-     * afresh at the same root is another view.
-     */
+    /** a copy moved aside and started afresh at the same root is another view */
     readonly copy: string;
     readonly caller: string;
-    /** Serve's address, for messages only: the root is keyed by it. */
     readonly serverUrl: string;
   }
   | {
@@ -88,10 +65,6 @@ export function serveCallerFingerprint(token: string | undefined): string {
   return createHash("sha256").update(token ?? "").digest("hex");
 }
 
-/**
- * The view a context over the v3 datastore at `datastorePath` reads;
- * `copyId` is the serve copy's, which a serve view records.
- */
 export function checkoutViewOf(
   datastorePath: string,
   namespace: string,
@@ -119,7 +92,6 @@ function sameView(a: CheckoutView, b: CheckoutView): boolean {
   return false;
 }
 
-/** What the file records: a view, and whether a rebuild from it is unfinished. */
 interface RecordedView {
   readonly view: CheckoutView;
   /**
@@ -129,17 +101,9 @@ interface RecordedView {
   readonly rebuilding?: true;
 }
 
-/** Error code for {@link ServeCopyHoldsUnlandedCommitsError}. */
 export const SERVE_COPY_HOLDS_UNLANDED_CODE =
   "datastore_v3_serve_copy_holds_unlanded";
 
-/**
- * Thrown when switching a checkout's view would leave a serve copy's
- * unsettled writes behind: the copy was built with another token, or the
- * checkout last read the datastore through another serve address or
- * namespace, and that copy's outbox still holds commits that have not
- * settled with serve.
- */
 export class ServeCopyHoldsUnlandedCommitsError extends UserError {
   constructor(readonly serveUrl: string) {
     super(
@@ -157,14 +121,7 @@ export class ServeCopyHoldsUnlandedCommitsError extends UserError {
   }
 }
 
-/**
- * Refuses when the outbox beside the serve copy at `root` holds entries
- * that could still land: pending or queued offline. Rejected and
- * quarantined entries never land, so they do not hold the copy; a reset
- * keeps them (swamp-club#4195).
- *
- * @throws ServeCopyHoldsUnlandedCommitsError
- */
+/** rejected and quarantined entries never land, so they do not hold the copy */
 export async function assertServeCopySettled(
   root: string,
   serverUrl: string,
@@ -189,10 +146,6 @@ function viewPath(repoDir: string): string {
   return join(readModelStateDir(repoDir), CHECKOUT_VIEW_FILE);
 }
 
-/**
- * The view recorded for the checkout at `repoDir`, or undefined when none
- * is (or the file cannot be read as one: it is then rebuilt like a change).
- */
 async function readRecordedView(
   repoDir: string,
 ): Promise<RecordedView | "absent" | "unreadable"> {
@@ -233,7 +186,6 @@ async function writeRecordedView(
   );
 }
 
-/** Whether `recorded` says the projection is `view`'s, finished. */
 function isCurrent(
   recorded: RecordedView | "absent" | "unreadable",
   view: CheckoutView,
@@ -243,31 +195,9 @@ function isCurrent(
 }
 
 /**
- * Makes the projection of the checkout at `repoDir` the one `handle`'s view
- * builds, before the context reads or catches up: when the checkout
- * recorded another view, or a rebuild that did not finish, it is rebuilt
- * from `handle`'s commit log as after an interrupted writer
- * (`recoverInterruptedWriter(0)`: the catalog cleared, the read model's
- * state reset, every commit replayed and every projected file no commit
- * owns removed), then the run indexes are removed, and the view recorded.
- *
- * A checkout with no view recorded is stamped with a solo view as it is:
- * before swamp-club#3985 only a solo view could build a projection. With a
- * serve view it is rebuilt, since it may hold a solo projection.
- *
- * The rebuild runs under the writer lease of `handle`'s datastore, which
- * every writer of the checkout holds for its whole command, so no writer
- * materialises files meanwhile: `holdsWriterLock` when this process holds
- * it already, else it is taken, waiting up to the lock timeout. A read-only
- * command waits too: it must never read another view's projection. It
- * touches only this checkout's files, catalog and read-model state; the
- * commit log is only read, so a solo datastore other checkouts share is
- * unchanged.
- *
- * @throws ServeCopyHoldsUnlandedCommitsError when the view recorded was a
- *   serve copy at another root whose outbox still holds entries
- * @throws V3WriterBusyError when another process holds the lease past the
- *   lock timeout
+ * the rebuild runs under the writer lease, which every writer of the checkout
+ * holds, so no writer materialises files meanwhile; a read-only command waits
+ * too, since it must never read another view's projection
  */
 export async function alignCheckoutView(
   repoDir: string,

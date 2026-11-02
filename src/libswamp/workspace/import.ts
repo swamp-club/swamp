@@ -23,11 +23,9 @@ import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
 import { type WorkspaceDeps, workspaceErrorEvent } from "./deps.ts";
 import { importWorkspace } from "./workspace_store.ts";
 
-/** A workspace registered from an existing repo. */
 export interface WorkspaceImportData {
   readonly name: string;
   readonly path: string;
-  /** True when the folder was registered already; nothing changed. */
   readonly alreadyRegistered: boolean;
 }
 
@@ -35,10 +33,6 @@ export type WorkspaceImportEvent =
   | { kind: "completed"; data: WorkspaceImportData }
   | { kind: "error"; error: SwampError };
 
-/**
- * Registers an existing swamp repo as a workspace where it is, the way the
- * `swamp start` page imports one. Nothing is moved or copied.
- */
 export async function* workspaceImport(
   ctx: LibSwampContext,
   deps: WorkspaceDeps,

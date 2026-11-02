@@ -30,20 +30,14 @@ import {
   evaluateWorkflowRunFilter,
   validateWorkflowRunFilter,
 } from "../../infrastructure/cel/workflow_run_filter.ts";
-/**
- * Re-export the shared item type for history search consumers.
- */
 export type WorkflowHistorySearchItem = WorkflowRunSearchItem;
 
-/**
- * Data payload for the completed event.
- */
 export interface WorkflowHistorySearchData {
   query: string;
   results: WorkflowHistorySearchItem[];
   /**
-   * Set when retention has reaped runs: older runs than `cutoff` are gone,
-   * so the listing cannot show them (swamp-club#3473).
+   * set when retention has reaped runs: runs older than cutoff are gone, so the
+   * listing cannot show them
    */
   reapedBefore?: ReapedBefore;
 }
@@ -53,9 +47,6 @@ export type WorkflowHistorySearchEvent =
   | { kind: "completed"; data: WorkflowHistorySearchData }
   | { kind: "error"; error: SwampError };
 
-/**
- * Dependencies for the workflow history search generator.
- */
 export interface WorkflowHistorySearchDeps {
   findAllWorkflows(): Promise<Array<{ id: string; name: string }>>;
   findAllRunsByWorkflowId(id: string): Promise<
@@ -76,16 +67,9 @@ export interface WorkflowHistorySearchDeps {
       stepProgress?: { completed: number; total: number };
     }>
   >;
-  /**
-   * Where retention records how far it has reaped. With it the listing says
-   * that older runs have been reaped (swamp-club#3473).
-   */
   retentionWatermarks?: RetentionWatermarkRepository;
 }
 
-/**
- * Input for the workflow history search generator.
- */
 export interface WorkflowHistorySearchInput {
   query?: string;
   workflow?: string;
@@ -93,13 +77,6 @@ export interface WorkflowHistorySearchInput {
   filter?: string;
 }
 
-/**
- * Searches workflow run history across all workflows.
- *
- * Fetches all workflows, then all runs for each workflow.
- * No filtering — just fetches all runs and sorts by startedAt descending.
- * The Ink renderer uses fzf for interactive fuzzy matching.
- */
 export async function* workflowHistorySearch(
   _ctx: LibSwampContext,
   deps: WorkflowHistorySearchDeps,
@@ -113,25 +90,21 @@ export async function* workflowHistorySearch(
 
       const allWorkflows = await deps.findAllWorkflows();
 
-      // Fetch run summaries for all workflows with bounded concurrency. Each
-      // per-workflow read streams one run file at a time; the bound keeps at
-      // most RUN_FANOUT_CONCURRENCY of those in flight so peak memory does not
-      // scale with the number of workflows. Summaries are lightweight, so
-      // holding them all before filtering is cheap (see WorkflowRunSummary).
+      // run summaries are fetched with bounded concurrency so peak memory does
+      // not scale with the number of workflows; summaries are lightweight, so
+      // holding them all before filtering is cheap
       const allRuns = await collectBounded(
         allWorkflows,
         RUN_FANOUT_CONCURRENCY,
         (workflow) => deps.findAllRunsByWorkflowId(workflow.id),
       );
 
-      // Sort by startedAt descending (most recent first)
       allRuns.sort((a, b) => {
         const aTime = a.startedAt?.getTime() ?? 0;
         const bTime = b.startedAt?.getTime() ?? 0;
         return bTime - aTime;
       });
 
-      // Convert to search items
       let results: WorkflowHistorySearchItem[] = allRuns.map((run) => {
         const startTime = run.startedAt?.getTime();
         const endTime = run.completedAt?.getTime();

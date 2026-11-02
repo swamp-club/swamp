@@ -56,9 +56,8 @@ export function classifyTier(
 export class AuditPolicy {
   readonly #rules: readonly AuditPolicyRule[];
   /**
-   * The rules as matched: each action in the stored spelling, so a
-   * behavior-spelled rule matches the model-spelled events (swamp-club#3334).
-   * `rules` keeps the rules as configured.
+   * rules as matched, with actions in the stored spelling so a behavior-spelled
+   * rule matches model-spelled events; rules keeps them as configured
    */
   readonly #matchRules: readonly AuditPolicyRule[];
   readonly #defaultLevel: AuditLevel;

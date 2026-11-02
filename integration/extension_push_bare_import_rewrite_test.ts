@@ -18,17 +18,9 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * Push rewrites each bare import the project's Deno config resolves to its
- * npm:, jsr: or node: target in the archive's source (swamp-club#3637), as
- * Deno resolves it from that module: deno.json or deno.jsonc imports, an
- * importMap file, the scope covering the module, a workspace root's imports
- * (swamp-club#3612). So the shipped source resolves without the author's
- * config: the registry's scan reads the specifiers, and a pulled extension
- * rebundles in a repository with no deno.json. Wires the real push resolver, module graph
- * reader, planner, dependency extractor and archive assembly to the real
- * install and bundler; only the registry download is mocked. The rebundle
- * resolves npm:ms, jsr:@std/path and npm:zod for real, so it needs network
- * access or a warm DENO_DIR, as the other bundle tests do.
+ * push rewrites each bare import the Deno config resolves to its npm:, jsr: or
+ * node: target so shipped source resolves without the author's config; the
+ * rebundle needs network or a warm DENO_DIR
  */
 
 import {
@@ -81,7 +73,6 @@ const VERSION = "2026.10.20.1";
 const graphReader = new DenoInfoModuleGraphReader(Deno.execPath());
 const logger = getLogger(["test"]);
 
-/** npm, its download counts and OSV, answering for ms 2.x only. */
 function fakeRegistries(url: string | URL): Promise<Response> {
   const host = new URL(String(url)).host;
   const healthy = { license: "MIT", maintainers: [{ name: "a" }] };
@@ -126,8 +117,8 @@ function stubDeps(
     extractDependencySpecifiers,
     checkDependencyTrust: async (specifiers, project: ExtensionProject) => {
       audited.push(...specifiers);
-      // The real audit reads the lock the bundler honours, so the archive
-      // records what it resolved (swamp-club#3662).
+      // the real audit reads the lock the bundler honours, so the archive
+      // records what it resolved
       if (realAudit) {
         return await checkDependencyTrust(
           specifiers,
@@ -189,7 +180,6 @@ async function withRepos(
   }
 }
 
-/** Packages the author's extension as push does. */
 async function pushArchive(
   author: string,
   audited: DependencySpecifier[],
@@ -259,7 +249,6 @@ async function pushArchive(
   };
 }
 
-/** The archive's files under `extension/`, by forward-slash path. */
 async function archiveFiles(archive: Uint8Array): Promise<Map<string, string>> {
   const out = await Deno.makeTempDir({ prefix: "swamp-bare-rewrite-out-" });
   try {
@@ -334,8 +323,7 @@ Deno.test("extension push: ships each bare import as its import-map target, and 
     const files = await archiveFiles(archive);
     const rel = files.get("models/rel.ts") ?? "";
     assertStringIncludes(rel, 'import ms from "npm:ms@2.1.3";');
-    // Each range ships pinned to the version the bundle holds
-    // (swamp-club#3970).
+    // each range ships pinned to the version the bundle holds
     assertMatch(
       rel,
       /import \{ basename \} from "jsr:@std\/path@\d+\.\d+\.\d+";/,
@@ -356,7 +344,6 @@ Deno.test("extension push: ships each bare import as its import-map target, and 
       "no project config ships",
     );
 
-    // Every dependency the archive now names was audited by push.
     assertEquals(
       audited.map((s) => `${s.registry}:${s.name}@${s.version}`).sort(),
       ["jsr:@std/path@^1", "npm:ms@2.1.3"],
@@ -400,7 +387,6 @@ Deno.test("extension push: ships each bare import as its import-map target, and 
   });
 });
 
-/** A one-model extension at `dir` whose model imports `ms` bare. */
 async function writeMsExtension(dir: string): Promise<void> {
   await write(
     join(dir, "extensions", "models", "took.ts"),
@@ -667,8 +653,7 @@ Deno.test("extension push: the archive records the locked version of a written a
     const locked = (spec: string) => lock?.resolvedFor("npm", "ms", spec);
     assert(locked("^2.1.0") !== undefined);
     const files = await archiveFiles(archive);
-    // Both ranges ship pinned to the locked version, one entry for it
-    // (swamp-club#3970).
+    // both ranges ship pinned to the locked version, one entry for it
     const version = locked("^2.1.0");
     assertEquals(locked("~2.1.0") ?? version, version);
     const record = JSON.parse(files.get("dependency-audit.json") ?? "");

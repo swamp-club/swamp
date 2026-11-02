@@ -43,14 +43,9 @@ import type { RepoMarkerData } from "./repo_marker_repository.ts";
 const logger = getLogger(["swamp", "extensions", "installed-entries"]);
 
 /**
- * The in-repo `.swamp/config/upstream_extensions.json` that the
- * auto-resolver records installs into, when it is a separate file from the
- * resolved managed lockfile. Returns undefined when the repo is not a
- * managedConfig repo on an extension-backed datastore, or when both paths
- * name the same file (a filesystem datastore at its default path).
- *
- * This is a transitional read input until swamp-club#2495 moves
- * auto-resolved installs into the managed lockfile (swamp-club#2483).
+ * undefined when the repo is not a managedConfig repo on an extension-backed
+ * datastore, or both paths name the same file; a transitional read input until
+ * installs move to the managed lockfile
  */
 export function transitionalLocalLockfilePath(
   repoDir: string,
@@ -65,18 +60,14 @@ export function transitionalLocalLockfilePath(
     : localPath;
 }
 
-/** Merged installed entries, and which came only from the local lockfile. */
 export interface InstalledEntries {
   entries: Record<string, UpstreamExtensionEntry>;
-  /** Names present only in the transitional local lockfile. */
   localOnly: ReadonlySet<string>;
 }
 
 /**
- * Reads the resolved lockfile and, when given, the transitional local
- * lockfile, merged by name with the resolved entry winning. A corrupt local
- * file is skipped with a warning rather than failing the read, and so is a
- * local entry that is not an object.
+ * merged by name with the resolved entry winning; a corrupt local file or
+ * non-object local entry is skipped with a warning rather than failing the read
  */
 export async function readInstalledEntries(
   resolvedLockfilePath: string,
@@ -108,9 +99,8 @@ export async function readInstalledEntries(
 }
 
 /**
- * Names recorded only in the transitional in-repo auto-resolve lockfile,
- * whose catalog rows reconcile must not orphan. Empty when the repo has no
- * such lockfile (see {@link transitionalLocalLockfilePath}).
+ * names recorded only in the transitional lockfile, whose catalog rows
+ * reconcile must not orphan
  */
 export async function transitionalInstalledNames(
   repoDir: string,
@@ -132,7 +122,6 @@ export async function transitionalInstalledNames(
   return [...localOnly];
 }
 
-/** True when `path` names something inside `boundary`; never throws. */
 function isContained(path: string, boundary: string): boolean {
   try {
     assertContainedPath(path, boundary);
@@ -152,12 +141,9 @@ async function pathExists(path: string, directory = false): Promise<boolean> {
 }
 
 /**
- * True when a pulled extension is gone from disk: its per-extension
- * directory is absent and none of its tracked source files remain (bundle
- * output is regenerable and does not count). This mirrors the auto-resolver's
- * `missing` inspection, the state in which it reinstalls the extension, at
- * its recorded version, the next time one of its types is needed. An entry
- * with a name or path outside the repo is never reported as gone.
+ * mirrors the auto-resolver's missing inspection (it then reinstalls at the
+ * recorded version); bundle output is regenerable and ignored; entries outside
+ * the repo are never reported gone
  */
 export async function isAbsentFromDisk(
   repoDir: string,
@@ -177,7 +163,6 @@ export async function isAbsentFromDisk(
   return true;
 }
 
-/** A lockfile entry's string `files`, read defensively. */
 function trackedFiles(entry: unknown): string[] {
   if (typeof entry !== "object" || entry === null) return [];
   const { files } = entry as { files?: unknown };
@@ -187,14 +172,9 @@ function trackedFiles(entry: unknown): string[] {
 }
 
 /**
- * The paths, relative to the repo, to delete so that an extension is gone
- * from disk ({@link isAbsentFromDisk}) and the auto-resolver reinstalls it:
- * its per-extension directory, then the skill dir of each pulled skill it
- * tracks and any other tracked source file outside that directory. A skill
- * dir another entry in `installed` also claims is shared, so only this
- * extension's own files in it are listed. Bundle output is regenerable and
- * not listed. Empty when the name would lead outside the pulled root; paths
- * outside the repo are left out.
+ * a skill dir another installed entry also claims is shared, so only this
+ * extension's files in it are listed; bundle output, paths outside the repo and
+ * names leading outside the pulled root are left out
  */
 export function pathsToRemoveForReinstall(
   repoDir: string,

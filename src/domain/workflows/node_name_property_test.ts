@@ -29,13 +29,11 @@ import { quoteShellWord } from "../shell_word.ts";
 const isControl = (code: number): boolean =>
   code < 0x20 || (code >= 0x7f && code <= 0x9f);
 
-/** A single UTF-16 code unit from the printable ranges, including space. */
 const arbPrintable = fc.oneof(
   fc.integer({ min: 0x20, max: 0x7e }),
   fc.integer({ min: 0xa0, max: 0xd7ff }),
 ).map((code) => String.fromCharCode(code));
 
-/** A single control character from C0, DEL or C1. */
 const arbControl = fc.oneof(
   fc.integer({ min: 0x00, max: 0x1f }),
   fc.integer({ min: 0x7f, max: 0x9f }),
@@ -46,7 +44,6 @@ const arbPrintableName = fc.stringOf(arbPrintable, {
   maxLength: 24,
 });
 
-/** A string that holds at least one control character somewhere. */
 const arbNameWithControl = fc.tuple(
   fc.stringOf(arbPrintable, { maxLength: 12 }),
   arbControl,

@@ -17,12 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// Self-test for the root-unit checks in usecase_sync_fixtures.ts
-// (swamp-club#3032). No characterization row runs in a root unit yet, so
-// these drive a synthetic composition through the same checks, under a CLI
-// lock and under serve's sync gate, and show each check fails when what it
-// guards breaks.
-
 import { join } from "@std/path";
 import { assertEquals, AssertionError, assertThrows } from "@std/assert";
 import { isCustomDatastoreConfig } from "../src/domain/datastore/datastore_config.ts";
@@ -52,12 +46,6 @@ interface Run {
   order: string[];
 }
 
-/**
- * Writes one file in A's cache and marks it through the root, then ends the
- * root, whose flush pushes and releases the lock or gate it holds (or, with
- * `pushAfterRelease`, releases first). `markOutside` also marks a second
- * file straight through the hook after the root ended.
- */
 async function runSynthetic(
   repos: RowRepos,
   composition: Composition,

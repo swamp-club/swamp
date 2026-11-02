@@ -209,8 +209,6 @@ Deno.test("importAndExtendBundle: throws for bundle with neither model nor exten
   );
 });
 
-// ── validatePrimaryExport: upgrade chain consistency ─────────────────
-
 const fakeZodSchema = {
   _def: {},
   parse: () => ({}),
@@ -280,8 +278,6 @@ Deno.test("validatePrimaryExport: model with mismatching last toVersion fails", 
   );
   assertEquals(result.success, false);
 });
-
-// ── processSecondaryExport: method collision pre-filtering ─────────────
 
 function localContributor(sourcePath: string): ExtensionContributor {
   return { sourcePath, pulled: false };
@@ -540,8 +536,6 @@ Deno.test("processSecondaryExport: a method kind declared by an extension is kep
   }
 });
 
-// ── processSecondaryExport: extension-vs-extension precedence (#2562) ──
-
 const LOCAL_AA = "/repo/extensions/models/aa_ext.ts";
 const LOCAL_ZZ = "/repo/extensions/models/zz_ext.ts";
 const PULLED = "/repo/.swamp/pulled-extensions/@acme/pkg/models/probe.ts";
@@ -768,8 +762,6 @@ Deno.test("processSecondaryExport: a failed registry merge leaves provenance unc
   });
 });
 
-// ── attachPendingExtensionsForType: files that add nothing (#2562) ────
-
 for (
   const [label, exported] of [
     ["an extension with no members", "empty"],
@@ -782,7 +774,6 @@ for (
     const catalog = new ExtensionCatalogStore(join(dir, "catalog.db"));
     clearAttachedExtensions();
     registerTestModel(type, { get: true });
-    // Rows whose source is missing are dropped (swamp-club#2490).
     await Deno.writeTextFile(join(dir, "noop.ts"), "");
     try {
       catalog.upsert({
@@ -822,8 +813,6 @@ for (
     }
   });
 }
-
-// ── attachPendingExtensionsForType: per-extension isolation ────────────
 
 Deno.test("attachPendingExtensionsForType: an extension that fails to import is skipped, the rest attach, and it is retried (swamp-club#2557)", async () => {
   const type = `@test/isolate-${crypto.randomUUID().slice(0, 8)}`;
@@ -868,8 +857,6 @@ Deno.test("attachPendingExtensionsForType: an extension that fails to import is 
     assertEquals("good_method" in afterFirst, true);
     assertEquals("broken_method" in afterFirst, false);
 
-    // The failed extension was not marked attached, so a later pass
-    // attaches it once its bundle imports.
     brokenFails = false;
     await modelKindAdapter.attachPendingExtensionsForType!(
       type,
@@ -888,8 +875,6 @@ Deno.test("attachPendingExtensionsForType: an extension that fails to import is 
     await Deno.remove(dir, { recursive: true }).catch(() => {});
   }
 });
-
-// ── detachExtensionSources: removed extensions leave a type (#2745) ──
 
 Deno.test("detachExtensionSources: removes only the removed source's members", () => {
   withPrecedenceType((type) => {
@@ -1044,14 +1029,6 @@ Deno.test("detachExtensionSources: a member displaced by the removed source atta
   }
 });
 
-// ── Extension rows whose source is gone (swamp-club#2490) ──────────────
-
-/**
- * Seeds three extension rows for `type`: `live` (source on disk, bundle
- * live.js), `gone` (source missing, own bundle gone.js) and `shared`
- * (source missing, but its bundle path is live.js). Every bundle file
- * exists.
- */
 async function seedStaleExtensionRows(
   dir: string,
   catalog: ExtensionCatalogStore,
@@ -1105,8 +1082,6 @@ Deno.test("findExtensionsForType: drops rows whose source is gone and evicts the
       catalog.findExtensionsForType(type).map((r) => basename(r.source_path)),
       ["live.ts"],
     );
-    // gone.js belonged only to a removed row; live.js is still referenced
-    // by the live row even though the removed `shared` row named it too.
     assertEquals(await fileExists(join(dir, "gone.js")), false);
     assertEquals(await fileExists(join(dir, "live.js")), true);
   } finally {
@@ -1152,8 +1127,6 @@ Deno.test("attachPendingExtensionsForType: never imports a row whose source is g
     await Deno.remove(dir, { recursive: true }).catch(() => {});
   }
 });
-
-// --- formatValidationError tests ---
 
 Deno.test("formatValidationError: missing execute reports method name", () => {
   const error = new z.ZodError([

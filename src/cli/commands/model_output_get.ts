@@ -112,13 +112,11 @@ export async function modelOutputGetAction(
   cliCtx.logger.debug("Model output get command completed");
 }
 
-/** The preferred spelling: `swamp behavior output get`. */
 export const BEHAVIOR_OUTPUT_GET_SYNTAX: CommandSyntax = {
   invocation: "swamp behavior output get",
   surface: "behavior",
 };
 
-/** The legacy spelling: `swamp model output get`. */
 export const MODEL_OUTPUT_GET_SYNTAX: CommandSyntax = {
   invocation: "swamp model output get",
   surface: "model",

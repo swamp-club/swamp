@@ -18,14 +18,9 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * `swamp vault remove`: removes a vault's config and, for a local_encryption
- * vault, its stored secrets (swamp-club#3597).
- *
- * The config removal is the transactional use case. The secrets are removed
- * by {@link vaultRemoveStoredSecrets} only once that removal has committed
- * and published, so a removal that does not land never costs the secrets.
- *
- * @module
+ * the config removal is the transactional use case; stored secrets are removed
+ * only once it has committed and published, so a removal that does not land
+ * never costs the secrets
  */
 
 import type { VaultConfig } from "../../domain/vaults/vault_config.ts";
@@ -64,13 +59,9 @@ import { notFound, validationFailed } from "../errors.ts";
 import { withUnitOfWork } from "../unit_of_work.ts";
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
 
-/** A local_encryption vault's stored secrets, which removal deletes. */
 export interface VaultRemoveLocalStorage {
-  /** The base directory the vault's storage resolves against. */
   baseDir: string;
-  /** The vault's secrets directory. */
   directory: string;
-  /** The secrets stored there. */
   secretCount: number;
   /**
    * False when the directory lies outside this repository's `.swamp`: a
@@ -80,20 +71,15 @@ export interface VaultRemoveLocalStorage {
   removable: boolean;
 }
 
-/** What happened to a local_encryption vault's secrets. */
 export interface VaultRemoveSecrets {
   directory: string;
-  /** Whether the directory was removed. */
   removed: boolean;
   secretCount: number;
-  /** The directory lies outside this repository, so it was kept. */
   keptOutsideRepository?: boolean;
 }
 
-/** The vault swamp stores sensitive outputs in when none is named. */
 export interface EffectiveDefaultVault {
   name: string;
-  /** Named by `defaultVault`; otherwise it is the first vault, by fallback. */
   configured: boolean;
 }
 
@@ -101,7 +87,6 @@ export interface VaultRemovePreview {
   vaultName: string;
   vaultId: string;
   vaultType: string;
-  /** Set for a local_encryption vault; other types keep their secrets. */
   localStorage?: VaultRemoveLocalStorage;
   references: VaultReferenceSite[];
   possibleReferences: PossibleVaultReference[];
@@ -111,16 +96,9 @@ export interface VaultRemoveData {
   vaultName: string;
   vaultId: string;
   vaultType: string;
-  /** References the removal went ahead despite, with force. */
   forcedReferences: VaultReferenceSite[];
-  /** Sources that compute a vault name at run time and may use this vault. */
   possibleReferences: PossibleVaultReference[];
   timestamp: string;
-  /**
-   * The local secrets, handled after the config removal was published by the
-   * caller of {@link vaultRemoveStoredSecrets}. Absent for a vault whose
-   * secrets live with its provider.
-   */
   secrets?: VaultRemoveSecrets;
 }
 
@@ -131,26 +109,15 @@ export type VaultRemoveEvent =
 
 export interface VaultRemoveInput {
   vaultName: string;
-  /** Remove the vault even while something references it. */
   force?: boolean;
 }
 
 export interface VaultRemoveDeps {
   findVault: (name: string) => Promise<VaultConfig | null>;
-  /** Every vault config, as read from each file. */
   listVaults: () => Promise<{ id: string; name: string }[]>;
-  /**
-   * The config stored at the path `config`'s type and id give, which is the
-   * file a removal deletes; null when no file is there.
-   */
   findStoredAt: (config: VaultConfig) => Promise<VaultConfig | null>;
-  /**
-   * The vault sensitive outputs go to when none is named: `defaultVault`
-   * when it names a vault, else the first user vault.
-   */
   getEffectiveDefaultVault: () => Promise<EffectiveDefaultVault | undefined>;
   findReferences: (vaultName: string) => Promise<VaultReferences>;
-  /** The local_encryption storage of `config`; undefined for other types. */
   findLocalStorage: (
     config: VaultConfig,
   ) => Promise<VaultRemoveLocalStorage | undefined>;
@@ -161,16 +128,12 @@ export interface VaultRemoveDeps {
   ) => Promise<VaultRemoveSecrets>;
 }
 
-/** The repositories vault remove reads and writes through. */
 export interface VaultRemoveRepositories {
-  /** The hooked repository, so the removal is staged and marked. */
   vaultConfigRepo: YamlVaultConfigRepository;
-  /** Reads primary and auto-definitions alike. */
   definitionRepo: YamlDefinitionRepository;
   workflowRepo: WorkflowRepository;
 }
 
-/** Wires real infrastructure into VaultRemoveDeps. */
 export function createVaultRemoveDeps(
   repoDir: string,
   repos: VaultRemoveRepositories,
@@ -253,11 +216,6 @@ export function createVaultRemoveDeps(
   };
 }
 
-/**
- * What removing the vault would do, for the confirmation prompt. Throws the
- * SwampError that {@link vaultRemove} would report: an unknown or reserved
- * vault, the default vault, or a referenced vault without force.
- */
 export async function vaultRemovePreview(
   ctx: LibSwampContext,
   deps: VaultRemoveDeps,
@@ -292,8 +250,8 @@ export async function vaultRemovePreview(
 }
 
 /**
- * Removes the vault's config. The checks of {@link vaultRemovePreview} run
- * again here, since the repository may have changed since the preview.
+ * the preview's checks run again here because the repository may have changed
+ * since
  */
 export async function* vaultRemove(
   ctx: LibSwampContext,
@@ -345,10 +303,8 @@ export async function* vaultRemove(
 }
 
 /**
- * Removes a removed vault's local secrets. Call it only once the config
- * removal of {@link vaultRemove} has committed and published. Returns
- * undefined for a vault whose secrets are not stored locally, and keeps a
- * directory outside this repository.
+ * call only once the config removal has committed and published; a directory
+ * outside this repository is kept
  */
 export async function vaultRemoveStoredSecrets(
   ctx: LibSwampContext,

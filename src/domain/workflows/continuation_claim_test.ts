@@ -113,7 +113,6 @@ Deno.test("continuationClaimKey: refuses anything that is not a run id, a digest
 Deno.test("decodeContinuationClaim: a claim survives its stored form, and anything else is not a claim", () => {
   const stored = encodeContinuationClaim(claim(2));
   assertEquals(decodeContinuationClaim(stored, claim(2)), claim(2));
-  // Stored under another generation's key.
   assertEquals(decodeContinuationClaim(stored, claim(1)), undefined);
   assertEquals(decodeContinuationClaim(null, claim(2)), undefined);
   assertEquals(
@@ -147,7 +146,6 @@ Deno.test("suspensionKeyOf: a run that moved on gives another key", async () => 
   const before = await suspensionKeyOf(run);
   run.getJob("main")!.getStep("review")!.succeed();
   assert(await suspensionKeyOf(run) !== before);
-  // As a resume moves it on: by applying the signal its wait accepted.
   const signalled = waitingRun();
   const waiting = await suspensionKeyOf(signalled);
   const step = signalled.getJob("main")!.getStep("review")!;
@@ -159,7 +157,6 @@ Deno.test("suspensionKeyOf: a run that moved on gives another key", async () => 
     ),
   );
   assert(await suspensionKeyOf(signalled) !== waiting);
-  // Another run suspended on a wait of its own.
   assert(await suspensionKeyOf(waitingRun()) !== before);
 });
 
@@ -232,7 +229,6 @@ Deno.test("acquireContinuation: serve takes over a dead holder only when told it
     NOW,
   );
   assertEquals(current, { kind: "acquired", claim: claim(2, B) });
-  // The dead holder's claim stays: a takeover adds a generation.
   assertEquals(store.claims.length, 2);
 });
 
@@ -287,6 +283,5 @@ Deno.test("removeClaimsOfRuns: one run whose claims cannot be removed does not k
     "store down",
   );
   assertEquals(removed, [a, b]);
-  // No store, nothing to do.
   await removeClaimsOfRuns(undefined, [a]);
 });

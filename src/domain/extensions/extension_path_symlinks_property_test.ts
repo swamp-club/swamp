@@ -58,7 +58,6 @@ Deno.test("pathComponentsToCheck: adding an inner root never adds components to 
       const outer = base;
       const inner = resolve(outer, ...innerSegs);
       const file = resolve(inner, ...fileSegs);
-      // An inner root lies strictly under the outer one.
       fc.pre(inner.startsWith(outer + SEPARATOR));
       const outerOnly = pathComponentsToCheck(file, [outer]);
       const both = pathComponentsToCheck(file, [inner, outer]);

@@ -17,13 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Property: whatever the interleaving of offline commits, other writers'
- * commits and flushes cut off part-way or refused, every offline entry is
- * in the end landed (once), rejected or quarantined; none is lost
- * (swamp-club#4195).
- */
-
 import { assertEquals } from "@std/assert";
 import fc from "fast-check";
 import type { Commit } from "../../domain/datastore_v3/commit.ts";
@@ -58,20 +51,16 @@ import {
 
 await initializeLogging({});
 
-/** How serve answers one send. */
 type Answer = "land" | "unreachable" | "forbidden" | "content" | "uncached";
 
-/** One step of the interleaving. */
 type Step =
   | { readonly kind: "offline"; readonly minute: number }
   | { readonly kind: "online"; readonly minute: number }
   | { readonly kind: "flush"; readonly answers: readonly Answer[] };
 
-/** A checkout's outbox and serve's log, in memory. */
 class Model implements OfflineFlushPort {
   readonly history = new FixtureHistory();
   readonly commits: Commit[] = [];
-  /** The outbox: entries by txnId, in queue order. */
   readonly outbox = new Map<string, OutboxEntry>();
   readonly own = new Set<string>();
   answers: Answer[] = [];
@@ -158,7 +147,6 @@ class Model implements OfflineFlushPort {
     this.commits.push(commit);
   }
 
-  /** The highest version of `out` known here: landed or queued. */
   highWater(): number {
     let high = this.history.partition.highWater("out");
     for (const entry of this.outbox.values()) {
@@ -171,7 +159,6 @@ class Model implements OfflineFlushPort {
     return high;
   }
 
-  /** The entries a flush takes: queued offline, in queue order. */
   queued(): OutboxEntry[] {
     return [...this.outbox.values()].filter((entry) =>
       entry.state === "offline"
@@ -241,7 +228,6 @@ Deno.test("flushOfflineEntries (property): every offline entry ends landed once,
               seq: model.history.partition.seq + 1,
               txnId: `online-${next++}`,
               at: minuteAt(current.minute),
-              // Serve's writer fence, as every flush below commits under.
               fence: 1,
               ops: await saveOps({
                 name: "out",
@@ -259,7 +245,6 @@ Deno.test("flushOfflineEntries (property): every offline entry ends landed once,
             });
           }
         }
-        // Serve answers every send from here on: the rest lands.
         model.answers = [];
         await flushOfflineEntries(model, model.queued(), {
           writer: { host: "h", pid: 1, instance: "p" },
@@ -282,7 +267,6 @@ Deno.test("flushOfflineEntries (property): every offline entry ends landed once,
             );
           }
         }
-        // The outbox holds nothing it was not given.
         for (const txnId of model.outbox.keys()) {
           assertEquals(queuedTxnIds.includes(txnId), true);
         }
@@ -292,12 +276,10 @@ Deno.test("flushOfflineEntries (property): every offline entry ends landed once,
   );
 });
 
-/** One step of the interleaving with removals and appends. */
 type EditStep =
   | { readonly kind: "save"; readonly minute: number }
   | {
     readonly kind: "append" | "delete" | "gc";
-    /** Which of the checkout's own live versions, by index. */
     readonly pick: number;
     readonly minute: number;
   }
@@ -324,7 +306,6 @@ const editStep: fc.Arbitrary<EditStep> = fc.oneof(
   }),
 );
 
-/** A version the checkout wrote offline: its queued number and its save. */
 interface OwnVersion {
   readonly queued: number;
   readonly saveTxnId: string;
@@ -337,12 +318,9 @@ Deno.test("flushOfflineEntries (property): offline saves, appends and removals a
       async (steps) => {
         const model = new Model();
         const queuedTxnIds: string[] = [];
-        /** The checkout's own versions it still holds live. */
         const own: OwnVersion[] = [];
-        /** Other writers' versions: number to raw digest. */
         const theirs = new Map<number, string>();
         let next = 0;
-        /** The number `version` goes by now: queued, or as it landed. */
         const currentNumber = (version: OwnVersion): number => {
           const saving = model.outbox.get(version.saveTxnId);
           if (saving !== undefined) return version.queued;
@@ -409,8 +387,6 @@ Deno.test("flushOfflineEntries (property): offline saves, appends and removals a
             const target = own[index];
             const number = currentNumber(target);
             if (current.kind === "append") {
-              // The metadata this checkout holds for it: queued, or as it
-              // landed.
               const held = model.outbox.has(target.saveTxnId)
                 ? metadata("out", number)
                 : landedMetadata(number);
@@ -475,7 +451,6 @@ Deno.test("flushOfflineEntries (property): offline saves, appends and removals a
         }
         await flush(undefined);
 
-        // Every offline entry landed once: none was valid and refused.
         const landed = model.commits.map((commit) => commit.txnId);
         for (const txnId of queuedTxnIds) {
           assertEquals(
@@ -485,7 +460,6 @@ Deno.test("flushOfflineEntries (property): offline saves, appends and removals a
           );
           assertEquals(landed.filter((id) => id === txnId).length, 1);
         }
-        // Another writer's version is never removed or changed.
         for (const [version, digest] of theirs) {
           assertEquals(
             model.history.partition.versions("out").includes(version),
@@ -500,7 +474,6 @@ Deno.test("flushOfflineEntries (property): offline saves, appends and removals a
             `their version ${version} was changed`,
           );
         }
-        // The checkout's own live versions are exactly the ones it kept.
         const restated = new Set<number>();
         for (const commit of model.commits) {
           for (const op of commit.ops) {

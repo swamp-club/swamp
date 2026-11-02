@@ -41,13 +41,9 @@ export const ResourceSelectorSchema = z.object({
 export type ResourceSelector = z.infer<typeof ResourceSelectorSchema>;
 
 /**
- * Parses a `<kind>:<pattern>` selector. The kind `behavior` is read as
- * `model`, its exact synonym (swamp-club#3334), before the kind is checked:
- * the result, and {@link resourceSelectorToString} of it, only ever carry the
- * model kind, so a stored grant and every comparison see one spelling. Any
- * other kind not listed in {@link ResourceKindSchema}, including `behaviour`
- * and plurals, is refused, so a misspelled deny fails loudly rather than
- * matching nothing (swamp-club#3130).
+ * the kind behavior is read as model, its exact synonym, so stored grants and
+ * comparisons see one spelling; any other unlisted kind is refused so a
+ * misspelled deny fails loudly instead of matching nothing
  */
 export function parseResourceSelector(value: string): ResourceSelector {
   const colonIndex = value.indexOf(":");
@@ -84,10 +80,8 @@ export function resourceSelectorToString(selector: ResourceSelector): string {
 }
 
 /**
- * A selector string in its canonical spelling — `behavior:x` becomes
- * `model:x` (swamp-club#3334) — or `value` unchanged when it does not parse,
- * so whoever parses it next reports the error as before. A valid selector
- * already in the canonical spelling comes back byte-identical.
+ * canonical spelling of a selector, or value unchanged when it does not parse,
+ * so whoever parses it next reports the error
  */
 export function canonicalResourceSelectorString(value: string): string {
   try {
@@ -97,13 +91,6 @@ export function canonicalResourceSelectorString(value: string): string {
   }
 }
 
-/**
- * Tests whether a resource name matches this selector's pattern.
- * Patterns support a trailing `*` as a suffix wildcard:
- * - `@acme/*` matches `@acme/deploy`, `@acme/build`
- * - `@acme/deploy` matches only `@acme/deploy` (exact)
- * - `*` matches everything
- */
 export function resourceSelectorMatches(
   selector: ResourceSelector,
   resourceName: string,
@@ -120,25 +107,19 @@ export function resourceSelectorMatches(
 }
 
 /**
- * Whether a pattern is written as a type path: with a `/` or `::` once a
- * leading `@` is set aside (`acme/*`, `@acme/deploy`, `AWS::EC2::*`). A
- * pattern without one (`prod-*`, `web.prod`) may be written for model names,
- * which match only as written (swamp-club#3130).
+ * a pattern without a / or :: once a leading @ is set aside (prod-*, web.prod)
+ * may be written for model names, which match only as written
  */
 export function namesTypePath(pattern: string): boolean {
   const body = pattern.replace(/\*$/, "").replace(/^[@/]+/, "");
   return body.includes("/") || body.includes("::");
 }
 
-/** A trailing separator that ModelType normalization would trim. */
 const TRAILING_TYPE_SEPARATOR = /(\/|\.|::|\s)$/;
 
 /**
- * The pattern written in the normalized model type spelling: lowercase, with
- * `::`, `.` and whitespace folded to `/` and a leading `@` kept, as
- * `ModelType` stores a type. A trailing `*` stays, and so does a separator
- * before it, so `AWS::*` gives `aws/*` and never the wider `aws*`. Null when
- * the pattern names no type once normalized (`::*`).
+ * a trailing * stays, and so does a separator before it, so AWS::* gives aws/*
+ * and never the wider aws*; null when the pattern names no type once normalized
  */
 export function canonicalTypePattern(pattern: string): string | null {
   if (pattern === "*") return "*";
@@ -157,13 +138,9 @@ export function canonicalTypePattern(pattern: string): string | null {
 }
 
 /**
- * Whether a model type matches a canonical type pattern when every leading
- * `@` and `/` is ignored on both sides, as `normalizeModelTypeName` compares
- * types (swamp-club#3129): `acme/*` and `@acme/*` both cover `@acme/deploy`
- * and `acme/deploy`. Only a pattern that names a type path — one with a `/`
- * once stripped — ignores the `@`. Any other (`a*`, `prod-*`, `@*`) is
- * matched as written, so a prefix written for model names never grows to
- * cover extension types (swamp-club#3130).
+ * only a pattern naming a type path ignores the @; any other (a*, prod-*, @*)
+ * matches as written, so a prefix written for model names never grows to cover
+ * extension types
  */
 export function typePatternMatchesIgnoringAt(
   canonicalPattern: string,

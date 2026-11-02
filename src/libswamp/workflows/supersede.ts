@@ -43,42 +43,26 @@ import {
 
 export interface SupersedeResult {
   cancelledRunIds: string[];
-  /**
-   * Nested runs the superseded runs were still waiting on and that were
-   * left unfinished (swamp-club#2736).
-   */
   detachedNestedRuns: DetachedNestedRunData[];
-  /**
-   * Nested runs cancelled with the superseded runs, and running ones asked
-   * to stop (swamp-club#2867).
-   */
   cancelledNestedRuns: CascadedNestedRunData[];
   stopRequestedNestedRuns: CascadedNestedRunData[];
   /**
-   * Suspended runs with matching inputs left alone because a step of theirs,
-   * or of a nested run they wait on, waits for a signal. Cancelling one would discard the wait, and a
-   * workflow with no inputs would cancel its own waiting run each time it is
-   * started. A wait past its deadline is left too: a resume fails its step,
-   * so `failed` handlers run.
+   * left alone because a step of theirs or a nested run waits for a signal:
+   * cancelling discards the wait, and an input-less workflow would cancel its
+   * own waiting run each start; past-deadline waits too
    */
   skippedRuns: SkippedSupersedeData[];
 }
 
-/** A run supersede left alone, with the ids of the waits it holds. */
 export interface SkippedSupersedeData {
   runId: string;
   waitIds: string[];
 }
 
-/**
- * What superseding needs beyond the run repository: the workflow's
- * suspended runs, and each run's own evaluated workflow snapshot to settle
- * a superseded run against.
- */
 export interface SupersedeDeps {
   /**
-   * The workflow's suspended runs. Superseding passes the new run's signal,
-   * so a cancelled run stops reading them (swamp-club#4088).
+   * superseding passes the new run's signal, so a cancelled run stops reading
+   * them
    */
   findSuspendedRuns: (
     workflowId: WorkflowId,
@@ -86,21 +70,19 @@ export interface SupersedeDeps {
   ) => Promise<WorkflowRun[]>;
   findEvaluatedWorkflow: EvaluatedWorkflowLookup;
   /**
-   * Claims each run while it is cancelled, so the cancel acts on the run as
-   * stored and no other writer saves over it (swamp-club#2919).
+   * claims each run while it is cancelled, so the cancel acts on the run as
+   * stored and no other writer saves over it
    */
   runClaims: WorkflowRunClaims;
   /**
-   * Cancels the nested runs the ended run waited on (swamp-club#2867).
-   * Without it they are only reported.
+   * cancels the nested runs the ended run waited on; without it they are only
+   * reported
    */
   cascade?: NestedCascade;
   /**
-   * The workflow's evaluated cache by name, for a `--last-evaluated` run
-   * (swamp-club#3583): loaded once per start, matched on here, and handed to
-   * the execution service to replay, so a cache rewritten between the two
-   * cannot split them. Required with the rest of superseding, so no caller
-   * that supersedes can leave the run to load another copy.
+   * loaded once per start, matched on here and handed to the execution service
+   * to replay, so a cache rewritten between the two cannot split them.
+   * Required, so no superseding caller leaves the run to load another copy.
    */
   evaluatedCache: (
     workflowName: string,
@@ -108,12 +90,9 @@ export interface SupersedeDeps {
 }
 
 /**
- * The inputs a new run's suspended predecessors are matched on: the ones it
- * will record. A `--last-evaluated` run records the inputs its cache was
- * evaluated with, under the supplied ones (swamp-club#3583), so it is matched
- * on `cache`, the one copy the run also executes. Undefined when the run will
- * be refused before it starts (no cache, or an input the cache cannot take),
- * so nothing is superseded by a run that never starts.
+ * matched on the inputs the new run will record; a --last-evaluated run records
+ * its cache's inputs under the supplied ones, so it matches on `cache`, the
+ * copy it executes. Undefined when the run will be refused before it starts.
  */
 export function supersedeMatchInputs(
   supplied: Record<string, unknown>,
@@ -131,7 +110,6 @@ export function supersedeMatchInputs(
   return "inputs" in replay ? replay.inputs : undefined;
 }
 
-/** Whether a new run of the workflow with `newInputs` supersedes `run`. */
 function isSuperseded(
   run: WorkflowRun,
   newInputs: Readonly<Record<string, unknown>>,
@@ -145,11 +123,9 @@ function isSuperseded(
 }
 
 /**
- * Cancels the workflow's locally-owned suspended runs whose inputs match the
- * new run's, settling each one's unfinished jobs and steps against its
- * evaluated snapshot, or else `workflow`. Only the read of the suspended runs
- * stops once `signal` aborts, and a read it stopped supersedes nothing: the
- * runs a finished read found are all settled, never some of them.
+ * settles each cancelled run's unfinished jobs and steps against its evaluated
+ * snapshot; only the read stops on abort, and a stopped read supersedes
+ * nothing, so a finished read's runs are all settled
  */
 export async function supersedeSuspendedRuns(
   workflow: Workflow,
@@ -163,7 +139,7 @@ export async function supersedeSuspendedRuns(
   try {
     suspendedRuns = await findSuspendedRuns(workflow.id, signal);
   } catch (error) {
-    // Whatever reason the run was cancelled with (swamp-club#4088).
+    // whatever reason the run was cancelled with
     if (!signal?.aborted) throw error;
     suspendedRuns = [];
   }

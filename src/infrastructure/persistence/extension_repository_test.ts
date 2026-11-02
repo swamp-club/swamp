@@ -50,11 +50,6 @@ import { makeBundleLocation } from "../../domain/extensions/bundle_location.ts";
 import { makeSource } from "../../domain/extensions/source.ts";
 import { makeSourceLocation } from "../../domain/extensions/source_location.ts";
 
-/**
- * Creates `<tmpRoot>/.swamp/_extension_catalog.db` and returns
- * `{ repoRoot, dbPath }`. The repoRoot is what the repository sees as
- * the canonical repo root for empty-identity fallback derivation.
- */
 function makeTempLayout(): { repoRoot: string; dbPath: string } {
   const repoRoot = Deno.makeTempDirSync({
     prefix: "swamp-ext-repo-test-",
@@ -131,7 +126,6 @@ function pulledExtension(args: {
   });
 }
 
-// ===== Test #1: round-trip save/load =====
 Deno.test("ExtensionRepository: round-trip save → load returns the same shape", () => {
   withRepository((repo, _cat, repoRoot) => {
     const ext = pulledExtension({
@@ -154,7 +148,6 @@ Deno.test("ExtensionRepository: round-trip save → load returns the same shape"
   });
 });
 
-// ===== Test #2: diff-save INSERT =====
 Deno.test("ExtensionRepository: diff-save adds a new Source as INSERT", () => {
   withRepository((repo, _cat, repoRoot) => {
     const v1 = pulledExtension({
@@ -166,7 +159,6 @@ Deno.test("ExtensionRepository: diff-save adds a new Source as INSERT", () => {
     repo.save(v1);
     assertEquals(repo.loadAll()[0].sources.size, 1);
 
-    // Add a new Source via observeFreshSource → save → expect INSERT
     const extRoot = v1.extensionRoot;
     const newLoc = makeSourceLocation(
       `${extRoot}/models/b.ts`,
@@ -189,14 +181,10 @@ Deno.test("ExtensionRepository: diff-save adds a new Source as INSERT", () => {
   });
 });
 
-// ===== Test #3: diff-save DELETE — swamp-club#201 reproducer at the repository layer =====
 Deno.test("ExtensionRepository: diff-save drops a Source as DELETE (swamp-club#201 reproducer at repo layer)", () => {
-  // The original #201 bug: `extension rm` left rows in bundle_types
-  // because the catalog had no diff-aware delete path. With the
-  // repository, saving an Extension that no longer owns a Source
-  // results in a DELETE on that row. This test reproduces the bug at
-  // the REPOSITORY LAYER — proving the W1b plumbing fixes it; the
-  // user-facing `extension rm` wiring lands in W2 (RemoveExtensionService).
+  // reproduces at the repository layer a bug where extension rm left rows in
+  // bundle_types: saving an Extension that does not own a Source must DELETE
+  // that row
   withRepository((repo, cat, repoRoot) => {
     const v1 = pulledExtension({
       repoRoot,
@@ -210,8 +198,6 @@ Deno.test("ExtensionRepository: diff-save drops a Source as DELETE (swamp-club#2
     repo.save(v1);
     assertEquals(cat.findAll().length, 2);
 
-    // v2 of the aggregate has only `models/a.ts` — `models/b.ts` was
-    // deleted by the user. Save should DELETE the b.ts row.
     const v1WithoutB = makeExtension({
       name: v1.name,
       version: v1.version,
@@ -228,7 +214,6 @@ Deno.test("ExtensionRepository: diff-save drops a Source as DELETE (swamp-club#2
   });
 });
 
-// ===== Test #4: diff-save UPDATE =====
 Deno.test("ExtensionRepository: diff-save transitions a Source state as UPDATE", () => {
   withRepository((repo, cat, repoRoot) => {
     const ext = pulledExtension({
@@ -241,7 +226,6 @@ Deno.test("ExtensionRepository: diff-save transitions a Source state as UPDATE",
     const before = cat.findAll();
     assertEquals(before[0].state, "Indexed");
 
-    // Move to ValidationFailed, save → row updates in place.
     const sourceId = [...ext.sources.values()][0].id;
     const failed = recordValidationFailed(ext, {
       location: sourceId,
@@ -253,15 +237,14 @@ Deno.test("ExtensionRepository: diff-save transitions a Source state as UPDATE",
     });
     repo.save(failed);
     const after = cat.findAll();
-    assertEquals(after.length, 1); // Same row, not a new one
+    assertEquals(after.length, 1);
     assertEquals(after[0].state, "ValidationFailed");
-    // type_normalized cleared so I-Repo-1 doesn't see this as occupying
-    // the namespace
+    // type_normalized is cleared so I-Repo-1 does not count this row as
+    // occupying the namespace
     assertEquals(after[0].type_normalized, "");
   });
 });
 
-// ===== Test #5: saveAll upgrade pattern =====
 Deno.test("ExtensionRepository: saveAll([vN.tombstoneAll(), vN+1]) succeeds when both ship same (kind, type)", () => {
   withRepository((repo, _cat, repoRoot) => {
     const v1 = pulledExtension({
@@ -272,10 +255,9 @@ Deno.test("ExtensionRepository: saveAll([vN.tombstoneAll(), vN+1]) succeeds when
     });
     repo.save(v1);
 
-    // v2 ships the SAME (kind, type) as v1. Naive "save v2 alongside v1"
-    // would hit I-Repo-1. The atomic upgrade pattern wraps v1.tombstoneAll
-    // and v2 in one saveAll; v1's Sources are Tombstoned in the
-    // post-state, so only v2 occupies the slot.
+    // saving v2 alongside v1 would hit I-Repo-1 for the same (kind, type);
+    // wrapping v1.tombstoneAll and v2 in one saveAll leaves only v2 occupying
+    // the slot
     const v2 = pulledExtension({
       repoRoot,
       name: "@scope/foo",
@@ -290,28 +272,9 @@ Deno.test("ExtensionRepository: saveAll([vN.tombstoneAll(), vN+1]) succeeds when
   });
 });
 
-// ===== Test #5b: bulk-upgrade order-independence (W2 plan v4 step 9) =====
-//
-// Bulk extension upgrade processes N independent
-// `(tombstoneAll(vN), vN+1)` pairs in one saveAll. Different extensions
-// occupy disjoint pulled-extensions subtrees, so the order in which
-// pairs are submitted to saveAll must NOT change the final catalog
-// state — and I-Repo-1 must evaluate the same post-save state either
-// way.
-//
-// Guards against a future regression where saveAll iterates in a way
-// that lets one extension's mid-loop intermediate state leak into
-// another's diff (e.g., I-Repo-1 fired mid-loop on a transient state).
-//
-// **Note on plan v4 step 9's literal form.** The plan describes
-// `saveAll([v2, tombstoneAll(v1)])` (inverted order, single extension).
-// That form isn't tested separately because the catalog's primary key
-// is `source_path`: v1 and v2 of the same extension share the same
-// source_path, which means they share the same row. "Order matters /
-// doesn't matter" within a single source_path is a no-op concept.
-// This bulk-upgrade test (two distinct extensions, distinct rows)
-// exercises the meaningful generalization of the order-independence
-// claim.
+// different extensions occupy disjoint subtrees, so saveAll pair order must not
+// change the final catalog state, and I-Repo-1 must see the same post-save
+// state either way
 Deno.test("ExtensionRepository: saveAll bulk-upgrade is order-independent across extensions", () => {
   function bulkUpgrade(repoRoot: string): {
     pairs: ReadonlyArray<readonly [Extension, Extension]>;
@@ -348,7 +311,6 @@ Deno.test("ExtensionRepository: saveAll bulk-upgrade is order-independent across
     };
   }
 
-  // Canonical order: A's tombstone+save, then B's tombstone+save.
   let canonicalState: { name: string; version: string }[] = [];
   withRepository((repo, _cat, repoRoot) => {
     const { pairs } = bulkUpgrade(repoRoot);
@@ -365,7 +327,6 @@ Deno.test("ExtensionRepository: saveAll bulk-upgrade is order-independent across
     })).sort((a, b) => a.name.localeCompare(b.name));
   });
 
-  // Inverted order: B's tombstone+save, then A's tombstone+save.
   let invertedState: { name: string; version: string }[] = [];
   withRepository((repo, _cat, repoRoot) => {
     const { pairs } = bulkUpgrade(repoRoot);
@@ -389,7 +350,6 @@ Deno.test("ExtensionRepository: saveAll bulk-upgrade is order-independent across
   ]);
 });
 
-// ===== Test #6: saveAll cross-extension DuplicateType reject + ROLLBACK =====
 Deno.test("ExtensionRepository: saveAll rejects cross-extension (kind, type) with ROLLBACK and names both paths", () => {
   withRepository((repo, cat, repoRoot) => {
     const a = pulledExtension({
@@ -405,7 +365,6 @@ Deno.test("ExtensionRepository: saveAll rejects cross-extension (kind, type) wit
       sources: [{ relPath: "models/x.ts", type: "@dup/x" }],
     });
 
-    // Pre-condition: catalog empty.
     assertEquals(cat.findAll().length, 0);
 
     let thrown: unknown;
@@ -418,16 +377,13 @@ Deno.test("ExtensionRepository: saveAll rejects cross-extension (kind, type) wit
     if (!(thrown instanceof DuplicateTypeError)) return;
     assertEquals(thrown.kind, "model");
     assertEquals(thrown.typeNormalized, "@dup/x");
-    // Both source paths named — the hard requirement.
     assertStringIncludes(thrown.message, "@scope/a");
     assertStringIncludes(thrown.message, "@scope/b");
 
-    // ROLLBACK applied: catalog still empty.
     assertEquals(cat.findAll().length, 0);
   });
 });
 
-// ===== Test #7: I-Repo-1 fires on save(ext) directly, not just saveAll =====
 Deno.test("ExtensionRepository: I-Repo-1 fires on save(ext) directly when reusing another extension's (kind, type)", () => {
   withRepository((repo, cat, repoRoot) => {
     const a = pulledExtension({
@@ -447,7 +403,6 @@ Deno.test("ExtensionRepository: I-Repo-1 fires on save(ext) directly when reusin
     });
     assertThrows(() => repo.save(b), DuplicateTypeError);
 
-    // ROLLBACK: a's rows unaffected; b's rows not persisted.
     const after = cat.findAll();
     assertEquals(after.length, aRowsBefore);
     for (const row of after) {
@@ -456,7 +411,6 @@ Deno.test("ExtensionRepository: I-Repo-1 fires on save(ext) directly when reusin
   });
 });
 
-// ===== swamp-club#2762: the pre-existing occupant is firstSource =====
 for (
   const [existingName, incomingName] of [
     ["@scope/zz", "@scope/aa"],
@@ -520,7 +474,6 @@ Deno.test("ExtensionRepository.saveAll: an upgrade colliding with a pre-existing
   });
 });
 
-// ===== swamp-club#2702: reconcile saves settle pulled-vs-pulled conflicts =====
 Deno.test("ExtensionRepository.saveAll: settlePulledTypeConflicts keeps the first-saved pulled provider and clears the other", () => {
   withRepository((repo, cat, repoRoot) => {
     const a = pulledExtension({
@@ -624,8 +577,6 @@ Deno.test("ExtensionRepository.saveAll: settlePulledTypeConflicts still rejects 
       });
     };
 
-    // A pulled conflict settled in the same save is not reported once the
-    // local duplicate rolls it back.
     const pulled = (name: string) =>
       pulledExtension({
         repoRoot,
@@ -650,11 +601,8 @@ Deno.test("ExtensionRepository.saveAll: settlePulledTypeConflicts still rejects 
   });
 });
 
-// ===== Test #8: lockfile fallback happy path =====
 Deno.test("ExtensionRepository: lockfile fallback resolves empty version, writes back, second-load is direct", () => {
   withRepository((repo, cat, repoRoot) => {
-    // Seed a row with the extension_name populated but extension_version
-    // empty — the W1a-shipped state for pulled rows.
     const sp =
       `${repoRoot}/.swamp/pulled-extensions/@scope/foo/models/instance.ts`;
     cat.upsertWithIdentity({
@@ -677,20 +625,15 @@ Deno.test("ExtensionRepository: lockfile fallback resolves empty version, writes
     assertEquals(exts[0].name, "@scope/foo");
     assertEquals(exts[0].version, "1.0.0");
 
-    // Verify the write-back: the row should now have the resolved version.
     const writtenBack = cat.findByExtension("@scope/foo", "1.0.0");
     assertEquals(writtenBack.length, 1);
 
-    // Second load goes through the direct path (extension_version
-    // populated), not the fallback. The aggregate result must be
-    // identical.
     const exts2 = repo.loadAll();
     assertEquals(exts2.length, 1);
     assertEquals(exts2[0].version, "1.0.0");
   }, { lockedVersions: fixedLockedVersions({ "@scope/foo": "1.0.0" }) });
 });
 
-// ===== Test #9: lockfile fallback orphan path =====
 Deno.test("ExtensionRepository: lockfile fallback orphan-DELETEs a pulled row whose lockfile entry is gone", () => {
   withRepository((repo, cat, repoRoot) => {
     const sp =
@@ -758,7 +701,6 @@ Deno.test("ExtensionRepository: empty-identity pulled row resolves names contain
   });
 });
 
-// ===== Test #10: cold-start guard parity over all 5 kinds =====
 Deno.test("ExtensionRepository: invalidationGuards parity over all 5 kinds × 4 triggers", () => {
   withRepository((repo, cat) => {
     const kinds = ["model", "vault", "datastore", "report"] as const;
@@ -767,7 +709,6 @@ Deno.test("ExtensionRepository: invalidationGuards parity over all 5 kinds × 4 
     const fingerprint = "fp-A";
 
     for (const kind of kinds) {
-      // Trigger 1: not-populated. Catalog has nothing for this kind.
       const r1 = repo.invalidationGuards({
         kind,
         expectedLayoutVersion: layoutVersion,
@@ -780,13 +721,11 @@ Deno.test("ExtensionRepository: invalidationGuards parity over all 5 kinds × 4 
         `kind=${kind} trigger=not-populated`,
       );
 
-      // Set up the kind so it's "populated and fresh."
       cat.markPopulated(kind);
       cat.setLayoutVersion(layoutVersion);
       cat.setDatastoreBasePath(dsBase, kind);
       cat.setSourceDirsFingerprint(fingerprint, kind);
 
-      // Trigger 0 (no firing): everything matches.
       const fresh = repo.invalidationGuards({
         kind,
         expectedLayoutVersion: layoutVersion,
@@ -795,7 +734,6 @@ Deno.test("ExtensionRepository: invalidationGuards parity over all 5 kinds × 4 
       });
       assertEquals(fresh, { shouldInvalidate: false, reason: "fresh" });
 
-      // Trigger 2: layout-version mismatch.
       const r2 = repo.invalidationGuards({
         kind,
         expectedLayoutVersion: "per-extension-aggregate-v999",
@@ -808,7 +746,6 @@ Deno.test("ExtensionRepository: invalidationGuards parity over all 5 kinds × 4 
         `kind=${kind} trigger=layout`,
       );
 
-      // Trigger 3: datastore-base-path changed.
       const r3 = repo.invalidationGuards({
         kind,
         expectedLayoutVersion: layoutVersion,
@@ -821,7 +758,6 @@ Deno.test("ExtensionRepository: invalidationGuards parity over all 5 kinds × 4 
         `kind=${kind} trigger=ds-base`,
       );
 
-      // Trigger 4: source-dirs-fingerprint changed.
       const r4 = repo.invalidationGuards({
         kind,
         expectedLayoutVersion: layoutVersion,
@@ -837,13 +773,11 @@ Deno.test("ExtensionRepository: invalidationGuards parity over all 5 kinds × 4 
   });
 });
 
-// ===== Test #13: W3-corruption boundary — two pulled versions on disk =====
 Deno.test("ExtensionRepository: two pulled rows for same name resolve to same version → deterministic-winner transform (W3)", () => {
   withRepository((repo, cat, repoRoot) => {
-    // Two source files for the SAME logical extension on disk
-    // (interrupted upgrade). Both resolve to same (name, version).
-    // W3's deterministic-winner transform tombstones the loser
-    // instead of throwing.
+    // two source files of one extension (an interrupted upgrade) resolve to the
+    // same name and version; the deterministic-winner transform tombstones the
+    // loser instead of throwing
     const sp1 =
       `${repoRoot}/.swamp/pulled-extensions/@scope/foo/models/instance.ts`;
     const sp2 =
@@ -884,7 +818,6 @@ Deno.test("ExtensionRepository: two pulled rows for same name resolve to same ve
   }, { lockedVersions: fixedLockedVersions({ "@scope/foo": "2.0.0" }) });
 });
 
-// ===== Supporting tests =====
 Deno.test("ExtensionRepository: invalidateAll on missing DB does not throw", () => {
   // Pass a path that doesn't exist; opening it creates an empty DB,
   // so invalidateAll runs against an empty state. The semantic the
@@ -894,7 +827,7 @@ Deno.test("ExtensionRepository: invalidateAll on missing DB does not throw", () 
   const dbPath = join(repoRoot, ".swamp", "_extension_catalog.db");
   const { repository, catalog } = makeStubRepository({ dbPath, repoRoot });
   try {
-    repository.invalidateAll(); // must not throw
+    repository.invalidateAll();
   } finally {
     catalog.close();
     Deno.removeSync(repoRoot, { recursive: true });
@@ -905,7 +838,6 @@ Deno.test("ExtensionRepository: invalidateAll is atomic — all kinds or none", 
   const { repoRoot, dbPath } = makeTempLayout();
   const { repository, catalog } = makeStubRepository({ dbPath, repoRoot });
   try {
-    // Populate all kinds so isPopulated returns true for each.
     const kinds = ["model", "vault", "datastore", "report"] as const;
     for (const kind of kinds) {
       catalog.markPopulated(kind);
@@ -917,7 +849,6 @@ Deno.test("ExtensionRepository: invalidateAll is atomic — all kinds or none", 
       );
     }
 
-    // invalidateAll should clear all kinds atomically.
     repository.invalidateAll();
 
     for (const kind of kinds) {
@@ -933,24 +864,18 @@ Deno.test("ExtensionRepository: invalidateAll is atomic — all kinds or none", 
 });
 
 Deno.test("ExtensionRepository: invalidateAll on corrupt DB does not throw", () => {
-  // Write garbage bytes into the .db file before opening — opening will
-  // throw, but the standalone forceCatalogRescan was best-effort. The
-  // new shape is: callers wrap repository construction in try/catch
-  // (per step 13's pattern). This test verifies repository.invalidateAll
-  // itself is best-effort against a successfully-opened-but-corrupt DB.
+  // invalidateAll must stay best-effort against a corrupt DB; callers wrap
+  // repository construction in try/catch
   const repoRoot = Deno.makeTempDirSync({ prefix: "swamp-ext-repo-test-" });
   ensureDirSync(join(repoRoot, ".swamp"));
   const dbPath = join(repoRoot, ".swamp", "_extension_catalog.db");
-  // Open + close to create a valid empty DB.
   const c = new ExtensionCatalogStore(dbPath);
   c.close();
-  // Truncate the DB to 0 bytes — sqlite will treat this as empty +
-  // initialise schema on next open.
   Deno.writeFileSync(dbPath, new Uint8Array());
 
   const { repository, catalog } = makeStubRepository({ dbPath, repoRoot });
   try {
-    repository.invalidateAll(); // must not throw
+    repository.invalidateAll();
   } finally {
     catalog.close();
     Deno.removeSync(repoRoot, { recursive: true });
@@ -958,9 +883,7 @@ Deno.test("ExtensionRepository: invalidateAll on corrupt DB does not throw", () 
 });
 
 Deno.test("ExtensionRepository: tombstoned-only save DELETEs the row", () => {
-  // Cousin of test #3. Save an extension with a Tombstoned source
-  // and verify the row is DELETEd rather than persisted with state=
-  // "Tombstoned" (per I4: dropped on save).
+  // a Tombstoned source is DELETEd on save, not persisted with state Tombstoned
   withRepository((repo, cat, repoRoot) => {
     const ext = pulledExtension({
       repoRoot,
@@ -971,19 +894,15 @@ Deno.test("ExtensionRepository: tombstoned-only save DELETEs the row", () => {
     repo.save(ext);
     assertEquals(cat.findAll().length, 1);
 
-    // Tombstone the source.
     const sourceId = [...ext.sources.values()][0].id;
     const tomb = recordSourceMissing(ext, { location: sourceId });
     repo.save(tomb);
-    // Row gone, not retained as state="Tombstoned".
     assertEquals(cat.findAll().length, 0);
   });
 });
 
 Deno.test("ExtensionRepository: empty-identity row with neither name nor version is derived via deriveExtensionIdentity", () => {
   withRepository((repo, cat, repoRoot) => {
-    // Seed a row matching the local-extension layout but with both
-    // identity columns empty (W1a leftover for new-rows-from-loaders).
     const sp = `${repoRoot}/extensions/models/local.ts`;
     cat.upsertWithIdentity({
       source_path: sp,
@@ -1003,14 +922,12 @@ Deno.test("ExtensionRepository: empty-identity row with neither name nor version
     assertEquals(exts.length, 1);
     assertEquals(exts[0].origin, "local");
     assertEquals(exts[0].version, "0.0.0");
-    // Write-back happened: row now has identity populated.
     const after = cat.findAll();
     assertFalse(after[0].extension_name === "");
     assertFalse(after[0].extension_version === "");
   });
 });
 
-// ===== Test: swamp-club#283 — pulled row keeps origin="pulled" when manifest name collides =====
 Deno.test("ExtensionRepository: pulled row retains origin='pulled' when localManifestIdentity name collides (swamp-club#283)", () => {
   const manifest: LocalManifestIdentity = {
     name: "@scope/foo",
@@ -1038,7 +955,6 @@ Deno.test("ExtensionRepository: pulled row retains origin='pulled' when localMan
   });
 });
 
-// ===== Test: local row still gets origin="local" when manifest identity matches =====
 Deno.test("ExtensionRepository: local row gets origin='local' when localManifestIdentity matches (preserves swamp-club#273 fix)", () => {
   const manifest: LocalManifestIdentity = {
     name: "@scope/foo",
@@ -1068,7 +984,6 @@ Deno.test("ExtensionRepository: local row gets origin='local' when localManifest
   }, { localManifestIdentity: manifest });
 });
 
-// ===== Test: I-Repo-1 allows multiple extension rows for the same target type (swamp-club#297) =====
 Deno.test("ExtensionRepository: I-Repo-1 allows multiple extension rows targeting the same base type", () => {
   withRepository((repo, cat, repoRoot) => {
     const ext = pulledExtension({
@@ -1121,8 +1036,6 @@ Deno.test("ExtensionRepository: I-Repo-1 allows multiple extension rows targetin
   });
 });
 
-// ===== Test: swamp-club#2557 — several extension Sources in one package
-// targeting the same base type all persist through the aggregate =====
 Deno.test("ExtensionRepository: extension Sources sharing a target type in one package all persist across save → load → save (swamp-club#2557)", () => {
   withRepository((repo, cat, repoRoot) => {
     const base = pulledExtension({
@@ -1172,8 +1085,6 @@ Deno.test("ExtensionRepository: extension Sources sharing a target type in one p
   });
 });
 
-// ===== Test: swamp-club#903 — saving an extension-kind Source through the
-// aggregate populates extends_type so findExtensionsForType matches it =====
 Deno.test("ExtensionRepository: saving an Indexed extension Source persists extends_type = target (swamp-club#903)", () => {
   withRepository((repo, cat, repoRoot) => {
     const extRoot = `${repoRoot}/.swamp/pulled-extensions/@scope/ext`;
@@ -1202,25 +1113,20 @@ Deno.test("ExtensionRepository: saving an Indexed extension Source persists exte
     });
     repo.save(ext);
 
-    // The persisted row carries the target type in extends_type...
     const row = cat.findAll().find((r) => r.kind === "extension");
     assert(row, "expected an extension row");
     assertEquals(row.extends_type, "@keeb/docker/compose");
 
-    // ...so the runtime merge query finds it. Before the fix this returned
-    // nothing (extends_type was hardcoded ""), dropping the extension's
-    // methods with "Unknown method".
+    // the runtime merge query must find the row, otherwise the extension's
+    // methods are dropped with Unknown method
     const matches = cat.findExtensionsForType("@keeb/docker/compose");
     assertEquals(matches.length, 1);
     assertPathEquals(matches[0].source_path, canonicalizePath(abs));
   });
 });
 
-// ===== Test: swamp-club#903 — primary and non-Indexed extension rows keep
-// an empty extends_type (the gate is neither too broad nor self-defeating) =====
 Deno.test("ExtensionRepository: primary rows and ValidationFailed extension rows keep empty extends_type (swamp-club#903)", () => {
   withRepository((repo, cat, repoRoot) => {
-    // Primary model source: extends_type stays "".
     const primary = pulledExtension({
       repoRoot,
       name: "@scope/base",
@@ -1267,7 +1173,6 @@ Deno.test("ExtensionRepository: primary rows and ValidationFailed extension rows
   });
 });
 
-// ===== saveAll preserves source-mounted extension rows =====
 Deno.test("ExtensionRepository: saveAll preserves source-mounted rows outside repo root", () => {
   withRepository((repo, cat, repoRoot) => {
     const externalSourcePath =
@@ -1330,8 +1235,6 @@ Deno.test("ExtensionRepository: saveAll preserves source-mounted rows outside re
     );
   });
 });
-
-// ===== swamp-club#2563: partial saves keep mounted rows =====
 
 const MOUNTED_MODELS_DIR = "/mounted/shared/extensions/models";
 
@@ -1485,7 +1388,6 @@ Deno.test("saveAll: upsertWithIdentity canonicalizes source_path preventing ghos
   });
 });
 
-// ===== lastOriginConflicts: pulled shadowed by local =====
 Deno.test(
   "ExtensionRepository: saveAll populates lastOriginConflicts when pulled type is shadowed by local source",
   () => {
@@ -1602,10 +1504,6 @@ Deno.test(
   },
 );
 
-// ---------------------------------------------------------------------------
-// deleteBySourcePaths — cross-OS canonical-mismatch fix (swamp-club#1903)
-// ---------------------------------------------------------------------------
-
 Deno.test(
   "deleteBySourcePaths: deletes same-OS canonical rows",
   () => {
@@ -1641,11 +1539,9 @@ Deno.test({
   ignore: Deno.build.os !== "windows",
   fn() {
     withRepository((_repo, catalog, repoRoot) => {
-      // Insert a row with a mixed-case PK directly via SQL, simulating
-      // a WSL-written catalog row (POSIX canonicalizePath is identity,
-      // so mixed case is stored as-is). On Windows, canonicalizePath
-      // lowercases, creating a mismatch between the stored PK and the
-      // canonical lookup form. This test verifies the fix.
+      // inserts a mixed-case PK via SQL, as a WSL-written row is stored; on
+      // Windows canonicalizePath lowercases, so the stored PK and the canonical
+      // lookup form differ
       const db = new DatabaseSync(
         join(repoRoot, ".swamp", "_extension_catalog.db"),
       );
@@ -1683,7 +1579,6 @@ Deno.test(
   },
 );
 
-// ===== saveAll pruneUnreachable option (swamp-club#2355) =====
 Deno.test("ExtensionRepository: saveAll with pruneUnreachable false keeps rows outside the repo root, the default prunes them", () => {
   withRepository((repo, catalog, repoRoot) => {
     const outsidePath = "/elsewhere/mounted/extensions/models/mounted.ts";
@@ -1735,8 +1630,6 @@ Deno.test("ExtensionRepository: saveAll with pruneUnreachable false keeps rows o
   });
 });
 
-// ===== swamp-club#2490: stale-source prune in saveAll =====
-
 function withPruningRepository(
   fn: (
     repo: ExtensionRepository,
@@ -1767,8 +1660,6 @@ function withPruningRepository(
   }
 }
 
-/** Seeds a typed row whose source file does not exist but whose bundle
- *  does. Returns the bundle path. */
 function seedStaleRow(
   catalog: ExtensionCatalogStore,
   repoRoot: string,
@@ -1806,7 +1697,6 @@ function bundleExists(path: string): boolean {
 Deno.test("ExtensionRepository.saveAll: prunes a typed row whose source is missing and evicts its bundle", () => {
   withPruningRepository((repo, cat, repoRoot) => {
     const bundle = seedStaleRow(cat, repoRoot, "@dup/x");
-    // Another extension claims the type the stale row still holds.
     const b = pulledExtension({
       repoRoot,
       name: "@scope/b",

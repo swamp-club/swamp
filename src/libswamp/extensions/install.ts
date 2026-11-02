@@ -47,23 +47,15 @@ import {
 import { classifyExtensionFile, isSkillDirEntryMulti } from "./layout.ts";
 
 /**
- * Test seam for `extensionInstall`. Production always uses
- * `installExtension` from pull.ts; tests inject a stub that simulates
- * the side effects (writing to the per-extension subtree and updating
- * the lockfile) without needing a real tar archive and registry.
- *
- * Returns the same shape as `installExtension`: an `InstallResult` on
- * a fresh install, or `undefined` when the extension was already pulled
- * earlier in the same call chain (the alreadyPulled short-circuit).
- * The result's `pruned` field carries the paths actually removed during
- * orphan cleanup so callers can surface that to the user.
+ * test seam: production always uses installExtension from pull.ts; returns
+ * undefined when the extension was already pulled earlier in the same call
+ * chain, and result.pruned carries the paths removed during orphan cleanup
  */
 export type InstallExtensionFn = (
   ref: ExtensionRef,
   ctx: InstallContext,
 ) => Promise<InstallResult | undefined>;
 
-/** Result of installing a single extension during bulk install. */
 export interface ExtensionInstallEntry {
   name: string;
   version: string;
@@ -71,7 +63,6 @@ export interface ExtensionInstallEntry {
   error?: string;
 }
 
-/** Data for the completed event. */
 export interface ExtensionInstallData {
   entries: ExtensionInstallEntry[];
   installed: number;
@@ -93,81 +84,37 @@ export type ExtensionInstallEvent =
   | { kind: "completed"; data: ExtensionInstallData }
   | { kind: "error"; error: SwampError };
 
-/** Dependencies for the extension install operation. */
 export interface ExtensionInstallDeps {
   lockfilePath: string;
   repoDir: string;
   /**
-   * Tool-aware skills destinations as **repo-relative** paths (e.g.
-   * `[".claude/skills", ".kiro/skills"]`, or
-   * `[".swamp/pulled-extensions/skills"]` for `tool=none`). Repo-relative
-   * is load-bearing: `entry.files[]` paths in the lockfile are
-   * repo-relative, and `isSkillDirEntry` compares them directly. Note
-   * the deliberate asymmetry with `InstallContext.skillsDirs`, which is
-   * **absolute** because `pull.ts` joins them with destination dirs to
-   * write skill files. Don't conflate the two.
-   *
-   * Optional for source-compat with direct libswamp consumers that
-   * hand-build the deps; production callers should always provide it
-   * (`createExtensionInstallDeps` does). When provided, skill dir
-   * entries are filtered out of legacy classification and the
-   * post-migration sweep so the freshly-installed skills survive —
-   * without it, the `tool=none` fallback path is structurally
-   * indistinguishable from a gen-2 path and would be destructively
-   * removed.
+   * repo-relative because lockfile files[] paths are, and isSkillDirEntry compares
+   * them directly (InstallContext.skillsDirs is absolute); without it the
+   * tool=none skills path looks like a gen-2 path and the sweep would remove it
    */
   skillsDirsRelative?: string[];
   /**
-   * Async factory that constructs a fresh {@link InstallContext} for
-   * each install entry. The async return type matters: each context
-   * captures a snapshot of the lockfile via {@link LockfileRepository}
-   * at construction (per the InstallContext.lockfileRepository JSDoc),
-   * and that capture is itself an async file read.
+   * async because each context captures a snapshot of the lockfile at
+   * construction, which is an async file read
    */
   createInstallContext: (
     name: string,
     version: string,
   ) => Promise<InstallContext>;
-  /**
-   * Test seam. Defaults to the real `installExtension` from pull.ts;
-   * tests can inject a stub so they don't need a real tar archive and
-   * registry to exercise the success path.
-   */
   installExtensionFn?: InstallExtensionFn;
-  /**
-   * Root directory for pulled extension sources. Defaults to
-   * `.swamp/pulled-extensions` when not provided. With managedConfig,
-   * callers pass `.swamp/config/pulled-extensions`.
-   */
   pulledExtensionsRoot?: string;
   /**
-   * Whether to fetch the datastore's lockfile before choosing what to
-   * restore, under a managed lockfile transaction. Defaults to true:
-   * `extension install` restores what other checkouts installed. `repo
-   * upgrade`'s install pass sets it false, so an upgrade with nothing to
-   * restore never contacts the datastore; each entry it does install is
-   * still made against the datastore's lockfile (swamp-club#2838).
+   * a repo upgrade's install pass sets it false, so an upgrade with nothing to
+   * restore never contacts the datastore; each entry it does install is still
+   * made against the datastore's lockfile
    */
   refreshFromDatastore?: boolean;
 }
 
 /**
- * Reads upstream_extensions.json and re-pulls any extension whose files
- * are missing from disk, whose installed version disagrees with the
- * lockfile pin, whose content has drifted from the recorded
- * filesChecksum, which declares a dependency with no lockfile entry, or
- * which still sits at a legacy on-disk layout (gen-1
- * `extensions/<type>/…` or gen-2 flat `.swamp/pulled-extensions/<type>/…`).
- * Analogous to `npm install` but also performs layout migration on legacy
- * repos — a single call brings the repo to the current per-extension
- * subtree layout.
- *
- * For legacy-layout entries, the per-entry flow is: capture the original
- * `files[]` list BEFORE install (installExtension rewrites the lockfile
- * to current-layout paths on success, so the legacy list must be
- * snapshotted first); call installExtension to write the new layout;
- * then sweep the original legacy paths so the working tree no longer
- * carries duplicates.
+ * for legacy-layout entries the original files[] list is captured before
+ * install, since installExtension rewrites the lockfile to current-layout
+ * paths, and the original legacy paths are swept afterward
  */
 export async function* extensionInstall(
   _ctx: LibSwampContext,
@@ -182,14 +129,12 @@ export async function* extensionInstall(
       const lockfileRepository = await LockfileRepository.create(
         deps.lockfilePath,
       );
-      // Restore what the datastore's lockfile pins, not a stale cache
-      // (swamp-club#2838).
+      // restore what the datastore's lockfile pins, not a stale cache
       if (deps.refreshFromDatastore !== false) {
         await refreshManagedLockfile(lockfileRepository);
       }
       const upstream = lockfileRepository.getAllEntries();
       const entries: ExtensionInstallEntry[] = [];
-      // A publish that failed after an install landed (swamp-club#2838).
       let unpublished: ManagedLockfileUnpublishedError | undefined;
       let installed = 0;
       let migrated = 0;
@@ -200,19 +145,14 @@ export async function* extensionInstall(
         const version = entry.version;
         const originalFiles = entry.files ?? [];
 
-        // Decide whether this entry needs work. An entry needs install
-        // when any of its files are absent from disk, OR when any are at
-        // a legacy layout (gen-1 or gen-2) and must be migrated to the
-        // current per-extension subtree.
         let needs = await needsInstallOrMigration(
           originalFiles,
           deps.repoDir,
           deps.skillsDirsRelative,
         );
 
-        // When all files exist at current layout, reconcile the on-disk
-        // extension against the lockfile entry — presence alone says
-        // nothing about which version is sitting there.
+        // presence alone says nothing about which version is sitting on disk,
+        // so reconcile against the lockfile entry
         if (needs === "up_to_date") {
           const effectivePulledRoot = deps.pulledExtensionsRoot ??
             resolvePulledExtensionsRoot(deps.repoDir);
@@ -221,13 +161,9 @@ export async function* extensionInstall(
           assertContainedPath(name, effectivePulledRoot);
           const extRoot = join(effectivePulledRoot, name);
 
-          // The pin is the authority. Compare it against the installed
-          // manifest.yaml so a different version already on disk — e.g.
-          // left behind by `doctor extensions` — is re-pulled instead of
-          // silently kept (swamp-club#2150). A constraint pin has no
-          // single version to match, and a missing or malformed manifest
-          // yields no identity; both leave the decision to the content
-          // check below rather than re-pulling on every run.
+          // the pin is the authority: a different version already on disk is
+          // re-pulled; a constraint pin or a missing or malformed manifest
+          // yields no identity and leaves the decision to the content check
           if (!isVersionConstraint(version)) {
             const identity = readManifestIdentityAt(
               join(extRoot, "manifest.yaml"),
@@ -237,10 +173,9 @@ export async function* extensionInstall(
             }
           }
 
-          // Content check: files at the current layout can still differ
-          // from the lockfile's filesChecksum when upstream_extensions.json
-          // was updated via git but the on-disk files weren't re-fetched
-          // (swamp-club#1021).
+          // files at the current layout can still differ from filesChecksum
+          // when the lockfile was updated via git but the files were not
+          // re-fetched
           if (needs === "up_to_date" && entry.filesChecksum) {
             try {
               const matches = await installedDigestMatches(
@@ -256,12 +191,9 @@ export async function* extensionInstall(
             }
           }
 
-          // Dependency check: every dependency the installed manifest
-          // declares needs a lockfile entry. A dependency install that
-          // failed after the parent was written, or a hand-edited
-          // lockfile, leaves the parent intact and the dependency
-          // unrecorded. Re-pulling the parent runs installExtension's
-          // dependency loop, which installs it (swamp-club#2646).
+          // a dependency install that failed after the parent was written, or a
+          // hand-edited lockfile, leaves the dependency unrecorded; re-pulling
+          // the parent runs its dependency loop
           if (
             needs === "up_to_date" &&
             await hasUnrecordedDependency(
@@ -286,11 +218,9 @@ export async function* extensionInstall(
 
         try {
           const installCtx = await deps.createInstallContext(name, version);
-          // Thread the lockfile's stored checksum through as an integrity
-          // anchor. installExtension verifies the freshly-downloaded archive
-          // matches byte-for-byte and fails loudly on registry drift.
-          // Pre-checksum-tracking entries (pre-f4dfc083) have no stored
-          // value and skip verification (handled in installExtension).
+          // the lockfile's stored checksum is an integrity anchor:
+          // installExtension fails loudly if the downloaded archive differs;
+          // entries without a stored checksum skip verification
           if (entry.checksum) {
             installCtx.expectedChecksum = entry.checksum;
           }
@@ -313,11 +243,6 @@ export async function* extensionInstall(
             unpublished ??= error;
           }
 
-          // For migrations, sweep the original legacy paths now that the
-          // current-layout files are on disk. installExtension has already
-          // rewritten entry.files in the lockfile to point at the new
-          // locations, so the legacy paths are "orphaned" and safe to
-          // remove.
           if (needs === "migrate") {
             await sweepLegacyPaths(
               originalFiles,
@@ -331,12 +256,9 @@ export async function* extensionInstall(
             installed++;
           }
 
-          // Surface orphan removals to the user. Source-of-truth list
-          // is `result.pruned` (paths actually removed by
-          // pruneOrphanFiles inside installExtension), not the diff
-          // we'd compute here. When the test seam returns undefined or
-          // the install was a no-op (alreadyPulled), there's nothing
-          // to emit.
+          // result.pruned is the source of truth for orphan removals; there is
+          // nothing to emit when the test seam returns undefined or the install
+          // was a no-op
           if (result && result.pruned.length > 0) {
             yield {
               kind: "orphans-pruned",
@@ -356,10 +278,9 @@ export async function* extensionInstall(
         }
       }
 
-      // A lockfile written on another OS reads the same, but its paths
-      // still differ from what this checkout writes. Rewrite it once so
-      // the committed file stops changing between checkouts. The managed
-      // lockfile is not committed, and the datastore holds its copy.
+      // a lockfile written on another OS reads the same but its paths differ
+      // from what this checkout writes: rewrite it once so the committed file
+      // stops changing between checkouts; the managed lockfile is not committed
       if (!isManagedLockfile(deps.lockfilePath)) {
         await lockfileRepository.normalize();
       }
@@ -374,20 +295,9 @@ export async function* extensionInstall(
 }
 
 /**
- * Returns true when the manifest at `manifestPath` declares a dependency
- * with no lockfile entry. Dependencies are matched by name, so a
- * constrained ref (`@x/y@^1.0.0`) is satisfied by any recorded version —
- * the same rule installExtension's dependency loop applies.
- *
- * `snapshot` is the lockfile as the restore read it at the start, and
- * installs made earlier in the same run are not in it. A dependency the
- * snapshot lacks is looked up again in the lockfile on disk, so a
- * dependency another parent just installed is not re-pulled.
- *
- * A dependency that does not parse as an extension ref counts as
- * unrecorded rather than throwing: the re-pull then fails on the same
- * ref inside the caller's per-entry try, so it is reported as that
- * entry's failure instead of aborting the whole restore.
+ * matched by name, so a constrained ref is satisfied by any recorded version; a
+ * snapshot miss is re-read from the lockfile on disk; an unparseable dependency
+ * counts as unrecorded
  */
 async function hasUnrecordedDependency(
   manifestPath: string,
@@ -410,24 +320,9 @@ async function hasUnrecordedDependency(
 }
 
 /**
- * Decides whether an entry's on-disk state matches the current layout.
- *
- * - Returns `"install"` when any file is missing from disk.
- * - Returns `"migrate"` when all files exist but at least one is at a
- *   legacy layout (gen-1 or gen-2); install will re-pull into the
- *   per-extension subtree and the caller sweeps the legacy paths.
- * - Returns `"up_to_date"` when every file exists AND is already at the
- *   current layout.
- *
- * Missing beats legacy: a missing file cannot be migrated without a
- * re-pull, so the flow is the same either way.
- *
- * `skillsDirsRelative` (when provided, repo-relative) filters skill
- * directory entries out of legacy classification — they are always
- * considered current-layout regardless of physical location. Their
- * on-disk presence is still checked so a skill dir deleted by a prior
- * buggy migration triggers `"install"` and self-heals on the next
- * run.
+ * missing beats legacy: a missing file cannot be migrated without a re-pull.
+ * Skill dir entries are always current-layout, but their presence is still
+ * checked so a deleted skill dir triggers install and self-heals
  */
 export async function needsInstallOrMigration(
   files: string[],
@@ -458,26 +353,9 @@ export async function needsInstallOrMigration(
 }
 
 /**
- * Removes legacy-layout files left behind after a successful migration
- * re-pull. Only paths classified as gen-1 or gen-2 are removed; current-
- * layout paths are left alone. NotFound is tolerated (file already gone
- * from an interrupted prior pass). Empty parent directories under the
- * repo root are pruned.
- *
- * Uses recursive removal so directory entries (e.g. legacy skill dirs
- * tracked by their root, with nested files inside) are handled — a plain
- * Deno.remove fails on non-empty directories.
- *
- * `skillsDirsRelative` (when provided, repo-relative) excludes skill
- * directory entries from the sweep — skill paths are current-layout
- * regardless of physical location and the freshly-restored skill dir
- * must survive the post-install cleanup. Without this filter, the
- * `tool=none` fallback at `.swamp/pulled-extensions/skills/<name>` is
- * structurally identical to a gen-2 path and would be destructively
- * removed.
- *
- * Exported for direct unit testing; production callers invoke it
- * indirectly through `extensionInstall`.
+ * NotFound is tolerated; recursive removal handles directory entries such as
+ * legacy skill dirs; skill dir entries are excluded, else a tool=none skills
+ * path looks like a gen-2 path and is removed
  */
 export async function sweepLegacyPaths(
   originalFiles: string[],

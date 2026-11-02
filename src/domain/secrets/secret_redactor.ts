@@ -23,12 +23,6 @@ import {
   SENTINEL_SOURCE,
 } from "../vaults/secret_bag_registry.ts";
 
-/**
- * Redacts secret values from text to prevent plaintext leakage into
- * persisted data files and log output. In a typed run it also masks every
- * sentinel the run issued ({@link maskSentinelsOf}), so a sentinel in a log
- * line, a streamed output line or an error is never written as it is.
- */
 export class SecretRedactor {
   private secrets: Set<string> = new Set();
   private readonly indentedSecrets = new Map<string, RegExp>();
@@ -36,18 +30,13 @@ export class SecretRedactor {
   private readonly sentinelPattern = new RegExp(SENTINEL_SOURCE, "g");
 
   /**
-   * Masks every sentinel `registry` issued as `***` as well
-   * (design/enablers/typed-secrets.md Section 7.1). The decision reads the
-   * registry, never a value: no load happens, and a mask does not depend on
-   * the length or contents of a value. Sentinel-shaped text with another
-   * prefix is left as it is. Registries add up: a nested run that shares
-   * this redactor keeps the outer run's sentinels masked.
+   * reads the registry, never a value, so nothing loads; registries add up so a
+   * nested run sharing this redactor keeps the outer run's sentinels masked
    */
   maskSentinelsOf(registry: SecretBagRegistry): void {
     this.sentinels.add(registry);
   }
 
-  /** Whether an attached registry holds a sentinel to mask. */
   private get masksSentinels(): boolean {
     for (const registry of this.sentinels) {
       if (!registry.isEmpty) return true;
@@ -55,7 +44,6 @@ export class SecretRedactor {
     return false;
   }
 
-  /** Whether an attached registry issued `sentinel`. */
   private isMaskedSentinel(sentinel: string): boolean {
     for (const registry of this.sentinels) {
       if (registry.entryOf(sentinel) !== undefined) return true;
@@ -64,13 +52,9 @@ export class SecretRedactor {
   }
 
   /**
-   * Registers a secret value for redaction.
-   * Values shorter than 3 characters are ignored to prevent false-positive redaction.
-   *
-   * Also registers the value as it reads after CRLF line endings are
-   * normalised to LF — every CR that precedes an LF or ends the value
-   * removed — because captured PowerShell output is normalised that way
-   * before it is redacted.
+   * values under 3 characters are ignored to avoid false positives; the
+   * CRLF-normalised form is also registered because captured PowerShell output
+   * is normalised before redaction
    */
   addSecret(value: string): void {
     if (value.length < 3) return;
@@ -99,7 +83,6 @@ export class SecretRedactor {
         ),
       );
     }
-    // Also add JSON-escaped version for JSON data files
     const jsonEscaped = JSON.stringify(value).slice(1, -1);
     if (jsonEscaped !== value) {
       this.secrets.add(jsonEscaped);
@@ -121,11 +104,8 @@ export class SecretRedactor {
   }
 
   /**
-   * Replaces every sentinel of an attached registry in the text with `***`,
-   * then all registered secret values. Sentinels go first, so a value that
-   * happens to be a fragment of a sentinel cannot break the sentinel apart
-   * before it is recognised. Longer secrets are replaced first to handle
-   * substring overlap.
+   * sentinels go first so a value that is a fragment of a sentinel cannot break
+   * it apart; longer secrets go first to handle substring overlap
    */
   redact(text: string): string {
     let result = text;
@@ -136,7 +116,6 @@ export class SecretRedactor {
       );
     }
     if (this.secrets.size > 0) {
-      // Sort longest-first to handle substring overlap (e.g., "abc" vs "abcdef")
       const sorted = Array.from(this.secrets).sort((a, b) =>
         b.length - a.length
       );
@@ -150,19 +129,16 @@ export class SecretRedactor {
   }
 
   /**
-   * Whether `text` is itself a registered secret, matched whole rather than
-   * as a substring. A writer that serializes structure asks this of a value
-   * it writes unquoted, such as a number, where masking a substring would
-   * break the syntax (swamp-club#3754).
+   * matches whole, for writers that emit a value unquoted such as a number,
+   * where masking a substring would break the syntax
    */
   isSecret(text: string): boolean {
     return this.secrets.has(text);
   }
 
   /**
-   * Whether anything is redacted: a registered value, or a sentinel of an
-   * attached registry. Callers gate on this before calling {@link redact}, so
-   * it must answer true before any value is loaded in a typed run.
+   * callers gate on this before redact, so it must answer true before any value
+   * is loaded in a typed run
    */
   get hasSecrets(): boolean {
     return this.secrets.size > 0 || this.masksSentinels;

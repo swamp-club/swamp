@@ -17,23 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * What checkpointing a workflow run at every save would cost on v3
- * (swamp-club#3587). A simulated run of N steps saves its record twice a
- * step (started, completed), the record growing by about what a real
- * model step adds (its data artifacts' provenance), and stages one small
- * data record per step. "end only" commits once when the run ends, as
- * before the change; "checkpointed" checkpoints after every save. The A/A
- * pair runs the same case twice, so a gap between them is noise. Before
- * the benches, it prints the bytes each case adds to the datastore. The
- * stored bytes grow with the square of the steps, which is why
- * `WorkflowRunCheckpointer` starts at most one checkpoint per
- * `RUN_CHECKPOINT_INTERVAL_MS`.
- *
- * ```
- * deno bench -A scripts/bench_v3_workflow_checkpoint.ts
- * ```
- */
 
 import { join } from "@std/path";
 import type { CommitLogUnitOfWork } from "../src/domain/datastore_v3/commit_log_unit_of_work.ts";
@@ -49,7 +32,6 @@ import {
 } from "../src/infrastructure/datastore_v3/v3_datastore.ts";
 import { runInUnitOfWork } from "../src/infrastructure/persistence/unit_of_work_scope.ts";
 
-/** About what a completed model step adds to its run's record. */
 const RECORD_BYTES_PER_STEP = 4_500;
 const RECORD_BASE_BYTES = 1_500;
 
@@ -66,7 +48,6 @@ const engine = handle.engineFor(() => Promise.resolve(), () => {
   throw new Error("no run repository needed");
 });
 
-/** Runs a simulated workflow of `steps` steps in its own root. */
 async function simulateRun(steps: number, checkpoint: boolean): Promise<void> {
   const workflowId = crypto.randomUUID();
   const runId = crypto.randomUUID();
@@ -77,8 +58,6 @@ async function simulateRun(steps: number, checkpoint: boolean): Promise<void> {
     `workflow-run-${runId}.yaml`,
   ]);
   await engine.runRoot({}, async () => {
-    // The run's use-case unit, a child of the root, as `withUnitOfWork`
-    // opens it.
     const unit = engine.openUnit() as unknown as CommitLogUnitOfWork;
     await runInUnitOfWork(unit, async () => {
       const save = async (kind: "run.create" | "run.update", size: number) => {
@@ -108,7 +87,6 @@ async function simulateRun(steps: number, checkpoint: boolean): Promise<void> {
   });
 }
 
-/** The bytes of the files under `path`. */
 async function bytesUnder(path: string): Promise<number> {
   let total = 0;
   for await (const entry of Deno.readDir(path)) {
@@ -119,7 +97,6 @@ async function bytesUnder(path: string): Promise<number> {
   return total;
 }
 
-/** Chunk bytes, and commit-log bytes (`commits.db` with its WAL). */
 async function stored(): Promise<{ chunks: number; log: number }> {
   let log = 0;
   for (const name of ["commits.db", "commits.db-wal"]) {

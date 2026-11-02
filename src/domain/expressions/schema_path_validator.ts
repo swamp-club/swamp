@@ -20,27 +20,16 @@
 import type { z } from "zod";
 import { findClosestMatch } from "../string_distance.ts";
 
-/**
- * Result of validating a path against a Zod schema.
- */
 export interface PathValidationResult {
-  /** Whether the path is valid in the schema */
   valid: boolean;
-  /** Error message if the path is invalid */
   error?: string;
-  /** Suggestion for fixing the error (e.g., "Did you mean 'resource' instead of 'resources'?") */
   suggestion?: string;
-  /** Available keys at the point where validation failed */
   availableKeys?: string[];
 }
 
 /**
- * Internal type for Zod v4 schema definition.
- *
- * Note: This relies on Zod's internal `_def` structure which is not part of
- * the public API. If Zod changes its internal structure in future versions,
- * this interface and the functions that use it may need to be updated.
- * See: https://github.com/colinhacks/zod
+ * relies on Zod's internal _def structure, which is not public API and may need
+ * updating if Zod changes it
  */
 interface ZodDef {
   type: string;
@@ -52,24 +41,15 @@ interface ZodDef {
   schema?: z.ZodTypeAny;
 }
 
-/**
- * Gets the definition type from a Zod schema (Zod v4 compatible).
- */
 function getSchemaType(schema: z.ZodTypeAny): string {
   const def = (schema as unknown as { _def: ZodDef })._def;
   return def?.type ?? "";
 }
 
-/**
- * Gets the definition from a Zod schema.
- */
 function getSchemaDef(schema: z.ZodTypeAny): ZodDef {
   return (schema as unknown as { _def: ZodDef })._def;
 }
 
-/**
- * Gets the keys from a Zod object schema.
- */
 function getObjectKeys(schema: z.ZodTypeAny): string[] | null {
   const unwrapped = unwrapSchema(schema);
   const schemaType = getSchemaType(unwrapped);
@@ -80,9 +60,6 @@ function getObjectKeys(schema: z.ZodTypeAny): string[] | null {
   return null;
 }
 
-/**
- * Unwraps optional, nullable, and other wrapper types to get the underlying schema.
- */
 function unwrapSchema(schema: z.ZodTypeAny): z.ZodTypeAny {
   const schemaType = getSchemaType(schema);
   const def = getSchemaDef(schema);
@@ -97,9 +74,6 @@ function unwrapSchema(schema: z.ZodTypeAny): z.ZodTypeAny {
   return schema;
 }
 
-/**
- * Gets the element schema from an array type.
- */
 function getArrayElement(schema: z.ZodTypeAny): z.ZodTypeAny | null {
   const unwrapped = unwrapSchema(schema);
   const schemaType = getSchemaType(unwrapped);
@@ -110,9 +84,6 @@ function getArrayElement(schema: z.ZodTypeAny): z.ZodTypeAny | null {
   return null;
 }
 
-/**
- * Gets the property schema from an object by key.
- */
 function getObjectProperty(
   schema: z.ZodTypeAny,
   key: string,
@@ -129,7 +100,6 @@ function getObjectProperty(
   }
 
   if (schemaType === "record" && def.valueType) {
-    // Records allow any string key
     return def.valueType;
   }
 
@@ -144,13 +114,6 @@ function getObjectProperty(
   return null;
 }
 
-/**
- * Validates a path against a Zod schema.
- *
- * @param schema - The Zod schema to validate against
- * @param path - The path segments to validate (e.g., ["attributes", "VpcId"])
- * @returns Validation result with error details if invalid
- */
 export function validateSchemaPath(
   schema: z.ZodTypeAny,
   path: string[],
@@ -166,7 +129,6 @@ export function validateSchemaPath(
     const segment = path[i];
     const unwrapped = unwrapSchema(currentSchema);
 
-    // Check if segment is an array index
     const isArrayIndex = /^\d+$/.test(segment);
 
     if (isArrayIndex) {
@@ -183,7 +145,6 @@ export function validateSchemaPath(
       currentSchema = elementSchema;
       visitedPath.push(`[${segment}]`);
     } else {
-      // Property access
       const propertySchema = getObjectProperty(unwrapped, segment);
 
       if (!propertySchema) {
@@ -213,13 +174,6 @@ export function validateSchemaPath(
   return { valid: true };
 }
 
-/**
- * Formats available keys into a readable string.
- *
- * @param keys - The keys to format
- * @param maxKeys - Maximum number of keys to show (default: 5)
- * @returns Formatted string of available keys
- */
 export function formatAvailableKeys(keys: string[], maxKeys = 5): string {
   if (keys.length === 0) return "";
 

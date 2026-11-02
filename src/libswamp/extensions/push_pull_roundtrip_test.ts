@@ -17,12 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// Integration coverage for issue-146: archives built by extensionPushPrepare
-// preserve the manifest's additionalFiles directory structure, and the
-// ctx.extensionFile() helper resolves correctly against the extracted layout.
-// Hermetic — no registry calls, no auth, no mocked tar magic beyond what the
-// real prepare pipeline writes.
-
 import { assertEquals } from "@std/assert";
 import { join } from "@std/path";
 import { createLibSwampContext } from "../context.ts";
@@ -128,7 +122,6 @@ Deno.test(
     const src = await Deno.makeTempDir({ prefix: "rt-src-" });
     const dst = await Deno.makeTempDir({ prefix: "rt-dst-" });
     try {
-      // Stage a fixture extension with nested additionalFiles.
       const modelsDir = join(src, "extensions", "models");
       await Deno.mkdir(modelsDir, { recursive: true });
       await Deno.writeTextFile(
@@ -208,7 +201,6 @@ Deno.test(
 
       await untarArchiveTo(prepared.archiveBytes, dst);
 
-      // Verify layout under extension/files/ mirrors the manifest.
       const extFilesDir = join(dst, "extension", "files");
       const stat = async (p: string) => await Deno.stat(p);
       await stat(join(extFilesDir, "prompts", "review.md"));
@@ -216,7 +208,6 @@ Deno.test(
       await stat(join(extFilesDir, "templates", "review.md"));
       await stat(join(extFilesDir, "README.md"));
 
-      // Content check: no basename collision clobbered content.
       const promptContent = await Deno.readTextFile(
         join(extFilesDir, "prompts", "review.md"),
       );
@@ -226,8 +217,6 @@ Deno.test(
       assertEquals(promptContent.split("\n")[0], "# PROMPT prompt");
       assertEquals(templateContent.split("\n")[0], "# TEMPLATE template");
 
-      // resolveExtensionFile against the extracted layout (simulating what
-      // a pulled extension would see at .swamp/pulled-extensions/<name>/files).
       const resolved = resolveExtensionFile(
         extFilesDir,
         "prompts/nested/deep.md",
@@ -253,10 +242,8 @@ Deno.test(
     const src = await Deno.makeTempDir({ prefix: "rt-pb-src-" });
     const dst = await Deno.makeTempDir({ prefix: "rt-pb-dst-" });
     try {
-      // Per-extension-subdir layout: manifest sits beside its source.
-      // No `extensions/models/` indirection — the model file is right
-      // next to manifest.yaml. paths.base=manifest is what makes this
-      // shape work end-to-end.
+      // the manifest sits beside its source with no extensions/models
+      // indirection; paths.base=manifest makes this shape work
       const extDir = join(src, "extensions", "models", "scorer-aligned");
       await Deno.mkdir(extDir, { recursive: true });
       await Deno.writeTextFile(
@@ -277,8 +264,8 @@ Deno.test(
         graphDependencies: { packageVersions: {}, unaudited: [] },
         repoDir: src,
         manifestDir: src,
-        // Resolver under paths.base=manifest sets these to the manifest dir;
-        // the test fixture mirrors that contract directly.
+        // paths.base=manifest sets these to the manifest dir; the fixture
+        // mirrors that contract directly
         modelsDir: extDir,
         allModelFiles: [join(extDir, "echo.ts")],
         modelEntryPoints: [join(extDir, "echo.ts")],
@@ -317,15 +304,10 @@ Deno.test(
 
       await untarArchiveTo(prepared.archiveBytes, dst);
 
-      // 1) Archive sub-paths mirror the manifest entries verbatim:
-      // bare basenames in `models:` resolve to bare basenames under
-      // `extension/models/`, not nested any deeper.
       const extRoot = await findManifestRoot(dst);
       await Deno.stat(join(extRoot, "models", "echo.ts"));
       await Deno.stat(join(extRoot, "files", "README.md"));
 
-      // 2) On-wire manifest preserves WYSIWYG: paths.base round-trips,
-      // path string arrays are byte-equivalent to the source manifest.
       const onWire = parseYaml(
         await Deno.readTextFile(join(extRoot, "manifest.yaml")),
       ) as Record<string, unknown>;
@@ -333,14 +315,8 @@ Deno.test(
       assertEquals(onWire.models, ["echo.ts"]);
       assertEquals(onWire.additionalFiles, ["README.md"]);
 
-      // 3) Scorer's collectEntrypoints finds every typed-key entry at
-      // the path it expects. This is the hard contract that broke
-      // under the v1 dual-base proposal — locking it here prevents
-      // any future divergence between manifest entries and archive
-      // sub-paths.
       const entrypoints = collectEntrypoints(extRoot, extRoot, manifest);
       assertEquals(entrypoints, [join(extRoot, "models", "echo.ts")]);
-      // Every entrypoint actually exists in the extracted archive.
       for (const ep of entrypoints) {
         await Deno.stat(ep);
       }
@@ -357,7 +333,6 @@ Deno.test(
     const src = await Deno.makeTempDir({ prefix: "rt-skill-src-" });
     const dst = await Deno.makeTempDir({ prefix: "rt-skill-dst-" });
     try {
-      // Per-extension-subdir layout with a skill next to the manifest.
       const extDir = join(src, "sub");
       await Deno.mkdir(extDir, { recursive: true });
       await Deno.writeTextFile(
@@ -365,7 +340,6 @@ Deno.test(
         'export const model = { type: "@t/skill-rt", version: "1.0.0" };',
       );
 
-      // Skill lives at sub/.claude/skills/my-skill/
       const skillDir = join(extDir, ".claude", "skills", "my-skill");
       await Deno.mkdir(skillDir, { recursive: true });
       await Deno.writeTextFile(
@@ -429,7 +403,6 @@ Deno.test(
 
       await untarArchiveTo(prepared.archiveBytes, dst);
 
-      // Skill files land under extension/skills/<name>/ with structure preserved.
       const archiveSkillDir = join(dst, "extension", "skills", "my-skill");
       await Deno.stat(join(archiveSkillDir, "SKILL.md"));
       await Deno.stat(join(archiveSkillDir, "references", "detail.md"));
@@ -599,7 +572,6 @@ Deno.test(
 
       await untarArchiveTo(prepared.archiveBytes, dst);
 
-      // Workflow file lands under extension/workflows/ in the archive
       await Deno.stat(join(dst, "extension", "workflows", "deploy.yaml"));
 
       const onWire = parseYaml(
@@ -625,8 +597,6 @@ Deno.test(
     const src = await Deno.makeTempDir({ prefix: "rt-1855-src-" });
     const dst = await Deno.makeTempDir({ prefix: "rt-1855-dst-" });
     try {
-      // Layout matching the reporter's scenario: manifest beside a
-      // models/ subdirectory, with paths.base=manifest.
       const extDir = join(src, "extensions", "myext");
       await Deno.mkdir(join(extDir, "models"), { recursive: true });
       await Deno.writeTextFile(
@@ -688,12 +658,10 @@ Deno.test(
       await untarArchiveTo(prepared.archiveBytes, dst);
       const extRoot = await findManifestRoot(dst);
 
-      // The archive places the model at the doubled path.
       await Deno.stat(join(extRoot, "models", "models", "project.ts"));
 
-      // The scorer prefixes every entry with its kind directory, as the
+      // the scorer prefixes every entry with its kind directory, as the
       // registry does, so it analyses the file where the archive put it
-      // (swamp-club#3781).
       const entrypoints = collectEntrypoints(extRoot, extRoot, manifest);
       assertEquals(entrypoints, [
         join(extRoot, "models", "models", "project.ts"),

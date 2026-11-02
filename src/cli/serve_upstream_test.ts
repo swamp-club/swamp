@@ -58,7 +58,6 @@ async function withTemp<T>(fn: (dir: string) => Promise<T>): Promise<T> {
   }
 }
 
-/** A servers.json in `dir` holding `token` for `serverUrl`. */
 async function storedCredential(
   dir: string,
   serverUrl: string,

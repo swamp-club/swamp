@@ -17,8 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// Unit tests for the pure helpers in refresh_litestream_pin.ts, plus one
-// opt-in network test that checks the checked-in pin against upstream.
 
 import { assertEquals, assertStringIncludes, assertThrows } from "@std/assert";
 import {

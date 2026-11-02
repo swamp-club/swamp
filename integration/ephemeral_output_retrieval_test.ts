@@ -130,8 +130,8 @@ async function withFixture(fn: (fx: Fixture) => Promise<void>) {
     const repo = createRepositoryContext({ repoDir: dir });
     try {
       await repo.definitionRepo.save(type, definition);
-      // A released direct CLI persisted this ephemeral v1. Keep it to catch
-      // an erroneous post-run retrieval command selecting the old bytes.
+      // a released direct CLI persisted this ephemeral v1; kept to catch a
+      // wrong post-run retrieval command selecting the old bytes
       await repo.unifiedDataRepo.save(
         type,
         definition.id,

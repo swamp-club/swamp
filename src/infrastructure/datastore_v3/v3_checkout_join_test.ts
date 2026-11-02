@@ -65,7 +65,6 @@ async function plant(repoDir: string, ...segments: string[]): Promise<void> {
   await Deno.writeTextFile(path, "v2 record");
 }
 
-/** Every file under `dir`, relative, with its content. */
 async function snapshot(dir: string): Promise<Record<string, string>> {
   const files: Record<string, string> = {};
   const walkDir = async (path: string, rel: string) => {
@@ -111,7 +110,6 @@ Deno.test("assertV3CheckoutJoinable: a checkout holding nothing, or only repo-lo
       await plant(repoDir, subdir, "a.json");
     }
     await plant(repoDir, "bundles", "ext", "mod.js");
-    // The v2 catalog is an index, not a record.
     await plant(repoDir, "data", "_catalog.db");
     await plant(repoDir, "run_tracker.db");
     await assertV3CheckoutJoinable(repoDir);
@@ -184,7 +182,6 @@ Deno.test("movePreV3CheckoutRecords: moves each record directory under pre-v3-re
       () => Deno.stat(swampPath(repoDir, "data")),
       Deno.errors.NotFound,
     );
-    // The moved records no longer stop the checkout joining.
     await assertV3CheckoutJoinable(repoDir, "team");
   });
 });
@@ -262,7 +259,6 @@ Deno.test("assertV3CheckoutJoinable: files a v3 checkout keeps as its own are no
       "2026-01-01.ndjson",
     );
     await assertV3CheckoutJoinable(repoDir);
-    // A config record beside them still counts.
     await plant(repoDir, "config", "vaults", "local_encryption", "v1.yaml");
     const error = await assertRejects(
       () => assertV3CheckoutJoinable(repoDir),
@@ -347,7 +343,6 @@ Deno.test("movePreV3CheckoutRecords: moves records only, leaving the checkout's 
       join(destination, "config", "vaults", "local_encryption", "v1.yaml"),
     );
     await Deno.stat(join(destination, "outputs", "m1", "run.yaml"));
-    // No empty version directory is left to be listed as a version.
     await assertRejects(
       () => Deno.stat(swampPath(repoDir, "data", "m1")),
       Deno.errors.NotFound,
@@ -376,7 +371,6 @@ Deno.test("movePreV3CheckoutRecords: a namespace named like a record directory m
 Deno.test("preV3CheckoutRecordDirs and movePreV3CheckoutRecords: a namespace that is no slug is refused before any path outside .swamp is walked or moved", async () => {
   await withTempDir(async (dir) => {
     const repoDir = join(dir, "repo");
-    // A record outside the repo that `../..` would reach.
     await Deno.mkdir(join(dir, "data"), { recursive: true });
     await Deno.writeTextFile(join(dir, "data", "outside"), "not the repo's");
     for (const namespace of ["../..", "a/b", "UPPER"]) {
@@ -415,7 +409,6 @@ Deno.test("isJoinOwnFile: the managedConfig lockfile is the joining checkout's o
 
 Deno.test("assertV3CheckoutJoinable: a fresh managedConfig checkout holding only what the datastore extension's install wrote joins, and one holding records beside it is refused (swamp-club#3696)", async () => {
   await withTempDir(async (repoDir) => {
-    // What auto-installing the datastore extension leaves in a fresh clone.
     await plant(
       repoDir,
       "config",

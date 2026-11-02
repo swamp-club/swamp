@@ -62,7 +62,6 @@ export interface RunGcData {
   workflowRunBytesReclaimed: number;
   outputsDeleted: number;
   outputBytesReclaimed: number;
-  /** Per-run evaluated-workflow snapshots removed with their runs or as orphans. */
   evaluatedSnapshotsDeleted: number;
   evaluatedSnapshotBytesReclaimed: number;
   totalBytesReclaimed: number;
@@ -78,23 +77,13 @@ export interface RunGcInput {
   dryRun: boolean;
   workflowRunRetentionDays?: number;
   outputRetentionDays?: number;
-  /**
-   * How long a finished run's evaluated snapshot is kept; unset, a snapshot
-   * goes with its run.
-   */
   evaluatedSnapshotRetentionDays?: number;
 }
 
-/** The `.swamp.yaml` `garbageCollection` block run gc reads. */
 export type RunGcGarbageCollectionPolicy = RetentionConfig;
 
 const DAY_MS = 86_400_000;
 
-/**
- * Maps the repository's garbage-collection block to run gc retention, in
- * days. A kind's own key wins over `retention`; a kind with neither is left
- * unset, so run gc uses its built-in default.
- */
 export function runGcRetentionFromPolicy(
   policy?: RunGcGarbageCollectionPolicy,
 ): Pick<
@@ -133,7 +122,6 @@ export function runGcInputFromPolicy(
   if (overrideRetentionDays === undefined) {
     return { dryRun, ...runGcRetentionFromPolicy(policy) };
   }
-  // The override is first in the policy's precedence for runs and outputs.
   return {
     dryRun,
     workflowRunRetentionDays: overrideRetentionDays,
@@ -193,10 +181,6 @@ async function listTerminalRunIds(
   return finished;
 }
 
-/**
- * Removes the wait records of the runs just deleted, then sweeps the
- * records nothing else removed.
- */
 function waitRecordCollector(
   store: SignalWaitStore,
   runRepo: Pick<WorkflowRunRepository, "findById">,
@@ -215,8 +199,8 @@ function waitRecordCollector(
       new Date(),
       { localRunAbsenceIsAuthoritative },
     );
-    // The continuation claims of a run go with it (swamp-club#3108), last:
-    // a claim that cannot be removed must not keep the wait records.
+    // a run's continuation claims go with it, last: a claim that cannot be
+    // removed must not keep the wait records
     await removeClaimsOfRuns(continuationClaims, deletedRunIds);
   };
 }
@@ -240,10 +224,6 @@ export function createRunGcDeps(
   };
 }
 
-/**
- * The run lifecycle service over a repository's runs, outputs and run
- * snapshots, as run gc and the retention pass use it.
- */
 export function createRunLifecycleService(
   repoDir: string,
   datastoreResolver?: DatastorePathResolver,

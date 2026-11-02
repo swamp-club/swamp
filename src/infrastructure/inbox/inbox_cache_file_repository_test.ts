@@ -36,7 +36,6 @@ const STAGING = "https://staging.swamp-club.com";
 const KEY_A: InboxCacheKey = { origin: PRODUCTION, fingerprint: FP_A };
 const KEY_B: InboxCacheKey = { origin: PRODUCTION, fingerprint: FP_B };
 
-/** Where the repository keeps a key's file under a config dir. */
 async function cachePath(dir: string, key: InboxCacheKey): Promise<string> {
   const digest = await crypto.subtle.digest(
     "SHA-256",
@@ -153,7 +152,6 @@ Deno.test("InboxCacheFileRepository: a field outside its bounds loads as empty",
           stop: { reason: "bored", at: valid.schedule.stop.at },
         },
       },
-      // A 404 no longer stops a key, so a stored one reads as never polled.
       {
         ...valid,
         schedule: {
@@ -223,7 +221,6 @@ Deno.test("InboxCacheFileRepository: keeps at most 8 keys, dropping the oldest a
     );
     for (const [i, key] of keys.slice(0, 8).entries()) {
       await repo.save(key, fullState);
-      // The first key is the oldest; the rest are newer than the ninth.
       const at = new Date(i === 0 ? T0 - 1_000_000 : T0 + 1_000_000 + i);
       await Deno.utime(await cachePath(dir, key), at, at);
     }
@@ -291,7 +288,6 @@ const storableState: fc.Arbitrary<InboxState> = fc.record({
       ),
       fetchedAt: fc.option(time, { nil: undefined }),
     }).map((snap) => {
-      // An absent fetchedAt is left out, as a file without the field loads.
       const { fetchedAt, ...rest } = snap;
       return fetchedAt === undefined ? rest : { ...rest, fetchedAt };
     }),
@@ -362,7 +358,6 @@ Deno.test({
     await withTempDir(async (dir) => {
       const repo = new InboxCacheFileRepository(dir);
       await repo.save(KEY_A, fullState);
-      // Saved again over an existing file, too.
       await repo.save(KEY_A, fullState);
       const info = await Deno.stat(await cachePath(dir, KEY_A));
       assertEquals(info.mode! & 0o777, 0o600);
@@ -385,7 +380,6 @@ Deno.test("InboxCacheFileRepository: delete removes the key's file and its first
     assertEquals(await repo.load(staging), fullState);
     assertEquals(await repo.load(KEY_B), fullState);
     assertEquals(await listNames(join(dir, "inbox")), [`${FP_B}.json`]);
-    // Nothing left to remove is not an error.
     await repo.delete(KEY_A);
   });
 });

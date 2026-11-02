@@ -18,20 +18,9 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * Reaps ended step-lease and pending-dispatch records (swamp-club#2262), and
- * revoked or expired enrollment tokens no worker record references
- * (swamp-club#3473).
- *
- * Both models declare `lifetime: "infinite"` and hold one data name per
- * record under a single instance, so without reaping every remote step
- * leaves a record behind forever. `isReapableLease` / `isReapableDispatch`
- * decide what may go; this module removes it.
- *
- * Deletes are sync-safe: each batch deletes locally and then pushes, as one
- * exclusive sync-gate unit, so a poller pull can never land between a delete
- * and its push and restore the record (swamp-club#2247). Batches are small
- * and the gate is released between them, so waiting runs never approach the
- * gate's wait timeout.
+ * deletes are sync-safe: each batch deletes locally then pushes as one
+ * exclusive gate unit, so a poller pull cannot land between and restore the
+ * record; small batches keep gate waits short
  */
 
 import type { DataQueryService } from "../domain/data/data_query_service.ts";
@@ -63,24 +52,18 @@ import { type SyncGate, withSyncGate } from "./sync_gate.ts";
 
 const logger = getSwampLogger(["serve", "bookkeeping-gc"]);
 
-/** Records deleted per exclusive gate hold. */
 export const DEFAULT_REAP_BATCH_SIZE = 100;
 
 export interface BookkeepingReapResult {
   readonly leasesDeleted: number;
   readonly dispatchesDeleted: number;
-  /** Revoked or expired enrollment tokens deleted. */
   readonly tokensDeleted: number;
-  /** Records whose local delete threw; they are retried next cycle. */
   readonly failed: number;
-  /** Records skipped because their body could not be read or parsed. */
   readonly unreadable: number;
   readonly batches: number;
-  /** Batches whose push failed; their deletes stay queued as dirty paths. */
   readonly pushFailures: number;
 }
 
-/** Identifies one record in the catalog without its body. */
 export interface BookkeepingRecordRef {
   readonly modelId: string;
   readonly name: string;
@@ -88,9 +71,8 @@ export interface BookkeepingRecordRef {
 
 export interface BookkeepingGcDeps {
   /**
-   * Lists matching records without reading their bodies. Bodies are read one
-   * by one afterwards, so a single unreadable record cannot fail the listing.
-   * Wire it with {@link createBookkeepingRecordQuery}.
+   * lists records without reading bodies; bodies are read one by one afterwards
+   * so one unreadable record cannot fail the listing
    */
   query(predicate: string): Promise<BookkeepingRecordRef[]>;
   readonly repo: Pick<
@@ -98,31 +80,25 @@ export interface BookkeepingGcDeps {
     "namespace" | "getContent" | "listVersions" | "delete"
   >;
   /**
-   * The mark hook `repo` was built over (`repoContext.markDirty`). Each batch
-   * runs in a root unit of work over it, so the deletes stage into the root
-   * (swamp-club#3056).
+   * each batch runs in a root unit of work over this hook, so the deletes stage
+   * into the root
    */
   readonly markDirty?: MarkDirtyHook;
   readonly syncService?: Pick<DatastoreSyncService, "pushChanged">;
-  /** Datastore namespace passed to `pushChanged`. */
   readonly syncNamespace?: string;
   readonly syncGate?: SyncGate;
   readonly batchSize?: number;
   /**
-   * Names of the enrollment tokens a worker record in this repo still
-   * references. Enrollment tokens are reaped only when this is wired, and
-   * a token any worker record names is kept. Wire it with
-   * {@link createWorkerTokenNameQuery}. When it throws, no token is reaped
-   * that cycle.
+   * tokens are reaped only when this is wired, and a token any worker record
+   * names is kept; when it throws, no token is reaped that cycle
    */
   listWorkerTokenNames?(): Promise<ReadonlySet<string>>;
   now?(): number;
 }
 
 /**
- * Adapts a catalog query service to {@link BookkeepingGcDeps.query}. A plain
- * query hydrates every matched record's body and fails outright if one cannot
- * be read; a `select` projection over metadata fields reads no bodies.
+ * a plain query hydrates every body and fails if one is unreadable; a select
+ * over metadata fields reads no bodies
  */
 export function createBookkeepingRecordQuery(
   dataQueryService: Pick<DataQueryService, "query">,
@@ -141,10 +117,8 @@ export function createBookkeepingRecordQuery(
 }
 
 /**
- * Adapts a catalog query service to
- * {@link BookkeepingGcDeps.listWorkerTokenNames}: the `tokenName` of every
- * worker state record in `namespace`. Throws when a worker record has no
- * readable token name, so an unknown reference never lets a token go.
+ * throws when a worker record has no readable token name, so an unknown
+ * reference never lets a token go
  */
 export function createWorkerTokenNameQuery(
   dataQueryService: Pick<DataQueryService, "query">,
@@ -182,10 +156,8 @@ interface BatchOutcome {
   pushFailed: boolean;
 }
 
-/** Data name every enrollment-token instance stores its record under. */
 const ENROLLMENT_TOKEN_DATA_NAME = "token-main";
 
-/** Catalog predicate for every enrollment token in the repo's namespace. */
 export function enrollmentTokenListPredicate(namespace: string): string {
   return `modelType == ${
     JSON.stringify(ENROLLMENT_TOKEN_MODEL_TYPE.normalized)
@@ -194,7 +166,6 @@ export function enrollmentTokenListPredicate(namespace: string): string {
     ownNamespaceTerm(namespace);
 }
 
-/** Catalog predicate for one bookkeeping instance in the repo's namespace. */
 export function bookkeepingListPredicate(
   modelType: ModelType,
   instanceName: string,
@@ -208,8 +179,8 @@ export function bookkeepingListPredicate(
 const decoder = new TextDecoder();
 
 /**
- * Reads one record's JSON body. Returns null when it is missing, unreadable
- * or not JSON, logging why — the record is kept and the sweep continues.
+ * null when the body is missing, unreadable or not JSON, logged; the record is
+ * kept and the sweep continues
  */
 async function readAttributes(
   deps: BookkeepingGcDeps,
@@ -266,17 +237,12 @@ const BOOKKEEPING_KINDS: readonly BookkeepingKind[] = [
   },
 ];
 
-/** The token name a token record carries, or undefined when it has none. */
 function tokenNameOf(attrs: unknown): string | undefined {
   if (typeof attrs !== "object" || attrs === null) return undefined;
   const name = (attrs as { name?: unknown }).name;
   return typeof name === "string" ? name : undefined;
 }
 
-/**
- * The enrollment-token kind for this cycle, or null when tokens are not
- * reaped: the worker reference lookup is not wired, or it failed.
- */
 async function enrollmentTokenKind(
   deps: BookkeepingGcDeps,
 ): Promise<BookkeepingKind | null> {
@@ -337,10 +303,8 @@ async function listCandidates(
 }
 
 /**
- * Deletes one batch locally, then pushes. Must run inside the exclusive sync
- * gate (`withSyncGate`), so the delete and its push are one unit. The batch
- * runs in a root unit of work whose flush is the push, on every outcome as
- * the `finally` it replaced did (swamp-club#3056).
+ * must run inside the exclusive sync gate so delete and push are one unit; the
+ * root unit of work flushes by pushing, on every outcome
  */
 async function reapBatch(
   deps: BookkeepingGcDeps,
@@ -408,13 +372,6 @@ async function reapBatch(
   return outcome;
 }
 
-/**
- * Deletes every ended lease and dispatch whose `endedAt` is at least
- * `gracePeriodMs` old, and — when `listWorkerTokenNames` is wired — every
- * revoked or expired enrollment token that ended at least `gracePeriodMs`
- * ago and no worker record references. Active leases, waiting dispatches
- * and live tokens are never touched. Stops between records and batches once `isStopping` returns true.
- */
 export async function reapEndedBookkeepingRecords(
   deps: BookkeepingGcDeps,
   gracePeriodMs: number,

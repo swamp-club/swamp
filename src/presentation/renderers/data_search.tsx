@@ -35,34 +35,21 @@ import { UserError } from "../../domain/errors.ts";
 import { renderInteractivePicker } from "./components/search_picker.tsx";
 import { renderMarkdownToTerminal } from "../markdown_renderer.ts";
 
-/**
- * Detail data fetched for the preview pane. Contains the raw content string
- * (or a description for binary data).
- */
 export interface DataPreviewDetail {
   content: string | undefined;
   contentPath: string;
 }
 
-/**
- * Callback type for fetching data content for the preview pane.
- */
 export type DataPreviewFetcher = (
   item: DataSearchItem,
 ) => Promise<DataPreviewDetail>;
 
-/**
- * Formats a byte count into a human-readable size string.
- */
 function formatSize(bytes: number): string {
   if (bytes < 1024) return `${bytes}B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)}KB`;
   return `${(bytes / (1024 * 1024)).toFixed(1)}MB`;
 }
 
-/**
- * Formats an ISO date string as a relative time (e.g., "2s ago", "5m ago").
- */
 function formatRelativeTime(isoStr: string): string {
   const diffMs = Date.now() - new Date(isoStr).getTime();
   const seconds = Math.floor(diffMs / 1000);
@@ -170,13 +157,6 @@ export function createDataSearchRenderer(
   }
 }
 
-// ---------------------------------------------------------------------------
-// Rendering callbacks for the SearchPicker
-// ---------------------------------------------------------------------------
-
-/**
- * Builds the metadata section as markdown for scrollback (plain-text output).
- */
 function buildMetadataMarkdown(item: DataSearchItem): string {
   const tagEntries = Object.entries(item.tags);
   const lines: string[] = [
@@ -207,9 +187,8 @@ function buildMetadataMarkdown(item: DataSearchItem): string {
 }
 
 /**
- * Builds metadata as React elements for the preview pane. Uses Ink's own
- * <Text> styling instead of ANSI from renderMarkdownToTerminal — Ink can
- * measure its own elements correctly for truncation.
+ * uses Ink's own Text styling instead of ANSI from renderMarkdownToTerminal:
+ * Ink can measure its own elements for truncation
  */
 function buildMetadataElements(item: DataSearchItem): React.ReactElement[] {
   const tagEntries = Object.entries(item.tags);

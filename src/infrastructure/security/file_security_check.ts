@@ -18,29 +18,9 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * Cross-platform "is this file safe to read sensitive material from?" check.
- *
- * On POSIX, replicates the long-standing `(stat.mode & 0o077) !== 0` rule —
- * any group or other access bit fails the check.
- *
- * On Windows, NTFS does not honour POSIX modes, so we shell out to `icacls`
- * and walk each ACE looking for entries that grant readable rights to a small
- * set of broad principals (Everyone, Authenticated Users, Anonymous Logon,
- * BUILTIN\Users). We use `icacls` rather than PowerShell `Get-Acl` because
- * GitHub Actions windows-latest runners cannot reliably auto-load the
- * `Microsoft.PowerShell.Security` module that hosts `Get-Acl`, but `icacls`
- * is a native Win32 binary that is always present.
- *
- * What this Windows check intentionally does NOT do:
- * - It does not walk the inheritance chain or evaluate effective access.
- * - It does not honour Deny ACEs (an explicit Deny that overrides a broad
- *   Allow will still be flagged here).
- * - It does not inspect alternate data streams.
- * - It does not resolve nested group memberships.
- *
- * The intent is to match the bar set by the POSIX check: if a file is broadly
- * readable in an obvious way, refuse to use it for vault key material.
- * Operators who need finer-grained control should adjust ACLs and re-run.
+ * Windows uses icacls (Get-Acl does not load reliably on CI) and flags broad
+ * principals only, ignoring inheritance, Deny ACEs, streams and nested groups,
+ * matching the POSIX bar of obviously broad readability
  */
 export type SecurityCheckResult = { ok: true } | {
   ok: false;
@@ -48,10 +28,8 @@ export type SecurityCheckResult = { ok: true } | {
 };
 
 /**
- * Broad principals on Windows whose Read-style access marks a file as
- * unsafe for sensitive material. icacls renders both the localised name
- * and (when the SID cannot be resolved) the SID itself, so we match
- * either form.
+ * icacls prints the localised name or, when the SID cannot be resolved, the
+ * SID, so either form is matched
  */
 const BROAD_WINDOWS_PRINCIPALS: ReadonlyArray<{ name: string; sid: string }> = [
   { name: "Everyone", sid: "S-1-1-0" },
@@ -61,14 +39,8 @@ const BROAD_WINDOWS_PRINCIPALS: ReadonlyArray<{ name: string; sid: string }> = [
 ];
 
 /**
- * icacls permission tokens that grant read-or-better access. These appear
- * inside parentheses on each ACE line, e.g. `(R)`, `(RX)`, `(F)`, `(M)`.
- * - F  = Full control
- * - M  = Modify (implies Read)
- * - RX = Read and Execute
- * - R  = Read
- * GR/GE/GA are generic-rights aliases icacls also emits when SDDL was used
- * to set the ACL — we treat those equivalently.
+ * F, M, RX and R grant read-or-better; GR/GE/GA are generic-rights aliases
+ * icacls emits when SDDL set the ACL, treated the same
  */
 const READ_GRANTING_TOKENS = [
   "(F)",
@@ -80,13 +52,6 @@ const READ_GRANTING_TOKENS = [
   "(GA)",
 ] as const;
 
-/**
- * Verifies that the file at `path` is not broadly readable.
- *
- * - Returns `{ ok: true }` when the file is restricted to the owner.
- * - Returns `{ ok: false, reason }` when the file is broadly readable; the
- *   reason is suitable for surfacing directly in an error message.
- */
 export async function checkFileNotBroadlyReadable(
   path: string,
 ): Promise<SecurityCheckResult> {
@@ -185,73 +150,32 @@ async function checkWindowsAcl(path: string): Promise<SecurityCheckResult> {
 }
 
 /**
- * Parsed icacls ACE. Exported for direct unit testing of the parser on
- * non-Windows hosts; production code only consumes it via
- * `checkFileNotBroadlyReadable`.
- *
- * @internal
+ * exported only for unit tests of the parser on non-Windows hosts; production
+ * code reaches it through checkFileNotBroadlyReadable
  */
 export interface IcaclsAce {
-  /** Principal as printed by icacls, e.g. "Everyone" or "BUILTIN\\Users". */
   principal: string;
-  /** Raw rights string, e.g. "(R)" or "(OI)(CI)(F)". */
   rights: string;
 }
 
-/**
- * Parses `icacls <path>` output into a list of ACEs.
- *
- * icacls output looks like (one ACE may span multiple lines if rights are
- * inheritance-flagged):
- *
- *   C:\path\to\file Everyone:(R)
- *                   BUILTIN\Users:(RX)
- *                   BUILTIN\Administrators:(F)
- *                   DOMAIN\user:(F)
- *
- *   Successfully processed 1 files; Failed processing 0 files
- *
- * The first ACE on the first line is preceded by the file path (which may
- * contain spaces). On continuation lines the file path is replaced by
- * leading whitespace. The trailing summary line ("Successfully processed
- * ...") is not an ACE.
- *
- * We split each ACE on the LAST `:` so that principals like
- * `BUILTIN\Users` (no colon) and `DOMAIN\user` (no colon) parse correctly,
- * and so a path like `C:\foo` on the leading line doesn't confuse us — we
- * strip the path prefix before splitting.
- *
- * @internal — exported only so unit tests can exercise the parser on
- * non-Windows hosts. Production code calls `checkFileNotBroadlyReadable`.
- */
 export function parseIcaclsOutput(stdout: string, path: string): IcaclsAce[] {
   const aces: IcaclsAce[] = [];
-  // Normalise EOL — icacls emits CRLF on Windows but we may run under
-  // tests that mock the binary on POSIX.
   const lines = stdout.split(/\r?\n/);
   for (const rawLine of lines) {
-    // Strip the leading path prefix if present. icacls prints the file
-    // path verbatim on the first ACE line; we strip it whether it's the
-    // exact path passed in (case-insensitive) or just leading whitespace.
     let line = rawLine;
     if (line.startsWith(path)) {
       line = line.slice(path.length);
     } else if (line.toLowerCase().startsWith(path.toLowerCase())) {
-      // icacls may normalise the path's case — handle that.
       line = line.slice(path.length);
     }
     line = line.trim();
     if (line.length === 0) continue;
-    // Skip the trailing summary line. The English form starts with
-    // "Successfully processed", but localised Windows can return other
-    // strings — the discriminator we lean on is the absence of any
-    // "(...)" rights token.
+    // localised Windows summary lines differ, so skip any line without a (...)
+    // rights token
     if (!line.includes("(") || !line.includes(")")) continue;
 
-    // Split on the LAST `:` so principals containing `:` (which is rare
-    // but possible) don't trip us; in practice icacls separates
-    // principal:rights with a single `:` and rights are wrapped in
-    // parentheses, so the colon immediately before "(" is the separator.
+    // split on the last `:(` so a colon inside the principal or the leading
+    // path does not confuse the split
     const colonIdx = line.lastIndexOf(":(");
     if (colonIdx < 0) continue;
     const principal = line.slice(0, colonIdx).trim();
@@ -263,13 +187,6 @@ export function parseIcaclsOutput(stdout: string, path: string): IcaclsAce[] {
   return aces;
 }
 
-/**
- * Returns the matched broad principal name when an ACE grants readable
- * rights to a broad principal, or null when the ACE is acceptable.
- *
- * @internal — exported only so unit tests can exercise the matcher on
- * non-Windows hosts.
- */
 export function matchBroadAce(ace: IcaclsAce): string | null {
   const matched = BROAD_WINDOWS_PRINCIPALS.find((p) =>
     ace.principal.localeCompare(p.name, undefined, {
@@ -279,9 +196,8 @@ export function matchBroadAce(ace: IcaclsAce): string | null {
   );
   if (!matched) return null;
 
-  // Substring-match across the rights string. icacls may emit
-  // inheritance flags inline (e.g. "(OI)(CI)(R)") so we don't anchor on
-  // the start/end of the string.
+  // substring match, since rights may carry inline inheritance flags like
+  // (OI)(CI)(R)
   if (READ_GRANTING_TOKENS.some((t) => ace.rights.includes(t))) {
     return matched.name;
   }

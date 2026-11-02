@@ -82,10 +82,6 @@ Deno.test("LogVaultReadSecretRenderer: writes exact bytes without trailing newli
   }
 });
 
-/**
- * Replaces Deno.stdout.writeSync with `mock` for the duration of `body` and
- * returns every chunk the mock was handed, copied at call time.
- */
 function withMockedStdoutWriteSync(
   mock: (data: Uint8Array, call: number) => number,
   body: () => void,
@@ -125,10 +121,9 @@ function completedWith(value: string): void {
 }
 
 Deno.test("LogVaultReadSecretRenderer: piped output keeps a 1024+ char last line after a short write at the last newline", () => {
-  // Deno's line-buffered stdout writer emits complete lines and returns a
-  // short count when the trailing partial line is 1024+ bytes
-  // (swamp-club#3006). Model that cut: the first call writes through the
-  // last newline only; later calls take everything.
+  // Deno's line-buffered stdout writer returns a short count when the trailing
+  // partial line is 1024+ bytes; model it: the first call writes through the
+  // last newline only, later calls take everything
   const lastLine = "k: " + "x".repeat(1021);
   const value = `a: b\n${lastLine}`;
   const encoded = new TextEncoder().encode(value);

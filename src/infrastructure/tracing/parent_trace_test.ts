@@ -47,10 +47,6 @@ Deno.test("runWithParentTrace: propagates async return values", async () => {
   assertEquals(result, "async-value");
 });
 
-// ============================================================================
-// withGeneratorTraceContext Tests
-// ============================================================================
-
 Deno.test("withGeneratorTraceContext: passes through when traceparent is undefined", async () => {
   async function* source() {
     yield 1;
@@ -125,7 +121,6 @@ Deno.test("withGeneratorTraceContext: a consumer break runs the inner finally on
         break;
       }
 
-      // The break has resolved only after the inner finally ran.
       assertEquals(finallyRuns, 1);
       const inFinally = findSpan(recorder.ended, "in-finally");
       assertEquals(

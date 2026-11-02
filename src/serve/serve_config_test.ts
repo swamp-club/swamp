@@ -678,8 +678,6 @@ Deno.test("parseWebhookConfig: parses generic scheme with header and prefix", as
   });
 });
 
-// ── parseExplicitFlags ────────────────────────────────────────────────
-
 Deno.test("parseExplicitFlags: detects simple flags", () => {
   const flags = parseExplicitFlags(["--port", "9090", "--host", "0.0.0.0"]);
   assertEquals(flags.has("port"), true);
@@ -702,8 +700,6 @@ Deno.test("parseExplicitFlags: ignores non-flag args", () => {
   const flags = parseExplicitFlags(["serve", "9090", "-v"]);
   assertEquals(flags.size, 0);
 });
-
-// ── mergeServeOptions ─────────────────────────────────────────────────
 
 Deno.test("mergeServeOptions: CLI flag wins over env var and config file", () => {
   const config: ServeConfigFile = { port: 3000 };
@@ -890,8 +886,6 @@ Deno.test("mergeServeOptions: trusted-hosts config array joined to comma string"
   );
 });
 
-// ── grants-file merge ─────────────────────────────────────────────────
-
 Deno.test("mergeServeOptions: grants-file CLI flag wins over config and env", () => {
   const config: ServeConfigFile = { "grants-file": "/from/config.yaml" };
   const cliOptions = { grantsFile: "/from/cli.yaml" };
@@ -967,8 +961,6 @@ Deno.test("loadServeConfig: non-string grants-file produces error", () => {
   });
 });
 
-// ── grants-dir merge ──────────────────────────────────────────────────
-
 Deno.test("mergeServeOptions: grants-dir CLI flag wins over config and env", () => {
   const config: ServeConfigFile = { "grants-dir": "/from/config" };
   const cliOptions = { grantsDir: "/from/cli" };
@@ -1043,8 +1035,6 @@ Deno.test("loadServeConfig: non-string grants-dir produces error", () => {
     );
   });
 });
-
-// ── mergeServeOptions: new concurrency/duration fields ────────────────
 
 Deno.test("mergeServeOptions: max-concurrent-runs from CLI flag", () => {
   const cliOptions = { maxConcurrentRuns: 50 };
@@ -1539,8 +1529,6 @@ for (
   });
 }
 
-// ── Trigger Overrides ────────────────────────────────────────────────
-
 Deno.test("loadServeConfig: parses valid triggers section", () => {
   withTempDir((dir) => {
     writeConfig(dir, {
@@ -1667,8 +1655,6 @@ Deno.test("mergeServeOptions: triggerOverrides undefined when empty", () => {
   );
   assertEquals(merged.triggerOverrides, undefined);
 });
-
-// ── readServeConfigFile / writeServeConfigFile ──────────────────────
 
 Deno.test("writeServeConfigFile: creates file when it does not exist", async () => {
   const dir = await Deno.makeTempDir();
@@ -1824,8 +1810,6 @@ Deno.test("writeServeConfigFile: replace semantics for trigger entries", async (
   }
 });
 
-// ── remote-only merge ─────────────────────────────────────────────────
-
 Deno.test("mergeServeOptions: remote-only defaults to false", () => {
   const merged = mergeServeOptions(
     null,
@@ -1901,8 +1885,6 @@ Deno.test("loadServeConfig: boolean remote-only is accepted", () => {
   });
 });
 
-// ── auto-resume merge ─────────────────────────────────────────────────
-
 Deno.test("mergeServeOptions: auto-resume defaults to false", () => {
   const merged = mergeServeOptions(
     null,
@@ -1953,8 +1935,6 @@ Deno.test("loadServeConfig: non-boolean auto-resume produces error", () => {
     );
   });
 });
-
-// ── auth.approve-requires-explicit-grant ─────────────────────────────
 
 Deno.test("mergeServeOptions: approve-requires-explicit-grant defaults to false", () => {
   const merged = mergeServeOptions(
@@ -2017,8 +1997,6 @@ Deno.test("loadServeConfig: non-boolean auth.approve-requires-explicit-grant pro
   });
 });
 
-// ── auth.signal-requires-explicit-grant ─────────────────────────────
-
 Deno.test("mergeServeOptions: signal-requires-explicit-grant defaults to false", () => {
   const merged = mergeServeOptions(
     null,
@@ -2079,8 +2057,6 @@ Deno.test("loadServeConfig: non-boolean auth.signal-requires-explicit-grant prod
     );
   });
 });
-
-// ── auth.tag-requires-explicit-grant ────────────────────────────────
 
 Deno.test("mergeServeOptions: tag-requires-explicit-grant defaults to false", () => {
   const merged = mergeServeOptions(
@@ -2143,8 +2119,6 @@ Deno.test("loadServeConfig: non-boolean auth.tag-requires-explicit-grant produce
   });
 });
 
-// ── dashboard ──────────────────────────────────────────────────────────
-
 Deno.test("mergeServeOptions: dashboard defaults to false", () => {
   const merged = mergeServeOptions(
     null,
@@ -2200,8 +2174,6 @@ Deno.test("mergeServeOptions: dashboard from config when no CLI or env", () => {
   );
   assertEquals(merged.dashboard, true);
 });
-
-// ── Audit Config ─────────────────────────────────────────────────────
 
 Deno.test("parseAuditConfig: returns null when no audit block", () => {
   assertEquals(parseAuditConfig(null), null);
@@ -2412,8 +2384,6 @@ Deno.test("loadServeConfig: rejects non-object audit block", () => {
     } catch { /* Windows EBUSY */ }
   }
 });
-
-// ── Phase 2 audit config fields ──────────────────────────────────────
 
 Deno.test("parseAuditConfig: returns Phase 2 defaults", () => {
   const result = parseAuditConfig({
@@ -2699,8 +2669,6 @@ Deno.test("readServeConfigFile: returns null when file does not exist", async ()
     } catch { /* Windows EBUSY */ }
   }
 });
-
-// ── Alert Rule Config ─────────────────────────────────────────────────
 
 Deno.test("parseAuditConfig: parses valid alert rules", () => {
   const result = parseAuditConfig({
@@ -3142,8 +3110,6 @@ Deno.test("loadServeConfig: a valid audit sink filter does not warn", async () =
   assertEquals(warnings, []);
 });
 
-// ── dispatch-env-allow (swamp-club#2791) ─────────────────────────────
-
 Deno.test("mergeServeOptions: dispatch-env-allow config list joined to a comma string", () => {
   const merged = mergeServeOptions(
     { "dispatch-env-allow": ["DEPLOY_ENV", "AWS_REGION"] },
@@ -3215,8 +3181,6 @@ Deno.test("loadServeConfig: dispatch-env-allow must be a list of names", () => {
     });
   }
 });
-
-// ── address (swamp-club#4063) ───────────────────────────────────────────
 
 Deno.test("mergeServeOptions: address comes from the CLI flag, then SWAMP_SERVE_ADDRESS, then serve.yaml", () => {
   const config: ServeConfigFile = {

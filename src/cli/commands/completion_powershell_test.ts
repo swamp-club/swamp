@@ -46,7 +46,6 @@ function sampleTree() {
     .command("secret", secret);
 }
 
-/** The script line holding the tree entry for `path`. */
 function nodeBlock(script: string, path: string): string {
   const start = script.indexOf(`    '${path}' = @{`);
   if (start === -1) throw new Error(`no tree entry for '${path}'`);
@@ -90,14 +89,12 @@ Deno.test("generatePowerShellCompletions: lists subcommands with aliases and lea
     nodeBlock(script, "deploy"),
     "@{ Name = 'plan'; Aliases = @(); Description = 'Plan the deploy' }",
   );
-  // Nested paths are keyed below the main command.
   nodeBlock(script, "deploy plan");
 });
 
 Deno.test("generatePowerShellCompletions: records options with value flags and completion actions", () => {
   const script = generatePowerShellCompletions("tool", sampleTree());
   const deploy = nodeBlock(script, "deploy");
-  // Global options are inherited by subcommands.
   assertStringIncludes(
     deploy,
     "@{ Flags = @('--verbose'); TakesValue = $false; Action = ''; File = $false; Description = 'Show more' }",
@@ -110,7 +107,6 @@ Deno.test("generatePowerShellCompletions: records options with value flags and c
     deploy,
     "@{ Flags = @('--config'); TakesValue = $true; Action = ''; File = $true; Description = 'Config file' }",
   );
-  // An optional value does not consume the next word.
   assertStringIncludes(
     deploy,
     "@{ Flags = @('--tag'); TakesValue = $false;",

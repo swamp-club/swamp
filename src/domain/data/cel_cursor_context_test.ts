@@ -176,8 +176,6 @@ Deno.test("determineCursorContext: unknown after closing value", () => {
   assertEquals(ctx, { kind: "unknown" });
 });
 
-// Map literal contexts (for SELECT projections)
-
 Deno.test("determineCursorContext: root after colon in map literal", () => {
   const expr = '{"name": ';
   const ctx = determineCursorContext(expr, expr.length);

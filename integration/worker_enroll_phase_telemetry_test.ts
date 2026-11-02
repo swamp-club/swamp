@@ -17,14 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * swamp-club#3986: worker enrollment preparation exports its phases through
- * the real OTLP exporter, with parentage, value types and outcomes intact.
- * Wires a real repo, the real enrollment-token and worker models and a real
- * WorkerGateway with its default model runner; spans are exported over HTTP
- * to a port-0 collector (design/enablers/serve-phase-telemetry.md).
- */
-
 import { assert, assertEquals, assertRejects } from "@std/assert";
 import { join } from "@std/path";
 import { configure, type LogRecord } from "@logtape/logtape";
@@ -95,10 +87,6 @@ interface OtlpRequest {
   resourceSpans: { scopeSpans: { spans: OtlpSpan[] }[] }[];
 }
 
-/**
- * Runs `fn` with spans exported over HTTP by {@link FetchOtlpExporter} to a
- * port-0 collector, and hands back every span it received.
- */
 async function withExportedSpans(
   fn: () => Promise<void>,
 ): Promise<OtlpSpan[]> {
@@ -144,7 +132,6 @@ async function withExportedSpans(
   );
 }
 
-/** Lock-contention warnings, captured so a test can wait for a retry. */
 const lockWarnings: string[] = [];
 await configure({
   sinks: {
@@ -171,7 +158,6 @@ interface Fixture {
   repoContext: RepositoryContext;
   tokenName: string;
   secret: string;
-  /** Starts an enroll call from a fresh socket. */
   enroll(
     machineId: string,
     options?: { token?: string; signal?: AbortSignal },
@@ -304,13 +290,11 @@ function num(span: OtlpSpan, key: string): number | undefined {
   return value?.doubleValue;
 }
 
-/** One enrollment's spans: the trace its `swamp.enrollment.request` roots. */
 interface EnrollmentTrace {
   request: OtlpSpan;
   spans: OtlpSpan[];
 }
 
-/** Enrollment traces in the order their requests started. */
 function enrollmentTraces(spans: OtlpSpan[]): EnrollmentTrace[] {
   return spans
     .filter((s) => s.name === "swamp.enrollment.request")
@@ -327,7 +311,6 @@ function phases(t: EnrollmentTrace, phase: string): OtlpSpan[] {
   return t.spans.filter((s) => s.name === `swamp.diagnostic.${phase}`);
 }
 
-/** The phases under the worker `enroll` method run of `t`. */
 function workerRun(t: EnrollmentTrace): OtlpSpan[] {
   const run = t.spans.find((s) =>
     s.name === "swamp.model.method.run" &&
@@ -359,8 +342,8 @@ function named(spans: OtlpSpan[], phase: string): OtlpSpan[] {
 }
 
 /**
- * `spans` ordered by the string attribute `key`. Each span is its own export
- * request, so the collector receives them in no fixed order.
+ * each span is its own export request, so the collector receives them in no
+ * fixed order; sort by the attribute
  */
 function sortedBy(spans: OtlpSpan[], key: string): OtlpSpan[] {
   return spans.toSorted((a, b) =>
@@ -372,7 +355,6 @@ function byId(spans: OtlpSpan[], id: string | undefined): OtlpSpan | undefined {
   return spans.find((s) => s.spanId === id);
 }
 
-/** Waits until a lock waiter has found the lock held at least once. */
 async function waitForLockRetry(lockPath: string): Promise<void> {
   await waitFor(
     () => lockWarnings.some((w) => w.includes(lockPath)),
@@ -384,7 +366,6 @@ async function workerNameFor(tokenName: string, machineId: string) {
   return `${tokenName}-${await fleetMemberSuffix(machineId)}`;
 }
 
-/** Writes `count` uuid-named worker auto-definitions, which the name index parses. */
 async function addWorkerDefinitions(
   repoContext: RepositoryContext,
   count: number,
@@ -409,7 +390,6 @@ Deno.test("enrollment phases: new and existing workers export their lookups, loc
       ({ secret, repoDir, tokenName } = f);
       const first = f.enroll("machine-1");
       await first.call;
-      // The same machine enrolls again from a new process after a drop.
       first.drop();
       await f.enroll("machine-1").call;
     })
@@ -417,7 +397,6 @@ Deno.test("enrollment phases: new and existing workers export their lookups, loc
   const [created, reused] = enrollmentTraces(spans);
   assert(created && reused, "two enrollment traces");
 
-  // --- A new worker: miss, lock, re-check under it, save ---
   const run = workerRun(created);
   const prepare = named(run, "prepare");
   assertEquals(prepare.length, 1);
@@ -444,14 +423,10 @@ Deno.test("enrollment phases: new and existing workers export their lookups, loc
   assertEquals(attribute(wait, "swamp.diagnostic.acquired")?.boolValue, true);
   assertEquals(num(wait, "swamp.diagnostic.retries"), 0);
   assertEquals(str(save, "swamp.diagnostic.definition_outcome"), "created");
-  // Parentage survives export: save and re-check under the hold, the hold
-  // and wait under prepare, prepare under the method run.
   assertEquals(save.parentSpanId, held.spanId);
   assertEquals(byId(run, lookups[1].parentSpanId)?.spanId, held.spanId);
   assertEquals(wait.parentSpanId, prepare[0].spanId);
   assertEquals(held.parentSpanId, prepare[0].spanId);
-  // Each miss scanned the primary root and asked the name index; the scans
-  // inherit their lookup's attempt label.
   for (const lookup of lookups) {
     const scans = sortedBy(
       run.filter((s) =>
@@ -472,7 +447,6 @@ Deno.test("enrollment phases: new and existing workers export their lookups, loc
     );
   }
   assertEquals(named(run, "type_resolution").length, 1);
-  // The transition's queue fields stay on the transition span.
   const transition = created.spans.find((s) =>
     s.name === "swamp.serve.transition"
   )!;
@@ -492,7 +466,6 @@ Deno.test("enrollment phases: new and existing workers export their lookups, loc
   const [tokens] = named(created.spans, "token_record_scan");
   assertEquals(num(tokens, "swamp.diagnostic.tokens"), 1);
 
-  // --- The same worker again: a hit, adopted, no lock ---
   const again = workerRun(reused);
   const [hit] = named(again, "definition_lookup");
   assertEquals(attribute(hit, "swamp.diagnostic.hit")?.boolValue, true);
@@ -507,7 +480,6 @@ Deno.test("enrollment phases: new and existing workers export their lookups, loc
   assertEquals(named(again, "lock_wait").length, 0);
   assertEquals(named(again, "definition_save").length, 0);
 
-  // --- Value types, statuses and contents as a collector receives them ---
   for (
     const span of spans.filter((s) => s.name.startsWith("swamp.diagnostic."))
   ) {
@@ -608,7 +580,6 @@ Deno.test("enrollment phases: a worker that cancels before the server finishes i
     attribute(save, "swamp.diagnostic.cancel_observed")?.boolValue,
     true,
   );
-  // The wait ended after the cancel; the scan before it did not see it.
   const initial = named(run, "definition_lookup").find((s) =>
     str(s, "swamp.diagnostic.lookup_attempt") === "initial"
   );
@@ -641,7 +612,6 @@ Deno.test("enrollment phases: an unknown token keeps the failed request and its 
   );
   assertEquals(attribute(lookup, "swamp.diagnostic.hit")?.boolValue, false);
   assertEquals(phases(failed, "token_record_scan").length, 1);
-  // Nothing past the token check ran.
   assertEquals(phases(failed, "prepare").length, 0);
 });
 

@@ -17,43 +17,19 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * The rules that decide what a commit does to the materialised files, shared
- * by the v3 read model (swamp-club#3239), which applies them to one
- * checkout's files, and history compaction (swamp-club#3258), which folds
- * them into the compacted base. One copy, so a checkout that loads the base
- * ends where a full replay would.
- *
- * - **Final key states.** Ops in one commit see each other's effects, so
- *   only each key's last put or tombstone is materialised, removals first.
- * - **File ownership (swamp-club#3256).** A file follows the change feed,
- *   not the order commits are applied in: a put writes only when it is newer
- *   in the feed than the put the file shows, and a tombstone removes the
- *   file only while it shows the tombstoning partition's own put.
- * - **Lexical keys.** Which keys may be materialised, and the file and
- *   directory conflicts a key meets among the present files, decided from
- *   key strings alone.
- *
- * @module
- */
-
 import type { Commit } from "./commit.ts";
 import type { PutOp } from "./op.ts";
 import type { RecordKey } from "./record_key.ts";
 
-/** A key's final state in one commit: the put that leaves it, or null. */
 export interface KeyChange {
   readonly key: RecordKey;
   readonly put: PutOp | null;
 }
 
 /**
- * Each key a commit touches, with the op that leaves it: ops in one commit
- * see each other's effects, so only the last put or tombstone of a key
- * matters. Removals come first, in first-touched order, then writes: each
- * key's final state is settled, so the order only decides the filesystem
- * path a write meets, and a removal can only clear the way for a write
- * (a put of `data/x` needs a removed `data/x/y`'s directory gone).
+ * removals come first, in first-touched order, then writes: a removal can only
+ * clear the way for a write (a put of data/x needs a removed data/x/y's
+ * directory gone)
  */
 export function finalKeyStates(commit: Commit): KeyChange[] {
   const changes = new Map<string, KeyChange>();
@@ -73,38 +49,24 @@ export function finalKeyStates(commit: Commit): KeyChange[] {
 }
 
 /**
- * Which put a materialised file shows (swamp-club#3256). One record key can
- * be written by two partitions (a same-key definition rename), and a
- * partition catch-up applies commits ahead of the change feed, so the file
- * follows feed positions rather than application order.
+ * one record key can be written by two partitions and a catch-up applies
+ * commits ahead of the feed, so the file follows feed positions rather than
+ * application order
  */
 export interface FileOwnership {
-  /** The partition whose put the file shows, or showed before its removal. */
   readonly owner: string;
-  /** The feed position of that put. */
   readonly mark: number;
-  /** False once the owner's own tombstone removed the file. */
   readonly present: boolean;
 }
 
-/** What one key change does to its file. */
 export type FileDecision =
-  /** Leave the file and its ownership alone. */
   | { readonly kind: "keep" }
-  /** Remove the file; record `next` as its ownership, when defined. */
   | { readonly kind: "remove"; readonly next: FileOwnership | undefined }
-  /** Write the put's content; record `next` as its ownership. */
   | { readonly kind: "write"; readonly next: FileOwnership };
 
 /**
- * The file decision for a put (or, with `isPut` false, a tombstone) of
- * `owner`'s partition at feed position `position`, given the file's ownership
- * before the commit. A put writes only when the key has no ownership or its
- * position is greater than the mark, then becomes the owner. A tombstone
- * removes the file only while it is present and owned by `owner`, and keeps
- * the mark, so an older put of another partition cannot bring it back. A key
- * with no ownership is removed (no put of it was applied, or it is a name
- * directory).
+ * a tombstone keeps the mark so an older put of another partition cannot bring
+ * the file back; a key with no ownership is removed
  */
 export function decideFile(
   before: FileOwnership | undefined,
@@ -125,15 +87,11 @@ export function decideFile(
   return { kind: "write", next: { owner, mark: position, present: true } };
 }
 
-/** A catalog database or one of its SQLite side files. */
 const CATALOG_DATABASE = /^_catalog.*\.db(?:-wal|-shm|-journal)?$/i;
 
 /**
- * Why a key must never be materialised, judged from the key alone; undefined
- * when its string is acceptable. Its first segment must be a synced
- * subdirectory (one of `subdirs`) and it must not name a catalog database.
- * The read model also refuses keys that resolve into its state directory,
- * which needs a path.
+ * the read model also refuses keys that resolve into its state directory, which
+ * needs a path
  */
 export function lexicalRefusal(
   key: string,
@@ -152,11 +110,8 @@ export function lexicalRefusal(
 }
 
 /**
- * A file and a directory claiming one key, among a set of present files:
- * `under-file` when an ancestor of the key is a present file, `directory`
- * when a present file lies under the key. Undefined when there is neither.
- * On a cache holding only materialised files this is what the read model
- * finds on disk, since directories exist only above present files.
+ * on a cache holding only materialised files this is what the read model finds
+ * on disk, since directories exist only above present files
  */
 export function lexicalConflict(
   key: string,
@@ -170,65 +125,30 @@ export function lexicalConflict(
   return hasPresentFileUnder(key) ? "directory" : undefined;
 }
 
-/** What the first pass of a net replay reads of one commit. */
 export interface NetReplayCommit {
   readonly namespace: string;
-  /** The commit's partition, the owner its puts give a file. */
   readonly partition: string;
-  /** The commit's feed position. */
   readonly position: number;
-  /** The commit's {@link finalKeyStates}. */
   readonly changes: readonly KeyChange[];
 }
 
-/** What a net replay may leave off disk, and what its first pass found. */
 export interface NetReplayPlan {
-  /** The last feed position the plan read: nothing past it is skipped. */
   readonly bound: number;
-  /**
-   * Whether the replay may leave the write of `key` at `position` off disk:
-   * a later change up to the bound replaces or removes its content.
-   */
   skipsWrite(namespace: string, key: string, position: number): boolean;
-  /**
-   * Whether the replay may leave out the removal of `key` at `position`: no
-   * write of it was on disk, since each one was replaced or removed again.
-   */
   skipsRemoval(namespace: string, key: string, position: number): boolean;
-  /** Writes up to the bound whose content a later change replaces or removes. */
   readonly replaceable: number;
-  /** Of those, the ones kept because another key is its path prefix or under it. */
   readonly keptForPrefix: number;
-  /** Of those, the ones kept because its directory was there before. */
   readonly keptForDirectory: number;
 }
 
 /**
- * Plans a net replay (swamp-club#3803): a catch-up from an empty checkout
- * that writes only the content still on disk at the end of the feed, instead
- * of every put a later commit replaces or removes. It runs the replay's own
- * rules ({@link decideFile} over each key's changes in feed order, from no
- * ownership) to find each key's final file, and lets a key skip its other
- * writes, and every removal, only when:
- *
- * - the replay materialises it (`ignored` names the keys it leaves alone);
- * - its first segment's directory was absent before the catch-up
- *   (`directoryAbsent`), so no file of it was on disk to begin with;
- * - no other key the plan reads is its path prefix, or lies under it, so its
- *   file can never decide another key's file and directory conflict. Keys
- *   are compared case-folded and composed (NFC), as a case-insensitive or
- *   normalising filesystem (macOS, Windows) compares the paths, and two keys
- *   that differ only so are each other's prefix.
- *
- * Everything else replays in full. At the bound every key's file is where a
- * full replay leaves it, so later commits apply as they would anyway.
+ * a key skips writes only if no other key is its path prefix, so its file never
+ * decides another key's conflict; keys compare case-folded and NFC, as
+ * case-insensitive or normalising filesystems do
  */
 export class NetReplayPlanner {
-  /** Each key's ownership as the replay would record it, by namespace and key. */
   readonly #ownership = new Map<string, FileOwnership>();
-  /** The positions each key was written at. */
   readonly #writes = new Map<string, number[]>();
-  /** Each namespace's keys, for the prefix rule. */
   readonly #keys = new Map<string, Set<string>>();
   #bound = 0;
 
@@ -237,10 +157,9 @@ export class NetReplayPlanner {
   ) {}
 
   /**
-   * Seeds one file of a compacted base, before any commit is read
-   * (swamp-club#3916): the key starts from the base's ownership, as the
-   * replay after the base load does, and a present file counts as a write
-   * at its mark, which a later commit of the tail may replace or remove.
+   * the key starts from the base's ownership, as the replay after the base load
+   * does, and a present file counts as a write at its mark that a later tail
+   * commit may replace or remove
    */
   seed(namespace: string, key: string, ownership: FileOwnership): void {
     if (this.ignored(namespace, key)) return;
@@ -256,7 +175,6 @@ export class NetReplayPlanner {
     }
   }
 
-  /** Reads one commit, in feed order. */
   add(commit: NetReplayCommit): void {
     this.#bound = Math.max(this.#bound, commit.position);
     for (const change of commit.changes) {
@@ -282,7 +200,6 @@ export class NetReplayPlanner {
     }
   }
 
-  /** Each namespace and first segment the plan's keys are under. */
   directories(): { namespace: string; segment: string }[] {
     const found: { namespace: string; segment: string }[] = [];
     for (const [namespace, keys] of this.#keys) {
@@ -292,16 +209,11 @@ export class NetReplayPlanner {
     return found;
   }
 
-  /**
-   * The plan, given which of {@link directories} were absent before the
-   * catch-up.
-   */
   finish(
     directoryAbsent: (namespace: string, segment: string) => boolean,
   ): NetReplayPlan {
     const prefixed = new Set<string>();
     for (const [namespace, keys] of this.#keys) {
-      // Each folded spelling, with the keys spelt so.
       const folded = new Map<string, string[]>();
       for (const key of keys) {
         const spelling = foldKey(key);
@@ -366,7 +278,6 @@ export class NetReplayPlanner {
   }
 }
 
-/** A key as a case-insensitive, normalising filesystem compares it. */
 function foldKey(key: string): string {
   return key.normalize("NFC").toLowerCase();
 }

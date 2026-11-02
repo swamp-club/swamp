@@ -17,14 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Integration test for giga-swamp Phase 7 — namespace migration.
- *
- * Tests the full round-trip: solo repo with data → namespace set → migrate →
- * verify namespaced layout → namespace unset --migrate → verify solo layout.
- * Verifies data integrity (file count + content) at every step.
- */
-
 import { assertEquals } from "@std/assert";
 import { ensureDir, exists } from "@std/fs";
 import { basename, join } from "@std/path";
@@ -182,7 +174,6 @@ Deno.test("namespace migrate: full round-trip solo → namespaced → solo", asy
     await ensureDir(join(repoDir, ".swamp"));
     await ensureDir(dsPath);
 
-    // Create solo-mode data in a few subdirs
     const testContent = '{"test": true}';
     for (const subdir of ["data", "outputs", "audit"]) {
       const dir = join(dsPath, subdir, "test-model", "v1");
@@ -190,21 +181,17 @@ Deno.test("namespace migrate: full round-trip solo → namespaced → solo", asy
       await Deno.writeTextFile(join(dir, "raw"), testContent);
     }
 
-    // Write a namespace manifest (simulates namespace set)
     await writeNamespaceManifest(dsPath, namespace, "repo-1");
 
     const soloFileCount = await countFiles(dsPath);
-    // 3 data files + 1 manifest file
     assertEquals(soloFileCount, 4);
 
-    // Create catalog
     const catalogPath = catalogDbPath(repoDir);
     const catalogStore = new CatalogStore(catalogPath);
 
     try {
       const ctx = createLibSwampContext({});
 
-      // --- Forward migration: solo → namespaced ---
       const fwdDeps = buildDeps(dsPath, namespace, catalogStore);
       const fwdEvents = await collect<NamespaceMigrateEvent>(
         datastoreNamespaceMigrate(ctx, fwdDeps, {
@@ -226,7 +213,6 @@ Deno.test("namespace migrate: full round-trip solo → namespaced → solo", asy
         assertEquals(fwdCompleted.data.migratedDirectories.length, 3);
       }
 
-      // Verify data moved to namespaced paths
       for (const subdir of ["data", "outputs", "audit"]) {
         assertEquals(
           await dirExists(join(dsPath, namespace, subdir)),
@@ -238,14 +224,12 @@ Deno.test("namespace migrate: full round-trip solo → namespaced → solo", asy
           false,
           `${subdir} should NOT exist at solo path`,
         );
-        // Verify content integrity
         const content = await Deno.readTextFile(
           join(dsPath, namespace, subdir, "test-model", "v1", "raw"),
         );
         assertEquals(content, testContent);
       }
 
-      // --- Dry-run reverse: should NOT move anything ---
       const dryDeps = buildDeps(dsPath, namespace, catalogStore);
       const dryEvents = await collect<NamespaceMigrateEvent>(
         datastoreNamespaceMigrate(ctx, dryDeps, {
@@ -261,7 +245,6 @@ Deno.test("namespace migrate: full round-trip solo → namespaced → solo", asy
         assertEquals(dryPreview.data.directories.length, 3);
       }
 
-      // Verify nothing actually moved
       for (const subdir of ["data", "outputs", "audit"]) {
         assertEquals(
           await dirExists(join(dsPath, namespace, subdir)),
@@ -270,7 +253,6 @@ Deno.test("namespace migrate: full round-trip solo → namespaced → solo", asy
         );
       }
 
-      // --- Reverse migration: namespaced → solo ---
       const revDeps = buildDeps(dsPath, namespace, catalogStore);
       const revEvents = await collect<NamespaceMigrateEvent>(
         datastoreNamespaceMigrate(ctx, revDeps, {
@@ -286,7 +268,6 @@ Deno.test("namespace migrate: full round-trip solo → namespaced → solo", asy
         assertEquals(revCompleted.data.reverse, true);
       }
 
-      // Verify data moved back to solo paths
       for (const subdir of ["data", "outputs", "audit"]) {
         assertEquals(
           await dirExists(join(dsPath, subdir)),
@@ -298,14 +279,12 @@ Deno.test("namespace migrate: full round-trip solo → namespaced → solo", asy
           false,
           `${subdir} should NOT exist at namespaced path`,
         );
-        // Verify content integrity
         const content = await Deno.readTextFile(
           join(dsPath, subdir, "test-model", "v1", "raw"),
         );
         assertEquals(content, testContent);
       }
 
-      // Verify manifest was removed on reverse migration
       const manifestPath = join(dsPath, namespace, ".namespace.json");
       let manifestExists = false;
       try {
@@ -333,7 +312,6 @@ Deno.test("namespace migrate: conflict detection on reverse", async () => {
 
     await ensureDir(join(repoDir, ".swamp"));
 
-    // Create data at both namespaced AND solo paths (conflict scenario)
     await ensureDir(join(dsPath, namespace, "data", "model-a"));
     await Deno.writeTextFile(
       join(dsPath, namespace, "data", "model-a", "raw"),
@@ -377,7 +355,6 @@ Deno.test("namespace migrate: skips subdirs that don't exist in source", async (
 
     await ensureDir(join(repoDir, ".swamp"));
 
-    // Only create "data" — the other 15 subdirs don't exist
     await ensureDir(join(dsPath, "data"));
     await Deno.writeTextFile(join(dsPath, "data", "test.json"), "{}");
 
@@ -405,11 +382,9 @@ Deno.test("namespace migrate: skips subdirs that don't exist in source", async (
         assertEquals(completed.data.migratedDirectories, ["data"]);
       }
 
-      // Only "data" should have moved
       assertEquals(await dirExists(join(dsPath, namespace, "data")), true);
       assertEquals(await dirExists(join(dsPath, "data")), false);
 
-      // All other subdirs should not exist at either path
       for (const subdir of DEFAULT_DATASTORE_SUBDIRS) {
         if (subdir === "data") continue;
         assertEquals(
@@ -440,10 +415,9 @@ async function listTree(dir: string, prefix = ""): Promise<string[]> {
   return paths.sort();
 }
 
-// swamp-club#2478: a namespace named after a layout directory shares that
-// directory with the solo layout. Before the guard, forward migrate moved
-// the directories ahead of `data` and then failed renaming `data` into
-// itself, leaving the datastore half-migrated.
+// a namespace named after a layout directory shares that directory with the
+// solo layout; forward migrate must refuse it rather than leave the datastore
+// half-migrated
 for (
   const { namespace, directories } of [
     { namespace: "data", directories: DEFAULT_DATASTORE_SUBDIRS },
@@ -493,14 +467,12 @@ for (
   }
 }
 
-// --- the repo-local catalog is not datastore content (swamp-club#3316) ---
-
 const SIDECARS = ["_catalog.db-wal", "_catalog.db-shm"];
 
 /**
- * A repo-local datastore: the datastore root is the repo's own `.swamp`, so
- * the live catalog sits in the `data` directory migration moves. The catalog
- * store stays open for the whole test, which keeps its WAL sidecars on disk.
+ * a repo-local datastore: its root is the repo's own .swamp, so the live
+ * catalog sits in the data directory migration moves; the open catalog keeps
+ * its WAL sidecars on disk
  */
 async function withRepoLocalDatastore(
   fn: (
@@ -670,7 +642,6 @@ Deno.test("namespace migrate: reverses while the catalog and its sidecars are in
 
 Deno.test("namespace migrate: a forward re-run deletes a stale catalog copy from the namespace", async () => {
   await withRepoLocalDatastore(async ({ dsPath, namespace, migrate }) => {
-    // What a migration by an affected version left behind.
     const namespaceData = join(dsPath, namespace, "data");
     await seed(namespaceData);
     await writeOrphanedCatalog(namespaceData);

@@ -18,8 +18,8 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * Reads every stored grant for serve's boot reconcilers of file and admin
- * grants, which run before the policy snapshot is first built.
+ * for serve's boot reconcilers of file and admin grants, which run before the
+ * policy snapshot is first built
  */
 
 import type { Data } from "../data/data.ts";
@@ -39,10 +39,8 @@ import {
   UnreadableAccessRecordsError,
 } from "./unreadable_access_records.ts";
 
-/** The access data a grant model keeps. */
 const GRANT_ACCESS_DATA_NAME = "grant-main";
 
-/** A stored grant, with the data and model it was read from. */
 export interface StoredGrant {
   grant: Grant;
   data: Data;
@@ -51,15 +49,9 @@ export interface StoredGrant {
 }
 
 /**
- * Every stored grant, canonical and orphaned, read from its `grant-main`.
- *
- * A reconciler that worked without a grant it could not load could write a
- * duplicate of it or orphan it, so any grant that cannot be read, is
- * corrupt, or fails this build's validation makes the whole read throw
- * {@link UnreadableAccessRecordsError}, naming each with its fix, before
- * anything is written (swamp-club#3386). Other data a grant model keeps,
- * such as a method-summary report, is not read. A version whose metadata is
- * missing is mid-write and skipped, as is a grant with no content.
+ * a reconciler working without a grant it could not load could duplicate or
+ * orphan it, so any unreadable, corrupt or invalid grant makes the whole read
+ * throw before anything is written; mid-write versions are skipped
  */
 export async function readStoredGrants(
   dataRepo: UnifiedDataRepository,

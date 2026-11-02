@@ -29,7 +29,6 @@ import {
 } from "../../domain/terminology/behavior_aliases.ts";
 import { bold, dim, green, red, yellow } from "@std/fmt/colors";
 
-/** Shows the models kind under its behavior name; other kinds print as-is. */
 function kindLabel(kind: string): string {
   return kind === MODEL_EXTENSION_KIND ? BEHAVIOR_EXTENSION_KIND : kind;
 }

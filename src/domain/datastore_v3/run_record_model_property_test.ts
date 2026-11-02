@@ -17,30 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * A model-based property test of {@link judgeRunRecord} (swamp-club#3922,
- * swamp-club#4245).
- *
- * It generates member-driven and serve-driven runs of plain steps and gates, and drives them through what a real run records and what serve's
- * handlers record. Between them, a member holding only `run` forges the next
- * record from the current one.
- *
- * A member's report of a run they drive is out of scope ("Run records: the
- * threat model" in `design/enablers/access-control.md`), so the oracle states
- * only what serve guarantees, across the history of what landed:
- * - a decision on a record is one serve's handler made, and a record never
- *   creates, changes or drops one, other than a retry clearing it;
- * - a record names no signal wait and carries no signal's outcome;
- * - a run serve drives takes no forwarded record;
- * - who triggered a run, its parent, vaults, initiator, plan and log are frozen;
- * - step keys are unique;
- * - every output a record sets is handed to serve to authorise.
- *
- * Every step a real runner records must still be accepted.
- *
- * @module
- */
-
 import { assert, assertEquals } from "@std/assert";
 import fc from "fast-check";
 import {
@@ -145,11 +121,9 @@ function decision(approved: boolean, decidedBy = "user:approver") {
 interface Move {
   readonly label: string;
   readonly record: WorkflowRunData;
-  /** Made by serve's handler, so never forwarded or judged. */
   readonly byServe?: boolean;
 }
 
-/** What a real run, or serve's handlers on its behalf, can record next. */
 function moves(specs: readonly StepSpec[], record: WorkflowRunData): Move[] {
   const out: Move[] = [];
   const steps = stepsOf(record);
@@ -360,7 +334,6 @@ function forge(record: WorkflowRunData, c: ForgeryChoice): WorkflowRunData {
   throw new Error("unknown forgery");
 }
 
-/** Why a record that landed breaks a guarantee, or undefined. */
 function violation(
   before: WorkflowRunData,
   after: WorkflowRunData,
@@ -473,7 +446,6 @@ function play(
       const options = moves(specs, record);
       if (options.length === 0) continue;
       const move = options[next.legit % options.length];
-      // On a serve-driven run every write is serve's own.
       if (!move.byServe && !serveDriven) {
         const judged = judge(record, move.record);
         if (judged.refusal !== undefined) {

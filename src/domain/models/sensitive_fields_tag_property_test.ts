@@ -17,11 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * The strict sensitive-fields reader and the stored-reference parser
- * (typed-secrets 3.3) read back exactly what the writer stores.
- */
-
 import { assertEquals } from "@std/assert";
 import fc from "fast-check";
 import { vaultReferenceText } from "../secrets/run_sensitive_values.ts";
@@ -31,12 +26,10 @@ import {
   SENSITIVE_FIELDS_TAG,
 } from "./data_writer.ts";
 
-/** Text the writer puts inside the quotes of a reference: non-empty, no quote. */
 const quotedText = fc.string({ minLength: 1 }).filter((text) =>
   !text.includes("'")
 );
 
-/** A path segment the strict reader accepts. */
 const segment = fc.string({ minLength: 1 }).filter((text) =>
   !text.includes(".") &&
   !["__proto__", "constructor", "prototype"].includes(text)
@@ -50,7 +43,6 @@ Deno.test("parseStoredVaultReference: reads back every reference the writer stor
         parseStoredVaultReference(vaultReferenceText(reference)),
         reference,
       );
-      // The writer's own text form, as processSensitiveResourceData writes it.
       assertEquals(
         parseStoredVaultReference(
           `\${{ vault.get('${vaultName}', '${key}') }}`,

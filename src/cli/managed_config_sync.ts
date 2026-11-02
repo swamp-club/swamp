@@ -63,21 +63,11 @@ import { datastoreBlockEngine } from "../infrastructure/persistence/datastore_fo
 import { createV3LockfileSync } from "../infrastructure/datastore_v3/v3_lockfile_sync.ts";
 
 /**
- * A config-tier change was written to the local cache but could not be
- * published to the datastore under managedConfig. The local write is kept.
- * The message names the retry: `swamp datastore sync --push` for most
- * config writes, `swamp extension install` for an extension lockfile
- * change, where a plain push would publish a stale copy.
+ * the local write is kept; the message names the retry, which is swamp
+ * extension install for a lockfile change because a plain push would publish a
+ * stale copy
  */
 export class ManagedConfigUnpublishedError extends UserError {
-  /**
-   * @param retryAdvice How to publish the change. An extension lockfile
-   *   change names `swamp extension install`, which fetches the datastore's
-   *   lockfile and replays the change onto it; a plain push would publish
-   *   the local copy over other checkouts' entries (swamp-club#2838).
-   * @param summary What happened, before the reason. The default describes
-   *   the current command's own change.
-   */
   constructor(
     cause: unknown,
     retryAdvice = "Run 'swamp datastore sync --push' to publish it.",
@@ -101,13 +91,6 @@ function toUnpublishedError(error: unknown): ManagedConfigUnpublishedError {
     : new ManagedConfigUnpublishedError(error);
 }
 
-/**
- * Push config-tier changes to the remote datastore when managedConfig is
- * active: a bare mark, then a push. A failed mark or push throws
- * {@link ManagedConfigUnpublishedError}; the local write is kept. Commands
- * publish through {@link runManagedConfigMutation}, which makes the same mark
- * and push through a root unit of work (swamp-club#3033).
- */
 export async function pushManagedConfigChanges(
   syncService: DatastoreSyncService | undefined,
   datastoreConfig: DatastoreConfig,
@@ -127,12 +110,6 @@ export async function pushManagedConfigChanges(
   }
 }
 
-/**
- * The mark half of {@link pushManagedConfigChanges} for a command that runs
- * in a root unit of work (swamp-club#3033): stages the same bare mark
- * through the root, which forwards it as the identical `markDirty()` call.
- * A failed mark throws {@link ManagedConfigUnpublishedError}.
- */
 export async function stageManagedConfigChanges(
   root: RootUnitOfWork,
   reason: string,
@@ -144,11 +121,6 @@ export async function stageManagedConfigChanges(
   }
 }
 
-/**
- * The push half of {@link pushManagedConfigChanges}: the root's push. A
- * failed push throws {@link ManagedConfigUnpublishedError}; the local write
- * is kept.
- */
 export async function publishManagedConfigChanges(
   syncService: DatastoreSyncService,
   datastoreConfig: DatastoreConfig,
@@ -163,13 +135,6 @@ export async function publishManagedConfigChanges(
   }
 }
 
-/**
- * Runs a config-tier mutation in a root unit of work and publishes it as
- * {@link pushManagedConfigChanges} does: when managedConfig is active and
- * `mutate` completed, {@link stageManagedConfigChanges} stages the bare mark
- * and the root's push is {@link publishManagedConfigChanges}. When `mutate`
- * fails nothing is marked or pushed, as before.
- */
 export async function runManagedConfigMutation<T>(
   repoContext: Pick<RepositoryContext, "markDirty">,
   syncService: DatastoreSyncService | undefined,
@@ -197,13 +162,9 @@ export async function runManagedConfigMutation<T>(
 }
 
 /**
- * Decides what a failed push or lock release means after a command that may
- * have changed the config tier, run as cleanup of the command's root unit of
- * work (swamp-club#3033). After a completed mutation under managedConfig the
- * push is what publishes the change, so it throws
- * {@link ManagedConfigUnpublishedError}. Otherwise (the mutation never ran,
- * or an earlier error is already propagating) the error goes to
- * `onCleanupError`, so it cannot replace that error.
+ * after a completed mutation a failed push throws
+ * ManagedConfigUnpublishedError; otherwise the error goes to onCleanupError so
+ * it cannot replace one already propagating
  */
 export function reportManagedConfigCleanupError(
   error: unknown,
@@ -218,10 +179,8 @@ export function reportManagedConfigCleanupError(
 }
 
 /**
- * The shared extension lockfile could not be fetched from the datastore
- * before an extension change, so the change was not made: making it on a
- * stale lockfile would publish over other checkouts' entries
- * (swamp-club#2838).
+ * the change is refused: making it on a stale lockfile would publish over other
+ * checkouts' entries
  */
 export class ManagedLockfileUnavailableError extends UserError {
   constructor(cause: unknown) {
@@ -238,7 +197,6 @@ export class ManagedLockfileUnavailableError extends UserError {
   }
 }
 
-/** A lock already held by this process: acquiring and releasing it is a no-op. */
 const HELD_LOCK: ManagedLockfileLock = {
   acquire: () => Promise.resolve(),
   release: () => Promise.resolve(),
@@ -249,24 +207,13 @@ export interface ManagedLockfileTransactionDeps {
   datastoreConfig: DatastoreConfig;
   repoDir: string;
   lockfilePath: string;
-  /** The datastore global lock (see datastoreGlobalLockOptions). */
   lock: ManagedLockfileLock;
 }
 
 /**
- * Builds the transaction a CLI extension command makes its lockfile change
- * in (see {@link createManagedLockfileTransaction}). A failed fetch throws
- * {@link ManagedLockfileUnavailableError} before anything changes; a failed
- * publish throws {@link ManagedConfigUnpublishedError} with the change
- * recorded in the repo's `.swamp/` directory, for the next transaction to
- * replay.
- *
- * Each outermost run is a root unit of work over the transaction's own mark
- * hook, with no flush and the namespace push as its checkpoint: the publish
- * stages the lockfile into it and pushes at the checkpoint, under the lock
- * (swamp-club#3192). The root is per run, not per command, because the
- * extension commands resolve the datastore only on their first lockfile
- * use, and some never make one.
+ * the root is per run, not per command: extension commands resolve the
+ * datastore on first lockfile use, and some never make one. a failed publish
+ * records the change in .swamp/ for the next transaction to replay
  */
 export function buildManagedLockfileTransaction(
   deps: ManagedLockfileTransactionDeps,
@@ -305,10 +252,9 @@ export function buildManagedLockfileTransaction(
         () => fn(),
       ),
     lock: {
-      // A datastore that cannot be reached fails here, before anything is
-      // downloaded or changed. Errors that already explain themselves pass
-      // through: a lock another process holds (LockTimeoutError) or a
-      // datastore that is misconfigured.
+      // an unreachable datastore fails here, before anything is downloaded;
+      // errors that explain themselves (lock timeout, misconfigured datastore)
+      // pass through
       acquire: async () => {
         try {
           await deps.lock.acquire();
@@ -362,20 +308,9 @@ export function buildManagedLockfileTransaction(
 }
 
 /**
- * The transaction a CLI extension command runs its lockfile changes in, for
- * `withManagedLockfileTransaction`. Undefined when the lockfile is not
- * shared through a datastore: no managedConfig, a filesystem datastore, or
- * the #445 exemption that records into the in-repo lockfile
- * (`write.publish` false).
- *
- * The datastore is resolved on first use: the first change, or the first
- * refresh (`extension install`, `update` and the `rm` preview refresh
- * before reading the lockfile, so they contact the datastore even when
- * they end up changing nothing). When this process already holds the
- * datastore global lock (a command that runs under the sync coordinator),
- * the transaction does not take it again; that check runs once, when the
- * transaction is built, so a transaction must not outlive the command
- * that built it.
+ * undefined when the lockfile is not shared through a datastore. the datastore
+ * resolves on first use and the held-global-lock check runs when built, so a
+ * transaction must not outlive its command
  */
 export function createManagedLockfileTransaction(
   repoDir: string,
@@ -429,12 +364,6 @@ export function createManagedLockfileTransaction(
   });
 }
 
-/**
- * Whether the repo's managed config lives on a v3 filesystem datastore
- * (swamp-club#3279), whose lockfile changes are committed rather than
- * shared as one file. The datastore's format marker decides at open; a
- * config naming format 3 that its marker contradicts is refused there.
- */
 function isV3ManagedConfigDatastore(
   repoDir: string,
   marker: RepoMarkerData | null,
@@ -443,13 +372,7 @@ function isV3ManagedConfigDatastore(
     datastoreBlockEngine(repoDir, marker.datastore) === "v3";
 }
 
-/**
- * The transaction a v3 repo's extension commands make lockfile changes in:
- * each outermost run is a commit-log root over the repo's context, and the
- * publish commits the lockfile at that root's checkpoint
- * ({@link createV3LockfileSync}). The writer lock the context holds stands
- * in for the global lock.
- */
+/** the writer lock the repo context holds stands in for the global lock */
 export function buildV3ManagedLockfileTransaction(
   repoContext: RepositoryContext,
   repoDir: string,
@@ -486,14 +409,11 @@ export function buildV3ManagedLockfileTransaction(
   });
 }
 
-/** Coordinator key under which a lockfile transaction holds the global lock. */
 const MANAGED_LOCKFILE_LOCK_KEY = "__managed_lockfile__";
 
 /**
- * The datastore global lock, held through the sync coordinator so its
- * SIGINT handler releases it: a Ctrl-C during a transaction, which can
- * include dependency downloads, must not leave other checkouts waiting out
- * the lock's TTL.
+ * held through the sync coordinator so its SIGINT handler releases it: Ctrl-C
+ * mid-transaction must not leave other checkouts waiting out the lock TTL
  */
 function coordinatedGlobalLock(config: DatastoreConfig): ManagedLockfileLock {
   return {
@@ -512,7 +432,6 @@ function coordinatedGlobalLock(config: DatastoreConfig): ManagedLockfileLock {
   };
 }
 
-/** A transaction built on its first use, so an unused one costs nothing. */
 function lazyLockfileTransaction(
   lockfilePath: string,
   build: () => Promise<LockfileTransaction>,
@@ -546,14 +465,9 @@ export interface PullManagedConfigAtBootDeps {
 }
 
 /**
- * Pulls the managed config and auto-definitions tiers at serve boot, then
- * re-enumerates the pulled-extension workflow directories.
- *
- * The repository context is created before this pull, so on an instance
- * that starts with an empty cache it enumerated pulled workflow dirs
- * against a lockfile that did not exist yet and registered none of them
- * (swamp-club#2434). Extension type registries load lazily after this pull
- * and are unaffected; workflows are the one kind enumerated eagerly.
+ * pulled workflow dirs are re-enumerated after the pull because the repo
+ * context was created before it; type registries load lazily, workflows are the
+ * one kind enumerated eagerly
  */
 export async function pullManagedConfigAtBoot(
   deps: PullManagedConfigAtBootDeps,

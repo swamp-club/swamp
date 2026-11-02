@@ -85,7 +85,6 @@ Deno.test("zodToJsonSchema: handles standard z.object()", () => {
 Deno.test("zodToJsonSchema: handles z.enum()", () => {
   const schema = z.enum(["a", "b", "c"]);
   const result = zodToJsonSchema(schema) as Record<string, unknown>;
-  // Zod's toJSONSchema may succeed for enum, but verify it works either way
   assertEquals(Array.isArray(result.enum), true);
 });
 

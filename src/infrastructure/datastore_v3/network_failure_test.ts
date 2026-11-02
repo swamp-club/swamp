@@ -20,12 +20,10 @@
 import { assertEquals } from "@std/assert";
 import { isNetworkFailure } from "./network_failure.ts";
 
-/** A Node-style error with a `code`, as the AWS SDK's transport throws. */
 function coded(code: string, message = `connect ${code}`): Error {
   return Object.assign(new Error(message), { code });
 }
 
-/** The S3 extension's wrapper: its own message, the transport as `cause`. */
 function s3Wrapped(cause: unknown, name = "Error"): Error {
   const error = new Error("S3 headObject failed key=_blobs/x", { cause });
   error.name = name;

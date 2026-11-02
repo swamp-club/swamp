@@ -57,16 +57,10 @@ function range(n: number): number[] {
 }
 
 interface GeneratedGraph {
-  /** Nodes in a random input order. */
   nodes: GraphNode[];
-  /** A permutation of the node indices, used to re-order the input. */
   order: number[];
 }
 
-/**
- * Builds a random DAG: node `i` may only depend on nodes with a lower index,
- * which makes the graph acyclic by construction.
- */
 function buildNodes(
   names: string[],
   weights: number[],

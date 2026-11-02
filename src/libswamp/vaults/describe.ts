@@ -24,9 +24,6 @@ import { notFound, validationFailed } from "../errors.ts";
 import type { VaultConfigInfo } from "./get.ts";
 
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
-/**
- * Data structure for vault describe output (full config data).
- */
 export interface VaultDescribeData {
   id: string;
   name: string;
@@ -40,14 +37,12 @@ export type VaultDescribeEvent =
   | { kind: "completed"; data: VaultDescribeData }
   | { kind: "error"; error: SwampError };
 
-/** Dependencies for the vault describe operation. */
 export interface VaultDescribeDeps {
   findByName: (name: string) => Promise<VaultConfigInfo | null>;
   findById: (type: string, id: string) => Promise<VaultConfigInfo | null>;
   findAll: () => Promise<VaultConfigInfo[]>;
 }
 
-/** Wires real infrastructure into VaultDescribeDeps. */
 export function createVaultDescribeDeps(repoDir: string): VaultDescribeDeps {
   const repo = new YamlVaultConfigRepository(repoDir);
   return {
@@ -57,7 +52,6 @@ export function createVaultDescribeDeps(repoDir: string): VaultDescribeDeps {
   };
 }
 
-/** Retrieves vault configuration for description. */
 export async function* vaultDescribe(
   _ctx: LibSwampContext,
   deps: VaultDescribeDeps,
@@ -70,10 +64,8 @@ export async function* vaultDescribe(
     (async function* () {
       yield { kind: "resolving" };
 
-      // Try to find by name first
       let config = await deps.findByName(vaultNameOrId);
 
-      // If not found by name, try to find by ID
       if (!config) {
         if (vaultType) {
           config = await deps.findById(vaultType, vaultNameOrId);
@@ -83,7 +75,6 @@ export async function* vaultDescribe(
         }
       }
 
-      // If type was specified, verify it matches
       if (config && vaultType && config.type !== vaultType) {
         yield {
           kind: "error",

@@ -17,8 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// The behavior spelling of a workflow step task (swamp-club#3334).
-
 import {
   assert,
   assertEquals,
@@ -128,7 +126,6 @@ Deno.test("normalizeBehaviorTask: a task mixing the two spellings is refused", (
       error.message.includes(key),
       `${JSON.stringify(task)}: ${error.message}`,
     );
-    // And through the schema every consumer parses with.
     assertThrows(() => StepTaskSchema.parse(task));
   }
 });

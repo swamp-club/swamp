@@ -18,36 +18,23 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * The vault `swamp repo init` creates for every new repository, so secrets
- * and sensitive outputs have somewhere to go without setup
- * (swamp-club#3259).
- *
- * @module
+ * the vault swamp repo init creates so secrets and sensitive outputs have
+ * somewhere to go without setup
  */
 
 import { createVaultConfigId, VaultConfig } from "./vault_config.ts";
 import { defaultLocalEncryptionConfig } from "./local_encryption_key_source.ts";
 
-/** The name of the vault `swamp repo init` creates. */
 export const DEFAULT_VAULT_NAME = "default";
 
-/** The type of the vault `swamp repo init` creates. */
 export const DEFAULT_VAULT_TYPE = "local_encryption";
 
-/**
- * Where the default vault's config is read and written. Repo init only needs
- * to find a vault by name and save a new one.
- */
 export interface DefaultVaultStore {
   findByName(name: string): Promise<VaultConfig | null>;
   save(config: VaultConfig): Promise<void>;
 }
 
-/**
- * A new default vault config: a local_encryption vault named `default`
- * whose key is generated on first use. Its config names no host path, so
- * the committed file works in every clone.
- */
+/** its config names no host path, so the committed file works in every clone */
 export function createDefaultVaultConfig(): VaultConfig {
   return VaultConfig.create(
     createVaultConfigId(crypto.randomUUID()),

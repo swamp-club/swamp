@@ -17,15 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * A serve-executed run has no command line, so no known values: a path its
- * error names is removed only if it was marked (swamp-club#2830). Drives
- * serve's real run path, `executeWorkflowWithLocks`, with a step whose method
- * throws an error naming a path with a space in its last segment, and checks
- * both entries the run records: the step's child invocation (through the
- * workflow telemetry bridge) and the run's parent invocation.
- */
-
 import "../src/domain/models/models.ts";
 import { assert, assertEquals } from "@std/assert";
 import { join } from "@std/path";
@@ -54,7 +45,6 @@ import { executeWorkflowWithLocks } from "../src/serve/deps.ts";
 
 await initializeLogging({});
 
-/** Records what the run wrote, so assertions see real entries. */
 class RecordingRepository implements TelemetryRepository {
   saved: TelemetryEntry[] = [];
   save(entry: TelemetryEntry): Promise<void> {

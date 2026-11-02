@@ -17,15 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * A datastore's `durable` setting reaches the writers that act on it
- * (swamp-club#4017). The setting is resolved from the `.swamp.yaml`
- * datastore block, or `SWAMP_DATASTORE_DURABLE` when the block does not
- * say, into the repository factory's unified data repository, which tells
- * a streaming writer whether to sync, and into the per-model lock, which
- * syncs the model directories it creates.
- */
-
 import { assertEquals } from "@std/assert";
 import { join } from "@std/path";
 import { createModelLock } from "../src/cli/repo_context.ts";
@@ -53,10 +44,6 @@ function marker(datastorePath: string, durable?: boolean): RepoMarkerData {
   };
 }
 
-/**
- * What the resolved datastore tells its writers: whether a streaming
- * writer must sync, and whether the model lock syncs what it creates.
- */
 async function writersOf(
   repoDir: string,
   repoMarker: RepoMarkerData,

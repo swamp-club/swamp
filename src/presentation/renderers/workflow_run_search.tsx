@@ -38,18 +38,12 @@ import { renderInteractivePicker } from "./components/search_picker.tsx";
 import { writeOutput } from "../../infrastructure/logging/logger.ts";
 import { dim } from "@std/fmt/colors";
 
-/** Where retention has reaped runs up to, as a listing reports it. */
 type ReapedBefore = NonNullable<WorkflowRunSearchData["reapedBefore"]>;
 
-/**
- * The marker a run listing ends with when retention has reaped older runs
- * (swamp-club#3473).
- */
 export function reapedRunsLine(reaped: ReapedBefore): string {
   return `Older runs reaped by retention before ${reaped.cutoff} (${reaped.retention})`;
 }
 
-/** Ends a log-mode run listing with the reaped marker, when there is one. */
 export function writeReapedRunsLine(reaped: ReapedBefore | undefined): void {
   if (reaped) writeOutput(dim(reapedRunsLine(reaped)));
 }
@@ -73,9 +67,6 @@ function formatDurationSec(ms: number): string {
   return `${(ms / 1000).toFixed(1)}s`;
 }
 
-/**
- * Callback type for fetching run detail data for the preview pane.
- */
 export type RunPreviewFetcher = (
   item: WorkflowRunSearchItem,
 ) => Promise<WorkflowRunView>;
@@ -191,11 +182,6 @@ export function createWorkflowRunSearchRenderer(
   }
 }
 
-// ---------------------------------------------------------------------------
-// Rendering callbacks for the SearchPicker
-// ---------------------------------------------------------------------------
-
-/** Single-line result for the results list. */
 function renderRunResultLine(
   item: WorkflowRunSearchItem,
 ): React.ReactElement {
@@ -227,7 +213,6 @@ function renderRunResultLine(
   );
 }
 
-/** Preview content for a workflow run. */
 function renderRunPreview(
   item: WorkflowRunSearchItem,
   detail: WorkflowRunView | undefined,
@@ -236,7 +221,6 @@ function renderRunPreview(
 ): React.ReactElement {
   const innerWidth = Math.max(10, width - 1);
   if (!detail) {
-    // Immediate content from the search item
     const statusColor = STATUS_COLORS[item.status] ?? "white";
     const dateStr = item.startedAt
       ? new Date(item.startedAt).toLocaleString()
@@ -299,7 +283,6 @@ function renderRunPreview(
     );
   }
 
-  // Full detail from fetchPreview
   const statusColor = STATUS_COLORS[detail.status] ?? "white";
   const durationStr = detail.duration !== undefined
     ? formatDurationSec(detail.duration)
@@ -363,7 +346,6 @@ function renderRunPreview(
   );
 }
 
-/** Plain-text scrollback output for a selected workflow run. */
 function renderRunScrollback(
   item: WorkflowRunSearchItem,
   detail: WorkflowRunView | undefined,

@@ -91,7 +91,6 @@ async function save(
   await repo.save(modelType, modelId, data, encoder.encode("# r\n"));
 }
 
-/** `repo` with each findByName call counted by data name. */
 function counting(repo: UnifiedDataRepository): {
   repo: Pick<UnifiedDataRepository, "namespace" | "findByName">;
   reads: string[];
@@ -109,7 +108,6 @@ function counting(repo: UnifiedDataRepository): {
   };
 }
 
-/** `run`'s result and the warnings the adapter logged while it ran. */
 async function withWarnings<T>(
   run: () => Promise<T>,
 ): Promise<{ result: T; warnings: string[] }> {

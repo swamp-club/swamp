@@ -47,8 +47,8 @@ async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
     await fn(dir);
   } finally {
     if (Deno.build.os === "windows") {
-      // Best-effort: EBUSY can fire when V8 hasn't GC'd native sqlite handles
-      // yet. Temp dir is ephemeral, OS reclaims.
+      // best-effort: EBUSY can fire when V8 has not GC'd native sqlite handles
+      // yet
       await Deno.remove(dir, { recursive: true }).catch(() => {});
     } else {
       await Deno.remove(dir, { recursive: true });
@@ -493,9 +493,6 @@ Deno.test("modelDelete: records no target or principal on the span when neither 
   });
 });
 
-// ── Diagnostic phases (swamp-club#4003) ─────────────────────────────
-
-/** Runs a delete the way worker prune does: in the worker_delete area. */
 function deleteInArea(
   deps: ModelDeleteDeps,
   force = true,
@@ -553,7 +550,6 @@ Deno.test("modelDelete: in an area, each stage is a phase under model_delete wit
     const del = findSpan(spans, "swamp.model.delete");
     const model = phase(spans, "model_delete");
     assert(isChildOf(model, del));
-    // The model's identity stays on the span queries select.
     assertEquals(del.attributes["model.name"], "my-model");
     assertEquals(model.attributes["model.name"], undefined);
     assertEquals(attr(model, "definition_type"), "aws/s3-bucket");
@@ -633,7 +629,6 @@ Deno.test("modelDelete: a refused delete ends model_delete as an error with its 
     );
     assertEquals(attr(phase(spans, "expiry_check"), "checker"), false);
     assertEquals(attr(phase(spans, "expiry_check"), "live"), 1);
-    // A refusal stops before any removal.
     assertEquals(diagnosticPhases(spans, "output_removal").length, 0);
   });
 });

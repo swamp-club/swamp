@@ -20,10 +20,6 @@
 import { UserError } from "../../domain/errors.ts";
 import { defaultCommandResolver } from "../process/resolve_command.ts";
 
-/**
- * Result of creating a GitHub issue.
- * Discriminated union: "created" when gh CLI was used, "url" when falling back to a browser URL.
- */
 export type GitHubIssueResult =
   | { method: "created"; url: string; number: number }
   | {
@@ -34,9 +30,6 @@ export type GitHubIssueResult =
     labels: string[];
   };
 
-/**
- * Options for creating a GitHub issue.
- */
 export interface CreateIssueOptions {
   title: string;
   body: string;
@@ -44,16 +37,9 @@ export interface CreateIssueOptions {
   repo?: string;
 }
 
-/**
- * Service for interacting with GitHub issues via the gh CLI.
- */
 export class GitHubIssueService {
   private readonly defaultRepo = "swamp-club/swamp";
 
-  /**
-   * Checks if the gh CLI is installed and authenticated.
-   * Returns true if available, false otherwise.
-   */
   async isAvailable(): Promise<boolean> {
     const ghPath = await defaultCommandResolver().resolve("gh");
     if (!ghPath) {
@@ -69,9 +55,6 @@ export class GitHubIssueService {
     return ghAuthenticated;
   }
 
-  /**
-   * Returns a GitHub "new issue" URL with labels pre-filled.
-   */
   getNewIssueUrl(options: { repo?: string; labels: string[] }): string {
     const repo = options.repo ?? this.defaultRepo;
     const params = new URLSearchParams();
@@ -84,13 +67,6 @@ export class GitHubIssueService {
       : `https://github.com/${repo}/issues/new`;
   }
 
-  /**
-   * Creates a GitHub issue using the gh CLI.
-   * Falls back to returning a pre-filled URL if the gh CLI is unavailable.
-   *
-   * @param options - The issue creation options
-   * @returns The result, either a created issue or a fallback URL
-   */
   async createIssue(options: CreateIssueOptions): Promise<GitHubIssueResult> {
     const available = await this.isAvailable();
     if (!available) {
@@ -119,7 +95,6 @@ export class GitHubIssueService {
       options.body,
     ];
 
-    // Add labels
     for (const label of options.labels) {
       args.push("--label", label);
     }
@@ -137,10 +112,8 @@ export class GitHubIssueService {
       throw new UserError(`Failed to create GitHub issue: ${errorMessage}`);
     }
 
-    // gh issue create returns the URL of the created issue
     const url = new TextDecoder().decode(stdout).trim();
 
-    // Extract issue number from URL (e.g., https://github.com/owner/repo/issues/123)
     const match = url.match(/\/issues\/(\d+)$/);
     const number = match ? parseInt(match[1], 10) : 0;
 

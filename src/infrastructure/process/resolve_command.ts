@@ -17,40 +17,20 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Cross-platform PATH resolver. On POSIX uses `which`; on Windows uses `where`.
- *
- * Returns the absolute path of the first match, or `null` when the binary is
- * not on PATH (or the underlying lookup tool itself is missing). Callers that
- * want to surface a specific error should wrap the `null` result.
- */
 export interface CommandResolver {
   resolve(name: string): Promise<string | null>;
 }
 
-/**
- * The result of running a PATH-lookup process. The default resolver wraps
- * `Deno.Command(...).output()`; tests inject a fake to exercise the parser
- * without spawning a subprocess.
- */
 export interface CommandLookupResult {
-  /** Whether the lookup process exited with code 0. */
   success: boolean;
-  /** Captured stdout bytes from the lookup process. */
   stdout: Uint8Array;
 }
 
-/**
- * Function shape that runs the platform-native lookup tool (`which` / `where`)
- * and returns its stdout. Exposed so unit tests can inject deterministic
- * multi-line output without relying on the host's PATH.
- */
 export type CommandLookupRunner = (
   tool: string,
   name: string,
 ) => Promise<CommandLookupResult>;
 
-/** Default runner — actually spawns `which` or `where`. */
 const defaultLookupRunner: CommandLookupRunner = async (tool, name) => {
   try {
     const cmd = new Deno.Command(tool, {
@@ -68,9 +48,8 @@ const defaultLookupRunner: CommandLookupRunner = async (tool, name) => {
 };
 
 /**
- * Returns an accessible cwd for subprocess spawning. Falls back to the OS
- * temp dir or root if the process's working directory is inaccessible (e.g.
- * when invoked via `sudo -u` from another user's restricted home).
+ * falls back to the OS temp dir or root if the working directory is
+ * inaccessible, e.g. via sudo -u from another user's restricted home
  */
 function safeCwd(): string {
   try {
@@ -81,16 +60,13 @@ function safeCwd(): string {
   }
 }
 
-/** Picks the platform-appropriate lookup tool name. */
 function lookupTool(): "which" | "where" {
   return Deno.build.os === "windows" ? "where" : "which";
 }
 
 /**
- * Parses `which`/`where` stdout: returns the first non-empty trimmed line, or
- * `null` if there is none. `where` returns multiple matches separated by
- * newlines on Windows; `which -a` does the same on POSIX. We deliberately take
- * the first match, mirroring the long-standing one-shot semantics of `which`.
+ * takes the first match deliberately, mirroring the one-shot semantics of
+ * which, though where (and which -a) can list several
  */
 function parseFirstLine(stdout: Uint8Array): string | null {
   const text = new TextDecoder().decode(stdout);
@@ -101,10 +77,6 @@ function parseFirstLine(stdout: Uint8Array): string | null {
   return null;
 }
 
-/**
- * The default cross-platform command resolver. Use this everywhere instead of
- * spawning `which`/`where` inline.
- */
 export function defaultCommandResolver(
   runner: CommandLookupRunner = defaultLookupRunner,
 ): CommandResolver {

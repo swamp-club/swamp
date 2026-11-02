@@ -54,9 +54,9 @@ export const questCommand = new Command()
 
     const client = new SwampClubClient(serverUrl, identity);
 
-    // Authenticated → your own pass. Otherwise the ghost read: the progress
-    // this device accrued, keyed by its distinct_id, unclaimed until an
-    // authenticated session (swamp auth login or a collective API key) binds it.
+    // authenticated: your own pass. Otherwise the ghost read: progress this
+    // device accrued, keyed by its distinct_id, unclaimed until an
+    // authenticated session binds it.
     let deps: QuestPassDeps;
     if (credentials?.apiKey) {
       const apiKey = credentials.apiKey;

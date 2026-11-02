@@ -23,28 +23,15 @@ import { swampPath } from "./paths.ts";
 import type { UpstreamExtensionEntry } from "./upstream_extensions.ts";
 
 /**
- * Local record that a managed-config lockfile change failed to reach the
- * datastore (swamp-club#2752).
- *
- * The record holds the change itself, as a {@link LockfileDelta}, so the
- * next extension write can fetch the datastore's lockfile and replay the
- * change onto it instead of publishing a stale local copy over entries
- * other checkouts wrote meanwhile (swamp-club#2838). A record written by an
- * older swamp holds only a timestamp; it reads as `unknown`, a change whose
- * content was never recorded.
- *
- * It lives in the repo's own `.swamp/` directory, which is never synced, and
- * is cleared by the next successful lockfile publish. A `datastore sync`
- * push clears only an `unknown` record; a recorded delta stays for the next
- * extension write to replay.
+ * a lockfile change that missed the datastore, kept as a delta so the next
+ * extension write replays it onto the datastore copy; lives in the unsynced
+ * .swamp dir, cleared by the next successful publish
  */
 const PENDING_FILE = "managed-config-lockfile-unpublished";
 const PENDING_FORMAT_VERSION = 1;
 
-/** A lockfile change that has not reached the datastore. */
 export type LockfileEntryDelta = LockfileDelta<UpstreamExtensionEntry>;
 
-/** What the pending record says about the local lockfile. */
 export type PendingLockfilePublish =
   | { kind: "none" }
   | { kind: "delta"; delta: LockfileEntryDelta }
@@ -54,11 +41,6 @@ function pendingPath(repoDir: string): string {
   return swampPath(repoDir, PENDING_FILE);
 }
 
-/**
- * Records `delta` as the lockfile change the datastore has not received.
- * It replaces any earlier record, so pass the whole outstanding change.
- * Without a delta, records a change of unknown content.
- */
 export async function markLockfilePublishPending(
   repoDir: string,
   delta?: LockfileEntryDelta,
@@ -74,8 +56,8 @@ export async function markLockfilePublishPending(
 }
 
 /**
- * Reads the pending record. A record that cannot be read or parsed counts
- * as `unknown`, so the caller errs towards keeping local entries.
+ * a record that cannot be read or parsed counts as unknown, so the caller errs
+ * towards keeping local entries
  */
 export async function readLockfilePublishPending(
   repoDir: string,
@@ -91,7 +73,6 @@ export async function readLockfilePublishPending(
   return delta ? { kind: "delta", delta } : { kind: "unknown" };
 }
 
-/** Clears the record once the lockfile has reached the datastore. */
 export async function clearLockfilePublishPending(
   repoDir: string,
 ): Promise<void> {
@@ -131,11 +112,9 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 /**
- * Clears a record whose change content was never recorded (`unknown`),
- * after a full `datastore sync` push published the local lockfile. A
- * recorded delta is kept: it is the only copy of the change, and replaying
- * it on the next extension write is harmless when the push already
- * delivered it, while the push may have been overwritten meanwhile.
+ * a recorded delta is kept: it is the only copy of the change, and replaying it
+ * is harmless if the push already delivered it, while the push may have been
+ * overwritten
  */
 export async function clearUnrecordedLockfilePublishPending(
   repoDir: string,

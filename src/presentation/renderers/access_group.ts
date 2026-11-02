@@ -86,8 +86,6 @@ export function createAccessGroupListRenderer(
   }
 }
 
-// ── IdP group rendering ──────────────────────────────────────────────
-
 export interface AccessGroupIdpRenderer {
   renderList(groups: AccessGroupIdpEntry[]): void;
 }

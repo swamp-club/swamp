@@ -17,19 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Where a datastore's global and per-model locks are taken
- * (swamp-club#3534). A v2 extension datastore takes them in its bucket
- * through its provider. A v3 datastore on a bucket takes them as a
- * filesystem v3 datastore does, as file locks: its writer lease already
- * admits one writing process at a time across every machine, so its locks
- * only order the work inside that process and its checkout. They live
- * under its local root (`.swamp/_datastore_v3_copies/<key>/`), which the v3
- * binding registers here when it binds the datastore.
- *
- * @module
- */
-
 import { checkedDatastoreEngine } from "./datastore_format_guard.ts";
 import {
   type CustomDatastoreConfig,
@@ -38,20 +25,11 @@ import {
   isCustomDatastoreConfig,
 } from "../../domain/datastore/datastore_config.ts";
 
-/**
- * The filesystem-shaped config each bound v3 bucket config locks under, and
- * each config of a datastore written through serve (swamp-club#3985),
- * whose storage a checkout never touches, filesystem or bucket.
- */
 let lockConfigs = new WeakMap<
   DatastoreConfig,
   FilesystemDatastoreConfig
 >();
 
-/**
- * Records that the v3 bucket datastore `config` names takes its locks
- * under the local directory `root`. Called by the v3 binding.
- */
 export function setV3BucketLockRoot(
   config: CustomDatastoreConfig | DatastoreConfig,
   root: string,
@@ -69,14 +47,8 @@ export function setV3BucketLockRoot(
 }
 
 /**
- * The config a datastore's locks are taken on: a bound v3 bucket
- * datastore's local root, as a filesystem config; any other config as it
- * is. A lock site that takes the provider's lock for an extension config
- * and a file lock otherwise passes its config through this first.
- *
- * @throws Error for a v3 extension config no binding has seen: its locks
- *   would otherwise be taken as v2 lock objects in its bucket. Every
- *   writing context binds its config first (`v3DatastoreConfigOf`).
+ * throws for a v3 extension config no binding has seen, since its locks would
+ * be taken as v2 lock objects in its bucket; bind first via v3DatastoreConfigOf
  */
 export function lockingConfigOf(config: DatastoreConfig): DatastoreConfig {
   const bound = lockConfigs.get(config);
@@ -93,7 +65,6 @@ export function lockingConfigOf(config: DatastoreConfig): DatastoreConfig {
   return config;
 }
 
-/** Test seam: forgets every bucket datastore's lock root. */
 export function resetV3BucketLockRootsForTesting(): void {
   lockConfigs = new WeakMap();
 }

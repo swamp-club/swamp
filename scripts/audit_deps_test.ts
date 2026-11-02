@@ -17,9 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// These tests are the only automated behaviour coverage this script has:
-// `scripts/` is excluded from `deno fmt` and `deno lint` in deno.json, and
-// `deno task check` only type-checks it.
 
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import { withMockedFetch } from "@swamp-club/swamp-testing";
@@ -31,7 +28,6 @@ import {
   isAcceptedAdvisory,
 } from "./audit_deps.ts";
 
-/** Captures console.warn output for the duration of `run`. */
 async function captureWarnings<T>(
   run: () => Promise<T>,
 ): Promise<{ result: T; warnings: string[] }> {
@@ -47,7 +43,6 @@ async function captureWarnings<T>(
   }
 }
 
-/** Rejects with the signal's reason once `signal` aborts. */
 function whenAborted(signal: AbortSignal): Promise<never> {
   return new Promise((_, reject) => {
     signal.addEventListener("abort", () => reject(signal.reason), {
@@ -56,7 +51,6 @@ function whenAborted(signal: AbortSignal): Promise<never> {
   });
 }
 
-/** The id at the end of a `/v1/vulns/{id}` request URL, decoded. */
 function requestedId(request: Request): string {
   const path = new URL(request.url).pathname;
   return decodeURIComponent(path.substring("/v1/vulns/".length));

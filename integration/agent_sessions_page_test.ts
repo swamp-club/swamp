@@ -17,14 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * The agent sessions page's own requests (swamp-club#4155), sent through
- * serve's handlers against sessions written by the real resource writer:
- * the visibility check, the list, a session's subagents and one session's
- * record. A viewer without read on the owning behavior gets none of it, so
- * hiding the page is never what keeps sessions private.
- */
-
 import { assert, assertEquals } from "@std/assert";
 import { z } from "zod";
 import "../src/domain/models/models.ts";
@@ -138,7 +130,6 @@ Deno.test("agent sessions page: a reader finds, lists, opens and expands session
     const list = parseListReply(
       (await ask(ctx, "data.query", listPayload())).data,
     );
-    // Top-level only, newest first.
     assertEquals(
       list.rows.map((r) => r.name),
       [headless, long, edits].map((s) => agentSessionDataName(s.harness, s.id)),
@@ -176,8 +167,6 @@ Deno.test("agent sessions page: the list pages newest first by cursor, in serve'
       agentSessionDataName(s.harness, s.id)
     );
 
-    // A window of two: serve sorts it, so it is the newest two, and it
-    // hands back a cursor for the rest.
     const firstReply = await ask(ctx, "data.query", {
       ...listPayload(),
       limit: 2,
@@ -210,7 +199,7 @@ Deno.test("agent sessions page: a repo filters in the query, keeps sessions writ
     const ctx = createServeCtx(repo, [ALLOW_DATA]);
     const importer = await saveModel(repo, "agent-sessions-more");
     const [edits, , , headless] = fixtureSessions();
-    // Written before swamp-club#4211: no repo tag, the repo only in the summary.
+    // a legacy session: no repo tag, the repo only in the summary
     const legacy: AgentSessionRecord = {
       ...edits,
       id: "legacy-0001",
@@ -260,7 +249,6 @@ Deno.test("agent sessions page: a repo filters in the query, keeps sessions writ
     );
     assertEquals(platform.shown, [edits, long, legacy].map(name).sort());
 
-    // A repo string with quotes matches only itself.
     const odd = await listed(tricky.repo);
     assertEquals(odd.shown, [name(tricky)]);
     assert(!odd.fromServe.includes(name(edits)));

@@ -240,8 +240,7 @@ Deno.test("pendingOutcome: a signal received within the limit becomes the wait's
       waitId: WAIT_ID,
       receivedAt: "2026-01-01T00:00:05.000Z",
       submittedBy: "camera",
-      // Every reader builds the same outcome, the mark included
-      // (swamp-club#3214).
+      // every reader builds the same outcome, the mark included
       heldAsPending: true,
     },
     payload: { verdict: "known" },
@@ -261,7 +260,6 @@ Deno.test("pendingOutcome: the window runs from the claim minus the age limit to
 });
 
 Deno.test("isReceivedForWait: a claim decides the slot and the window as its wait does, both edges included", () => {
-  // What a claim keeps of its wait: `early` and the deadline.
   const claim = { early: ref().early, deadline: DEADLINE };
   const at = (receivedAt: string) =>
     isReceivedForWait(pending({ receivedAt }), claim);
@@ -269,7 +267,6 @@ Deno.test("isReceivedForWait: a claim decides the slot and the window as its wai
   assertEquals(at("2025-12-31T23:59:59.999Z"), false);
   assertEquals(at(DEADLINE), true);
   assertEquals(at("2026-01-01T00:00:40.001Z"), false);
-  // A slot the claim does not read, and the one below it over a release.
   assertEquals(isReceivedForWait(pending({ slot: 2 }), claim), false);
   const overRelease = {
     early: { ...claim.early, generation: 2, overRelease: true },
@@ -305,7 +302,6 @@ Deno.test("applicablePendingOutcome: the outcome the slot's pending signal would
   assertEquals(outcome, pendingOutcome(pending(), ref()));
   assert(outcome, "the pending signal applies");
   assertEquals(store.outcomes.size, 0);
-  // The take stores that same outcome.
   assertEquals(await takePendingSignal(store, ref()), {
     kind: "found",
     record: outcome,
@@ -351,7 +347,6 @@ Deno.test("takePendingSignal: a store's listener is told of the take by its rece
   const store = new InMemorySignalWaitStore();
   const heard: unknown[] = [];
   store.pendingTaken = (taken) => heard.push(taken);
-  // Nothing applies: nothing is heard.
   assertEquals(await takePendingSignal(store, ref()), { kind: "absent" });
   assertEquals(heard, []);
 
@@ -398,7 +393,6 @@ Deno.test("takePendingSignal: a wait another outcome settled first is not heard 
 Deno.test("takePendingSignal: nothing applies, nothing is settled", async () => {
   const store = new InMemorySignalWaitStore();
   assertEquals(await takePendingSignal(store, ref()), { kind: "absent" });
-  // Too old for the wait.
   await store.createPendingRecord(
     pending({ receivedAt: "2025-12-31T23:00:00.000Z" }),
   );
@@ -439,7 +433,6 @@ Deno.test("takePendingSignal: a claim created over a release also reads the slot
   });
   const stored = await takePendingSignal(store, over);
   assertEquals(stored.kind === "found" && stored.record.kind, "accepted");
-  // A claim that was not reads its own slot alone.
   const other = new InMemorySignalWaitStore();
   await other.createPendingRecord(pending({ slot: 2 }));
   assertEquals(
@@ -480,7 +473,6 @@ Deno.test("pendingOutcome: the receipt keeps the idempotency key the signal was 
     "idempotencyKey" in (pendingOutcome(pending(), ref())?.receipt ?? {}),
     false,
   );
-  // A key in another form was never one a signal was held under.
   assertEquals(
     decodePendingRecord(
       new TextEncoder().encode(

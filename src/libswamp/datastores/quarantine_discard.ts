@@ -17,30 +17,17 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * `swamp datastore quarantine discard` (swamp-club#4195): an admin discards
- * a change serve keeps because its author lacked a grant it needs, so it
- * never lands. Serve keeps the record, marked discarded; the author's next
- * command keeps its entry as rejected and never sends it.
- *
- * @module
- */
-
 import { isQuarantineTxnId } from "../../domain/datastore_v3/quarantine.ts";
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
 import type { LibSwampContext } from "../context.ts";
 import { type SwampError, validationFailed } from "../errors.ts";
 
-/** What `datastore quarantine discard` reports. */
 export interface DatastoreQuarantineDiscardData {
   txnId: string;
   partition: string;
-  /** Who made the change. */
   author: string;
-  /** The admin who discarded it. */
   discardedBy: string;
   discardedAt: string;
-  /** It had been discarded already. */
   duplicate: boolean;
 }
 
@@ -54,11 +41,9 @@ export interface DatastoreQuarantineDiscardInput {
 }
 
 export interface DatastoreQuarantineDiscardDeps {
-  /** Asks serve to discard the kept change `txnId`; resolves with its reply. */
   discard: (txnId: string) => Promise<Record<string, unknown>>;
 }
 
-/** Discards a change serve keeps for an admin, so it never lands. */
 export async function* datastoreQuarantineDiscard(
   ctx: LibSwampContext,
   deps: DatastoreQuarantineDiscardDeps,
@@ -86,7 +71,6 @@ export async function* datastoreQuarantineDiscard(
   );
 }
 
-/** Serve's reply to a discard, as the command reports it. */
 function discardDataOf(
   txnId: string,
   reply: Record<string, unknown>,

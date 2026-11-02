@@ -27,9 +27,6 @@ import {
   type DataLifecycle,
   DataLifecycleSchema,
 } from "../../domain/data/data_metadata.ts";
-/**
- * A single data search result item.
- */
 export interface DataSearchItem {
   id: string;
   name: string;
@@ -54,9 +51,6 @@ export interface DataSearchItem {
   stepTag?: string;
 }
 
-/**
- * Data payload for the completed event.
- */
 export interface DataSearchData {
   query: string;
   filters: Record<string, string>;
@@ -70,9 +64,6 @@ export type DataSearchEvent =
   | { kind: "completed"; data: DataSearchData }
   | { kind: "error"; error: SwampError };
 
-/**
- * Dependencies for the data search generator.
- */
 export interface DataSearchDeps {
   findLatestItems(): Promise<DataSearchItem[]>;
   findDefinitionByIdOrName(
@@ -80,9 +71,6 @@ export interface DataSearchDeps {
   ): Promise<{ definition: { name: string } } | null>;
 }
 
-/**
- * Input for the data search generator.
- */
 export interface DataSearchInput {
   query?: string;
   type?: string;
@@ -100,10 +88,6 @@ export interface DataSearchInput {
   limit?: number;
 }
 
-/**
- * Parses a duration string (e.g., "1h", "1d", "7d", "1w", "1mo") to
- * milliseconds. Reused by workflow run search.
- */
 export function parseDuration(duration: string): number {
   const match = duration.match(/^(\d+)(mo|y|h|m|d|w)$/);
   if (!match) {
@@ -133,10 +117,6 @@ export function parseDuration(duration: string): number {
   }
 }
 
-/**
- * Parses an array of "KEY=VALUE" strings into a Record<string, string>.
- * Reused by workflow run search.
- */
 export function parseTags(raw: string[]): Record<string, string> {
   const tags: Record<string, string> = {};
   for (const entry of raw) {
@@ -151,9 +131,6 @@ export function parseTags(raw: string[]): Record<string, string> {
   return tags;
 }
 
-/**
- * Filters data search items. All filters combine with AND logic.
- */
 function filterData(
   items: DataSearchItem[],
   input: DataSearchInput,
@@ -216,9 +193,6 @@ function filterData(
   return result;
 }
 
-/**
- * Builds active filters record for output metadata.
- */
 function buildFilters(input: DataSearchInput): Record<string, string> {
   const filters: Record<string, string> = {};
   if (input.type) filters.type = input.type;
@@ -240,9 +214,6 @@ function buildFilters(input: DataSearchInput): Record<string, string> {
   return filters;
 }
 
-/**
- * Searches data artifacts across all models with rich filtering.
- */
 export async function* dataSearch(
   _ctx: LibSwampContext,
   deps: DataSearchDeps,
@@ -269,7 +240,6 @@ export async function* dataSearch(
         return;
       }
 
-      // Validate model if provided
       if (input.model) {
         const modelResult = await deps.findDefinitionByIdOrName(input.model);
         if (!modelResult) {
@@ -281,19 +251,15 @@ export async function* dataSearch(
         }
       }
 
-      // Fetch latest items from the catalog index
       const items = await deps.findLatestItems();
 
-      // Apply filters
       const filtered = filterData(items, input);
 
-      // Sort by createdAt descending
       filtered.sort(
         (a, b) =>
           new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
       );
 
-      // Apply limit
       const limit = input.limit ?? 50;
       const total = filtered.length;
       const limited = total > limit;

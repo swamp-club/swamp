@@ -19,10 +19,6 @@
 
 import { stripAnsiCode } from "@std/fmt/colors";
 
-/**
- * Runs `fn` with console.log captured and returns what it wrote, one string
- * per call, with colors removed.
- */
 export async function captureLog(
   fn: () => void | Promise<void>,
 ): Promise<string[]> {

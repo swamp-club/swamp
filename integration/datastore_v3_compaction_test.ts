@@ -17,14 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * History compaction (swamp-club#3258) on a real `commits.db`, the
- * filesystem `storage/1` and read models: compacted commits are gone, their
- * retries still land once, a checkout behind the compaction point loads and
- * reconciles the compacted base, and chunk GC reclaims superseded content
- * while keeping present content.
- */
-
 import { assert, assertEquals, assertRejects } from "@std/assert";
 import { join } from "@std/path";
 import { walk } from "@std/fs";
@@ -72,7 +64,6 @@ import type {
 const PARTITION = modelPartition();
 const signal = () => AbortSignal.timeout(30_000);
 
-/** Content of several chunks, distinct per seed. */
 function content(seed: number): Uint8Array {
   return new Uint8Array(3 * TEST_CHUNK_BYTES + seed).map((_, i) =>
     (i * seed + seed) % 251
@@ -94,7 +85,6 @@ function remove(name: string, version: number) {
   });
 }
 
-/** Appends commits to the fixture model, from seq `from` on. */
 async function appendAll(
   env: V3Env,
   history: readonly (readonly Op[])[],
@@ -108,7 +98,6 @@ async function appendAll(
   }
 }
 
-/** A checkout of its own, with its own cache and state directories. */
 function checkout(env: V3Env, name: string): {
   readModel: SqliteReadModel;
   root: string;
@@ -127,7 +116,6 @@ function checkout(env: V3Env, name: string): {
   };
 }
 
-/** What a checkout holds: files, catalog, index and live versions. */
 async function observe(
   view: { readModel: SqliteReadModel; root: string; stateDir: string },
 ): Promise<unknown> {
@@ -154,7 +142,6 @@ async function observe(
   };
 }
 
-/** Every row of every commits.db table, for comparing whole states. */
 function dump(path: string): Record<string, unknown[]> {
   const db = new DatabaseSync(path);
   // A terminated writer's lock is released asynchronously.
@@ -211,7 +198,6 @@ Deno.test("compaction: folds commits away, refuses reads below the point, and ap
       seq: 3,
       highestFence: undefined,
     });
-    // Compacting past the last commit stops at it.
     assertEquals((await env.store.compactHistory(99)).point, 3);
     assertEquals(
       await env.store.append(
@@ -242,13 +228,11 @@ Deno.test("compaction: a retry of a compacted commit is still a duplicate, cache
     }
     for (const commit of commits) await env.store.append(commit);
     await env.store.compactHistory(4);
-    // The cached partition answers from compacted_txns.
     assertEquals(await env.store.append(commits[1]), {
       kind: "duplicate",
       seq: 2,
     });
 
-    // A store opened afresh rebuilds from the snapshot compaction wrote.
     const path = join(env.dir, "commits.db");
     const cold = SqliteCommitStore.open(path, { snapshotInterval: 1000 });
     try {
@@ -291,7 +275,6 @@ Deno.test("compaction: the status keeps the newest commits and those written rec
         }),
       );
     }
-    // commitOf stamps every commit at 2026-10-11T00:00:00.000Z.
     assertEquals(
       await env.store.compactionStatus({ commits: 2, since: at(0) }),
       { point: 0, through: 4, commits: 4 },
@@ -315,7 +298,6 @@ Deno.test("compaction: the status keeps the newest commits and those written rec
   });
 });
 
-/** Sets every stored chunk's modification time to the epoch. */
 async function ageChunks(env: V3Env): Promise<void> {
   for await (
     const entry of walk(join(env.dir, "datastore", "_blobs"), {
@@ -334,7 +316,6 @@ async function storedChunks(env: V3Env): Promise<string[]> {
   return hashes.sort();
 }
 
-/** Overwrites, a delete and a gc whose content only history names. */
 async function supersedingHistory(env: V3Env) {
   const store = (seed: number) =>
     env.chunkStore.write(SOLO_NAMESPACE, content(seed), signal());
@@ -367,7 +348,6 @@ Deno.test("compaction: GC then reclaims superseded chunks and keeps present ones
     assertEquals(report.released, superseded.length);
     await ageChunks(env);
     const fs = new FileSystemStorage(join(env.dir, "datastore"));
-    // Past the release grace: a sweep an hour later reclaims them.
     const collector = new ChunkCollector({
       commitStore: env.store,
       storage: fs,
@@ -413,8 +393,6 @@ Deno.test("compaction: released chunks are forgotten after the release retention
   await withV3Env(async (env) => {
     const { superseded, present } = await supersedingHistory(env);
     const hashes = [...superseded, ...present];
-    // Released an hour ago, then forgotten by a later batch keeping
-    // releases for less than that.
     await env.store.compactHistory(5, {
       clock: () => new Date(Date.now() - 60 * 60 * 1000),
     });
@@ -537,7 +515,6 @@ Deno.test("compaction: a checkout whose partition catch-up ran past the compacte
       await env.store.compactHistory(2);
       await view.readModel.catchUp(signal());
       assertEquals(await observe(view), await observe(reference));
-      // And a partition catch-up from below its compacted seq loads too.
       const late = checkout(env, "late");
       try {
         await late.readModel.catchUpPartition("", PARTITION, signal());
@@ -572,7 +549,6 @@ Deno.test("compaction: a batch that fails before committing leaves commits.db as
       "injected failure",
     );
     assertEquals(dump(path), before);
-    // The store carries on: the same compaction then lands whole.
     assertEquals((await env.store.compactHistory(2)).compacted, 2);
   });
 });
@@ -625,7 +601,6 @@ Deno.test("compaction: a writer stopped inside a batch's transaction leaves comm
   });
 });
 
-/** A storage whose chunk reads fail while `failing` is set. */
 class FlakyStorage extends SmallChunkStorage {
   failing = false;
   override get(namespace: string, sha256: string, s: AbortSignal) {
@@ -683,7 +658,6 @@ Deno.test("compaction: a load that fails part-way converges, even against a newe
   });
 });
 
-/** A commit store that compacts everything right after the first feed page. */
 class CompactingAfterFirstPage implements CommitStore {
   #compacted = false;
   constructor(readonly inner: SqliteCommitStore) {}

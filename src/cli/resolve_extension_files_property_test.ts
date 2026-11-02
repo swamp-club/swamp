@@ -17,9 +17,8 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// Properties of planWorkflowArchiveNames (swamp-club#2613): archive names
-// inside one package are pairwise distinct or the planner throws, and the
-// legacy names for bare entries and single-entry directories never change.
+// archive names inside one package are pairwise distinct or the planner throws,
+// and legacy names for bare entries and single-entry directories never change
 
 import { assert, assertEquals, assertThrows } from "@std/assert";
 import { basename } from "@std/path";
@@ -44,7 +43,6 @@ const arbEntries: fc.Arbitrary<WorkflowManifestEntry[]> = fc.array(arbRef, {
   maxLength: 6,
 }).map((refs) => refs.map((ref) => ({ ref, realPath: `/repo/${ref}` })));
 
-/** Manifest refs always use forward slashes, so posix dirname applies. */
 function rawDirOf(ref: string): string {
   const dir = posixDirname(ref);
   return dir === "." ? "" : dir;

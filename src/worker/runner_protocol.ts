@@ -21,34 +21,19 @@ import { z } from "zod";
 import { DispatchParamsSchema } from "../domain/remote/protocol.ts";
 
 /**
- * Bootstrap parameters sent as the first stdio frame from supervisor to
- * dispatch runner. The runner reads this to set up its data-plane client,
- * bundle cache, and RPC channel before executing the dispatch.
- *
- * Each runner receives a per-dispatch credential that is independent of
- * the control-channel credential. Session refreshes on the control
- * channel do not invalidate dispatch credentials.
+ * each runner gets a per-dispatch credential independent of the control
+ * channel's, so session refreshes do not invalidate it
  */
 export const RunnerBootstrapParamsSchema = z.object({
-  /** Bearer credential for the HTTP data plane (static at spawn time). */
   sessionCredential: z.string().min(1),
-  /** Base URL of the orchestrator's HTTP data plane. */
   dataPlaneUrl: z.string().min(1),
-  /** Path to the shared bundle cache directory. */
   cacheDirPath: z.string().min(1),
   /**
-   * The dispatch's scratch directory, made by the supervisor and removed by
-   * it once the runner has exited, so a runner killed after a cancel leaves
-   * none behind (swamp-club#3854). Absent, the runner makes its own.
+   * made by the supervisor and removed once the runner exits, so a killed
+   * runner leaves none behind; absent, the runner makes its own
    */
   scratchDirPath: z.string().min(1).optional(),
-  /** The full dispatch parameters from the orchestrator. */
   dispatch: DispatchParamsSchema,
-  /**
-   * PEM-encoded CA certificates the worker trusts (`--ca-cert` /
-   * `SWAMP_CA_CERT`), applied to data-plane requests. Absent when the worker
-   * has no custom CA.
-   */
   caCerts: z.array(z.string().min(1)).optional(),
 });
 
@@ -56,12 +41,6 @@ export type RunnerBootstrapParams = z.infer<
   typeof RunnerBootstrapParamsSchema
 >;
 
-/** Grace period before the supervisor kills an unresponsive runner child. */
 export const RUNNER_CANCEL_GRACE_MS = 10_000;
 
-/**
- * The supervisor call a protocol version 6 runner reports its passed parse of
- * the step's arguments by. The supervisor streams it to serve as the
- * `arguments_validated` event, outside any `method_event`.
- */
 export const RUNNER_ARGUMENTS_VALIDATED = "runner.argumentsValidated";

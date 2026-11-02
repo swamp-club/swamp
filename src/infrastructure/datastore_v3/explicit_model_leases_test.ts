@@ -46,7 +46,6 @@ async function withRoot(fn: (root: string) => Promise<void>): Promise<void> {
     await fn(root);
   } finally {
     if (Deno.build.os === "windows") {
-      // Best-effort: EBUSY can fire on Windows; the OS reclaims temp dirs.
       await Deno.remove(root, { recursive: true }).catch(() => {});
     } else {
       await Deno.remove(root, { recursive: true });
@@ -66,7 +65,6 @@ function held(overrides: Partial<ExplicitLease> = {}): ExplicitLease {
   };
 }
 
-/** Serve's lock routes for explicit leases, recording each call. */
 class FakeServe {
   readonly timeoutMs = 30_000;
   readonly calls: string[] = [];
@@ -158,7 +156,6 @@ Deno.test("acquireExplicitLease: takes a fenced lease for its hold and records i
     );
     assertEquals(existing, false);
     assertEquals([lease.fence, lease.holdMs], [7, 1_800_000]);
-    // Taken for a short TTL, recorded, then extended to its hold.
     assertEquals(serve.calls, [
       `acquire ${KEY} hold=undefined`,
       `renew ${lease.leaseId} ttl=1800000 hold=1800000`,
@@ -198,7 +195,6 @@ Deno.test("acquireExplicitLease: a recorded lease serve ended is forgotten and a
     const renew = serve.renewLock.bind(serve);
     serve.renewLock = (leaseId: string, ttlMs: number) => {
       const reply = renew(leaseId, ttlMs);
-      // Only the recorded lease has ended; the new one extends.
       serve.renewal = "renew";
       return reply;
     };
@@ -286,7 +282,6 @@ Deno.test("renewExplicitLeases: a lease another command records while the renewa
     const serve = new FakeServe();
     const renew = serve.renewLock.bind(serve);
     serve.renewLock = async (leaseId: string, ttlMs: number) => {
-      // Another command acquires a lease meanwhile.
       await recordExplicitLease(root, second);
       return await renew(leaseId, ttlMs);
     };

@@ -17,12 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Factories that construct WorkflowRunDeps and ModelMethodRunDeps from a
- * RepositoryContext. These mirror the patterns in the CLI commands but are
- * decoupled from Cliffy options parsing.
- */
-
 import { SIGNAL_WAITS_NOT_CONFIGURED } from "../domain/workflows/signal_wait_store.ts";
 import { join } from "@std/path";
 import type { RepositoryContext } from "../infrastructure/persistence/repository_factory.ts";
@@ -122,22 +116,19 @@ export async function createWorkflowRunDeps(
   runTracker?: RunTrackerRepository,
   options?: {
     /**
-     * Records per-method telemetry for this run. Left undefined by callers
-     * that are not a serve-executed run (and by every caller when telemetry
-     * is disabled), in which case libswamp's bridge is never constructed.
+     * undefined for callers that are not a serve-executed run and when
+     * telemetry is disabled, so libswamp's bridge is never constructed
      */
     telemetrySink?: WorkflowTelemetrySink;
-    /** Commits each run's progress as it saves its record (swamp-club#3587). */
     runCheckpointer?: RunCheckpointer;
     /**
-     * The repo's `defaultVault`, as serve read it at startup: where a step's
-     * sensitive outputs land when nothing names a vault (swamp-club#3680).
+     * the repo's defaultVault as serve read it at startup: where a step's
+     * sensitive outputs land when nothing names a vault
      */
     defaultVault?: string;
     /**
-     * Serve's run write fence, closed by shutdown for the runs it interrupts
-     * (swamp-club#4101). Every serve caller passes it (pinned by
-     * `integration/serve_deps_rules_test.ts`).
+     * serve's run write fence, closed by shutdown for the runs it interrupts;
+     * every serve caller passes it
      */
     runWriteFence?: RunWriteFence;
   },
@@ -168,10 +159,8 @@ export async function createWorkflowRunDeps(
       ephRepo,
       ephCatalog,
     ) => {
-      // Direct type execution (auto-create-then-run steps) must work over
-      // serve exactly as it does locally — serve is the only way to run
-      // workflows with worker placement. Mirrors the CLI's resolver in
-      // workflow_run.ts.
+      // direct type execution must work over serve as it does locally, as serve
+      // is the only way to run workflows with worker placement
       const directResolver: DirectTypeResolver = async (
         typeArg,
         defName,
@@ -208,9 +197,8 @@ export async function createWorkflowRunDeps(
         );
         const result = await resolveOrCreateDefinition(
           {
-            // From serve's definition index, so a new name does not walk
-            // every definition, before the creation lock and again under it
-            // (swamp-club#4037).
+            // from serve's definition index, so a new name does not walk every
+            // definition before the creation lock and again under it
             lookupDefinition: (name) =>
               findDefinitionByIdOrName(
                 repoContext.definitionRepo,
@@ -270,9 +258,8 @@ export async function createWorkflowRunDeps(
       );
       service.signalWaits = repoContext.signalWaits ??
         SIGNAL_WAITS_NOT_CONFIGURED;
-      // A resume takes the run's lock and its suspension's claim, so two
-      // serve instances on one datastore never take over the same run
-      // (swamp-club#3108).
+      // a resume takes the run's lock and its suspension's claim, so two serve
+      // instances on one datastore never take over the same run
       service.runClaims = createWorkflowRunClaims(datastoreConfig);
       service.continuationClaims = repoContext.continuationClaims;
       service.runRecordCurrency = repoContext.runRecordCurrency;
@@ -296,8 +283,8 @@ export async function createWorkflowRunDeps(
           signal,
         ),
       findEvaluatedWorkflow: (runId) => evaluatedWorkflows().findByRunId(runId),
-      // On a v3 datastore only serve's own evaluations run: none trusted
-      // refuses rather than falling back to the file (swamp-club#3922).
+      // on a v3 datastore only serve's own evaluations run: none trusted
+      // refuses rather than falling back to the file
       evaluatedCache: async (name) => {
         const trust = repoContext.evaluationTrust;
         if (trust === undefined) {
@@ -450,16 +437,9 @@ export async function createModelMethodRunDeps(
 }
 
 /**
- * Builds the per-step model lock hook serve's workflow executions, and a CLI
- * workflow run or resume (swamp-club#3860), use: it acquires the step's model
- * lock and invalidates the catalog when acquiring it synced remote state.
- *
- * The step's pull and its flush push run under the sync gate's shared mode
- * (swamp-club#2405), so they never overlap a poller pull, and a lock's last
- * publish attempt runs alone (swamp-club#3146). `syncGate` is required — pass
- * `undefined` explicitly where no gate exists — so a new caller cannot
- * silently run its syncs ungated. `progressWriter` gives each step's lock
- * messages their writer; without it they go to the default lock writer.
+ * pull and flush push run in the sync gate's shared mode, never overlapping a
+ * poller pull; a lock's last publish runs alone; syncGate is required so a new
+ * caller cannot run ungated
  */
 export function createStepLockHook(
   repoDir: string,
@@ -469,9 +449,9 @@ export function createStepLockHook(
   syncGate: SyncGate | undefined,
   progressWriter?: (modelId: string) => LockProgressWriter,
   /**
-   * Called with the lapse when a step's fenced lease at serve lapses
-   * (swamp-club#4121): the caller cancels the run. Only a checkout's locks
-   * are serve leases; serve's own runs lock locally.
+   * called when a step's fenced lease at serve lapses so the caller cancels the
+   * run; only a checkout's locks are serve leases, serve's own runs lock
+   * locally
    */
   onLeaseLost?: (reason: unknown) => void,
 ): StepLockHook {
@@ -503,26 +483,9 @@ export function createStepLockHook(
 }
 
 /**
- * Executes a workflow run with per-step model lock acquisition — the single
- * code path for both WebSocket-triggered and scheduled workflow execution.
- *
- * Handles: pre-lookup → stepLockHook creation → workflowRun.
- * Locks are acquired and released per-step by the execution service rather
- * than held for the entire workflow duration.
- * The caller provides a callback to consume the event stream.
- *
- * The run executes in one root unit of work whose flush is the post-run push,
- * under the sync gate's shared mode, on every outcome (succeeded, failed,
- * suspended, cancelled, thrown). Each step's model lock still pushes on its
- * own when the step releases it; only the post-run push is the root's.
- *
- * Call it only where no root unit of work is open: not from inside a serve
- * request that opened one, and not from work started inside a running
- * workflow (a timer it arms, or an event callback). There the run's root
- * would be nested inside another with its own push, and
- * `runInRootUnitOfWork` throws rather than drop that push. Launch such runs
- * after the enclosing root has ended, as `workflow.approve` does for its
- * auto-resume.
+ * runs in one root unit of work whose flush is the post-run push, on every
+ * outcome; call only where no root is open, since a nested root makes
+ * runInRootUnitOfWork throw rather than drop its push
  */
 export async function executeWorkflowWithLocks(
   repoDir: string,
@@ -535,31 +498,19 @@ export async function executeWorkflowWithLocks(
   runTracker: RunTrackerRepository | undefined,
   options: {
     /**
-     * Serve's sync gate. The run's step syncs and post-run push take its
-     * shared mode so they never overlap a poller pull (swamp-club#2405).
-     * Required — pass `undefined` explicitly where no gate exists — so a new
-     * caller cannot silently run ungated.
+     * the run's step syncs and post-run push take its shared mode so they never
+     * overlap a poller pull; required so a new caller cannot run ungated
      */
     syncGate: SyncGate | undefined;
-    /**
-     * What caused this run. Supplied by serve's trigger sites (scheduled,
-     * webhook, API) so the run is recorded and distinguishable from
-     * interactive use. Omitted by library and test callers, which then
-     * produce no telemetry — the pre-existing behaviour.
-     */
     triggerSource?: WorkflowTriggerSource;
     initiatedBy?: string;
     /**
-     * The vault scope of the principal that triggered the run
-     * (swamp-club#2676), entered around the run so every vault operation in
-     * it is decided for that principal. Every serve caller passes it
-     * (pinned by `integration/serve_run_entry_scope_rules_test.ts`);
-     * `undefined` where no policy applies.
+     * entered around the run so every vault operation in it is decided for the
+     * triggering principal; every serve caller passes it; undefined where no
+     * policy applies
      */
     vaultAccess?: ServeRunVaultScope;
-    /** The repo's `defaultVault`, forwarded to the run (swamp-club#3680). */
     defaultVault?: string;
-    /** Serve's run write fence, forwarded to the run (swamp-club#4101). */
     runWriteFence?: RunWriteFence;
   },
 ): Promise<void> {
@@ -582,9 +533,6 @@ export async function executeWorkflowWithLocks(
     options.syncGate,
   );
 
-  // Undefined when no trigger source was supplied (library/test callers) or
-  // when telemetry is disabled for this process, in which case the run
-  // produces no telemetry at all — exactly as before this was wired.
   const runTelemetry = options.triggerSource
     ? createRunTelemetry(
       options.triggerSource,
@@ -614,16 +562,9 @@ export async function executeWorkflowWithLocks(
     openUnitOfWork: repoUnitOfWorkFactory(repoContext),
   });
 
-  // Layer the workflow's trigger.inputs under any caller-supplied inputs so
-  // scheduled and webhook trigger-fired runs get baseline values at fire
-  // time. Downstream workflowRun applies schema defaults and validates,
-  // yielding precedence: caller inputs > trigger.inputs > schema defaults.
-  //
-  // For webhook runs, trigger.inputs may reference the request payload via the
-  // `webhook` CEL namespace (e.g. "${{ webhook.body.data.issue.identifier }}").
-  // Resolve those against the payload here — before workflowRun's coercion and
-  // validation — so a required input mapped from the payload satisfies the
-  // schema.
+  // precedence is caller inputs > trigger.inputs > schema defaults; webhook
+  // trigger.inputs resolve against the payload here, before coercion and
+  // validation, so a required input mapped from it satisfies the schema
   let resolvedTriggerInputs: Record<string, unknown> | undefined;
   if (workflow && input.webhook && workflow.triggerInputs) {
     const resolver = new TriggerInputResolver(new CelEvaluator());
@@ -751,15 +692,10 @@ export async function executeWorkflowWithLocks(
       () => runTracker,
       error,
     );
-    // Names the steps a recovery must acknowledge (swamp-club#3882).
     throw withCommittedUnknownSteps(error, runCheckpointer);
   }).finally(() => runCheckpointer.close());
 }
 
-/**
- * Closes out a run's telemetry without letting a telemetry failure surface
- * as a workflow failure.
- */
 async function finishRunTelemetry(
   runTelemetry: RunTelemetry,
   error: Error | null,

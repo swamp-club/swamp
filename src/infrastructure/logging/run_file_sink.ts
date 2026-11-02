@@ -23,15 +23,8 @@ import type { SecretRedactor } from "../../domain/secrets/mod.ts";
 import { assertSafePath } from "../persistence/safe_path.ts";
 import { textFormatter } from "./log_format.ts";
 
-/**
- * Formats a LogRecord as a plain text line for file output, using the same
- * RFC3339 timestamp and line layout as the console text sink.
- */
 const formatRecord = textFormatter();
 
-/**
- * Checks whether `category` starts with `prefix`.
- */
 function categoryMatchesPrefix(
   category: readonly string[],
   prefix: string[],
@@ -43,7 +36,6 @@ function categoryMatchesPrefix(
   return true;
 }
 
-/** Property key set on LogRecords via logger.with() to scope them to a run. */
 export const RUN_ID_PROPERTY = "swampRunId";
 
 interface FileWriter {
@@ -55,42 +47,25 @@ interface FileWriter {
 }
 
 /**
- * A LogTape sink that routes log records to per-run log files.
- * Registered once at startup. File targets are added/removed dynamically
- * as runs start and complete.
- *
- * Each {@link register} call is keyed by a unique opaque handle rather than by
- * its category prefix. Concurrent runs (forEach children, parent+child) share
- * the same catch-all `[]` prefix, so keying by the prefix would collide on a
- * single map entry and let one run's register/unregister close a sibling run's
- * still-open file descriptor — surfacing as Deno's "Bad resource ID". The
- * handle decouples a registration's identity from its routing rule (the prefix
- * is retained only for record matching).
+ * keyed by opaque handle, not prefix: concurrent runs share the catch-all
+ * prefix, so a prefix key would let one run's unregister close a sibling's open
+ * fd
  */
 export class RunFileSink {
   private writers = new Map<string, FileWriter>();
-  /** Redactors registered without a log file (see {@link registerRedactor}). */
   private redactors = new Map<string, SecretRedactor>();
 
   /**
-   * Number of currently registered writers (each holds one open file
-   * descriptor). Test-only observability: lets tests assert that a run's log
-   * handle was released without counting raw OS file descriptors (which is not
-   * portable across Linux, macOS, and Windows). Not used by production code.
+   * test-only, unused by production code; lets tests assert a run's log handle
+   * was released without counting OS file descriptors
    */
   get activeCount(): number {
     return this.writers.size;
   }
 
   /**
-   * Register a log file for a category prefix and return an opaque handle that
-   * identifies this registration. All log records matching the prefix while the
-   * registration is active are written to the file. Pass the returned handle to
-   * {@link unregister} to close the file.
-   *
-   * Failure-atomic: all fallible I/O (path validation, directory creation, file
-   * open) completes before the writer is recorded, so a throw leaves the writer
-   * map and every open descriptor untouched and requires no caller cleanup.
+   * failure-atomic: all fallible I/O completes before the writer is recorded,
+   * so a throw leaves the writer map and open descriptors untouched
    */
   async register(
     categoryPrefix: string[],
@@ -99,12 +74,10 @@ export class RunFileSink {
     boundary?: string,
     options?: { append?: boolean; runId?: string },
   ): Promise<string> {
-    // Validate the file path stays within the expected boundary
     if (boundary) {
       await assertSafePath(filePath, boundary);
     }
 
-    // Ensure parent directory exists
     const dir = dirname(filePath);
     if (dir && dir !== ".") {
       await Deno.mkdir(dir, { recursive: true });
@@ -129,9 +102,8 @@ export class RunFileSink {
   }
 
   /**
-   * Unregister and close the file writer for a registration handle. No-ops if
-   * the handle is unknown or undefined (e.g. when a `register` call threw before
-   * returning a handle), so callers can unregister unconditionally on cleanup.
+   * no-ops for an unknown or undefined handle, such as after a register that
+   * threw, so callers can unregister unconditionally
    */
   unregister(handle: string | undefined): void {
     if (handle === undefined) return;
@@ -147,13 +119,9 @@ export class RunFileSink {
   }
 
   /**
-   * Register a redactor that has no log file of its own, so every sink that
-   * consults {@link redactActive} masks its secrets. The dispatch runner
-   * registers its dispatch redactor this way: it keeps no run log, but its
-   * stderr is read and re-logged by the worker supervisor, so the stderr sink
-   * and the console guard must mask the dispatch's secrets before a line
-   * leaves the process (swamp-club#3526). Returns an opaque handle for
-   * {@link unregisterRedactor}.
+   * registers a redactor with no log file so every sink using redactActive
+   * masks its secrets; the dispatch runner needs it because its stderr is
+   * re-logged by the supervisor
    */
   registerRedactor(redactor: SecretRedactor): string {
     const handle = crypto.randomUUID();
@@ -161,16 +129,11 @@ export class RunFileSink {
     return handle;
   }
 
-  /**
-   * Remove a redactor registered with {@link registerRedactor}. No-ops for an
-   * unknown or undefined handle, so cleanup can be unconditional.
-   */
   unregisterRedactor(handle: string | undefined): void {
     if (handle === undefined) return;
     this.redactors.delete(handle);
   }
 
-  /** Whether formatting must preserve complete values until they are masked. */
   get hasActiveSecrets(): boolean {
     return [...this.writers.values()].some((writer) =>
       writer.redactor?.hasSecrets
@@ -178,11 +141,9 @@ export class RunFileSink {
   }
 
   /**
-   * Whether `text` is, whole, a value an active redactor registered. A sink
-   * that exports a number or boolean as such, rather than as text it
-   * redacts, asks this of the value's text, so a secret delivered as a
-   * number (swamp-club#3967) is masked while a number that only contains a
-   * secret's digits is kept.
+   * whether text is, whole, a registered secret; lets a sink exporting a number
+   * or boolean mask a secret delivered as one while keeping numbers that merely
+   * contain its digits
    */
   isActiveSecret(text: string): boolean {
     return [...this.writers.values()].some((writer) =>
@@ -193,18 +154,9 @@ export class RunFileSink {
   }
 
   /**
-   * Redacts `text` using every currently-active redactor.
-   *
-   * Each active run registers its own {@link SecretRedactor} under a catch-all
-   * `[]` prefix, so every active run's secrets already apply to every record in
-   * the per-run files; applying their union here, together with the file-less
-   * redactors from {@link registerRedactor}, gives every other sink (the OTLP
-   * log sink, which exports records to an external collector; the stderr sink
-   * and the console guard, whose output a worker supervisor reads from a
-   * runner) the same secret scrubbing without duplicating the redaction logic.
-   * Returns the input unchanged when no active redactor holds secrets.
-   * Over-redaction across concurrent runs is negligible in practice — secret
-   * values are long, unique strings.
+   * applies the union of all active redactors for sinks beyond the run files
+   * (OTLP, stderr, console guard); over-redaction across concurrent runs is
+   * negligible since secrets are long and unique
    */
   redactActive(text: string): string {
     let result = text;
@@ -221,10 +173,6 @@ export class RunFileSink {
     return result;
   }
 
-  /**
-   * The sink function to pass to LogTape configure().
-   * Writes to all registered prefixes that match the record's category.
-   */
   get sink(): Sink {
     return (record: LogRecord) => {
       const formatted = formatRecord(record);
@@ -251,9 +199,6 @@ export class RunFileSink {
     };
   }
 
-  /**
-   * Close all open file writers.
-   */
   dispose(): void {
     for (const writer of this.writers.values()) {
       try {
@@ -267,8 +212,4 @@ export class RunFileSink {
   }
 }
 
-/**
- * Global singleton RunFileSink instance.
- * Created once at startup and registered with LogTape.
- */
 export const runFileSink = new RunFileSink();

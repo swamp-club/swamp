@@ -18,12 +18,9 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * Integration tests for a lockfile shared between Windows and POSIX
- * checkouts (swamp-club#3569). A Windows checkout writes
- * `upstream_extensions.json` paths with backslashes, and its bundle paths
- * name a bundle namespace hashed from a backslash path. These tests run the
- * real startup missing-files check and the real `extension install` restore
- * over such a lockfile, in-process on a temp repo.
+ * a Windows checkout writes lockfile paths with backslashes and bundle
+ * namespaces hashed from them; these run the real startup missing-files check
+ * and install restore over such a lockfile
  */
 
 import { assertEquals } from "@std/assert";
@@ -56,11 +53,6 @@ interface Fixture {
   name: string;
 }
 
-/**
- * A repo with one pulled extension on disk (a manifest and an additional
- * file, so startup has nothing to bundle) and a lockfile as a Windows
- * checkout wrote it.
- */
 async function withWindowsLockfileRepo(
   fn: (fixture: Fixture, written: string) => Promise<void>,
 ): Promise<void> {

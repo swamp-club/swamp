@@ -52,106 +52,78 @@ import {
   v3RetentionHistory,
 } from "../../infrastructure/datastore_v3/v3_repo_context.ts";
 
-/** Most overdue items listed per kind; the count covers the rest. */
 export const RETENTION_CHECK_ITEM_LIMIT = 50;
 
 /**
- * Grace past the v3 compaction bound before history older than it fails the
- * check: the pass that removes an item cannot fold its own remove, and the
- * next hourly pass may not have run yet.
+ * grace past the v3 compaction bound: the pass that removes an item cannot fold
+ * its own remove, and the next hourly pass may not have run yet
  */
 export const V3_HISTORY_GRACE_MS = 24 * 60 * 60 * 1000;
 
 const TERMINAL_STATUSES = new Set(["succeeded", "failed", "cancelled"]);
 
-/** One item still stored past its kind's retention. */
 export interface RetentionOverdueItem {
-  /** What the item is: a run id, a path relative to its kind's root, a day. */
   id: string;
-  /** The time it was judged by (ISO-8601). */
   at: string;
 }
 
-/** The last retention pass recorded for a kind. */
 export interface RetentionCheckWatermark {
   lastPassAt: string;
   cutoff: string;
   complete: boolean;
 }
 
-/** What a storage scan found for one kind. */
 export interface RetentionKindCheck {
   kind: RetentionKind;
-  /** The configured duration, or null when the kind has no retention. */
   retention: string | null;
-  /** now − retention (ISO-8601), or null when the kind has no retention. */
   cutoff: string | null;
   /**
-   * False when storage was not scanned for the kind: no retention, or the
-   * kind (serve bookkeeping) lives in serve's control plane, not here.
+   * false when storage was not scanned: no retention, or serve bookkeeping,
+   * which lives in serve's control plane
    */
   scanned: boolean;
-  /** Items older than the cutoff that retention would have removed. */
   overdue: number;
-  /** The first {@link RETENTION_CHECK_ITEM_LIMIT} of them. */
   items: RetentionOverdueItem[];
   /**
-   * Items older than the cutoff that retention keeps by design: unfinished
-   * runs and their snapshots, finished runs a related unfinished run still
-   * reads, exempt access/serve state, names with an in-flight write.
+   * items past the cutoff that retention keeps by design: unfinished runs and
+   * their snapshots, finished runs a related unfinished run reads, exempt
+   * access/serve state, names with an in-flight write
    */
   kept: number;
   watermark: RetentionCheckWatermark | null;
 }
 
-/** The v3 commit history that still holds removed content. */
 export interface RetentionV3HistoryCheck {
-  /** The oldest commit still stored (ISO-8601), or null when none is. */
   oldestCommitAt: string | null;
   /**
    * Commits written before this are folded by each retention pass: the
    * earlier of the retention cutoff and the compaction policy's last day.
    */
   compactionBound: string;
-  /** History older than this fails the check: the bound less a day's grace. */
   failBefore: string;
   overdue: boolean;
 }
 
-/** Outcome of `swamp doctor datastores --retention`. */
 export interface RetentionCheckSummary {
-  /** True when any kind has a retention. */
   configured: boolean;
-  /** True when retention runs on its own (serve timer, CLI end of command). */
   automatic: boolean;
   checkedAt: string;
   kinds: RetentionKindCheck[];
-  /** Present only for a v3 datastore. */
   v3History?: RetentionV3HistoryCheck;
 }
 
-/** Where a retention scan reads storage. */
 export interface RetentionScanSources {
   repoDir: string;
-  /** Resolves the datastore directories; absent, the repo's own `.swamp`. */
   datastoreResolver?: DatastorePathResolver;
-  /** The data repository whose files the data scan walks. */
   dataRepo?: Pick<
     UnifiedDataRepository,
     "findAllGlobal" | "listVersions" | "findByName" | "hasPendingVersions"
   >;
-  /** The agent command log directory; defaults to `.swamp/audit`. */
   auditDir?: string;
   watermarks?: RetentionWatermarkRepository;
-  /** v3 only: how far back the commit history reaches at `now`. */
   v3History?: (now: Date) => Promise<V3RetentionHistory>;
 }
 
-/**
- * The scan sources of an opened repository: its datastore directories, its
- * data repository and watermarks, and on a v3 filesystem datastore its
- * commit history.
- */
 export function retentionScanSourcesFor(input: {
   repoDir: string;
   datastoreConfig: DatastoreConfig;
@@ -178,7 +150,6 @@ export function retentionScanSourcesFor(input: {
   };
 }
 
-/** True when the summary shows anything past its retention. */
 export function retentionCheckFailed(summary: RetentionCheckSummary): boolean {
   return summary.kinds.some((kind) => kind.overdue > 0) ||
     summary.v3History?.overdue === true;
@@ -201,7 +172,6 @@ interface RunRecord {
   workflowId: string;
   runId: string;
   status: string | null;
-  /** completedAt ?? startedAt, in epoch ms; undefined when neither parses. */
   timestampMs: number | undefined;
   mtimeMs: number | undefined;
   parentRunId: string | null;
@@ -231,7 +201,6 @@ async function readDirNames(
   return names.sort();
 }
 
-/** Every run record file, read straight from storage (no index). */
 async function readRunRecords(runsDir: string): Promise<RunRecord[]> {
   const records: RunRecord[] = [];
   for (const workflowId of await readDirNames(runsDir, "dir")) {
@@ -303,7 +272,6 @@ function checkRuns(
   for (const record of records) {
     const id = `${record.workflowId}/${record.runId}`;
     if (record.status === null) {
-      // An empty record is removed by its mtime alone.
       if (record.mtimeMs !== undefined && record.mtimeMs < cutoffMs) {
         list.add(id, record.mtimeMs);
       }
@@ -401,11 +369,6 @@ async function collectYamlFiles(dir: string): Promise<string[]> {
   return files.sort();
 }
 
-/**
- * The cutoff an output under `relativePath` is removed at: the retention
- * cutoff, or its method's `outputLifetime` cutoff when that is more recent,
- * as `deleteByMethodLifetime` decides it.
- */
 function outputCutoffFor(
   fallbackCutoffMs: number,
   nowMs: number,
@@ -547,17 +510,9 @@ async function readWatermarks(
   }
 }
 
-/**
- * How far past its cutoff an item may be before the check calls it overdue
- * when retention is automatic: one hourly pass plus slack.
- */
 export const RETENTION_PASS_GRACE_MS = 2 * 60 * 60 * 1000;
 
-/**
- * Scans storage — the record files themselves, never only an index — for
- * items each kind's retention should already have removed
- * (swamp-club#3473). Read-only.
- */
+/** reads the record files themselves, never only an index; read-only */
 export async function scanRetention(
   sources: RetentionScanSources,
   policy: RetentionPolicy,

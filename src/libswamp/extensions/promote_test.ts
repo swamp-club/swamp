@@ -182,7 +182,6 @@ Deno.test("extensionPromoteValidate: rejects beta as target without fromChannel"
 });
 
 Deno.test("extensionPromoteValidate: accepts valid forward promotion", () => {
-  // Should not throw
   extensionPromoteValidate({
     extensionName: "@test/ext",
     version: "2026.06.10.1",
@@ -206,8 +205,6 @@ Deno.test("extensionPromote: yields error when API call fails", async () => {
     "validation_failed",
   );
 });
-
-// ── Promote from a manifest (swamp-club#2939, swamp-club#2751) ─────────
 
 const MANIFEST_INPUT: ExtensionPromoteInput = {
   extensionName: "@test/ext",
@@ -348,8 +345,6 @@ Deno.test("extensionPromote: by name and version, never asks the registry where 
   assertEquals(events.map((e) => e.kind), ["promoting", "completed"]);
   assertEquals(lookups, 0);
 });
-
-// ── Yanked versions (swamp-club#3138) ──────────────────────────────────
 
 Deno.test("extensionPromote: from a manifest, a yanked version is refused before the registry is asked to promote", async () => {
   let promoteCalls = 0;

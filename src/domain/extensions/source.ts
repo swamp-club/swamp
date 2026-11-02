@@ -23,16 +23,8 @@ import type { SourceFingerprint } from "./source_fingerprint.ts";
 import type { SourceLocation } from "./source_location.ts";
 
 /**
- * A single `.ts` entry point owned by an Extension aggregate.
- *
- * **Fully immutable.** Every aggregate transition produces a NEW Source
- * instance — no mutators here, no setters anywhere. Extension stores the
- * new instance in its sources map and the old one becomes garbage.
- *
- * Identity within an Extension is `id` (a SourceLocation). The aggregate's
- * `sources: ReadonlyMap<SourceLocation, Source>` is keyed by the
- * SourceLocation so the equality contract from
- * {@link sourceLocationEquals} flows through to map lookups.
+ * fully immutable: every aggregate transition produces a new Source; the map is
+ * keyed by SourceLocation so sourceLocationEquals flows through to lookups
  */
 export interface Source {
   readonly id: SourceLocation;
@@ -43,10 +35,8 @@ export interface Source {
 }
 
 /**
- * Constructs a Source. All fields are required — there is no
- * "default state" Source. Callers that don't yet have a state should
- * construct an Indexed/Bundled/etc state first via the relevant
- * Extension transition method, not via direct Source construction.
+ * there is no default-state Source: reach a state through the Extension
+ * transition method first, not by constructing directly
  */
 export function makeSource(args: {
   id: SourceLocation;
@@ -64,12 +54,7 @@ export function makeSource(args: {
   };
 }
 
-/**
- * Returns a NEW Source with `state` replaced. Used by Extension
- * transitions to advance a Source through the RowState machine without
- * mutating the original. Caller is responsible for ensuring the
- * transition is valid per the RowState state-machine table.
- */
+/** the caller must ensure the transition is valid per the RowState table */
 export function withState(source: Source, state: RowState): Source {
   return makeSource({
     id: source.id,
@@ -80,11 +65,6 @@ export function withState(source: Source, state: RowState): Source {
   });
 }
 
-/**
- * Returns a NEW Source with `fingerprint` and `state` replaced together.
- * Used by `observeFreshSource` and rebundle transitions where the
- * fingerprint and the resulting state both change atomically.
- */
 export function withFingerprintAndState(
   source: Source,
   fingerprint: SourceFingerprint,

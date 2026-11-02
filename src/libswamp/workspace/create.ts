@@ -23,7 +23,6 @@ import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
 import { type WorkspaceDeps, workspaceErrorEvent } from "./deps.ts";
 import { createNewWorkspace, newWorkspaceLocation } from "./workspace_store.ts";
 
-/** A workspace `swamp workspace create` made. */
 export interface WorkspaceCreateData {
   readonly name: string;
   readonly path: string;
@@ -34,12 +33,9 @@ export type WorkspaceCreateEvent =
   | { kind: "error"; error: SwampError };
 
 /**
- * Creates a workspace: a new repo with no tools, registered in the
- * workspace registry, at `<parent>/<name>`. With no parent it goes in the
- * folder set with `swamp config set workspaces.dir`, else under
- * `<data dir>/workspaces`. Refuses a name that is registered, and a folder
- * left behind by `workspace remove` (importing it brings that workspace
- * back). A relative parent is resolved against `relativeTo`.
+ * a new repo with no tools, registered at <parent>/<name>; with no parent it
+ * goes in workspaces.dir, else under <data dir>/workspaces; refuses a
+ * registered name and a folder left by workspace remove
  */
 export async function* workspaceCreate(
   ctx: LibSwampContext,

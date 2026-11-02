@@ -18,20 +18,12 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * What caused an invocation, when it was not a human at a terminal.
- *
- * Set only on invocations a long-lived `swamp serve` produced on its own:
- * a cron-fired workflow, a verified inbound webhook, or an API/WebSocket
- * request. Interactive CLI runs leave it `undefined`, which keeps the
- * emitted event byte-identical to what the CLI has always sent.
- *
- * Deliberately NOT named `source`. The telemetry backend already derives a
- * field by that name from the recorded command, and overloading it here
- * would collide two independently-owned concerns in one key.
+ * set only on runs a long-lived serve started itself; CLI runs leave it
+ * undefined. Not named source: the telemetry backend already derives a field by
+ * that name
  */
 export type WorkflowTriggerSource = "schedule" | "webhook" | "api";
 
-/** Every valid trigger source, for validation and exhaustive iteration. */
 export const WORKFLOW_TRIGGER_SOURCES: readonly WorkflowTriggerSource[] = [
   "schedule",
   "webhook",
@@ -39,11 +31,8 @@ export const WORKFLOW_TRIGGER_SOURCES: readonly WorkflowTriggerSource[] = [
 ];
 
 /**
- * Narrows an arbitrary value to a WorkflowTriggerSource.
- *
- * Used when decoding persisted entries: a spool file is on disk and can be
- * hand-edited or written by a newer version, so the value is not trusted to
- * be one of the known variants.
+ * a spool file can be hand-edited or written by a newer version, so decoded
+ * values are not trusted to be known variants
  */
 export function isWorkflowTriggerSource(
   value: unknown,

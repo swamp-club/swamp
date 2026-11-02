@@ -21,32 +21,18 @@ import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
 
-/** What one chunk sweep of a v3 datastore found and did. */
 export interface DatastoreGcChunkReport {
-  /** Chunks the sweep listed. */
   scanned: number;
-  /** Chunks past the grace period kept because a commit names them. */
   referenced: number;
-  /** Unreferenced chunks deleted. */
   deleted: number;
-  /** Chunks deleted, then put back because a commit naming them landed. */
   restored: number;
-  /** Chunks stored within the grace period, kept unchecked. */
   keptTooNew: number;
-  /** Candidates kept for the next sweep because its read budget was spent. */
   keptOverBudget: number;
-  /** Damaged chunks found and deleted. */
   damaged: number;
-  /** Stale temp files removed. */
   tempFilesRemoved: number;
 }
 
-/** The result of `swamp datastore gc`. */
 export interface DatastoreGcData {
-  /**
-   * False on a v2 datastore, which has no chunks: chunk garbage collection
-   * applies only to v3 datastores (swamp-club#3279).
-   */
   applies: boolean;
   chunks?: DatastoreGcChunkReport;
 }
@@ -56,20 +42,10 @@ export type DatastoreGcEvent =
   | { kind: "completed"; data: DatastoreGcData }
   | { kind: "error"; error: SwampError };
 
-/** Dependencies for {@link datastoreGc}. */
 export interface DatastoreGcDeps {
-  /**
-   * Sweeps the datastore's unreferenced chunks; undefined on a v2 datastore,
-   * which has none.
-   */
   collectChunks?: (signal: AbortSignal) => Promise<DatastoreGcChunkReport>;
 }
 
-/**
- * Deletes the content chunks no commit names any more, past the grace
- * period, on a v3 datastore (swamp-club#3279). On a v2 datastore it does
- * nothing and says so.
- */
 export async function* datastoreGc(
   ctx: LibSwampContext,
   deps: DatastoreGcDeps,

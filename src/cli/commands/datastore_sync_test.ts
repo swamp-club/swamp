@@ -58,8 +58,6 @@ Deno.test("parseTimeoutFlag: rejects values above the 21600s cap", () => {
     UserError,
     "--timeout must be at most 21600 seconds",
   );
-  // The error message points users at the env var for higher values —
-  // explicit escape hatch for legitimate long-haul migration scenarios.
   assertThrows(
     () => parseTimeoutFlag(99_999),
     UserError,
@@ -86,9 +84,8 @@ Deno.test("parseTimeoutFlag: rejects non-integer numbers", () => {
 });
 
 Deno.test("parseTimeoutFlag: rejects non-number inputs defensively", () => {
-  // Cliffy's `:integer` parser should deliver a number, but defense in
-  // depth — a future refactor that loosens the parser should still surface
-  // a clean UserError, not a runtime type error.
+  // Cliffy's `:integer` parser should deliver a number, but a future loosening
+  // must still surface a clean UserError, not a runtime type error
   assertThrows(
     () => parseTimeoutFlag("60"),
     UserError,

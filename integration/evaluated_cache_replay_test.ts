@@ -18,10 +18,9 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * A `--last-evaluated` run reads its evaluated cache once (swamp-club#3583):
- * superseding matches on that copy and execution replays it, so a cache
- * rewritten between the two cannot split them, and a run the input check
- * refuses supersedes nothing.
+ * a --last-evaluated run reads its evaluated cache once: superseding matches on
+ * that copy and execution replays it, so a rewrite between them cannot split
+ * them, and a refused run supersedes nothing
  */
 
 import { assertEquals, assertExists, assertRejects } from "@std/assert";
@@ -63,7 +62,6 @@ await initializeLogging({});
 
 type RepositoryContext = ReturnType<typeof createRepositoryContext>;
 
-/** A repo with a behavior that records the `value` each run hands it. */
 async function withRepo(
   fn: (
     repo: RepositoryContext,
@@ -207,7 +205,6 @@ for (const authored of [true, false]) {
   });
 }
 
-/** A step that captures `target`, then a gate that suspends the run. */
 function gatedCapture(): Workflow {
   return Workflow.create({
     name: "pinned",
@@ -356,8 +353,6 @@ Deno.test("workflow --last-evaluated: superseding and execution use the one cach
     });
     const caches = new YamlEvaluatedWorkflowRepository(dir);
 
-    // Two fresh runs suspend at the gate. The second rewrites the by-name
-    // cache, as any evaluation does.
     const first = suspendedRun(
       await start(deps, { inputs: { target: "scratch" } }),
     );
@@ -398,8 +393,6 @@ Deno.test("workflow --last-evaluated: superseding and execution use the one cach
     assertEquals(replayed.inputs, { target: "scratch" });
     assertEquals(executions.at(-1), { value: "scratch" });
 
-    // The predecessor matched on other inputs is untouched, and the by-name
-    // cache was never read for this run.
     const workflowId = createWorkflowId(workflow.id);
     assertEquals(
       (await repo.workflowRunRepo.findById(
@@ -437,7 +430,6 @@ Deno.test("workflow --last-evaluated: a run the input check refuses supersedes n
     const runsBefore =
       (await repo.workflowRunRepo.findAllByWorkflowId(workflowId)).length;
 
-    // An input the cache was evaluated with another value for.
     const events = await start(deps, {
       lastEvaluated: true,
       inputs: { target: "third" },
@@ -540,7 +532,6 @@ Deno.test("workflow evaluate: the untyped pass writes what the raw evaluator wro
     assertEquals(taskOf(3).modelIdOrName, "${{ steps.first.outputs.name }}");
     assertEquals(steps[4].guard, '${{ inputs.region == "eu" }}');
     assertEquals(cached.evaluatedInputs, { region: "eu" });
-    // The operator's input is data where it was spliced, in both maps.
     const path = "jobs[0].steps[0].task.inputs.value";
     assertEquals(
       cached.provenance instanceof ProvenanceMap &&

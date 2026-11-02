@@ -24,15 +24,12 @@ import {
 } from "./extension_content_extractor.ts";
 import { declaresExport } from "./export_declaration.ts";
 
-/** A model fact the push metadata reads as a string literal. */
 export type ModelCatalogLiteral = "type" | "version";
 
 /**
- * Why the registry catalog would leave a model entry point out:
- * `not-plain-object` when the export is not written as
- * `export const model = { ... }` (a type annotation, or an initializer that
- * is not an object literal), `missing-literals` when the object has no
- * string-literal `type` or `version`.
+ * not-plain-object: the export is not written as export const model = { ... }
+ * (annotated, or a non-literal initializer); missing-literals: no
+ * string-literal type or version
  */
 export type ModelCatalogGap =
   | { kind: "not-plain-object"; annotated: boolean }
@@ -40,21 +37,15 @@ export type ModelCatalogGap =
 
 const MODEL_EXPORT_DECLARATION = /export\s+const\s+model\s*[=:]/;
 const ANNOTATED_MODEL_EXPORT = /export\s+const\s+model\s*:/;
-// `behavior` is the other spelling of the `model` export (swamp-club#3338).
-// It is read only when the file has no `model` export, as the catalog
-// extractors do.
+// behavior is the other spelling of the model export, read only when the file
+// has no model export, as the catalog extractors do
 const BEHAVIOR_EXPORT_DECLARATION = /export\s+const\s+behavior\s*[=:]/;
 const ANNOTATED_BEHAVIOR_EXPORT = /export\s+const\s+behavior\s*:/;
 
 /**
- * Says why `extractContentMetadata` would not list a model file, or returns
- * null when it would. A file that declares no model export in code (an
- * extension, vault or other file, or a fixture whose export is only inside a
- * string) is never a gap. Built on the extractors the catalog uses, so the
- * two cannot disagree (swamp-club#2486). Like the catalog, the object body
- * is found in the raw source, so an `export const model = {` inside a string
- * ahead of the real export is read in its place; the verdict still matches
- * the catalog, only the reason may describe that text.
+ * built on the catalog's extractors so they cannot disagree; like the catalog
+ * it reads raw source, so an export inside a string before the real one is read
+ * instead, with the verdict still matching
  */
 export function modelCatalogGap(content: string): ModelCatalogGap | null {
   const spelledModel = declaresExport(content, MODEL_EXPORT_DECLARATION);

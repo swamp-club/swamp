@@ -229,8 +229,6 @@ Deno.test(
 
     const parsed = JSON.parse(output);
     assertEquals(Array.isArray(parsed.nextSteps), true);
-    // Every command already requires an account, so init no longer
-    // prints a sign-in step of its own.
     assertEquals(parsed.nextSteps.length, 1);
     assertStringIncludes(parsed.nextSteps[0], "/swamp-getting-started");
   },
@@ -276,9 +274,8 @@ function captureUpgradeLogOutput(
 }
 
 /**
- * Runs a sequence of `RepoUpgradeEvent`s through the JSON renderer and
- * captures everything written to stdout. Used to assert the "exactly
- * one top-level JSON object per invocation" invariant.
+ * runs events through the JSON renderer and captures stdout, to assert one
+ * top-level JSON object per invocation
  */
 function captureStdout(
   events: RepoUpgradeEvent[],
@@ -316,11 +313,8 @@ function captureStdout(
 Deno.test(
   "JsonRepoUpgradeRenderer: emits exactly one top-level JSON object (no double-JSON)",
   () => {
-    // Regression guard for the bug where delegating the `extensions`
-    // envelope to JsonExtensionInstallRenderer emitted its own
-    // `console.log(JSON.stringify(...))` mid-stream, then the upgrade's
-    // `completed` handler emitted a second one. Downstream tools
-    // parsing stdout as a single JSON document broke.
+    // guards against the extensions envelope printing its own JSON mid-stream,
+    // which would leave stdout as two documents
     const installCompleted: ExtensionInstallEvent = {
       kind: "completed",
       data: {
@@ -366,11 +360,9 @@ Deno.test(
       },
     ]);
 
-    // Parsing the whole output must yield a single object.
     const parsed = JSON.parse(output);
     assertEquals(typeof parsed, "object");
     assertEquals(parsed.newVersion, "0.1.1");
-    // The install summary is folded into the single output.
     assertEquals(parsed.extensionInstall.migrated, 1);
     assertEquals(parsed.extensionInstall.entries[0].name, "@me/ext");
   },

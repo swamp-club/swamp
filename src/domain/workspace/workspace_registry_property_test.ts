@@ -56,7 +56,6 @@ Deno.test("WorkspaceRegistry: names and paths stay unique, removed names are gon
   fc.assert(
     fc.property(fc.array(arbCommand, { maxLength: 40 }), (commands) => {
       const registry = WorkspaceRegistry.empty();
-      // The origin each name was first registered with.
       const origins = new Map<string, WorkspaceOrigin | undefined>();
       for (const command of commands) {
         try {
@@ -88,7 +87,6 @@ Deno.test("WorkspaceRegistry: names and paths stay unique, removed names are gon
         if (new Set(entries.map((e) => e.path)).size !== entries.length) {
           return false;
         }
-        // Trusting or re-registering never changes how an entry was made.
         if (entries.some((e) => e.origin !== origins.get(e.name))) {
           return false;
         }

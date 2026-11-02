@@ -98,9 +98,8 @@ function addListProblems(
 }
 
 /**
- * Describes what is wrong with a sink entry's `filter` block, one message per
- * problem; empty when it is valid or absent. parseSinkFilter still reads the
- * block as written, so a bad value filters exactly as it always has.
+ * parseSinkFilter still reads the block as written, so an invalid filter still
+ * filters the way it did
  */
 export function validateSinkFilter(raw: Record<string, unknown>): string[] {
   const filter = raw.filter;

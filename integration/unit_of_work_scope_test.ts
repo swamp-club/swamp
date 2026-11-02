@@ -17,13 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// The ambient unit of work across real repository contexts (swamp-club#2971,
-// datastore rework Phase 1). Each repo runs on its own per-run test datastore
-// type over its own in-memory remote, wired by the composition root, so the
-// remote's recorded marks show where each repository's signal went. A
-// repository stages into an ambient unit only when the unit wraps its own
-// context's hook; everything else keeps calling the hook as before.
-
 import "../src/domain/models/models.ts";
 import { assert, assertEquals, assertRejects } from "@std/assert";
 import { join } from "@std/path";
@@ -62,7 +55,6 @@ interface Peer {
   cacheDir: string;
 }
 
-/** Opens one repo per name, each on its own remote and datastore type. */
 async function withRepos(
   names: readonly string[],
   fn: (peers: Record<string, Peer>) => Promise<void>,
@@ -132,12 +124,10 @@ async function save(peer: Peer, modelId: string, name: string): Promise<void> {
   );
 }
 
-/** The path marks `peer`'s remote recorded, sorted. */
 async function marksOn(peer: Peer): Promise<string[]> {
   return [...(await peer.remote.pendingPush(peer.cacheDir)).marked].sort();
 }
 
-/** The data names whose files a unit staged, sorted and deduplicated. */
 function stagedNames(uow: UnitOfWork, modelId: string): string[] {
   const names = new Set<string>();
   for (const change of uow.staged()) {
@@ -197,7 +187,6 @@ Deno.test("runInUnitOfWork: two scopes running concurrently never see each other
     const second = createLegacyUnitOfWork(A.hook, { flush: undefined });
     const firstSaved = deferred();
     const secondSaved = deferred();
-    // Interleave: first, second, first, second.
     await Promise.all([
       runInUnitOfWork(first, async () => {
         await save(A, modelId, "one-a");

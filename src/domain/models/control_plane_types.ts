@@ -20,13 +20,9 @@
 import { ModelType } from "./model_type.ts";
 
 /**
- * The built-in model types swamp's control plane stores its own records
- * under: access control (grants, groups, server tokens) and the worker fleet
- * (enrollment tokens, workers, step leases, pending dispatches, fleet
- * probes). Their definitions and data live in the repository beside user
- * models, but they are never user data: they are hidden from discovery,
- * treated as live by prune, owned by the `access` kind when served
- * (swamp-club#2756), and unreadable from expressions.
+ * control-plane records live beside user models but are never user data: hidden
+ * from discovery, treated as live by prune, owned by the access kind when
+ * served, unreadable from expressions
  */
 export const CONTROL_PLANE_MODEL_TYPES: readonly string[] = [
   "swamp/enrollment-token",
@@ -40,25 +36,16 @@ export const CONTROL_PLANE_MODEL_TYPES: readonly string[] = [
 ];
 
 /**
- * Every `type_normalized` value a control-plane record can be stored under:
- * each type bare and with its `@` prefix. ModelType keeps a leading `@`, and
- * the access commands write grants and groups as `@swamp/grant` and
- * `@swamp/group`, so an exclusion that compares stored types as strings must
- * name both forms (swamp-club#2756).
+ * ModelType keeps a leading @ and access commands write @swamp/grant, so an
+ * exclusion that compares stored types as strings must name both forms
  */
 export const CONTROL_PLANE_STORED_TYPES: readonly string[] =
   CONTROL_PLANE_MODEL_TYPES.flatMap((type) => [type, `@${type}`]);
 
 /**
- * The normalized form of a model type string, as ModelType normalizes it,
- * with every leading `@` and `/` then dropped; null for a string that
- * normalizes to nothing.
- *
- * ModelType normalizes first, so the `@` is found after the whitespace and
- * separators that execution trims: `" @x/y"`, `"@@x/y"` and `"@/@x/y"` all
- * give `x/y`, the same key as `@x/y` and `x/y`. The result is a fixed point —
- * normalizing it again returns it unchanged — so authorization can compare
- * any two spellings by this key (swamp-club#3129).
+ * ModelType normalizes first, so whitespace and separators are trimmed before
+ * the @ is found; the result is a fixed point, so authorization can compare any
+ * two spellings by this key
  */
 export function normalizeModelTypeName(type: string): string | null {
   let normalized: string;
@@ -72,11 +59,6 @@ export function normalizeModelTypeName(type: string): string | null {
   return stripped.length > 0 ? stripped : null;
 }
 
-/**
- * Whether `type` names a control-plane model type. The type is normalized
- * first, so casing, separator and `@` variants of a control-plane type all
- * match.
- */
 export function isControlPlaneModelType(type: string): boolean {
   const normalized = normalizeModelTypeName(type);
   return normalized !== null && CONTROL_PLANE_MODEL_TYPES.includes(normalized);

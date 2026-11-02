@@ -24,43 +24,31 @@
  */
 export const DRAIN_WAIT_TTL_MS = 10_000;
 
-/** The most lock nonces a {@link DrainWait} lists on either side. */
 export const MAX_DRAIN_WAIT_LOCKS = 1024;
 
 const TOKEN = /^[A-Za-z0-9-]{1,64}$/;
 const MAX_HOSTNAME_LENGTH = 255;
 
-/**
- * One structural command's wait for per-model locks to clear, as it tells
- * the other drains on the datastore (design/enablers/datastores.md,
- * "Parent-Process Lock Awareness"). Locks are named by the nonce their lock
- * file records.
- */
 export interface DrainWait {
-  /** Names this wait; also its marker's file name. */
   readonly id: string;
   readonly pid: number;
   readonly hostname: string;
-  /** When the wait began, in ms since the epoch. Orders who yields. */
   readonly startedAtMs: number;
-  /** When the drain last published this wait, in ms since the epoch. */
   readonly updatedAtMs: number;
   readonly ttlMs: number;
   /**
-   * The live locks the drain skips: those a swamp above it holds for the
-   * run that started it, and so keeps while that run waits on this drain.
-   * A holder that stops waiting re-keys its lock, and the next scan no
-   * longer lists it here.
+   * locks a swamp above the drain holds for the run that started it; a holder
+   * that stops waiting re-keys its lock, so the next scan drops it from this
+   * list
    */
   readonly skipping: readonly string[];
-  /** The live locks the drain is waiting on. */
   readonly waitingOn: readonly string[];
 }
 
 /**
- * Reads a {@link DrainWait} from parsed JSON. Returns null for anything
- * malformed or oversized: markers come from a directory other processes
- * write, and a drain must never act on one it cannot fully validate.
+ * returns null for anything malformed or oversized: markers come from a
+ * directory other processes write, and a drain must never act on one it cannot
+ * fully validate
  */
 export function parseDrainWait(value: unknown): DrainWait | null {
   if (typeof value !== "object" || value === null) {
@@ -92,7 +80,6 @@ export function parseDrainWait(value: unknown): DrainWait | null {
   };
 }
 
-/** The JSON a drain publishes for `wait`; {@link parseDrainWait} reads it. */
 export function serializeDrainWait(wait: DrainWait): string {
   return JSON.stringify({
     id: wait.id,
@@ -106,31 +93,22 @@ export function serializeDrainWait(wait: DrainWait): string {
   });
 }
 
-/** True once `wait` has gone a full ttl without a refresh. */
 export function isDrainWaitExpired(wait: DrainWait, nowMs: number): boolean {
   return nowMs - wait.updatedAtMs > wait.ttlMs;
 }
 
 /**
- * True when each drain waits on a lock the other skips. A skipped lock is
- * held until its drain exits, so neither can finish first: they wait until
- * the lock timeout unless one gives up. A drain that skips every lock the
- * other skips (it runs under the same run, or deeper inside it) is not
- * waited on by the other and breaks no tie.
+ * a skipped lock is held until its drain exits, so neither can finish first; a
+ * drain skipping every lock the other skips is not waited on and breaks no tie
  */
 export function areMutuallyWaiting(a: DrainWait, b: DrainWait): boolean {
   return waitsOn(a, b) && waitsOn(b, a);
 }
 
 /**
- * The drain `self` must give way to, if any.
- *
- * Every drain that sees the same waits reaches the same answer: unexpired
- * waits are ordered by start time, then id, and taken in that order. A
- * drain yields when it is mutually waiting with an earlier drain that is
- * not itself yielding, so of any group that all wait on each other exactly
- * one keeps waiting, and a drain never yields to one that is about to give
- * up anyway.
+ * waits are ordered by start time then id so every drain reaches the same
+ * answer; one yields only to an earlier drain that is not itself yielding, so
+ * exactly one of a group keeps waiting
  */
 export function drainToYieldTo(
   self: DrainWait,

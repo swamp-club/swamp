@@ -18,15 +18,8 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * Turns the `username:<name>` subjects of parsed grant files into
- * `user:<sub>` subjects (swamp-club#3123). Grants keep matching the OAuth
- * subject; a username is only a way to name it in the file.
- *
- * Looking a name up, and pinning what it resolved to, is the resolver's
- * job. This service only applies the answers: an entry whose name resolved
- * names the sub, and a file with any name that did not resolve is rejected
- * whole, as a file with any invalid subject is. Skipping the entry instead
- * would silently drop a deny.
+ * a file with any name that did not resolve is rejected whole, like one with an
+ * invalid subject; skipping the entry would silently drop a deny
  */
 
 import {
@@ -37,51 +30,40 @@ import {
   USERNAME_SUBJECT_PREFIX,
 } from "./grant_file.ts";
 
-/** What a resolver says about one username. */
 export type UsernameLookup =
   | { readonly status: "resolved"; readonly sub: string }
-  /** Not found, not looked up, or not resolvable here; the file is rejected. */
   | { readonly status: "unresolved"; readonly message: string };
 
 export interface UsernameResolutionRequest {
-  /** Every username named by a grant source that loaded, deduplicated. */
   readonly names: readonly string[];
   /**
-   * True when every grant source loaded. A resolver may forget a name that
-   * is in no file only then: a source held back still names its usernames.
+   * true when every grant source loaded; a resolver may forget a name in no
+   * file only then, since a source held back still names its usernames
    */
   readonly complete: boolean;
 }
 
-/** Resolves grant-file usernames to OAuth subjects. */
 export interface GrantUsernameResolver {
-  /** Answers every requested name; throws only if it cannot answer at all. */
   resolve(
     request: UsernameResolutionRequest,
   ): Promise<ReadonlyMap<string, UsernameLookup>>;
 }
 
-/** One parsed grant source to resolve. */
 export interface ParsedGrantSource {
-  /** How errors name the file. */
   readonly filename: string;
   readonly entries: readonly ParsedGrantFileEntry[];
 }
 
-/** A source after resolution: its entries, or the errors that reject it. */
 export interface ResolvedGrantSource {
   readonly entries: GrantFileEntry[];
   readonly errors: GrantFileError[];
 }
 
 export interface GrantUsernameResolution {
-  /** By the same keys as the input. */
   readonly sources: Map<string, ResolvedGrantSource>;
-  /** Resolved sub to the username that named it, for display. */
   readonly usernamesBySub: Record<string, string>;
 }
 
-/** Resolves usernames without a provider: every name is rejected. */
 export function unresolvableUsernames(message: string): GrantUsernameResolver {
   return {
     resolve: (request) =>
@@ -96,15 +78,13 @@ export function unresolvableUsernames(message: string): GrantUsernameResolver {
 }
 
 /**
- * Why a `username:` subject cannot be resolved outside OAuth mode: with
- * token auth a user principal already is its username, and without auth
- * there is none.
+ * with token auth a user principal already is its username, and without auth
+ * there is none, so username subjects need OAuth mode
  */
 export function usernameSubjectsNeedOAuthMessage(authMode: string): string {
   return `username subjects need --auth-mode oauth (this serve runs with --auth-mode ${authMode}). With --auth-mode token a user principal is its username, so write user:<name>`;
 }
 
-/** The usernames the entries name, in first-seen order. */
 export function grantFileUsernames(
   entries: Iterable<ParsedGrantFileEntry>,
 ): string[] {

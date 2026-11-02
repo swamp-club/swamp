@@ -17,13 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Serve's quarantined changes in its shared control plane (swamp-club#4195).
- * See {@link QuarantineStore} and the layout in `quarantine.ts`.
- *
- * @module
- */
-
 import type { ControlPlaneStore } from "../../domain/datastore/control_plane_store.ts";
 import {
   MAX_QUARANTINED,
@@ -46,7 +39,6 @@ import { getSwampLogger } from "../logging/logger.ts";
 
 const logger = getSwampLogger(["serve", "datastore-quarantine"]);
 
-/** A {@link QuarantineStore} over serve's control-plane store. */
 export class ControlPlaneQuarantineStore implements QuarantineStore {
   readonly #store: ControlPlaneStore;
 
@@ -170,7 +162,6 @@ export class ControlPlaneQuarantineStore implements QuarantineStore {
     };
   }
 
-  /** The record at `key`; undefined, and logged, when it cannot be read. */
   async #read(key: string): Promise<QuarantineRecord | undefined> {
     if (parseQuarantineRecordKey(key) === undefined) return undefined;
     const bytes = await this.#store.get(key);

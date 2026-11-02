@@ -18,39 +18,9 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * The run-time vault rule for serve runs (swamp-club#2676).
- *
- * Every vault operation a serve run makes — a `vault.get` expression, a
- * sensitive output, a model's `context.vaultService`, a worker's
- * `resolveSecret` — is judged against the grants of the principal that
- * triggered the run. The decision inputs (principal, IdP groups,
- * collectives) are captured once when the run starts; the grants are read
- * from the current policy snapshot on every decision, so a reload or a
- * revocation applies to the run's next vault operation.
- *
- * For vault `N` and action `A`:
- *
- * - (r) a reserved vault is refused unless the principal holds admin on
- *   `access:*`, whatever other grants exist;
- * - (a) with no vault-kind grant in the policy, allowed (today's behaviour);
- * - (b) a vault-kind deny for `A` matching `N` refuses;
- * - an access admin is never vault-scoped and is otherwise allowed;
- * - (c) a principal any vault-kind allow applies to (for any action) is
- *   vault-scoped: allowed only when an allow for `A` matches `N`;
- * - (d) otherwise allowed.
- *
- * Decided with `keyUnknown` (the pre-run check of a sensitive output whose
- * key is generated at write time), a refusal that could change once the key
- * is known — by (b) through a deny conditioned on `key`, or by (c) while an
- * allow for `A` matching `N` that applies to the principal is conditioned on
- * `key` —
- * is reported as undetermined: the put, which knows the key, decides.
- *
- * Data-kind grants play no part at run time. This differs from the request
- * rule for vault requests (which needs an allow), because run reads were
- * never checked before vault grants existed.
- *
- * @module
+ * run vault operations are judged against the triggering principal's current
+ * grants: reserved vaults need admin on access:*, a vault deny refuses, a vault
+ * allow scopes the principal; data grants play no part
  */
 
 import type { AccessPrincipal } from "../domain/access/access_decision_service.ts";
@@ -91,10 +61,8 @@ import { displayPrincipal } from "./known_usernames.ts";
 
 const logger = getSwampLogger(["serve", "run-vault-access"]);
 
-/** How long a server token record read for a run's decisions is reused. */
 export const TOKEN_REVALIDATION_TTL_MS = 30_000;
 
-/** Which rule decided a run-time vault operation. */
 export type RunVaultRule =
   | "reserved"
   | "no-vault-grants"
@@ -106,17 +74,11 @@ export type RunVaultRule =
   | "key-undetermined"
   | "unscoped";
 
-/** A run-time vault decision, with the rule that made it. */
 export interface RunVaultDecision extends VaultAccessDecision {
   readonly rule: RunVaultRule;
-  /**
-   * Whether the principal's runs are vault-scoped: they read only vaults a
-   * vault allow names.
-   */
   readonly restricted: boolean;
 }
 
-/** The decision service the rule reads, fresh per decision. */
 export type RunVaultDecisionService = Pick<
   GrantBasedAccessDecisionService,
   "decide" | "hasAnyGrantForKind" | "snapshot"
@@ -134,12 +96,9 @@ function isAccessAdmin(
 }
 
 /**
- * Whether a refusal decided with no key could change once the key is known:
- * a deny decided it and that deny's condition is on `key`, or the principal is
- * vault-scoped and an allow for `action` that applies to it (directly,
- * through a local group, an IdP group or a collective) and matches
- * `vaultName` has a condition on `key`. An allow for another action cannot
- * change the outcome, so it never defers the refusal.
+ * whether a keyless refusal could change once the key is known: a deny, or a
+ * scoping allow for this action and vault, conditioned on `key`. An allow for
+ * another action never defers it.
  */
 function refusalDependsOnKey(
   service: RunVaultDecisionService,
@@ -168,10 +127,8 @@ function refusalDependsOnKey(
 }
 
 /**
- * Decides one run-time vault operation by the rule in this module's docs.
- * `principal` is null when the run's decision inputs are unavailable (a
- * resumed run that recorded none, or a revoked token): then every operation
- * is refused once the policy holds any vault grant.
+ * a null principal (resumed run with no recorded inputs, or a revoked token) is
+ * refused every operation once the policy holds any vault grant
  */
 export function decideRunVaultAccess(
   service: RunVaultDecisionService,
@@ -290,10 +247,8 @@ function decideKnownKey(
   };
 }
 
-/** Where a run's decision inputs come from. */
 export type RunPrincipalInputs =
   | {
-    /** A server-token session: memberships re-read from the token record. */
     readonly source: "token";
     readonly principal: Principal;
     readonly tokenBinding: NonNullable<RunTriggeringPrincipal["tokenBinding"]>;
@@ -312,29 +267,20 @@ export type RunPrincipalInputs =
     readonly collectives: readonly string[];
   }
   | {
-    /** A resumed run that recorded no triggering principal. */
     readonly source: "missing";
-    /** The run's `initiatedBy`, for refusals and audit. */
     readonly label: string;
   };
 
-/** What the run-time policy needs from serve. */
 export interface RunVaultPolicyDeps {
   readonly authMode: AuthMode;
   readonly policySnapshotLoader?: {
     readonly decisionService: RunVaultDecisionService;
   };
-  /** Reads a server token's record; required for token sessions. */
   readonly readTokenRecord?: (name: string) => Promise<ServerToken>;
   readonly now?: () => number;
   readonly tokenTtlMs?: number;
 }
 
-/**
- * {@link VaultPrincipalPolicy} for one serve run: the triggering principal's
- * decision inputs captured at run start, decided per operation against the
- * current policy snapshot.
- */
 export class ServeRunVaultPolicy implements VaultPrincipalPolicy {
   readonly principal: string;
   readonly triggeringPrincipal?: RunTriggeringPrincipal;
@@ -435,13 +381,9 @@ export class ServeRunVaultPolicy implements VaultPrincipalPolicy {
   }
 
   /**
-   * Null unless the token `inputs` is bound to still exists, is not revoked,
-   * and is the same mint for the same principal. Expiry alone does not cut a
-   * run off: it was authorized when it started (an expired token is deleted
-   * by token GC after its grace period, and from then on it is refused). A
-   * live token session takes its memberships from the record; a resumed run
-   * keeps the memberships it recorded at run start (an OAuth session's IdP
-   * groups and collectives are not on the token record).
+   * null unless the bound token still exists, is not revoked and is the same
+   * mint for the same principal. Expiry alone does not cut off a run authorized
+   * at start; token GC refuses it after the grace period.
    */
   async #revalidateToken(
     inputs: Exclude<RunPrincipalInputs, { source: "missing" }>,
@@ -477,15 +419,12 @@ export class ServeRunVaultPolicy implements VaultPrincipalPolicy {
   }
 }
 
-/** What a serve run's vault scope needs from the connection context. */
 export interface RunVaultScopeContext extends RunVaultPolicyDeps {
   readonly auditEmitter?: AuditEmitter;
   readonly instanceId?: string;
-  /** Known user names by id, so a denial names its user. */
   readonly resolvedUserNames?: Readonly<Record<string, string>>;
 }
 
-/** The run-time policy's view of a serve connection context. */
 export function runVaultScopeContext(
   ctx: Pick<
     ConnectionContext,
@@ -507,12 +446,6 @@ export function runVaultScopeContext(
   };
 }
 
-/**
- * Captures, at run start, the decision inputs of the principal behind a
- * request on `socket`: a server-token session re-reads its memberships from
- * the token record (with a short cache); an OAuth session keeps the IdP
- * groups and collectives of the session. Null without a principal.
- */
 export function captureRunPrincipal(
   socket: WebSocket,
   principal: Principal | null,
@@ -539,10 +472,6 @@ export function captureRunPrincipal(
   };
 }
 
-/**
- * The scope for a run a request on `socket` starts, or `undefined` when no
- * policy applies.
- */
 export function requestRunVaultScope(
   ctx: Parameters<typeof runVaultScopeContext>[0],
   socket: WebSocket,
@@ -554,19 +483,11 @@ export function requestRunVaultScope(
   return createRunVaultScope(runVaultScopeContext(ctx), inputs, runId);
 }
 
-/**
- * The vault scope a serve run executes in. `runId` is filled once the run
- * has one, so a refusal is audited with it.
- */
 export interface ServeRunVaultScope {
   readonly access: RunVaultAccess;
   runId?: string;
 }
 
-/**
- * The scope for a run triggered with `inputs`, or `undefined` when no
- * policy applies (authorization is off, or no snapshot is loaded).
- */
 export function createRunVaultScope(
   ctx: RunVaultScopeContext,
   inputs: RunPrincipalInputs,
@@ -583,7 +504,6 @@ export function createRunVaultScope(
   return scope as ServeRunVaultScope;
 }
 
-/** The scope for a scheduled or webhook run of service principal `service`. */
 export function serviceRunVaultScope(
   ctx: RunVaultScopeContext,
   service: Principal,
@@ -597,13 +517,9 @@ export function serviceRunVaultScope(
 }
 
 /**
- * The scope a resume of `run` executes in: always the principal that
- * triggered the run, never the resumer, with the memberships it recorded. A
- * run whose triggering session held a server token is held to that token as
- * a live run is: once it is revoked or expired, every vault operation is
- * refused while the policy holds a vault grant. A run that recorded no
- * principal is refused every vault operation once the policy holds a vault
- * grant.
+ * a resume runs as the run's triggering principal, never the resumer, with
+ * recorded memberships. A revoked token or no recorded principal refuses every
+ * vault operation once the policy holds a vault grant.
  */
 export function resumeRunVaultScope(
   ctx: RunVaultScopeContext,
@@ -634,11 +550,7 @@ export function resumeRunVaultScope(
   );
 }
 
-/**
- * Audits a refused run-time vault operation as a socket-free serve event,
- * shaped like a trigger denial: category secrets, outcome denied, with the
- * decision. Audit must never break a run, so a failure is logged and dropped.
- */
+/** audit must never break a run, so a failure is logged and dropped */
 export function emitRunVaultDenial(
   ctx: Pick<
     RunVaultScopeContext,

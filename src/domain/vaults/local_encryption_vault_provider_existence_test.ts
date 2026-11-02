@@ -17,12 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * LocalEncryptionVaultProvider.has(): the VaultExistenceProvider contract
- * answered from a stat on the secret's file plus the cached key material,
- * never from the file's contents.
- */
-
 import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
 import { join } from "@std/path";
 import {
@@ -57,7 +51,6 @@ Deno.test("LocalEncryptionVaultProvider.has: false for a missing key, and create
   await withTempDir(async (dir) => {
     const vault = autoProvider(dir);
     assertEquals(await vault.has("missing"), false);
-    // No vault directory yet: a has() on a missing key makes no file.
     await assertRejects(
       () => Deno.stat(localEncryptionSecretsDir(dir, VAULT)),
       Deno.errors.NotFound,
@@ -97,7 +90,7 @@ Deno.test("LocalEncryptionVaultProvider.has: rejects an invalid key as get does"
 Deno.test("LocalEncryptionVaultProvider.has: never reads the file, so a garbage secret file answers true while get rejects", async () => {
   await withTempDir(async (dir) => {
     const vault = autoProvider(dir);
-    await vault.put("seed", "v"); // creates the vault directory and its key
+    await vault.put("seed", "v");
     await Deno.writeTextFile(
       join(localEncryptionSecretsDir(dir, VAULT), "garbage.enc"),
       "this is not an encrypted record",
@@ -116,7 +109,6 @@ Deno.test("LocalEncryptionVaultProvider.has: rejects when the key source is unav
   await withTempDir(async (dir) => {
     await autoProvider(dir).put("k", "v");
 
-    // Same vault, same files, but credentials that cannot be loaded.
     const broken = new LocalEncryptionVaultProvider(VAULT, {
       ssh_key_path: join(dir, "no-such-key"),
       auto_generate: false,
@@ -128,7 +120,6 @@ Deno.test("LocalEncryptionVaultProvider.has: rejects when the key source is unav
     assertStringIncludes(fromHas.message, "Failed to read SSH key");
     assertEquals(fromHas.message, fromGet.message);
 
-    // A missing key is still answered before credentials are needed.
     assertEquals(await broken.has("missing"), false);
   });
 });
@@ -169,10 +160,9 @@ Deno.test("LocalEncryptionVaultProvider.has: with auto_generate and no key file,
     const keyFile = join(localEncryptionSecretsDir(dir, VAULT), ".key");
     await Deno.remove(keyFile);
 
-    // A fresh instance holds no cached key material, so has() loads it.
     const fresh = autoProvider(dir);
     assertEquals(await fresh.has("k"), true);
-    await Deno.stat(keyFile); // regenerated, exactly as get would do
+    await Deno.stat(keyFile);
     // The old file no longer decrypts under the new key: the integrity
     // fault has() cannot see without reading, which get reports at load.
     await assertRejects(() => fresh.get("k"), Error);

@@ -77,13 +77,8 @@ async function authorizeVaultAction(
 }
 
 /**
- * Service for managing vault providers and resolving vault operations.
- *
- * Every per-vault method is held to the run vault access scope
- * (`run_vault_access.ts`): reads (`get`, `has`, `list`, `getAnnotation`,
- * `getRefreshHook`) and writes (`put`, `delete`, `putAnnotation`,
- * `deleteAnnotation`, `putRefreshHook`, `deleteRefreshHook`) are decided
- * before the provider is reached.
+ * every per-vault method, read or write, is decided against the run vault
+ * access scope before the provider is reached
  */
 export class VaultService {
   static readonly #globalProviders = new Map<
@@ -126,20 +121,6 @@ export class VaultService {
     this.auditRepository = repo;
   }
 
-  /**
-   * Creates a VaultService instance loaded with vault configurations from the repository.
-   * This is the preferred way to create a VaultService that should have access to
-   * all configured vaults.
-   *
-   * Vaults are loaded from the effective vaults directory (created via
-   * `swamp vault create`): the repository's vaults/ directory, or the
-   * datastore config tier's vaults/ when managedConfig is active.
-   * Note: Vaults are NOT configured in .swamp.yaml - use the CLI to create vaults.
-   *
-   * @param repoDir - The repository directory containing vault configurations
-   * @param options.vaultsDir - Overrides the effective vaults directory
-   * @returns A VaultService with all configured vaults loaded
-   */
   static async fromRepository(
     repoDir: string,
     options?: {
@@ -172,7 +153,6 @@ export class VaultService {
     }
     for (const vaultConfig of vaultConfigs) {
       try {
-        // Auto-remap renamed vault types so old configs load transparently
         let vaultType = vaultConfig.type;
         const renamedTo = RENAMED_VAULT_TYPES[vaultType.toLowerCase()];
         if (renamedTo) {
@@ -181,7 +161,6 @@ export class VaultService {
           vaultType = renamedTo;
         }
 
-        // Auto-resolve missing vault types from trusted collectives
         await vaultTypeRegistry.ensureTypeLoaded(vaultType);
         if (
           !vaultTypeRegistry.has(vaultType) && vaultType.startsWith("@")
@@ -220,9 +199,6 @@ export class VaultService {
     return vaultService;
   }
 
-  /**
-   * Registers a vault provider with the given configuration.
-   */
   registerVault(config: VaultConfiguration): void {
     const provider = createVaultProvider(
       config.type,
@@ -236,11 +212,6 @@ export class VaultService {
     }
   }
 
-  /**
-   * Gets a secret from the specified vault. When a refresh hook is configured
-   * on the key and refreshOptions were provided, transparently re-runs the
-   * refresh command when the TTL has lapsed.
-   */
   async get(
     vaultName: string,
     secretKey: string,
@@ -323,9 +294,9 @@ export class VaultService {
   }
 
   /**
-   * The configured type of a registered vault. Capability errors name it
-   * from here, not from `provider.getName()`, which built-in providers answer
-   * with the vault's instance name.
+   * capability errors name the configured type from here, not
+   * provider.getName(), which built-in providers answer with the vault's
+   * instance name
    */
   private vaultTypeOf(vaultName: string): string {
     return this.vaultTypes.get(vaultName) ?? "unknown";
@@ -364,9 +335,6 @@ export class VaultService {
     return provider;
   }
 
-  /**
-   * Stores a secret in the specified vault.
-   */
   async put(
     vaultName: string,
     secretKey: string,
@@ -423,17 +391,9 @@ export class VaultService {
   }
 
   /**
-   * Answers whether {@link get} would succeed for the key, without reading
-   * the value. Held to the run vault access scope as a read, so a principal
-   * that cannot read the key cannot learn whether it exists. Runs no refresh
-   * hook (a hook runs a command, and presence does not depend on freshness)
-   * and records no audit entry (no value is read). A stale hook that would
-   * mint a value on {@link get} for a key with no stored value therefore
-   * leaves `has` answering `false`: `has` reports what is stored now.
-   *
-   * Only a provider that implements `VaultExistenceProvider` can answer;
-   * check {@link supportsExistenceCheck} first. For any other provider the
-   * caller falls back to a probe read through {@link get}.
+   * held to the run vault access scope as a read, so a principal that cannot
+   * read a key cannot learn it exists; runs no refresh hook and records no
+   * audit entry, so it reports what is stored now
    */
   async has(vaultName: string, secretKey: string): Promise<boolean> {
     await authorizeVaultAction(vaultName, "read", secretKey);
@@ -442,20 +402,13 @@ export class VaultService {
   }
 
   /**
-   * Holds a read of the key to the run vault access scope, as {@link get}
-   * and {@link has} do, without touching any provider. The existence check
-   * calls it for a reference it already confirmed, because a grant can be
-   * revoked mid-run. Without a scope it does nothing.
+   * the existence check calls it for a reference it already confirmed, because
+   * a grant can be revoked mid-run
    */
   async authorizeRead(vaultName: string, secretKey: string): Promise<void> {
     await authorizeVaultAction(vaultName, "read", secretKey);
   }
 
-  /**
-   * Whether the named vault's provider answers {@link has} itself, so a
-   * caller can tell a `has` answer from a probe read. False for an unknown
-   * vault.
-   */
   supportsExistenceCheck(vaultName: string): boolean {
     const provider = this.providers.get(vaultName);
     if (!provider) return false;
@@ -487,10 +440,6 @@ export class VaultService {
     return provider;
   }
 
-  /**
-   * Lists all secret keys in the specified vault.
-   * Returns only key names, not values.
-   */
   async list(vaultName: string): Promise<string[]> {
     await authorizeVaultAction(vaultName, "read");
     const provider = this.requireProvider(vaultName);
@@ -629,27 +578,19 @@ export class VaultService {
     return provider;
   }
 
-  /**
-   * Lists all registered vault names.
-   */
   getVaultNames(): string[] {
     return Array.from(this.providers.keys());
   }
 
   /**
-   * Lists the vaults a user configured, leaving out swamp's reserved internal
-   * vaults (such as the `_token-secrets` control-plane vault that serve
-   * registers). Use this, not {@link getVaultNames}, to decide whether a vault
-   * is available for user data: reserved vaults never accept it.
+   * leaves out reserved internal vaults, which never accept user data; use
+   * this, not getVaultNames, to decide whether a vault is available for user
+   * data
    */
   getUserVaultNames(): string[] {
     return this.getVaultNames().filter((name) => !isReservedVaultName(name));
   }
 
-  /**
-   * Returns the repo-level default vault name if configured and the vault
-   * is registered, otherwise undefined.
-   */
   getDefaultVaultName(): string | undefined {
     if (
       this.configuredDefaultVault !== undefined &&
@@ -660,12 +601,6 @@ export class VaultService {
     return undefined;
   }
 
-  /**
-   * Hook for future default vault setup.
-   * Previously auto-created an AWS vault when credentials were present,
-   * but AWS is now an extension (@swamp/aws-sm). Install it with:
-   *   swamp extension pull @swamp/aws-sm
-   */
   ensureDefaultVaults(): void {
     // No-op — all external vault providers are now extensions.
     // Left in place to avoid breaking the fromRepository() call site.

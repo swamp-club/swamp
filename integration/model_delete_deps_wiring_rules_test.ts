@@ -17,10 +17,9 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// createModelDeleteDeps falls back to a definition repository that only
-// looks in .swamp/auto-definitions. With a datastore configured,
-// auto-definitions live in the datastore, so a caller that omits the
-// injected definition repo cannot find or delete them (swamp-club#2382).
+// createModelDeleteDeps falls back to a repo that only looks in
+// .swamp/auto-definitions; with a datastore configured they live there, so
+// callers must inject the definition repo
 
 import { assertGreater } from "@std/assert";
 import { walk } from "@std/fs/walk";
@@ -33,10 +32,8 @@ import {
   topLevelOwners,
 } from "./arch_fitness_helpers.ts";
 
-/** Callers that still omit the injected definition repo. */
 const PINNED_WITHOUT_DEFINITION_REPO: readonly string[] = [];
 
-/** Position of the injectedDefinitionRepo parameter. */
 const DEFINITION_REPO_ARG = 5;
 
 /**

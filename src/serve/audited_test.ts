@@ -264,8 +264,6 @@ Deno.test("audited: concurrent success and failure calls emit correctly", async 
   assertEquals(failEvent.detail, "boom");
 });
 
-// --- Resolved resource names (swamp-club#2603) ---
-
 Deno.test("audited: records the resolved name a handler recorded, then forgets it", async () => {
   const sink = createCaptureSink();
   const emitter = new AuditEmitter([sink]);

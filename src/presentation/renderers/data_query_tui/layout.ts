@@ -17,31 +17,14 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Layout metrics for the data query TUI.
- */
 export interface QueryTuiLayout {
-  /** Height available for the results table (rows). */
   resultsHeight: number;
-  /** Height available for the inspector overlay. */
   inspectorHeight: number;
-  /** Width available for the inspector overlay. */
   inspectorWidth: number;
 }
 
-/**
- * Fixed vertical chrome:
- *   brand(1) + QUERY input(1) + SELECT input(1) + LIMIT input(1)
- *   + separator(1) + separator(1) + help bar(1) = 7 lines
- */
 const CHROME_LINES = 7;
 
-/**
- * Computes layout metrics from terminal dimensions.
- *
- * @param autocompleteLines - Number of visible autocomplete dropdown lines (0 when closed)
- * @param errorLines - Number of error text lines (0 when no error)
- */
 export function computeQueryTuiLayout(
   width: number,
   height: number,

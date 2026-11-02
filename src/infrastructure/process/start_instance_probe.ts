@@ -24,39 +24,31 @@ import {
   type StartServerRecord,
 } from "../persistence/start_server_record.ts";
 
-/** How long the ping to a recorded server may take. */
 export const START_PROBE_TIMEOUT_MS = 2_000;
 
 /**
- * How long the ping may take on Windows. Windows retries a refused
- * loopback connect for about two seconds before it reports the refusal, so
- * the default timeout would turn every closed port into `unknown`.
+ * Windows retries a refused loopback connect before reporting the refusal, so
+ * the default timeout would turn every closed port into unknown
  */
 export const WINDOWS_START_PROBE_TIMEOUT_MS = 5_000;
 
-/** The ping timeout for a probe running on `os`. */
 export function startProbeTimeoutMs(os: typeof Deno.build.os): number {
   return os === "windows"
     ? WINDOWS_START_PROBE_TIMEOUT_MS
     : START_PROBE_TIMEOUT_MS;
 }
 
-/** The header carrying the recorded token on a `/start/ping` request. */
 export const START_PING_TOKEN_HEADER = "x-swamp-start-token";
 
 /**
- * What a probe learned about a recorded server:
- * - `live`: it answered the ping with its token.
- * - `dead`: its process is gone, nothing listens on its port, or something
- *   else answers there.
- * - `unknown`: the ping timed out or failed some other way; the record may
- *   still belong to a live server.
+ * live: answered the ping with its token. dead: process gone, nothing
+ * listening, or something else answers. unknown: timed out or failed otherwise;
+ * the record may still be live
  */
 export type StartServerLiveness = "live" | "dead" | "unknown";
 
 export interface StartProbeOptions {
   readonly timeoutMs?: number;
-  /** The OS the probe runs on; tests override it. */
   readonly os?: typeof Deno.build.os;
 }
 
@@ -73,10 +65,8 @@ function isConnectionRefused(error: unknown): boolean {
 }
 
 /**
- * Asks a recorded `swamp start` server whether it is still there, through
- * its `/start/ping` endpoint. The ping does not count as a page, so probing
- * never keeps another server from ending. Off Windows a record whose
- * process is gone is dead without a ping.
+ * the ping does not count as a page, so probing never keeps another server from
+ * ending; off Windows a record whose process is gone is dead without a ping
  */
 export async function probeStartServer(
   record: StartServerRecord,

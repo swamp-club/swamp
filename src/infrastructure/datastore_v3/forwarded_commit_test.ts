@@ -57,8 +57,6 @@ async function withHandle(fn: (v3: V3Datastore) => Promise<void>) {
     }
   } finally {
     if (Deno.build.os === "windows") {
-      // Best-effort: EBUSY can fire when V8 hasn't GC'd native
-      // sqlite handles yet. Temp dir is ephemeral, OS reclaims.
       await Deno.remove(dir, { recursive: true }).catch(() => {});
     } else {
       await Deno.remove(dir, { recursive: true });
@@ -199,7 +197,6 @@ Deno.test("commitForwarded: a chunk the store does not hold is refused before an
 Deno.test("commitForwarded: a failed precondition names the key and who changed it", async () => {
   await withHandle(async (v3) => {
     await commitForwarded(v3, request(await saveOps("vpc", 1)), signal());
-    // Bob's put of the version's content.
     const bobs = await putOp({
       intent: modelIntent({ kind: "data.append", name: "vpc", version: 1 }),
       key: dataKey("vpc", 1),
@@ -210,7 +207,6 @@ Deno.test("commitForwarded: a failed precondition names the key and who changed 
       request([bobs], { expectedSeq: 1, principal: "user:bob" }),
       signal(),
     );
-    // Alice still expects the bytes she first read.
     const stale = await putOp({
       intent: modelIntent({ kind: "data.append", name: "vpc", version: 1 }),
       key: dataKey("vpc", 1),

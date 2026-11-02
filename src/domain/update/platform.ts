@@ -25,9 +25,6 @@ const ARTIFACT_BASE_URL =
 const SUPPORTED_OS = new Set(["darwin", "linux", "windows"]);
 const SUPPORTED_ARCH = new Set(["aarch64", "x86_64"]);
 
-/**
- * Value object representing a supported platform for binary artifacts.
- */
 export class Platform {
   readonly os: string;
   readonly arch: string;
@@ -37,18 +34,10 @@ export class Platform {
     this.arch = arch;
   }
 
-  /**
-   * Detect the current platform from Deno.build.
-   * Throws UserError for unsupported platforms.
-   */
   static detect(): Platform {
     return Platform.from(Deno.build.os, Deno.build.arch);
   }
 
-  /**
-   * Create a Platform from explicit OS and arch values.
-   * Throws UserError for unsupported combinations.
-   */
   static from(os: string, arch: string): Platform {
     if (!SUPPORTED_OS.has(os)) {
       throw new UserError(

@@ -18,18 +18,9 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * What an expression can read beyond its own model: other models' data and
- * definitions, and the process environment. Serve uses this to authorize
- * expression text against the principal who supplies it (swamp-club#2755,
- * swamp-club#2786), so the analysis fails closed: anything it cannot pin to
- * a named model reads "any data".
- *
- * The regex extractors in `dependency_extractor.ts` order evaluation and
- * deliberately skip what they cannot name; they are not a security boundary.
- * This walks the same AST evaluation parses, so bracket access, hyphenated
- * names and `cel.bind` aliases are seen as evaluation sees them. The walk is
- * linear in the parse evaluation already does, so analyzing caller text never
- * costs more than evaluating it.
+ * fails closed for authorization: anything not pinned to a named model reads
+ * any data. Walks the same AST evaluation parses; the regex extractors in
+ * dependency_extractor.ts are not a security boundary.
  */
 
 import { type ASTNode, Environment } from "cel-js";
@@ -37,9 +28,8 @@ import { BINDING_MACROS, transformHyphenatedModelRefs } from "./cel_grammar.ts";
 import { extractExpressions } from "./expression_parser.ts";
 
 /**
- * Data accessors whose first argument names the model they read. The other
- * accessors (`query`, `findByTag`) read across models, so any call to them
- * reads any data.
+ * accessors whose first argument names the model they read; query and findByTag
+ * read across models, so any call to them reads any data
  */
 export const MODEL_SCOPED_DATA_ACCESSORS: ReadonlySet<string> = new Set([
   "latest",
@@ -49,105 +39,57 @@ export const MODEL_SCOPED_DATA_ACCESSORS: ReadonlySet<string> = new Set([
 ]);
 
 /**
- * Data accessors that read across models. With
- * {@link MODEL_SCOPED_DATA_ACCESSORS} this covers every entry of
- * `DATA_NAMESPACE_ACCESSORS`; `integration/expression_accessors_rules_test.ts`
- * fails when an accessor is added to the namespace without being classified.
+ * together with MODEL_SCOPED_DATA_ACCESSORS this covers every
+ * DATA_NAMESPACE_ACCESSORS entry; integration/expression_accessors_rules_test.ts
+ * fails on an unclassified accessor
  */
 export const CROSS_MODEL_DATA_ACCESSORS: ReadonlySet<string> = new Set([
   "query",
   "findByTag",
 ]);
 
-/** `model.<name>.<accessor>` entries that hold the model's data. */
 const MODEL_DATA_ACCESSORS: ReadonlySet<string> = new Set([
   "resource",
   "file",
   "execution",
 ]);
 
-/** `model.<name>.<accessor>` entries that hold only definition content. */
 const MODEL_DEFINITION_ACCESSORS: ReadonlySet<string> = new Set([
   "input",
   "definition",
 ]);
 
 /**
- * What an expression reads of one model's data through the synchronous
- * readers: the `model.<name>.resource` and `model.<name>.file` maps and
- * `file.contents`. Those read the local cache without downloading, so on a
- * lazily hydrating datastore the content must be made local before the
- * expression is evaluated (swamp-club#3179).
+ * these readers use the local cache without downloading, so on a lazily
+ * hydrating datastore content must be made local before evaluation
  */
 export interface SyncDataRead {
-  /** The model's resources are read. */
   readonly resource: boolean;
-  /** Every file spec of the model is read. */
   readonly allFiles: boolean;
-  /** File specs read by name (`file.contents("<model>", "<spec>")`). */
   readonly fileSpecs: ReadonlySet<string>;
 }
 
-/** What one expression reads beyond its own arguments. */
 export interface ExpressionReferences {
-  /**
-   * Models whose data the expression reads, as written: a name, a definition
-   * id, or `ns:name`.
-   */
   readonly dataTargets: ReadonlySet<string>;
-  /** Models whose definition content (`model.X.input`) the expression reads. */
   readonly modelTargets: ReadonlySet<string>;
   /**
-   * The {@link dataTargets} read through the synchronous readers, keyed as
-   * written (a name or a definition id), with what each reads. Models read
-   * only through the async `data.*` accessors, which download for
-   * themselves, and `model.<name>.execution`, which holds run outputs rather
-   * than data, are not here. A model named by a computed key is not here
-   * either; {@link dataWide} reports it.
+   * models read only through the async data.* accessors (which download
+   * themselves) and model.<name>.execution are not here; a computed model key
+   * is reported by dataWide
    */
   readonly syncDataReads: ReadonlyMap<string, SyncDataRead>;
-  /**
-   * The expression reads data it does not name statically: a computed model
-   * argument, a cross-model accessor, the `model` map with a computed key or
-   * whole, an unknown accessor, or text that does not parse.
-   */
   readonly dataWide: boolean;
-  /**
-   * Steps whose context the expression reads through the `steps` map, by
-   * name as written (`steps.<name>` or `steps['<name>']`). The synchronous
-   * passes authorize the sensitive-field references of their output sources
-   * ahead of evaluation (typed-secrets 4.2). A step named by a computed key
-   * is not here; {@link stepsWide} reports it.
-   */
   readonly stepTargets: ReadonlySet<string>;
-  /**
-   * The expression reads the `steps` map by a computed key or whole, or
-   * does not parse, so it may read any step.
-   */
   readonly stepsWide: boolean;
-  /** The expression reads the process environment. */
   readonly usesEnv: boolean;
-  /** The expression reads `self` or `inputs`, so its targets can follow them. */
   readonly readsSelfOrInputs: boolean;
-  /**
-   * Model methods the expression runs: `model.method("<model>", "<method>")`
-   * in a workflow guard or assert executes the method, as a step does.
-   */
   readonly runTargets: readonly { model: string; method: string }[];
-  /** The expression runs a model method whose model or method is computed. */
   readonly runsComputed: boolean;
-  /**
-   * The text does not parse, so every flag above is set: it is judged as
-   * reading and running anything.
-   */
   readonly unanalyzable: boolean;
 }
 
-/** An expression found in content, with what it reads. */
 export interface AnalyzedExpression {
-  /** The raw `${{ ... }}` text, as `collectAuthoredExpressions` keys it. */
   readonly raw: string;
-  /** Every path in the content where this text appears. */
   readonly paths: readonly string[];
   readonly references: ExpressionReferences;
 }
@@ -184,7 +126,6 @@ interface Accumulator {
   unanalyzable: boolean;
 }
 
-/** Analyzes one CEL expression (the text inside `${{ }}`). */
 export function analyzeExpression(celExpression: string): ExpressionReferences {
   const acc: Accumulator = {
     dataTargets: new Set(),
@@ -217,12 +158,6 @@ export function analyzeExpression(celExpression: string): ExpressionReferences {
   return acc;
 }
 
-/**
- * Analyzes every `${{ }}` expression in content, keyed by raw text as
- * `collectAuthoredExpressions` keys it, with every path it appears at.
- * `extra` adds bare CEL that is evaluated without `${{ }}` (a workflow
- * assert's `task.expr`).
- */
 export function analyzeContentExpressions(
   data: unknown,
   extra: Iterable<{ raw: string; celExpression: string; path: string }> = [],
@@ -247,21 +182,9 @@ export function analyzeContentExpressions(
 }
 
 /**
- * The expressions an edit must be authorized for (swamp-club#2755). Where an
- * expression sits decides where its value goes, so it is checked whenever
- * the edit puts it somewhere new:
- *
- * - its raw text is not in the stored content;
- * - it appears at a path where the stored content did not have it (moved or
- *   copied, to a field or step whose output the writer may read);
- * - it sits under one of `changedScopes`, path prefixes whose destination
- *   the edit changed (a workflow step now running a different target);
- * - when `retargeted` (the edit changed a value `self` or `inputs` reads),
- *   it reads data through a target computed from `self` or `inputs`.
- *
- * An expression left where it was, under an unchanged destination, is not
- * re-checked, so an edit to an unrelated field of a model or workflow that
- * already reads other data is unaffected.
+ * an expression is checked whenever the edit puts it somewhere new (new raw
+ * text, new path, changed scope, or retargeted via self or inputs); one left in
+ * place is not re-checked
  */
 export function expressionsAddedByEdit(
   before: readonly AnalyzedExpression[],
@@ -289,11 +212,8 @@ export function expressionsAddedByEdit(
 }
 
 /**
- * Whether a definition edit changes what `self` or `inputs` read in its
- * expressions: its name, version, tags, global arguments or inputs, with
- * expression text included, since global-argument expressions are evaluated
- * before `self.globalArguments` is read. Method arguments are not among
- * them, so editing those alone retargets nothing.
+ * expression text counts because global-argument expressions are evaluated
+ * before self.globalArguments is read; method arguments do not retarget
  */
 export function definitionRetargetSourcesChanged(
   before: Record<string, unknown>,
@@ -309,7 +229,6 @@ export function definitionRetargetSourcesChanged(
   return canonicalJson(sources(before)) !== canonicalJson(sources(after));
 }
 
-/** JSON with object keys sorted, so key order is not a change. */
 export function canonicalJson(value: unknown): string {
   return JSON.stringify(
     value,
@@ -333,7 +252,6 @@ function stringLiteral(node: ASTNode | undefined): string | undefined {
     : undefined;
 }
 
-/** Records a model named by a data accessor or `file.contents`. */
 function addDataTarget(node: ASTNode | undefined, acc: Accumulator): void {
   const name = stringLiteral(node);
   if (name === undefined) {
@@ -343,7 +261,6 @@ function addDataTarget(node: ASTNode | undefined, acc: Accumulator): void {
   acc.dataTargets.add(name);
 }
 
-/** The synchronous read entry for `name`, created empty when absent. */
 function syncReadOf(name: string, acc: Accumulator): MutableSyncDataRead {
   let read = acc.syncDataReads.get(name);
   if (!read) {
@@ -353,7 +270,6 @@ function syncReadOf(name: string, acc: Accumulator): MutableSyncDataRead {
   return read;
 }
 
-/** Records `file.contents(<model>, <spec>)` as a synchronous read. */
 function addFileContentsRead(
   modelNode: ASTNode | undefined,
   specNode: ASTNode | undefined,
@@ -367,10 +283,6 @@ function addFileContentsRead(
   else read.fileSpecs.add(spec);
 }
 
-/**
- * Records a `model[<name>]` or `model.<name>` entry, given the accessor read
- * from it (undefined when the entry is used whole).
- */
 function addModelEntry(
   name: string | undefined,
   accessor: string | undefined,
@@ -398,7 +310,6 @@ function addModelEntry(
   if (accessor !== "resource") read.allFiles = true;
 }
 
-/** The model entry `node` selects from the free `model` map, if it does. */
 function modelEntry(
   node: ASTNode,
   bound: ReadonlySet<string>,
@@ -436,7 +347,6 @@ function visit(
       if (name === "data" || name === "model" || name === "file") {
         acc.dataWide = true;
       }
-      // The steps map used whole or aliased can reach any step.
       if (name === "steps") acc.stepsWide = true;
       // An aliased model namespace (cel.bind, dyn(), a list) still
       // dispatches model.method at evaluation, so it may run any model.
@@ -497,7 +407,6 @@ function visit(
         if (MODEL_SCOPED_DATA_ACCESSORS.has(name)) {
           addDataTarget(args[0], acc);
         } else {
-          // query, findByTag, and any accessor this module does not know.
           acc.dataWide = true;
         }
         for (const a of args) visit(a, bound, acc);
@@ -572,8 +481,8 @@ function visit(
 }
 
 /**
- * Every data accessor this module classifies. A fitness rule pins it against
- * `DATA_NAMESPACE_ACCESSORS`, so a new accessor cannot skip the check.
+ * a fitness rule pins this against DATA_NAMESPACE_ACCESSORS, so a new accessor
+ * cannot skip the check
  */
 export const CLASSIFIED_DATA_ACCESSORS: readonly string[] = [
   ...MODEL_SCOPED_DATA_ACCESSORS,

@@ -18,13 +18,9 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * The evaluated-definition cache on the real repository, for a sensitive
- * argument whose value came from the run's inputs rather than a vault
- * (swamp-club#3681): the domain builds the persisted form, the repository
- * writes it, and the file holds the mask beside the vault reference of the
- * value that did come from a vault. Read back, the replay predicate names
- * the masked path, the vault value still rehydrates, and a write that skips
- * the domain builder is refused at the repository.
+ * run-input sensitive values persist as a mask beside vault references; replay
+ * names the masked paths, vault values rehydrate, and a write skipping the
+ * domain builder is refused
  */
 
 import {
@@ -93,7 +89,6 @@ async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
   }
 }
 
-/** A type with two sensitive globals and one sensitive method argument. */
 function registerType(): ModelType {
   const type = ModelType.create(
     `@test/sensitive-global-arg-${crypto.randomUUID().slice(0, 8)}`,
@@ -235,8 +230,6 @@ Deno.test("evaluated cache: an input-fed sensitive argument is written as the ma
       assertEquals(replayValues.list(), []);
       assertEquals(restored.definition.globalArguments.apiKey, "***");
 
-      // A write that skips persistEvaluatedDefinition is refused at the
-      // repository and leaves no file.
       const leaky = Definition.create({
         name: "leaky",
         type: type.normalized,
@@ -681,9 +674,9 @@ for (
   ] as const
 ) {
   Deno.test(`evaluated cache: ${name} method overrides preserve safe replay behavior`, async () => {
-    // A step input the workflow spells is the author's own text, so a
-    // preprocessor that reads its keys caches and replays them
-    // (swamp-club#3681); only data at such a position is masked.
+    // a step input the workflow spells is the author's text, so a preprocessor
+    // reading its keys caches and replays them; only data at such a position is
+    // masked
     const opaque = name === "sensitive-preprocess" ||
       name === "transformed-global";
     await withTempDir(async (dir) => {
@@ -727,10 +720,9 @@ for (
             : {}),
           methods: {
             execute: {
-              // Both sensitive preprocessors read only what the step
-              // supplies (its `alias`, or its first key), and the
-              // transformed global feeds the method from the globals, so
-              // their definitions spell no arguments of their own.
+              // both sensitive preprocessors read only what the step supplies
+              // and the transformed global feeds the method from the globals,
+              // so their definitions spell no arguments
               arguments: opaque || name === "preprocess-keys" ? {} : {
                 kind: "one",
                 ...(name === "catchall" ? {} : { target: "old" }),

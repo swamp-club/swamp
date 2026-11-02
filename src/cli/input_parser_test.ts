@@ -32,8 +32,6 @@ import { withMockedEnv } from "../infrastructure/persistence/path_test_helpers.t
 import { assertThrows } from "@std/assert";
 import { stringify as stringifyYaml } from "@std/yaml";
 
-// --- setNestedValue ---
-
 Deno.test("setNestedValue: sets a simple key", () => {
   const obj: Record<string, unknown> = {};
   setNestedValue(obj, "name", "alice");
@@ -57,8 +55,6 @@ Deno.test("setNestedValue: merges into existing nested object", () => {
   setNestedValue(obj, "server.port", "8080");
   assertEquals(obj, { server: { host: "localhost", port: "8080" } });
 });
-
-// --- parseKeyValueInputs ---
 
 Deno.test("parseKeyValueInputs: single key=value", async () => {
   const result = await parseKeyValueInputs(["environment=production"]);
@@ -149,8 +145,6 @@ Deno.test("parseKeyValueInputs: @file with dot notation", async () => {
   }
 });
 
-// --- isScopedIdentifier ---
-
 Deno.test("isScopedIdentifier: matches two-segment scoped type", () => {
   assertEquals(isScopedIdentifier("@hivemq/base-images"), true);
 });
@@ -192,8 +186,6 @@ Deno.test("isScopedIdentifier: rejects namespace-only (no slash)", () => {
   assertEquals(isScopedIdentifier("@hivemq"), false);
 });
 
-// --- parseKeyValueInputs: scoped identifier passthrough ---
-
 Deno.test("parseKeyValueInputs: scoped identifier passes through literally", async () => {
   const result = await parseKeyValueInputs([
     "sourceType=@hivemq/base-images",
@@ -226,20 +218,14 @@ Deno.test("parseKeyValueInputs: @file with extension still reads file", async ()
   }
 });
 
-// --- Stream-0 regression net: tilde expansion semantics on POSIX ---
-
 Deno.test({
   name: "parseKeyValueInputs: ~/file expands using HOME env var on POSIX",
-  // Tilde-to-HOME expansion is POSIX-specific; Windows uses USERPROFILE.
-  // Stream C will add the Windows path; this test pins POSIX.
+  // tilde-to-HOME expansion is POSIX-specific (Windows uses USERPROFILE), so
+  // this test pins POSIX
   ignore: Deno.build.os === "windows",
   fn: async () => {
     const tempDir = await Deno.makeTempDir({ prefix: "swamp-tilde-home-" });
     try {
-      // Write a file inside the temp dir and stash the value through
-      // the @-file mechanism using "~/<basename>" so the production
-      // tilde-expansion code (`startsWith("~/")` in resolveFileValue)
-      // is exercised.
       const fileName = "tilde-test.txt";
       await Deno.writeTextFile(
         `${tempDir}/${fileName}`,
@@ -260,11 +246,9 @@ Deno.test({
 Deno.test({
   name:
     "parseKeyValueInputs: ~/file is left literal when HOME is unset on POSIX",
-  // Pin the existing fallback: resolveFileValue only expands ~ when
-  // Deno.env.get("HOME") returns a value. With HOME unset, the literal
-  // path "~/missing.txt" is passed straight to Deno.readTextFile, which
-  // surfaces a "Input file not found" UserError. Stream C must preserve
-  // this exact fallback (same error message, same un-expanded path).
+  // with HOME unset the literal ~/missing.txt goes straight to readTextFile and
+  // surfaces an Input file not found UserError; that exact fallback must be
+  // preserved
   ignore: Deno.build.os === "windows",
   fn: async () => {
     await withMockedEnv({ HOME: undefined }, async () => {
@@ -297,8 +281,6 @@ Deno.test({
   },
 });
 
-// --- deepMerge ---
-
 Deno.test("deepMerge: flat objects", () => {
   const result = deepMerge({ a: 1, b: 2 }, { b: 3, c: 4 });
   assertEquals(result, { a: 1, b: 3, c: 4 });
@@ -322,8 +304,6 @@ Deno.test("deepMerge: does not mutate base", () => {
   deepMerge(base, { b: 2 });
   assertEquals(base, { a: 1 });
 });
-
-// --- parseInputs (backward compat) ---
 
 Deno.test("parseInputs: JSON string backward compat", async () => {
   const result = await parseInputs({
@@ -350,18 +330,12 @@ Deno.test("parseInputs: invalid JSON throws", async () => {
 });
 
 Deno.test("parseInputs: JSON array throws", async () => {
-  // A JSON array starts with { after stringify won't, but we can test
-  // invalid JSON object like {"key": [1]} parsed as non-object via a trick:
-  // only `{` triggers JSON mode, and `{` always yields an object or syntax error.
-  // Test that a JSON array wrapped to start with `{` but being invalid still errors.
   await assertRejects(
     () => parseInputs({ input: "{ invalid json" }),
     Error,
     "Invalid JSON in --input",
   );
 });
-
-// --- parseInputs (key-value) ---
 
 Deno.test("parseInputs: single key=value", async () => {
   const result = await parseInputs({
@@ -389,8 +363,6 @@ Deno.test("parseInputs: key=value with dot notation", async () => {
   });
 });
 
-// --- parseInputs (YAML file) ---
-
 Deno.test("parseInputs: YAML file", async () => {
   const tempFile = await Deno.makeTempFile({ suffix: ".yaml" });
   try {
@@ -414,8 +386,6 @@ Deno.test("parseInputs: missing YAML file throws", async () => {
   );
 });
 
-// --- parseInputs (combined) ---
-
 Deno.test("parseInputs: combined file + k=v overrides", async () => {
   const tempFile = await Deno.makeTempFile({ suffix: ".yaml" });
   try {
@@ -430,8 +400,8 @@ Deno.test("parseInputs: combined file + k=v overrides", async () => {
       inputFile: tempFile,
     });
     assertEquals(result.source, "combined");
-    assertEquals(result.inputs.environment, "production"); // override
-    assertEquals(result.inputs.replicas, 2); // from file
+    assertEquals(result.inputs.environment, "production");
+    assertEquals(result.inputs.replicas, 2);
   } finally {
     await Deno.remove(tempFile);
   }
@@ -454,8 +424,6 @@ Deno.test("parseInputs: JSON input ignores input-file", async () => {
     await Deno.remove(tempFile);
   }
 });
-
-// --- parseKeyValueInputs (:json suffix) — swamp-club#235 ---
 
 Deno.test("parseKeyValueInputs: :json suffix parses an array", async () => {
   const result = await parseInputs({
@@ -486,10 +454,8 @@ Deno.test("parseKeyValueInputs: :json suffix on the leaf of a nested key", async
 });
 
 Deno.test("parseKeyValueInputs: :json takes precedence over @file shorthand", async () => {
-  // A `@`-prefixed value would normally be treated as a file path; the
-  // :json suffix bypasses that and parses the literal as JSON. So
-  // `key:json=@notafile.json` parses `@notafile.json` as JSON (which
-  // fails) — verifying the suffix takes precedence.
+  // the :json suffix bypasses @file handling, so @notafile is parsed as JSON
+  // and fails
   await assertRejects(
     () => parseInputs({ input: ["key:json=@notafile"] }),
     UserError,
@@ -514,9 +480,6 @@ Deno.test("parseKeyValueInputs: :json parse failure raises UserError", async () 
 });
 
 Deno.test("parseKeyValueInputs: :json from CLI overrides --input-file value", async () => {
-  // Confirms precedence: the YAML file sets keywords as a string list,
-  // the CLI :json override replaces it with a parsed array. Existing
-  // deepMerge semantics: CLI key-value wins over file.
   const tempFile = await Deno.makeTempFile({ suffix: ".yaml" });
   try {
     await Deno.writeTextFile(
@@ -534,15 +497,11 @@ Deno.test("parseKeyValueInputs: :json from CLI overrides --input-file value", as
   }
 });
 
-// --- parseInputs (none) ---
-
 Deno.test("parseInputs: no options returns none", async () => {
   const result = await parseInputs({});
   assertEquals(result.source, "none");
   assertEquals(result.inputs, {});
 });
-
-// --- parseStdinContent ---
 
 Deno.test("parseStdinContent: single JSON object returns one-element array", () => {
   const result = parseStdinContent('{"run": "echo hello"}');
@@ -651,8 +610,6 @@ Deno.test("mergeInputArgs: --input values come after --arg values", () => {
     ["a=1", "a=2"],
   );
 });
-
-// --- parseKeyValueInputs / parseInputs (literal) — swamp-club#3205 ---
 
 Deno.test("parseKeyValueInputs: literal keeps a leading @ and \\@ verbatim", async () => {
   const result = await parseKeyValueInputs(

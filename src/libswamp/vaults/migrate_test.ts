@@ -59,7 +59,6 @@ function makeDeps(
     isVaultTypeLoaded: () => Promise.resolve(true),
     findRegistryConfigFields: () => Promise.resolve(null),
     resolveExtensionVaultType: () => Promise.resolve(),
-    // Case-insensitive, as vaultTypeRegistry.get is.
     getVaultTypeInfo: (type) => {
       const key = type.toLowerCase();
       if (key === "mock" || key === "local_encryption") {
@@ -76,7 +75,6 @@ function makeDeps(
       new MockVaultProvider(name, Object.fromEntries(targetSecrets)),
     findLeftoverSecrets: () => Promise.resolve(undefined),
     loadSourceVaultService: async () => {
-      // Create a minimal vault service with the source provider
       const { VaultService } = await import(
         "../../domain/vaults/vault_service.ts"
       );
@@ -110,7 +108,6 @@ Deno.test("vaultMigratePreview: returns preview with secret count", async () => 
   assertEquals(preview.vaultName, "my-vault");
   assertEquals(preview.currentType, "mock");
   assertEquals(preview.targetType, "local_encryption");
-  // MockVaultProvider has default secrets
   assertEquals(typeof preview.secretCount, "number");
 });
 
@@ -222,19 +219,15 @@ Deno.test("vaultMigrate: copies secrets and updates config", async () => {
     }),
   );
 
-  // Should have copying events, updating_config, and completed
   const kinds = events.map((e) => e.kind);
   assertEquals(kinds.includes("updating_config"), true);
   assertEquals(kinds[kinds.length - 1], "completed");
 
-  // Secrets should have been copied
   assertEquals(copiedSecrets.size > 0, true);
 
-  // Config should have been saved with new type
   assertEquals(savedConfig!.type, "local_encryption");
   assertEquals(savedConfig!.name, "my-vault");
 
-  // Old config should have been deleted
   assertEquals(deletedConfig!.type, "mock");
 });
 
@@ -331,7 +324,6 @@ Deno.test("vaultMigrate: handles empty vault with zero secrets", async () => {
   assertEquals(completed.kind, "completed");
   assertEquals(completed.data.secretsMigrated, 0);
 
-  // Config should still be updated even with zero secrets
   assertEquals(savedConfig!.type, "local_encryption");
 });
 
@@ -350,7 +342,6 @@ Deno.test("vaultMigrate: tolerates delete failure", async () => {
     }),
   );
 
-  // Should still complete despite delete failure
   const last = events[events.length - 1];
   assertEquals(last.kind, "completed");
 });
@@ -395,8 +386,6 @@ Deno.test("vaultMigrate: case-insensitive target type resolves correct config", 
   const last = events[events.length - 1];
   assertEquals(last.kind, "completed");
   assertEquals(savedConfig!.type, "Local_Encryption");
-  // The key assertion: config should have auto_generate and base_dir,
-  // not an empty object from the default branch
   assertEquals(createdProviderConfig?.auto_generate, true);
   assertEquals(createdProviderConfig?.base_dir, "/tmp/test-repo");
 });
@@ -413,7 +402,7 @@ Deno.test("vaultMigrate: rejects same-type migration", async () => {
   const events = await collect<VaultMigrateEvent>(
     vaultMigrate(createLibSwampContext(), deps, {
       vaultName: "my-vault",
-      targetType: "mock", // same as source type
+      targetType: "mock",
       repoDir: "/tmp",
     }),
   );
@@ -425,7 +414,6 @@ Deno.test("vaultMigrate: rejects same-type migration", async () => {
   assertEquals(last.kind, "error");
   assertEquals(last.error.code, "validation_failed");
   assertStringIncludes(last.error.message, "Cannot migrate to the same type");
-  // Config must NOT be deleted — that would destroy the vault
   assertEquals(deleteCalled, false);
 });
 
@@ -461,8 +449,6 @@ Deno.test("vaultMigrate: yields error event on secret copy failure", async () =>
   assertEquals(last.kind, "error");
   assertStringIncludes(last.error.message, "Network timeout");
 });
-
-// Key-source rule for local_encryption targets (swamp-club#2690).
 
 Deno.test("vaultMigrate: an untrusted local_encryption target cannot name its own key source", async () => {
   for (
@@ -671,10 +657,6 @@ Deno.test("createVaultMigrateDeps: without an injected repository, uses the vaul
   });
 });
 
-// ---------------------------------------------------------------------------
-// Leftover local_encryption storage (swamp-club#3614)
-// ---------------------------------------------------------------------------
-
 const LEFTOVER = join(
   "/tmp",
   ".swamp",
@@ -785,10 +767,6 @@ Deno.test("createVaultMigrateDeps: finds storage an earlier local_encryption vau
   });
 });
 
-// ---------------------------------------------------------------------------
-// Required config fields (swamp-club#3003)
-// ---------------------------------------------------------------------------
-
 const ONE_PASSWORD_SCHEMA = z.object({
   op_vault: z.string().min(1).describe("The 1Password vault to use"),
   op_account: z.string().optional().describe("Account shorthand or UUID"),
@@ -813,7 +791,6 @@ const REGISTRY_FIELDS: VaultConfigField[] = [
   { name: "op_account", type: "string", required: false },
 ];
 
-/** Deps for a 1Password target that is installed only once resolved. */
 function makeOnePasswordDeps(
   options: {
     registryFields?: VaultConfigField[] | null;
@@ -842,7 +819,6 @@ function makeOnePasswordDeps(
 }
 
 Deno.test("vaultMigratePreview: the registry's field list never refuses a config the installed schema accepts", async () => {
-  // Published metadata that still calls a defaulted field required.
   const { deps, resolved } = makeOnePasswordDeps({
     registryFields: [
       { name: "op_vault", type: "string", required: true },

@@ -25,20 +25,13 @@ import {
 import { OwnerTypes } from "./data_metadata.ts";
 import type { CursorContext } from "./cel_cursor_context.ts";
 
-/** A single completion suggestion. */
 export interface CompletionItem {
-  /** Text to insert (replaces the current prefix). */
   text: string;
-  /** Display text in the dropdown. */
   label: string;
-  /** Secondary info (type hint, count). */
   detail?: string;
-  /** Category of the completion. */
   kind: "field" | "value" | "operator" | "builtin";
 }
 
-/** CEL comparison and method operators suggested after a field name. */
-/** Comparison operators shown after a space (e.g. `name ==`). */
 const COMPARISON_OPERATORS: CompletionItem[] = [
   { text: "==", label: "==", detail: "equals", kind: "operator" },
   { text: "!=", label: "!=", detail: "not equals", kind: "operator" },
@@ -48,7 +41,6 @@ const COMPARISON_OPERATORS: CompletionItem[] = [
   { text: "<=", label: "<=", detail: "less or equal", kind: "operator" },
 ];
 
-/** Dot method operators shown after a dot (e.g. `name.contains(`). */
 const DOT_METHODS: CompletionItem[] = [
   {
     text: "contains(",
@@ -76,7 +68,6 @@ const DOT_METHODS: CompletionItem[] = [
   },
 ];
 
-/** Maps CEL field names to catalog column names and whether values are numeric. */
 const FIELD_TO_COLUMN: Record<string, { column: string; numeric: boolean }> = {
   id: { column: "id", numeric: false },
   name: { column: "data_name", numeric: false },
@@ -99,7 +90,6 @@ const FIELD_TO_COLUMN: Record<string, { column: string; numeric: boolean }> = {
   source: { column: "source", numeric: false },
 };
 
-/** Field type hints for display in the autocomplete dropdown. */
 const FIELD_TYPES: Record<string, string> = {
   id: "string",
   name: "string",
@@ -126,12 +116,6 @@ const FIELD_TYPES: Record<string, string> = {
   source: "string",
 };
 
-/**
- * Provides context-aware autocomplete suggestions for CEL query expressions.
- *
- * Caches expensive catalog lookups (distinct values, tag keys) for the
- * lifetime of the provider instance, which matches the TUI session.
- */
 export class AutocompleteProvider {
   private distinctCache = new Map<string, string[]>();
   private tagKeysCache: string[] | undefined;
@@ -142,12 +126,6 @@ export class AutocompleteProvider {
     private readonly tagValuesFn: (key: string) => string[],
   ) {}
 
-  /**
-   * Returns completion items for the given cursor context.
-   * @param mode - "predicate" for filter expressions, "select" for projections.
-   *   In select mode, operator and value completions are suppressed since
-   *   projections use field names and member access, not comparisons.
-   */
   complete(
     context: CursorContext,
     mode: "predicate" | "select" = "predicate",
@@ -197,7 +175,6 @@ export class AutocompleteProvider {
         kind: "builtin",
       });
     }
-    // behavior() is the behavior spelling of model() (swamp-club#3410).
     if (mode === "predicate" && BEHAVIOR_FUNCTION.startsWith(prefix)) {
       items.push({
         text: `${BEHAVIOR_FUNCTION}(`,
@@ -214,7 +191,6 @@ export class AutocompleteProvider {
     chain: string[],
     prefix: string,
   ): CompletionItem[] {
-    // tags. → offer tag keys
     if (root === "tags" && chain.length === 0) {
       const keys = this.getCachedTagKeys();
       return keys
@@ -225,12 +201,9 @@ export class AutocompleteProvider {
           kind: "field" as const,
         }));
     }
-    // Nested access (e.g. attributes.status. or tags.env.) → offer dot methods
-    // because the user is calling a method on a resolved value
     if (chain.length > 0) {
       return DOT_METHODS.filter((m) => m.text.startsWith(prefix));
     }
-    // Known non-map field with dot (e.g. name.) → offer dot methods
     if (QUERY_FIELDS.has(root) && root !== "attributes" && root !== "tags") {
       return DOT_METHODS.filter((m) => m.text.startsWith(prefix));
     }
@@ -243,14 +216,12 @@ export class AutocompleteProvider {
   }
 
   private completeValue(field: string, prefix: string): CompletionItem[] {
-    // Boolean field
     if (field === "streaming") {
       return ["true", "false"]
         .filter((v) => v.startsWith(prefix))
         .map((v) => ({ text: v, label: v, kind: "value" as const }));
     }
 
-    // Owner type — hardcoded enum
     if (field === "ownerType") {
       return OwnerTypes
         .filter((v) => v.startsWith(prefix))
@@ -261,7 +232,6 @@ export class AutocompleteProvider {
         }));
     }
 
-    // Tag value (field is "tags.xxx")
     if (field.startsWith("tags.")) {
       const tagKey = field.slice(5);
       const values = this.tagValuesFn(tagKey);
@@ -274,7 +244,6 @@ export class AutocompleteProvider {
         }));
     }
 
-    // Catalog column with distinct values
     const mapping = FIELD_TO_COLUMN[field];
     if (mapping) {
       const values = this.getCachedDistinct(mapping.column);

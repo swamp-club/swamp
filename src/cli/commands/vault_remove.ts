@@ -117,7 +117,6 @@ To delete a single secret, use 'swamp vault delete <vault> <key>'.`,
       RepoPath.create(repoDir),
     );
 
-    // The hooked vault config repository stages into each use case's unit.
     const ctx = libSwampContextForRepo(repoContext, { logger: cliCtx.logger });
     const deps = createVaultRemoveDeps(repoDir, {
       vaultConfigRepo: repoContext.vaultConfigRepo,
@@ -134,7 +133,6 @@ To delete a single secret, use 'swamp vault delete <vault> <key>'.`,
       throw error;
     }
 
-    // Before anything is removed (swamp-club#4097).
     await assertConfigEditCurrent(repoContext, "vault", preview.vaultName);
 
     if (cliCtx.outputMode === "log" && !options.yes) {
@@ -149,10 +147,9 @@ To delete a single secret, use 'swamp vault delete <vault> <key>'.`,
     }
 
     const outcome: { removed?: VaultRemoveData } = {};
-    // The hooked repository marks the removed config's path, so the push
-    // deletes it on the datastore. runManagedConfigMutation's bare mark would
-    // turn the push into a walk that deletes nothing, leaving the vault for
-    // other checkouts.
+    // the hooked repository marks the removed config's path so the push deletes
+    // it on the datastore; the bare mark of runManagedConfigMutation would walk
+    // and delete nothing, leaving the vault for other checkouts
     const publishes = syncService !== undefined &&
       marker?.datastore?.managedConfig === true;
     try {

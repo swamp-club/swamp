@@ -17,14 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Help wording that has to read the same across the whole tree, checked on
- * the root src/cli/mod.ts builds: every --force says whether it is the --yes
- * alias (swamp-club#3836), every --model option says the spelling is kept
- * (swamp-club#3837), and the root states the --json error envelope and the
- * exit codes every command shares (swamp-club#3834).
- */
-
 import "../src/domain/models/models.ts";
 import { assertEquals, assertStringIncludes } from "@std/assert";
 import { buildCommandTree, ROOT_DESCRIPTION } from "../src/cli/mod.ts";
@@ -37,7 +29,6 @@ interface Visited {
   command: AnyCommand;
 }
 
-/** Every command under `command` once, by its canonical names. */
 function walk(command: AnyCommand, path: string[] = []): Visited[] {
   return command.getCommands(true).flatMap((child: AnyCommand) => {
     const childPath = [...path, child.getName()];
@@ -47,7 +38,6 @@ function walk(command: AnyCommand, path: string[] = []): Visited[] {
 
 const commands = walk(root);
 
-/** Each option declared on `command` itself. */
 function localOptions(
   command: AnyCommand,
 ): { flags: string[]; description: string }[] {
@@ -71,7 +61,8 @@ Deno.test("help wording: every --force says whether it is the --yes alias", () =
     }
   }
   assertEquals(unclear, []);
-  // The walk reached the tree: the plain --yes aliases alone number 13.
+  // guards against a walk that reached nothing: the plain --yes aliases alone
+  // are many
   assertEquals(seen >= 13, true, `only ${seen} --force options found`);
 });
 

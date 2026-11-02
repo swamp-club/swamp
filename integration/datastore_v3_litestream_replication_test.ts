@@ -18,15 +18,9 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * The v3 writer's Litestream sidecar against a real Litestream and a file
- * replica (swamp-club#3416, Phase 4 D1). Write commands run in-process;
- * the sidecar is a real detached supervisor with Litestream as its child.
- *
- * These tests spawn processes, which integration tests otherwise avoid:
- * the supervisor (from its entry file, never the swamp CLI) and Litestream
- * are the components under test, and what is checked (idle exits, frozen
- * and orphaned sidecars, process groups) exists only between real
- * processes. Every one they start is killed afterwards.
+ * these tests spawn the real supervisor (never the swamp CLI) and Litestream
+ * because idle exits, frozen and orphaned sidecars and process groups exist
+ * only between real processes; all are killed afterwards
  */
 
 import {
@@ -165,8 +159,6 @@ Deno.test({
     await withReplicationEnv(async (env) => {
       await writeCommand(env, 1);
       const first = (await presenceOf(env))!;
-      // Another writer takes the lease and lets it go, without replicating,
-      // so it records no lineage.
       await withMockedEnv({ [V3_REPLICA_ENV]: undefined }, async () => {
         await (await acquireV3WriterLock(env.datastorePath))();
       });
@@ -263,7 +255,6 @@ Deno.test({
     await withReplicationEnv(async (env) => {
       await writeCommand(env, 1);
       const old = (await presenceOf(env))!;
-      // Only the supervisor dies; its Litestream lives on.
       hostLitestreamProcesses.signal(old.supervisorPid, "SIGKILL");
       await waitFor(
         () => !hostLitestreamProcesses.isAlive(old.supervisorPid),
@@ -289,7 +280,6 @@ Deno.test({
     await withReplicationEnv(async (env) => {
       const paths = await env.paths();
       await Deno.mkdir(paths.sharedDir, { recursive: true, mode: 0o700 });
-      // This test runner's parent: alive, and no sidecar.
       await Deno.writeTextFile(
         paths.presence,
         JSON.stringify({
@@ -333,15 +323,12 @@ Deno.test({
   ignore,
   async fn() {
     await withReplicationEnv(async (env) => {
-      // Enough commits that a snapshot of commits.db shows in the replica's
-      // size against one command's change.
       await writeCommand(env, 40);
       const first = (await presenceOf(env))!;
       const path = replicaPathFor(env.replicaRoot, first.lineageFence);
       // The database's logical size: the copy's main file may not be
       // checkpointed yet.
       const dbBytes = logicalBytes((await env.paths()).commitsDb);
-      // The sidecar is restarted on the same lineage: a killed sidecar.
       hostLitestreamProcesses.signalGroup(first.supervisorPid, "SIGKILL");
       await waitFor(
         () => !hostLitestreamProcesses.isAlive(first.supervisorPid),
@@ -367,7 +354,6 @@ Deno.test({
   ignore,
   async fn() {
     await withReplicationEnv(async (env) => {
-      // Two replicators stand in for two processes: each has its own locks.
       const paths = await env.paths();
       const make = () =>
         new LitestreamReplicator({
@@ -422,9 +408,7 @@ Deno.test({
     await withReplicationEnv(async (env) => {
       await writeCommand(env, 1);
       const first = (await presenceOf(env))!;
-      // A command takes the next fence and ends without its teardown.
       await (await acquireV3WriterLock(env.datastorePath))();
-      // A read-only command recovers the checkout under the fence after.
       const recovery = await tryAcquireV3WriterLock(env.datastorePath);
       assert(recovery !== undefined);
       await recovery();
@@ -450,15 +434,13 @@ Deno.test({
         "the idle exit",
         { timeoutMs: 15_000 },
       );
-      // The database's logical size: the copy's main file may not be
-      // checkpointed yet.
       const dbBytes = logicalBytes((await env.paths()).commitsDb);
       const before = await bytesUnder(path);
       await writeCommand(env, 1);
       const uploaded = await bytesUnder(path) - before;
-      // Recorded for the design record: the stopping Litestream may hold the
-      // last connection, so SQLite can checkpoint the WAL and the next start
-      // can upload a snapshot. Every commit must restore either way.
+      // the stopping Litestream may hold the last connection, so SQLite can
+      // checkpoint the WAL and the next start can upload a snapshot; every
+      // commit must restore either way
       console.error(
         `idle restart uploaded ${uploaded} bytes of a ${dbBytes}-byte database`,
       );
@@ -615,8 +597,6 @@ Deno.test({
           region: "us-east-1",
         }),
       }, async () => {
-        // The emulator's credentials reach Litestream through the
-        // supervisor's environment (AWS_ACCESS_KEY_ID and the rest).
         await writeCommand(env, 2);
         const first = (await presenceOf(env))!;
         await writeCommand(env, 1);
@@ -660,8 +640,6 @@ Deno.test("v3 replication: with the setting unset a write command starts nothing
         ),
         false,
       );
-      // Nothing of Phase 4 D2 either (swamp-club#3482): the shared
-      // commits.db, no lineage records, no checkout copy.
       assertEquals(
         [...Deno.readDirSync(datastorePath)].some((e) =>
           e.name === "commits.db"
@@ -687,7 +665,6 @@ Deno.test("v3 replication: with the setting unset a write command starts nothing
   }
 });
 
-/** Stops a sidecar answering, as a stuck network does: SIGSTOP both. */
 function freeze(presence: { supervisorPid: number; litestreamPid?: number }) {
   hostLitestreamProcesses.signal(presence.litestreamPid!, "SIGSTOP");
   hostLitestreamProcesses.signal(presence.supervisorPid, "SIGSTOP");
@@ -703,7 +680,6 @@ Deno.test({
       await commitIn(env, 1);
       await confirmV3CommandReplicated();
       freeze((await presenceOf(env))!);
-      // Retention's commit, after the command's own.
       await commitIn(env, 1);
       await closeV3Datastores();
     }, { syncDeadlineMs: 1_000 });
@@ -733,7 +709,6 @@ Deno.test({
     await withReplicationEnv(async (env) => {
       await holdV3Writer(env.config, env.repoDir);
       await commitIn(env, 1);
-      // The first lineage is confirmed, so the lineage rule lets it run.
       await confirmV3CommandReplicated();
       const handle = v3DatastoreFor(env.repoDir, env.config);
       const report = await handle.collectChunks(AbortSignal.timeout(30_000));

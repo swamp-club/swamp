@@ -18,17 +18,8 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * Commits a forwarded commit: one a client built and serve authorised
- * (swamp-club#3915). Serve's own writer appends it, under the partition's
- * lock and through the outbox, with serve's writer, fence and namespace; the
- * client supplies only the partition, its txnId, the head it built on and
- * the ops. The caller is stamped as the commit's principal.
- *
- * A retry under the same txnId lands once: a txnId that already landed
- * answers with its seq, when the landed commit is the same one from the same
- * caller, and is refused otherwise.
- *
- * @module
+ * a retry under the same txnId lands once: a landed txnId answers with its seq
+ * when it is the same commit from the same caller, and is refused otherwise
  */
 
 import {
@@ -51,7 +42,6 @@ import { recordLastChange } from "./record_last_change.ts";
 export { StaleSeqError };
 import type { V3Datastore } from "./v3_datastore.ts";
 
-/** What serve hands over to commit, after authorising it. */
 export interface ForwardedCommitRequest {
   readonly partition: PartitionKey;
   readonly txnId: string;
@@ -61,26 +51,20 @@ export interface ForwardedCommitRequest {
    * mismatch means serve's writer changed under it.
    */
   readonly fence?: number;
-  /** The authenticated caller, as serve names it. */
   readonly principal: string;
   readonly ops: readonly Op[];
   /**
-   * The lease op serve stamps for the model lease the commit was made
-   * under (swamp-club#4121), built from serve's own lease record, never
-   * the client's. It lands after the client's ops, and a retry is compared
-   * without it.
+   * built from serve's own lease record, never the client's; it lands after the
+   * client's ops and a retry is compared without it
    */
   readonly lease?: LeaseOp;
 }
 
-/** A landed forwarded commit. */
 export interface ForwardedCommitResult {
   readonly seq: number;
-  /** True when an earlier attempt under the same txnId had landed it. */
   readonly duplicate: boolean;
 }
 
-/** The parts of a v3 handle a forwarded commit uses. */
 export type ForwardedCommitTarget =
   & Pick<
     V3Datastore,
@@ -96,16 +80,10 @@ export type ForwardedCommitTarget =
     };
   };
 
-/**
- * A forwarded commit's precondition failed: the record changed since the
- * client read it. `changedBy` and `changedAt` name the newest commit that
- * touched the key, when it is recent enough to find.
- */
 export class PreconditionConflictError extends Error {
   readonly code = "precondition_failed";
   constructor(
     readonly key: string,
-    /** The partition's head now. */
     readonly seq: number,
     readonly changedBy: string | undefined,
     readonly changedAt: string | undefined,
@@ -119,7 +97,6 @@ export class PreconditionConflictError extends Error {
   }
 }
 
-/** A txnId that landed as another commit, or for another caller. */
 export class TxnIdReusedError extends Error {
   readonly code = "txn_id_reused";
   constructor(readonly txnId: string) {
@@ -128,7 +105,6 @@ export class TxnIdReusedError extends Error {
   }
 }
 
-/** Chunks a forwarded commit names that the store does not hold. */
 export class ChunksMissingError extends Error {
   readonly code = "chunk_missing";
   constructor(readonly missing: readonly string[]) {
@@ -140,16 +116,6 @@ export class ChunksMissingError extends Error {
   }
 }
 
-/**
- * Commits `request` through `v3`'s writer and resolves with its seq.
- *
- * @throws StaleSeqError when the partition's head is not `expectedSeq`
- * @throws PreconditionConflictError when an op's `expect` fails
- * @throws TxnIdReusedError when the txnId landed as another commit
- * @throws ChunksMissingError when a named chunk is not stored
- * @throws WriterFencedError when the client's fence is not the writer's
- * @throws CommitRejectedError for any other refusal of the partition
- */
 export async function commitForwarded(
   v3: ForwardedCommitTarget,
   request: ForwardedCommitRequest,
@@ -204,12 +170,9 @@ export async function commitForwarded(
 }
 
 /**
- * The seq `request`'s txnId landed at, when it did, as a duplicate: refused
- * when the landed commit is another caller's or holds other ops. Serve asks
- * before proof of possession, so a retry of a commit that landed is
- * answered without naming its chunks again (swamp-club#3922).
- *
- * @throws TxnIdReusedError when the txnId landed as another commit
+ * serve asks before proof of possession, so a retry of a landed commit is
+ * answered without naming its chunks again; refused when the landed commit is
+ * another caller's or holds other ops
  */
 export async function landedForwardedCommit(
   v3: ForwardedCommitTarget,
@@ -276,10 +239,6 @@ async function missingChunks(
   return [...missing];
 }
 
-/**
- * The conflict reply of a failed precondition: the key, the head, and who
- * changed the key last, by {@link recordLastChange}.
- */
 async function preconditionConflict(
   v3: ForwardedCommitTarget,
   partition: PartitionKey,

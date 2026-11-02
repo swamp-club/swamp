@@ -67,7 +67,6 @@ Deno.test("RepoMarkerRepository.exists returns true when marker exists", async (
     const repo = new RepoMarkerRepository();
     const repoPath = RepoPath.create(dir);
 
-    // Create marker file manually
     const markerPath = join(dir, ".swamp.yaml");
     await Deno.writeTextFile(markerPath, "swampVersion: 0.1.0\n");
 
@@ -82,7 +81,6 @@ Deno.test("RepoMarkerRepository.exists returns false for directory at marker pat
     const repo = new RepoMarkerRepository();
     const repoPath = RepoPath.create(dir);
 
-    // Create a directory instead of a file
     await Deno.mkdir(join(dir, ".swamp.yaml"));
 
     const result = await repo.exists(repoPath);
@@ -107,7 +105,6 @@ Deno.test("RepoMarkerRepository.read parses YAML correctly", async () => {
     const repo = new RepoMarkerRepository();
     const repoPath = RepoPath.create(dir);
 
-    // Create marker file with known content
     const markerPath = join(dir, ".swamp.yaml");
     const content = `swampVersion: "1.2.3"
 initializedAt: "2024-01-15T10:30:00.000Z"
@@ -356,7 +353,6 @@ Deno.test("RepoMarkerRepository.createInitMarker creates correct data", () => {
 
   assertEquals(marker.swampVersion, "1.0.0");
   assertEquals(typeof marker.initializedAt, "string");
-  // Verify it's a valid ISO date
   const date = new Date(marker.initializedAt);
   assertEquals(isNaN(date.getTime()), false);
   assertEquals(marker.upgradedAt, undefined);
@@ -375,7 +371,6 @@ Deno.test("RepoMarkerRepository.createUpgradeMarker preserves existing data", ()
   assertEquals(marker.swampVersion, "2.0.0");
   assertEquals(marker.initializedAt, "2024-01-15T10:30:00.000Z");
   assertEquals(typeof marker.upgradedAt, "string");
-  // Verify upgradedAt is a valid ISO date
   const date = new Date(marker.upgradedAt!);
   assertEquals(isNaN(date.getTime()), false);
 });
@@ -525,7 +520,6 @@ Deno.test("RepoMarkerRepository.write drops legacy `tool` field", async () => {
     const markerPath = join(dir, ".swamp.yaml");
     const content = await Deno.readTextFile(markerPath);
     assertStringIncludes(content, "tools:");
-    // No top-level `tool:` line
     assertEquals(content.match(/^tool:/m), null);
   });
 });
@@ -587,7 +581,6 @@ Deno.test("RepoMarkerRepository.createUpgradeMarker always sets upgradedAt", () 
   const marker = repo.createUpgradeMarker(existing, newVersion);
 
   assertEquals(marker.upgradedAt !== undefined, true);
-  // The new upgradedAt should be different from the old one
   assertEquals(marker.upgradedAt !== existing.upgradedAt, true);
 });
 

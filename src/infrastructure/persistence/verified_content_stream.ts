@@ -18,30 +18,21 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * A content file's stream, checked against what was staged
- * (swamp-club#3564). A stream-sourced put is read when its unit commits,
- * not when it is staged, so the file must not change in between; if it did
- * (a reader catching up over a stalled writer's checkout), the commit would
- * carry bytes its metadata does not describe. The stream errors at its end
- * instead, and the unit's commit fails with nothing landed.
- *
- * @module
+ * a stream-sourced put is read at commit, so the file must not change after
+ * staging; the stream errors at its end if it did, and the commit fails with
+ * nothing landed
  */
 
 import { createHash } from "node:crypto";
 import { markErrorPaths, UserError } from "../../domain/errors.ts";
 
-/** Error code for a content file that changed between staging and commit. */
 export const STAGED_CONTENT_CHANGED_CODE = "datastore_v3_content_changed";
 
-/** What a content file held when its put was staged. */
 export interface StagedContent {
   readonly size: number;
-  /** Its SHA-256, hex, when the staging knew it. */
   readonly sha256?: string;
 }
 
-/** A content file no longer holds what its staged put described. */
 export class StagedContentChangedError extends UserError {
   constructor(path: string, what: string) {
     super(
@@ -54,11 +45,6 @@ export class StagedContentChangedError extends UserError {
   }
 }
 
-/**
- * `stream`, the content of `path`, erroring at its end with
- * {@link StagedContentChangedError} when its length or digest is not what
- * `staged` says.
- */
 export function verifiedContentStream(
   stream: ReadableStream<Uint8Array>,
   path: string,

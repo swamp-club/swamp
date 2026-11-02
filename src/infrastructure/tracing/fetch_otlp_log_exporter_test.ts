@@ -24,7 +24,6 @@ import { SeverityNumber } from "@opentelemetry/api-logs";
 import type { ReadableLogRecord } from "@opentelemetry/sdk-logs";
 import { FetchOtlpLogExporter } from "./fetch_otlp_log_exporter.ts";
 
-/** Creates a minimal ReadableLogRecord stub for testing. */
 function makeLogRecord(body: string): ReadableLogRecord {
   return {
     hrTime: [1719000000, 0],
@@ -48,7 +47,6 @@ function makeLogRecord(body: string): ReadableLogRecord {
   } as unknown as ReadableLogRecord;
 }
 
-/** Helper to call export and await the result via callback. */
 function exportAndAwait(
   exporter: FetchOtlpLogExporter,
   logs: ReadableLogRecord[],
@@ -181,14 +179,13 @@ Deno.test("FetchOtlpLogExporter: shutdown() drains an in-flight send before reso
   });
 
   globalThis.fetch = async (): Promise<Response> => {
-    await network; // block until released
+    await network;
     sendCompleted = true;
     return new Response(null, { status: 200 });
   };
 
   try {
     const exporter = new FetchOtlpLogExporter({ url: "https://x/v1/logs" });
-    // Kick off an export; the send is now in-flight and blocked.
     exporter.export([makeLogRecord("draining")], () => {});
 
     let shutdownResolved = false;
@@ -196,8 +193,6 @@ Deno.test("FetchOtlpLogExporter: shutdown() drains an in-flight send before reso
       shutdownResolved = true;
     });
 
-    // Give microtasks a chance — shutdown must still be pending while the
-    // network is blocked, proving it awaits the in-flight send.
     await new Promise((r) => setTimeout(r, 20));
     assertEquals(shutdownResolved, false);
     assertEquals(sendCompleted, false);

@@ -90,7 +90,6 @@ function makeManifest(
   };
 }
 
-/** A fetchCollectives answer for a server that reports no entitlement. */
 function lookup(collectives: string[]): CollectiveLookup {
   return { collectives, entitlements: undefined };
 }
@@ -239,7 +238,6 @@ Deno.test("extensionPush: sends private intent to both phases and uses applied v
       throw new Error("Confirmed visibility must not use a lookup");
     },
   });
-  // Reusing the effective manifest after a version bump retains private intent.
   const manifest = makeManifest({ visibility: "private" });
   for (const version of ["2026.09.16.1", "2026.09.16.2"]) {
     const events = await collect(extensionPush(
@@ -433,8 +431,6 @@ Deno.test("extensionPush: non-CLI invalid visibility is rejected before I/O", as
   assertEquals(error.code, "validation_failed");
   assertStringIncludes(error.message, "visibility");
 });
-
-// ── Prepare tests ─────────────────────────────────────────────────────
 
 Deno.test("extensionPushPrepare: not authenticated throws SwampError", async () => {
   const deps = makePrepareDeps({
@@ -945,7 +941,6 @@ Deno.test("extensionPushPrepare: dry run reports authentication as not run when 
     result.registryChecks[0].message,
     "registry did not answer: fetch failed",
   );
-  // A plain collective still passes on the username fallback.
   assertEquals(
     result.registryChecks.find((c) => c.name === "collective-membership")
       ?.status,
@@ -1049,8 +1044,6 @@ Deno.test("extensionPushPrepare: skip mode never loads credentials or contacts t
   assertEquals(result.registryChecks, []);
 });
 
-// ── Private entitlement ───────────────────────────────────────────────
-
 const PRIVATE_REFUSAL =
   "Private publication requires a paid plan or an eligible collective trial";
 const BILLING = "https://test.swamp-club.com/o/testuser/billing";
@@ -1058,7 +1051,6 @@ const EXPIRED_REFUSAL =
   `Collective "@testuser"'s 30-day free trial has ended. ` +
   `Private extensions need a paid plan; upgrade at ${BILLING}.`;
 
-/** The caller's own collective as the registry reports it. */
 function testuserPlan(
   overrides: Partial<CollectiveEntitlement> = {},
 ): CollectiveEntitlement {
@@ -1077,10 +1069,6 @@ const PAID = testuserPlan({ plan: "team", planName: "Team" });
 const NO_TRIAL = testuserPlan({ trial: null });
 const NO_TRIAL_REFUSAL =
   `Private extensions in "@testuser" need a paid plan; upgrade at ${BILLING}.`;
-/**
- * The issue's repro (swamp-club#3311): the personal trial ended, but a paid
- * collective the owner belongs to covers the personal namespace.
- */
 const COVERED = { ...EXPIRED, privateExtensions: "allowed" };
 const PAYWALLED = { ...EXPIRED, privateExtensions: "paywalled" };
 
@@ -1208,7 +1196,6 @@ Deno.test("extensionPushPrepare: public or default intent adds no entitlement ch
       result.registryChecks.some((c) => c.name === "private-entitlement"),
       false,
     );
-    // The entitlement still rides along for a refusal to explain.
     assertEquals(result.collectiveEntitlement, EXPIRED);
   }
 });
@@ -1308,7 +1295,6 @@ Deno.test("extensionPushPrepare: a private push refuses an ended trial or no tri
 });
 
 Deno.test("extensionPushPrepare: a private push to a personal namespace the registry covers goes ahead (swamp-club#3311)", async () => {
-  // Enforce mode: a failed check would throw here instead of returning.
   const result = await extensionPushPrepare(
     ctx,
     entitledDeps([COVERED]),
@@ -1429,8 +1415,6 @@ Deno.test("extensionPush: other failures and public pushes keep the registry's m
   );
   assertEquals(publicPush.message, "Forbidden");
 });
-
-// ── Deps factory tests ────────────────────────────────────────────────
 
 const REGISTRY = "https://registry.test";
 
@@ -1587,8 +1571,8 @@ Deno.test("createExtensionPushPrepareDeps: fetchCollectives reads membership and
   });
   const lookup = await deps.fetchCollectives(REGISTRY, "swamp_key");
   assertEquals(lookup.collectives, ["seth", "acme"]);
-  // The lookup carries the whole entitlement the server sent, including the
-  // fields the domain type does not name.
+  // the lookup carries the whole entitlement the server sent, including fields
+  // the domain type does not name
   assertEquals<unknown>(lookup.entitlements, [
     { slug: "seth", plan: "free", planName: "Free", trial: null },
     {
@@ -1699,8 +1683,6 @@ Deno.test("createExtensionPushPrepareDeps: records the npm, OSV and JSR calls th
   }
 });
 
-// ── Push tests ────────────────────────────────────────────────────────
-
 Deno.test("extensionPush: successful push yields completed", async () => {
   const deps = makeExecuteDeps();
   const input = makeExecuteInput();
@@ -1732,7 +1714,7 @@ Deno.test("extensionPush: warns when manifest has no repository (non-blocking)",
 
   const events = await collect(extensionPush(testCtx, deps, input));
   const last = events[events.length - 1];
-  assertEquals(last.kind, "completed"); // Warning does not block push.
+  assertEquals(last.kind, "completed");
   assertEquals(warnings.length, 1);
   assertStringIncludes(
     warnings[0],
@@ -2025,8 +2007,6 @@ Deno.test("extensionPushPrepare: a symlinked quality.yaml is refused unread, quo
     await Deno.remove(tmp, { recursive: true }).catch(() => {});
   }
 });
-
-// ── Declared acceptances ──────────────────────────────────────────────
 
 const SECRET_FINDING = (file: string, line: number) => ({
   ruleId: "credentials-sensitive-field",
@@ -2450,7 +2430,6 @@ Deno.test("extensionPushPrepare: without a deno.json every bare import still rai
   });
 });
 
-/** The text of each file under the archive's `extension/` directory, by path below it. */
 async function archiveTexts(
   bytes: Uint8Array,
 ): Promise<Record<string, string>> {
@@ -2501,7 +2480,6 @@ Deno.test("extensionPushPrepare: the archive's source carries each bare import's
       ...input,
       denoConfigPath: paths["deno.json"],
       bareImports: await topLevelBareImports(models, paths["deno.json"]),
-      // What the module graph says each target resolved to (swamp-club#3970).
       graphDependencies: {
         packageVersions: {
           "npm:ms@^2": { specifier: "npm:ms@2.1.3" },
@@ -3106,13 +3084,10 @@ Deno.test("extensionPushPrepare: an accepted finding in an additional file maps 
   }
 });
 
-// ── Local gates in collect mode (extension quality) ─────────────────
-
 async function archiveEntries(bytes: Uint8Array): Promise<string[]> {
   return await listTarGzEntries(ReadableStream.from([bytes]));
 }
 
-/** A real extension dir: one model plus the given additional files. */
 async function withCollectFixture(
   additional: Record<string, string>,
   fn: (dir: string, input: ExtensionPushPrepareInput) => Promise<void>,
@@ -3408,14 +3383,12 @@ Deno.test("extensionPushPrepare: a symlinked model the safety gate refuses is ne
     return { deps, seen };
   };
 
-  // A push (enforce) stops at the safety gate.
   const enforced = recording("evil.ts");
   await assertRejects(() =>
     extensionPushPrepare(ctx, enforced.deps, makePrepareInput())
   );
   assertEquals(enforced.seen, []);
 
-  // `extension quality` (collect) runs the later gates without it.
   await withCollectFixture({}, async (dir, input) => {
     const link = join(dir, "models", "evil.ts");
     const withLink: ExtensionPushPrepareInput = {
@@ -3700,8 +3673,6 @@ Deno.test("extensionPushPrepare: dry run reports a yanked version as taken and n
   );
 });
 
-// ── Declared license (optional) ─────────────────────────────────────
-
 Deno.test("extensionPushPrepare: a license is optional — no license and no LICENSE file prepares with no warning", async () => {
   await withCollectFixture({}, async (_dir, input) => {
     const result = await extensionPushPrepare(ctx, makePrepareDeps(), input);
@@ -3748,7 +3719,6 @@ Deno.test("extensionPushPrepare: an invalid or non-SPDX license warns and never 
   }
 });
 
-/** An archive index whose sources load as `loaded` and fail as `failed`. */
 function archiveIndex(
   loaded: Array<
     {
@@ -4224,7 +4194,6 @@ Deno.test("extensionPushPrepare: the archive records each version it ships, with
     );
     const record = JSON.parse(texts["dependency-audit.json"]);
     assertEquals(record.recordVersion, 2);
-    // swamp-club#3972: the consumer keeps bundles of a format it runs.
     assertEquals(record.bundleFormat, BUNDLE_FORMAT_VERSION);
     assertEquals(record.dependencies, [
       {
@@ -4251,7 +4220,6 @@ Deno.test("extensionPushPrepare: the archive records each version it ships, with
       origin: "https://example.com/x.ts",
       modules: { "https://example.com/x.ts": "sha256:00" },
     }]);
-    // One SHA-256 per bundle file, of the bytes the archive holds.
     assertEquals(Object.keys(record.bundles), ["bundles/a.js"]);
     const digest = new Uint8Array(
       await crypto.subtle.digest(

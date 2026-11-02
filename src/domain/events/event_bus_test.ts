@@ -101,7 +101,7 @@ Deno.test("EventBus.subscribe returns unsubscribe function", async () => {
   unsubscribe();
 
   await eventBus.publish(createModelCreated("swamp/echo", "2", "model-2"));
-  assertEquals(received.length, 1); // Still 1, not 2
+  assertEquals(received.length, 1);
 });
 
 Deno.test("EventBus.batch queues events and dispatches at end", async () => {
@@ -115,10 +115,10 @@ Deno.test("EventBus.batch queues events and dispatches at end", async () => {
   await eventBus.batch(async () => {
     await eventBus.publish(createModelCreated("swamp/echo", "1", "model-1"));
     await eventBus.publish(createModelCreated("swamp/echo", "2", "model-2"));
-    assertEquals(received.length, 0); // Not dispatched yet during batch
+    assertEquals(received.length, 0);
   });
 
-  assertEquals(received.length, 2); // Dispatched after batch completes
+  assertEquals(received.length, 2);
 });
 
 Deno.test("EventBus.batch returns value from function", async () => {

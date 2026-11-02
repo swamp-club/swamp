@@ -19,10 +19,6 @@
 
 import type { ReportDefinition, ReportScope } from "./report.ts";
 
-/**
- * Metadata for a lazily-indexed report type. The type is known to exist
- * (from the bundle catalog) but its bundle has not been imported yet.
- */
 export interface LazyReportEntry {
   type: string;
   bundlePath: string;
@@ -30,14 +26,6 @@ export interface LazyReportEntry {
   version: string;
 }
 
-/**
- * Registry of all known report definitions.
- *
- * Supports lazy loading of user extensions via {@link setLoader} and
- * {@link ensureLoaded}. With per-bundle lazy loading, the registry also
- * tracks "lazy entries" — types that are known to exist (from the bundle
- * catalog) but whose bundles have not been imported yet.
- */
 export class ReportRegistry {
   private reports = new Map<string, ReportDefinition>();
   private readonly lazyTypes = new Map<string, LazyReportEntry>();
@@ -48,33 +36,24 @@ export class ReportRegistry {
   private typeLoadPromises = new Map<string, Promise<void>>();
   private typeLoader: ((type: string) => Promise<void>) | null = null;
 
-  /** Configures the lazy loader for user report extensions. */
   setLoader(loader: () => Promise<void>): void {
     this.extensionLoader = loader;
   }
 
-  /** Configures the per-type loader for on-demand bundle imports. */
   setTypeLoader(loader: (type: string) => Promise<void>): void {
     this.typeLoader = loader;
   }
 
-  /**
-   * Registers a lazy report entry — a type known to exist from the bundle
-   * catalog but not yet imported. Does nothing if the type is already
-   * registered (either fully loaded or lazy).
-   */
   registerLazy(entry: LazyReportEntry): void {
     const key = entry.type;
     if (this.reports.has(key) || this.lazyTypes.has(key)) return;
     this.lazyTypes.set(key, entry);
   }
 
-  /** Returns true if a type is registered as lazy (not yet imported). */
   isLazy(name: string): boolean {
     return this.lazyTypes.has(name);
   }
 
-  /** Ensures user report extensions have been loaded. */
   async ensureLoaded(): Promise<void> {
     if (this.extensionsLoaded) return;
     if (!this.extensionLoader) return;
@@ -87,20 +66,14 @@ export class ReportRegistry {
     await this.extensionLoadPromise;
   }
 
-  /**
-   * Clears the extension-loaded flag so the next call to
-   * {@link ensureLoaded} re-runs the configured loader.
-   */
   resetLoadedFlag(): void {
     this.extensionsLoaded = false;
     this.extensionLoadPromise = null;
   }
 
   /**
-   * Test-only: removes the configured loaders and clears the loaded state,
-   * so loaders a test installed do not leak into later tests. It does not
-   * restore loaders set before the test, and does not clear
-   * already-registered types.
+   * test-only: removes the configured loaders and loaded state; does not
+   * restore loaders set before the test or clear already-registered types
    */
   clearLoadersForTesting(): void {
     this.extensionLoader = null;
@@ -109,21 +82,12 @@ export class ReportRegistry {
     this.extensionLoadPromise = null;
   }
 
-  /**
-   * Surgically removes a single report from the registry so it can be
-   * re-registered with updated metadata after a bundle upgrade.
-   */
   invalidateType(name: string): void {
     this.reports.delete(name);
     this.lazyTypes.delete(name);
     this.typeLoadPromises.delete(name);
   }
 
-  /**
-   * Ensures a specific report type's bundle has been imported.
-   * If the type is lazy, invokes the type loader to import just that bundle.
-   * Concurrent callers for the same type share the same promise.
-   */
   async ensureTypeLoaded(name: string): Promise<void> {
     if (this.reports.has(name)) return;
     if (!this.lazyTypes.has(name)) return;
@@ -137,9 +101,9 @@ export class ReportRegistry {
     if (!promise) {
       const loader = this.typeLoader;
       promise = loader(name).then(() => {
-        // A loader that skipped a stale or broken bundle never promoted
-        // the type; drop the lazy entry so later lookups report it as
-        // unknown instead of retrying (swamp-club#2490).
+        // a loader that skipped a stale or broken bundle never promoted the
+        // type; drop the lazy entry so later lookups report it as unknown
+        // instead of retrying
         if (!this.reports.has(name)) {
           this.lazyTypes.delete(name);
         }
@@ -153,10 +117,6 @@ export class ReportRegistry {
     await promise;
   }
 
-  /**
-   * Promotes a lazy entry to a fully loaded report.
-   * Called by the type loader after importing a bundle.
-   */
   promoteFromLazy(name: string, report: ReportDefinition): void {
     this.lazyTypes.delete(name);
     if (!this.reports.has(name)) {
@@ -164,13 +124,6 @@ export class ReportRegistry {
     }
   }
 
-  /**
-   * Registers a report definition.
-   *
-   * @param name - Unique name for the report
-   * @param report - The report definition
-   * @throws If a report with the same name is already registered
-   */
   register(name: string, report: ReportDefinition): void {
     if (this.reports.has(name)) {
       throw new Error(`Report already registered: ${name}`);
@@ -178,33 +131,21 @@ export class ReportRegistry {
     this.reports.set(name, report);
   }
 
-  /**
-   * Registers a report that ships with swamp. No pulled extension may
-   * replace or remove it (swamp-club#2746).
-   */
+  /** built-in reports cannot be replaced or removed by pulled extensions */
   registerBuiltIn(name: string, report: ReportDefinition): void {
     this.register(name, report);
     this.builtInNames.add(name.toLowerCase());
   }
 
-  /**
-   * True for a report registered with {@link registerBuiltIn}. Matches any
-   * letter case, because pulled report rows carry lowercased names.
-   */
+  /** matches any letter case because pulled report rows carry lowercased names */
   isBuiltIn(name: string): boolean {
     return this.builtInNames.has(name.toLowerCase());
   }
 
-  /**
-   * Gets a report definition by name. Returns undefined for lazy types.
-   */
   get(name: string): ReportDefinition | undefined {
     return this.reports.get(name);
   }
 
-  /**
-   * Returns all fully loaded reports.
-   */
   getAll(): Array<{ name: string; report: ReportDefinition }> {
     return Array.from(this.reports.entries()).map(([name, report]) => ({
       name,
@@ -212,35 +153,24 @@ export class ReportRegistry {
     }));
   }
 
-  /**
-   * Returns all lazy report entries (not yet imported).
-   */
   getAllLazy(): LazyReportEntry[] {
     return Array.from(this.lazyTypes.values());
   }
 
-  /**
-   * Returns all reports matching a specific scope.
-   */
   getByScope(
     scope: ReportScope,
   ): Array<{ name: string; report: ReportDefinition }> {
     return this.getAll().filter(({ report }) => report.scope === scope);
   }
 
-  /**
-   * Checks if a report is registered (either fully loaded or lazy).
-   */
   has(name: string): boolean {
     return this.reports.has(name) || this.lazyTypes.has(name);
   }
 }
 
 /**
- * Global report registry instance.
- *
- * Uses globalThis so that the same registry is shared across module
- * boundaries (e.g., when extensions are loaded outside the bundle).
+ * kept on globalThis so one registry is shared across module boundaries, e.g.
+ * extensions loaded outside the bundle
  */
 const REPORT_REGISTRY_KEY = "__swampReportRegistry";
 // deno-lint-ignore no-explicit-any

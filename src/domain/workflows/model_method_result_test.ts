@@ -127,7 +127,6 @@ Deno.test("modelMethodResourceResult: a typed consumer is handed the stored reco
     "_swamp.sensitiveFields": JSON.stringify(["password"]),
   });
   assertEquals(typed.attributes, { password: REFERENCE, host: "h" });
-  // Text content is text for both, and nothing written answers undefined.
   {
     assertEquals(
       await modelMethodResourceResult(

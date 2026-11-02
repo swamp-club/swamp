@@ -17,21 +17,9 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// Architectural fitness test: one sentinel registry per run (typed-secrets
-// Section 3.2, swamp-club#3558).
-//
-// Every VaultSecretBag is a view of its run's SecretBagRegistry, carried by
-// RunSensitiveValues, so a sentinel issued in any pass resolves from any
-// step's bag. A bag over a registry of its own breaks that silently: a
-// sentinel from an earlier pass would be delivered as literal text. The
-// constructor requires a registry, so the places that create one are the
-// whole story, and they are pinned here.
-//
-// A vault.get() value is read only at delivery (typed-secrets Section 3.3,
-// swamp-club#3562): the SecretLoader is the one place that reads a value for
-// delivery and builds the delivery view that holds it, so a new read path
-// cannot fill a bag before delivery, or around the loader's access scope and
-// redaction.
+// one sentinel registry per run: every bag views its run's registry, and a
+// vault.get value is read only at delivery by SecretLoader; the places that
+// create either are pinned
 
 import {
   assertPinnedSet,
@@ -41,14 +29,6 @@ import {
   SRC_DIR,
 } from "./arch_fitness_helpers.ts";
 
-/**
- * Where a registry may be created outside tests:
- * - the run's record of sensitive values, which every run creates once;
- * - independent nested invocations, through SecretBagRegistry.independent;
- * - a worker rebuilding a dispatched bag, which is that worker's whole run;
- * - the evaluation service's fallback for callers with no run context (the
- *   validate pre-flight checks).
- */
 const REGISTRY_CREATORS = [
   "src/domain/expressions/expression_evaluation_service.ts",
   "src/domain/secrets/run_sensitive_values.ts",
@@ -78,7 +58,6 @@ Deno.test("secret bag registry: only the pinned production files create a regist
   );
 });
 
-/** Production files whose code, comments aside, matches `pattern`. */
 async function filesMatching(pattern: RegExp): Promise<string[]> {
   const files: string[] = [];
   for await (const filePath of productionSourceFiles(SRC_DIR)) {

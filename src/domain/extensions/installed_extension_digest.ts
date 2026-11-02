@@ -19,29 +19,14 @@
 
 import { computeChecksum } from "../models/checksum.ts";
 
-/**
- * A single file's contribution to the installed-extension digest.
- *
- * `relPath` is the file's path relative to the per-extension root, using
- * forward slashes regardless of OS. `contentSha` is the hex-encoded SHA-256
- * of the file's raw bytes. Infrastructure code produces these entries; the
- * domain rolls them up into a single digest.
- */
 export interface InstalledExtensionDigestEntry {
   relPath: string;
   contentSha: string;
 }
 
 /**
- * Rolls a set of per-file SHA-256 hashes into a single stable digest.
- *
- * Determinism: entries are sorted by relPath, then encoded as lines of
- * `<relPath>\0<contentSha>\n` and hashed. Sorting guarantees stability
- * regardless of the order callers pass entries in; the NUL separator
- * prevents path/content ambiguity for paths containing newlines.
- *
- * Pure: no filesystem access. Infrastructure reads files and produces
- * entries; this function combines them.
+ * sorted by relPath so the digest is stable regardless of caller order; the NUL
+ * separator prevents path/content ambiguity for paths containing newlines
  */
 export async function computeInstalledExtensionDigest(
   entries: InstalledExtensionDigestEntry[],

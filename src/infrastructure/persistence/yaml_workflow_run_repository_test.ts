@@ -176,12 +176,10 @@ Deno.test("YamlWorkflowRunRepository.findAllByWorkflowId returns all runs", asyn
     const repo = new YamlWorkflowRunRepository(dir);
     const workflow = createTestWorkflow();
 
-    // Create and save multiple runs
     const run1 = WorkflowRun.create(workflow);
     run1.start();
     await repo.save(workflow.id, run1);
 
-    // Small delay to ensure different timestamps
     await new Promise((r) => setTimeout(r, 10));
 
     const run2 = WorkflowRun.create(workflow);
@@ -208,15 +206,12 @@ Deno.test("YamlWorkflowRunRepository.findLatestByWorkflowId returns most recent"
     const repo = new YamlWorkflowRunRepository(dir);
     const workflow = createTestWorkflow();
 
-    // Create and save first run
     const run1 = WorkflowRun.create(workflow);
     run1.start();
     await repo.save(workflow.id, run1);
 
-    // Small delay to ensure different timestamps
     await new Promise((r) => setTimeout(r, 10));
 
-    // Create and save second run (should be latest)
     const run2 = WorkflowRun.create(workflow);
     run2.start();
     await repo.save(workflow.id, run2);
@@ -244,7 +239,7 @@ Deno.test("YamlWorkflowRunRepository.nextId returns unique IDs", () => {
   const id2 = repo.nextId();
 
   assertNotEquals(id1, id2);
-  assertEquals(id1.length, 36); // UUID length
+  assertEquals(id1.length, 36);
 });
 
 Deno.test("YamlWorkflowRunRepository preserves run state", async () => {
@@ -253,7 +248,6 @@ Deno.test("YamlWorkflowRunRepository preserves run state", async () => {
     const workflow = createTestWorkflow();
     const run = WorkflowRun.create(workflow);
 
-    // Set various states
     run.start();
     const jobRun = run.getJob("job1");
     jobRun?.start();
@@ -325,12 +319,10 @@ Deno.test("YamlWorkflowRunRepository.findAllGlobal returns runs from multiple wo
     const workflow1 = createTestWorkflow();
     const workflow2 = createTestWorkflow2();
 
-    // Create runs for workflow 1
     const run1 = WorkflowRun.create(workflow1);
     run1.start();
     await repo.save(workflow1.id, run1);
 
-    // Create runs for workflow 2
     const run2 = WorkflowRun.create(workflow2);
     run2.start();
     await repo.save(workflow2.id, run2);
@@ -338,7 +330,6 @@ Deno.test("YamlWorkflowRunRepository.findAllGlobal returns runs from multiple wo
     const allRuns = await repo.findAllGlobal();
     assertEquals(allRuns.length, 2);
 
-    // Verify both workflows are represented
     const workflowIds = allRuns.map((r) => r.workflowId);
     assertEquals(workflowIds.includes(workflow1.id), true);
     assertEquals(workflowIds.includes(workflow2.id), true);
@@ -360,15 +351,12 @@ Deno.test("YamlWorkflowRunRepository.findAllGlobal sorts by startedAt descending
     const workflow1 = createTestWorkflow();
     const workflow2 = createTestWorkflow2();
 
-    // Create first run (older)
     const run1 = WorkflowRun.create(workflow1);
     run1.start();
     await repo.save(workflow1.id, run1);
 
-    // Small delay to ensure different timestamps
     await new Promise((r) => setTimeout(r, 10));
 
-    // Create second run (newer)
     const run2 = WorkflowRun.create(workflow2);
     run2.start();
     await repo.save(workflow2.id, run2);
@@ -376,7 +364,6 @@ Deno.test("YamlWorkflowRunRepository.findAllGlobal sorts by startedAt descending
     const allRuns = await repo.findAllGlobal();
     assertEquals(allRuns.length, 2);
 
-    // Most recent should be first
     assertEquals(allRuns[0].run.id, run2.id);
     assertEquals(allRuns[1].run.id, run1.id);
   });
@@ -387,7 +374,6 @@ Deno.test("YamlWorkflowRunRepository.deleteAllByWorkflowId deletes all runs for 
     const repo = new YamlWorkflowRunRepository(dir);
     const workflow = createTestWorkflow();
 
-    // Create and save multiple runs
     const run1 = WorkflowRun.create(workflow);
     run1.start();
     await repo.save(workflow.id, run1);
@@ -396,15 +382,12 @@ Deno.test("YamlWorkflowRunRepository.deleteAllByWorkflowId deletes all runs for 
     run2.start();
     await repo.save(workflow.id, run2);
 
-    // Verify runs exist
     const runsBefore = await repo.findAllByWorkflowId(workflow.id);
     assertEquals(runsBefore.length, 2);
 
-    // Delete all runs
     const deletedCount = await repo.deleteAllByWorkflowId(workflow.id);
     assertEquals(deletedCount, 2);
 
-    // Verify runs are gone
     const runsAfter = await repo.findAllByWorkflowId(workflow.id);
     assertEquals(runsAfter.length, 0);
   });
@@ -457,7 +440,6 @@ Deno.test("YamlWorkflowRunRepository.deleteAllByWorkflowId does not affect other
     const workflow1 = createTestWorkflow();
     const workflow2 = createTestWorkflow2();
 
-    // Create runs for both workflows
     const run1 = WorkflowRun.create(workflow1);
     run1.start();
     await repo.save(workflow1.id, run1);
@@ -466,14 +448,11 @@ Deno.test("YamlWorkflowRunRepository.deleteAllByWorkflowId does not affect other
     run2.start();
     await repo.save(workflow2.id, run2);
 
-    // Delete only workflow1's runs
     await repo.deleteAllByWorkflowId(workflow1.id);
 
-    // Verify workflow1 runs are gone
     const runs1After = await repo.findAllByWorkflowId(workflow1.id);
     assertEquals(runs1After.length, 0);
 
-    // Verify workflow2 runs still exist
     const runs2After = await repo.findAllByWorkflowId(workflow2.id);
     assertEquals(runs2After.length, 1);
   });
@@ -497,8 +476,6 @@ Deno.test("YamlWorkflowRunRepository invokes markDirty with relPath on mutations
     const run = WorkflowRun.create(workflow);
     run.start();
 
-    // Each mutation marks before it and again after it (swamp-club#2421).
-    // save → per-run yaml path
     await repo.save(workflow.id, run);
     const runPath = repo.getPath(workflow.id, run.id);
     assertEquals(calls, [runPath, runPath]);
@@ -507,7 +484,6 @@ Deno.test("YamlWorkflowRunRepository invokes markDirty with relPath on mutations
     await repo.findAllByWorkflowId(workflow.id);
     assertEquals(calls.length, 2);
 
-    // deleteAllByWorkflowId → runs directory path (not bulk)
     await repo.deleteAllByWorkflowId(workflow.id);
     const runsDir = join(dir, ".swamp", "workflow-runs", workflow.id);
     assertEquals(calls.slice(2), [runsDir, runsDir]);
@@ -524,7 +500,6 @@ Deno.test("findAllGlobalSince: returns only in-window runs", async () => {
     const repo = new YamlWorkflowRunRepository(dir);
     const workflow = createTestWorkflow();
 
-    // A run that started, and was last saved, a week ago.
     const oldDate = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
     const old = await saveRunStartedAt(repo, workflow.id, workflow, oldDate);
     const oldPath = repo.getPath(workflow.id, old.id);
@@ -549,15 +524,14 @@ Deno.test(
       const repo = new YamlWorkflowRunRepository(dir);
       const workflow = createTestWorkflow();
 
-      // A run that started 2 days ago.
       const longRunning = WorkflowRun.create(workflow);
       longRunning.start();
       await repo.save(workflow.id, longRunning);
       const path = repo.getPath(workflow.id, longRunning.id);
       const startedLongAgo = new Date(Date.now() - 2 * 24 * 60 * 60 * 1000);
-      // Re-write the YAML with a startedAt 2 days in the past, then bump
-      // mtime to "now" to simulate a long-running workflow that the engine
-      // saved into recently — Stage A passes, Stage B must reject.
+      // startedAt is old but mtime is bumped to now, as for a long-running
+      // workflow saved recently: the mtime pre-filter passes it and the
+      // startedAt check must reject it
       const content = await Deno.readTextFile(path);
       const patched = content.replace(
         /startedAt: .*/,
@@ -582,9 +556,8 @@ Deno.test(
       const repo = new YamlWorkflowRunRepository(dir);
       const workflow = createTestWorkflow();
 
-      // An old run whose mtime got scrambled by a backup-restore — mtime is
-      // "now" but the YAML startedAt is far in the past. Stage A is defeated
-      // (we won't skip), but Stage B catches it.
+      // an old run whose mtime was scrambled by a backup restore: the mtime
+      // pre-filter will not skip it, the startedAt check catches it
       const old = WorkflowRun.create(workflow);
       old.start();
       await repo.save(workflow.id, old);
@@ -622,9 +595,6 @@ Deno.test(
       doomed.start();
       await repo.save(workflow.id, doomed);
 
-      // Simulate a concurrent deletion by removing the file. Pre-fix
-      // behavior: NotFound thrown by Deno.stat propagates to the
-      // workflow-level catch, returning [] and losing `keep` too.
       await Deno.remove(repo.getPath(workflow.id, doomed.id));
 
       const cutoff = new Date(Date.now() - 60 * 60 * 1000);
@@ -638,7 +608,6 @@ Deno.test(
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
-/** A running run of `workflow` that started at `startedAt`, saved under `workflowId`. */
 async function saveRunStartedAt(
   repo: YamlWorkflowRunRepository,
   workflowId: WorkflowId,
@@ -655,11 +624,6 @@ async function saveRunStartedAt(
   return run;
 }
 
-/**
- * Runs `fn` recording each run record read under `dir`, and the most
- * listings, stats and reads under `dir` in flight at once. Each waits a
- * macrotask, so concurrent ones overlap even on a fast disk.
- */
 async function trackScanOpens<T>(
   dir: string,
   fn: () => Promise<T>,
@@ -835,7 +799,6 @@ Deno.test(
     await withTempDir(async (dir) => {
       const repo = new YamlWorkflowRunRepository(dir);
       const workflow = createTestWorkflow();
-      // Saved pending, so its entry has no startedAt.
       const run = WorkflowRun.create(workflow);
       await repo.save(workflow.id, run);
       const runsDir = runsDirOf(dir, workflow.id);
@@ -875,8 +838,6 @@ Deno.test(
       fresh.start();
       await repo.save(workflow.id, fresh);
       const runsDir = runsDirOf(dir, workflow.id);
-      // A hand-placed record, and an entry under its file name that says it
-      // started long ago, so the counts match.
       await Deno.copyFile(
         repo.getPath(workflow.id, fresh.id),
         join(runsDir, "workflow-run-not-a-uuid.yaml"),
@@ -907,8 +868,6 @@ Deno.test(
       const repo = new YamlWorkflowRunRepository(dir);
       const workflow = createTestWorkflow();
       const base = Date.now();
-      // Two runs in different workflows share a startedAt, so ties must
-      // keep walk order; the rest are spread across the cutoff.
       const tie = new Date(base - 10 * 60 * 1000);
       for (let w = 0; w < 6; w++) {
         const workflowId = createWorkflowId(crypto.randomUUID());
@@ -923,7 +882,6 @@ Deno.test(
             startedAt,
           );
           if (r === 4) {
-            // Its jobs never ran, so it completes as failed.
             run.complete();
             await repo.save(workflowId, run);
           }
@@ -977,7 +935,6 @@ Deno.test(
       }
       const cutoff = new Date(Date.now() - 60 * 60 * 1000);
 
-      // Each scan alone opens more than one at a time.
       for (
         const scan of [
           () => repo.findAllGlobalSince(cutoff),
@@ -1005,7 +962,7 @@ Deno.test(
       );
       for (const found of result) assertEquals(found.length, 72);
       assertEquals(open, 0);
-      // Bounded across the scans (24 scans unbounded open up to 24).
+      // the bound is shared across the scans, not applied per scan
       assert(peak <= 16, `${peak} open at once`);
       assert(peak > 1, `${peak} open at once`);
     });
@@ -1037,9 +994,8 @@ Deno.test(
   },
 );
 
-// Writes a raw run YAML directly (bypassing save/toData) so tests can exercise
-// records the summary read must tolerate — e.g. huge inline outputs or a
-// malformed jobs subtree that full-aggregate validation would reject.
+// writes a raw run YAML directly, bypassing save, for records the summary read
+// must tolerate that full-aggregate validation would reject
 async function writeRawRun(
   repo: YamlWorkflowRunRepository,
   workflowId: WorkflowId,
@@ -1094,7 +1050,6 @@ Deno.test(
       const summaries = await repo.findAllSummariesByWorkflowId(workflowId);
 
       assertEquals(summaries.length, 2);
-      // Most recent first.
       assertEquals(summaries[0].id, "22222222-2222-2222-2222-222222222222");
       assertEquals(summaries[1].id, "11111111-1111-1111-1111-111111111111");
       assertEquals(summaries[1].tags, { env: "prod" });
@@ -1171,9 +1126,6 @@ Deno.test(
       const repo = new YamlWorkflowRunRepository(dir);
       const workflowId = createWorkflowId(WF_ID);
 
-      // jobs is not an array and the step status is invalid — WorkflowRunSchema
-      // (used by findAllByWorkflowId via fromData) would reject this, but the
-      // summary read only looks at the displayed fields.
       await writeRawRun(
         repo,
         workflowId,
@@ -1222,8 +1174,6 @@ Deno.test(
     });
   },
 );
-
-// --- Index-backed methods ---
 
 Deno.test("save: creates index entry alongside YAML file", async () => {
   await withTempDir(async (dir) => {
@@ -1305,7 +1255,6 @@ Deno.test("findAllSummariesFromIndex: returns summaries from index", async () =>
   });
 });
 
-/** Sets the run index file and the records directory back a minute. */
 async function settleRunIndex(dir: string, workflowId: WorkflowId) {
   const runsDir = join(dir, ".swamp", "workflow-runs", workflowId);
   const when = new Date(Date.now() - 60_000);
@@ -1314,14 +1263,12 @@ async function settleRunIndex(dir: string, workflowId: WorkflowId) {
 }
 
 /**
- * A run index cache clock a minute ahead, for a repository whose snapshots
- * a test expects to be kept: `Deno.utime` sets a file's mtime back but
- * moves its ctime to now, and a recent ctime is not trusted
- * (swamp-club#3467).
+ * a run index cache clock a minute ahead: utime sets mtime back but moves ctime
+ * to now, and a recent ctime is not trusted, so snapshots a test expects kept
+ * need this clock
  */
 const aheadClock = () => Date.now() + 60_000;
 
-/** A repository whose run index cache judges file times by `aheadClock`. */
 function keepingRepo(dir: string): YamlWorkflowRunRepository {
   return new YamlWorkflowRunRepository(
     dir,
@@ -1336,7 +1283,6 @@ function runsDirOf(dir: string, workflowId: WorkflowId): string {
   return join(dir, ".swamp", "workflow-runs", workflowId);
 }
 
-/** Copies a run's record to a new run id, as another writer would add it. */
 async function copyRecord(
   dir: string,
   workflowId: WorkflowId,
@@ -1378,7 +1324,6 @@ Deno.test("countRunRecords: stops listing once its signal aborts", async () => {
     const workflow = createTestWorkflow();
     const aborted = new AbortController();
     aborted.abort(new Error("stopped"));
-    // No runs directory yet: an aborted count still rejects.
     await assertRejects(
       () => repo.countRunRecords(workflow.id, aborted.signal),
       Error,
@@ -1467,8 +1412,6 @@ Deno.test("runIndexSnapshot: does not keep a snapshot while the index ctime is r
     const run = WorkflowRun.create(workflow);
     run.start();
     await repo.save(workflow.id, run);
-    // Sets the mtimes back, as a rewrite in place that restores them
-    // would, and moves the index's ctime to now.
     await settleRunIndex(dir, workflow.id);
     // A platform that reports no ctime (Windows) has nothing to tell the
     // rewrite by, and keeps the snapshot.
@@ -1610,7 +1553,6 @@ Deno.test("runIndexSnapshot: sees runs another process saves, and an index anoth
       "running",
     );
 
-    // Same record count: only the index file changes.
     run.interruptOrphaned("test");
     await writer.save(workflow.id, run);
     assertEquals(
@@ -1665,7 +1607,6 @@ Deno.test("findAllSummariesFromIndex: falls back to YAML scan when index missing
     run.start();
     await repo.save(workflow.id, run);
 
-    // Delete the index to force fallback
     const runsDir = join(dir, ".swamp", "workflow-runs", workflow.id);
     await Deno.remove(getIndexPath(runsDir));
 
@@ -1680,13 +1621,10 @@ Deno.test("findAllSummariesFromIndex: rebuilds stale index missing triggerSource
     const repo = new YamlWorkflowRunRepository(dir);
     const workflow = createTestWorkflow();
 
-    // Save a run with triggerSource
     const run = WorkflowRun.create(workflow, {}, undefined, "schedule");
     run.start();
     await repo.save(workflow.id, run);
 
-    // Overwrite the index with an old-format file (flat JSON, no
-    // triggerSource) simulating a pre-upgrade cache
     const runsDir = join(dir, ".swamp", "workflow-runs", workflow.id);
     const oldIndex: Record<string, unknown> = {
       [run.id]: {
@@ -1696,7 +1634,6 @@ Deno.test("findAllSummariesFromIndex: rebuilds stale index missing triggerSource
         startedAt: run.startedAt?.toISOString(),
         tags: {},
         inputs: {},
-        // triggerSource deliberately omitted
       },
     };
     await Deno.writeTextFile(
@@ -1704,7 +1641,6 @@ Deno.test("findAllSummariesFromIndex: rebuilds stale index missing triggerSource
       JSON.stringify(oldIndex),
     );
 
-    // The search must rebuild from YAML and return the real triggerSource
     const summaries = await repo.findAllSummariesFromIndex(workflow.id);
     assertEquals(summaries.length, 1);
     assertEquals(summaries[0].triggerSource, "schedule");
@@ -1752,8 +1688,6 @@ Deno.test("findSummariesByStatus: rebuilds stale index", async () => {
     run1.start();
     await repo.save(workflow.id, run1);
 
-    // Manually write a second YAML file without updating the index
-    // to simulate a concurrent write race
     const run2 = WorkflowRun.create(workflow);
     run2.start();
     run2.suspend();
@@ -1766,7 +1700,6 @@ Deno.test("findSummariesByStatus: rebuilds stale index", async () => {
       stringifyYaml(cleanData as Record<string, unknown>),
     );
 
-    // Index has 1 entry, but 2 YAML files exist — staleness detected
     const suspended = await repo.findSummariesByStatus(
       workflow.id,
       "suspended",
@@ -1782,11 +1715,9 @@ Deno.test("findSummariesByStatus: an aborted signal stops a rebuild before it wr
     const workflow = createTestWorkflow();
     const indexDir = join(dir, ".swamp", "workflow-runs", workflow.id);
     await saveRunningRuns(repo, workflow, 3);
-    // An index of another schema version: the next read rebuilds it whole.
     const stale = JSON.stringify({ version: 0, entries: {} });
     await Deno.writeTextFile(getIndexPath(indexDir), stale);
 
-    // Aborted while the rebuild reads its first record.
     const abort = new AbortController();
     const original = Deno.readTextFile;
     let recordReads = 0;
@@ -1807,11 +1738,9 @@ Deno.test("findSummariesByStatus: an aborted signal stops a rebuild before it wr
     } finally {
       Deno.readTextFile = original;
     }
-    // It stopped before the next record, and wrote nothing.
     assertEquals(recordReads, 1);
     assertEquals(await Deno.readTextFile(getIndexPath(indexDir)), stale);
 
-    // Without the signal the same read rebuilds it.
     assertEquals(
       (await repo.findSummariesByStatus(workflow.id, "running")).length,
       3,
@@ -1847,11 +1776,9 @@ Deno.test("index: corrupt JSON triggers rebuild on read", async () => {
     run.start();
     await repo.save(workflow.id, run);
 
-    // Corrupt the index
     const runsDir = join(dir, ".swamp", "workflow-runs", workflow.id);
     await Deno.writeTextFile(getIndexPath(runsDir), "{{corrupt}}");
 
-    // Should fall back to YAML scan
     const summaries = await repo.findAllSummariesFromIndex(workflow.id);
     assertEquals(summaries.length, 1);
     assertEquals(summaries[0].status, "running");
@@ -1873,7 +1800,6 @@ Deno.test("findLatestByWorkflowId: uses index without loading all runs", async (
     run2.start();
     await repo.save(workflow.id, run2);
 
-    // Index exists from save — findLatestByWorkflowId should use it
     const runsDir = join(dir, ".swamp", "workflow-runs", workflow.id);
     const index = await readRunIndex(runsDir);
     assertNotEquals(index, null);
@@ -1900,7 +1826,6 @@ Deno.test("findLatestByWorkflowId: falls back to summary scan when index missing
     run2.start();
     await repo.save(workflow.id, run2);
 
-    // Delete the index to force fallback to summary scan
     const runsDir = join(dir, ".swamp", "workflow-runs", workflow.id);
     await Deno.remove(getIndexPath(runsDir));
     const index = await readRunIndex(runsDir);
@@ -1974,8 +1899,6 @@ Deno.test("findGlobalByStatus: respects since cutoff", async () => {
     old.start();
     await repo.save(workflow.id, old);
 
-    // Patch the YAML so startedAt is 7 days ago, then delete the index
-    // so it rebuilds from the patched YAML on the next read.
     const oldPath = repo.getPath(workflow.id, old.id);
     const oldDate = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
     const content = await Deno.readTextFile(oldPath);
@@ -2060,13 +1983,11 @@ Deno.test("save: index is written to local path, not cache baseDir", async () =>
       run.start();
       await repo.save(workflow.id, run);
 
-      // Index must be under the repo-local .swamp/ path
       const localIndexDir = join(dir, ".swamp", "workflow-runs", workflow.id);
       const localIndex = await readRunIndex(localIndexDir);
       assertNotEquals(localIndex, null, "index must exist under local .swamp/");
       assertEquals(localIndex!.entries[run.id]?.status, "running");
 
-      // Index must NOT be in the cache baseDir (would pollute sync)
       const cacheIndex = await readRunIndex(join(cacheDir, workflow.id));
       assertEquals(cacheIndex, null, "index must not exist in cache baseDir");
     } finally {
@@ -2134,8 +2055,6 @@ Deno.test("YamlWorkflowRunRepository.findGlobalById: returns the same aggregate 
     assertNotEquals(viaGlobal, null);
     assertEquals(viaGlobal!.run.id, viaDirect!.id);
     assertEquals(viaGlobal!.run.status, viaDirect!.status);
-    // logFile must come back absolute, exactly as the scan path returns it —
-    // `workflow history logs` reads run.logFile directly.
     assertEquals(viaGlobal!.run.logFile, viaDirect!.logFile);
     assert(isAbsolute(viaGlobal!.run.logFile!));
   });
@@ -2186,10 +2105,9 @@ Deno.test("YamlWorkflowRunRepository.findGlobalById: keeps scanning when a direc
     target.start();
     await repo.save(workflowB.id, target);
 
-    // A file at the target's exact path in another workflow directory, holding
-    // a different run. findById returns null for it, so the scan must continue
-    // to the directory that really owns the run rather than give up — the same
-    // branch a run deleted between stat and read takes.
+    // a decoy at the target's path in another workflow directory: findById
+    // returns null for it, so the scan must go on to the directory that owns
+    // the run, as for a run deleted between stat and read
     const decoyRun = WorkflowRun.create(workflowA);
     const decoyPath = repo.getPath(workflowA.id, target.id);
     await ensureDir(dirname(decoyPath));
@@ -2214,8 +2132,6 @@ Deno.test("YamlWorkflowRunRepository.findGlobalById: returns null when the disco
     run.start();
     await repo.save(workflow.id, run);
 
-    // The single-directory form of the concurrent-delete race: the stat finds
-    // a file, the read does not find the run in it, and nothing else owns it.
     await Deno.writeTextFile(
       repo.getPath(workflow.id, run.id),
       stringifyYaml(
@@ -2238,8 +2154,6 @@ Deno.test("YamlWorkflowRunRepository.deleteOlderThan: reports the IDs of the run
     const running = WorkflowRun.create(workflow);
     running.start();
     await repo.save(workflow.id, running);
-    // An unparseable (empty) run file is deleted too; its ID comes from the
-    // filename.
     const emptyId = crypto.randomUUID();
     await Deno.writeTextFile(
       join(
@@ -2270,9 +2184,9 @@ Deno.test("YamlWorkflowRunRepository.deleteOlderThan: deletes every collectable 
     const running = WorkflowRun.create(workflow);
     running.start();
     await repo.save(workflow.id, running);
-    // Each delete is followed by an attempt to remove the still non-empty
-    // runs directory; on macOS a walk of that directory open at the time
-    // skipped entries (swamp-club#3535).
+    // each delete is followed by an attempt to remove the still non-empty runs
+    // directory; on macOS a walk of that directory open at the time skipped
+    // entries
     const runsDir = join(dir, ".swamp", "workflow-runs", workflow.id);
     const collectable: string[] = [];
     for (let i = 0; i < 220; i++) {
@@ -2324,7 +2238,6 @@ Deno.test("YamlWorkflowRunRepository.deleteOlderThan: never reports a run ID tha
       run.start();
       run.endAsCancelled("test");
       await repo.save(workflow.id, run);
-      // Rewrite the persisted ID as a tampered or corrupt record would.
       const path = repo.getPath(workflow.id, run.id);
       const content = await Deno.readTextFile(path);
       await Deno.writeTextFile(
@@ -2332,15 +2245,12 @@ Deno.test("YamlWorkflowRunRepository.deleteOlderThan: never reports a run ID tha
         content.replace(`id: ${run.id}`, `id: ${JSON.stringify(badId)}`),
       );
     }
-    // Empty (unparseable) files whose filename yields "." or "..".
     await Deno.writeTextFile(join(runsDir, "workflow-run-..yaml"), "");
     await Deno.writeTextFile(join(runsDir, "workflow-run-...yaml"), "");
 
     const result = await repo.deleteOlderThan(new Date(Date.now() + 60_000));
 
     assertEquals(result.deleted, 5);
-    // The filename fallback yields the real run IDs for the three tampered
-    // records; the two dot names are dropped.
     assertEquals(result.deletedRunIds.length, 3);
     assertEquals(result.deletedRunIds.includes(""), false);
     assertEquals(result.deletedRunIds.includes(".."), false);
@@ -2356,7 +2266,6 @@ Deno.test("YamlWorkflowRunRepository.deleteOlderThan: reports the deleted file's
     finished.start();
     finished.endAsCancelled("test");
     await repo.save(workflow.id, finished);
-    // The body names another, live run.
     const liveRunId = crypto.randomUUID();
     const path = repo.getPath(workflow.id, finished.id);
     const content = await Deno.readTextFile(path);
@@ -2384,7 +2293,6 @@ Deno.test("YamlWorkflowRunRepository.listRunIdsForWorkflow: lists one workflow's
     const runsDir = join(dir, ".swamp", "workflow-runs", workflow.id);
     await Deno.writeTextFile(join(runsDir, `workflow-run-${emptyId}.yaml`), "");
     await Deno.writeTextFile(join(runsDir, "workflow-run-..yaml"), "");
-    // Another workflow's run is not included.
     const otherDir = join(dir, ".swamp", "workflow-runs", crypto.randomUUID());
     await ensureDir(otherDir);
     await Deno.writeTextFile(
@@ -2408,7 +2316,6 @@ Deno.test("YamlWorkflowRunRepository.listWorkflowIds: lists every runs directory
     const run = WorkflowRun.create(workflow);
     run.start();
     await repo.save(workflow.id, run);
-    // A directory no definition owns, holding a file that is not a run.
     const otherId = crypto.randomUUID();
     const otherDir = join(dir, ".swamp", "workflow-runs", otherId);
     await ensureDir(otherDir);
@@ -2416,7 +2323,6 @@ Deno.test("YamlWorkflowRunRepository.listWorkflowIds: lists every runs directory
       join(otherDir, `workflow-run-${crypto.randomUUID()}.yaml`),
       "id: x\njobs: [\n",
     );
-    // A stray file beside the directories is not a workflow.
     await Deno.writeTextFile(
       join(dir, ".swamp", "workflow-runs", "notes.txt"),
       "",
@@ -2445,7 +2351,6 @@ Deno.test("YamlWorkflowRunRepository.save: stages a write of the run file", asyn
 
     await runInUnitOfWork(uow, () => repo.save(workflow.id, run));
 
-    // Signalled before the write and again after it (swamp-club#2421).
     assertEquals(uow.staged(), [{ kind: "write", path }, {
       kind: "write",
       path,
@@ -2473,7 +2378,6 @@ Deno.test("YamlWorkflowRunRepository.deleteAllByWorkflowId: stages a remove of t
 
     await runInUnitOfWork(uow, () => repo.deleteAllByWorkflowId(workflow.id));
 
-    // Signalled before the write and again after it (swamp-club#2421).
     assertEquals(uow.staged(), [{ kind: "remove", path: runsDir }, {
       kind: "remove",
       path: runsDir,
@@ -2506,7 +2410,6 @@ Deno.test("YamlWorkflowRunRepository.deleteOlderThan: stages a remove of each te
     );
 
     assertEquals(result.deletedRunIds, [finished.id]);
-    // Signalled before the write and again after it (swamp-club#2421).
     assertEquals(uow.staged(), [{ kind: "remove", path }, {
       kind: "remove",
       path,
@@ -2541,7 +2444,6 @@ Deno.test("YamlWorkflowRunRepository.deleteOlderThan: stages a remove of each un
     );
 
     assertEquals(result.deletedRunIds, [runId]);
-    // Signalled before the write and again after it (swamp-club#2421).
     assertEquals(uow.staged(), [{ kind: "remove", path }, {
       kind: "remove",
       path,
@@ -2551,7 +2453,6 @@ Deno.test("YamlWorkflowRunRepository.deleteOlderThan: stages a remove of each un
   });
 });
 
-/** Each typed change's op kind, key and intent kind, for comparison. */
 function typedShape(change: TypedChange): Record<string, unknown> {
   if ("put" in change) {
     return {
@@ -2661,7 +2562,6 @@ Deno.test("YamlWorkflowRunRepository.deleteOlderThan: on v3, tombstones each rem
       join(runsDir, `workflow-run-${unparseable}.yaml`),
       "",
     );
-    // A stray file whose name holds no UUID: no repository put it.
     await Deno.writeTextFile(join(runsDir, "workflow-run-stray.yaml"), "");
     const cutoff = new Date(Date.now() + 60_000);
 
@@ -2734,7 +2634,6 @@ Deno.test("save: concurrent saves of different runs of one workflow keep every i
   });
 });
 
-/** Puts a run's record back to `content` without a save, as a pull does. */
 async function replaceRecord(
   repo: YamlWorkflowRunRepository,
   workflowId: WorkflowId,
@@ -2909,7 +2808,6 @@ Deno.test("verifyIndexes: a workflow with an unreadable record does not stop the
   });
 });
 
-/** Saves `count` running runs of one workflow and returns them. */
 async function saveRunningRuns(
   repo: YamlWorkflowRunRepository,
   workflow: Workflow,
@@ -3054,7 +2952,6 @@ Deno.test("verifyIndexes: keeps the entry a save writes while a replaced record 
       await repo.save(workflow.id, run);
       await replaceRecord(repo, workflow.id, run, runningRecord);
 
-      // The same run saved again while the record behind the index is read.
       await Promise.all([
         repo.verifyIndexes(),
         repo.save(workflow.id, run),
@@ -3111,7 +3008,6 @@ Deno.test("verifyIndexes: a record whose body names another run is not rewritten
     const repo = new YamlWorkflowRunRepository(dir);
     const workflow = createTestWorkflow();
     const [run] = await saveRunningRuns(repo, workflow, 1);
-    // The record is stored under a file name that is not its own id.
     await Deno.rename(
       repo.getPath(workflow.id, run.id),
       join(
@@ -3144,7 +3040,6 @@ const orderedIds = [
   "88888888-8888-4888-8888-888888888888",
   "ffffffff-ffff-4fff-8fff-ffffffffffff",
 ];
-// Written in an order no sorted listing would return.
 const unorderedIds = [orderedIds[1], orderedIds[2], orderedIds[0]];
 
 Deno.test("YamlWorkflowRunRepository.listWorkflowIds: returns ids in name order", async () => {
@@ -3216,8 +3111,8 @@ Deno.test("YamlWorkflowRunRepository.verifyIndexes: a rebuilt index lists runs i
   });
 });
 
-// Run logs are written under the repo-local .swamp/workflow-runs whichever
-// datastore holds the run records (swamp-club#3266).
+// run logs are written under the repo-local .swamp/workflow-runs whichever
+// datastore holds the run records
 
 const EIGHT_DAYS_MS = 8 * 24 * 60 * 60 * 1000;
 
@@ -3381,7 +3276,6 @@ Deno.test("YamlWorkflowRunRepository.deleteOlderThan: keeps the repo-local log o
     // Old and silent: only its record keeps it.
     await backdate(runningLog, EIGHT_DAYS_MS);
 
-    // Cutoff in the past: the finished run is too recent to collect.
     await repo.deleteOlderThan(new Date(Date.now() - 60_000));
     assertEquals(await pathExists(finishedLog), true);
     assertEquals(await pathExists(runningLog), true);
@@ -3458,7 +3352,6 @@ Deno.test("YamlWorkflowRunRepository.deleteOlderThan: keeps an orphaned log newe
     const old = await writeLocalLog(repoDir, workflowId, crypto.randomUUID());
     await backdate(old, EIGHT_DAYS_MS);
 
-    // Past the floor but not past a cutoff further back.
     await repo.deleteOlderThan(new Date(Date.now() - 2 * EIGHT_DAYS_MS));
     assertEquals(await pathExists(old), true);
 
@@ -3531,8 +3424,6 @@ Deno.test("YamlWorkflowRunRepository.deleteAllByWorkflowId: removes the repo-loc
     assertEquals(await pathExists(logB), true);
   });
 });
-
-// --- Incremental index repair (swamp-club#3443, swamp-club#3407) ---
 
 for (const missing of [true, false]) {
   Deno.test(`repairIndex: queued readers share one ${missing ? "rebuild" : "validation"} across repository instances (swamp-club#3857)`, async () => {
@@ -3634,7 +3525,6 @@ Deno.test("repairIndex: cancelling the first queued reader does not cancel its p
         "both reads to queue",
       );
       abort.abort(new DOMException("stopped", "AbortError"));
-      // Cancellation returns even while the index queue is still held.
       await rejected;
       release.resolve();
       assertEquals((await peer).length, 2);
@@ -3648,7 +3538,6 @@ Deno.test("repairIndex: cancelling the first queued reader does not cancel its p
   });
 });
 
-/** Rewrites a workflow's run index without the entries of `runIds`. */
 async function dropIndexEntries(indexDir: string, runIds: string[]) {
   const result = await readRunIndex(indexDir);
   const entries = { ...result!.entries };
@@ -3831,7 +3720,6 @@ Deno.test("repairIndex: a writer queued between readers separates their validati
   });
 });
 
-/** Counts reads of run record files while `fn` runs. */
 async function countingRecordReads<T>(
   fn: () => Promise<T>,
 ): Promise<[T, number]> {
@@ -3973,7 +3861,6 @@ Deno.test("getValidatedIndex: a count mismatch reads only the records the index 
       summaries.map((s) => s.id).sort(),
       runs.map((r) => r.id).sort(),
     );
-    // The other records still match the stat their entries were built from.
     assertEquals(reads, 1);
     assertEquals(
       Object.keys((await readRunIndex(indexDir))!.entries).sort(),
@@ -4007,7 +3894,6 @@ Deno.test("getValidatedIndex: a count mismatch also corrects an entry whose reco
       "running",
     );
 
-    // A new run arrives the same way, so the count is off by one.
     const [added] = await saveRunningRuns(repo, workflow, 1);
     await dropIndexEntries(indexDir, [added.id]);
 
@@ -4078,12 +3964,10 @@ Deno.test("getValidatedIndex: a reader that counted before a save's entry landed
         summaries.map((s) => s.id).sort(),
         [first.id, second.id].sort(),
       );
-      // Every record still matches the stat its entry was built from.
       assertEquals(recordReads, 0);
     } finally {
       Deno.readTextFile = original;
     }
-    // Nothing differed, so the reader left the save's index as it was.
     assertEquals((await Deno.stat(indexPath)).mtime?.getTime(), past.getTime());
     assertEquals(await Deno.readTextFile(indexPath), landed);
   });
@@ -4112,12 +3996,10 @@ Deno.test("getValidatedIndex: a reader that counted before a save's entry landed
       }),
     );
 
-    // A new run's record is written, and its entry is still to come.
     const [added] = await saveRunningRuns(repo, workflow, 1);
     const addedEntry = (await readRunIndex(indexDir))!.entries[added.id];
     await dropIndexEntries(indexDir, [added.id]);
 
-    // Hold the queue as that save does between its record and its entry.
     let release!: () => void;
     const held = withIndexQueue(indexDir, async () => {
       await new Promise<void>((resolve) => release = resolve);
@@ -4166,11 +4048,9 @@ Deno.test("runIndexSnapshot: an aborted signal stops a rebuild before it writes 
     const workflow = createTestWorkflow();
     const indexDir = join(dir, ".swamp", "workflow-runs", workflow.id);
     await saveRunningRuns(repo, workflow, 3);
-    // An index of another schema version: the next read rebuilds it whole.
     const stale = JSON.stringify({ version: 0, entries: {} });
     await Deno.writeTextFile(getIndexPath(indexDir), stale);
 
-    // Aborted while the rebuild reads its first record.
     const abort = new AbortController();
     const original = Deno.readTextFile;
     let recordReads = 0;
@@ -4190,11 +4070,9 @@ Deno.test("runIndexSnapshot: an aborted signal stops a rebuild before it writes 
     } finally {
       Deno.readTextFile = original;
     }
-    // It stopped before the next record, and wrote nothing.
     assertEquals(recordReads, 1);
     assertEquals(await Deno.readTextFile(getIndexPath(indexDir)), stale);
 
-    // Without the signal the same read rebuilds it.
     assertEquals((await repo.runIndexSnapshot(workflow.id)).size, 3);
   });
 });
@@ -4243,7 +4121,6 @@ Deno.test("YamlWorkflowRunRepository.deleteOlderThan: a limit stops early with m
     assertEquals(first.deletedRunIds.length, 2);
     assertEquals(first.more, true);
     assertEquals((await repo.listRunIds()).size, 2);
-    // The index no longer lists the runs the batch deleted.
     assertEquals(
       (await repo.findAllSummariesFromIndex(workflow.id)).map((s) => s.id)
         .sort(),
@@ -4331,7 +4208,6 @@ Deno.test("YamlWorkflowRunRepository: a run record the lookup names unreadable f
         );
       },
     );
-    // Another run of the workflow is there, so its directory is.
     const workflow = Workflow.create({
       name: "flow",
       jobs: [Job.create({
@@ -4376,7 +4252,6 @@ Deno.test("YamlWorkflowRunRepository.findGlobalById: a run whose workflow has no
       undefined,
       lookup,
     );
-    // Not even the runs directory exists in this checkout.
     const error = await assertRejects(() => repo.findGlobalById(runId));
     assert(error === [...errors.values()][0]);
     assertEquals(
@@ -4420,7 +4295,6 @@ Deno.test("YamlWorkflowRunRepository: listings keep their readable runs and warn
         (await repo.findAllGlobal()).map((r) => r.run.id),
         [run.id],
       );
-      // One listing query for the whole listing, not one per workflow.
       assertEquals(stats.listings, 1);
       assertEquals(
         (await repo.findAllByWorkflowId(workflowId)).map((r) => r.id),
@@ -4433,14 +4307,11 @@ Deno.test("YamlWorkflowRunRepository: listings keep their readable runs and warn
       assertEquals((await repo.findLatestByWorkflowId(workflowId))?.id, run.id);
       assertEquals((await repo.runIndexSnapshot(workflowId)).size, 1);
     });
-    // Named once in this process, though five listings left it out.
     assertEquals(warnings.length, 1, warnings.join("\n"));
     assertStringIncludes(warnings[0], lostPath);
     assertEquals(stats.listings, 5);
   });
 });
-
-// Spans on the expensive run record reads (swamp-club#3741).
 
 const RUN_READ_SPANS = [
   "swamp.workflow_runs.scan_all",
@@ -4449,7 +4320,6 @@ const RUN_READ_SPANS = [
   "swamp.workflow_runs.index.rebuild",
 ];
 
-/** The total length of the text of every run record of the workflows. */
 async function recordTextLength(
   dir: string,
   workflowIds: WorkflowId[],
@@ -4520,7 +4390,6 @@ Deno.test("getValidatedIndex: a repair span records the records it reads and its
       await repo.findAllSummariesFromIndex(workflow.id);
       const repair = findSpan(spans, "swamp.workflow_runs.index.repair");
       assertEquals(repair.attributes["workflow.id"], workflow.id);
-      // Only the record the index does not list is read.
       assertEquals(repair.attributes["workflow_runs.records_read"], 1);
       assert(Number(repair.attributes["workflow_runs.bytes_read"]) > 0);
       const wait = repair.attributes["workflow_runs.index.queue_wait_ms"];
@@ -4555,7 +4424,6 @@ Deno.test("getValidatedIndex: a repair that rebuilds has the reads on its child 
       assertEquals(rebuild.attributes["workflow_runs.records_read"], 3);
       assertEquals(rebuild.attributes["workflow_runs.bytes_read"], length);
       assertEquals(repair.attributes["workflow_runs.records_read"], 0);
-      // The wait is the repair's: the rebuild ran inside its queue slot.
       assertEquals(
         typeof repair.attributes["workflow_runs.index.queue_wait_ms"],
         "number",
@@ -4681,14 +4549,8 @@ Deno.test("YamlWorkflowRunRepository.save: on v3, the staged record of a typed r
   });
 });
 
-// --- Retention keeps the run index (swamp-club#3856) ---
-
 const RETENTION_CUTOFF = () => new Date(Date.now() - 86_400_000);
 
-/**
- * A finished run whose record says it finished 400 days ago, with its file
- * set back as far, so a retention cutoff of a day collects it.
- */
 async function saveOldFinishedRun(
   dir: string,
   repo: YamlWorkflowRunRepository,
@@ -4711,7 +4573,6 @@ async function saveOldFinishedRun(
   return run;
 }
 
-/** Saves `old` collectable runs, then `kept` recent finished runs. */
 async function saveRetentionHistory(
   dir: string,
   repo: YamlWorkflowRunRepository,
@@ -4839,7 +4700,6 @@ Deno.test("YamlWorkflowRunRepository.findAllSummariesFromIndex: records removed 
     const workflow = createWorkflowWithId(crypto.randomUUID(), "interrupted");
     const indexDir = runsDirOf(dir, workflow.id);
     const { old, kept } = await saveRetentionHistory(dir, repo, workflow, 3, 5);
-    // The records went but the cleanup stopped before the index update.
     for (const run of old) {
       await Deno.remove(join(indexDir, `workflow-run-${run.id}.yaml`));
     }
@@ -4871,7 +4731,6 @@ Deno.test("YamlWorkflowRunRepository.deleteOlderThan: removes the run index with
     const workflow = createWorkflowWithId(crypto.randomUUID(), "emptied");
     const indexDir = runsDirOf(dir, workflow.id);
     const { old } = await saveRetentionHistory(dir, repo, workflow, 2, 0);
-    // An entry whose record went missing before the pass.
     const orphan = await saveFinishedRun(repo, workflow);
     await Deno.remove(join(indexDir, `workflow-run-${orphan.id}.yaml`));
 
@@ -4942,7 +4801,6 @@ Deno.test("YamlWorkflowRunRepository.deleteOlderThan: with records in another da
   });
 });
 
-/** Saves `count` suspended runs of `workflow`, returned in save order. */
 async function saveSuspendedRuns(
   repo: YamlWorkflowRunRepository,
   workflow: Workflow,
@@ -4971,7 +4829,6 @@ Deno.test(
         SCAN_CONCURRENCY * 3,
       );
 
-      // One request alone reads more than one record at a time.
       const alone = await trackScanOpens(
         dir,
         () => repo.findByStatus(workflow.id, "suspended"),
@@ -4992,7 +4849,8 @@ Deno.test(
       );
       for (const found of result) assertEquals(found.length, runs.length);
       assertEquals(open, 0);
-      // Unbounded, eight requests of 48 runs each open up to 384.
+      // bounded across concurrent requests; unbounded, each request would open
+      // its own reads
       assert(peak <= SEARCH_SCAN_SHARE, `${peak} open at once`);
       assert(peak > 1, `${peak} open at once`);
     });
@@ -5026,7 +4884,6 @@ Deno.test("findByStatus: leaves out a run whose record is gone when it is read",
     const runs = await saveSuspendedRuns(repo, workflow, 3);
     const gone = repo.getPath(workflow.id, runs[1].id);
 
-    // Removed after the index lists it, so the read finds no record.
     const original = Deno.readTextFile;
     Deno.readTextFile = ((...args: Parameters<typeof original>) => {
       if (String(args[0]) === gone) {
@@ -5081,7 +4938,6 @@ Deno.test("findByStatus: an aborted signal stops reading records and rejects wit
     const runs = await saveSuspendedRuns(repo, workflow, SCAN_CONCURRENCY * 3);
     const abort = new AbortController();
 
-    // Aborted as the first record is read.
     const original = Deno.readTextFile;
     let recordReads = 0;
     Deno.readTextFile = ((...args: Parameters<typeof original>) => {

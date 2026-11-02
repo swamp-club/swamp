@@ -18,50 +18,9 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * Flushes what a serve-mode checkout queued offline (swamp-club#4195). Run
- * by the outbox recovery under the writer hold, once serve is reachable:
- * read-only commands never flush.
- *
- * Entries go in outbox order, one at a time, each rebased
- * ({@link rebaseOfflineCommits}) on the partition as the copy holds it
- * once caught up, so every one that records a data version gets its
- * versions renumbered past what landed meanwhile and its observation time
- * as `createdAt`, and `latest` follows when the work was observed. Each is
- * built under its original txnId, so an entry a cut-off flush landed
- * settles next time and never lands twice. What each landed entry
- * renumbered and rewrote ({@link OfflineRebaseCarry}) is carried to the
- * partition's later entries, in this flush and, recorded with it, in a
- * later one: a removal or append of a version an earlier entry wrote
- * follows that version as it landed, never another writer's that now holds
- * its queued number.
- *
- * - Sent under the lease it was queued under while serve still holds it.
- *   One that lapsed, was released or was superseded is sent under no lease,
- *   rebased: never applied over what landed meanwhile. Refused because
- *   another holder's lease covers the behavior now, it stays queued.
- * - A removal whose target changed is `rejected`, kept and reported.
- * - Serve refusing it for a grant the caller lacks makes it `quarantined`,
- *   kept for an admin ({@link OfflineFlushPort.quarantined}); refused for
- *   its content, `rejected`.
- * - Serve unreachable again: the flush stops, and the rest stays queued.
- *   A send that may have reached serve records when
- *   ({@link OutboxEntry.sentMaybeAt}); once serve's txnId retention has
- *   passed since, the entry is `rejected` as a possible duplicate, never
- *   sent blind.
- * - An error of the entry's own (a chunk missing from this checkout's
- *   cache, a commit that will not build) makes it `rejected`, and the flush
- *   goes on with the next. Any other local failure (a full disk, a refused
- *   permission) stops the flush and the entry stays queued, to be tried
- *   again. Serve refusing the caller, diverging or asking for an upgrade
- *   fails the command, as before.
- * - Serve refusing this checkout the current latest's content
- *   (`chunk_not_provided`) while the entry restates it: sent again without
- *   the restatement, so the rebased version becomes latest, and the report
- *   says so.
- *
- * Nothing is ever discarded: an entry leaves the outbox only once landed.
- *
- * @module
+ * entries go in outbox order, each rebased on the caught-up partition and built
+ * under its original txnId, so one a cut-off flush landed settles next time; an
+ * entry leaves the outbox only once landed
  */
 
 import { Commit, type CommitWriter } from "../../domain/datastore_v3/commit.ts";
@@ -112,38 +71,27 @@ import { emitServeOfflineNotice } from "./serve_offline.ts";
 
 const logger = getSwampLogger(["datastore", "v3", "offline"]);
 
-/** How many times one entry is rebased again on a head that moved. */
 const FLUSH_SEQ_GAP_ATTEMPTS = 8;
 
-/** What the flush needs of a serve-mode handle. */
 export interface OfflineFlushPort {
-  /** Brings the copy's `partition` up to serve's log. */
   catchUpPartition(namespace: string, partition: PartitionKey): Promise<void>;
-  /** The copy's state of `partition`, caught up. */
   partitionState(
     namespace: string,
     partition: PartitionKey,
   ): Promise<Partition>;
-  /** The copy's stored commits of `partition`, oldest first. */
   partitionCommits(
     namespace: string,
     partition: PartitionKey,
   ): Promise<readonly Commit[]>;
-  /** The partition's head, as the next commit builds on it. */
   head(namespace: string, partition: PartitionKey): Promise<number>;
-  /** Sends `commit`, naming the model lease `leaseId` or none. */
   send(commit: Commit, leaseId: string | undefined): Promise<unknown>;
-  /** A version's `metadata.yaml` bytes, as the data repository writes them. */
   encodeMetadata(metadata: DataMetadata): Uint8Array;
-  /** Stores `bytes` too long to inline as chunks of `namespace`. */
   storeChunks(namespace: string, bytes: Uint8Array): Promise<BlobRef>;
-  /** Marks entries, durably. */
   mark(
     keys: readonly OutboxKey[],
     state: OutboxEntryState,
     reason?: string,
   ): Promise<void>;
-  /** Removes the entries of commits that landed. */
   settle(keys: readonly OutboxKey[]): Promise<void>;
   /**
    * Records that an offline entry landed, before its settle: a later flush
@@ -155,40 +103,19 @@ export interface OfflineFlushPort {
     at: number,
     carry?: OfflineRebaseCarry,
   ): Promise<void>;
-  /**
-   * What `partition`'s offline entries earlier flushes landed renumbered
-   * and rewrote, for its entries still queued.
-   */
   landedCarry?(
     namespace: string,
     partition: PartitionKey,
   ): Promise<OfflineRebaseCarry>;
-  /**
-   * The txnIds of `partition`'s offline entries earlier flushes landed:
-   * this checkout's own offline work, which its later offline work saw.
-   */
   ownLanded?(
     namespace: string,
     partition: PartitionKey,
   ): Promise<ReadonlySet<string>>;
-  /**
-   * Records that the entry `key` was sent without learning whether serve
-   * took it; an earlier record is kept.
-   */
   markSentMaybe?(key: OutboxKey, at: number): Promise<void>;
-  /**
-   * The seq through which the copy compacted `partition`'s commits; 0 when
-   * none was.
-   */
   compactedThrough?(
     namespace: string,
     partition: PartitionKey,
   ): Promise<number>;
-  /**
-   * A committed version whose commit was compacted, as the checkout's files
-   * hold it: its metadata and, when readable, its raw bytes. Undefined when
-   * the checkout holds neither.
-   */
   compactedVersion?(
     namespace: string,
     partition: PartitionKey,
@@ -199,48 +126,37 @@ export interface OfflineFlushPort {
     | undefined
   >;
   /**
-   * An entry serve refused for a grant the caller lacks, now marked
-   * quarantined: step 10 of swamp-club#4195 deposits it with serve for an
-   * admin to accept. Its failure is logged; the entry stays either way.
+   * an entry serve refused for a missing grant, now marked quarantined and
+   * deposited with serve for an admin to accept; a failed deposit is logged and
+   * the entry stays either way
    */
   quarantined?(entry: OutboxEntry, reason: string): Promise<void>;
   /**
-   * What serve did with a quarantined entry's deposit: still `held`,
-   * `accepted` or `discarded`; undefined when serve holds none or cannot be
-   * asked. A discarded one is settled here as declined.
+   * what serve did with a quarantined entry's deposit; undefined when serve
+   * holds none or cannot be asked. A discarded one is settled here as declined
    */
   quarantineState?(
     entry: OutboxEntry,
   ): Promise<"held" | "accepted" | "discarded" | undefined>;
 }
 
-/** What one flush did. */
 export interface OfflineFlushReport {
   readonly landed: number;
-  /** Entries left queued: serve unreachable, or another holder's lease. */
   readonly waiting: number;
   readonly rejected: number;
   readonly quarantined: number;
   readonly renumbered: readonly FlushedVersion[];
-  /** Each landed entry's outcome for the names it wrote, in flush order. */
   readonly latest: readonly FlushedLatest[];
-  /** Which version holds each behavior's name's latest once the flush ends. */
   readonly latestAtEnd: readonly FlushedLatest[];
 }
 
-/**
- * A renumbered version, with the behavior (`type/id`) whose partition it is
- * in: two behaviors flushed together may share a data name.
- */
 export type FlushedVersion = RenumberedVersion & { readonly behavior: string };
 
-/** A latest outcome, with the behavior (`type/id`) it belongs to. */
 export type FlushedLatest = LatestOutcome & { readonly behavior: string };
 
 /**
- * Which version holds each behavior's name's latest once a flush ends: a
- * later entry's outcome supersedes an earlier one's for the same behavior
- * and name. Two behaviors' names never mix, though they may be spelled alike.
+ * a later entry's outcome supersedes an earlier one's for the same behavior and
+ * name; names of different behaviors never mix, though spelled alike
  */
 export function latestAtEndOf(
   latest: readonly FlushedLatest[],
@@ -252,7 +168,6 @@ export function latestAtEndOf(
   return [...atEnd.values()];
 }
 
-/** The behavior a partition belongs to, as `type/id`, or its key. */
 function behaviorOf(partition: Commit["partition"]): string {
   const identity = partition.identity;
   return identity.kind === "model"
@@ -260,7 +175,6 @@ function behaviorOf(partition: Commit["partition"]): string {
     : partition.toString();
 }
 
-/** The outcome of one entry. */
 type EntryOutcome =
   | {
     readonly kind: "landed";
@@ -273,7 +187,6 @@ type EntryOutcome =
   | { readonly kind: "rejected"; readonly reason: string }
   | { readonly kind: "quarantined"; readonly reason: string };
 
-/** Flushes `entries`, offline entries in outbox order; see the module doc. */
 export async function flushOfflineEntries(
   port: OfflineFlushPort,
   entries: readonly OutboxEntry[],
@@ -294,10 +207,7 @@ export async function flushOfflineEntries(
   // A partition whose entry waits keeps its later entries waiting too:
   // they were queued after it.
   const held = new Set<string>();
-  // The commits this flush landed: what an entry queued after them saw.
   const flushed = new Set<string>();
-  // What each partition's landed entries renumbered and rewrote, for its
-  // later ones: read once from earlier flushes, then grown by this one.
   const carries = new Map<string, OfflineRebaseCarry>();
   const carryOf = async (entry: OutboxEntry): Promise<OfflineRebaseCarry> => {
     const id = entry.commit.partition.toString();
@@ -334,7 +244,6 @@ export async function flushOfflineEntries(
     } catch (error) {
       if (stopsTheFlush(error)) throw error;
       if (isEntryOwnError(error)) {
-        // The entry's own failure: kept, rejected, and the flush goes on.
         outcome = { kind: "rejected", reason: messageOf(error) };
       } else {
         // A local failure that may pass (a full disk, a refused
@@ -402,7 +311,6 @@ export async function flushOfflineEntries(
         break;
     }
   }
-  // A later entry of the flush supersedes an earlier one's outcome.
   const report = {
     landed,
     waiting,
@@ -531,7 +439,6 @@ async function flushEntry(
           leaseId = undefined;
           continue;
         }
-        // Another holder's lease covers the behavior now: it waits.
         if (error.reason === "lease-lost") return { kind: "waiting" };
         return { kind: "rejected", reason: error.message };
       }
@@ -546,9 +453,8 @@ async function flushEntry(
 }
 
 /**
- * The versions of a data name `entry`'s partition's other entries, still
- * queued, hold by their queued numbers: `entry`'s renumbered versions never
- * land on one.
+ * versions of a data name that the partition's other still-queued entries hold
+ * by their queued numbers; this entry's renumbered versions never land on one
  */
 function reservedBy(
   entries: readonly OutboxEntry[],
@@ -574,17 +480,14 @@ function reservedBy(
   };
 }
 
-/** Serve's code for a chunk a commit names but neither carries nor may read. */
 const CHUNK_NOT_PROVIDED = "chunk_not_provided";
 
-/** `choice`, once its restatement was dropped for content serve withheld. */
 function notProvided(choice: LatestOutcome): LatestOutcome {
   return choice.kind === "rebased" && choice.restateSkipped === "disabled"
     ? { ...choice, restateSkipped: "content-not-provided" }
     : choice;
 }
 
-/** The commit an entry is sent as: its original txnId, on serve's head. */
 function buildCommit(
   commit: Commit,
   ops: readonly Op[],
@@ -611,7 +514,6 @@ function buildCommit(
   });
 }
 
-/** An offline entry that cannot be rebased or built into a commit. */
 class OfflineEntryUnbuildableError extends Error {
   constructor(cause: unknown) {
     super(
@@ -623,8 +525,8 @@ class OfflineEntryUnbuildableError extends Error {
 }
 
 /**
- * Runs `build`, a pure step of rebuilding the entry: a failure is the
- * entry's own, unless it is a local I/O failure that may pass.
+ * a failure in this pure rebuild step is the entry's own, unless it is a local
+ * I/O failure that may pass
  */
 async function asEntryOwn<T>(build: () => Promise<T>): Promise<T> {
   try {
@@ -635,21 +537,12 @@ async function asEntryOwn<T>(build: () => Promise<T>): Promise<T> {
   }
 }
 
-/**
- * Whether `error` is the entry's own, so it is rejected and kept: a chunk
- * missing from this checkout's cache, content that does not check, or a
- * commit that cannot be rebuilt.
- */
 function isEntryOwnError(error: unknown): boolean {
   return error instanceof ChunkNotCachedError ||
     error instanceof ChunkIngestError ||
     error instanceof OfflineEntryUnbuildableError;
 }
 
-/**
- * Whether `error` is a local I/O failure that may pass (a full disk, a
- * refused permission, a busy file): the flush stops and the entry stays.
- */
 function isTransientLocalError(error: unknown): boolean {
   if (!(error instanceof Error)) return false;
   if (Object.values(Deno.errors).some((type) => error instanceof type)) {
@@ -661,22 +554,9 @@ function isTransientLocalError(error: unknown): boolean {
 }
 
 /**
- * What the rebase reads of committed versions: from the copy's stored
- * commits of the partition, each version's commit time, metadata and raw
- * content. A version whose commit was compacted after the entry's base is
- * read from the checkout's files instead ({@link OfflineFlushPort.compactedVersion}),
- * for the latest of each name the entry writes and the versions it
- * restates: its time is then its metadata `createdAt` alone, by its
- * writer's clock.
- *
- * Only a version the offline writer could not have seen is judged against
- * it: one that landed after the entry's base and is not this checkout's
- * own offline work, landed by this flush or an earlier one. A restatement
- * is never the checkout's own, even in its own commit: it stands for
- * another writer's version, and competes with that version's observation
- * time, so each later entry of the flush is judged against it too. One it
- * saw is not observed here, so the offline write, made after it, takes
- * `latest` as it would have online.
+ * only a version the offline writer could not have seen is judged: landed after
+ * the entry's base and not this checkout's own offline work; a restatement is
+ * never own, since it stands for another writer's version
  */
 async function lookupsOf(
   port: OfflineFlushPort,
@@ -733,7 +613,6 @@ async function lookupsOf(
   };
 }
 
-/** The most compacted versions one name's restatement chain reads. */
 const MAX_COMPACTED_LOOKUPS = 8;
 
 /**
@@ -801,9 +680,9 @@ async function addCompactedVersions(
 }
 
 /**
- * Whether `error` stops the flush and fails the command, rather than
- * rejecting the one entry: a cancelled command, or serve refusing the
- * caller, diverging, compacting past the copy or asking for an upgrade.
+ * a cancelled command or serve refusing the caller, diverging, compacting past
+ * the copy or asking for an upgrade stops the flush; other errors reject only
+ * the one entry
  */
 function stopsTheFlush(error: unknown): boolean {
   return (error instanceof DOMException && error.name === "AbortError") ||
@@ -818,7 +697,6 @@ function messageOf(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-/** The rebase's changes as ops: new content inlined, or stored as chunks. */
 async function opsOf(
   port: OfflineFlushPort,
   namespace: string,
@@ -852,7 +730,6 @@ async function opsOf(
   return ops;
 }
 
-/** The inline limit, as the unit applies it. */
 const MAX_INLINE = 8 * 1024;
 
 function base64Of(bytes: Uint8Array): string {
@@ -861,7 +738,6 @@ function base64Of(bytes: Uint8Array): string {
   return btoa(binary);
 }
 
-/** Says once what the flush did. */
 function reportFlush(report: OfflineFlushReport): void {
   if (report.landed > 0) {
     const moved = report.renumbered

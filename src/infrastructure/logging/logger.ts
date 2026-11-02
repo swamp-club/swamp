@@ -43,18 +43,14 @@ export interface LoggingOptions {
   logLevel?: LogLevel;
   jsonMode?: boolean;
   noColor?: boolean;
-  /** When true, run loggers also write to the console sink (flat [INF] output for --log mode). */
   forceLog?: boolean;
-  /** Suppress console output while keeping the run file sink at info level. */
   quiet?: boolean;
   /**
-   * Write all log output to stderr only — every console-bound sink, pretty
-   * included. For callers whose stdout carries something other than prose:
-   * RPC frames in the dispatch runners, or a value the user pipes for the
-   * commands listed in `src/cli/stdout_contract.ts`.
+   * for callers whose stdout carries something other than prose, such as RPC
+   * frames or a value piped by the commands in stdout_contract.ts; covers the
+   * pretty sink too
    */
   stderrOnly?: boolean;
-  /** Test-only: clear the once-per-process guard so logging can be reconfigured. */
   _reset?: boolean;
   /** Test-only: bypass Deno.env for OTel logs config to avoid env var races under --parallel. */
   _logsConfig?: InitLogsConfig;
@@ -68,25 +64,9 @@ function writeStderr(text: string): void {
 }
 
 /**
- * A sink that writes formatted records to stderr.
- *
- * Every line passes through `runFileSink.redactActive` first. The dispatch
- * runner is the caller that matters: its stderr is read and re-logged by the
- * worker supervisor, and it registers its dispatch redactor as an active
- * redactor, so a method's log line or the runner's own failure warning leaves
- * the process with the dispatch's secrets masked (swamp-club#3526). With no
- * active redactor the line is written as it is.
- *
- * The formatter owns the trailing newline — both `textFormatter()` and the
- * pretty formatter already end their output with exactly one, so this writes
- * what it is given. Appending another would double-space every record, which
- * went unnoticed while the dispatch runner was the only caller and nobody read
- * its stderr.
- *
- * Takes the formatter so `stderrOnly` can cover the pretty sink too: the
- * console sink is not the only console-bound sink, and the pretty one is what a
- * TTY session actually uses. `write` is a seam for tests that want the real
- * sink without stubbing `Deno.stderr`.
+ * lines pass through runFileSink.redactActive so a dispatch's secrets are
+ * masked in method log lines and failure warnings; the formatter owns the
+ * trailing newline, so write as given
  */
 export function createStderrSink(
   formatter: TextFormatter = stderrFormatter,
@@ -97,10 +77,9 @@ export function createStderrSink(
       write(formatter(record));
       return;
     }
-    // Render complete values and mask them before layout can wrap or
-    // abbreviate a secret inside a structured value. Collapse the message
-    // to a literal so the formatter only lays out already-scrubbed text.
-    // Other sinks still receive the original record.
+    // mask complete rendered values before layout can wrap or abbreviate a
+    // secret; the message becomes a literal so the formatter only lays out
+    // scrubbed text; other sinks get the original record
     const redactString = (value: unknown) =>
       typeof value === "string" ? runFileSink.redactActive(value) : value;
     const render = (value: unknown) =>
@@ -135,21 +114,13 @@ let systemPipeWidth = 6;
 // up with it as `system │` lines instead of gutter lines.
 let pipeOutputActive = false;
 
-/** Most warnings kept while buffering; later ones are dropped. */
 const STARTUP_BUFFER_CAP = 200;
 let startupBuffer: LogRecord[] | undefined;
 
 /**
- * Captures warning-level (and higher) records emitted before
- * {@link initializeLogging} runs, such as extension loader warnings raised
- * while the CLI resolves the managed config base at startup. The next
- * {@link initializeLogging} call replaces this configuration and replays
- * the records through the real loggers, so level and JSON-mode filtering
- * still apply. Info and debug records stay dropped, as they are today
- * before logging starts. Does nothing once logging is initialised.
- *
- * @param options._reset Test-only: clear the once-per-process guard and any
- *   pending buffer, so the buffer installs again under `deno test --repeats`.
+ * captures warning-level records emitted before initializeLogging, which
+ * replays them through the real loggers so level and JSON-mode filtering apply;
+ * info and debug stay dropped
  */
 export async function bufferStartupWarnings(
   options: { _reset?: boolean } = {},
@@ -180,20 +151,11 @@ export async function bufferStartupWarnings(
 }
 let serveFormatEnabled = false;
 
-/**
- * Record the width of a workflow run's `name │` column. Called by the
- * workflow run renderer once its pipe display starts, which also switches
- * the pretty sink to `system │` lines for the rest of the run.
- */
 export function setSystemPipeWidth(width: number): void {
   systemPipeWidth = Math.max(width, 6);
   pipeOutputActive = true;
 }
 
-/**
- * Called by the workflow run renderer when its pipe display ends, so records
- * logged after the run go back to the status gutter.
- */
 export function endSystemPipeOutput(): void {
   pipeOutputActive = false;
 }
@@ -202,11 +164,6 @@ export function getSystemPipeWidth(): number {
   return systemPipeWidth;
 }
 
-/**
- * Switch the console sink to the `" system │ message"` format used by
- * workflow and model-method runs. Call once at serve startup (non-JSON
- * mode) — all subsequent LogTape console output will use the new style.
- */
 export function enableServeOutput(): void {
   serveFormatEnabled = true;
 }
@@ -233,16 +190,9 @@ export async function initializeLogging(
 
   const logLevel: LogLevel = options.logLevel ?? "info";
 
-  // The console (non-pretty) sink always renders plain text: it is used for
-  // non-interactive contexts (piped, redirected, `--no-color`, non-TTY stdin),
-  // where ANSI escape codes would pollute the output. Colored output is the
-  // pretty sink's job, selected only when stdin is a TTY.
-  //
-  // Both sinks use a dynamic formatter that switches to the serve-style
-  // " system │ message" format when enableServeOutput() is called.
-  //
-  // `stderrOnly` must reach *every* console-bound sink, not just this one —
-  // see the pretty sink below.
+  // the console sink always renders plain text since ANSI would pollute
+  // non-interactive output; stderrOnly must reach every console-bound sink, the
+  // pretty one included
   const consoleSink: Sink = options.stderrOnly
     ? createStderrSink()
     : getConsoleSink({
@@ -271,28 +221,17 @@ export async function initializeLogging(
       getPipeWidth: () => pipeOutputActive ? systemPipeWidth : undefined,
     });
 
-    // The pretty sink honours `stderrOnly` too. It is easy to miss, because
-    // `prettyOutput` is `!noColor && isStdinTty()` and redirecting *stdout*
-    // does not change *stdin* — so `swamp invite link -v | pbcopy` run from a
-    // terminal takes this path, not the console sink above. Routing only the
-    // console sink leaves the reported bug (swamp-club#2254) intact for every
-    // interactive user while looking fixed in a script.
+    // honour stderrOnly here too: prettyOutput keys on stdin being a TTY, so
+    // piping stdout from a terminal still uses this sink, not the console sink
     const prettyFormatter = createDynamicFormatter(prettyFormat);
     sinks["pretty"] = options.stderrOnly
       ? createStderrSink(prettyFormatter)
       : getConsoleSink({ formatter: prettyFormatter });
   }
 
-  // Initialize the OTel logs signal. When OTLP logs export is enabled (same
-  // OTEL_EXPORTER_OTLP_* config as traces, opt out via OTEL_LOGS_EXPORTER=none),
-  // this returns a LoggerProvider we bridge into LogTape via a sink. The sink
-  // exports over the network only — never stdout/stderr — so it is orthogonal
-  // to the CLI output mode. Zero cost when logs export is disabled.
-  //
-  // Guarded: a telemetry init failure (e.g. a dynamic import of the OTel SDK
-  // rejecting) must never take down core logging — "telemetry must never
-  // interfere with the CLI", as elsewhere in this codebase. On failure we simply
-  // proceed without the otel sink.
+  // OTLP log export goes over the network only, orthogonal to output mode; a
+  // telemetry init failure must never take down core logging, so proceed
+  // without the otel sink
   let otelProvider: Awaited<ReturnType<typeof initLogs>>;
   try {
     otelProvider = await initLogs(options._logsConfig);
@@ -306,18 +245,9 @@ export async function initializeLogging(
   }
 
   if (options.jsonMode) {
-    // JSON mode: the renderError() function in
-    // src/presentation/output/error_output.ts is the single emitter for
-    // fatal output (it writes JSON to stderr and skips logger.fatal).
-    // The root logger has no *console* sinks so nothing leaks to stdout via the
-    // standard logging pipeline. Audit at swamp-club#235: only error_output.ts
-    // calls logger.fatal in src/, both inside renderError itself.
-    //
-    // OTLP log export is orthogonal to output mode — it writes only to the
-    // network. So when the otel sink is enabled, lower the root threshold to
-    // the configured level and attach only the otel sink: all logs export,
-    // while stdout stays clean. When it is disabled, keep the original
-    // fatal/no-sink behavior byte-for-byte.
+    // in JSON mode renderError is the single fatal emitter, so the root has no
+    // console sinks; with the otel sink on, lower the threshold and attach only
+    // it so logs export while stdout stays clean
     loggers.push({
       category: [],
       lowestLevel: otelSinks.length > 0 ? logLevel : "fatal",
@@ -331,13 +261,8 @@ export async function initializeLogging(
     });
   }
 
-  // In JSON mode, sever sink inheritance from the root logger on the
-  // category loggers — otherwise a child logger emitting an info record
-  // would also emit through the root's `jsonError` sink, polluting
-  // stderr with malformed JSON. `parentSinks: 'override'` is the
-  // documented LogTape API for this (since 0.6.0). Also clear the
-  // logtape.meta logger's own sinks in JSON mode so its warnings
-  // don't reach the console at all.
+  // in JSON mode sever sink inheritance so child records skip the root's
+  // jsonError sink and don't pollute stderr; clear the logtape.meta sinks too
   const jsonMode = options.jsonMode ?? false;
   const forceLog = options.forceLog ?? false;
   const quiet = options.quiet ?? false;
@@ -380,11 +305,6 @@ export function getSwampLogger(category: string[]) {
   return getLogger(category);
 }
 
-/**
- * Writes plain text to stdout with no decoration (no timestamp, level,
- * or category prefix). Use for human-readable CLI "log" mode output
- * that should read like a document rather than a log stream.
- */
 export function writeOutput(message: string): void {
   // deno-lint-ignore no-console
   console.log(message);
@@ -405,10 +325,9 @@ export function getRunLogger(
   return runId ? logger.with({ [RUN_ID_PROPERTY]: runId }) : logger;
 }
 
-// LogTape interprets {…} in message templates as property placeholders.
-// Raw process output containing JSON objects would render as "undefined".
-// It only parses a template that has an opening brace and prints any other
-// verbatim, so a closing brace is doubled only alongside an opening one.
+// LogTape treats {…} as placeholders, so raw JSON output would render as
+// undefined; only a template with an opening brace is parsed, so a closing
+// brace is doubled only alongside one
 export function escapeLogTemplate(text: string): string {
   if (!text.includes("{")) return text;
   return text.replaceAll("{", "{{").replaceAll("}", "}}");

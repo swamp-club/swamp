@@ -18,18 +18,9 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * The errors {@link ServeDatastoreClient} throws for serve's datastore API
- * replies (swamp-club#3985), each mapped from serve's status and `code` so
- * a caller handles a refusal from serve as it handles the same refusal from
- * a local commit: a precondition that failed is a `CommitRejectedError`
- * with reason `expect-failed`, a partition's refusal a
- * `CommitRejectedError` with its reason, and compaction a
- * `CommitsCompactedError`. Serve's message is kept verbatim; the codes
- * serve shares with the CLI (a fenced writer, an unreachable storage) are
- * kept, so the exit code a command ends with is the one it would end with
- * locally.
- *
- * @module
+ * each serve refusal maps to the error a local commit would give, so a caller
+ * handles both alike; serve's message is kept verbatim, and shared codes are
+ * kept so the exit code matches a local run
  */
 
 import { serverLoginHint } from "../../domain/auth/server_login_hint.ts";
@@ -56,17 +47,12 @@ import {
 
 export { V3_SERVE_UNREACHABLE_CODE };
 
-/** Whether a request that failed may have reached serve. */
 export type ServeRequestSent = "never" | "maybe";
 
 /**
- * Serve could not be reached, or stopped answering, so the request failed
- * without a reply. With `sent` `"never"` the connection was never made
- * (refused, a failed lookup, a failed TLS handshake), so serve changed
- * nothing; with `"maybe"` the request may have reached serve. `cause` is
- * the transport's error, so `isNetworkFailure` recognises this error.
- * Nothing goes around serve to the datastore's storage: a datastore
- * reached through serve is never reached any other way.
+ * sent "never" means the connection was never made, so serve changed nothing;
+ * "maybe" means it may have reached serve. Nothing goes around serve to the
+ * datastore's storage, which is never reached another way
  */
 export class ServeUnreachableError extends UserError {
   declare readonly code: typeof V3_SERVE_UNREACHABLE_CODE;
@@ -97,10 +83,9 @@ export class ServeUnreachableError extends UserError {
 }
 
 /**
- * A read in a checkout that has never read its datastore from serve, while
- * serve cannot be reached (swamp-club#3985): its copy holds nothing yet,
- * so an empty answer would look like an empty datastore. Exits 75 as an
- * unreachable serve does.
+ * a read in a checkout that never read from serve, while serve is unreachable:
+ * its copy is empty, so an empty answer would look like an empty datastore.
+ * Exits 75
  */
 export class ServeNeverReadError extends UserError {
   declare readonly code: typeof V3_SERVE_UNREACHABLE_CODE;
@@ -119,10 +104,8 @@ export class ServeNeverReadError extends UserError {
   }
 }
 
-/** Error code for a serve that is not serving the log a copy follows. */
 export const SERVE_UPSTREAM_DIVERGED_CODE = "serve_upstream_diverged";
 
-/** A commit of a copy serve was checked against: see {@link ServeUpstreamDivergedError}. */
 export interface ServeDivergedCommit {
   readonly namespace: string;
   readonly partition: string;
@@ -130,11 +113,6 @@ export interface ServeDivergedCommit {
   readonly txnId: string | undefined;
 }
 
-/**
- * What serve answered that the copy does not follow: another commit log's
- * id; or, for a commit the copy holds or followed, a head for its
- * partition below the commit's seq, or another commit at that seq.
- */
 export type ServeDivergence =
   | {
     readonly kind: "other-log";
@@ -145,13 +123,9 @@ export type ServeDivergence =
   | { readonly kind: "other-commit"; readonly serveTxnId: string };
 
 /**
- * Serve at a checkout's address is not serving the commit log the
- * checkout's copy follows (swamp-club#4049): the address now reaches
- * another serve or datastore (another log id), or one restored to an
- * earlier point (a commit the copy holds, missing). `commit` is that
- * commit, undefined for another log. The copy is never re-synced on its
- * own, since a copy holding commits serve lost may be what a restore
- * needs; a fresh copy starts once this one is moved aside.
+ * serve at the address does not serve the log the copy follows (another log id,
+ * or a restore to an earlier point); the copy is never re-synced on its own, as
+ * it may hold commits a restore needs
  */
 export class ServeUpstreamDivergedError extends UserError {
   declare readonly code: typeof SERVE_UPSTREAM_DIVERGED_CODE;
@@ -194,15 +168,12 @@ function divergenceOf(
     : `${at}, and serve holds another commit at that seq`;
 }
 
-/** Error code for a serve too old to say which commit log it serves. */
 export const SERVE_UPSTREAM_UPGRADE_REQUIRED_CODE =
   "serve_upstream_upgrade_required";
 
 /**
- * Serve answered without the id of the commit log it serves
- * (swamp-club#4049): a swamp too old to send it. The checkout cannot tell
- * whether serve still serves the log its copy follows, so the reply is not
- * used.
+ * a serve too old to send its log id: the checkout cannot tell whether it still
+ * serves the log its copy follows, so the reply is not used
  */
 export class ServeUpstreamUpgradeRequiredError extends UserError {
   declare readonly code: typeof SERVE_UPSTREAM_UPGRADE_REQUIRED_CODE;
@@ -220,10 +191,6 @@ export class ServeUpstreamUpgradeRequiredError extends UserError {
   }
 }
 
-/**
- * A reply serve's datastore API refused a request with. `code` is serve's
- * own, `message` serve's verbatim.
- */
 export class ServeUpstreamError extends UserError {
   declare readonly code: string;
 
@@ -233,7 +200,6 @@ export class ServeUpstreamError extends UserError {
   }
 }
 
-/** 401: the token is missing, expired or revoked. */
 export class ServeAuthFailedError extends ServeUpstreamError {
   constructor(readonly serveUrl: string, readonly serveMessage: string) {
     super(401, "unauthorized", serverLoginHint(serveUrl));
@@ -241,12 +207,10 @@ export class ServeAuthFailedError extends ServeUpstreamError {
   }
 }
 
-/** 409 `stale_seq`: the partition's head moved; catch up and build again. */
 export class ServeStaleSeqError extends ServeUpstreamError {
   declare readonly code: "stale_seq";
 
   constructor(
-    /** The partition's head at serve. */
     readonly seq: number,
     message: string,
   ) {
@@ -256,19 +220,15 @@ export class ServeStaleSeqError extends ServeUpstreamError {
 }
 
 /**
- * 409 `precondition_failed`: a record the commit expected changed since the
- * caller read it. A `CommitRejectedError` with reason `expect-failed`, as
- * a local commit refused for the same reason is, carrying no `code` as
- * that one carries none, and serve's message verbatim.
+ * a record the commit expected changed since the caller read it: a
+ * CommitRejectedError with reason expect-failed, carrying no code, as a local
+ * refusal does, and serve's message verbatim
  */
 export class ServePreconditionFailedError extends CommitRejectedError {
-  /** HTTP status of the reply. */
   readonly status = 409;
 
   constructor(
-    /** The record key as serve named it. */
     readonly recordKey: string,
-    /** The partition's head at serve. */
     readonly seq: number,
     readonly changedBy: string | undefined,
     readonly changedAt: string | undefined,
@@ -279,11 +239,6 @@ export class ServePreconditionFailedError extends CommitRejectedError {
   }
 }
 
-/**
- * 409 `commit_<reason>`: the partition refused the commit. A
- * `CommitRejectedError` with that reason, as a local refusal is, keeping
- * serve's code and message.
- */
 export class ServeCommitRejectedError extends CommitRejectedError {
   readonly status = 409;
 
@@ -293,7 +248,6 @@ export class ServeCommitRejectedError extends CommitRejectedError {
   }
 }
 
-/** 409 `chunk_missing`: chunks the commit names that serve does not hold. */
 export class ServeChunksMissingError extends ServeUpstreamError {
   declare readonly code: "chunk_missing";
 
@@ -303,14 +257,9 @@ export class ServeChunksMissingError extends ServeUpstreamError {
   }
 }
 
-/**
- * 403 `forbidden` or `commit_refused`: the commit was refused op by op on
- * the caller's access or content. `opIndex` is the op refused.
- */
 export class ServeCommitRefusedError extends ServeUpstreamError {
   constructor(
     code: string,
-    /** The refusal's reason, as serve names it. */
     readonly reason: string | undefined,
     readonly opIndex: number | undefined,
     message: string,
@@ -320,11 +269,6 @@ export class ServeCommitRefusedError extends ServeUpstreamError {
   }
 }
 
-/**
- * 410 `commits_compacted`: the commits asked for were compacted. A
- * `CommitsCompactedError` at serve's compaction point, with serve's
- * message verbatim.
- */
 export class ServeCommitsCompactedError extends CommitsCompactedError {
   readonly status = 410;
   readonly code = "commits_compacted";
@@ -337,11 +281,9 @@ export class ServeCommitsCompactedError extends CommitsCompactedError {
 }
 
 /**
- * 503 with a `seq`: serve committed the change at `seq`, then could not
- * confirm it (its replica did not confirm the sync). It may already be in
- * the datastore, so it has `COMMIT_MAY_LAND_CODE`: running the command
- * again blindly could make it twice. `serveCode` is the code serve
- * answered with.
+ * serve committed at `seq` but could not confirm it, so it may already be in
+ * the datastore; COMMIT_MAY_LAND_CODE warns that running the command again
+ * blindly could make it twice
  */
 export class ServeCommitMayLandError extends ServeUpstreamError {
   declare readonly code: typeof COMMIT_MAY_LAND_CODE;
@@ -364,15 +306,10 @@ export class ServeCommitMayLandError extends ServeUpstreamError {
   }
 }
 
-/**
- * 429 that outlasted the client's retries, or that serve says not to retry
- * (`upload_quota_exceeded`, with no `Retry-After`).
- */
 export class ServeRateLimitedError extends ServeUpstreamError {
   constructor(
     code: string,
     message: string,
-    /** Serve's `Retry-After`, in seconds, when it sent one. */
     readonly retryAfterSeconds: number | undefined,
   ) {
     super(429, code, message);
@@ -381,9 +318,9 @@ export class ServeRateLimitedError extends ServeUpstreamError {
 }
 
 /**
- * A chunk a commit names is not in this checkout's chunk cache, so the
- * commit cannot be sent: the commit's own failure, never serve's
- * (swamp-club#4195). An offline flush rejects the entry and keeps it.
+ * a chunk a commit names is not in this checkout's chunk cache, so the commit
+ * cannot be sent: the commit's own failure, never serve's; an offline flush
+ * rejects the entry and keeps it
  */
 export class ChunkNotCachedError extends Error {
   constructor(readonly sha256: string, partition: string) {
@@ -396,18 +333,15 @@ export class ChunkNotCachedError extends Error {
 }
 
 /**
- * A reply whose body passed the bytes the client reads of it
- * (swamp-club#4062): serve is broken or hostile, and the body was
- * cancelled unread past the limit. `status` is the reply's.
+ * a reply body past the bytes the client reads: serve is broken or hostile, and
+ * the body was cancelled unread
  */
 export class ServeReplyTooLargeError extends ServeUpstreamError {
   declare readonly code: "reply_too_large";
 
   constructor(
     status: number,
-    /** The route the reply answered, as the client names it. */
     readonly route: string,
-    /** The most bytes the client reads of this reply. */
     readonly maxBytes: number,
   ) {
     super(
@@ -420,7 +354,6 @@ export class ServeReplyTooLargeError extends ServeUpstreamError {
   }
 }
 
-/** Every reason a partition refuses a commit with, by name. */
 const COMMIT_REJECTIONS: Readonly<Record<CommitRejection, true>> = {
   "partition-mismatch": true,
   "seq-gap": true,
@@ -459,12 +392,6 @@ function seqField(body: Record<string, unknown>, field: string) {
     : undefined;
 }
 
-/**
- * The error a serve datastore API reply that was not a success maps to.
- * `body` is the reply's parsed JSON, or undefined when it had none;
- * `serveUrl` the serve's `http(s)` origin, as the auth hint names it;
- * `retryAfterSeconds` the reply's `Retry-After`, if any.
- */
 export function serveErrorFromReply(
   status: number,
   body: unknown,
@@ -528,10 +455,9 @@ export function serveErrorFromReply(
       return new ServeCommitsCompactedError(point, message, seq);
     }
   }
-  // Refused before it was taken (swamp-club#4096), so nothing may land:
-  // checked before a 503's seq, which would say it might. A follower that
-  // forwarded the request and lost the leader after it reached it says
-  // `inFlight` (swamp-club#4120): the request may already have run.
+  // refused before it was taken, so nothing may land; checked before a 503's
+  // seq, which would say it might. A follower that lost the leader after
+  // forwarding says `inFlight`: the request may already have run
   if (status === 503 && code === SERVE_NOT_LEADER_CODE) {
     const leader = typeof fields.leader === "object" && fields.leader !== null
       ? parseServeLeader(
@@ -540,8 +466,8 @@ export function serveErrorFromReply(
       : undefined;
     return new ServeNotLeaderError(leader, false, fields.inFlight === true);
   }
-  // A follower behind the caller's copy refused a read while it catches up
-  // (swamp-club#4254): retryable, never divergence, and nothing landed.
+  // a follower behind the caller's copy refused a read while it catches up:
+  // retryable, never divergence, and nothing landed
   if (status === 503 && code === SERVE_FOLLOWER_BEHIND_CODE) {
     return new ServeFollowerBehindError();
   }

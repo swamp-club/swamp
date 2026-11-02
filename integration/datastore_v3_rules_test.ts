@@ -199,10 +199,10 @@ const PINNED_V3_IMPORTERS: readonly string[] = [
   "src/cli/commands/serve.ts -> src/infrastructure/datastore_v3/control_plane_lease_store.ts",
   "src/cli/commands/serve.ts -> src/infrastructure/datastore_v3/v3_repo_context.ts",
   "src/cli/repo_context.ts -> src/infrastructure/datastore_v3/v3_repo_context.ts",
-  // A serve-mode checkout's --last-evaluated trusts only serve's and its own
-  // member's evaluations, and its signal outcomes are serve's (swamp-club#4245).
+  // a serve-mode checkout's --last-evaluated trusts only serve's and its own
+  // member's evaluations, and its signal outcomes are serve's
   "src/cli/last_evaluated_trust.ts -> src/infrastructure/datastore_v3/trusted_evaluations.ts",
-  // A run serve drives is the one it may act on (swamp-club#4245).
+  // a run serve drives is the one it may act on
   "src/serve/resume_launcher.ts -> src/domain/datastore_v3/content_bindings.ts",
   "src/cli/last_evaluated_trust.ts -> src/infrastructure/datastore_v3/v3_repo_context.ts",
   "src/cli/repo_context.ts -> src/infrastructure/datastore_v3/serve_upstream_registry.ts",
@@ -614,8 +614,8 @@ const STORAGE_CALL = /\.storage\??\.?\(/;
 const PINNED_STORAGE_CALLS: readonly string[] = [
   // swamp-club#3534: setup checks a bucket holds no chunk, and the binding
   // gives a bucket v3 datastore its chunk storage.
-  "src/infrastructure/datastore_v3/v3_bucket_setup.ts:131",
-  "src/infrastructure/datastore_v3/v3_datastore_binding.ts:361",
+  "src/infrastructure/datastore_v3/v3_bucket_setup.ts:105",
+  "src/infrastructure/datastore_v3/v3_datastore_binding.ts:272",
 ];
 
 Deno.test("datastore v3: no production code calls a provider's storage()", async () => {

@@ -17,19 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Where a position in a POSIX `sh` command sits, for placing an environment
- * variable reference there:
- *
- * - `unquoted`: a word outside quotes (also comments and arithmetic).
- * - `double`: inside double quotes.
- * - `single`: inside single quotes.
- * - `ansi-c`: inside `$'...'`.
- * - `heredoc`: in the body of a here-document whose delimiter is unquoted,
- *   where the shell expands parameters.
- * - `heredoc-literal`: in the body of a here-document with a quoted
- *   delimiter, where nothing is expanded.
- */
 export type ShellContext =
   | "unquoted"
   | "double"
@@ -50,14 +37,6 @@ interface PendingHeredoc {
   stripTabs: boolean;
 }
 
-/**
- * Classifies each of `positions` (offsets into `command`) by the shell
- * context it falls in. A heuristic over `sh` grammar covering quotes,
- * `$'...'`, comments, command substitution and backticks (where quoting
- * restarts), arithmetic expansion, here-strings and here-documents (plain,
- * `<<-`, fully or partly quoted delimiters, several per line in order,
- * bodies running to the terminator line or the end of the script).
- */
 export function classifyShellPositions(
   command: string,
   positions: readonly number[],
@@ -65,19 +44,16 @@ export function classifyShellPositions(
   return scanShellPositions(command, positions).map((p) => p.context);
 }
 
-/** A position's shell context, and whether it is inside arithmetic. */
 export interface ShellPosition {
   readonly context: ShellContext;
   /**
-   * True inside `$(( ... ))` or `(( ... ))`, quoted or not, where bash
-   * evaluates an expanded value again as an arithmetic expression (array
-   * subscripts in it run command substitutions), so a reference there does
-   * not keep the value literal.
+   * inside (( )) bash evaluates an expanded value again as arithmetic (array
+   * subscripts run command substitutions), so a reference there does not keep
+   * the value literal
    */
   readonly arithmetic: boolean;
 }
 
-/** {@link classifyShellPositions}, with each position's arithmetic flag. */
 export function scanShellPositions(
   command: string,
   positions: readonly number[],
@@ -91,8 +67,6 @@ export function scanShellPositions(
   const sorted = [...wanted.keys()].sort((a, b) => a - b);
   const result: ShellContext[] = new Array(positions.length).fill("unquoted");
   const arithmetic: boolean[] = new Array(positions.length).fill(false);
-  // Assigns a context to every requested position in [from, to), finding the
-  // first by binary search so a long script costs one lookup per range.
   const record = (from: number, to: number, context: ShellContext) => {
     let low = 0;
     let high = sorted.length;
@@ -140,7 +114,6 @@ export function scanShellPositions(
       continue;
     }
 
-    // Here-document bodies start after the newline that ends their line.
     if (ch === "\n" && quote === "none" && pending.length > 0) {
       i++;
       while (pending.length > 0) {
@@ -215,7 +188,6 @@ export function scanShellPositions(
       continue;
     }
 
-    // Unquoted from here on.
     const current = frame();
     if (current.kind === "arith") {
       record(i, i + 1, current.inDouble ? "double" : "unquoted");
@@ -334,7 +306,6 @@ export function scanShellPositions(
   }));
 }
 
-/** Parses `<<WORD` / `<<-WORD` at `start`, returning the heredoc and where it ends. */
 function parseHeredocOperator(
   command: string,
   start: number,

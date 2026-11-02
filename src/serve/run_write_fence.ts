@@ -18,8 +18,8 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * Serve's run write fence (swamp-club#4101): one per process, handed to every
- * executor serve builds, and closed by shutdown for the runs it interrupts.
+ * one per process, handed to every executor serve builds, and closed by
+ * shutdown for the runs it interrupts
  */
 
 import type { RunWriteFence } from "../domain/workflows/run_write_fence.ts";
@@ -28,12 +28,9 @@ import { getSwampLogger } from "../infrastructure/logging/logger.ts";
 const logger = getSwampLogger(["serve", "shutdown"]);
 
 /**
- * How long closing the fence waits for saves already under way. A save
- * writes the local record (and on v3 checkpoints it), but before the write
- * it may close the run's signal waits, which can stall on a slow wait
- * store. The bound keeps shutdown inside its termination grace; a save
- * still under way at the deadline is logged and may land over the
- * interrupted record.
+ * bounds how long closing waits for saves under way so shutdown stays inside
+ * its termination grace; a save still running at the deadline is logged and may
+ * land over the interrupted record
  */
 export const RUN_WRITE_FENCE_WAIT_MS = 2_000;
 
@@ -63,11 +60,6 @@ export class ServeRunWriteFence implements RunWriteFence {
     return write;
   }
 
-  /**
-   * Closes the fence for `runIds`, then waits for their saves already under
-   * way, at most `waitMs`. A run whose save is still under way at the
-   * deadline is logged: that save may land over what the caller writes.
-   */
   async close(
     runIds: readonly string[],
     waitMs: number = RUN_WRITE_FENCE_WAIT_MS,

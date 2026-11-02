@@ -22,9 +22,6 @@ import { DataOutputValidationService } from "./data_output_validation_service.ts
 import type { DataHandle } from "./model.ts";
 import type { DataId } from "../data/data_id.ts";
 
-/**
- * Creates a test DataHandle with the given spec name and kind.
- */
 function createTestHandle(
   name: string,
   specName: string,

@@ -28,20 +28,13 @@ import { initializeLogging } from "../../infrastructure/logging/logger.ts";
 import { type AnyCommand, buildCliSchema } from "../cli_schema.ts";
 import { behaviorCommand } from "./behavior.ts";
 
-// Import models barrel to trigger self-registration
 import "../../domain/models/models.ts";
 
 await initializeLogging({});
 
 /**
- * The golden file pins everything a user or agent can see of the `swamp
- * behavior` tree (swamp-club#3331): the `swamp help` JSON, the `--help` text
- * of every command (examples and usage are not in the schema) and the shell
- * completion scripts. The behavior commands are built by the same factories
- * as `swamp model` (pinned by model_cli_surface_test.ts), so a change to a
- * factory shows up in both goldens. Regenerate it only for an intended
- * surface change, with
- * `SWAMP_UPDATE_GOLDEN=1 deno run test src/cli/commands/behavior_cli_surface_test.ts`.
+ * pins everything a user or agent sees of the behavior tree; commands share
+ * factories with swamp model, so a factory change shows in both goldens
  */
 const GOLDEN_PATH = fromFileUrl(
   new URL("./test_helpers/behavior_cli_surface.json", import.meta.url),
@@ -56,9 +49,9 @@ interface BehaviorCliSurface {
 }
 
 /**
- * A root shaped like `createRootCommand` (src/cli/mod.ts may not be imported
- * from src/), minus `.version()`, whose value changes with every build and
- * appears in subcommand help. Kept in step with model_cli_surface_test.ts.
+ * a root shaped like `createRootCommand` (src/cli/mod.ts may not be imported
+ * from src/), minus `.version()`, whose value changes with every build; kept in
+ * step with model_cli_surface_test.ts
  */
 function surfaceRoot(behavior: AnyCommand): AnyCommand {
   return registerCompletionTypes(new Command())
@@ -150,9 +143,9 @@ Deno.test("behavior CLI surface: matches the golden file", async () => {
 });
 
 Deno.test("behavior CLI surface: only the zsh and PowerShell completion scripts offer the behaviour alias", () => {
-  // Cliffy 1.0.1's bash and fish generators ignore command aliases; see
-  // src/cli/commands/completion.ts. A Cliffy upgrade that changes this
-  // should update that note and design/primitives/behaviors.md.
+  // Cliffy's bash and fish generators ignore command aliases (see
+  // src/cli/commands/completion.ts); a Cliffy upgrade that changes this should
+  // update that note and design/primitives/behaviors.md
   const { completions } = captureSurface();
   assertEquals(completions.zsh.includes("behavior|behaviour"), true);
   assertEquals(

@@ -42,12 +42,10 @@ const VERDICT: InputsSchema = {
   },
 };
 
-/** A key no payload is refused for. */
 const arbSafeKey = fc.string({ minLength: 1, maxLength: 8 }).filter((key) =>
   !RESERVED_PAYLOAD_KEYS.includes(key)
 );
 
-/** Plain JSON data, shallow enough to stay inside the depth limit. */
 const arbJsonValue: fc.Arbitrary<unknown> = fc.letrec((tie) => ({
   value: fc.oneof(
     { depthSize: "small", maxDepth: 4 },
@@ -109,7 +107,6 @@ Deno.test("SignalWait.validatePayload: every accepted payload is stored exactly 
 
       const checked = strict.validatePayload(verdict);
       assert(checked.valid, JSON.stringify(verdict));
-      // No default is added, no key dropped, nothing coerced.
       assertEquals(checked.payload, verdict);
       assertEquals(
         JSON.stringify(checked.payload),
@@ -170,14 +167,11 @@ Deno.test("SignalWait.validatePayload: a payload the strict schema does not allo
     fc.property(
       arbValidVerdict,
       fc.oneof(
-        // A verdict outside the enum.
         fc.string().filter((s) => !["ship", "fix", "abandon"].includes(s)).map(
           (verdict) => ({ verdict }),
         ),
-        // An undeclared property.
         arbSafeKey.filter((k) => !["verdict", "count", "tags"].includes(k))
           .map((key) => ({ [key]: 1 })),
-        // A wrong type.
         fc.constant({ count: "many" }),
         fc.constant({ tags: [1] }),
       ),

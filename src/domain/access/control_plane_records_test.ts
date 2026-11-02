@@ -57,7 +57,6 @@ Deno.test("isControlPlaneRecordResource: only access resources named by a contro
     ),
     true,
   );
-  // The names access requests use are not control-plane records.
   for (const name of ["grant", "group", "*", "swamp/*", "audit"]) {
     assertEquals(
       isControlPlaneRecordResource({ kind: "access", name, fields: { name } }),
@@ -65,7 +64,6 @@ Deno.test("isControlPlaneRecordResource: only access resources named by a contro
       name,
     );
   }
-  // Another kind named like a control-plane type is not one either.
   assertEquals(
     isControlPlaneRecordResource({
       kind: "data",

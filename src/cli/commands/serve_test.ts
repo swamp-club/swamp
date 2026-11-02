@@ -69,7 +69,6 @@ import type {
 } from "../../domain/access/access_decision_service.ts";
 import type { PolicySnapshotLoader } from "../../domain/access/policy_snapshot_loader.ts";
 
-// Initialize logging for tests
 await initializeLogging({});
 
 Deno.test("serveCommand module loads", async () => {
@@ -125,8 +124,8 @@ Deno.test("serveCommand has correct description", async () => {
     description,
     "Start a WebSocket API server for workflow and behavior execution",
   );
-  // Service deployments need HOME set; the description documents this so the
-  // guidance is discoverable via `swamp serve --help` (see swamp-club#463).
+  // service deployments need HOME set; the description documents this so the
+  // guidance is discoverable via `swamp serve --help`
   assertStringIncludes(description, "HOME");
 });
 
@@ -190,8 +189,6 @@ for (const name of ["token-gc-interval", "token-gc-grace-period"]) {
     }
   });
 }
-
-// --- --token-gc-interval / --token-gc-grace-period parsing ---
 
 Deno.test("parseTokenGcSettings: unset gives the 1h defaults", () => {
   assertEquals(parseTokenGcSettings(undefined, undefined), {
@@ -259,8 +256,6 @@ Deno.test("parseTokenGcSettings: caps the interval at the timer ceiling but not 
     60 * 86_400_000,
   );
 });
-
-// --- --datastore-poll-interval parsing ---
 
 Deno.test("parseShutdownDrainTimeout: unset keeps the 30s default", () => {
   assertEquals(parseShutdownDrainTimeout(undefined), 30_000);
@@ -371,8 +366,6 @@ Deno.test("parseDatastorePollInterval: rejects zero and bad formats", () => {
   );
 });
 
-// --- --group-refresh-interval warning ---
-
 const DEFAULT_GROUP_REFRESH_MS = 4 * 60 * 60 * 1000;
 
 Deno.test("shouldWarnGroupRefreshIgnored: unset interval never warns", () => {
@@ -397,8 +390,6 @@ Deno.test("shouldWarnGroupRefreshIgnored: explicit zero never warns", () => {
 Deno.test("shouldWarnGroupRefreshIgnored: explicit interval with OAuth ready does not warn", () => {
   assertEquals(shouldWarnGroupRefreshIgnored("2h", 7_200_000, true), false);
 });
-
-// --- Off-loopback security validation ---
 
 Deno.test("assertOffLoopbackSecurity: off-loopback without TLS refuses", () => {
   assertThrows(
@@ -439,8 +430,6 @@ Deno.test("assertOffLoopbackSecurity: loopback localhost with no TLS and no auth
 Deno.test("assertOffLoopbackSecurity: IPv6 loopback ::1 with no TLS and no auth passes", () => {
   assertOffLoopbackSecurity("::1", false, "none");
 });
-
-// --- WebSocket origin/host validation ---
 
 Deno.test("validateDashboardSessionOrigin: requires the exact browser origin including port", () => {
   const request = new Request("http://localhost:9090/auth/dashboard/session", {
@@ -843,8 +832,6 @@ Deno.test("validateWebSocketOrigin: rejects malformed origin", () => {
   assertStringIncludes(result.reason!, "malformed origin");
 });
 
-// --- Trusted hosts ---
-
 Deno.test("validateWebSocketOrigin: accepts trusted host on off-loopback bind", () => {
   const result = validateWebSocketOrigin(
     null,
@@ -975,8 +962,6 @@ Deno.test("validateWebSocketOrigin: empty trusted hosts array has no effect", ()
   assertEquals(result.allowed, false);
   assertStringIncludes(result.reason!, "untrusted host");
 });
-
-// --- collectServeExtraArgs ---
 
 Deno.test("collectServeExtraArgs: forwards --trusted-hosts", () => {
   const args = collectServeExtraArgs({
@@ -1111,8 +1096,6 @@ Deno.test("collectServeExtraArgs: forwards --max-run-duration", () => {
   assertEquals(args, ["--max-run-duration", "1h"]);
 });
 
-// --- cancelExecution ---
-
 function makeActiveRun(
   runId: string,
   completion: Promise<void>,
@@ -1162,7 +1145,6 @@ Deno.test("cancelExecution: returns cancelled when run deregisters within grace 
     100,
   );
 
-  // Simulate the run stopping: deregister and resolve completion
   activeRunRegistry.deregister("run-1");
   resolveCompletion();
 
@@ -1176,7 +1158,6 @@ Deno.test("cancelExecution: returns cancellation_requested when run stays active
   const cancelRegistry = new RunCancelRegistry();
   const activeRunRegistry = new ActiveRunRegistry();
   const controller = new AbortController();
-  // Completion never resolves — simulates a stuck run
   const completion = new Promise<void>(() => {});
   const run = makeActiveRun("run-stuck", completion);
   Object.assign(run, { controller });
@@ -1193,7 +1174,6 @@ Deno.test("cancelExecution: returns cancellation_requested when run stays active
   assertEquals(result.status, "cancellation_requested");
   assertEquals(result.executionId, "run-stuck");
 
-  // Clean up: deregister to avoid dangling state
   activeRunRegistry.deregister("run-stuck");
 });
 
@@ -1400,7 +1380,6 @@ Deno.test("cancelExecution: the not_found message names a method-run", async () 
   assertEquals(result.message, "No cancellable method-run with id gone");
 });
 
-/** A registry holding a run that leaves it as soon as it is aborted. */
 function registryWithAbortableRun(runId: string): ActiveRunRegistry {
   const registry = new ActiveRunRegistry();
   const run = makeActiveRun(runId, Promise.resolve());
@@ -1494,8 +1473,6 @@ Deno.test("cancelExecution: a persisted cancel reports its own nested runs and i
   });
 });
 
-// --- readBulkCancelBody ---
-
 function bulkCancelRequest(body?: string): Request {
   return new Request("http://localhost/api/v1/cancel", {
     method: "POST",
@@ -1529,8 +1506,6 @@ Deno.test("readBulkCancelBody: refuses a body over the cap with 413", async () =
   assertEquals(result.ok, false);
   assertEquals(!result.ok && result.status, 413);
 });
-
-// --- readCancelRequestReason ---
 
 function cancelRequest(body?: string): Request {
   return new Request("http://localhost/api/v1/cancel/workflow-run/r1", {
@@ -1612,13 +1587,9 @@ Deno.test("readCancelRequestReason: refuses an oversized body with 413", async (
   if (!result.ok) assertEquals(result.status, 413);
 });
 
-// --- legacyHealthBody ---
-
 Deno.test("legacyHealthBody: names no schedule, webhook or setting", () => {
   assertEquals(legacyHealthBody(), { status: "ok", version: "1" });
 });
-
-// --- cancelSuccessBody ---
 
 Deno.test("cancelSuccessBody: a workflow run reports the reason serve applied", () => {
   for (const status of ["cancelled", "cancellation_requested"] as const) {
@@ -1691,7 +1662,6 @@ Deno.test("cancelExecution: passes its reason to the registry that aborts the ru
   );
 });
 
-/** A registered run that leaves the registry as soon as it is aborted. */
 function exitingRun(registry: ActiveRunRegistry, runId: string): ActiveRun {
   let resolve!: () => void;
   const run = makeActiveRun(
@@ -1778,15 +1748,12 @@ Deno.test("cancelExecution: does not re-check a run still registered after the g
   assertEquals(calls, 0);
 });
 
-// ── HTTP cancel authorization (swamp-club#2651) ──────────────────────
-
 interface CancelAuthHarness {
   events: AuditEvent[];
   asked: Parameters<AccessDecisionService["decide"]>[];
   loader: Pick<PolicySnapshotLoader, "decisionService">;
 }
 
-/** A policy whose admin decision is `effect`, or no match for null. */
 function cancelAuthHarness(
   effect: AccessDecision["effect"] | null,
 ): CancelAuthHarness {
@@ -1931,7 +1898,6 @@ Deno.test("authorizeCancelRequest: lets an admin through without auditing", () =
   assertEquals(h.events, []);
 });
 
-/** The audited fields a cancel refusal sets. */
 function refusalFields(h: CancelAuthHarness) {
   return h.events.map((e) => ({
     action: e.action,
@@ -1945,7 +1911,6 @@ function refusalFields(h: CancelAuthHarness) {
   }));
 }
 
-/** Merged serve options with Cliffy's defaults and the given flags set. */
 function mergedServeOptions(flags: Record<string, unknown> = {}) {
   return mergeServeOptions(
     null,

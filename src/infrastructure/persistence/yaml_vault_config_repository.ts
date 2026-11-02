@@ -52,11 +52,6 @@ import {
   createVaultUpdated,
 } from "../../domain/events/types.ts";
 
-/**
- * A vault config file that does not parse as YAML or does not match the vault
- * config schema. It names the file and how to repair it, and carries the vault
- * type and id derived from the file's location.
- */
 export class VaultConfigParseError extends UserError {
   constructor(
     readonly path: string,
@@ -73,15 +68,6 @@ export class VaultConfigParseError extends UserError {
   }
 }
 
-/**
- * YAML-based repository for vault configurations.
- *
- * Stores vault configs as YAML files in the directory structure:
- * {vaultsDir}/{vault-type}/{id}.yaml
- *
- * vaultsDir defaults to the effective vaults dir: {repoDir}/vaults, or the
- * datastore config tier's vaults/ when managedConfig is active.
- */
 export class YamlVaultConfigRepository {
   private readonly eventBus: EventBus | null;
   private readonly baseDir: string;
@@ -96,9 +82,6 @@ export class YamlVaultConfigRepository {
     this.baseDir = baseDir ?? resolveEffectiveVaultsDir(repoDir);
   }
 
-  /**
-   * Finds a vault config by its type and ID.
-   */
   async findById(
     vaultType: string,
     id: VaultConfigId,
@@ -117,12 +100,9 @@ export class YamlVaultConfigRepository {
   }
 
   /**
-   * Finds a vault config by name across all vault types. Files that do not
-   * parse are skipped while a match may still come; vault names are unique,
-   * so a parseable match is the vault. With no match, the first file that did
-   * not parse is reported, since it may be the vault asked for. With
-   * `skipUnparseable`, such files are never reported: a check whether a name
-   * is free treats a file that cannot be read as not holding it.
+   * unparseable files are skipped while a match may still come; with no match
+   * the first is reported, unless skipUnparseable, which treats an unreadable
+   * file as not holding the name
    */
   async findByName(
     name: string,
@@ -156,11 +136,8 @@ export class YamlVaultConfigRepository {
   }
 
   /**
-   * The vault files that do not parse as a vault config but still declare
-   * `name` in their YAML, as paths. A name check that skips unparseable files
-   * uses it so a rename cannot take a name such a file holds, which would
-   * leave two vaults with that name once the file is fixed (swamp-club#4107).
-   * A file whose YAML does not parse at all declares nothing.
+   * lets a name check that skips unparseable files avoid a rename taking a name
+   * such a file declares, which would leave two vaults with it once fixed
    */
   async findUnparseableDeclaring(name: string): Promise<string[]> {
     const found: string[] = [];
@@ -193,9 +170,6 @@ export class YamlVaultConfigRepository {
     return found;
   }
 
-  /**
-   * Finds all vault configs of a specific type.
-   */
   async findAllByType(vaultType: string): Promise<VaultConfig[]> {
     const dir = this.getTypeDir(vaultType);
     const configs: VaultConfig[] = [];
@@ -216,9 +190,6 @@ export class YamlVaultConfigRepository {
     return configs;
   }
 
-  /**
-   * Finds all vault configs across all types.
-   */
   async findAll(): Promise<VaultConfig[]> {
     const vaultDir = this.getVaultDir();
     const configs: VaultConfig[] = [];
@@ -239,9 +210,6 @@ export class YamlVaultConfigRepository {
     return configs;
   }
 
-  /**
-   * Saves a vault config to the repository.
-   */
   async save(config: VaultConfig): Promise<void> {
     const dir = this.getTypeDir(config.type);
     await assertSafePath(dir, this.baseDir);
@@ -249,7 +217,6 @@ export class YamlVaultConfigRepository {
 
     const path = this.getPath(config.type, config.id);
 
-    // Check if this is a new vault or an update
     const isNew = !(await this.exists(path));
 
     const data = config.toData();
@@ -265,7 +232,6 @@ export class YamlVaultConfigRepository {
       await atomicWriteTextFile(path, content);
       await this.stageSave(config, path, content, prior);
 
-      // Emit event
       if (this.eventBus) {
         const event = isNew
           ? createVaultCreated(config.id, config.type, config.name)
@@ -275,9 +241,6 @@ export class YamlVaultConfigRepository {
     });
   }
 
-  /**
-   * Deletes a vault config from the repository.
-   */
   async delete(config: VaultConfig): Promise<void> {
     const path = this.getPath(config.type, config.id);
     return await withChangeSignalled(this.markDirty, { kind: "remove", path }, {
@@ -291,7 +254,6 @@ export class YamlVaultConfigRepository {
         await Deno.remove(path);
         removed = true;
 
-        // Emit event
         if (this.eventBus) {
           const event = createVaultDeleted(config.id, config.type, config.name);
           await this.eventBus.publish(event);
@@ -318,12 +280,9 @@ export class YamlVaultConfigRepository {
   }
 
   /**
-   * On v3, the typed changes of a save (swamp-club#3257), from #3256's
-   * definition batches with kind `vault`: a create expecting the key absent,
-   * an edit expecting the replaced bytes' digest, or a rename as two
-   * partitions. A save that wrote the bytes the file already held stages
-   * nothing. The content is the file the repository wrote and nothing else:
-   * secrets are the vault provider's and never reach a typed change.
+   * on v3 a save stages a create expecting the key absent, an edit expecting
+   * the replaced digest, or a rename as two partitions; identical bytes stage
+   * nothing; secrets never reach a typed change
    */
   private async stageSave(
     config: VaultConfig,
@@ -350,27 +309,17 @@ export class YamlVaultConfigRepository {
     }
   }
 
-  /**
-   * A managed-config vault file's record key; undefined for a repo-local
-   * vault config (`{repo}/vaults`, as repo init writes), which stages
-   * nothing.
-   */
+  /** undefined for a repo-local vault config, which stages nothing */
   private stagingTierOf(path: string) {
     const tier = stagingTierOf(this.repoDir, [], path);
     return tier?.tier === "config" ? tier : undefined;
   }
 
-  /**
-   * Checks if a vault config exists by name.
-   */
   async existsByName(name: string): Promise<boolean> {
     const config = await this.findByName(name);
     return config !== null;
   }
 
-  /**
-   * Checks if a file exists at the given path.
-   */
   private async exists(path: string): Promise<boolean> {
     try {
       await Deno.stat(path);
@@ -384,9 +333,8 @@ export class YamlVaultConfigRepository {
   }
 
   /**
-   * Paths of every `.yaml` under `dir`, in the order a walk sorted by name at
-   * each level visits them, so the same vault directory reads identically on
-   * every filesystem (swamp-club#3067). NotFound propagates.
+   * visits files sorted by name at each level so the same vault directory reads
+   * identically on every filesystem; NotFound propagates
    */
   private async yamlFilesSorted(dir: string): Promise<string[]> {
     const paths: string[] = [];
@@ -401,16 +349,10 @@ export class YamlVaultConfigRepository {
     return paths.sort(comparePathsBySegment);
   }
 
-  /**
-   * Gets the base vault directory.
-   */
   private getVaultDir(): string {
     return this.baseDir;
   }
 
-  /**
-   * Gets the directory for a specific vault type.
-   */
   private getTypeDir(vaultType: string): string {
     const vaultDir = this.getVaultDir();
     const result = join(vaultDir, vaultType);
@@ -435,9 +377,6 @@ export class YamlVaultConfigRepository {
     }
   }
 
-  /**
-   * Gets the file path for a specific vault config.
-   */
   getPath(vaultType: string, id: VaultConfigId): string {
     const typeDir = this.getTypeDir(vaultType);
     const path = join(typeDir, `${id}.yaml`);
@@ -448,11 +387,6 @@ export class YamlVaultConfigRepository {
     return path;
   }
 
-  /**
-   * Parses YAML content and validates it against the VaultConfigData schema.
-   * Throws a VaultConfigParseError if the YAML is malformed or missing
-   * required fields.
-   */
   private parseVaultConfig(content: string, path: string): VaultConfigData {
     let raw: unknown;
     try {
@@ -477,10 +411,6 @@ export class YamlVaultConfigRepository {
     return result.data;
   }
 
-  /**
-   * Builds the parse error for a vault file, deriving the vault type (which
-   * spans two directories for namespaced types) and id from its location.
-   */
   private parseError(path: string, reason: string): VaultConfigParseError {
     const segments = relative(this.getVaultDir(), path).split(SEPARATOR);
     const file = segments.pop() ?? "";

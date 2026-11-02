@@ -18,34 +18,9 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * Adopting a repo's existing config into a v3 datastore's config tier
- * (swamp-club#3300).
- *
- * On v2, `swamp datastore config migrate` copies the repo's model
- * definitions, workflows and vault configs into the config tier. A v3 config
- * tier is what its commits say, so each of those files has to be committed.
- * Adoption reads the repo-local `models/`, `workflows/` and `vaults/` trees
- * and commits each file into its managed-config partition (the config
- * partition of its kind and name) as a `definition.create` expecting its
- * key absent, writing the same bytes into the checkout's config tier.
- *
- * The commit log is the migration record: a name is adopted only while no
- * commit of its partition has changed its definition (a create, an edit, a
- * delete or a rename). The evaluated workflow a run stages shares the
- * workflow's partition but is not its definition, so a workflow that ran
- * before the migration is still adopted (swamp-club#3760). So a re-run
- * adopts nothing, a name deleted from the tier after it was adopted is never
- * brought back, and a name another checkout already committed is never
- * overwritten. A checkout that commits the same name between this one's
- * catch-up and its commit makes this one's create fail its `absent`
- * precondition.
- *
- * Only regular files are read: a symlink in the repo's trees is skipped, so
- * a repo-controlled link can never pull bytes from outside the repo into the
- * datastore. Secrets are never read: vault configs name their vault, the
- * secrets stay where the vault keeps them.
- *
- * @module
+ * a name is adopted only while no commit of its partition has changed its
+ * definition, so a re-run adopts nothing and a deleted or already committed
+ * name is never brought back or overwritten
  */
 
 import { ensureDir } from "@std/fs";
@@ -87,7 +62,6 @@ import { runInRootUnitOfWork } from "../persistence/repo_unit_of_work.ts";
 import { stageTyped } from "../persistence/unit_of_work_scope.ts";
 import { type V3DatastoreConfig, v3DatastoreFor } from "./v3_repo_context.ts";
 
-/** Where each kind of config lives, in the repo and in the config tier. */
 const ADOPTED_TREES: readonly {
   readonly kind: DefinitionKind;
   readonly dir: string;
@@ -97,29 +71,21 @@ const ADOPTED_TREES: readonly {
   { kind: "vault", dir: "vaults" },
 ];
 
-/** A repo-local file adoption will commit. */
 export interface ConfigAdoption {
   readonly kind: DefinitionKind;
   readonly name: string;
   readonly id: string | undefined;
-  /** The repo-local file. */
   readonly sourcePath: string;
-  /** Where it lands in the config tier. */
   readonly targetPath: string;
   readonly content: Uint8Array;
 }
 
-/** Why a repo-local file is not adopted, when that is worth reporting. */
 export type ConfigAdoptionSkipReason =
-  /** The file declares no name, or one no partition can be formed from. */
   | "unnamed"
-  /** The file, or a directory holding it, could not be read. */
   | "unreadable"
   /**
-   * The commit log already holds a definition of the name, and this
-   * checkout's config tier has no copy at the file's path: another
-   * checkout's definition of it, or one renamed or deleted since it was
-   * adopted.
+   * the commit log already holds a definition of the name and this checkout's
+   * config tier has no copy at the file's path
    */
   | "name-committed"
   /**
@@ -128,12 +94,9 @@ export type ConfigAdoptionSkipReason =
    * committed, and the two cannot be told apart, so it is left out.
    */
   | "history-compacted"
-  /** No record key can name the file's path in the config tier. */
   | "invalid-path"
-  /** An earlier file of the same kind declares the same name. */
   | "duplicate-name";
 
-/** A repo-local file adoption skipped, and why. */
 export interface SkippedConfigFile {
   readonly kind: DefinitionKind | "lockfile";
   readonly path: string;
@@ -141,17 +104,13 @@ export interface SkippedConfigFile {
   readonly reason: ConfigAdoptionSkipReason;
 }
 
-/** The repo-local extension lockfile, adopted with the config. */
 export interface LockfileAdoption {
   readonly sourcePath: string;
-  /** `upstream_extensions.json` in the config tier. */
   readonly targetPath: string;
   readonly content: Uint8Array;
   /**
-   * The repo's pulled extension sources and the managed root a managed repo
-   * reads them from, when the repo has any. They are never committed (they
-   * have no v3 intent), so they are copied in this checkout only, as v2's
-   * migration copies them.
+   * never committed, having no v3 intent: copied in this checkout only, as v2's
+   * migration copies them
    */
   readonly pulledExtensions?: {
     readonly source: string;
@@ -159,23 +118,15 @@ export interface LockfileAdoption {
   };
 }
 
-/** What adoption found in the repo. */
 export interface ConfigAdoptionPlan {
   readonly adoptions: readonly ConfigAdoption[];
-  /** The extension lockfile, when the commit log has never held one. */
   readonly lockfile?: LockfileAdoption;
-  /**
-   * Files with nothing to do: the commit log already holds their name, or
-   * the config tier already holds their bytes at their path.
-   */
   readonly alreadyCommitted: number;
   readonly skipped: readonly SkippedConfigFile[];
 }
 
-/** Options for {@link planConfigAdoption}. */
 export interface PlanConfigAdoptionOptions {
   readonly repoDir: string;
-  /** The checkout's managed config base, `.swamp[/<namespace>]/config`. */
   readonly configBase: string;
   /**
    * Whether the commit log holds any commit of `partition`. Asked of the
@@ -183,35 +134,25 @@ export interface PlanConfigAdoptionOptions {
    */
   readonly partitionHasCommits: (partition: PartitionKey) => Promise<boolean>;
   /**
-   * Whether the commit log holds a change to the definition of a
-   * managed-config `partition` (its create, an edit, a delete or a rename),
-   * or cannot tell because the partition's history was compacted. The
-   * evaluated workflow a run stages into the same partition is not the
-   * definition, so it must not count (swamp-club#3760).
+   * the evaluated workflow a run stages into the same partition is not the
+   * definition, so it must not count
    */
   readonly definitionCommitState: (
     partition: PartitionKey,
   ) => Promise<DefinitionCommitState>;
   /**
-   * The repo-local extension lockfile (`upstream_extensions.json` in the
-   * repo's extension models directory). Turning managedConfig on moves the
-   * lockfile into the config tier, so it is adopted with the config, and
-   * the repo's pulled extension sources move with it.
+   * turning managedConfig on moves the lockfile into the config tier, so it is
+   * adopted with the config
    */
   readonly lockfileSource?: string;
   /**
-   * Confirm a config-tier copy against the commit log rather than trust it.
-   * `datastore config migrate` sets it: it is not on every command's path,
-   * and a copy the commit log never held (one left by an earlier setup, or
-   * placed by hand) must not stop its name being committed.
+   * a copy the commit log never held (left by an earlier setup or placed by
+   * hand) must not stop its name being committed, so migrate confirms copies
+   * against the log
    */
   readonly verifyTierCopies?: boolean;
 }
 
-/**
- * Finds the repo-local config the commit log has never held. Reads files
- * and the commit log only; it writes nothing.
- */
 export async function planConfigAdoption(
   options: PlanConfigAdoptionOptions,
 ): Promise<ConfigAdoptionPlan> {
@@ -230,11 +171,9 @@ export async function planConfigAdoption(
       const rel = relative(sourceRoot, sourcePath);
       assertContainedPath(rel, targetRoot);
       const targetPath = join(targetRoot, rel);
-      // Adoption writes a tier copy only after its commit lands, and every
-      // later write there commits too, so a file at the target path means a
-      // committed name (a copy placed there by hand aside), whatever bytes
-      // an edit has since given it. Skip it before parsing it or reading the
-      // commit log: a repo adopted long ago pays one lstat per file.
+      // adoption writes a tier copy only after its commit lands, so a file at
+      // the target path means a committed name; skip it before parsing or
+      // reading the commit log
       const hasTierCopy = await isFile(targetPath);
       if (hasTierCopy && options.verifyTierCopies !== true) {
         alreadyCommitted++;
@@ -320,10 +259,8 @@ export async function planConfigAdoption(
 }
 
 /**
- * The lockfile adoption, when the repo has a lockfile of its own and the
- * commit log has never held one. Its partition has no precondition (a
- * lockfile put carries none), so the commit log's head is what keeps a
- * second checkout from replacing a lockfile another one committed.
+ * a lockfile put carries no precondition, so the commit log's head is what
+ * keeps a second checkout from replacing a lockfile another one committed
  */
 async function planLockfileAdoption(
   options: PlanConfigAdoptionOptions,
@@ -373,12 +310,6 @@ async function planLockfileAdoption(
   };
 }
 
-/**
- * Stages each adoption's commit. Call it inside a root unit of work open over
- * the v3 context whose hook is `markDirty`; the root's commit lands the
- * adoptions. It writes no file: {@link commitConfigAdoption} writes the
- * config tier once the commit has landed.
- */
 export async function stageConfigAdoption(
   markDirty: MarkDirtyHook,
   configBase: string,
@@ -414,11 +345,6 @@ export async function stageConfigAdoption(
   }
 }
 
-/**
- * {@link planConfigAdoption} over the v3 datastore `config` names, whose
- * commit store answers which partitions have commits. The context opening
- * caught the read model up, so the plan sees every commit made before it.
- */
 export async function planV3ConfigAdoption(
   repoDir: string,
   config: V3DatastoreConfig,
@@ -445,30 +371,14 @@ export async function planV3ConfigAdoption(
   });
 }
 
-/** How many commits {@link definitionCommitState} reads at a time. */
 export const DEFINITION_SCAN_PAGE = 256;
 
 /**
- * What the commit log says about a managed-config definition: `none` when
- * no commit of its partition changed it, `committed` when one did, and
- * `compacted` when part of the partition's history was compacted and
- * neither the commits left nor the live records show a definition.
- * Compaction keeps only live records, so a deleted definition's tombstone
- * may be gone: a compacted name cannot be told from one never committed
- * (swamp-club#3760).
+ * compaction keeps only live records, so a deleted definition's tombstone may
+ * be gone: a compacted name cannot be told from one never committed
  */
 export type DefinitionCommitState = "none" | "committed" | "compacted";
 
-/**
- * The {@link DefinitionCommitState} of a managed-config partition. Reads the
- * partition's commits in seq order and stops at the first that changes the
- * definition, so a definition committed before its runs is found in one
- * page. When the history was compacted, it reads the commits left after
- * the compaction, then the read model's live records once caught up: a
- * record under `config/` is a definition file (an evaluated workflow is
- * keyed under `workflows-evaluated/`). An index the read model cannot list
- * shows none.
- */
 export async function definitionCommitState(
   store: Pick<CommitStore, "head" | "readPartition">,
   readModel: Pick<ReadModel, "catchUp" | "liveRecords">,
@@ -502,10 +412,6 @@ export async function definitionCommitState(
     : "compacted";
 }
 
-/**
- * Whether a commit from seq `from` on changes the partition's definition,
- * or `compacted` when `from` is at or below its compacted seq.
- */
 async function scanForDefinition(
   store: Pick<CommitStore, "readPartition">,
   namespace: string,
@@ -541,9 +447,8 @@ async function scanForDefinition(
 }
 
 /**
- * The lowest seq of a compacted partition still stored, found by bisecting
- * `readPartition`'s refusals (the store keeps a partition's compacted seq to
- * itself); undefined when every commit up to `head` was compacted.
+ * the store keeps a partition's compacted seq to itself, so find the lowest
+ * stored seq by bisecting readPartition's refusals
  */
 async function firstStoredSeq(
   store: Pick<CommitStore, "readPartition">,
@@ -551,7 +456,6 @@ async function firstStoredSeq(
   partition: PartitionKey,
   head: number,
 ): Promise<number | undefined> {
-  // Seq 1 is compacted; find the lowest seq in (1, head] that is not.
   let low = 1;
   let high = head + 1;
   while (high - low > 1) {
@@ -567,12 +471,6 @@ async function firstStoredSeq(
   return high <= head ? high : undefined;
 }
 
-/**
- * Thrown when another checkout committed a name this adoption was about to
- * create: its `absent` precondition failed, and nothing it staged in that
- * name's partition landed. Running adoption again adopts nothing for the
- * names that now have commits.
- */
 export class ConfigAdoptionRefusedError extends UserError {
   constructor(cause: CommitRejectedError) {
     super(
@@ -585,27 +483,15 @@ export class ConfigAdoptionRefusedError extends UserError {
   }
 }
 
-/** Options for {@link adoptV3Config}. */
 export interface AdoptV3ConfigOptions {
-  /** The v3 context to commit through. */
   readonly repoContext: Pick<RepositoryContext, "markDirty" | "commitLog">;
   readonly repoDir: string;
   readonly config: V3DatastoreConfig;
-  /** The checkout's managed config base, `.swamp[/<namespace>]/config`. */
   readonly configBase: string;
-  /** See {@link PlanConfigAdoptionOptions.lockfileSource}. */
   readonly lockfileSource?: string;
-  /** See {@link PlanConfigAdoptionOptions.verifyTierCopies}. */
   readonly verifyTierCopies?: boolean;
 }
 
-/**
- * Commits the repo-local config the v3 commit log has never held
- * ({@link commitConfigAdoption}) and returns what it found.
- *
- * @throws ConfigAdoptionRefusedError when another checkout committed one of
- *   the names first
- */
 export async function adoptV3Config(
   options: AdoptV3ConfigOptions,
 ): Promise<ConfigAdoptionPlan> {
@@ -627,15 +513,8 @@ export async function adoptV3Config(
 }
 
 /**
- * Commits `plan`'s adoptions in a root unit of work of its own over the v3
- * context, then writes them into the checkout's config tier. The root has no
- * flush, so it never releases the locks of the command it runs in. Call it
- * with no root open over the context: a child unit would end before the
- * outer root commits, and the files would be written ahead of the commit. A
- * plan with nothing to adopt opens no root.
- *
- * @throws ConfigAdoptionRefusedError when another checkout committed one of
- *   the keys first
+ * the root has no flush, so it never releases the command's locks; call with no
+ * root open, or the files would be written ahead of the outer commit
  */
 export async function commitConfigAdoption(
   repoContext: Pick<RepositoryContext, "markDirty" | "commitLog">,
@@ -659,10 +538,8 @@ export async function commitConfigAdoption(
     }
     throw error;
   }
-  // The files are written only once the commit has landed, so a config-tier
-  // copy always means a committed one. When the commit fails, nothing is
-  // written, and the partitions that did commit reach this checkout at its
-  // next catch-up, as another checkout's commits do.
+  // write files only once the commit has landed, so a config-tier copy always
+  // means a committed one
   for (const adoption of plan.adoptions) {
     await ensureDir(dirname(adoption.targetPath));
     await Deno.writeFile(adoption.targetPath, adoption.content);
@@ -677,7 +554,6 @@ export async function commitConfigAdoption(
   }
 }
 
-/** Whether `path` is a regular file, without following a symlink. */
 async function isFile(path: string): Promise<boolean> {
   try {
     return (await Deno.lstat(path)).isFile;
@@ -688,10 +564,8 @@ async function isFile(path: string): Promise<boolean> {
 }
 
 /**
- * The `.yaml` and `.yml` regular files under `root`, sorted, so the first
- * of two files declaring one name is always the same one. Symlinks, to
- * files or directories and `root` itself, are skipped and never followed. A
- * missing root has none.
+ * sorted so the first of two files declaring one name is always the same;
+ * symlinks are skipped, never followed
  */
 async function regularYamlFiles(
   root: string,

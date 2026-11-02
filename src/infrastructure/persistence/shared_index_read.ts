@@ -18,9 +18,8 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * One index read with independent callers. Its loader receives a signal owned
- * by the read, not by its first caller: it stops only once every caller leaves.
- * The owner decides which callers may share it and how long it remains visible.
+ * the loader's signal is owned by the read, not its first caller, and aborts
+ * only once every caller has left
  */
 export class SharedIndexRead<T> {
   readonly #abort = new AbortController();

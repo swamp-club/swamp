@@ -63,7 +63,6 @@ function summaryOf(overrides: Partial<OutputSummary> = {}): OutputSummary {
   };
 }
 
-/** `summaries` as rows, each of a record no test here compares. */
 function rowsOf(...summaries: OutputSummary[]): OutputSummaryRow[] {
   return summaries.map((summary) => ({
     summary,
@@ -83,7 +82,6 @@ function indexIn(dir: string, baseDir = "outputs"): OutputSummaryIndex {
   return new OutputSummaryIndex(dir, join(dir, baseDir));
 }
 
-/** The one shard under `dir`. */
 async function shardIn(dir: string): Promise<string> {
   const found: string[] = [];
   const walk = async (at: string) => {
@@ -527,10 +525,6 @@ Deno.test("removeStaleOutputSummaries: readers adding rows while it clears fail 
   });
 });
 
-/**
- * Runs `fn` with a clock that moves past a slice between any two looks at it, so
- * work done in slices yields after each item, however fast this machine is.
- */
 async function withEverySliceExpired<T>(fn: () => Promise<T>): Promise<T> {
   const now = performance.now;
   let ticks = now.call(performance);
@@ -666,7 +660,6 @@ Deno.test("OutputSummaryIndex.read: a chunk that cannot be decoded fails no call
   });
 });
 
-/** The warnings logged while `fn` runs. */
 async function warningsDuring(fn: () => Promise<void>): Promise<string[]> {
   const warnings: string[] = [];
   await configure({

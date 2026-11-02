@@ -56,7 +56,6 @@ Deno.test("merge two streams contains all items", async () => {
     fromArray(["a", "b"]),
     fromArray(["c", "d"]),
   ]));
-  // All items present, order may vary
   assertEquals(items.sort(), ["a", "b", "c", "d"]);
 });
 
@@ -65,7 +64,6 @@ Deno.test("merge interleaves delayed streams", async () => {
     delayed(["a1", "a2"], 5),
     delayed(["b1", "b2"], 5),
   ]));
-  // All items present
   assertEquals(items.length, 4);
   assertEquals(items.sort(), ["a1", "a2", "b1", "b2"]);
 });
@@ -96,8 +94,6 @@ Deno.test("merge with pre-aborted signal yields nothing", async () => {
   ], controller.signal));
   assertEquals(items, []);
 });
-
-// mergeWithConcurrency tests
 
 Deno.test("mergeWithConcurrency: undefined limit delegates to merge", async () => {
   const items = await collect(mergeWithConcurrency([
@@ -165,8 +161,6 @@ Deno.test("mergeWithConcurrency: with pre-aborted signal yields nothing", async 
   assertEquals(items, []);
 });
 
-// Error propagation tests
-
 async function* throwAfter<T>(
   items: T[],
   error: Error,
@@ -231,12 +225,10 @@ Deno.test("merge does not propagate stream error when signal is aborted", async 
       },
     };
   }
-  // Should NOT throw — the abort came first
   const items = await collect(merge(
     [fromArray([1]), abortThenThrow()],
     controller.signal,
   ));
-  // May or may not contain 1 depending on timing, but must not throw
   assertEquals(items.length <= 1, true);
 });
 
@@ -262,8 +254,6 @@ Deno.test("mergeWithConcurrency propagates error from one of multiple streams", 
     "step exploded",
   );
 });
-
-// Abort-exits-promptly tests
 
 async function* slowStream(
   durationMs: number,
@@ -340,12 +330,6 @@ Deno.test("merge does not throw stream error after abort", async () => {
   assert(items.length <= 1);
 });
 
-// finishStartedOnAbort: started streams run to their end after the abort
-
-/**
- * Yields `<name>:before`, waits for `release`, then yields `<name>:after` and
- * records that it reached its end.
- */
 async function* heldStream(
   name: string,
   release: Promise<void>,

@@ -101,7 +101,6 @@ Deno.test("runShutdownDrain: drains every source concurrently under one deadline
     drainTimeoutMs: 45_000,
     abortGraceMs: 5_000,
   });
-  // All three drains start before any of them settles.
   assertEquals(log, [
     "webhooks.drain(45000)",
     "schedules.drain(45000)",
@@ -173,8 +172,8 @@ Deno.test("runShutdownDrain: with nothing configured returns no aborted runs", a
 });
 
 Deno.test("runShutdownDrain: refuses later registrations even when nothing is drained", async () => {
-  // A chained auto-resume can register after shutdown begins; the registry
-  // must stop accepting runs although no drain waited (swamp-club#2736).
+  // a chained auto-resume can register after shutdown begins, so the registry
+  // must stop accepting runs even when no drain waited
   for (const drainTimeoutMs of [0, 30_000]) {
     const registry = new FakeRegistry([], []);
     await runShutdownDrain({

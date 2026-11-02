@@ -31,12 +31,10 @@ Deno.test("inviteLinkCommand: has correct name and description", () => {
 
 Deno.test("firstRuleCommand: same command, hidden from help", () => {
   assertEquals(firstRuleCommand.getName(), "first-rule");
-  // It carries the same description as `link`, so the two cannot drift.
   assertEquals(
     firstRuleCommand.getDescription(),
     inviteLinkCommand.getDescription(),
   );
-  // And `link` itself no longer carries it as an alias.
   assertEquals(inviteLinkCommand.getAliases(), []);
 
   // Cliffy exposes no public isHidden() reader, so the flag is read the way

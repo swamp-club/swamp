@@ -45,11 +45,9 @@ import { withConsoleGuard } from "./console_guard.ts";
 import { processTraceEnv } from "./process_trace_env.ts";
 
 /**
- * Renders a LogTape string template the way LogTape does for its own sinks:
- * `{{` and `}}` are escaped braces, and `{key}` is a placeholder filled from
- * `props`. Without props, a single-brace span is left as written so plain
- * output (JSON, say) still displays verbatim. A template with no opening
- * brace is not parsed at all, so `}}` in one stays doubled.
+ * without props a single-brace span is left as written so plain output such as
+ * JSON displays verbatim; a template with no opening brace is not parsed, so }}
+ * stays doubled
  */
 function renderMessageTemplate(
   tpl: string,
@@ -119,9 +117,8 @@ export function wrapLoggerWithOutput(
 }
 
 /**
- * Interface for the execute method of MethodExecutionService.
- * Allows InProcessExecutor to delegate argument validation and
- * method execution without a circular dependency on the full service.
+ * lets InProcessExecutor delegate validation and execution without a circular
+ * dependency on the full service
  */
 export interface MethodExecutor {
   execute(
@@ -132,20 +129,10 @@ export interface MethodExecutor {
 }
 
 /**
- * In-process executor — runs model methods directly in the host Deno process.
- *
- * This is the execution path for every step without remote placement. It
- * receives live in-process objects at construction time and ignores the
- * serialized parts of ExecutionRequest.
- *
- * Responsibility: create data writers, inject them into context, delegate
- * to MethodExecutor for argument validation and method execution, and
- * return the result as an ExecutionResult with "persisted" ExecutionOutputs.
+ * runs every step without remote placement from live in-process objects given
+ * at construction, ignoring the serialized parts of ExecutionRequest
  */
 export class InProcessExecutor {
-  /**
-   * The context with writers injected, available after execute() completes.
-   */
   contextWithWriters?: MethodContext;
 
   constructor(
@@ -352,10 +339,9 @@ export class InProcessExecutor {
         };
       }
 
-      // A file writer handed a path but never finalised left a version
-      // with no metadata that no commit or later write claims, so it would
-      // stay in this checkout alone (swamp-club#3736). Its rollback's error
-      // is logged, never put in place of the method's.
+      // a file writer handed a path but never finalised leaves a version no
+      // commit or write claims, so roll it back; a rollback error is logged,
+      // never put in place of the method's
       const unfinalized = getUnfinalizedFileReceipts();
       if (unfinalized.length > 0) {
         try {
@@ -366,9 +352,8 @@ export class InProcessExecutor {
         }
       }
 
-      // Collect handles for data that was already written to disk before the
-      // throw. Without this, data produced by a method that writes-then-throws
-      // (e.g. code-review verdict=FAIL) would be invisible to workflow queries.
+      // collect handles for data already written before the throw, so a method
+      // that writes then throws stays visible to workflow queries
       const writerHandles = [
         ...getResourceHandles(),
         ...getFileHandles(),

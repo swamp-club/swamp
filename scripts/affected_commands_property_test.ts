@@ -28,7 +28,6 @@ const MODULES = Array.from({ length: 12 }, (_, i) => `src/m${i}.ts`);
 const COMMANDS = ["a", "b", "c", "d"];
 const commandFile = (name: string) => `src/cli/commands/${name}.ts`;
 
-/** A random graph: main.ts imports every command, the rest is arbitrary. */
 const arbGraph: fc.Arbitrary<ImportGraph> = fc.array(
   fc.subarray(MODULES),
   { minLength: MODULES.length + COMMANDS.length, maxLength: MODULES.length + COMMANDS.length },
@@ -42,7 +41,6 @@ const arbGraph: fc.Arbitrary<ImportGraph> = fc.array(
 
 const INDEX = Object.fromEntries(COMMANDS.map((n) => [n, commandFile(n)]));
 
-/** Modules in the graph, files with no effect, and files that force all. */
 const arbChanged = fc.subarray([
   ...MODULES,
   ...COMMANDS.map(commandFile),

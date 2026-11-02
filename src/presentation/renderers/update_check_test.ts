@@ -42,11 +42,6 @@ function progress(receivedBytes: number, totalBytes: number | null = 100 * MB) {
 
 const EMPTY_BAR = "\u2500".repeat(30);
 
-/**
- * A log renderer with a recording spinner, stderr and a settable clock.
- * Spinner messages are recorded without color; `calls` records the
- * spinner's stop and finish in order.
- */
 function logRenderer(options: Partial<UpdateCheckRendererOptions> = {}) {
   const spinnerMessages: string[] = [];
   const calls: string[] = [];
@@ -156,7 +151,6 @@ Deno.test("createUpdateCheckRenderer: speed is averaged over the last few second
 
   r.at(0);
   r.send(progress(0));
-  // A fast first stretch...
   r.at(1000);
   r.send(progress(50 * MB));
   // ...then a slow one: the window forgets the fast stretch.
@@ -292,7 +286,6 @@ Deno.test("createUpdateCheckRenderer: without a terminal lines are not cut", () 
   );
 });
 
-/** Runs `fn`, returning what it wrote through each console method. */
 function captureConsole(fn: () => void): { out: string; err: string } {
   const out: string[] = [];
   const err: string[] = [];
@@ -382,7 +375,6 @@ const UPDATED = {
   },
 };
 
-/** Sends `event` and returns the spinner calls and stdout lines in order. */
 function sendRecordingOrder(
   r: ReturnType<typeof logRenderer>,
   event: UpdateCheckEvent,
@@ -421,7 +413,6 @@ Deno.test("createUpdateCheckRenderer: the final line's time stops at the last pr
   r.send(progress(0));
   r.at(5000);
   r.send(progress(100 * MB));
-  // Checksum and install take a while before completed arrives.
   r.at(65_000);
 
   const order = sendRecordingOrder(r, UPDATED);

@@ -22,7 +22,6 @@ import { Command } from "@cliffy/command";
 import type { CliSchema } from "../cli_schema.ts";
 import { createHelpCommand } from "./help.ts";
 
-/** A small tree with an aliased command and a hidden one, plus help itself. */
 function buildTree() {
   const root = new Command().name("cli").description("root");
   root.command(
@@ -38,7 +37,6 @@ function buildTree() {
   return help;
 }
 
-/** Runs the help command and returns the schema it printed. */
 async function runHelp(args: string[]): Promise<CliSchema> {
   const help = buildTree();
   const logs: string[] = [];

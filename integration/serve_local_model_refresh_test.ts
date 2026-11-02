@@ -17,11 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// A running serve resolves an edited repo-local model to its new code, for
-// steps it runs itself and for the bundle it ships to workers
-// (swamp-club#3284). Wires the extension loader, catalog, model registry
-// and serve's run deps as `swamp serve` wires them.
-
 import { assertEquals, assertNotEquals } from "@std/assert";
 import { join } from "@std/path";
 import { withMockedCommand } from "@swamp-club/swamp-testing";
@@ -50,7 +45,6 @@ const stubDenoRuntime: DenoRuntime = {
   getDenoEnv: () => Deno.env.toObject(),
 };
 
-/** Mock `deno bundle`: copies the source to the `-o` output path. */
 const copyingBundler = async (_cmd: string, args: string[]) => {
   const out = args[args.indexOf("-o") + 1];
   await Deno.writeTextFile(out, await Deno.readTextFile(args[args.length - 1]));
@@ -81,7 +75,6 @@ export const model = {
 };
 `;
 
-/** Sets a file's mtime to a distinct second, as a later save would. */
 async function touch(path: string, second: number): Promise<void> {
   const at = new Date(Date.UTC(2030, 0, 1, 0, 0, second));
   await Deno.utime(path, at, at);
@@ -114,7 +107,6 @@ Deno.test("serve run deps resolve an edited local model to its new code and a ne
   const datastore = { type: "filesystem" as const, path: join(dir, ".swamp") };
   try {
     await withMockedCommand(copyingBundler, async () => {
-      // As cli/mod.ts wires the registry for a serve process.
       const loader = new ExtensionLoader(
         stubDenoRuntime,
         modelKindAdapter,
@@ -148,7 +140,6 @@ Deno.test("serve run deps resolve an edited local model to its new code and a ne
       await Deno.writeTextFile(source, modelCode(type, "v2"));
       await touch(source, 1);
       await createWorkflowRunDeps(dir, repo, datastore);
-      // How a workflow step resolves its model (execution_service.ts).
       const v2 = await resolveModelType(modelType, null);
       assertEquals(v2?.methods.plan.description, "v2");
       const v2Bundle = await sha256Hex(await v2!.bundleSourceFactory!());

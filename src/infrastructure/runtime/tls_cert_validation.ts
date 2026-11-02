@@ -18,19 +18,13 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * Validate PEM-encoded TLS certificates for common issues that produce
- * misleading errors at connection time.
- *
- * Deno's WebSocket client masks all TLS validation errors as "HTTP/2 not
- * supported by this client" when `createHttpClient({ http2: false })` is
- * used. Catching problems at cert-load time gives users actionable
- * guidance instead of a red herring.
+ * Deno's WebSocket client masks TLS validation errors as HTTP/2 not supported
+ * when http2 is false, so catching problems at cert-load time gives actionable
+ * guidance
  */
 
-/** basicConstraints OID 2.5.29.19 in DER encoding (tag 06, length 03). */
 const BASIC_CONSTRAINTS_OID = new Uint8Array([0x06, 0x03, 0x55, 0x1d, 0x13]);
 
-/** ASN.1 BOOLEAN TRUE: tag 01, length 01, value FF. */
 const ASN1_BOOLEAN_TRUE = new Uint8Array([0x01, 0x01, 0xff]);
 
 export interface CertWarning {
@@ -38,11 +32,7 @@ export interface CertWarning {
   message: string;
 }
 
-/**
- * Check a PEM certificate for issues that will cause connection failures.
- * Returns warnings (not errors) — the cert may still work with non-Deno
- * clients.
- */
+/** warnings, not errors: the cert may still work with non-Deno clients */
 export function validateEndEntityCert(pemCert: string): CertWarning[] {
   const warnings: CertWarning[] = [];
 
@@ -65,16 +55,9 @@ export function validateEndEntityCert(pemCert: string): CertWarning[] {
 }
 
 /**
- * Detect CA:TRUE in a PEM certificate's basicConstraints extension by
- * scanning the DER encoding.
- *
- * Extension structure:
- *   OID(2.5.29.19) [BOOLEAN(critical)] OCTET-STRING { SEQUENCE { [BOOLEAN(cA)] } }
- *
- * The critical flag is also a BOOLEAN TRUE, so we cannot just scan for
- * any 01 01 FF after the OID. Instead we locate the OCTET STRING (tag
- * 04), enter the inner SEQUENCE (tag 30), and check whether its first
- * element is BOOLEAN TRUE.
+ * the critical flag is also a BOOLEAN TRUE, so scanning for 01 01 FF after the
+ * OID would misfire; find the OCTET STRING (04), enter the inner SEQUENCE (30)
+ * and check its first element
  */
 export function hasCaTrue(pemCert: string): boolean {
   const der = pemToDer(pemCert);
@@ -91,13 +74,11 @@ export function hasCaTrue(pemCert: string): boolean {
     while (pos < limit && der[pos] !== 0x04) pos++;
     if (pos >= limit) return false;
 
-    // Skip OCTET STRING tag + length
     pos++;
     if (pos >= der.length) return false;
     pos += der[pos] < 0x80 ? 1 : (der[pos] & 0x7f) + 1;
     if (pos >= der.length) return false;
 
-    // Now we should be at the inner SEQUENCE (tag 30)
     if (der[pos] !== 0x30) return false;
     pos++;
     if (pos >= der.length) return false;
@@ -107,7 +88,6 @@ export function hasCaTrue(pemCert: string): boolean {
     // Empty SEQUENCE (30 00) → CA defaults to FALSE
     if (seqLen === 0) return false;
 
-    // First element of SEQUENCE: check for BOOLEAN TRUE (01 01 FF)
     if (pos + 2 < der.length && bytesMatch(der, pos, ASN1_BOOLEAN_TRUE)) {
       return true;
     }

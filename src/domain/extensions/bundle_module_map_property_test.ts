@@ -55,7 +55,6 @@ const arbModule = fc.record({
   dependency: fc.boolean(),
   author: arbAuthorPath,
   dep: arbDependencyPath,
-  // Statements in the module's body.
   body: fc.integer({ min: 1, max: 4 }),
 });
 

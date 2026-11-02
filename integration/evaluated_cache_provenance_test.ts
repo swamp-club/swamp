@@ -239,7 +239,6 @@ Deno.test("evaluated cache: substituted data stays literal through run and stand
     await repo.definitionRepo.save(type, definition);
     await runModel(dir);
     await runModel(dir, {}, true);
-    // Both single-model and batch evaluation must persist source provenance.
     const deps = createModelEvaluateDeps(
       dir,
       undefined,
@@ -319,9 +318,8 @@ Deno.test("evaluated cache: workflow steps retain saved provenance without autho
   });
 });
 
-// Bracket-index env access was evaluated in the persist phase before env
-// detection became CEL-aware; now it is deferred, so the runtime pass must
-// still see every namespace the expression reads.
+// bracket-index env access is deferred, so the runtime pass must still see
+// every namespace the expression reads
 Deno.test("evaluated cache: deferred env expressions keep the model and data namespaces on standalone runs", async () => {
   await withRepo(async (repo, dir, type, executions) => {
     const producer = Definition.create({ name: "producer" });
@@ -470,7 +468,6 @@ Deno.test("workflow runtime selectors: resolves nested target before lookup and 
       JSON.stringify(parent.jobs[0].steps[0].task.data),
     );
 
-    // The child now refers back to the parent through an env selector.
     await repo.workflowRepo.save(Workflow.fromData({
       ...child.toData(),
       jobs: workflowWithTask("child", StepTask.workflow('${{ env["PARENT"] }}'))
@@ -576,8 +573,6 @@ for (const location of ["workflow", "definition", "file", "direct"]) {
             "run",
             inputs,
             {
-              // This resolves during evaluation, leaving only the cached
-              // definition's deferred expression to require model on replay.
               prefix: "${{ model.producer.input.globalArguments.prefix }}",
             },
           )
@@ -611,9 +606,8 @@ for (const location of ["workflow", "definition", "file", "direct"]) {
         }),
         undefined,
       );
-      // A replay runs with the inputs the cache was evaluated with
-      // (swamp-club#3583); the deferred env expression still resolves at
-      // step time.
+      // a replay runs with the inputs the cache was evaluated with; the
+      // deferred env expression still resolves at step time
       const replay = await runWorkflow(repo, dir, workflow.name, true, {
         suffix: ":fresh",
       });
@@ -623,10 +617,9 @@ for (const location of ["workflow", "definition", "file", "direct"]) {
         : "runtime-home:source";
       assertEquals(executions, [
         { value, authored: "runtime-source:fresh" },
-        // A step input the cached workflow substituted replays as cached. A
-        // behavior definition is evaluated fresh from its current source
-        // (swamp-club#3583), so the edited value shows, and the wrong
-        // definition cache written above is never read.
+        // a step input the cached workflow substituted replays as cached; a
+        // behavior definition is evaluated fresh from current source, so the
+        // edited value shows and the wrong definition cache is never read
         {
           value: location === "workflow" ? value : "edited-source",
           authored: "runtime-source:fresh",
@@ -657,7 +650,6 @@ for (const depth of [1, 2]) {
                   ...(childSuffix ? { authored: expression } : {}),
                 }),
               }),
-              // Leave a failed run so direct resume can replay the capture step.
               Step.create({
                 name: "fail",
                 task: StepTask.model("missing", "run"),
@@ -724,9 +716,8 @@ for (const depth of [1, 2]) {
         );
         assertEquals(resumed.at(-1)?.kind, "completed");
         assertEquals(executions, [expected, expected]);
-        // A different value for an input the cache was evaluated with is
+        // a different value for an input the cache was evaluated with is
         // refused rather than recorded over what its steps ran with
-        // (swamp-club#3583).
         const refused = await assertRejects(
           () =>
             runWorkflow(repo, dir, child.name, true, {
@@ -737,8 +728,6 @@ for (const depth of [1, 2]) {
           "was evaluated with other values for --input",
         );
         assertStringIncludes(refused.message, '"value"');
-        // The cached workflow replays with the inputs it recorded; the model
-        // reloads its own records.
         await runWorkflow(
           repo,
           dir,
@@ -779,10 +768,9 @@ for (const depth of [1, 2]) {
   }
 }
 
-// A direct-type step persists its global arguments into an auto-created
-// definition. A parent-passed expression that reads no parent scope is
-// stored as its authored text, exactly as before deferral; one that does
-// read parent scope is refused instead of being stored as a dangling token.
+// a direct-type step persists its globals into an auto-created definition: a
+// parent expression reading no parent scope is stored as authored text, one
+// that does is refused, not stored as a dangling token
 Deno.test("nested runtime scope: direct-type global arguments restore unscoped parent expressions and refuse scoped ones", async () => {
   await withRepo(async (repo, dir, _type, _executions) => {
     const direct = ModelType.create(`test/direct-${crypto.randomUUID()}`);
@@ -837,7 +825,6 @@ Deno.test("nested runtime scope: direct-type global arguments restore unscoped p
     assertEquals(stored.definition.globalArguments, {
       home: "${{ env.HOME }}",
     });
-    // The stored definition still works on its own and accepts a literal.
     const standalone = await runWorkflow(repo, dir, "direct-child", false, {
       home: "literal-home",
     });
@@ -919,8 +906,8 @@ Deno.test("nested runtime scope: dynamic vault arguments survive persistence wit
     await collect(
       service.resume(child.name, childRun.id, { fromStep: "capture" }),
     );
-    // The child's cache replays with the inputs it recorded: the parent's
-    // vault arguments were never the child's (swamp-club#3583).
+    // the child's cache replays with the inputs it recorded; the parent's vault
+    // arguments were never the child's
     await runWorkflow(repo, dir, "child", true);
     await runModel(dir, {}, true);
     assertEquals(
@@ -983,10 +970,8 @@ Deno.test("assert: a vault secret in the failure message is redacted before pers
     assertEquals(run.status, "failed");
     const assertEvent = events.find((e) => e.kind === "assert_result");
     assertExists(assertEvent);
-    // The message reached the failing path with the secret substituted...
     assertStringIncludes(assertEvent.message, "token=");
     assertEquals(assertEvent.message.includes("vault.get"), false);
-    // ...but neither the events nor the run record carry it in plaintext.
     for (const data of [events, run.toData()]) {
       assertEquals(JSON.stringify(data).includes(secret), false);
     }
@@ -1173,7 +1158,6 @@ for (const via of ["inputs", "data", "forEach"]) {
         injected.ordinary,
       );
 
-      // A record-only field must reject substituted expression text before CEL runs.
       await repo.workflowRepo.save(
         Workflow.create({
           name: "record-injection",
@@ -1268,7 +1252,6 @@ for (const mode of ["run", "evaluate", "array", "object"]) {
         false,
       );
       assertEquals(cached.workflow.jobs[0].steps.length, expands ? 2 : 1);
-      // Replay must use cache provenance even after the source predicate changes.
       await repo.workflowRepo.save(Workflow.fromData({
         ...workflow.toData(),
         jobs:
@@ -1321,7 +1304,6 @@ Deno.test("assert provenance: substituted messages stay literal and predicates c
       rejected.getJob("main")?.getStep("capture")?.assertResult?.expr,
       "${{ inputs.predicate }}",
     );
-    // A substituted predicate in a cache must still fail the provenance gate.
     const cacheRepo = new YamlEvaluatedWorkflowRepository(dir);
     const cached = await cacheRepo.findByNameWithProvenance("assert-predicate");
     assertExists(cached);

@@ -36,7 +36,6 @@ const data: ModelDeleteData = {
   expiredDataAutoCollected: 0,
 };
 
-/** The message part of each LogTape record the console sink prints. */
 function captureMessages(fn: () => void): string[] {
   const messages: string[] = [];
   const original = console.info;

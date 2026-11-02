@@ -34,7 +34,6 @@ import { ProvenanceMap } from "./provenance_map.ts";
 
 const LOWER = "abcdefghijklmnopqrstuvwxyz".split("");
 
-/** Bare identifiers: leading letter, then letters/digits/underscores. */
 const arbIdent = fc
   .tuple(
     fc.constantFrom(...LOWER),
@@ -44,7 +43,6 @@ const arbIdent = fc
   )
   .map(([head, rest]) => head + rest);
 
-/** Model names carrying at least one hyphen — the transform's domain. */
 const arbHyphenModelName = fc
   .array(arbIdent, { minLength: 2, maxLength: 3 })
   .map((parts) => parts.join("-"));
@@ -78,7 +76,6 @@ const arbKey = fc.stringOf(fc.constantFrom(..."abcdefgh".split("")), {
   maxLength: 6,
 });
 
-/** Literal text that can never form or break a `${{ ... }}` marker. */
 const arbLiteral = fc.stringOf(
   fc.constantFrom(..."abc XYZ019.,_-!".split("")),
   { maxLength: 10 },
@@ -134,9 +131,6 @@ Deno.test("replaceExpressionsTracked: a refused splice preserves its source and 
   );
 });
 
-/** JSON-ish trees with arbitrary string leaves (expressions included by
- * chance) — `undefined`, floats, and unsafe keys excluded so structural
- * equality after a rebuild is unambiguous. */
 const { tree: arbJsonTree } = fc.letrec((tie) => ({
   tree: fc.oneof(
     { depthSize: "small", withCrossShrink: true },
@@ -158,7 +152,6 @@ Deno.test("extractCelExpression: round-trips generated expressions through the $
         const wrapped = `\${{${ws}${expr}${ws}}}`;
         assertEquals(extractCelExpression(wrapped), expr);
         assert(containsExpression(wrapped));
-        // The bare expression carries no wrapper, so it is not an expression.
         assertEquals(extractCelExpression(expr), null);
         assertEquals(containsExpression(expr), false);
       },
@@ -189,7 +182,6 @@ Deno.test("extractExpressions: finds every embedded expression with its path", (
             [`${k3}.${k4}`, e3],
           ],
         );
-        // Every raw slice is the exact wrapped text found in the data.
         assertEquals(locations[0].raw, `\${{ ${e1} }}`);
         assertEquals(locations[1].raw, `\${{ ${e2} }}`);
         assertEquals(locations[2].raw, `\${{ ${e3} }}`);
@@ -213,7 +205,6 @@ Deno.test("transformHyphenatedModelRefs: rewrites hyphenated refs to bracket not
         const expr = `${lit}model.${model}.${type}.${field}`;
         const once = transformHyphenatedModelRefs(expr);
         assertEquals(once, `${lit}model["${model}"].${type}.${field}`);
-        // Idempotent: bracket notation no longer matches the transform.
         assertEquals(transformHyphenatedModelRefs(once), once);
       },
     ),
@@ -260,7 +251,6 @@ Deno.test("stripExpressionFields: removes exactly the expression-carrying keys",
         );
         assertEquals(stripped[plainKey1], lit);
         assertEquals(stripped[plainKey2], { nested: [num, lit] });
-        // Every surviving value is expression-free.
         for (const value of Object.values(stripped)) {
           assertEquals(valueContainsExpression(value), false);
         }
@@ -277,7 +267,6 @@ Deno.test("valueContainsExpression: detects an expression at any nesting depth",
       fc.array(fc.oneof(arbKey, fc.constant(null)), { maxLength: 4 }),
       arbLiteral,
       (expr, wrappers, lit) => {
-        // Wrap the leaf in alternating objects (key) and arrays (null).
         let withExpr: unknown = `\${{ ${expr} }}`;
         let plain: unknown = lit;
         for (const w of wrappers) {
@@ -295,10 +284,8 @@ Deno.test("valueContainsExpression: detects an expression at any nesting depth",
 Deno.test("replaceExpressions: an empty values map leaves arbitrary data unchanged", () => {
   fc.assert(
     fc.property(arbJsonTree, (data) => {
-      // Totality: extraction never throws on arbitrary JSON-ish data...
       const locations = extractExpressions(data);
       assert(Array.isArray(locations));
-      // ...and replacement without values is a deep identity.
       assertEquals(replaceExpressions(data, new Map()), data);
     }),
     { numRuns: 300 },
@@ -361,7 +348,6 @@ Deno.test("extractInputReferencesFromCel: dot and bracket references agree", () 
           extractInputReferencesFromCel(bracketExpr),
           extractInputReferencesFromCel(dotExpr),
         );
-        // Cross-model references are excluded from input references.
         const crossModel = fields
           .map((f) => `model.foo.input.${f}`)
           .join(" + ");
@@ -373,11 +359,6 @@ Deno.test("extractInputReferencesFromCel: dot and bracket references agree", () 
 });
 
 Deno.test("replaceExpressions: multi-expression strings interpolate every expression with stringified values", () => {
-  // Regression: the single-expression fast path once matched ANY string that
-  // started with "${{" and ended with "}}", so "${{ a }} and ${{ b }}" was
-  // looked up whole in the values map (keyed by individual raws), missed, and
-  // came back unreplaced. Strings that start AND end with expressions must go
-  // through inline interpolation like any other multi-expression string.
   fc.assert(
     fc.property(
       arbIdent,
@@ -393,13 +374,10 @@ Deno.test("replaceExpressions: multi-expression strings interpolate every expres
           [rawA, "A"],
           [rawB, 42],
         ]);
-        // Starts and ends with expressions — the shape the old fast path
-        // swallowed whole (mid may be empty, making them adjacent).
         assertEquals(
           replaceExpressions(`${rawA}${mid}${rawB}`, values),
           `A${mid}42`,
         );
-        // Literal text around the expressions interpolates the same way.
         assertEquals(
           replaceExpressions(`${pre}${rawA}${mid}${rawB}${post}`, values),
           `${pre}A${mid}42${post}`,

@@ -18,19 +18,9 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * Placement of data-origin text in a shell command (swamp-club#3868).
- *
- * A value that came from data (a caller's or a webhook's input, a data read,
- * a step output, an environment variable) and was spliced into a shell
- * command must reach the shell as one literal word, never as syntax. Each
- * data range of the command becomes a reference to a generated environment
- * variable that holds the text, with the same context-aware references a
- * secret read through data gets (design/enablers/expressions.md, Shell
- * Safety). Shell variable expansion happens after the command is parsed, so
- * metacharacters in the text stay literal. Where no reference expands (a
- * here-document with a quoted delimiter on POSIX, single quotes on
- * PowerShell), or where the shell evaluates the expanded text again (POSIX
- * arithmetic), placement is refused rather than pasting the text in.
+ * data text spliced into a shell command must reach the shell as one literal
+ * word: each data range becomes an env variable reference; where none expands
+ * or the shell re-evaluates text, placement is refused
  */
 
 import { scanShellPositions } from "./shell_context_scanner.ts";
@@ -40,24 +30,16 @@ import {
   VaultSecretBag,
 } from "./vault_secret_bag.ts";
 
-/**
- * A `[start, end)` range of a command that holds data text, as provenance
- * records it (written out here so the vaults context does not depend on
- * expressions).
- */
+/** written out here so the vaults context does not depend on expressions */
 export type DataRange = readonly [number, number];
 
-/** The prefix of every environment variable that carries data text. */
 export const GENERATED_DATA_ENV_PREFIX = "__SWAMP_IN_";
 
-/** The shell grammar a command is placed for. */
 export type ShellDialect = "posix" | "powershell";
 
 /**
- * The dialect of the shell `command/shell` runs on a host whose OS is
- * `platform` (`Deno.build.os`, also what a worker enrolls with), as
- * `selectShellStrategy` chooses it. Undefined for a platform swamp does not
- * know, so a caller refuses rather than guess.
+ * undefined for a platform swamp does not know, so a caller refuses rather than
+ * guess
  */
 export function shellDialectFor(platform: string): ShellDialect | undefined {
   switch (platform) {
@@ -78,13 +60,9 @@ export function shellDialectFor(platform: string): ShellDialect | undefined {
   }
 }
 
-/** A data range of a command that no environment reference expands at. */
 export interface RefusedDataPlacement {
-  /** The position as a user reads it. */
   readonly where: string;
-  /** Why data text cannot be passed safely there, read after "where". */
   readonly why: string;
-  /** What to write instead. */
   readonly fix: string;
 }
 
@@ -115,13 +93,9 @@ const ARITHMETIC_REFUSAL: RefusedDataPlacement = {
     "pass the value through env and check it is a number before using it in arithmetic",
 };
 
-/** A command with its data text placed through the environment. */
 export interface ShellDataPlacement {
-  /** The command with every data range replaced by its reference. */
   readonly command: string;
-  /** The generated variables and the data text each carries. */
   readonly env: Record<string, string>;
-  /** Set when a data range sits where no reference expands. */
   readonly refused?: RefusedDataPlacement;
   /**
    * True when the command is nothing but data, apart from whitespace: as
@@ -130,7 +104,6 @@ export interface ShellDataPlacement {
   readonly wholeCommandIsData: boolean;
 }
 
-/** The index of the `close` matching the `open` before `from`, or the end. */
 function matching(
   text: string,
   from: number,
@@ -149,14 +122,8 @@ function matching(
 }
 
 /**
- * Spans of `command` that bash evaluates as an arithmetic expression after
- * expansion, read from the text alone and regardless of quoting, so it errs
- * toward more spans: `((...))` wherever it is written (`for((`, `while((`),
- * `$[...]`, a subscript or substring offset inside `${...}` of any
- * parameter, and the subscript of an array element assignment, plain or
- * compound. The shell context scanner finds the
- * plain `$(( ))` and `(( ))` forms too; this pass covers what its grammar
- * does not.
+ * read from the text alone regardless of quoting, so it errs toward more spans;
+ * covers the arithmetic forms the shell context scanner's grammar does not
  */
 function bashArithmeticSpans(command: string): DataRange[] {
   const spans: DataRange[] = [];
@@ -168,11 +135,8 @@ function bashArithmeticSpans(command: string): DataRange[] {
     const start = m.index + 2;
     spans.push([start, matching(command, start, "[", "]")]);
   }
-  // A parameter expansion, as bash's grammar reads it:
-  // ${ [#|!] parameter [ [subscript] ] [ :offset[:length] ] ... }, where the
-  // parameter is a name, a positional number or one of @ * # ? $ ! -. The
-  // subscript and an offset (a colon not followed by - = + ?) are
-  // arithmetic; ${name:-word} and the pattern operators are not.
+  // in ${...} the subscript and an offset (a colon not followed by - = + ?) are
+  // arithmetic; ${name:-word} and the pattern operators are not
   for (
     const m of command.matchAll(
       /\$\{[#!]?(?:[A-Za-z_][A-Za-z0-9_]*|[0-9]+|[@*#?$!-])/g,
@@ -189,7 +153,6 @@ function bashArithmeticSpans(command: string): DataRange[] {
       spans.push([i + 1, close]);
     }
   }
-  // A compound array assignment, name=( [subscript]=value ... ).
   for (const m of command.matchAll(/[A-Za-z_][A-Za-z0-9_]*\+?=\(/g)) {
     const bodyStart = m.index + m[0].length;
     const bodyEnd = matching(command, bodyStart, "(", ")");
@@ -200,7 +163,6 @@ function bashArithmeticSpans(command: string): DataRange[] {
       i = end;
     }
   }
-  // name[subscript]= and name[subscript]+=, including after declare/local.
   for (const m of command.matchAll(/[A-Za-z_][A-Za-z0-9_]*\[/g)) {
     const start = m.index + m[0].length;
     const end = matching(command, start, "[", "]");
@@ -209,7 +171,6 @@ function bashArithmeticSpans(command: string): DataRange[] {
   return spans;
 }
 
-/** The parts of `ranges` in `command` that are data text, sentinels cut out. */
 function dataPieces(
   command: string,
   ranges: readonly DataRange[],
@@ -242,11 +203,9 @@ function dataPieces(
 }
 
 /**
- * Places the data ranges of `command` for `dialect`: each becomes a
- * reference to a generated `__SWAMP_IN_<n>` variable, named so it never
- * equals one of `authoredEnvKeys` (case-insensitively on PowerShell, as
- * Windows reads names). Text outside the ranges is unchanged. Equal text
- * shares one variable.
+ * each range becomes a reference to a generated variable named so it never
+ * equals an authored env key (case-insensitively on PowerShell); equal text
+ * shares one variable
  */
 export function placeShellData(
   command: string,
@@ -262,9 +221,8 @@ export function placeShellData(
     command.slice(0, pieces[0][0]).trim() === "" &&
     command.slice(pieces[0][1]).trim() === "";
 
-  // Each piece is swapped for an inert word before the contexts are read,
-  // so quote characters in the data cannot move the context of what
-  // follows it.
+  // each piece is swapped for an inert word before contexts are read, so quote
+  // characters in the data cannot move the context of what follows
   let inert = "";
   const positions: number[] = [];
   let last = 0;

@@ -20,16 +20,9 @@
 import { UserError } from "../errors.ts";
 
 /**
- * The extension registry could not answer: the request timed out, the
- * connection failed, the server returned a 5xx, or the rate limit held after
- * retries. Distinct from an answer that the extension does not exist, so
- * auto-resolution can report an outage instead of "no extension publishes
- * this type" (swamp-club#3243).
- *
- * Reported under the name `UserError`, with the same messages and no code,
- * so CLI error output is what it was before the type existed. Readers of
- * `constructor.name` (telemetry's errorType, serve's exceptionType) see
- * `RegistryUnavailableError`.
+ * distinct from 'extension does not exist', so auto-resolution can report an
+ * outage; named UserError so CLI output is unchanged, while constructor.name
+ * readers see RegistryUnavailableError
  */
 export class RegistryUnavailableError extends UserError {
   constructor(message: string, options?: { cause?: unknown }) {

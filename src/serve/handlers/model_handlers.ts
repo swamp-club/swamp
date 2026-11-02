@@ -17,10 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Model-domain request handlers (model.* verbs).
- */
-
 import { isControlPlaneModelType } from "../../domain/models/control_plane_types.ts";
 import { controlPlaneRecordResource } from "../../domain/access/control_plane_records.ts";
 import { consumeStream } from "../../libswamp/stream.ts";
@@ -232,13 +228,11 @@ const logger = getSwampLogger(["serve", "connection"]);
 
 const DEFAULT_BUFFER_CAPACITY = 10_000;
 
-/** The model a read or list run publishes what it wrote to. */
 type PublishedModel = { modelType: string; modelId: string };
 
 /**
- * How a method run holds its model's lock (swamp-club#3934). A direct type
- * execution can rewrite an existing definition's global arguments whatever
- * the method, so it always locks for the run.
+ * a direct type execution can rewrite an existing definition's global arguments
+ * whatever the method, so it always locks for the run
  */
 function runLockMode(
   ctx: ConnectionContext,
@@ -256,7 +250,6 @@ function runLockMode(
   });
 }
 
-/** Pulls a read or list run's model, unlocked, under the run sync gate. */
 async function pullBeforeUnlockedRun(
   ctx: ConnectionContext,
   model: PublishedModel,
@@ -272,10 +265,9 @@ async function pullBeforeUnlockedRun(
 }
 
 /**
- * Takes a read or list run's model lock, which pulls the model, publishes
- * what the run wrote, refusing versions another clone wrote meanwhile, and
- * releases the lock (swamp-club#3934). The client already has its result,
- * so a failure is logged.
+ * a read or list run's lock pulls the model, publishes what the run wrote,
+ * refuses versions another clone wrote meanwhile, then releases; the client
+ * already has its result, so a failure is logged
  */
 async function publishUnlockedRun(
   ctx: ConnectionContext,
@@ -285,8 +277,8 @@ async function publishUnlockedRun(
   if (written.length === 0) return;
   let publishLocks: ModelLockResult | undefined;
   try {
-    // When another run holds the lock, the next run that takes it on this
-    // host publishes what this one wrote (swamp-club#3934).
+    // when another run holds the lock, the next run that takes it on this host
+    // publishes what this one wrote
     publishLocks = await acquirePublishLocksOrDefer(
       ctx.datastoreConfig,
       model,
@@ -322,8 +314,8 @@ async function publishUnlockedRun(
   } catch (error) {
     let cause: unknown = error;
     if (error instanceof DataVersionConflictError) {
-      // The run's work is done, as the CLI warns for a read or list run
-      // (swamp-club#3934); a failure publishing the rest is logged below.
+      // the run's work is done, as the CLI warns for a read or list run; a
+      // failure publishing the rest is logged below
       cause = error.publishFailure;
       logger.warn(
         "Another swamp process wrote {versions} of behavior {model} while this run was running: the datastore keeps that copy, and this host now holds it in place of this run's",
@@ -336,7 +328,7 @@ async function publishUnlockedRun(
       );
     }
     if (cause === undefined) {
-      // Only the conflict: the rest of the run's data was published.
+      // only the conflict: the rest of the run's data was published
     } else if (isUnpublishedDataError(cause)) {
       pushFailure = { error: cause };
     } else {
@@ -352,32 +344,21 @@ async function publishUnlockedRun(
   await releaseModelLocks(publishLocks, pushFailure);
 }
 
-/** What a method run is authorized as, and what it then acts on. */
 interface MethodRunTarget {
-  /** The existing definition, when the reference resolves to one. */
   definition: DefinitionLookupResult | null;
-  /** The resource `run` is authorized on. */
   resource: AccessResource;
-  /** The argument and lookup mode handed to modelMethodRun. */
   modelIdOrName: string;
   byId: boolean;
-  /** The name the model was authorized on, when acting by id. */
   expectedName?: string;
-  /** The id of the model run by id, recorded for cancel and attach. */
   resourceId?: string;
   /**
-   * A direct type execution acts on the definition `definitionName` names,
-   * which a request may set apart from `modelIdOrName` (swamp-club#2672):
-   * that definition (null when the run will create it) and the resource it
-   * is authorized on. Absent on the standard path.
+   * a direct type execution acts on the definition `definitionName` names,
+   * which a request may set apart from `modelIdOrName`; absent on the standard
+   * path
    */
   run?: { definition: DefinitionLookupResult | null; resource: AccessResource };
 }
 
-/**
- * The definition a method run executes and locks: for a direct type
- * execution the one `definitionName` names, otherwise the one resolved.
- */
 function executedDefinition(
   target: MethodRunTarget,
 ): DefinitionLookupResult | null {
@@ -385,12 +366,9 @@ function executedDefinition(
 }
 
 /**
- * Resolves a method run's model. The standard path authorizes the model's
- * canonical name and full fields, then runs it by id (swamp-club#2674). A
- * direct type execution (a type and a definition name) may create its
- * definition, so it runs by name: it authorizes the requested name, the
- * type, and the definition `definitionName` names, which is the one it acts
- * on (swamp-club#2672). Throws when a lookup fails.
+ * the standard path authorizes the model's canonical name and full fields and
+ * runs by id; a direct type execution may create its definition, so it runs by
+ * name and authorizes name, type and acted-on definition
  */
 async function resolveMethodRunTarget(
   ctx: ConnectionContext,
@@ -402,9 +380,9 @@ async function resolveMethodRunTarget(
   );
   const methodName = payload.methodName;
   if (payload.typeArg && payload.definitionName) {
-    // A definition not created yet has no tags; its type is the one named.
-    // An existing one's fields are its own, even for a control-plane type
-    // whose access resource names the type instead (swamp-club#2756).
+    // a definition not created yet has no tags; its type is the one named. An
+    // existing one's fields are its own, even for a control-plane type whose
+    // access resource names the type instead
     const fields: Record<string, unknown> = definition
       ? {
         name: definition.definition.name,
@@ -416,11 +394,9 @@ async function resolveMethodRunTarget(
         modelType: normalizedTypeOrRaw(payload.typeArg),
         tags: {},
       };
-    // The definition the run acts on is the one definitionName names. It is
-    // authorized by its canonical name and fields when it exists, and by
-    // the name to be created otherwise (swamp-club#2672). The run looks it
-    // up with the same findDefinitionByIdOrName (serve deps), and fails if
-    // it then finds anything else, so the two cannot disagree silently.
+    // the definition the run acts on is the one definitionName names,
+    // authorized by canonical name and fields if it exists, else by the name to
+    // be created; the run fails if its lookup finds anything else
     const runDefinition = await findDefinitionByIdOrName(
       ctx.repoContext.definitionRepo,
       payload.definitionName,
@@ -485,9 +461,8 @@ async function resolveMethodRunTarget(
 }
 
 /**
- * Releases a method run's model locks after its root pushed them, warning
- * once if the push or the release failed. A release error replaces the push
- * error, as the combined push-then-release in a `finally` did.
+ * a release error replaces the push error, as the combined push-then-release in
+ * a `finally` did
  */
 async function releaseModelLocks(
   modelLocks: ModelLockResult,
@@ -495,7 +470,7 @@ async function releaseModelLocks(
 ): Promise<void> {
   let failure = pushFailure;
   if (isUnpublishedDataError(pushFailure?.error)) {
-    // The client got its result before the push; the loss is logged only.
+    // the client got its result before the push; the loss is logged only
     logger.error("{message}", { message: pushFailure.error.message });
     failure = undefined;
   }
@@ -513,10 +488,6 @@ async function releaseModelLocks(
   }
 }
 
-/**
- * Authorizes a method run: admin for a restricted model type, otherwise run
- * on the target model and, for a direct type execution, on the type.
- */
 function authorizeMethodRun(
   socket: WebSocket,
   requestId: string,
@@ -538,9 +509,9 @@ function authorizeMethodRun(
       restricted,
     )
   ) {
-    // Judged on the requested model's fields and, for a direct type
-    // execution, on those of the definition it acts on, so a condition on
-    // the record's name applies (swamp-club#2672).
+    // judged on the requested model's fields and, for a direct type execution,
+    // on those of the definition it acts on, so a condition on the record's
+    // name applies
     return authorizeOrReject(socket, requestId, principal, "admin", {
       kind: "access",
       name: "*",
@@ -566,8 +537,8 @@ function authorizeMethodRun(
   ) return false;
   if (payload.typeArg) {
     const executionTarget = ModelType.create(payload.typeArg).normalized;
-    // A type carries no tags; every resource field is present so a
-    // conditional deny decides on it rather than failing closed.
+    // a type carries no tags; every resource field is present so a conditional
+    // deny decides on it rather than failing closed
     if (
       !authorizeOrReject(socket, requestId, principal, "run", {
         kind: "model",
@@ -581,7 +552,7 @@ function authorizeMethodRun(
       }, ctx).allowed
     ) return false;
   }
-  // Last, so the requested model and the type are reported first.
+  // last, so the requested model and the type are reported first
   if (target.run) {
     if (
       !authorizeOrReject(
@@ -605,11 +576,9 @@ function authorizeMethodRun(
 }
 
 /**
- * Whether a direct run may proceed on `found`, a definition other than the
- * one it was authorized on: renamed in between, or created by a concurrent
- * run under the same name. It is judged as the run's own target would be,
- * by its canonical name and fields, and as admin for a restricted or
- * control-plane type (swamp-club#2672).
+ * a direct run may proceed on a definition other than the one authorized
+ * (renamed in between, or created concurrently) only if judged as its own
+ * target would be, and as admin for restricted or control-plane types
  */
 function resolvedRunAllowed(
   socket: WebSocket,
@@ -638,12 +607,8 @@ function resolvedRunAllowed(
 }
 
 /**
- * Authorizes the expressions in a run's inputs against the caller, who
- * wrote them (swamp-club#2755, swamp-club#2786): data they read must be
- * readable by the caller, and `env` needs write on the model, as authoring
- * it in the definition would. Inputs with no expressions pass untouched.
- * Replies and returns false on a refusal. With `literalInputs` nothing in the
- * inputs is evaluated, so there is nothing to authorize (swamp-club#3205).
+ * with `literalInputs` nothing in the inputs is evaluated, so there is nothing
+ * to authorize
  */
 async function authorizeRunInputs(
   socket: WebSocket,
@@ -678,30 +643,25 @@ export async function handleModelMethodRun(
 ): Promise<void> {
   const registry = ctx.activeRunRegistry;
   if (!registry) {
-    // Assigned in the root below, which control flow analysis cannot see.
+    // assigned in the root below, which control flow analysis cannot see
     let modelLocks = undefined as ModelLockResult | undefined;
-    // Set when a read or list run takes its model's lock only to publish
-    // what it wrote (swamp-club#3934).
+    // set when a read or list run takes its model's lock only to publish what
+    // it wrote
     let publishModel = undefined as PublishedModel | undefined;
-    // Whether the run is answered before its root's flush: a lock's push,
-    // or a read or list run's publish, waits for no client.
+    // whether the run is answered before its root's flush: a lock's push, or a
+    // read or list run's publish, waits for no client
     const answersBeforeFlush = () =>
       modelLocks !== undefined || publishModel !== undefined;
     let mutating = true;
     let lockPushFailure: { error: unknown } | undefined;
-    // What the run wrote, for the lock's push to publish (swamp-club#3146).
     const written: WrittenVersion[] = [];
-    // The run's error, once it was answered inside the root.
     let answered = false;
     let answeredError: unknown;
     let deregistered = false;
     const initiatedBy = principal ? principalToString(principal) : "ghost";
-    // The run's vault operations are decided for this principal
-    // (swamp-club#2676). Refusals are audited with the request id: this
-    // path has no run id of its own (the detached path below mints one),
-    // and the method run's id is first reported on its completed event,
-    // after any refusal. The request id is the one the caller, its event
-    // stream and the cancel registry know the run by.
+    // refusals are audited with the request id: this path has no run id yet,
+    // since the run's id is first reported on its completed event, after any
+    // refusal; the request id is what the caller and cancel registry know
     const vaultAccess = requestRunVaultScope(ctx, socket, principal, requestId);
     const telemetry = createCommandTelemetry(
       {
@@ -758,11 +718,8 @@ export async function handleModelMethodRun(
       ) return;
       const preResult = executedDefinition(target);
 
-      // The root's flush is the model lock's push when the run took one, or
-      // a read or list run's publish (swamp-club#3934), on every outcome;
-      // otherwise the run's push once it completed. The reply, telemetry and
-      // cancel deregistration keep their place: before a lock's push or a
-      // publish, and around the no-lock push as before (swamp-club#3055).
+      // The root's flush is the model lock's push or a read or list run's
+      // publish on every outcome, otherwise the run's push.
       await runInRootUnitOfWork(
         ctx.repoContext,
         {
@@ -959,7 +916,6 @@ export async function handleModelMethodRun(
     return;
   }
 
-  // Pre-lookup and authorization for the detached path
   let target: MethodRunTarget;
   try {
     target = await resolveMethodRunTarget(ctx, payload);
@@ -995,8 +951,8 @@ export async function handleModelMethodRun(
   const runController = new AbortController();
   const runId: string = crypto.randomUUID();
   const startedAt = new Date();
-  // Captured now, while the socket's memberships are at hand: the run's
-  // vault operations are decided for this principal (swamp-club#2676).
+  // captured now, while the socket's memberships are at hand: the run's vault
+  // operations are decided for this principal
   const vaultAccess = requestRunVaultScope(ctx, socket, principal, runId);
 
   buffer.push({ kind: "run.accepted", runId });
@@ -1056,19 +1012,19 @@ export async function handleModelMethodRun(
   const detachedMutating = detachedLockMode === "run";
 
   (async () => {
-    // Assigned in the root below, which control flow analysis cannot see.
+    // assigned in the root below, which control flow analysis cannot see
     let modelLocks = undefined as ModelLockResult | undefined;
-    // Set when a read or list run takes its model's lock only to publish
-    // what it wrote (swamp-club#3934).
+    // set when a read or list run takes its model's lock only to publish what
+    // it wrote
     let publishModel = undefined as PublishedModel | undefined;
-    // Whether the terminal precedes the root's flush: a lock's push, or a
-    // read or list run's publish, waits for no client.
+    // whether the terminal precedes the root's flush: a lock's push, or a read
+    // or list run's publish, waits for no client
     const answersBeforeFlush = () =>
       modelLocks !== undefined || publishModel !== undefined;
     let lockPushFailure: { error: unknown } | undefined;
-    // What the run wrote, for the lock's push to publish (swamp-club#3146).
+    // what the run wrote, for the lock's push to publish
     const written: WrittenVersion[] = [];
-    // The run's error, once it was answered inside the root.
+    // the run's error, once it was answered inside the root
     let answered = false;
     let answeredError: unknown;
     const finishWithError = async (error: unknown) => {
@@ -1101,10 +1057,9 @@ export async function handleModelMethodRun(
       }
     };
     try {
-      // The root's flush is the model lock's push when the run took one, or
-      // a read or list run's publish (swamp-club#3934), on every outcome,
-      // after the stream's terminal; otherwise the run's push once it
-      // completed, before the terminal (swamp-club#3055).
+      // the root's flush is the model lock's push or a read or list run's
+      // publish on every outcome, after the stream's terminal; otherwise the
+      // run's push once completed, before the terminal
       await runInRootUnitOfWork(
         ctx.repoContext,
         {
@@ -1251,10 +1206,9 @@ export async function handleModelMethodRun(
             } else {
               await runUnderModelLocks(modelLocks, doRun);
             }
-            // With replication on, the terminal waits for the root's commit
-            // and its confirmation below (swamp-club#3489).
-            // On v3 the root commits after this: it waits too
-            // (swamp-club#3759).
+            // with replication on, the terminal waits for the root's commit and
+            // its confirmation below; on v3 the root commits after this, so it
+            // waits too
             if (
               answersBeforeFlush() && ctx.confirmReplicated === undefined &&
               ctx.holdRepliesUntilCommitted !== true
@@ -1276,9 +1230,8 @@ export async function handleModelMethodRun(
         !answersBeforeFlush() || ctx.confirmReplicated !== undefined ||
         ctx.holdRepliesUntilCommitted === true
       ) {
-        // Reported finished only once its commits are replicated
-        // (swamp-club#3489); answered here, so a failure is not answered
-        // again below.
+        // reported finished only once its commits are replicated; answered
+        // here, so a failure is not answered again below
         const unconfirmed = await confirmRunReplicated(
           ctx,
           "method_execution_failed",
@@ -1581,7 +1534,7 @@ export async function handleModelCreate(
       !authorizeOrReject(socket, requestId, principal, "write", {
         kind: "model",
         name: payload.name ?? payload.typeArg,
-        // A model being created has no tags yet; its type is the one named.
+        // a model being created has no tags yet; its type is the one named
         fields: {
           name: payload.name ?? payload.typeArg,
           modelType: normalizedTypeOrRaw(payload.typeArg),
@@ -1590,8 +1543,7 @@ export async function handleModelCreate(
       }, ctx).allowed
     ) return;
   }
-  // Every expression in a new model is added by this writer
-  // (swamp-club#2755).
+  // every expression in a new model is added by this writer
   const refusal = await authorizeExpressionReferences(
     socketAuthority(socket, requestId, principal, ctx),
     ctx,
@@ -1603,7 +1555,7 @@ export async function handleModelCreate(
     return;
   }
 
-  // The root pushes only once the success reply was sent (swamp-club#3035).
+  // the root pushes only once the success reply was sent
   let replied = false;
   await runInRootUnitOfWork(
     ctx.repoContext,
@@ -1688,7 +1640,7 @@ export async function handleModelDelete(
     ctx.repoContext.definitionRepo,
     payload.modelIdOrName,
   );
-  // Deleting a model of a restricted type needs admin (swamp-club#3131).
+  // deleting a model of a restricted type needs admin
   const { action, resolution: target } = restrictedModelAuthorization(
     resolved,
     "write",
@@ -1709,7 +1661,7 @@ export async function handleModelDelete(
   ) return;
   const model = targetArgument(target, payload.modelIdOrName);
 
-  // The root pushes only once the success reply was sent (swamp-club#3035).
+  // the root pushes only once the success reply was sent
   let replied = false;
   await runInRootUnitOfWork(
     ctx.repoContext,
@@ -1801,9 +1753,8 @@ export async function handleModelDelete(
         });
         replied = true;
       } catch (error) {
-        // modelDeletePreview throws a SwampError (e.g. notFound) rather than an
-        // Error; wrap it so the client gets its message and allow-listed
-        // reason.
+        // modelDeletePreview throws a SwampError rather than an Error; wrap it
+        // so the client gets its message and allow-listed reason
         const clientError = isSwampError(error)
           ? new LibSwampStreamError(error)
           : error;
@@ -1827,9 +1778,8 @@ export async function handleModelOutputGet(
   controller: AbortController,
   principal: Principal | null,
 ): Promise<void> {
-  // Resolve first and authorize every model that owns the output read, not
-  // the raw argument: an output id prefix matches across every model
-  // (swamp-club#2673).
+  // resolve first and authorize every model that owns the output read, not the
+  // raw argument: an output id prefix matches across every model
   const access = await resolveOutputAccess(
     ctx.repoContext.definitionRepo,
     async () => {
@@ -1913,10 +1863,9 @@ export async function handleModelOutputData(
   controller: AbortController,
   principal: Principal | null,
 ): Promise<void> {
-  // Resolve first and authorize every model that owns the output, not the
-  // raw id prefix (swamp-club#2673). The read returns data artifact content,
-  // so it needs a data read on those models too, as data.get does
-  // (swamp-club#2739).
+  // resolve first and authorize every model that owns the output, not the raw
+  // id prefix; the read returns data artifact content, so it needs a data read
+  // on those models too, as data.get does
   const access = await resolveOutputAccess(
     ctx.repoContext.definitionRepo,
     async () => {
@@ -2001,10 +1950,9 @@ export async function handleModelOutputLogs(
   controller: AbortController,
   principal: Principal | null,
 ): Promise<void> {
-  // Resolve first and authorize every model that owns the output, not the
-  // raw id prefix (swamp-club#2673). The read returns log data artifacts, so
-  // it needs a data read on those models too, as data.get does
-  // (swamp-club#2739).
+  // resolve first and authorize every model that owns the output, not the raw
+  // id prefix; the read returns log data artifacts, so it needs a data read on
+  // those models too, as data.get does
   const access = await resolveOutputAccess(
     ctx.repoContext.definitionRepo,
     async () => {
@@ -2101,20 +2049,19 @@ export async function handleModelOutputSearch(
     const libCtx = handlerLibSwampContext(ctx);
     const outputRepo = ctx.repoContext.outputRepo;
     const definitionRepo = ctx.repoContext.definitionRepo;
-    // One read of the extension workflows per request, as
-    // canonicalResources reads them (swamp-club#3779).
+    // one read of the extension workflows per request, as canonicalResources
+    // reads them
     const workflowRepo = ctx.repoContext.workflowRepo.memoizedView?.() ??
       ctx.repoContext.workflowRepo;
-    // One owner lookup per definition names the outputs and authorizes them
-    // (swamp-club#4141).
+    // one owner lookup per definition names the outputs and authorizes them
     const canonical = canonicalResources(ctx, controller.signal);
 
-    // One decision per output key for the scan's choice of files. The final
-    // check decides again, on the policy current once the scan is done.
+    // one decision per output key for the scan's choice of files; the final
+    // check decides again, on the policy current once the scan is done
     const readable = outputReadability(canonical, socket, principal, ctx);
 
-    // The scans stop when the request is cancelled, so it gives up its
-    // place among the shared scan permits (swamp-club#4070).
+    // the scans stop when the request is cancelled, so it gives up its place
+    // among the shared scan permits
     const deps: ModelOutputSearchDeps = {
       findAllOutputsGlobal: (selectReadable) =>
         outputRepo.findAllGlobalSummaries(controller.signal, selectReadable),
@@ -2147,8 +2094,8 @@ export async function handleModelOutputSearch(
         };
         const byName = await definitionRepo.findByNameGlobal(idOrName);
         if (byName) add(byName.definition, byName.type);
-        // Returns [] for a non-UUID name without scanning every
-        // definition — a plain `model` filter never pays for the id scan.
+        // returns [] for a non-UUID name without scanning every definition, so
+        // a plain `model` filter never pays for the id scan
         const byId = await findDefinitionsByIdGlobal(definitionRepo, idOrName);
         for (const { definition, type } of byId) add(definition, type);
         return [...found.values()];
@@ -2174,19 +2121,16 @@ export async function handleModelOutputSearch(
           selectReadable,
         ),
       resolveWorkflowNames: (ids) => workflowNamesOf(workflowRepo, ids),
-      // Files the caller may not read are left unread (swamp-club#4142).
+      // files the caller may not read are left unread
       ...candidateReadability(ctx, readable),
     };
 
-    // Exported as the output_search diagnostic area's phases
-    // (swamp-club#4056): the search's own, then authorization and response.
     await withDiagnosticArea("output_search", async () => {
       let result: ModelOutputSearchData | undefined;
       await consumeStream(
-        // A limited search judges each output it reads with canRead, so its
-        // limit counts only outputs the caller may read, and it stops reading
-        // there (swamp-club#4143, swamp-club#4174). Unreadable run links are
-        // redacted after authorization.
+        // a limited search judges each output it reads with canRead, so its
+        // limit counts only outputs the caller may read and it stops reading
+        // there; unreadable run links are redacted after authorization
         modelOutputSearch(libCtx, deps, {
           ...payload,
           includeProvenance: true,
@@ -2249,7 +2193,7 @@ export async function handleModelOutputSearch(
       });
     }, controller.signal);
   } catch (error) {
-    // A scan stopped by the cancel answers as one that ran to the end does.
+    // a scan stopped by the cancel answers as one that ran to the end does
     if (controller.signal.aborted) {
       sendError(socket, requestId, "cancelled", "Operation was cancelled");
       return;
@@ -2265,11 +2209,6 @@ export async function handleModelOutputSearch(
   }
 }
 
-/**
- * Answers `model.usage.summary`: exact usage per model over a window, counted
- * after the same per-method authorization as `model.output.search`, so the
- * dashboard's Behaviors page needs no raw rows (swamp-club#4144).
- */
 export async function handleModelUsageSummary(
   socket: WebSocket,
   ctx: ConnectionContext,
@@ -2296,8 +2235,8 @@ export async function handleModelUsageSummary(
       ctx.repoContext.workflowRepo;
     const canonical = canonicalResources(ctx, controller.signal);
     const readable = outputReadability(canonical, socket, principal, ctx);
-    // Decides afresh once the scan is done, as filterOutputItems does, so a
-    // grant revoked while the summary waited for its reads no longer counts.
+    // decides afresh once the scan is done, as filterOutputItems does, so a
+    // grant revoked while the summary waited for its reads does not count
     let finalCheck: ReturnType<typeof outputReadability> | undefined;
 
     const deps: ModelUsageSummaryDeps = {
@@ -2363,7 +2302,7 @@ export async function handleModelUsageSummary(
       });
     }, controller.signal);
   } catch (error) {
-    // A scan stopped by the cancel answers as one that ran to the end does.
+    // a scan stopped by the cancel answers as one that ran to the end does
     if (controller.signal.aborted) {
       sendError(socket, requestId, "cancelled", "Operation was cancelled");
       return;
@@ -2387,8 +2326,8 @@ export async function handleModelMethodHistoryGet(
   controller: AbortController,
   principal: Principal | null,
 ): Promise<void> {
-  // Resolve first and authorize every model that owns the output read, not
-  // the raw argument (swamp-club#2673).
+  // resolve first and authorize every model that owns the output read, not the
+  // raw argument
   const access = await resolveOutputAccess(
     ctx.repoContext.definitionRepo,
     async () => {
@@ -2474,8 +2413,8 @@ export async function handleModelMethodHistoryLogs(
   controller: AbortController,
   principal: Principal | null,
 ): Promise<void> {
-  // Resolve first and authorize every model that owns the output read, not
-  // the raw argument (swamp-club#2673).
+  // resolve first and authorize every model that owns the output read, not the
+  // raw argument
   const access = await resolveOutputAccess(
     ctx.repoContext.definitionRepo,
     async () => {
@@ -2588,11 +2527,10 @@ export async function handleModelMethodHistorySearch(
     const outputRepo = ctx.repoContext.outputRepo;
     const definitionRepo = ctx.repoContext.definitionRepo;
 
-    // One owner lookup per definition names the outputs and authorizes them
-    // (swamp-club#4141).
+    // one owner lookup per definition names the outputs and authorizes them
     const canonical = canonicalResources(ctx, controller.signal);
 
-    // The scan stops when the request is cancelled (swamp-club#4070).
+    // the scan stops when the request is cancelled
     const deps: ModelOutputSearchDeps = {
       findAllOutputsGlobal: () =>
         outputRepo.findAllGlobalSummaries(controller.signal),
@@ -2601,8 +2539,6 @@ export async function handleModelMethodHistorySearch(
         resolveModelNames(canonical, keys, controller.signal),
     };
 
-    // Exported as the output_search diagnostic area's phases
-    // (swamp-club#4056).
     await withDiagnosticArea("output_search", async () => {
       let result: Record<string, unknown> | undefined;
       await consumeStream(
@@ -2656,7 +2592,7 @@ export async function handleModelMethodHistorySearch(
       });
     }, controller.signal);
   } catch (error) {
-    // A scan stopped by the cancel answers as one that ran to the end does.
+    // a scan stopped by the cancel answers as one that ran to the end does
     if (controller.signal.aborted) {
       sendError(socket, requestId, "cancelled", "Operation was cancelled");
       return;
@@ -2679,8 +2615,8 @@ export async function handleModelValidate(
   principal: Principal | null,
   payload?: ModelValidatePayload,
 ): Promise<void> {
-  // Without a model this validates every model the caller may read, and only
-  // those (swamp-club#2675). A named model is resolved first.
+  // without a model this validates every model the caller may read, and only
+  // those; a named model is resolved first
   const modelIdOrName = payload?.modelIdOrName;
   let model:
     | { idOrName: string; byId: boolean; expectedName?: string }
@@ -2688,7 +2624,7 @@ export async function handleModelValidate(
   let include:
     | ((entry: DefinitionLookupResult) => boolean)
     | undefined;
-  // An empty string reads as absent, exactly as libswamp reads it.
+  // an empty string reads as absent, exactly as libswamp reads it
   if (!modelIdOrName) {
     if (
       !authorizeAnyOrReject(socket, requestId, principal, "read", "model", ctx)
@@ -2731,10 +2667,9 @@ export async function handleModelValidate(
     );
 
     let result: Record<string, unknown> | undefined;
-    // In a root unit of work with no push: model checks receive the hooked
-    // data and definition repositories, so a check that writes stages into
-    // the root instead of reaching the hook through signalChange's fallback
-    // (swamp-club#3056). Nothing pushes here, as before.
+    // in a root unit of work with no push: checks that write stage into the
+    // root instead of reaching the hook through signalChange's fallback;
+    // nothing pushes here
     await runInRootUnitOfWork(
       ctx.repoContext,
       { flush: undefined },
@@ -2782,9 +2717,9 @@ export async function handleModelEvaluate(
   principal: Principal | null,
   payload?: ModelEvaluatePayload,
 ): Promise<void> {
-  // Without a model this evaluates every model — evaluation orders them all
-  // in one dependency graph — but saves and returns only those the caller
-  // may read (swamp-club#2675). A named model is resolved first.
+  // without a model this evaluates every model, since evaluation orders them in
+  // one dependency graph, but saves and returns only those the caller may read;
+  // a named model is resolved first
   const modelIdOrName = payload?.modelIdOrName;
   let model:
     | { idOrName: string; byId: boolean; expectedName?: string }
@@ -2792,7 +2727,7 @@ export async function handleModelEvaluate(
   let include:
     | ((entry: DefinitionLookupResult) => boolean)
     | undefined;
-  // An empty string reads as absent, exactly as libswamp reads it.
+  // an empty string reads as absent, exactly as libswamp reads it
   if (!modelIdOrName) {
     if (
       !authorizeAnyOrReject(socket, requestId, principal, "read", "model", ctx)
@@ -2819,11 +2754,9 @@ export async function handleModelEvaluate(
     ) return;
     model = targetArgument(target, modelIdOrName);
   }
-  // A later --last-evaluated run replays what evaluate saves, so it saves
-  // only what the caller may run, decided as resolvedRunAllowed decides a
-  // run: admin for a restricted or control-plane type, otherwise run
-  // (swamp-club#3940). A caller who may only read gets the evaluation back
-  // unsaved.
+  // a later --last-evaluated run replays what evaluate saves, so save only what
+  // the caller may run, decided as resolvedRunAllowed decides a run; a caller
+  // who may only read gets the evaluation back unsaved
   const runnable = resourceDecider(socket, principal, "run", ctx);
   const administrable = resourceDecider(socket, principal, "admin", ctx);
   const persist = (entry: DefinitionLookupResult) => {
@@ -2880,8 +2813,8 @@ export async function handleModelEvaluate(
       payload: { data },
     });
   } catch (error) {
-    // Evaluating every model can fail on one the caller may not read, and
-    // the error may name it, so such a caller gets no detail.
+    // evaluating every model can fail on one the caller may not read, and the
+    // error may name it, so such a caller gets no detail
     const message = !model &&
         !(await readsEveryModel(socket, principal, ctx))
       ? "Evaluating every behavior failed"
@@ -2890,7 +2823,6 @@ export async function handleModelEvaluate(
   }
 }
 
-/** Whether the caller may read every model definition in the repository. */
 async function readsEveryModel(
   socket: WebSocket,
   principal: Principal | null,
@@ -2915,9 +2847,9 @@ export async function handleModelEdit(
 ): Promise<void> {
   if (rejectEditWithoutContent(socket, requestId, payload.content)) return;
 
-  // Authorize the model the edit will act on, by its canonical name and full
-  // fields, not the raw id-or-name: a grant matches the resource name, so an
-  // id would sidestep name-scoped denies (swamp-club#2426, swamp-club#2674).
+  // authorize the model by its canonical name and full fields, not the raw
+  // id-or-name: a grant matches the resource name, so an id would sidestep
+  // name-scoped denies
   let resolved: Awaited<ReturnType<typeof findDefinitionByIdOrName>> = null;
   try {
     resolved = await findDefinitionByIdOrName(
@@ -2925,8 +2857,8 @@ export async function handleModelEdit(
       payload.modelIdOrName,
     );
   } catch {
-    // A model that cannot be loaded is authorized by the requested name and
-    // then reported as not found.
+    // a model that cannot be loaded is authorized by the requested name and
+    // then reported as not found
   }
   const current: ModelEditTarget | null = resolved
     ? {
@@ -2961,7 +2893,7 @@ export async function handleModelEdit(
     return;
   }
 
-  // The root pushes only once the success reply was sent (swamp-club#3035).
+  // the root pushes only once the success reply was sent
   let replied = false;
   await runInRootUnitOfWork(
     ctx.repoContext,
@@ -2994,10 +2926,9 @@ export async function handleModelEdit(
             principalId: principal ? principalToString(principal) : undefined,
             stdinContent: payload.content,
             allowRename: payload.allowRename === true,
-            // Every save is authorized against the edited model too, so a
-            // rename or retag needs write on the result. It runs on every save
-            // rather than only on a detected change, so a concurrent retag
-            // between the lookup above and the save cannot skip it.
+            // every save is authorized against the edited model too, on every
+            // save rather than only a detected change, so a concurrent retag
+            // between the lookup and the save cannot skip it
             authorizeUpdate: async (before, after) => {
               const { action, resource } = modelEditAuthorization(
                 after,
@@ -3013,9 +2944,9 @@ export async function handleModelEdit(
                   ctx,
                 ).allowed
               ) return false;
-              // A control-plane or restricted model is edited as admin, which
+              // a control-plane or restricted model is edited as admin, which
               // covers its tags; any other retag or rename needs `tag`, judged
-              // against the tags stored now too (swamp-club#3085).
+              // against the tags stored now too
               if (resource.kind !== "model" || action !== "write") return true;
               const stored = await findDefinitionByIdGlobal(
                 ctx.repoContext.definitionRepo,
@@ -3030,13 +2961,13 @@ export async function handleModelEdit(
                 afterTags: after.tags,
               }, ctx);
             },
-            // The expressions the edit adds are authorized against this
-            // writer; those already stored are not (swamp-club#2755).
+            // the expressions the edit adds are authorized against this writer;
+            // those already stored are not
             authorizeContent: async (before, after) => {
               const beforeData = before.toData();
               const afterData = after.toData();
-              // An edit to what self or inputs read can retarget a stored
-              // reference computed from them.
+              // an edit to what self or inputs read can retarget a stored
+              // reference computed from them
               const refusal = await authorizeExpressionReferences(
                 socketAuthority(socket, requestId, principal, ctx),
                 ctx,
@@ -3076,7 +3007,7 @@ export async function handleModelEdit(
         });
         replied = true;
       } catch (error) {
-        // A denied rename or retag was already reported by authorizeOrReject.
+        // a denied rename or retag was already reported by authorizeOrReject
         if (wasRequestErrored(socket, requestId)) return;
         const message = sanitizeErrorForClient(error);
         sendError(socket, requestId, "model_edit_failed", message);
@@ -3086,11 +3017,9 @@ export async function handleModelEdit(
 }
 
 /**
- * The action and resource an edit is authorized on, before and after. A
- * control-plane model (grant, group, token, worker) is its access record, so
- * editing one — or editing a model into one — needs admin (swamp-club#2756).
- * A model of a restricted type needs admin on access:*, judged on its fields,
- * as creating or running one does (swamp-club#3131).
+ * a control-plane model is its access record, so editing one, or editing a
+ * model into one, needs admin; a restricted type needs admin on access:*,
+ * judged on its fields, as creating or running one does
  */
 function modelEditAuthorization(
   target: ModelEditTarget,
@@ -3115,7 +3044,6 @@ function modelEditAuthorization(
   return { action: "write", resource };
 }
 
-/** The model resource an edit of an ordinary model is authorized on. */
 function modelEditResource(target: ModelEditTarget): AccessResource {
   return {
     kind: "model",
@@ -3239,9 +3167,8 @@ export async function handleModelTypeSearch(
 }
 
 /**
- * Drops the workflow linkage from each output whose workflow the principal
- * may not read. A linkage whose workflow no longer resolves cannot be
- * authorized, so it is dropped too unless the server has no authorization.
+ * a linkage whose workflow does not resolve cannot be authorized, so it is
+ * dropped too unless the server has no authorization
  */
 export async function redactWorkflowLinks(
   items: Pick<
@@ -3272,25 +3199,21 @@ export async function redactWorkflowLinks(
   }
 }
 
-/** What an output or method run is judged on for reading. */
 type OutputReadKey = Pick<
   ModelOutputSearchItem,
   "definitionId" | "type" | "modelName" | "methodName"
 >;
 
 /**
- * How many definitions naming an output search's results are looked up at
- * once, so a request's open definition files stay bounded (swamp-club#4150).
+ * bounds how many definitions naming a search's results are looked up at once,
+ * so a request's open definition files stay bounded
  */
 const MODEL_NAME_LOOKUP_CONCURRENCY = 8;
 
 /**
- * The names of the definitions an output search asks for, in order, from the
- * request's owner lookups, which authorizing its items then reuses.
- * {@link MODEL_NAME_LOOKUP_CONCURRENCY} at a time: each id is looked up once
- * per request, so overlapping lookups still read each definition once
- * (swamp-club#4150). A cancel or a failed lookup starts no further lookup,
- * and those already started finish before this returns.
+ * each id is looked up once per request, so overlapping lookups still read each
+ * definition once; a cancel or failed lookup starts no further lookup, and
+ * those started finish before this returns
  */
 async function resolveModelNames(
   canonical: CanonicalResources,
@@ -3329,11 +3252,9 @@ async function resolveModelNames(
 }
 
 /**
- * Whether the caller may read an output or method run: judged on every model
- * owning its definition id, with the method it ran, so a methods-scoped or
- * tag-conditioned grant applies to it (swamp-club#2675). Decided once per
- * distinct key, for the request it is built in, on the request's owner
- * lookups.
+ * judged on every model owning its definition id, with the method it ran, so a
+ * methods-scoped or tag-conditioned grant applies; decided once per distinct
+ * key on the request's owner lookups
  */
 function outputReadability(
   canonical: CanonicalResources,
@@ -3374,10 +3295,7 @@ function outputReadability(
   };
 }
 
-/**
- * A scan's `canRead`, in its own phase, for a caller whose reads are
- * authorized: with authorization off, nothing is asked and every file is read.
- */
+/** with authorization off nothing is asked and every file is read */
 function candidateReadability(
   ctx: ConnectionContext,
   readable: (key: OutputReadKey) => Promise<boolean>,
@@ -3401,7 +3319,6 @@ function candidateReadability(
   };
 }
 
-/** The current names of the given workflow ids, from one listing. */
 async function workflowNamesOf(
   workflowRepo: Pick<
     ConnectionContext["repoContext"]["workflowRepo"],
@@ -3418,10 +3335,6 @@ async function workflowNamesOf(
   return names;
 }
 
-/**
- * Keeps the output or method-run items the caller may read, as
- * {@link outputReadability} judges them on the policy current when called.
- */
 async function filterOutputItems(
   items: ModelOutputSearchItem[],
   canonical: CanonicalResources,
@@ -3439,9 +3352,8 @@ async function filterOutputItems(
 }
 
 /**
- * The normalized model type for authorization, or the raw string when it
- * does not parse — the operation then reports the invalid type itself,
- * inside its own error handling.
+ * the raw string when it does not parse: the operation then reports the invalid
+ * type itself, inside its own error handling
  */
 function normalizedTypeOrRaw(typeArg: string): string {
   try {

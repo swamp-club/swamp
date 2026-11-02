@@ -286,7 +286,6 @@ Deno.test("LogExtensionListRenderer - an auto-resolved skew remedy deletes what 
     remedy,
   );
   assertEquals(remedy.includes("extension pull"), false, remedy);
-  // One footer explains why update and rm do not act on the row.
   assertEquals(
     lines.filter((l) => l.includes("Auto-resolved extensions are not managed"))
       .length,

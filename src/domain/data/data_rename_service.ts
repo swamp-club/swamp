@@ -27,9 +27,6 @@ import {
 import { wordedError, wordedText } from "../behavior_wording.ts";
 import type { ModelRefOptions } from "./data_delete_service.ts";
 
-/**
- * Result of a data rename operation.
- */
 export interface RenameResult {
   oldName: string;
   newName: string;
@@ -40,34 +37,18 @@ export interface RenameResult {
   newVersion: number;
 }
 
-/**
- * Service for renaming data instances.
- *
- * Copies the latest version under a new name and writes a tombstone
- * with a forward reference on the old name for backwards compatibility.
- */
 export class DataRenameService {
   constructor(
     private readonly dataRepo: UnifiedDataRepository,
     private readonly definitionRepo: DefinitionRepository,
   ) {}
 
-  /**
-   * Renames a data instance from oldName to newName.
-   *
-   * @param modelRef - Model name or ID
-   * @param oldName - Current data name
-   * @param newName - New data name
-   * @param options - `byId` resolves `modelRef` as an exact definition id
-   * @returns The rename result
-   */
   async rename(
     modelRef: string,
     oldName: string,
     newName: string,
     options: ModelRefOptions = {},
   ): Promise<RenameResult> {
-    // Validate new name passes schema checks
     const nameValidation = DataMetadataSchema.shape.name.safeParse(newName);
     if (!nameValidation.success) {
       throw new Error(
@@ -77,7 +58,6 @@ export class DataRenameService {
       );
     }
 
-    // Resolve the model
     const result = options.byId
       ? await findDefinitionByIdGlobal(
         this.definitionRepo,
@@ -92,7 +72,6 @@ export class DataRenameService {
     }
     const { definition, type: modelType } = result;
 
-    // Delegate to the repository
     const renameResult = await this.dataRepo.rename(
       modelType,
       definition.id,

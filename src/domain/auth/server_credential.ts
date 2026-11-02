@@ -17,23 +17,15 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/** Stored authentication credential for a swamp serve instance. */
 export interface ServerCredential {
-  /** Normalized URL of the serve instance (e.g. "https://swamp.acme.internal:9090"). */
   serverUrl: string;
-  /** The name portion of the <name>.<secret> token. */
   tokenName: string;
-  /** The full <name>.<secret> plaintext token. */
   token: string;
-  /** The user's principal ID (sub from OAuth login). */
   principalId: string;
-  /** The user's display name, if available. */
   displayName?: string;
-  /** ISO 8601 timestamp of when the credential was obtained. */
   obtainedAt: string;
 }
 
-/** Persistence abstraction for server credentials, keyed by normalized server URL. */
 export interface ServerCredentialRepository {
   get(serverUrl: string): Promise<ServerCredential | null>;
   save(credential: ServerCredential): Promise<void>;

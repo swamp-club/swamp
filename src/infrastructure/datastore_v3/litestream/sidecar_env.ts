@@ -18,34 +18,23 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * The environment Litestream itself runs with (swamp-club#3534): only what
- * its replica needs, from the table in `design/enablers/datastore-litestream.md`
- * ("the replica target"). The swamp supervisor that starts it keeps its own
- * environment: it resolves the binary through `SWAMP_HOME` and the binary
- * override, and from source it needs Deno's own variables.
- *
- * @module
+ * only what its replica needs; the supervisor keeps its own environment since
+ * it resolves the binary through SWAMP_HOME and the override, and from source
+ * needs Deno's variables
  */
 
 import type { V3ReplicaSetting } from "./replica_setting.ts";
 
-/** Which kind of replica a Litestream child replicates to. */
 export type LitestreamReplicaType = V3ReplicaSetting["type"];
 
-/** The replica kinds a supervisor may be told. */
 export const LITESTREAM_REPLICA_TYPES: readonly LitestreamReplicaType[] = [
   "file",
   "s3",
   "gcs",
 ];
 
-/** Every replica's child gets these. */
 const BASE = ["HOME", "PATH"];
 
-/**
- * A bucket replica's network route and trust: the proxy variables in both
- * cases, and the CA bundles of a self-hosted store or a corporate TLS proxy.
- */
 const NETWORK = [
   "HTTPS_PROXY",
   "HTTP_PROXY",
@@ -58,9 +47,8 @@ const NETWORK = [
 ];
 
 /**
- * What a child process needs to start on Windows. Replication is refused
- * there while the pin is below the Windows minimum, but the list is kept
- * so that lifting the pin needs no second change.
+ * what a child process needs to start on Windows; kept though replication is
+ * refused there while the pin is below the Windows minimum
  */
 const WINDOWS = [
   "SYSTEMROOT",
@@ -74,7 +62,6 @@ const WINDOWS = [
   "LOCALAPPDATA",
 ];
 
-/** The variables each replica kind keeps by name, and by prefix. */
 const KEPT: Record<
   LitestreamReplicaType,
   { readonly names: readonly string[]; readonly prefixes: readonly string[] }
@@ -96,13 +83,6 @@ const KEPT: Record<
   },
 };
 
-/**
- * The environment a Litestream child replicating to a `type` replica gets
- * from `env`: its credentials, `HOME`, `PATH`, and for a bucket the proxy
- * variables and CA bundles. On Windows, where variable names are case
- * insensitive, names are matched so, and what a child process needs to
- * start is kept too.
- */
 export function litestreamChildEnv(
   type: LitestreamReplicaType,
   env: Readonly<Record<string, string>>,
@@ -125,7 +105,6 @@ export function litestreamChildEnv(
   return out;
 }
 
-/** Parses a supervisor's `--replica-type`, or undefined when it is not one. */
 export function parseLitestreamReplicaType(
   value: string | undefined,
 ): LitestreamReplicaType | undefined {

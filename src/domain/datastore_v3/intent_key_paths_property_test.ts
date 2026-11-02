@@ -29,14 +29,9 @@ import {
 import { bindKey } from "./intent_key_paths.ts";
 import { RecordKey } from "./record_key.ts";
 
-/**
- * An aggregate and the keys its repositories write, built independently of
- * the binding: the projection side of the property.
- */
 interface Aggregate {
   readonly intents: readonly Intent[];
   readonly keys: readonly string[];
-  /** Keys any aggregate of the same kind may share by design. */
   readonly shared: readonly string[];
 }
 

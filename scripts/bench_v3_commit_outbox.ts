@@ -17,17 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * What one v3 commit costs a writer on its success path, outbox included
- * (swamp-club#3586): a root that commits one inline auto-definition, and one
- * that commits a chunked one, through a v3 filesystem datastore's handle.
- * The A/A pair runs the same root twice, so a gap between them is noise.
- * Run on two checkouts to compare:
- *
- * ```
- * deno bench -A scripts/bench_v3_commit_outbox.ts
- * ```
- */
 
 import { join } from "@std/path";
 import type { CommitLogUnitOfWork } from "../src/domain/datastore_v3/commit_log_unit_of_work.ts";
@@ -53,7 +42,6 @@ const engine = handle.engineFor(() => Promise.resolve(), () => {
   throw new Error("no run repository needed");
 });
 
-/** Commits one auto-definition of `bytes` bytes in its own root. */
 async function commitOne(bytes: number): Promise<void> {
   const id = crypto.randomUUID();
   await engine.runRoot({}, async () => {

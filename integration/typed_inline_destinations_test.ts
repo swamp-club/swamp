@@ -119,7 +119,6 @@ for (const route of routes) {
     ) {
       await withFixture(async (f) => {
         await f.seed();
-        // Concatenation also exercises the deferred scalar interpolation path.
         const step = route.step(`prefix-${source}-suffix`, f);
         const run = await f.run(
           workflow([

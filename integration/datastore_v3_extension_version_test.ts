@@ -17,12 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// The minimum S3/GCS extension version for v3 bucket datastores
-// (swamp-club#3567), wired end to end: a pulled datastore extension loaded
-// through the real extension loader records where it came from, the format
-// guard reads that extension's manifest version when a format-3 config
-// opens, and setup's dependency also checks the committed lockfile pin.
-
 import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
 import { join } from "@std/path";
 import type { CustomDatastoreConfig } from "../src/domain/datastore/datastore_config.ts";
@@ -49,7 +43,6 @@ class StubDenoRuntime implements DenoRuntime {
 
 const V3_MARKER = '{"format":3,"minReaderFormat":3,"writtenBy":"2026.10.16.5"}';
 
-/** A capable bucket datastore whose control plane holds `config.marker`. */
 function extensionSource(type: string): string {
   return `
 export const datastore = {

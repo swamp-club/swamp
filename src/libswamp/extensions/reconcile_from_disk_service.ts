@@ -88,7 +88,6 @@ import { createDenoInfoModuleGraphReader } from "../../infrastructure/runtime/de
 
 const logger = getLogger(["swamp", "extensions", "reconcile"]);
 
-/** Subdirectories of a per-extension subtree, paired with their kind. */
 const KIND_DIRS = [
   "models",
   "vaults",
@@ -100,19 +99,14 @@ const KIND_DIRS = [
 type KindDir = typeof KIND_DIRS[number];
 
 /**
- * The repo's local `extensions/<dir>/` directories and the kind each
- * holds: every kind directory, plus `extensions/behaviors/`, the
- * behavior-spelled sibling of `extensions/models/` (swamp-club#3338).
+ * includes extensions/behaviors/, the behavior-spelled sibling of
+ * extensions/models/.
  */
 const LOCAL_KIND_DIRS: ReadonlyArray<readonly [string, KindDir]> = [
   ...KIND_DIRS.map((k) => [k, k] as const),
   [BEHAVIORS_DIR_NAME, "models"],
 ];
 
-/**
- * A single state transition produced by reconcile. Structured value —
- * W6's `swamp doctor extensions` renders this directly.
- */
 export interface ReconcileTransition {
   readonly source: SourceLocation;
   readonly fromState: RowStateTag | null;
@@ -120,19 +114,12 @@ export interface ReconcileTransition {
   readonly reason: string;
 }
 
-/**
- * Result of a reconcile run.
- */
 export interface ReconcileResult {
   readonly transitions: readonly ReconcileTransition[];
   readonly applied: boolean;
 }
 
-/**
- * Per-extension outcome of
- * {@link ReconcileFromDiskService.reconcileUncataloguedPulled}. Each
- * extension is saved on its own, so one failure never rolls back another.
- */
+/** each extension is saved on its own, so one failure never rolls back another. */
 export type UncataloguedPulledResult =
   | {
     readonly name: string;
@@ -151,33 +138,9 @@ export type UncataloguedPulledResult =
   };
 
 /**
- * W3 application service — reconciles on-disk extension state against
- * the persisted catalog aggregate state.
- *
- * Walks the on-disk source tree across all three origin types (locals,
- * pulled, source-mounted), loads the current aggregate state via
- * {@link ExtensionRepository.loadAll}, diffs the two, and emits
- * {@link ReconcileTransition} records.
- *
- * Delegates to per-loader `bundleAndIndexOne` for type extraction —
- * NOT {@link InstallExtensionService}. The source is already on disk
- * and the lockfile already exists; reconcile is post-hoc state repair,
- * not a fresh install.
- *
- * **Trigger points:** cold-start (when `anyKindNeedsInvalidation()`
- * returns true) + explicit `swamp doctor extensions` call. NOT on
- * every command. Serve reload also runs the scoped
- * {@link ReconcileFromDiskService.reconcileUncataloguedPulled} for
- * lockfile entries that have no catalog rows.
- *
- * **dryRun mode:** when `dryRun: true`, collects transitions without
- * calling `repository.saveAll()`. Returns the same structured result
- * either way.
- *
- * **Transition-count guardrail:** if any single run would transition
- * > 50% of existing rows, the run aborts and returns the transitions
- * without applying them. Catches mass-tombstone bugs before they
- * destroy legitimate rows.
+ * delegates to per-loader bundleAndIndexOne, not InstallExtensionService: the
+ * source is already on disk, so this is state repair. A run that would
+ * transition over 50% of rows aborts unapplied, to catch mass-tombstone bugs.
  */
 export class ReconcileFromDiskService {
   private readonly denoRuntime: DenoRuntime;
@@ -189,7 +152,6 @@ export class ReconcileFromDiskService {
   private readonly scanOnDiskDatastores: boolean;
   private readonly additionalInstalledNames: ReadonlySet<string>;
   private readonly bundleProber: BundleProber | undefined;
-  /** Datastore extensions found on disk, by name; set per execute(). */
   private onDiskDatastores = new Map<string, OnDiskDatastoreExtension>();
 
   constructor(args: {
@@ -200,25 +162,20 @@ export class ReconcileFromDiskService {
     localManifestIdentity?: LocalManifestIdentity | null;
     pulledExtensionsRoot?: string;
     /**
-     * Treat datastore extensions the way the on-disk datastore loader finds
-     * them (swamp-club#2483): a lockfile entry's datastore sources are walked
-     * at the root the on-disk scan chose (which may be the legacy root after
-     * `datastore config migrate`), and datastore sources under a chosen dir
-     * are never orphaned. Set for managedConfig repos on an extension-backed
-     * datastore.
+     * walk a lockfile entry's datastore sources at the root the on-disk scan
+     * chose (possibly the legacy root after `datastore config migrate`);
+     * datastore sources under a chosen dir are never orphaned.
      */
     scanOnDiskDatastores?: boolean;
     /**
-     * Extension names installed outside the lockfile this service iterates,
-     * such as entries in the transitional in-repo auto-resolve lockfile.
-     * Their catalog rows are not orphaned. Iteration and versions still use
-     * `lockfileRepository` only.
+     * names installed outside the lockfile this service iterates, such as the
+     * transitional in-repo auto-resolve lockfile; their catalog rows are not
+     * orphaned. Iteration and versions still use lockfileRepository only.
      */
     additionalInstalledNames?: readonly string[];
     /**
-     * Indexes new and changed sources by probing their bundles in
-     * isolation instead of importing them into this isolate
-     * (swamp-club#3374). Released when each pass ends.
+     * probes bundles in isolation instead of importing them into this isolate;
+     * released when each pass ends.
      */
     bundleProber?: BundleProber;
   }) {
@@ -266,10 +223,9 @@ export class ReconcileFromDiskService {
         transitions,
       );
 
-    // Identity-migration tombstones are expected mass-transitions, not
-    // repair anomalies. Exclude them from the guardrail ratio so a
-    // version bump in a repo with ≥10 local sources doesn't permanently
-    // block the migration.
+    // identity-migration tombstones are expected mass transitions, so they are
+    // left out of the guardrail ratio; otherwise a version bump in a repo with
+    // 10 or more local sources would block the migration permanently.
     const repairCount = transitions.length - migrationTransitions;
     const GUARDRAIL_MIN_ROWS = 10;
     if (
@@ -285,9 +241,9 @@ export class ReconcileFromDiskService {
     }
 
     if (!dryRun && transitions.length > 0) {
-      // Reconcile repairs state it did not create, so two pulled
-      // extensions providing one type are settled, not a rollback that
-      // leaves the catalog empty for every later command (swamp-club#2702).
+      // reconcile repairs state it did not create, so two pulled extensions
+      // providing one type are settled rather than rolled back, which would
+      // leave the catalog empty for every later command.
       this.repository.saveAll(reconciledExtensions, {
         settlePulledTypeConflicts: true,
       });
@@ -312,37 +268,15 @@ export class ReconcileFromDiskService {
     return { transitions, applied: !dryRun && transitions.length > 0 };
   }
 
-  /**
-   * Returns the names, in order, that {@link reconcileUncataloguedPulled}
-   * would reconcile: those with a lockfile entry and no aggregate yet.
-   * Callers use it to skip the reconcile when nothing qualifies, so both
-   * apply the one criterion.
-   */
   selectUncataloguedPulled(extensionNames: readonly string[]): string[] {
     const skips = this.uncataloguedSkipReasons(extensionNames);
     return extensionNames.filter((name) => !skips.has(name));
   }
 
   /**
-   * Catalogues pulled lockfile entries that have no aggregate yet — files
-   * that reached disk without an install, such as a managed-config sync
-   * into a running serve (swamp-club#2355).
-   *
-   * It creates aggregates only for the named extensions that have none. A
-   * name that already has one is returned as `skipped` and its aggregate is
-   * not reconciled. Each extension is saved with its own `saveAll`, so a
-   * failure (for example a `DuplicateTypeError`) rolls back only that
-   * extension. Each save still runs saveAll's origin-conflict resolution
-   * across the repo, which can clear a pulled row's type when another
-   * origin claims it, as every pull does, and checks I-Repo-1. It skips
-   * unreachable-source pruning, which would delete the rows of live
-   * sources mounted from outside the repo root that this save does not
-   * include.
-   *
-   * Unlike {@link execute}, it skips local and source-mounted sources,
-   * orphan tombstoning, populated markers and the >50% guardrail. The
-   * guardrail stops reconcile from mass transitioning existing rows, and
-   * this method never reconciles an existing aggregate.
+   * creates aggregates only for named extensions that have none; each is saved on
+   * its own, so a failure rolls back only that one. Skips unreachable-source
+   * pruning, which would delete rows of live sources mounted outside the repo root.
    */
   async reconcileUncataloguedPulled(
     extensionNames: readonly string[],
@@ -389,11 +323,6 @@ export class ReconcileFromDiskService {
     return results;
   }
 
-  /**
-   * The shared criterion for the scoped pulled reconcile: a name is skipped
-   * when it has no lockfile entry, or when it already has an aggregate.
-   * Returns the skip reason for each skipped name.
-   */
   private uncataloguedSkipReasons(
     extensionNames: readonly string[],
   ): Map<string, string> {
@@ -420,10 +349,8 @@ export class ReconcileFromDiskService {
     const result: Extension[] = [];
     let migrationTransitions = 0;
 
-    // Gather local + source-mounted on-disk sources, partitioned by
-    // per-subdirectory manifests. Each manifest-bearing subdirectory
-    // becomes its own Extension aggregate; remaining files fall back
-    // to the @local/<repo> aggregate.
+    // each manifest-bearing subdirectory becomes its own Extension aggregate;
+    // remaining files fall back to the @local/<repo> aggregate.
     const localTransitionsBefore = transitions.length;
     const { extensions: localExts, hasManifestPartitions } = await this
       .reconcileLocalAndSourceMounted(
@@ -433,12 +360,9 @@ export class ReconcileFromDiskService {
       );
     const localTransitionsAdded = transitions.length - localTransitionsBefore;
 
-    // Pulled extensions next. Processed BEFORE local aggregates in
-    // the result array so saveAll DELETEs pulled-orphan rows before
-    // local INSERTs. Prevents the manifest-deletion case from losing
-    // data: old manifest-named rows are inferred as "pulled" after the
-    // manifest is removed, orphan-tombstoned, and their DELETEs must
-    // not clobber the new @local/ rows at the same source_path.
+    // pulled before local in the result array, so saveAll deletes pulled-orphan
+    // rows before local inserts; otherwise a removed manifest's old rows would
+    // clobber the new @local/ rows at the same source_path.
     const pulledExts = await this.reconcilePulled(
       existingExtensions,
       transitions,
@@ -446,10 +370,9 @@ export class ReconcileFromDiskService {
     );
     result.push(...pulledExts);
 
-    // Atomic identity migration: tombstone stale local-origin aggregates
-    // BEFORE the new aggregates. saveAll processes in array order —
-    // tombstones must come first so removeBySourcePath deletes old rows
-    // before upsertWithIdentity writes new ones at the same paths.
+    // tombstones come before the new aggregates: saveAll processes in array
+    // order, so removeBySourcePath deletes old rows before upsertWithIdentity
+    // writes new ones at the same paths.
     const localIdentities = new Set(
       localExts.map((e) => `${e.name}@${e.version}`),
     );
@@ -478,15 +401,8 @@ export class ReconcileFromDiskService {
         }
         result.push(tombstoneAll(existing));
       }
-      // When migrating identities (full: monolithic @local/<repo> is
-      // entirely replaced, or partial: some files remain in the default
-      // partition while others move to manifest partitions), the
-      // tombstones and new-source indexing are expected consequences of
-      // the identity change. Count both as migration transitions so
-      // they're exempt from the >50% guardrail.
-      // hasManifestPartitions covers the partial-adoption case where
-      // @local/<repo> remains in localIdentities but files are being
-      // re-partitioned to manifest-declared aggregates.
+      // Tombstones and new-source indexing from an identity change, full or
+      // partial, count as migration transitions exempt from the >50% guardrail.
       if (isMigration || hasManifestPartitions) {
         migrationTransitions = tombstoneCount + localTransitionsAdded;
       } else {
@@ -512,11 +428,9 @@ export class ReconcileFromDiskService {
       ? topLevelManifest.version
       : "0.0.0";
 
-    // Discover per-subdirectory manifests under each extensions/<kind>/
-    // directory. Only immediate children are checked — deeper nesting
-    // is not treated as an extension boundary.
-    // When a top-level manifest exists, per-subdirectory manifests are
-    // ignored — the top-level identity claims the entire tree.
+    // only immediate children are checked; deeper nesting is not an extension
+    // boundary. A top-level manifest claims the entire tree, so
+    // per-subdirectory manifests are then ignored.
     const subdirManifests = new Map<string, LocalManifestIdentity>();
     if (!topLevelManifest) {
       for (const [dirName] of LOCAL_KIND_DIRS) {
@@ -525,9 +439,6 @@ export class ReconcileFromDiskService {
       }
     }
 
-    // Collect all on-disk sources, partitioned by extension identity.
-    // Key: "<name>@<version>" for all partitions, including the
-    // fallback @local/<repo> aggregate.
     const partitions = new Map<
       string,
       {
@@ -546,7 +457,6 @@ export class ReconcileFromDiskService {
       sources: new Map(),
     });
 
-    // Pre-populate partitions for all discovered subdirectory manifests.
     for (const [, manifest] of subdirManifests) {
       const key = `${manifest.name}@${manifest.version}`;
       if (!partitions.has(key)) {
@@ -559,7 +469,6 @@ export class ReconcileFromDiskService {
       }
     }
 
-    // Local extensions under extensions/<kind>/
     for (const [dirName, kindDir] of LOCAL_KIND_DIRS) {
       const dir = join(this.repoDir, "extensions", dirName);
       const files = await collectTsFiles(dir);
@@ -575,7 +484,6 @@ export class ReconcileFromDiskService {
       }
     }
 
-    // Source-mounted extensions from .swamp-sources.yaml
     const config = await readSwampSources(this.repoDir);
     if (config) {
       const { baseDir, legacyBaseDir } = await resolveSourceBaseDirs(
@@ -605,17 +513,14 @@ export class ReconcileFromDiskService {
       }
     }
 
-    // Reconcile each partition into an Extension aggregate.
     const hasManifestPartitions = subdirManifests.size > 0;
     const result: Extension[] = [];
     for (const [key, partition] of partitions) {
       const isDefault = key === defaultKey;
 
-      // When manifest partitions have claimed all files from the default
-      // partition, skip reconciling it entirely. The old @local/<repo>
-      // aggregate (if one exists) will be tombstoned by the identity
-      // migration loop in reconcileAll(), which counts its transitions
-      // as migrationTransitions — exempt from the >50% guardrail.
+      // when manifest partitions claimed all files of the default partition,
+      // skip it; the old @local/<repo> aggregate is tombstoned by the identity
+      // migration loop and counted as migration transitions.
       if (
         isDefault && hasManifestPartitions && partition.sources.size === 0
       ) {
@@ -685,7 +590,6 @@ export class ReconcileFromDiskService {
       );
     }
 
-    // Handle orphaned pulled extensions: in catalog but not in lockfile.
     const chosenDatastoreDirs = [...this.onDiskDatastores.values()].map((d) => {
       const dir = canonicalizePath(d.datastoresDir);
       return dir.endsWith("/") ? dir : `${dir}/`;
@@ -716,10 +620,6 @@ export class ReconcileFromDiskService {
     return result;
   }
 
-  /**
-   * Reconciles one pulled lockfile entry: walks its kind dirs and diffs
-   * them against the entry's aggregate (a new one when none exists).
-   */
   private async reconcilePulledEntry(
     extensionName: string,
     existingExtensions: Extension[],
@@ -778,12 +678,11 @@ export class ReconcileFromDiskService {
   ): Promise<Extension> {
     let ext = extension;
 
-    // Phase 1: Sources on disk — ensure they're in the aggregate.
     for (const [absolutePath, { kind, baseDir }] of onDiskSources) {
       const loc = makeSourceLocation(absolutePath, ext.extensionRoot);
       const existingSource = findSourceByPath(ext, loc.canonicalPath);
-      // Use the existing source's id for aggregate operations (Map key
-      // equality is by reference). For new sources, use the fresh loc.
+      // use the existing source's id for aggregate operations, since Map key
+      // equality is by reference.
       const effectiveLoc = existingSource?.id ?? loc;
 
       if (existingSource && existingSource.state.tag === "Indexed") {
@@ -848,8 +747,8 @@ export class ReconcileFromDiskService {
           });
         }
       } catch (error) {
-        // Recorded below as deterministic, so this is the one time the
-        // user is told why the source is missing (swamp-club#3374).
+        // recorded below as deterministic, so this is the one time the user is
+        // told why the source is missing.
         if (error instanceof ProbeFailedError) {
           logger.warn`${error.message}`;
         }
@@ -881,10 +780,8 @@ export class ReconcileFromDiskService {
       }
     }
 
-    // Phase 2: Sources in aggregate but NOT on disk → transition.
-    // Canonicalize on-disk keys for comparison — on Windows the raw
-    // absolutePath uses backslashes while loc.canonicalPath uses forward
-    // slashes (see canonicalizePath).
+    // canonicalize on-disk keys for comparison: on Windows the raw path uses
+    // backslashes while canonicalPath uses forward slashes.
     const onDiskCanonical = new Set(
       [...onDiskSources.keys()].map(canonicalizePath),
     );
@@ -902,11 +799,9 @@ export class ReconcileFromDiskService {
         originType === "pulled" && walkedPrefixes !== undefined &&
         !walkedPrefixes.some((p) => loc.canonicalPath.startsWith(p))
       ) {
-        // Outside every dir walked for this lockfile entry — e.g. the
-        // pre-migration `.swamp/pulled-extensions/` copy of a managed
-        // repo's extension. The lockfile does not vouch for it, so it is
-        // tombstoned rather than kept as EntryPointUnreadable, which
-        // would leave a failure row for doctor forever (swamp-club#2490).
+        // outside every dir walked for this entry, such as a managed repo's
+        // pre-migration pulled-extensions copy: the lockfile does not vouch for
+        // it, so it is tombstoned, not left as an EntryPointUnreadable row
         ext = markSourceMissing(ext, { location: loc, bundleOnDisk: null });
         transitions.push({
           source: loc,
@@ -915,10 +810,9 @@ export class ReconcileFromDiskService {
           reason: "pulled source outside the extension's walked dirs",
         });
       } else if (originType === "pulled") {
-        // Pulled: lockfile is canonical. Source missing but lockfile
-        // entry present → EntryPointUnreadable (re-fetch is W4).
-        // This path only fires if the lockfile has the entry —
-        // orphan handling (no lockfile entry) is in reconcilePulled.
+        // pulled: the lockfile is canonical, so a source missing while its
+        // lockfile entry is present is EntryPointUnreadable; sources with no
+        // lockfile entry are handled in reconcilePulled.
         ext = recordEntryPointUnreadable(ext, {
           location: loc,
           lastError: "source file missing from disk",
@@ -930,7 +824,6 @@ export class ReconcileFromDiskService {
           reason: "pulled source missing from disk (lockfile entry present)",
         });
       } else {
-        // Local / source-mounted: source is canonical → tombstone.
         const bundleOnDisk = extractBundlePath(source.state);
         ext = markSourceMissing(ext, { location: loc, bundleOnDisk });
         const newState = bundleOnDisk ? "OrphanedBundleOnly" : "Tombstoned";
@@ -1083,11 +976,6 @@ async function collectTsFiles(dir: string): Promise<string[]> {
   return out;
 }
 
-/**
- * Scans immediate subdirectories of `kindDir` for `manifest.yaml`
- * files that declare both `name` and `version`. Populates `out` with
- * entries keyed by the subdirectory's absolute path.
- */
 async function discoverSubdirManifests(
   kindDir: string,
   out: Map<string, LocalManifestIdentity>,
@@ -1107,12 +995,6 @@ async function discoverSubdirManifests(
   }
 }
 
-/**
- * Determines which manifest-bearing subdirectory owns `filePath`.
- * Returns the partition key (`"<name>@<version>"`) for the owning
- * subdirectory, or `defaultKey` if the file is not under any
- * manifest-bearing subdirectory.
- */
 function findOwningManifest(
   filePath: string,
   subdirManifests: Map<string, LocalManifestIdentity>,

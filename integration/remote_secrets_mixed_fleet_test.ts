@@ -17,16 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * A mixed fleet under one serve during the typed-secrets 5.2 window
- * (design/enablers/typed-secrets.md Section 9): a protocol version 5 worker
- * and a protocol version 6 worker run the same secret-bearing step through
- * the real MethodExecutionService → DispatchService → WorkerGateway path and
- * the real dispatch runner, in-process. The version 6 dispatch carries
- * references only and its runner loads each value through the protected
- * route; the version 5 dispatch keeps today's plaintext frame.
- */
-
 import { ProvenanceMap } from "../src/domain/expressions/provenance_map.ts";
 import { assert, assertEquals, assertRejects } from "@std/assert";
 import { waitFor } from "@swamp-club/swamp-testing";
@@ -83,13 +73,11 @@ await initializeLogging({});
 
 const SANITIZE = { sanitizeOps: false, sanitizeResources: false };
 
-/** What the step's method received, by the worker that ran it. */
 interface Received {
   token: unknown;
   endpoint: unknown;
 }
 
-/** A per-run model whose method records what it receives. */
 function registerFleetModel(received: Received[]): ModelType {
   const type = ModelType.create(`test/mixed-fleet-${crypto.randomUUID()}`);
   defineModel({
@@ -114,11 +102,6 @@ function registerFleetModel(received: Received[]): ModelType {
   return type;
 }
 
-/**
- * Runs one dispatch through the real runner in this process. As the
- * supervisor does, the runner's report that its arguments passed is streamed
- * to serve as it arrives, ahead of the result.
- */
 async function runInProcess(
   bootstrap: RunnerBootstrapParams,
   stream: (event: RpcStreamEvent) => void,
@@ -134,7 +117,6 @@ async function runInProcess(
       joined.set(pending);
       joined.set(chunk, pending.length);
       pending = joined;
-      // Length-prefixed frames, as the stdio transport writes them.
       while (pending.length >= 4) {
         const length = new DataView(pending.buffer, pending.byteOffset)
           .getUint32(0);
@@ -161,10 +143,6 @@ async function runInProcess(
   return result;
 }
 
-/**
- * Answers `worker`'s dispatches by running them through the real runner,
- * keeping each raw frame as it arrived.
- */
 function runDispatches(
   o: BaselineOrchestrator,
   worker: InMemoryWorker,
@@ -183,7 +161,6 @@ function runDispatches(
   });
 }
 
-/** Counts the reads the protected route makes of serve's vault. */
 function countingVault(reads: string[]) {
   return (vault: VaultService): VaultService => {
     const get = vault.get.bind(vault);
@@ -195,12 +172,6 @@ function countingVault(reads: string[]) {
   };
 }
 
-/**
- * Runs the fleet model's step on the worker the `tier` label selects, with
- * its method argument and global argument each a vault reference, through
- * executeWorkflow as a workflow step runs it. Returns what serve's own
- * loader read and how often the evaluation hook was called.
- */
 async function runStep(
   o: BaselineOrchestrator,
   type: ModelType,
@@ -274,7 +245,6 @@ async function runStep(
   return { serveReads, validated };
 }
 
-/** Every file under `dir` whose text holds `needle`, by relative path. */
 async function filesHolding(dir: string, needle: string): Promise<string[]> {
   const holding: string[] = [];
   for await (const entry of walk(dir, { includeDirs: false })) {
@@ -327,7 +297,6 @@ Deno.test({
         runDispatches(o, v5, join(dir, "cache-v5"), v5Frames);
         runDispatches(o, v6, join(dir, "cache-v6"), v6Frames);
 
-        // Version 5: serve loads both references and ships the values.
         const legacy = await runStep(o, type, "v5", keys);
         assertEquals(
           legacy.serveReads.toSorted(),
@@ -341,8 +310,6 @@ Deno.test({
           "the version 5 frame carries plaintext",
         );
 
-        // Version 6: serve loads nothing; the runner loads each reference
-        // once, through the route, and validates on the worker.
         const current = await runStep(o, type, "v6", keys);
         assertEquals(current.serveReads, []);
         assertEquals(
@@ -360,14 +327,11 @@ Deno.test({
           REMOTE_PROTOCOL_VERSION,
         );
 
-        // The method received the exact values on both workers.
         assertEquals(received, [
           { token, endpoint },
           { token, endpoint },
         ]);
 
-        // No lease record, pending-dispatch record or other file serve or
-        // the workers wrote holds the value (the vault stores it encrypted).
         assertEquals(await filesHolding(dir, token), []);
       } finally {
         modelRegistry.invalidateType(type);
@@ -398,10 +362,9 @@ Deno.test({
         await o.putSecret(keys.token, token);
         await o.putSecret(keys.endpoint, "https://api.example.com");
 
-        // The first worker loads the dispatch's references, then its
-        // socket drops before it answers: a no-write attempt, so serve
-        // re-dispatches the step. It drops only once the second worker is
-        // in the pool, so the re-dispatch has somewhere to go.
+        // the first worker loads the references, then its socket drops before
+        // it answers: a no-write attempt, so serve re-dispatches; it drops only
+        // once the second worker is in the pool
         const lost = await connectInMemoryWorker(o, "lost", { tier: "v6" });
         const lostCredential: { value?: string } = {};
         const firstFrames: Record<string, unknown>[] = [];
@@ -442,8 +405,6 @@ Deno.test({
         nextEnrolled.resolve();
         await step;
 
-        // Both attempts carried references only, and each loaded them
-        // itself: one load per reference per attempt.
         assertEquals(firstFrames.length, 1);
         assertEquals(frames.length, 1);
         for (const frame of [firstFrames[0], frames[0]]) {
@@ -459,7 +420,6 @@ Deno.test({
         assertEquals(received[0].token, token);
         assertEquals((await step).validated, 1);
 
-        // The lost attempt's credential reads nothing now.
         const client = new DataPlaneClient({
           baseUrl: o.dataPlaneUrl,
           credential: () => lostCredential.value!,

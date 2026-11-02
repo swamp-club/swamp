@@ -16,10 +16,6 @@
 //
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
-// A search answered from the output summaries (swamp-club#4145) must return
-// exactly what reading every record returns: the same runs in the same order,
-// whatever saves, deletes, retention passes, damage to the index, and records
-// written by other writers came before it.
 
 import { assertEquals } from "@std/assert";
 import { ensureDir } from "@std/fs";
@@ -61,7 +57,6 @@ interface Run {
   type: number;
   definition: number;
   method: number;
-  /** Few distinct values across a day boundary, so ties and shards recur. */
   offset: number;
   status: Status;
 }
@@ -169,7 +164,6 @@ async function writeAt(path: string, text: string): Promise<void> {
   await Deno.writeTextFile(path, text);
 }
 
-/** Every shard of the checkout at `dir`. */
 async function shards(dir: string): Promise<string[]> {
   const found: string[] = [];
   const walk = async (at: string) => {
@@ -187,12 +181,10 @@ async function shards(dir: string): Promise<string[]> {
   return found.toSorted();
 }
 
-/** What a search reports of a run, without what only a record's read has. */
 function reported(summary: OutputSummary): unknown {
   return JSON.parse(JSON.stringify(outputSummaryToData(summary)));
 }
 
-/** Every record read directly, as the search would without the summaries. */
 async function truth(repo: YamlOutputRepository): Promise<
   { type: string; method: string; run: unknown }[]
 > {
@@ -219,7 +211,6 @@ async function assertSearchesMatch(
 
   assertEquals(shape(await repo.findAllGlobalSummaries()), expected);
 
-  // A cutoff inside the window also keeps the records it should.
   const cutoffMs = BASE_MS + 1000;
   assertEquals(
     shape(await repo.findAllGlobalSince(new Date(cutoffMs))),
@@ -229,7 +220,6 @@ async function assertSearchesMatch(
     ),
   );
 
-  // Newest first, every read returns each of them.
   const newest = await repo.findGlobalNewestFirst({});
   const read: OutputSummary[] = [];
   while (true) {
@@ -257,7 +247,6 @@ async function assertSearchesMatch(
             found.type === type.normalized &&
             (found.run as { definitionId: string }).definitionId ===
               definition &&
-            // A definition's history skips a file named for another.
             !mislabelled.has((found.run as { id: string }).id)
           )
           .map(({ run }) => run),
@@ -323,7 +312,6 @@ async function apply(
       return;
     }
     case "writeMislabelled": {
-      // A record named for a definition and method it does not declare.
       const output = outputOf(op.run);
       const name = `${crypto.randomUUID()}-2026-01-02T00-00-00-000Z.yaml`;
       const path = repo.getPath(TYPES[op.run.type], "other-method", output);

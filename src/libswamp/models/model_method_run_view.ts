@@ -17,9 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Read-model projection of a data artifact produced by a model method run.
- */
 export interface DataArtifactView {
   id: string;
   name: string;
@@ -27,13 +24,6 @@ export interface DataArtifactView {
   attributes?: Record<string, unknown>;
 }
 
-/**
- * Read-model projection of a completed model method run.
- * Presentation-oriented view with computed fields (duration, artifacts).
- */
-/**
- * Result of a single report execution for the view.
- */
 export interface ReportResultView {
   name: string;
   scope?: string;
@@ -43,13 +33,6 @@ export interface ReportResultView {
   error?: string;
 }
 
-/**
- * Read-model projection of a completed model method run.
- * Presentation-oriented view with computed fields (duration, artifacts).
- */
-/**
- * Read-model projection of a standalone report run (no method execution).
- */
 export interface ModelReportView {
   modelId: string;
   modelName: string;
@@ -59,13 +42,9 @@ export interface ModelReportView {
 }
 
 /**
- * A data version a read or list run wrote that its publish left on this
- * host only (swamp-club#3934). `conflict`: another swamp process wrote the
- * same version first; the datastore keeps that copy and this host now holds
- * it, so an artifact naming this version names data that no longer exists.
- * `unauthorized`: the datastore refused the credentials, as read-only ones.
- * `deferred`: another run held the behavior's lock; the next run that takes
- * it on this host publishes the version.
+ * conflict: another process wrote that version first and the datastore keeps
+ * its copy, so an artifact naming it names data that does not exist;
+ * unauthorized: credentials refused; deferred: lock was busy
  */
 export interface UnpublishedVersionView {
   dataName: string;
@@ -73,10 +52,6 @@ export interface UnpublishedVersionView {
   reason: "conflict" | "unauthorized" | "deferred";
 }
 
-/**
- * Read-model projection of a completed model method run.
- * Presentation-oriented view with computed fields (duration, artifacts).
- */
 export interface ModelMethodRunView {
   modelId: string;
   modelName: string;
@@ -91,6 +66,5 @@ export interface ModelMethodRunView {
   globalArguments?: Record<string, unknown>;
   methodArguments?: Record<string, unknown>;
   initiatedBy?: string;
-  /** Present only when the run's publish left versions unpublished. */
   unpublishedVersions?: UnpublishedVersionView[];
 }

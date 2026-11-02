@@ -68,7 +68,6 @@ const ONE_PASSWORD_ENTRY = {
   ],
 };
 
-/** A resolver stub that records describe calls. */
 function fakeResolver(
   answer: ExtensionContentMetadata | null,
 ): ExtensionAutoResolver & { calls: string[] } {
@@ -141,20 +140,16 @@ function malformedResolver(vaults: unknown): ExtensionAutoResolver {
 }
 
 Deno.test("createRegistryConfigFieldsLookup: a malformed registry entry means unknown, never a crash", async () => {
-  // No configFields at all, although hasConfigSchema claims there is one.
   assertEquals(
     await createRegistryConfigFieldsLookup(
       malformedResolver([{ type: TYPE, hasConfigSchema: true }]),
     )(TYPE),
     null,
   );
-  // vaults is not an array.
   assertEquals(
     await createRegistryConfigFieldsLookup(malformedResolver("nope"))(TYPE),
     null,
   );
-  // An entry without a string type, and fields without a string name, are
-  // skipped; the rest still come through with safe defaults.
   const fields = await createRegistryConfigFieldsLookup(
     malformedResolver([
       { type: 42, configFields: [{ name: "x", required: true }] },

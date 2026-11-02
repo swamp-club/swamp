@@ -36,9 +36,6 @@ import { UserError } from "../../domain/errors.ts";
 import { renderInteractivePicker } from "./components/search_picker.tsx";
 import { renderMarkdownToTerminal } from "../markdown_renderer.ts";
 
-/**
- * Formats an ISO date string as a relative time (e.g., "2d ago").
- */
 function formatRelativeTime(isoDate: string): string {
   const diffMs = Date.now() - new Date(isoDate).getTime();
   const diffSec = Math.floor(diffMs / 1000);
@@ -51,9 +48,6 @@ function formatRelativeTime(isoDate: string): string {
   return `${diffDay}d ago`;
 }
 
-/**
- * Filters reports by a query string (case-insensitive match on name, model, scope, workflow, variant).
- */
 function filterReports(
   reports: StoredReportSummary[],
   query: string,
@@ -70,9 +64,6 @@ function filterReports(
   );
 }
 
-/**
- * Callback type for fetching report detail data for the preview pane.
- */
 export type ReportPreviewFetcher = (
   item: StoredReportSummary,
 ) => Promise<StoredReportDetail>;
@@ -187,11 +178,6 @@ export function createReportSearchRenderer(
   }
 }
 
-// ---------------------------------------------------------------------------
-// Rendering callbacks for the SearchPicker
-// ---------------------------------------------------------------------------
-
-/** Single-line result for the results list. */
 function renderReportResultLine(
   item: StoredReportSummary,
 ): React.ReactElement {
@@ -211,7 +197,6 @@ function renderReportResultLine(
   );
 }
 
-/** Preview content for a report. */
 function renderReportPreview(
   item: StoredReportSummary,
   detail: StoredReportDetail | undefined,
@@ -220,7 +205,6 @@ function renderReportPreview(
 ): React.ReactElement {
   const innerWidth = Math.max(10, width - 1);
   if (!detail) {
-    // Immediate content from the search item
     const lines: React.ReactElement[] = [
       <Text key="name" bold wrap="truncate-end">{item.reportName}</Text>,
       <Text key="scope" dimColor wrap="truncate-end">
@@ -285,7 +269,6 @@ function renderReportPreview(
   );
 }
 
-/** Plain-text scrollback output for a selected report. */
 function renderReportScrollback(
   item: StoredReportSummary,
   detail: StoredReportDetail | undefined,
@@ -311,7 +294,6 @@ function renderReportScrollback(
     return lines.join("\n");
   }
 
-  // With detail, show the rendered markdown
   const lines: string[] = [
     `${detail.reportName} (${detail.reportScope}) v${detail.version}`,
     "",

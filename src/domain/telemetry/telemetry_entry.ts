@@ -51,9 +51,6 @@ import {
   type WorkflowTriggerSource,
 } from "./trigger_source.ts";
 
-/**
- * Properties required to create a new TelemetryEntry.
- */
 export interface CreateTelemetryEntryProps {
   id?: string;
   invocation: CommandInvocationData;
@@ -68,19 +65,13 @@ export interface CreateTelemetryEntryProps {
   workflowContext?: WorkflowContextData;
   triggerSource?: WorkflowTriggerSource;
   initiatedBy?: string;
-  /**
-   * The telemetry endpoint in effect for the run that recorded the entry.
-   * The entry is only ever flushed to this endpoint.
-   */
+  /** the entry is only ever flushed to this endpoint */
   endpoint?: string;
 }
 
 /**
- * Data transfer object for TelemetryEntry.
- *
- * `invocationContext`, `parentInvocationId`, `workflowContext`, and
- * `triggerSource` are optional so entries written before each field was
- * introduced still decode without loss.
+ * context, parent, workflow and trigger fields are optional so older spooled
+ * entries still decode
  */
 export interface TelemetryEntryData {
   id: string;
@@ -97,16 +88,10 @@ export interface TelemetryEntryData {
   workflowContext?: WorkflowContextData;
   triggerSource?: WorkflowTriggerSource;
   initiatedBy?: string;
-  /**
-   * The telemetry endpoint in effect for the run that recorded the entry.
-   * The entry is only ever flushed to this endpoint.
-   */
+  /** the entry is only ever flushed to this endpoint */
   endpoint?: string;
 }
 
-/**
- * TelemetryEntry is the main entity representing a CLI invocation.
- */
 export class TelemetryEntry {
   private constructor(
     readonly id: TelemetryId,
@@ -126,9 +111,6 @@ export class TelemetryEntry {
     readonly endpoint?: string,
   ) {}
 
-  /**
-   * Creates a new TelemetryEntry.
-   */
   static create(props: CreateTelemetryEntryProps): TelemetryEntry {
     const id = props.id ? createTelemetryId(props.id) : generateTelemetryId();
     const durationMs = props.completedAt.getTime() - props.startedAt.getTime();
@@ -158,9 +140,6 @@ export class TelemetryEntry {
     );
   }
 
-  /**
-   * Reconstructs a TelemetryEntry from persisted data.
-   */
   static fromData(data: TelemetryEntryData): TelemetryEntry {
     return new TelemetryEntry(
       createTelemetryId(data.id),
@@ -189,17 +168,11 @@ export class TelemetryEntry {
     );
   }
 
-  /**
-   * Whether this entry may be sent to `endpoint`. Entries written before
-   * endpoint stamping carry none and may go anywhere, as they always could.
-   */
+  /** an entry with no endpoint stamp may be sent anywhere */
   isFlushableTo(endpoint: string): boolean {
     return this.endpoint === undefined || this.endpoint === endpoint;
   }
 
-  /**
-   * Converts the TelemetryEntry to a plain data object for persistence.
-   */
   toData(): TelemetryEntryData {
     const data: TelemetryEntryData = {
       id: this.id,

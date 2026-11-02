@@ -21,10 +21,8 @@ import { assertEquals, assertStringIncludes } from "@std/assert";
 import { createSourceListRenderer } from "./extension_source_list.ts";
 
 /**
- * Captures `console.log` output across a callback. Strips ANSI colour
- * codes so assertions stay stable regardless of terminal. `writeOutput`
- * from the logger module wraps `console.log` directly — swapping the
- * global is the lightest-weight spy for these renderer tests.
+ * captures console.log with ANSI stripped; writeOutput wraps console.log
+ * directly, so swapping the global is the lightest spy
  */
 async function captureLog(fn: () => Promise<void> | void): Promise<string[]> {
   const lines: string[] = [];
@@ -37,7 +35,6 @@ async function captureLog(fn: () => Promise<void> | void): Promise<string[]> {
   } finally {
     console.log = originalLog;
   }
-  // Strip ANSI sequences.
   // deno-lint-ignore no-control-regex
   const ansi = /\x1b\[[0-9;]*m/g;
   return lines.map((l) => l.replace(ansi, ""));
@@ -107,7 +104,6 @@ Deno.test("extension_source_list renderer: no_extensions status shows message + 
   });
   const joined = lines.join("\n");
   assertStringIncludes(joined, "no extensions found");
-  // Remediation hint so users know how to recover without consulting docs.
   assertStringIncludes(joined, "swamp extension source rm /c");
 });
 

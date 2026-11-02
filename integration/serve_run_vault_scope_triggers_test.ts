@@ -17,21 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Serve's other ways into a run's vault scope (swamp-club#2676), wired from
- * real components against a real repository with local_encryption vaults:
- *
- * - scheduler and webhook queue entries each start outside any scope, so
- *   different workflows' `vaults:` lists (and a scope the delivery arrived
- *   in) never leak into each other;
- * - a worker's `resolveSecret`, `putSecret` and data-plane sensitive write
- *   are held to the dispatching run's scope, and the data plane stores in
- *   the configured default vault the pre-run check approved;
- * - an HTTP request serve answers starts outside any run's scope — and
- *   every other store a run entered (swamp-club#3125) — even when Deno hands
- *   the handler the async context a run left behind.
- */
-
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import { waitFor } from "@swamp-club/swamp-testing";
 import { z } from "zod";
@@ -93,7 +78,6 @@ await initializeLogging({});
 
 const SANITIZE = { sanitizeOps: false, sanitizeResources: false };
 
-/** A workflow allowed only `vaults`, reading erp then roomcontrol. */
 function listedReads(name: string, vaults: string[]): Workflow {
   return Workflow.create({
     name,
@@ -120,7 +104,6 @@ function listedReads(name: string, vaults: string[]): Workflow {
   });
 }
 
-/** A scope a delivery might arrive in: it refuses every vault. */
 const STRAY_SCOPE = RunVaultAccess.create({
   allowedVaults: [],
   allowListSource: "stray",
@@ -139,15 +122,12 @@ function finished(run: WorkflowRun | null): boolean {
   return run?.status === "succeeded" || run?.status === "failed";
 }
 
-/** Each workflow read only the vault its own list allows. */
 function assertOwnListOnly(only: WorkflowRun, other: WorkflowRun): void {
-  // only-rc: roomcontrol allowed, erp refused by its own list.
   assertStringIncludes(
     stepOf(only, "main", "erp").error ?? "",
     `not in the vaults list of workflow '${only.workflowName}'`,
   );
   assertEquals(stepOf(only, "main", "rc").status, "succeeded");
-  // only-erp: erp allowed, roomcontrol refused by its own list.
   assertEquals(stepOf(other, "main", "erp").status, "succeeded");
   assertStringIncludes(
     stepOf(other, "main", "rc").error ?? "",
@@ -155,7 +135,6 @@ function assertOwnListOnly(only: WorkflowRun, other: WorkflowRun): void {
   );
 }
 
-/** The trigger principal may read both vaults: only the lists differ. */
 function triggerGrants(subject: string) {
   return [
     ...runnerGrants(subject),
@@ -178,7 +157,6 @@ Deno.test({
         workflowRepo: f.repo.repoContext.workflowRepo,
         repoDir: f.repo.repoDir,
         initiatedBy: "service:scheduler",
-        // As serve wires its executor.
         executeWorkflow: (input, signal, onEvent) =>
           executeWorkflowWithLocks(
             f.repo.repoDir,
@@ -201,7 +179,6 @@ Deno.test({
           ),
       });
       try {
-        // Both fire from inside a scope that refuses every vault.
         runWithVaultAccess(STRAY_SCOPE, () => {
           scheduler.enqueueForReplay({
             pendingRunId: crypto.randomUUID(),
@@ -256,7 +233,6 @@ Deno.test({
         ],
         syncGate: undefined,
         initiatedBy: "service:webhook",
-        // As serve wires it.
         createVaultAccess: () =>
           serviceRunVaultScope(runVaultScopeContext(f.ctx), WEBHOOK_PRINCIPAL),
       });
@@ -277,7 +253,6 @@ Deno.test({
           }),
         );
       try {
-        // Both arrive inside a scope that refuses every vault.
         await runWithVaultAccess(STRAY_SCOPE, async () => {
           for (const route of ["/hooks/rc", "/hooks/erp"]) {
             const response = await deliver(route);
@@ -305,7 +280,6 @@ Deno.test({
     }, { grants: triggerGrants("service:webhook") }),
 });
 
-/** The bot's run scope, as serve captures it for a session. */
 function botScope(f: VaultScopeFixture): RunVaultAccess {
   return createRunVaultScope(runVaultScopeContext(f.ctx), {
     source: "session",
@@ -315,7 +289,6 @@ function botScope(f: VaultScopeFixture): RunVaultAccess {
   })!.access;
 }
 
-/** bot reads roomcontrol and reads and writes outputs; nothing else. */
 const WORKER_GRANTS = [
   ...runnerGrants("user:bot"),
   grant("user:bot", "vault", "roomcontrol"),
@@ -323,7 +296,6 @@ const WORKER_GRANTS = [
   grant("user:bot", "vault", "outputs2", ["read", "write"]),
 ];
 
-/** A dispatch of the bot's run to worker `w1`. */
 function botDispatch(
   f: VaultScopeFixture,
   modelDef: ModelDefinition,
@@ -464,7 +436,6 @@ Deno.test({
         );
         return { status: response?.status, text: await response?.text() };
       };
-      // Wired as serve now wires it: the run deps' default vault.
       const wired = await write(target);
       assertEquals(wired.status, 200, wired.text);
       const vaults = await f.vaults();
@@ -497,7 +468,6 @@ Deno.test({
   ...SANITIZE,
   fn: () =>
     withVaultScopeFixture(async (f) => {
-      // A store added later stands in for any ambient store serve grows.
       const futureStore = new AsyncLocalStorage<string>();
       const lockNonce = crypto.randomUUID();
       const seen: Record<string, string[]> = { raw: [], wrapped: [] };

@@ -18,19 +18,11 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * The one lexer for where CEL string literals and comments begin and end.
- *
- * It mirrors the cel-js tokenizer: a string opens on `'` or `"`, in its
- * triple-quoted form when the quote is repeated three times; a backslash
- * inside a string always skips the next character, whatever the string's
- * `r`/`b` prefix (a prefix only changes how escapes are decoded, never where
- * the string ends, so prefixes are ignored here); a single-quoted string may
- * not hold a line break; and `//` starts a comment that runs to the next
- * newline. This module has no imports so every other expression module can
- * depend on it without creating a cycle.
+ * mirrors the cel-js tokenizer: a backslash always skips the next character
+ * whatever the r/b prefix, since a prefix only changes decoding; no imports so
+ * every expression module can use it without a cycle
  */
 
-/** Where the lexer is: in code, in one of the four string forms, or in a comment. */
 export const LexState = {
   Code: 0,
   Single: 1,
@@ -40,22 +32,12 @@ export const LexState = {
   Comment: 5,
 } as const;
 
-/** One of the {@link LexState} values. */
 export type LexState = typeof LexState[keyof typeof LexState];
 
-/** The number of {@link LexState} values, for packing (position, state) pairs. */
 export const LEX_STATE_COUNT = 6;
 
-/** A step of the lexer that cannot continue: an unterminated string. */
 export const LEX_ERROR = -1;
 
-/**
- * Advances the lexer by one step from `pos` in `state`.
- *
- * Returns the next position and state, or `LEX_ERROR` as the position when a
- * string cannot be terminated there (a line break in a single-quoted string,
- * or the end of the text inside a string).
- */
 export function lexStep(
   text: string,
   pos: number,
@@ -103,17 +85,12 @@ export function lexStep(
   }
 }
 
-/** A run of CEL text that is all code, one string literal, or one comment. */
 export interface LexSegment {
   kind: "code" | "string" | "comment";
   start: number;
   end: number;
 }
 
-/**
- * Splits CEL text into code, string-literal and comment segments. An
- * unterminated string runs to the end of the text.
- */
 export function lexSegments(text: string): LexSegment[] {
   const segments: LexSegment[] = [];
   let pos = 0;
@@ -154,11 +131,9 @@ export function lexSegments(text: string): LexSegment[] {
 }
 
 /**
- * Replaces every CEL string literal with `""` and normalises member access,
- * so `self . tags .? env` reads `self.tags.env`. Text that only this rewrite
- * exposes to a regex (an identifier after a `.`) is then never mistaken for
- * a root. Comments are kept, so a scan over the result stays conservative.
- * Linear in the length of the text.
+ * text only this rewrite exposes to a regex (an identifier after a dot) is
+ * never mistaken for a root; comments are kept, so a scan over the result stays
+ * conservative
  */
 export function stripStringLiterals(celExpression: string): string {
   let out = "";
@@ -175,10 +150,6 @@ export function stripStringLiterals(celExpression: string): string {
 
 const WHITESPACE = /\s/;
 
-/**
- * Collapses whitespace around a `.` or `.?` member access to a bare `.`.
- * Each whitespace run is examined once, so the pass is linear.
- */
 function normaliseMemberAccess(code: string): string {
   let out = "";
   let i = 0;
@@ -210,14 +181,9 @@ function normaliseMemberAccess(code: string): string {
 const IDENTIFIER_CHAR = /[A-Za-z0-9_]/;
 
 /**
- * Blanks the argument of every `literal('...')` call, so regexes that look
- * for references (`self.x`, `env.X`, `vault.get(...)`) never read the text a
- * `literal()` passes through.
- *
- * Only a call whose callee is the bare global `literal` — not `x.literal`,
- * not `my_literal` — and whose only argument is one string literal is
- * masked. Anything else (`literal(inputs.x)`) keeps its text, so a real
- * reference is never hidden. Linear in the length of the text.
+ * only a bare global literal call with one string-literal argument is masked;
+ * anything else (literal(inputs.x)) keeps its text, so a real reference is
+ * never hidden
  */
 export function maskLiteralCalls(celExpression: string): string {
   if (!celExpression.includes("literal")) return celExpression;
@@ -259,11 +225,6 @@ export function maskLiteralCalls(celExpression: string): string {
   return out + celExpression.slice(last);
 }
 
-/**
- * Whether the text from `from` to `end` is optional whitespace, `(`, optional
- * whitespace and an optional raw-string prefix — the opening of a call whose
- * argument is the string literal starting at `end`.
- */
 function opensCallAtSegmentEnd(
   text: string,
   from: number,
@@ -278,7 +239,6 @@ function opensCallAtSegmentEnd(
   return i === end;
 }
 
-/** Whether the text from `from` is optional whitespace then `)`. */
 function closesCall(text: string, from: number, end: number): boolean {
   let i = from;
   while (i < end && WHITESPACE.test(text[i])) i++;
@@ -286,11 +246,8 @@ function closesCall(text: string, from: number, end: number): boolean {
 }
 
 /**
- * Whether `literal` at `at` names the global function: it is not part of a
- * longer identifier, and is not a member reached through `.`. Only
- * whitespace in the same code segment is skipped looking for the `.`, so a
- * comment between them (`x.//c\nliteral('a')`) reads as a bare call. That
- * only ever masks a string literal's text, never a reference.
+ * a comment between x. and literal reads as a bare call; that only ever masks a
+ * string literal's text, never a reference
  */
 function isBareCallee(text: string, at: number, segmentStart: number): boolean {
   if (IDENTIFIER_CHAR.test(text[at + 7] ?? "")) return false;

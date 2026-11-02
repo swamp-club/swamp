@@ -18,72 +18,51 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * Continuation claims: the record that one suspension of a run was consumed
- * by a resume (swamp-club#3108).
- *
- * A run record on a synced datastore is a cached copy, so two hosts can each
- * hold a copy that says "suspended" after one of them has resumed the run.
- * The run's lock serialises their resumes but does not refresh the copy. A
- * claim closes that gap without pulling anything: every resume creates the
- * claim of the suspension it consumes, once, in a store every host reads
- * directly. A host whose copy is older derives the same suspension key,
- * finds the claim and leaves the run alone.
- *
- * A claim is kept until its run is deleted. The holder of a claim that is
- * known dead is replaced by creating the next generation, never by deleting
- * and creating again, so two hosts that both see a dead holder cannot both
- * take its place.
+ * a synced run copy can say suspended after another host resumed; each resume
+ * creates a claim for the suspension it consumes in a store every host reads,
+ * so an older copy leaves the run alone
  */
 
 import { z } from "zod";
 import { UserError } from "../errors.ts";
 import type { WorkflowRun } from "./workflow_run.ts";
 
-/** Key family of claims: `continuations/<runId>/<suspensionKey>/<generation>`. */
 export const CONTINUATION_CLAIM_PREFIX = "continuations/";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const SUSPENSION_KEY = /^[0-9a-f]{64}$/;
 
-/** The largest claim record read back, in bytes. */
 export const CONTINUATION_CLAIM_MAX_BYTES = 4096;
 
 export const ContinuationClaimSchema = z.object({
   runId: z.string().regex(UUID, "must be a UUID"),
   suspensionKey: z.string().regex(SUSPENSION_KEY, "must be a SHA-256 digest"),
-  /** 1 for the first claim of a suspension; each takeover adds one. */
   generation: z.number().int().min(1),
-  /** Who holds the claim: see {@link serveHolder} and {@link localHolder}. */
   holder: z.string().min(1).max(256),
   claimedAt: z.string().datetime(),
 });
 
 export type ContinuationClaim = z.infer<typeof ContinuationClaimSchema>;
 
-/** The holder name of a `swamp serve` instance. */
 export function serveHolder(instanceId: string): string {
   return `serve:${instanceId}`;
 }
 
-/** The serve instance id a holder names, or undefined for any other holder. */
 export function serveInstanceOf(holder: string): string | undefined {
   return holder.startsWith("serve:") && holder.length > "serve:".length
     ? holder.slice("serve:".length)
     : undefined;
 }
 
-/** A holder name for one local command, unique to the process that asks. */
 export function localHolder(): string {
   return `local:${crypto.randomUUID()}`;
 }
 
-/** The key prefix of every claim of `runId`. Throws for a non-UUID. */
 export function continuationRunPrefix(runId: string): string {
   if (!UUID.test(runId)) throw new Error(`Not a run id: ${runId}`);
   return `${CONTINUATION_CLAIM_PREFIX}${runId.toLowerCase()}/`;
 }
 
-/** The key prefix of the claims of one suspension. */
 export function continuationSuspensionPrefix(
   runId: string,
   suspensionKey: string,
@@ -94,7 +73,6 @@ export function continuationSuspensionPrefix(
   return `${continuationRunPrefix(runId)}${suspensionKey}/`;
 }
 
-/** The key of one claim. */
 export function continuationClaimKey(
   claim: Pick<ContinuationClaim, "runId" | "suspensionKey" | "generation">,
 ): string {
@@ -106,7 +84,6 @@ export function continuationClaimKey(
   }${claim.generation}`;
 }
 
-/** The generation a claim key names, or undefined for any other key. */
 export function generationFromKey(key: string): number | undefined {
   const last = key.slice(key.lastIndexOf("/") + 1);
   if (!/^[1-9][0-9]*$/.test(last)) return undefined;
@@ -119,9 +96,8 @@ export function encodeContinuationClaim(claim: ContinuationClaim): Uint8Array {
 }
 
 /**
- * Reads a stored claim. Undefined for a record that is missing, too large,
- * not a claim, or stored under a key other than its own: the store is one
- * other writers can reach.
+ * undefined for a missing, oversized or non-claim record, or one stored under
+ * another key, since other writers can reach the store
  */
 export function decodeContinuationClaim(
   bytes: Uint8Array | null,
@@ -147,15 +123,9 @@ export function decodeContinuationClaim(
 }
 
 /**
- * Identifies the suspension `run` is in: a digest of every step's place,
- * status and times, the wait it holds and the decision on its gate. Every
- * host derives the same key from the same record. A record from before or
- * after a resume that took the claim derives a different one, since such a
- * resume changes at least one step: a run with a wait still open or a gate
- * still undecided is refused before its suspension is claimed, and every
- * accepted signal is applied to its step by the resume that claims it.
- * Delivering a signal does not change the run record, so it does not change
- * the key.
+ * every host derives the same key from the same record; a resume that takes the
+ * claim changes at least one step, so the key changes; delivering a signal does
+ * not change the record or the key
  */
 export async function suspensionKeyOf(run: WorkflowRun): Promise<string> {
   const steps = run.jobs.flatMap((job) =>
@@ -178,29 +148,22 @@ export async function suspensionKeyOf(run: WorkflowRun): Promise<string> {
     .join("");
 }
 
-/** Where continuation claims are kept. */
 export interface ContinuationClaimStore {
-  /** The claim of the highest generation of a suspension, if it has one. */
   find(
     runId: string,
     suspensionKey: string,
   ): Promise<ContinuationClaim | undefined>;
 
-  /** Creates `claim` unless its generation exists. True when it was created. */
   create(claim: ContinuationClaim): Promise<boolean>;
 
-  /** Removes `claim`, for a resume that took it and then ran nothing. */
   release(claim: ContinuationClaim): Promise<void>;
 
-  /** Removes every claim of a run, with the run. */
   removeForRun(runId: string): Promise<void>;
 }
 
 /**
- * Removes the claims of each run in `runIds`, with the runs. One run whose
- * claims cannot be removed does not keep the others: every run is tried,
- * and the first failure is thrown after the last. An id that is not a run
- * id has no claims and is passed over.
+ * every run is tried so one failure does not keep the others, and the first
+ * failure is thrown after the last
  */
 export async function removeClaimsOfRuns(
   store: Pick<ContinuationClaimStore, "removeForRun"> | undefined,
@@ -219,45 +182,34 @@ export async function removeClaimsOfRuns(
   if (failures.length > 0) throw failures[0];
 }
 
-/** What is known of the process a claim names. */
 export type HolderLiveness = "alive" | "dead" | "unknown";
 
-/**
- * The claims a resume takes, as one process uses them: the store, the name
- * this process holds claims under, and what it can tell of another holder.
- */
 export interface ContinuationClaims {
   readonly store: ContinuationClaimStore;
   readonly holder: string;
   liveness(holder: string): Promise<HolderLiveness>;
   /**
-   * False when the store turns out unable to create a record atomically. A
-   * resume then takes no claim, as on a datastore with no such store.
-   * Absent for a store known to be usable.
+   * false when the store cannot create a record atomically; a resume then takes
+   * no claim
    */
   usable?(): Promise<boolean>;
 }
 
-/** Who asks for a claim, which decides when another holder's is replaced. */
 export type ContinuationMode =
   /**
-   * A person asked for the resume. Only a holder known to be alive refuses
-   * it: a manual resume has always been allowed over a run nobody drives.
-   * A serve instance is known alive only where it writes a heartbeat, which
-   * is on a synced datastore; elsewhere the run's lock and record refuse a
-   * second resume, not the claim.
+   * only a holder known alive refuses a manual resume; serve is known alive
+   * only where it writes a heartbeat (synced datastore), elsewhere the run's
+   * lock and record refuse a second resume
    */
   | { readonly kind: "manual" }
   /**
-   * Serve continues the run by itself. Another holder's claim is replaced
-   * only when that holder is known dead and `takeover` is set, which the
-   * caller does only when its copy of the run is current.
+   * another holder's claim is replaced only when it is known dead and takeover
+   * is set, which the caller does only when its copy of the run is current
    */
   | { readonly kind: "automatic"; readonly takeover: boolean };
 
 export type ContinuationAcquisition =
   | { readonly kind: "acquired"; readonly claim: ContinuationClaim }
-  /** Another holder has the suspension; `liveness` is what is known of it. */
   | {
     readonly kind: "held";
     readonly claim: ContinuationClaim;
@@ -265,9 +217,8 @@ export type ContinuationAcquisition =
   };
 
 /**
- * Takes the claim of a suspension for `claims.holder`, or reports who has
- * it. A claim this holder already has is its own: the holder's copy of the
- * run still shows the suspension, so its earlier resume ran nothing.
+ * a claim this holder already has is its own: its copy of the run still shows
+ * the suspension, so its earlier resume ran nothing
  */
 export async function acquireContinuation(
   claims: ContinuationClaims,
@@ -328,21 +279,14 @@ export async function acquireContinuation(
 }
 
 /**
- * Whether this host's stored record of a run is the one the datastore
- * holds. On a synced datastore each host resumes from its own copy of a run,
- * and a copy can be behind without anything in it saying so: a peer cancelled
- * the run after its last wait was signalled, or ended a run that had only
- * decided gates. Rejects when the datastore cannot be read, so a caller never
- * takes an unreachable datastore for agreement.
+ * a synced copy can be behind with nothing in it saying so (a peer cancelled or
+ * ended the run); rejects when the datastore cannot be read, so an unreachable
+ * datastore is never taken for agreement
  */
 export type RunRecordCurrency = (
   run: { workflowId: string; runId: string },
 ) => Promise<boolean>;
 
-/**
- * A resume serve started by itself, refused because this host's record of
- * the run is not the one the datastore holds.
- */
 export class RunRecordStaleError extends UserError {
   constructor(readonly runId: string) {
     super(
@@ -353,10 +297,6 @@ export class RunRecordStaleError extends UserError {
   }
 }
 
-/**
- * A resume refused because another holder has the suspension's claim: that
- * holder is resuming the run, or already has.
- */
 export class ContinuationHeldError extends UserError {
   constructor(
     readonly runId: string,

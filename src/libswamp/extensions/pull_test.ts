@@ -142,8 +142,8 @@ Deno.test("computeOrphanDiff: empty inputs yield empty diff", () => {
   assertEquals(computeOrphanDiff([], ["a.ts"]), []);
 });
 
-// On Windows the lockfile reads with forward slashes while the new
-// version's paths come from relative() with backslashes (swamp-club#3569).
+// on Windows the lockfile reads with forward slashes while the new version's
+// paths come from relative() with backslashes
 Deno.test("computeOrphanDiff: a path differing only in separator is not an orphan", () => {
   assertEquals(
     computeOrphanDiff(
@@ -159,7 +159,6 @@ Deno.test("computeOrphanDiff: a path differing only in separator is not an orpha
     ),
     [".swamp/pulled-extensions/@a/b/models/gone.ts"],
   );
-  // A case-only change is still a rename.
   assertEquals(
     computeOrphanDiff([".claude/skills/Foo"], [".claude\\skills\\foo"]),
     [".claude/skills/Foo"],
@@ -177,8 +176,6 @@ Deno.test("computeOrphanDiff: identical sets yield no orphans", () => {
 Deno.test(
   "computeOrphanDiff: paths in old but NOT new are orphans",
   () => {
-    // The canonical case from issue 202: v1 had two files, v2 declares
-    // only one, so the dropped one is the orphan.
     const oldFiles = [
       ".swamp/pulled-extensions/@hivemq/harvester/kubeconfig/models/harvester/kubeconfig.ts",
       ".swamp/pulled-extensions/@hivemq/harvester/kubeconfig/models/harvester/fetch_kubeconfig.ts",
@@ -220,8 +217,6 @@ Deno.test(
 Deno.test(
   "computeOrphanDiff: order of returned orphans matches old-list order",
   () => {
-    // Stability: if two callers compute the same diff, they get the
-    // same list. Important for deterministic event output.
     const oldFiles = ["c.ts", "a.ts", "b.ts"];
     const extractedFiles = ["a.ts"];
     assertEquals(computeOrphanDiff(oldFiles, extractedFiles), ["c.ts", "b.ts"]);
@@ -265,20 +260,6 @@ Deno.test(
     ]);
   },
 );
-
-// ===== Pin 2 (W2) =====
-//
-// `extensionPull` is one of the 5 KEEP callsites — its
-// {@link ExtensionPullEvent} stream API is consumed directly by
-// renderers in `presentation/renderers/extension_pull.ts`. Plan v4
-// asserts that W2's internal refactor (pull.ts → InstallExtensionService)
-// preserves this stream byte-identically. The architecture-agent's Pin 2
-// review demanded a regression test that locks in the current shape so
-// the W2 refactor cannot quietly leak through the event payload.
-//
-// This test captures the pre-W2 event sequence + structural shape. As
-// commits 2b/2c land (service refactor + phase 8), the test must keep
-// passing — that's the proof of byte-identicality.
 
 function makeStubInstallResult(
   ref: ExtensionRef,
@@ -359,12 +340,10 @@ Deno.test(
       extensionPull(createLibSwampContext(), deps, { ref, force: false }),
     );
 
-    // Lock in the exact event-kind sequence consumed by renderers.
     assertEquals(events.length, 2);
     assertEquals(events[0].kind, "installing");
     assertEquals(events[1].kind, "completed");
 
-    // Lock in the structural shape of the completed event's payload.
     if (events[1].kind === "completed") {
       assertEquals(events[1].data.name, "@stub/ext");
       assertEquals(events[1].data.version, "1.0.0");
@@ -409,9 +388,6 @@ Deno.test(
 Deno.test(
   "extensionPull: emits only installing when install short-circuits (alreadyPulled)",
   async () => {
-    // The real installExtension returns undefined when ref.name is in
-    // alreadyPulled. The generator must NOT yield orphans-pruned or
-    // completed in that case — only `installing`.
     const ref: ExtensionRef = { name: "@stub/already-pulled", version: null };
     const deps = await makeStubDeps(() => Promise.resolve(undefined));
 
@@ -462,8 +438,6 @@ Deno.test(
   },
 );
 
-// ===== isVersionConstraint =====
-
 Deno.test("isVersionConstraint: detects >= prefix", () => {
   assertEquals(isVersionConstraint(">=2026.04.24"), true);
 });
@@ -500,15 +474,9 @@ Deno.test("isVersionConstraint: returns false for simple semver", () => {
   assertEquals(isVersionConstraint("1.0.0"), false);
 });
 
-// ===== Dependency version constraint resolution (swamp-club#866) =====
-
 Deno.test(
   "dependency version constraint resolution: constraint stripped, name used for lookup",
   () => {
-    // Verifies the logic applied in installExtension's dependency loop:
-    // 1. Parse the dep string to extract name (for lookups) and version
-    // 2. Detect version constraints and null them out so installExtension
-    //    resolves to extInfo.latestVersion
     const depRef = parseExtensionRef("@bixu/launchd@>=2026.04.24");
     assertEquals(depRef.name, "@bixu/launchd");
     assertEquals(depRef.version, ">=2026.04.24");
@@ -521,7 +489,6 @@ Deno.test(
     assertEquals(resolvedRef.name, "@bixu/launchd");
     assertEquals(resolvedRef.version, null);
 
-    // Exact versions pass through unchanged
     const exactRef = parseExtensionRef("@hivemq/asdlc@2026.06.27.1782598415");
     assertEquals(isVersionConstraint(exactRef.version!), false);
     const resolvedExact: ExtensionRef = {
@@ -630,12 +597,8 @@ Deno.test(
   },
 );
 
-// ===== Skill ownership (swamp-club#2494) =====
-//
-// Skills land in shared tool dirs, so a same-named dir may belong to the
-// user or another extension. These tests drive installExtension against
-// real archives to pin what it records, what it may roll back, and when
-// it raises a conflict.
+// skills land in shared tool dirs, so a same-named dir may belong to the user
+// or another extension
 
 const SKILL_VERSION = "2026.01.01.1";
 
@@ -643,17 +606,12 @@ interface SkillArchiveSpec {
   name: string;
   skills: Record<string, Record<string, string>>;
   dependencies?: string[];
-  /** Extra files keyed by path under the extension root, e.g. `models/a.ts`. */
   files?: Record<string, string>;
-  /** Symlinks keyed by path under the extension root, valued by target. */
   symlinks?: Record<string, string>;
-  /** Leaves manifest.yaml out of the archive. */
   omitManifest?: boolean;
-  /** The manifest version; defaults to SKILL_VERSION. */
   version?: string;
 }
 
-/** Builds an extension archive that ships only skills. */
 async function buildSkillArchive(spec: SkillArchiveSpec): Promise<Uint8Array> {
   const tmp = await Deno.makeTempDir({ prefix: "swamp_skill_archive_" });
   try {
@@ -698,7 +656,6 @@ async function buildSkillArchive(spec: SkillArchiveSpec): Promise<Uint8Array> {
   }
 }
 
-/** A .tar.gz holding exactly `files`, keyed by raw tar header path. */
 async function buildRawArchive(
   files: Record<string, string>,
 ): Promise<Uint8Array> {
@@ -739,7 +696,6 @@ function lockPath(repoDir: string, path: string): string {
   return canonicalLockfilePath(relative(repoDir, path));
 }
 
-/** Asserts every reported path is in the lockfile's `/` form. */
 function assertLockfileForm(paths: ReadonlyArray<string> | undefined): void {
   for (const path of paths ?? []) {
     assertEquals(path, canonicalLockfilePath(path));
@@ -869,7 +825,6 @@ Deno.test(
       assertEquals(files.includes(readme), true);
       assertLockfileForm(result?.extractedFiles);
       assertLockfileForm(result?.skillFiles);
-      // Only the file that did not exist before may be rolled back.
       assertEquals(result?.createdPaths.includes(skillMd), true);
       assertEquals(result?.createdPaths.includes(readme), false);
       assertEquals(result?.createdPaths.includes(root), false);
@@ -895,7 +850,6 @@ Deno.test(
         skillInstallContext(repoDir, lockfile, { [name]: archive }),
       );
       const root = lockPath(repoDir, join(repoDir, ".claude", "skills", "foo"));
-      // Still owned as the root, but nothing new to roll back.
       assertEquals(lockfile.getEntry(name)?.files?.includes(root), true);
       assertEquals(result?.createdPaths.includes(root), false);
     });
@@ -1040,7 +994,6 @@ Deno.test(
       await lockfile.writeEntry(other, "2025.01.01.1", [
         relative(repoDir, join(skillDir, "other.md")),
       ]);
-      // The new owner version drops skill foo and ships bar instead.
       const archive = await buildSkillArchive({
         name: owner,
         skills: { bar: { "SKILL.md": "bar" } },
@@ -1074,8 +1027,6 @@ Deno.test(
         relative(repoDir, oldFile),
         relative(repoDir, skillDir),
       ]);
-      // The new version drops files/old.txt and skill foo, and its
-      // dependency merges a file into foo, so the prune walks foo.
       const archives = {
         [owner]: await buildSkillArchive({
           name: owner,
@@ -1152,8 +1103,6 @@ Deno.test(
     await withSkillRepo(async (repoDir, lockfile) => {
       const name = uniqueExtName();
       const skillDir = join(repoDir, ".claude", "skills", "foo");
-      // Prior install merged into a user dir that has since been
-      // deleted, so this install creates the root afresh.
       await lockfile.writeEntry(name, "2025.01.01.1", [
         relative(repoDir, join(skillDir, "SKILL.md")),
       ]);
@@ -1209,12 +1158,6 @@ Deno.test(
     });
   },
 );
-
-// ===== Lockfile restore anchors (swamp-club#2639) =====
-//
-// A restore passes the lockfile entry's checksum and channel on the
-// install context. The checksum anchors that entry's archive only, and
-// the channel reaches the registry and the rewritten entry.
 
 async function buildParentWithDependency(): Promise<{
   parent: string;
@@ -1339,15 +1282,6 @@ Deno.test(
   },
 );
 
-// ===== Prepare / apply split (swamp-club#2708) =====
-//
-// installExtension runs prepareInstall (network I/O and a private temp
-// dir only), then applyInstall (repo and lockfile changes). These tests
-// pin that prepare leaves the repo alone, that the prepared install's
-// temp dir is always cleaned up, and that apply refuses anything but a
-// live PreparedInstall.
-
-/** Repo-relative path → size and mtime for every file under `dir`. */
 async function snapshotTree(dir: string): Promise<Record<string, string>> {
   const snapshot: Record<string, string> = {};
   for await (const entry of walk(dir, { includeDirs: true })) {
@@ -1359,7 +1293,6 @@ async function snapshotTree(dir: string): Promise<Record<string, string>> {
   return snapshot;
 }
 
-/** Repo-relative path → content for every file under `dir`. */
 async function readTree(
   dir: string,
   skip: string[] = [],
@@ -1515,8 +1448,6 @@ Deno.test(
     });
   },
 );
-
-// ===== Bundle safety scan (swamp-club#3383) =====
 
 const CLEAN_MODEL = "export const model = { type: 'thing' };\n";
 
@@ -1888,13 +1819,6 @@ Deno.test(
   },
 );
 
-// ===== Pulled-extensions lock (swamp-club#2709) =====
-//
-// installExtension holds the checkout's pulled-extensions lock around
-// apply only. A second PulledExtensionsLock instance has its own
-// in-process state, so its tryWithLock probes the cross-process file
-// lock the way another swamp process would.
-
 Deno.test(
   "installExtension: the lock is free while the top-level prepare downloads, and held for a dependency's",
   async () => {
@@ -1970,9 +1894,7 @@ Deno.test(
           [name]: await withSkill("a"),
         }),
       );
-      // This context's snapshot records skill "a"...
       const stale = await LockfileRepository.create(lockfilePath);
-      // ...then another install replaces it with skill "b".
       await installExtension(
         { name, version: null },
         skillInstallContext(
@@ -1982,8 +1904,8 @@ Deno.test(
         ),
       );
 
-      // Read from the stale snapshot, "b" would be an unowned dir (a
-      // conflict) and would never be pruned.
+      // read from the stale snapshot, b would be an unowned dir (a conflict)
+      // and would never be pruned
       await installExtension(
         { name, version: null },
         skillInstallContext(repoDir, stale, { [name]: await withSkill("c") }),
@@ -2039,13 +1961,6 @@ Deno.test(
   },
 );
 
-// ===== Stage and swap (swamp-club#2723) =====
-//
-// applyInstall builds the new version in staging and swaps the
-// extension root and bundle roots in whole. These tests pin that the
-// result matches a plain install, that a failure restores the prior
-// version exactly, and that nested entries survive their parent's swap.
-
 function swapSpec(
   name: string,
   files: Record<string, string>,
@@ -2090,7 +2005,6 @@ async function installArchive(
   );
 }
 
-/** The repo tree minus the lockfile; asserts no staging is left. */
 async function installedTree(
   repoDir: string,
 ): Promise<Record<string, string>> {
@@ -2179,7 +2093,6 @@ Deno.test(
   },
 );
 
-/** A logger that records each warning as its rendered text. */
 function warningRecorder(): { logger: Logger; warnings: string[] } {
   const warnings: string[] = [];
   const logger = {
@@ -2227,8 +2140,6 @@ Deno.test(
         V2_FILES["models/a.ts"],
       );
       assertEquals(warnings, []);
-      // The entry lists what the extension shipped, not the user's files,
-      // and its anchor covers the tree on disk.
       const entry = lockfile.getEntry(name)!;
       assertEquals(entry.files?.includes(lockPath(repoDir, extra)), false);
       assertEquals(
@@ -2267,11 +2178,8 @@ Deno.test(
       const v2 = await buildSkillArchive(swapSpec(name, V2_FILES));
       await installArchive(repoDir, lockfile, { [name]: v1 }, name);
       const extRoot = extRootOf(repoDir, name);
-      // new_only.ts is not in v1, so this is the user's file until v2
-      // ships one there.
       const clash = join(extRoot, "models", "new_only.ts");
       await Deno.writeTextFile(clash, "user file");
-      // A user dir where v2 ships a file: nothing under it can be kept.
       const under = join(extRoot, "files", "data.txt");
       await Deno.remove(under);
       await Deno.mkdir(under);
@@ -2360,7 +2268,6 @@ Deno.test(
       const childTreeBefore = await readTree(childRoot);
       const childEntry = lockfile.getEntry(child);
 
-      // Installing the child did not make the parent look edited.
       const parentRoot = extRootOf(repoDir, parent);
       assertEquals(
         await readInstalledExtensionDigest(parentRoot, {
@@ -2376,8 +2283,6 @@ Deno.test(
       await installArchive(repoDir, lockfile, v2, parent, { force: true });
 
       assertEquals(await readTree(childRoot), childTreeBefore);
-      // Sizes and mtimes too: the child's sources stay no newer than
-      // its bundles.
       assertEquals(await snapshotTree(childRoot), childBefore);
       assertEquals(lockfile.getEntry(child), childEntry);
       assertEquals(
@@ -2426,8 +2331,6 @@ Deno.test(
       const tree = await installedTree(repoDir);
       const entry = lockfile.getEntry(name);
 
-      // A skills dir that cannot be created fails the install after the
-      // swap and before the lockfile write.
       const blocker = join(repoDir, "not-a-dir");
       await Deno.writeTextFile(blocker, "");
       const v2 = await buildSkillArchive(swapSpec(name, V2_FILES));
@@ -2453,8 +2356,6 @@ Deno.test(
       const archives = {
         [name]: await buildSkillArchive(swapSpec(name, V2_FILES, [dep])),
       };
-      // The dependency is not in the registry, so its install throws
-      // after the parent's lockfile entry landed.
       await assertRejects(
         () => installArchive(repoDir, lockfile, archives, name),
         UserError,
@@ -2571,7 +2472,6 @@ Deno.test(
   },
 );
 
-/** Leaves a journal for `name` that recovery cannot act on. */
 async function leaveUnrecoverableJournal(
   repoDir: string,
   lockfile: LockfileRepository,
@@ -2593,7 +2493,6 @@ async function leaveUnrecoverableJournal(
     new SimulatedInstallCrash("died"),
     () => Promise.resolve(null),
   );
-  // A journal recovery refuses: its lockfile is not this repository's.
   const journalPath = join(
     repoDir,
     ".swamp",
@@ -2634,7 +2533,6 @@ Deno.test(
       );
       assertEquals(lockfile.getEntry(name), null);
 
-      // Other extensions are not held up.
       await installArchive(repoDir, lockfile, archives, other);
       assertEquals(lockfile.getEntry(other)?.version, SKILL_VERSION);
       assertEquals(await exists(journalPath), true);
@@ -2668,7 +2566,6 @@ Deno.test(
   },
 );
 
-/** A lockfile whose next writeEntry fails, as a full disk would. */
 class FailingWriteLockfile extends LockfileRepository {
   failNext = false;
   override async writeEntry(
@@ -2726,7 +2623,6 @@ Deno.test(
       );
       await lockfile.refresh();
       assertEquals(lockfile.getEntry(name), entry);
-      // Every path the prior entry claims is still there.
       for (const file of entry?.files ?? []) {
         assertEquals(await exists(join(repoDir, file)), true, file);
       }
@@ -2789,25 +2685,15 @@ Deno.test("detectConflicts: lists conflicting files in per-level name order", as
   }
 });
 
-// ===== Replacement identity (swamp-club#2877) =====
-//
-// A pull that replaces an installed extension states what is installed and
-// what is coming, with the channel each is published on and the channel the
-// install follows, before anything is written.
-
 const OLD = "2026.09.23.1";
 const NEW = "2026.10.01.1";
 
 interface ChannelFixture {
   name: string;
-  /** Archives by version. */
   archives: Record<string, Uint8Array>;
   info: Partial<ExtensionRegistryInfo>;
-  /** The registry's published channel per version, for the lookup. */
   published?: Record<string, string>;
-  /** Makes the lookup throw. */
   lookupFails?: boolean;
-  /** Leaves getVersionChannels unset, as restore and update do. */
   noLookup?: boolean;
 }
 
@@ -2888,7 +2774,6 @@ function channelContext(
   };
 }
 
-/** Installs OLD as the latest stable, the way a plain pull would. */
 async function installOld(
   repoDir: string,
   lockfile: LockfileRepository,
@@ -2934,7 +2819,6 @@ Deno.test(
       });
       assertEquals(error.replacement?.change, "upgrade");
       assertEquals(error.replacement?.channelChanged, false);
-      // Nothing is reported as going ahead while the conflict stands.
       assertEquals(ctx.replacements, []);
       assertEquals(lockfile.getEntry(name)?.version, OLD);
     });
@@ -2964,8 +2848,6 @@ Deno.test(
         lookups,
       });
       const result = await installExtension({ name, version: OLD }, ctx);
-      // The installed version is the registry's latest, so only the
-      // incoming one is looked up.
       assertEquals(lookups, [[OLD]]);
       assertEquals(ctx.replacements.length, 1);
       assertEquals(ctx.replacements[0].change, "downgrade");
@@ -3032,8 +2914,6 @@ Deno.test(
       }]);
       assertEquals(result?.channel, "stable");
       assertEquals(result?.publishedChannel, "beta");
-      // The lockfile keeps following stable and records where the
-      // version is published.
       const entry = lockfile.getEntry(name);
       assertEquals(entry?.channel, undefined);
       assertEquals(entry?.publishedChannel, "beta");
@@ -3345,8 +3225,6 @@ Deno.test(
         publishedChannel: "beta",
       });
 
-      // As extensionInstall restores it: the entry's channel and version,
-      // no lookup, and the version no longer the latest on any channel.
       const ctx = channelContext(repoDir, lockfile, {
         name,
         archives,
@@ -3366,7 +3244,6 @@ Deno.test(
   async () => {
     await withSkillRepo(async (repoDir, lockfile) => {
       const name = uniqueExtName();
-      // As a managed lockfile lists an extension another checkout holds.
       await lockfile.writeEntry(name, OLD, [
         `.swamp/pulled-extensions/${name}/models/a.ts`,
       ]);
@@ -3379,7 +3256,6 @@ Deno.test(
         lookupFails: true,
       }, { lookups });
       const result = await installExtension({ name, version: OLD }, ctx);
-      // A failed lookup only warns, and only the incoming version is asked.
       assertEquals(lookups, [[OLD]]);
       assertEquals(result?.version, OLD);
       assertEquals(ctx.replacements, []);
@@ -3445,12 +3321,6 @@ Deno.test(
     });
   },
 );
-
-// ===== Archive-root shared sources (swamp-club#3384) =====
-//
-// Push places a shared module outside its kind's directory at the archive
-// root (lib/, _lib/, a bare file, or _shared/). Pull installs it at the
-// same path under the extension root so the installed sources resolve.
 
 const SHARED_FILES = {
   "models/a.ts": 'import { cmp } from "../lib/cmp.ts";\n' +
@@ -3529,10 +3399,6 @@ for (
   );
 }
 
-/**
- * A skill-only extension archive built header by header, so it can hold
- * entries push never writes; `extra` follows the manifest and skill.
- */
 async function rawSkillArchive(
   name: string,
   extra: RawTarEntry[],
@@ -3861,8 +3727,6 @@ Deno.test(
           })),
         };
         await installArchive(repoDir, lockfile, archives, parent);
-        // Without a lockfile entry only the parent's tree says what it
-        // keeps.
         if (!withEntry) await lockfile.removeEntry(parent);
         const tree = await installedTree(repoDir);
 

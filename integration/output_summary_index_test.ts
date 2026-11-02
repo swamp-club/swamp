@@ -16,10 +16,6 @@
 //
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
-// The output summaries answer history reads without opening records
-// (swamp-club#4145). These wire the real repository to real files: what a read
-// opens once the index is warm, and that a row never outlives what it stands
-// for.
 
 import { assertEquals, assertRejects } from "@std/assert";
 import { ensureDir } from "@std/fs";
@@ -83,7 +79,6 @@ function running(startedAt = STARTED): ModelOutput {
   });
 }
 
-/** Saves `output` finished, as a method run does. */
 async function saveFinished(
   repo: YamlOutputRepository,
   output = running(),
@@ -93,7 +88,6 @@ async function saveFinished(
   return output;
 }
 
-/** Writes `output`'s record as another checkout's write or a pull would. */
 async function writeRecord(
   repo: YamlOutputRepository,
   output: ModelOutput,
@@ -106,7 +100,6 @@ async function writeRecord(
   );
 }
 
-/** Runs `fn`, returning how many output records it opened. */
 async function countRecordReads<T>(
   fn: () => Promise<T>,
 ): Promise<{ result: T; reads: number }> {
@@ -364,7 +357,6 @@ Deno.test("output summaries: readers racing on a cold index leave a shard the ne
       await writeRecord(writer, output);
     }
 
-    // Separate repositories, as separate processes are: they share no scan.
     await Promise.all(
       Array.from(
         { length: 8 },
@@ -378,7 +370,6 @@ Deno.test("output summaries: readers racing on a cold index leave a shard the ne
     const lines = (await Deno.readTextFile(await onlyShard(dir))).trim()
       .split("\n").length;
     assertEquals(lines < 2 * total, true, `${lines} lines for ${total} runs`);
-    // And what it left still answers.
     const again = await countRecordReads(() => writer.findAllGlobalSummaries());
     assertEquals(again.reads, 0);
   });
@@ -411,7 +402,6 @@ Deno.test("output summaries: a read that held records while the summaries were c
     }
     assertEquals(cleared, true);
 
-    // No row was added, so the next read goes back to the record, and heals.
     const next = await countRecordReads(() => repo.findAllGlobalSummaries());
     assertEquals(next.reads, 1);
     const healed = await countRecordReads(() => repo.findAllGlobalSummaries());
@@ -473,7 +463,6 @@ Deno.test("output summaries: a few files of a large shard read their records, an
     assertEquals(history.result.map((o) => o.id), [wanted.id]);
     assertEquals(await Deno.readTextFile(shard), before);
 
-    // The whole shard is worth opening.
     const all = await countRecordReads(() => repo.findAllGlobalSummaries());
     assertEquals(all.reads, 0);
     assertEquals(all.result.length, 101);
@@ -667,7 +656,6 @@ Deno.test("output summaries: on a v3 datastore a committed save keeps its row th
   });
 });
 
-/** Runs `fn` counting stats of record files by how they were made. */
 async function countRecordStats<T>(
   fn: () => Promise<T>,
 ): Promise<{ result: T; sync: number; awaited: number; mostAtOnce: number }> {
@@ -700,7 +688,6 @@ async function countRecordStats<T>(
   }
 }
 
-/** `count` finished records under `repo`, and a first read that adds their rows. */
 async function warmRecords(
   repo: YamlOutputRepository,
   count: number,

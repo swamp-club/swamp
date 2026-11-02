@@ -59,18 +59,9 @@ import type { ProbeRedactor } from "../vaults/secret_reference_check.ts";
 import { SecretLoader } from "../vaults/secret_loader.ts";
 
 /**
- * Builds env context from Deno environment variables.
- *
- * Returns the **entire** process environment as a flat string map. Values are
- * not filtered or redacted in any way.
- *
- * **Security note:** Any environment variable accessed via `env.VAR_NAME` in a
- * CEL expression will be embedded in model output data and **persisted to disk**
- * in `.swamp/data/`. This includes sensitive runtime values such as
- * `AWS_SECRET_ACCESS_KEY`, `GITHUB_TOKEN`, database passwords, etc.
- *
- * Prefer `vault.get(vaultName, secretKey)` for sensitive values — vault secrets
- * are fetched at runtime and are never written to model output data.
+ * returns the unfiltered process environment; env.* values land in persisted
+ * model output, so prefer vault.get for secrets, which is never written to
+ * output
  */
 export function buildEnvContext(): Record<string, string> {
   return { ...Deno.env.toObject() };
@@ -81,7 +72,6 @@ export function buildEnvContext(): Record<string, string> {
 import type { FileDataRecord } from "../data/data_record.ts";
 export type { DataRecord, FileDataRecord } from "../data/data_record.ts";
 
-/** Escapes a string for safe embedding in a CEL string literal. */
 function escapeCelString(s: string): string {
   return s.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
 }
@@ -93,13 +83,8 @@ interface NamespaceRouting {
 }
 
 /**
- * Parses a possibly-namespaced model name and returns the bare model name,
- * the CEL predicate fragment for namespace scoping, and whether the lookup
- * is a wildcard query.
- *
- * - No prefix ("model") → own-namespace only: `namespace == "{ownNs}"`
- * - Specific prefix ("ns:model") → target namespace: `namespace == "ns"`
- * - Wildcard ("*:model") → all namespaces, no filter (caller must check ambiguity)
+ * no prefix scopes to the own namespace, ns:model to that namespace, *:model to
+ * all namespaces with no filter (the caller must check ambiguity)
  */
 function routeNamespace(
   rawModelName: string,
@@ -127,9 +112,6 @@ function routeNamespace(
   };
 }
 
-/**
- * Throws if wildcard query results span multiple namespaces.
- */
 function checkWildcardAmbiguity(
   results: DataRecord[],
   rawModelName: string,
@@ -146,21 +128,9 @@ function checkWildcardAmbiguity(
 }
 
 /**
- * Deduplicates DataRecords that represent the same logical data item under
- * different model UUIDs (orphan recovery after delete/recreate cycles).
- *
- * Two records are considered duplicates when they share the same non-empty
- * modelName AND the same data name. When modelName is empty (tag not set),
- * records are always kept — they originate from different models that happen
- * to use the same data name.
- *
- * Among duplicates, the most recently created record is kept.
- *
- * @param modelName - Treat every record as this model's, whatever its tag
- *   says: records read by definition identity may carry an earlier name.
- * @param preferred - Breaks a tie between duplicates created in the same
- *   millisecond: a preferred record wins over one that is not
- *   (swamp-club#3043). Without it, the first record read wins.
+ * records with the same non-empty modelName and data name are one item under
+ * different model UUIDs (orphan recovery); the newest wins, and an empty
+ * modelName is never merged
  */
 function deduplicateByName(
   records: DataRecord[],
@@ -185,7 +155,6 @@ function deduplicateByName(
   return [...byKey.values()];
 }
 
-/** The size of the file at `path`, or null when there is none. */
 function localFileSize(path: string): number | null {
   try {
     return Deno.statSync(path).size;
@@ -194,7 +163,6 @@ function localFileSize(path: string): number | null {
   }
 }
 
-/** Whether a regular file or directory exists at the path. */
 function fileExists(path: string): boolean {
   try {
     Deno.statSync(path);
@@ -205,9 +173,8 @@ function fileExists(path: string): boolean {
 }
 
 /**
- * Clears `path` on records whose content file is not present locally. Used
- * for list lookups, which must not download every match on a lazy-hydration
- * datastore (swamp-club#2122); single-record lookups hydrate instead.
+ * list lookups must not download every match on a lazy-hydration datastore, so
+ * missing content paths are cleared; single-record lookups hydrate instead
  */
 function dropMissingPaths(records: DataRecord[]): DataRecord[] {
   for (const record of records) {
@@ -216,12 +183,6 @@ function dropMissingPaths(records: DataRecord[]): DataRecord[] {
   return records;
 }
 
-// FileDataRecord moved to ../data/data_record.ts. Re-exported below for
-// callers that import it from this module.
-
-/**
- * Data about a single model for CEL context.
- */
 export interface ModelData {
   input: {
     id: string;
@@ -238,9 +199,7 @@ export interface ModelData {
     globalArguments: Record<string, unknown>;
     inputs?: InputsSchema;
   };
-  /** Resource data: specName → instanceName → DataRecord (includes id, version, attributes, etc.) */
   resource?: Record<string, Record<string, DataRecord>>;
-  /** File metadata: specName → instanceName → file metadata (path, size, contentType, etc.) */
   file?: Record<string, Record<string, FileDataRecord>>;
   execution?: {
     id: string;
@@ -254,27 +213,15 @@ export interface ModelData {
 }
 
 /**
- * How a data read treats a record's tagged sensitive fields.
- *
- * - `resolve` (the default): own-namespace tagged fields are read from the
- *   reader's vaults into plaintext, as today.
- * - `stored`: the record is returned as stored, references and all, and no
- *   vault is read. The typed expression path (typed-secrets 3.3) reads this
- *   way and authorizes each reference itself.
+ * resolve (default) reads own-namespace tagged fields from the reader's vaults
+ * into plaintext; stored returns the record as stored with no vault read, the
+ * typed path authorizing each reference itself
  */
 export interface DataReadOptions {
   readonly sensitiveFields?: "resolve" | "stored";
 }
 
-/**
- * Namespace for data versioning functions in CEL expressions.
- */
 export interface DataNamespace {
-  /**
-   * The reader's own namespace: the one whose records' tagged fields are
-   * this repository's to resolve. Absent on a namespace built without a
-   * repository.
-   */
   readonly namespace?: Namespace;
 
   /**
@@ -284,22 +231,12 @@ export interface DataNamespace {
    */
   readonly readsSoloNamespace?: boolean;
 
-  /**
-   * Get a specific version of data. Delegates to catalog query with an
-   * explicit `version == N` predicate (which opts out of the implicit
-   * latest-only filter). Always returns the record as stored.
-   */
   version(
     modelName: string,
     dataName: string,
     version: number,
   ): Promise<DataRecord | null>;
 
-  /**
-   * Get the latest version of data. Delegates to catalog query — the
-   * implicit `isLatest == true` injection handles latest-only filtering.
-   * `options` chooses how tagged sensitive fields are read.
-   */
   latest(
     modelName: string,
     dataName: string,
@@ -307,21 +244,13 @@ export interface DataNamespace {
   ): Promise<DataRecord | null>;
 
   /**
-   * List all version numbers for a data item, ascending. Stays synchronous
-   * (via the sync catalog query path) so it can be used in sync CEL
-   * contexts that don't go through the async evaluator.
+   * stays synchronous so it works in sync CEL contexts that skip the async
+   * evaluator
    */
   listVersions(modelName: string, dataName: string): number[];
 
-  /**
-   * Find all data records with a specific tag. Delegates to catalog query.
-   */
   findByTag(tagKey: string, tagValue: string): Promise<DataRecord[]>;
 
-  /**
-   * Find all data records for a model matching a spec name.
-   * Delegates to catalog query — no hidden scoping.
-   */
   findBySpec(modelName: string, specName: string): Promise<DataRecord[]>;
 
   /**
@@ -331,11 +260,6 @@ export interface DataNamespace {
    */
   specInstanceNames?(modelName: string, specName: string): string[];
 
-  /**
-   * Query data artifacts using a CEL predicate, with optional projection.
-   * `view` is the expression-facing query view of a typed evaluation
-   * (typed-secrets Section 6.2), handed to the query service as it is.
-   */
   query(
     predicate: string,
     select?: string,
@@ -343,37 +267,20 @@ export interface DataNamespace {
   ): Promise<DataRecord[] | unknown[]>;
 
   /**
-   * No-op — retained for interface compatibility. `latest()` always reads
-   * from disk so there is no cache to invalidate.
+   * no-op kept for interface compatibility; latest() always reads from disk, so
+   * there is no cache to invalidate
    */
   invalidateLatest?(modelName: string, dataName: string): void;
 
   /**
-   * Prepares the context for one expression before it is evaluated, since
-   * some of what it reads is read synchronously:
-   *
-   * - resolves the definitions behind the own-namespace model names the
-   *   expression passes to the data accessors, so the synchronous
-   *   `listVersions()` can read by definition identity too
-   *   (swamp-club#3029);
-   * - makes local the content the expression reads through the model map
-   *   and `file.contents`, which read the cache without downloading, so on
-   *   a lazily hydrating datastore they do not see empty or stale data
-   *   (swamp-club#3179).
-   *
-   * Awaited by async evaluation before the expression runs, and by the
-   * synchronous evaluation passes before they run.
+   * runs before evaluation because some reads are synchronous: resolves
+   * definitions for listVersions and makes content local so lazily hydrating
+   * datastores do not yield empty or stale data
    */
   prepare?(expression: string): Promise<void>;
 }
 
-/**
- * State one full expression context shares between its model map's lazy
- * `resource`/`file` getters and its data namespace's `prepare`
- * (swamp-club#3179).
- */
 interface ReadSetState {
-  /** Coordinates by every way the model map is keyed: name and id. */
   readonly coordsByRef: Map<string, ModelCoordinates[]>;
   /**
    * Updates a model's already-loaded maps in place with items whose
@@ -381,35 +288,19 @@ interface ReadSetState {
    * whose getter has not fired yet is left to load current content itself.
    */
   readonly refreshers: Map<string, (items: ChangedItem[]) => void>;
-  /** Reads already made local in this context, so each is done once. */
   readonly ensured: Set<string>;
 }
 
-/** A data item whose local content `prepare` downloaded or replaced. */
 interface ChangedItem {
   readonly data: Data;
   readonly modelType: ModelType;
   readonly modelId: string;
 }
 
-/**
- * Namespace for lazy-loading file contents in CEL expressions.
- */
 export interface FileNamespace {
-  /**
-   * Lazy-load file contents from disk.
-   * Reads file synchronously for CEL evaluation.
-   *
-   * @param modelName - The model name
-   * @param specName - The file spec name
-   * @returns The file contents as string, or null if not found
-   */
   contents(modelName: string, specName: string): string | null;
 }
 
-/**
- * Namespace for querying workers eligible for dispatch in CEL expressions.
- */
 export interface WorkersNamespace {
   connected(): Promise<DataRecord[]>;
 }
@@ -430,10 +321,8 @@ export interface RunContext {
 }
 
 /**
- * A completed step as `steps.<name>` reads it. A context may also carry the
- * sources its outputs were merged from under a symbol key
- * (`step_output_sources.ts`), which CEL cannot read: the typed evaluator
- * views the outputs through them (typed-secrets 4.2).
+ * a context may carry the output sources under a symbol key that CEL cannot
+ * read; the typed evaluator views the outputs through them
  */
 export interface StepContext {
   status: string;
@@ -441,17 +330,8 @@ export interface StepContext {
 }
 
 /**
- * The verified payload of an inbound webhook request, exposed to a workflow's
- * `trigger.inputs` CEL expressions as the `webhook` namespace
- * (`webhook.body`, `webhook.headers`, `webhook.route`).
- *
- * `body` is the JSON-parsed request body when the payload is valid JSON, or the
- * raw UTF-8 string otherwise. `headers` is a map of lowercased header names to
- * values; the signature header is intentionally excluded.
- *
- * **Security note:** header values are not redacted. If a workflow maps one into
- * a model attribute it is stored in `.swamp/data/` and visible in
- * `swamp data get` output. Treat sensitive headers accordingly.
+ * header values are not redacted and the signature header is excluded; a header
+ * mapped into a model attribute is stored and visible in data output
  */
 export interface WebhookPayload {
   body: unknown;
@@ -459,85 +339,45 @@ export interface WebhookPayload {
   route: string;
 }
 
-/**
- * Context for evaluating CEL expressions.
- */
 export interface ExpressionContext {
-  /** Parent bindings for internal deferred runtime references. */
   deferredExpressions?:
     readonly import("./deferred_expression.ts").DeferredExpression[];
-  /** Map of model name/UUID to model data */
   model: Record<string, ModelData>;
-  /**
-   * Self-reference for the current input being evaluated.
-   * When forEach is used, additional keys are added for the iteration variable
-   * (e.g., self.env for forEach with item: "env")
-   */
   self?: {
     id: string;
     name: string;
     version: number;
     tags: Record<string, string>;
     globalArguments: Record<string, unknown>;
-    /** Index signature to allow forEach variables like self.env, self.tag */
     [key: string]: unknown;
   };
-  /** Input values provided when instantiating a definition */
   inputs?: Record<string, unknown>;
-  /** Workflow context (for workflow evaluation) */
   workflow?: Record<string, unknown>;
-  /** Vault operations for secure secret access */
   vault?: {
     get(vaultName: string, secretKey: string): string;
   };
   /**
-   * Full process environment, available as `env.VAR_NAME` in CEL expressions.
-   *
-   * **Security note:** Values accessed via `env` are not redacted. If used as
-   * model attributes they will be stored in `.swamp/data/` on disk and visible
-   * in `swamp data get` output. Use `vault.get()` for sensitive values instead.
+   * env values are not redacted; used as model attributes they are stored on
+   * disk and visible in data output, so use vault.get() for secrets
    */
   env: Record<string, string>;
-  /** Data namespace for versioned data access */
   data?: DataNamespace;
-  /** Workers namespace for querying dispatchable workers */
   workers?: WorkersNamespace;
-  /** File namespace for lazy-loading file contents */
   file?: FileNamespace;
-  /**
-   * Workflow run ID, available as a CEL variable for query predicates.
-   * Set by the workflow engine after creating the run.
-   */
   workflowRunId?: string;
-  /** Structured workflow run context, available as `run.*` in CEL expressions. */
   run?: RunContext;
-  /** Completed step results, available as `steps.<name>.status` and `steps.<name>.outputs` in CEL expressions. */
   steps?: Record<string, StepContext>;
-  /**
-   * Verified inbound webhook payload, available as `webhook.*` in a workflow's
-   * `trigger.inputs` CEL expressions. Set only for webhook-triggered runs.
-   */
   webhook?: WebhookPayload;
-  /** Index signature for CEL evaluator compatibility */
   [key: string]: unknown;
 }
 
-/**
- * Configuration for optional repositories and services.
- */
 export interface ModelResolverRepositories {
   outputRepo?: YamlOutputRepository;
-  /** Optional vault service for dependency injection (useful for testing) */
   vaultService?: VaultService;
-  /** Repository directory for lazy loading vault configurations */
   repoDir?: string;
-  /** Resolved vault config directory (managed config tier or local vaults/) */
   vaultsDir?: string;
-  /** Optional data repository for loading versioned data */
   dataRepo?: UnifiedDataRepository;
-  /** Optional data query service for CEL data.query() support */
   dataQueryService?: DataQueryService;
-  /** Optional refresh options for auto-refreshing vault secrets on read */
   vaultRefreshOptions?: VaultRefreshOptions;
 }
 
@@ -558,10 +398,6 @@ export interface ModelCoordinates {
  */
 export type ModelCoordinatesMap = Map<string, ModelCoordinates[]>;
 
-/**
- * Buckets data items into resource and file maps by specName/dataName.
- * Shared by the per-coordinate loader and the orphan recovery fallback.
- */
 function populateFromItems(
   items: Data[],
   result: {
@@ -623,9 +459,6 @@ function populateFromItems(
   }
 }
 
-/**
- * Resolves model references to build CEL evaluation context.
- */
 export class ModelResolver {
   private readonly outputRepo?: YamlOutputRepository;
   private vaultService?: VaultService;
@@ -636,10 +469,8 @@ export class ModelResolver {
   private readonly vaultRefreshOptions?: VaultRefreshOptions;
   private vaultServiceInitialized = false;
   /**
-   * Light-context definition lookups by model name, misses included, shared
-   * by every light context this resolver builds — one per command or run —
-   * so a name is looked up once rather than once per step. A stale entry only
-   * falls back to (or adds to) the name-tag read.
+   * shared by every light context this resolver builds so a name is looked up
+   * once; a stale entry only falls back to or adds to the name-tag read
    */
   private readonly identityLookups = new Map<string, ModelCoordinates[]>();
   private readonly pendingIdentityLookups = new Map<
@@ -657,24 +488,17 @@ export class ModelResolver {
     this.dataRepo = repos?.dataRepo;
     this.dataQueryService = repos?.dataQueryService;
     this.vaultRefreshOptions = repos?.vaultRefreshOptions;
-    // If a vault service was provided, use it directly
     if (repos?.vaultService) {
       this.vaultService = repos.vaultService;
       this.vaultServiceInitialized = true;
     }
   }
 
-  /**
-   * Gets or lazily initializes the vault service.
-   * If a VaultService was provided in the constructor, it's used directly.
-   * Otherwise, vaults are loaded from the repository (if repoDir was provided).
-   */
   private async getVaultService(): Promise<VaultService> {
     if (this.vaultServiceInitialized && this.vaultService) {
       return this.vaultService;
     }
 
-    // Lazy initialization: load vaults from repository if repoDir is available
     const refreshOpts = this.vaultRefreshOptions ??
       createVaultRefreshOptions();
     if (this.repoDir) {
@@ -683,7 +507,6 @@ export class ModelResolver {
         { refreshOptions: refreshOpts, vaultsDir: this.vaultsDir },
       );
     } else {
-      // No repoDir, create an empty vault service with defaults
       this.vaultService = new VaultService(refreshOpts);
       this.vaultService.ensureDefaultVaults();
     }
@@ -691,20 +514,8 @@ export class ModelResolver {
     return this.vaultService;
   }
 
-  /**
-   * Type resolver function that maps model IDs to their types.
-   */
   private typeResolver?: (modelId: string) => ModelType | undefined;
 
-  /**
-   * Builds a complete expression context from all available models.
-   *
-   * @param selfDefinition - The definition currently being evaluated (for self reference)
-   * @param selfType - The model type of the self definition
-   * @param typeResolver - Optional function to resolve model IDs to their types for data loading
-   * @param definitions - Definitions the caller already loaded, to avoid a second repository walk
-   * @returns The expression context
-   */
   async buildContext(
     sensitiveValues: RunSensitiveValues,
     selfDefinition?: Definition,
@@ -717,18 +528,16 @@ export class ModelResolver {
       env: buildEnvContext(),
     };
 
-    // Store type resolver for data loading
     this.typeResolver = typeResolver;
 
-    // Load all definitions and build a map of ID -> type
     const allDefinitions = definitions ??
       await this.definitionRepo.findAllGlobal();
     const idToType = new Map<string, ModelType>();
     const idToName = new Map<string, string>();
 
-    // Control-plane models (grants, groups, tokens, workers) are never
-    // addressable from an expression: not as model.<name>, not through their
-    // data (swamp-club#2756).
+    // control-plane models (grants, groups, tokens, workers) are never
+    // addressable from an expression, neither as model.<name> nor through their
+    // data
     const visibleDefinitions = allDefinitions.filter(({ type }) =>
       !isControlPlaneModelType(type.normalized)
     );
@@ -736,7 +545,6 @@ export class ModelResolver {
       idToType.set(definition.id, defType);
       idToName.set(definition.id, definition.name);
 
-      // Build model data from definition
       const modelData: ModelData = {
         input: {
           id: definition.id,
@@ -755,15 +563,13 @@ export class ModelResolver {
         },
       };
 
-      // Index by name
       context.model[definition.name] = modelData;
-      // Also index by UUID for direct ID references
       context.model[definition.id] = modelData;
     }
 
-    // Build model coordinates map from definitions (O(definitions) not O(data)).
-    // model.resource and model.file are populated lazily on first access
-    // to avoid the O(N) findAllGlobal() filesystem walk.
+    // coordinates come from definitions, O(definitions) not O(data);
+    // model.resource and model.file load lazily on first access to avoid the
+    // O(N) findAllGlobal() walk
     const coordsMap: ModelCoordinatesMap = new Map();
     let readSet: ReadSetState | undefined;
     if (this.dataRepo) {
@@ -783,10 +589,6 @@ export class ModelResolver {
       }
       readSet = { coordsByRef, refreshers: new Map(), ensured: new Set() };
 
-      // Lazy-load model.resource and model.file on first property access.
-      // Instead of walking all data on disk upfront, each model's data is
-      // loaded only when its .resource or .file is accessed in a CEL expression.
-      // The getter replaces itself with the loaded value after first access.
       const dataRepo = this.dataRepo;
       const boundDataToRecord = this.dataToRecord.bind(this);
       let orphanData:
@@ -821,9 +623,9 @@ export class ModelResolver {
             );
           }
 
-          // Orphan recovery: if no resource/file data found under current
-          // coordinates, scan the full datastore once (shared across all
-          // models) for orphan data tagged with this model's name.
+          // orphan recovery: with no data under the current coordinates, scan
+          // the datastore once (shared across models) for orphan data tagged
+          // with this model's name
           if (!result.resource && !result.file) {
             if (!orphanData) {
               orphanData = dataRepo.findAllGlobalSync();
@@ -894,10 +696,9 @@ export class ModelResolver {
               item.modelId,
             );
           }
-          // Only the changed items are replaced: records a step merged in
-          // after the getter fired (as stored references the model map
-          // view adapts) were written
-          // locally, so they are never changed by prepare and are kept.
+          // only changed items are replaced; records a step merged in after the
+          // getter fired were written locally, never changed by prepare, and
+          // are kept
           for (
             const [spec, instances] of Object.entries(fresh.resource ?? {})
           ) {
@@ -947,12 +748,10 @@ export class ModelResolver {
     context.workers = this.buildWorkersNamespace();
     attachSensitiveValues(context, sensitiveValues);
 
-    // Create file namespace for lazy-loading file contents
     context.file = {
       contents: (modelName: string, specName: string): string | null => {
         const modelData = context.model[modelName];
         if (!modelData?.file?.[specName]) return null;
-        // Get the first instance under the spec
         const instances = modelData.file[specName];
         const firstKey = Object.keys(instances)[0];
         if (!firstKey) return null;
@@ -965,7 +764,6 @@ export class ModelResolver {
       },
     };
 
-    // Build self context if provided
     if (selfDefinition && selfType) {
       context.self = {
         id: selfDefinition.id,
@@ -980,12 +778,9 @@ export class ModelResolver {
   }
 
   /**
-   * Builds a lightweight expression context with only the data and env
-   * namespaces — no definition loading, no model data, no file namespace.
-   * Used whenever the expressions being evaluated read none of the model or
-   * file namespaces (see `requiresModelNamespace`), and by --last-evaluated
-   * where definitions are already cached and only deferred data.*
-   * expressions need resolution at step execution time.
+   * light context: data and env only, no definition loading, model data or file
+   * namespace; used when expressions read no model or file namespace, and by
+   * --last-evaluated for deferred data.* expressions
    */
   buildLightContext(sensitiveValues: RunSensitiveValues): ExpressionContext {
     const ownNamespace = this.dataRepo?.namespace ?? ("" as Namespace);
@@ -1004,14 +799,9 @@ export class ModelResolver {
   }
 
   /**
-   * Makes a single-record lookup's `path` name a file that is present and
-   * current. On a lazy-hydration datastore the version's raw file may not
-   * have been pulled yet, or a metadata-only pull may have left bytes older
-   * than the record's size (swamp-club#3178); the repository's
-   * content-ensuring step fetches it through its hydrate hook. If it is
-   * still absent — or the fetch fails — `path` is cleared, so hydration can
-   * add a path but never fail a lookup that would otherwise succeed. List
-   * lookups use {@link dropMissingPaths} instead so they never download.
+   * hydration can add a path but never fail a lookup: if the file is still
+   * absent or the fetch fails, path is cleared. List lookups use
+   * dropMissingPaths so they never download.
    */
   private async materializePath(record: DataRecord | null): Promise<void> {
     if (!record?.path || !this.dataRepo) return;
@@ -1034,14 +824,9 @@ export class ModelResolver {
   }
 
   /**
-   * Makes local the content `expression` reads through the synchronous
-   * readers — the model map's `resource` and `file` and `file.contents` —
-   * so they read current data on a lazily hydrating datastore
-   * (swamp-club#3179). Only what a reader reads is ensured: text resources
-   * for `resource` (other content types are never read), and files of the
-   * specs read. Each read is ensured once per context. A model's maps that
-   * are already loaded get the items whose content changed. A download
-   * error fails the evaluation, as it fails `data get`.
+   * ensures only what synchronous readers read (text resources, files of the
+   * specs read), once per context; loaded maps get changed items; a download
+   * error fails the evaluation, as it fails data get
    */
   private async ensureReadSet(
     expression: string,
@@ -1132,9 +917,9 @@ export class ModelResolver {
   }
 
   /**
-   * The coordinates to read a model's data by, from the primary definition
-   * of that name — the definitions the full context's coordinates map is
-   * built from, so both contexts read the same model.
+   * uses the primary definition of that name, the same definitions the full
+   * context's coordinates map is built from, so both contexts read the same
+   * model
    */
   private async lookUpModelCoordinates(
     modelName: string,
@@ -1152,7 +937,6 @@ export class ModelResolver {
       }
       return [{ modelType: found.type, modelId: found.definition.id }];
     } catch (error) {
-      // The read by name tag still runs, as it did before identity reads.
       getLogger(["swamp", "expressions"])
         .warn`Could not look up the definition of ${modelName}; reading its data by name tag only: ${
         error instanceof Error ? error.message : String(error)
@@ -1162,10 +946,9 @@ export class ModelResolver {
   }
 
   /**
-   * @param lookUpIdentities - Look up the definition behind a name absent
-   *   from `coordsMap`. The full context passes every definition's
-   *   coordinates, so a name missing from it has no definition; the light
-   *   context passes none.
+   * lookUpIdentities: the full context passes every definition's coordinates,
+   * so a name missing from coordsMap has no definition; the light context
+   * passes none
    */
   private buildDataNamespace(
     ownNamespace: Namespace,
@@ -1173,10 +956,9 @@ export class ModelResolver {
     lookUpIdentities = false,
     readSet?: ReadSetState,
   ): DataNamespace {
-    // The modelName tag records the name at write time, so an own-namespace
-    // read also selects the definition's data by type and id, and data
-    // written before the instance was renamed is still found
-    // (swamp-club#3029).
+    // the modelName tag records the name at write time, so an own-namespace
+    // read also selects by definition type and id, finding data written before
+    // a rename
     const lookedUp = this.identityLookups;
     const lookUps = this.pendingIdentityLookups;
     const knownIdentities = (
@@ -1277,9 +1059,9 @@ export class ModelResolver {
         // (typed-secrets 3.3).
 
         if (!ns.isWildcard) {
-          // A namespaced name is never read through the caller's own
-          // definition of that name: its coordinates select this repository's
-          // data whatever namespace was asked for (swamp-club#3295).
+          // a namespaced name is never read through the caller's own definition
+          // of that name: its coordinates select this repository's data
+          // whatever namespace was asked for
           const coords =
             parseNamespacedModelName(rawModelName).namespace === undefined
               ? await resolveIdentities(ns.modelName)
@@ -1311,11 +1093,9 @@ export class ModelResolver {
                     { modelType, modelId },
                   );
                 }
-                // dataToRecord reads the content synchronously, so make it
-                // local and current first, or a lazily hydrating datastore
-                // returns empty attributes (swamp-club#3179). As in
-                // materializePath, a failed download never fails a lookup
-                // that would otherwise succeed.
+                // dataToRecord reads content synchronously, so make it local
+                // and current first or a lazy datastore returns empty
+                // attributes.
                 let available = false;
                 try {
                   available = await this.dataRepo.ensureContentLocal(
@@ -1365,13 +1145,9 @@ export class ModelResolver {
                 excludeModelTypes: CONTROL_PLANE_STORED_TYPES,
               },
             );
-            // The coordinates path above resolves sensitive vault references
-            // through this resolver's own vault service; do the same here so
-            // both paths return the same attributes. Another namespace's
-            // record is returned as stored, as the wildcard and version
-            // readers return it: its tags and values are that namespace's to
-            // write, and must not choose which of this repository's secrets
-            // are read (swamp-club#3306).
+            // Resolve vault references through this resolver's vault service;
+            // another namespace's record is returned as stored so its tags
+            // cannot choose secrets.
             await this.materializePath(record);
             return record;
           }
@@ -1422,10 +1198,9 @@ export class ModelResolver {
             ? knownIdentities(ns.modelName)
             : undefined;
         if (coords && coords.length > 0) {
-          // Full records, not `select: "version"`: mergeModelData needs each
-          // record's identity to drop the ones both reads return. Versions
-          // under an earlier id that shares the name are still listed
-          // alongside, as the name-tag read alone lists them.
+          // full records, not select version: mergeModelData needs each
+          // record's identity to drop ones both reads return; versions under an
+          // earlier id sharing the name are still listed
           const queryService = this.dataQueryService;
           const predicates = [
             predicate,
@@ -1506,9 +1281,9 @@ export class ModelResolver {
             );
           }
           if (identityReads.length > 0) {
-            // Every record now belongs to this name, by tag or by identity,
-            // whatever name its tag recorded. On a tie, the definition's own
-            // record wins, as latest() reads it first.
+            // every record now belongs to this name, whatever its tag recorded;
+            // on a tie the definition's own record wins, as latest() reads it
+            // first
             const ownRecord = (record: DataRecord) =>
               coords.some(({ modelType, modelId }) =>
                 record.modelType === modelType.normalized &&
@@ -1569,18 +1344,10 @@ export class ModelResolver {
     };
   }
 
-  /**
-   * Resolves a single model reference by name or ID.
-   *
-   * @param modelRef - The model name or UUID
-   * @returns The definition and model type
-   * @throws ModelNotFoundError if the model cannot be found
-   */
   async resolveModel(modelRef: string): Promise<{
     definition: Definition;
     type: ModelType;
   }> {
-    // Try by name first
     const byName = await this.definitionRepo.findByNameGlobal(modelRef);
     if (byName) {
       return {
@@ -1604,13 +1371,6 @@ export class ModelResolver {
     throw new ModelNotFoundError(modelRef);
   }
 
-  /**
-   * Updates the context with fresh output state for a specific model.
-   *
-   * @param context - The context to update
-   * @param modelRef - The model name or UUID
-   * @param output - The output state
-   */
   updateOutputInContext(
     context: ExpressionContext,
     modelRef: string,
@@ -1630,13 +1390,6 @@ export class ModelResolver {
     }
   }
 
-  /**
-   * Updates the context with fresh definition data for a specific model.
-   *
-   * @param context - The context to update
-   * @param modelRef - The model name or UUID
-   * @param definition - The definition data
-   */
   updateDefinitionInContext(
     context: ExpressionContext,
     modelRef: string,
@@ -1655,10 +1408,6 @@ export class ModelResolver {
     }
   }
 
-  /**
-   * Converts a Data entity to a DataRecord by reading content from disk synchronously.
-   * Used by data.* namespace functions for sync CEL evaluation.
-   */
   private dataToRecord(
     data: Data,
     modelType: ModelType,
@@ -1739,20 +1488,17 @@ export class ModelResolver {
   }
 
   /**
-   * A loader that reads vault.get() values at delivery through this
-   * resolver's vault service, the one its existence checks ask, so a refresh
-   * hook refreshes on load as it did on the eager read.
+   * reads vault.get() values at delivery through this resolver's vault service,
+   * the one its existence checks ask, so a refresh hook refreshes on load
    */
   secretLoader(redactor?: SecretRedactor): SecretLoader {
     return new SecretLoader(() => this.getVaultService(), redactor);
   }
 
   /**
-   * The vault check scope of a typed evaluation
-   * (design/enablers/typed-secrets.md Section 3.4): this resolver's vault
-   * service, the one its existence checks ask and its loader reads through,
-   * with the run's probe redactor (a probe's value goes to it and is dropped;
-   * with none it is only dropped) and the authored location.
+   * the vault check scope of a typed evaluation: this resolver's vault service,
+   * with the run's probe redactor (a probe's value goes to it and is dropped)
+   * and the authored location
    */
   async vaultEvaluationScope(
     location: string,

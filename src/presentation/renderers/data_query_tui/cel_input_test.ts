@@ -20,8 +20,6 @@
 import { assertEquals } from "@std/assert";
 import { deleteBeforeCursor, insertAtCursor } from "./cel_input.tsx";
 
-// insertAtCursor
-
 Deno.test("insertAtCursor: inserts at beginning", () => {
   const result = insertAtCursor("hello", 0, "X");
   assertEquals(result, { text: "Xhello", cursorPos: 1 });
@@ -46,8 +44,6 @@ Deno.test("insertAtCursor: inserts into empty string", () => {
   const result = insertAtCursor("", 0, "a");
   assertEquals(result, { text: "a", cursorPos: 1 });
 });
-
-// deleteBeforeCursor
 
 Deno.test("deleteBeforeCursor: deletes in middle", () => {
   const result = deleteBeforeCursor("hello", 3);

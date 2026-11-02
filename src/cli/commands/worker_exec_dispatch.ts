@@ -18,10 +18,9 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * `swamp worker exec-dispatch` — hidden entry point for the dispatch runner
- * child process. Executes exactly one dispatch received over stdin, with
- * all console and log output redirected to stderr. stdout is reserved for
- * length-prefixed RPC frames.
+ * hidden entry for the dispatch runner child: runs one dispatch from stdin with
+ * all console and log output on stderr, since stdout is reserved for
+ * length-prefixed RPC frames
  */
 
 import { Command } from "@cliffy/command";

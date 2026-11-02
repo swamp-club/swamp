@@ -17,23 +17,8 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// Rewrites every import of a barrel file so each name is imported from the
-// module the barrel re-exports it from. The barrel itself is left alone: it
-// stays the declared list of what is public, it just stops being an import
-// path, so `deno info` reports what a file really depends on.
-//
-// Usage (from the repository root):
-//
-//   deno run unbarrel            # rewrite importers of src/libswamp/mod.ts
-//   deno run unbarrel --check    # report what would change, write nothing
-//   deno run unbarrel <barrel>   # a different barrel, repo-root-relative
-//
-// The rewrite is idempotent: a second run finds nothing to do. It emits each
-// rewritten statement on one line, so run `deno fmt` afterwards.
-//
-// `integration/ddd_layer_rules_test.ts` imports the parsing half of this
-// file, so the codemod and the rule that polices its result read the barrel
-// the same way.
+// Rewrites barrel importers to import each name from its defining module; the
+// barrel stays the declared list of what is public.
 
 import { parse, type ParserPlugin } from "@babel/parser";
 import { walk } from "@std/fs/walk";
@@ -46,7 +31,6 @@ const DEFAULT_BARREL = "src/libswamp/mod.ts";
 const SKIPPED_DIR =
   /[\\/](?:experiments|\.agents|\.claude|\.github|\.jj|node_modules|\.git)$/;
 
-/** A node of the Babel AST, narrowed to the fields this file reads. */
 interface AstNode {
   type: string;
   start: number;
@@ -54,66 +38,40 @@ interface AstNode {
   [key: string]: unknown;
 }
 
-/** Where the barrel gets one of its exported names from. */
 export interface BarrelOrigin {
-  /** Absolute path of the module, or the bare specifier when `bare`. */
   module: string;
-  /** True for an import-map / npm / jsr specifier, which is kept verbatim. */
   bare: boolean;
-  /** The name as that module exports it — differs from the key on a rename. */
   name: string;
-  /** True when the barrel re-exports the name as a type only. */
   typeOnly: boolean;
 }
 
-/** Barrel export name → where it comes from. */
 export type BarrelExports = Map<string, BarrelOrigin>;
 
-/** How a source file refers to another module. */
 export type ReferenceKind =
-  /** `import { a } from "x"` / `import type { A } from "x"` */
   | "import"
-  /** `export { a } from "x"` */
   | "export"
-  /** `import("x").A` in a type position */
   | "import-type"
-  /** `import d from "x"` */
   | "default"
-  /** `import * as ns from "x"` / `export * as ns from "x"` */
   | "namespace"
-  /** `export * from "x"` */
   | "export-all"
-  /** `import "x"` */
   | "side-effect"
-  /** `await import("x")` */
   | "dynamic"
-  /** `typeof import("x")` — the whole module as a type */
   | "import-type-module";
 
-/** One reference from a source file to another module. */
 export interface ModuleReference {
   kind: ReferenceKind;
-  /** The specifier exactly as written. */
   specifier: string;
-  /** The names taken from the module, as the module exports them. */
   names: string[];
-  /** One-based line of the reference. */
   line: number;
 }
 
-/** The outcome of rewriting one source file. */
 export interface RewriteResult {
-  /** The rewritten text; identical to the input when nothing changed. */
   text: string;
-  /** How many references to the barrel were rewritten. */
   rewritten: number;
-  /** References to the barrel that were left in place. */
   unhandled: UnhandledReference[];
 }
 
-/** A reference to the barrel the codemod cannot rewrite mechanically. */
 export interface UnhandledReference {
-  /** One-based line of the reference. */
   line: number;
   reason: string;
 }
@@ -145,7 +103,6 @@ function isNode(value: unknown): value is AstNode {
     typeof (value as AstNode).type === "string";
 }
 
-/** Depth-first visit of every node beneath (and including) `node`. */
 function visit(node: AstNode, fn: (node: AstNode) => void): void {
   fn(node);
   for (const key in node) {
@@ -159,7 +116,6 @@ function visit(node: AstNode, fn: (node: AstNode) => void): void {
   }
 }
 
-/** The text of an `Identifier` or a string-literal module export name. */
 function nameOf(node: unknown): string {
   const n = node as AstNode;
   return n.type === "StringLiteral" ? n.value as string : n.name as string;
@@ -169,7 +125,6 @@ function isStringLiteral(node: unknown): node is AstNode & { value: string } {
   return isNode(node) && node.type === "StringLiteral";
 }
 
-/** The string argument of a `TSImportType`, across Babel 7 and 8 shapes. */
 function importTypeArgument(node: AstNode): AstNode & { value: string } {
   const argument = node.argument as AstNode;
   return (isStringLiteral(argument)
@@ -177,7 +132,6 @@ function importTypeArgument(node: AstNode): AstNode & { value: string } {
     : argument.literal) as AstNode & { value: string };
 }
 
-/** The leftmost identifier of `A` or `A.B.C`. */
 function leftmostIdentifier(qualifier: AstNode): AstNode {
   let node = qualifier;
   while (node.type === "TSQualifiedName") node = node.left as AstNode;
@@ -190,7 +144,6 @@ function lineOf(source: string, offset: number): number {
   return line;
 }
 
-/** Absolute path a relative specifier points at, or undefined when bare. */
 function resolveSpecifier(
   filePath: string,
   specifier: string,
@@ -199,7 +152,6 @@ function resolveSpecifier(
   return resolve(dirname(filePath), specifier);
 }
 
-/** A relative, forward-slash specifier from `filePath` to `target`. */
 function specifierTo(filePath: string, origin: BarrelOrigin): string {
   if (origin.bare) return origin.module;
   const rel = relative(dirname(filePath), origin.module)
@@ -208,11 +160,9 @@ function specifierTo(filePath: string, origin: BarrelOrigin): string {
 }
 
 /**
- * Read a barrel: every exported name and the module it is re-exported from.
- *
- * A barrel is only `export { … } from "…"` statements. Anything else —
- * `export *`, a local declaration — has no single origin to rewrite to, so it
- * throws instead of producing a partial map.
+ * a barrel is only export { } from statements; anything else (export *, a local
+ * declaration) has no single origin, so it throws rather than produce a partial
+ * map
  */
 export function parseBarrel(barrelPath: string, source: string): BarrelExports {
   const exports: BarrelExports = new Map();
@@ -249,12 +199,6 @@ export function parseBarrel(barrelPath: string, source: string): BarrelExports {
   return exports;
 }
 
-/**
- * Every reference `source` makes to another module, in source order.
- *
- * `names` are the names as the referenced module exports them, so
- * `import { a as b } from "x"` reports `a`.
- */
 export function findModuleReferences(
   filePath: string,
   source: string,
@@ -346,7 +290,6 @@ export function findModuleReferences(
   return references;
 }
 
-/** One name of a rewritten statement, already rendered. */
 interface RewrittenName {
   text: string;
   typeOnly: boolean;
@@ -368,13 +311,8 @@ function renderStatement(
 }
 
 /**
- * Rewrite the references `source` makes to the barrel into direct ones.
- *
- * Handled: named `import … from`, named `export … from` and type-position
- * `import("…").Name`. Renames and `type` modifiers are kept; a name the barrel
- * exports as a type stays a type. Everything else that reaches the barrel —
- * a namespace, default, side-effect or dynamic import — has no mechanical
- * equivalent and is returned in `unhandled`.
+ * namespace, default, side-effect and dynamic imports of the barrel have no
+ * mechanical equivalent and are returned in unhandled
  */
 export function rewriteSource(
   filePath: string,
@@ -412,7 +350,6 @@ export function rewriteSource(
     const kind = keyword === "import" ? "importKind" : "exportKind";
     const groups = new Map<string, RewrittenName[]>();
     for (const specifier of specifiers) {
-      // import { <taken> as <bound> } / export { <taken> as <bound> }
       const taken = nameOf(
         keyword === "import" ? specifier.imported : specifier.local,
       );
@@ -499,7 +436,6 @@ export function rewriteSource(
   return { text, rewritten, unhandled };
 }
 
-/** Every `.ts` / `.tsx` file of the repository at `root`, sorted. */
 export async function collectFiles(root: string): Promise<string[]> {
   const files: string[] = [];
   for await (
@@ -514,22 +450,13 @@ export async function collectFiles(root: string): Promise<string[]> {
   return files.sort();
 }
 
-/** What a run over a repository did. */
 export interface UnbarrelSummary {
-  /** Repo-relative paths of the files that changed (or would, on a check). */
   changedFiles: string[];
-  /** References rewritten across all files. */
   rewritten: number;
-  /** References left in place, with file, line and reason. */
   unhandled: string[];
-  /** Names the barrel exports. */
   barrelNames: number;
 }
 
-/**
- * Rewrite every importer of the barrel under `root`. With `write: false`
- * nothing is written and the summary describes what would change.
- */
 export async function unbarrel(
   root: string,
   barrelRelativePath: string,

@@ -18,23 +18,16 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * The replica a v3 writer's Litestream sidecar replicates to (swamp-club#3416).
- *
- * Phase 4 D1 ships the sidecar dormant: nothing replicates unless the
- * internal, undocumented `SWAMP_V3_REPLICA` variable names a replica, which
- * only tests set. Phase 4E replaces it with the datastore's own bucket. This
- * module is its only reader.
- *
- * @module
+ * dormant: nothing replicates unless the internal, undocumented
+ * SWAMP_V3_REPLICA names a replica, which only tests set; this module is its
+ * only reader
  */
 
 import { UserError } from "../../../domain/errors.ts";
 import { ReplicaRoot } from "../../../domain/datastore_v3/replica_root.ts";
 
-/** The internal variable that turns replication on, for tests only. */
 export const V3_REPLICA_ENV = "SWAMP_V3_REPLICA";
 
-/** Where Litestream replicates `commits.db`. */
 export type V3ReplicaSetting =
   | { readonly type: "file"; readonly path: string }
   | {
@@ -49,10 +42,8 @@ export type V3ReplicaSetting =
   | { readonly type: "gcs"; readonly bucket: string; readonly path: string };
 
 /**
- * The replica `SWAMP_V3_REPLICA` names, or undefined when it is unset, which
- * is every real user's case: no sidecar, no replication.
- *
- * @throws UserError when it is set but not a replica
+ * undefined when unset, which is every real user's case: no sidecar, no
+ * replication
  */
 export function v3ReplicaSetting(): V3ReplicaSetting | undefined {
   const raw = Deno.env.get(V3_REPLICA_ENV);
@@ -60,7 +51,6 @@ export function v3ReplicaSetting(): V3ReplicaSetting | undefined {
   return parseV3ReplicaSetting(raw);
 }
 
-/** Parses a `SWAMP_V3_REPLICA` value. */
 export function parseV3ReplicaSetting(raw: string): V3ReplicaSetting {
   let value: unknown;
   try {
@@ -98,9 +88,8 @@ export function parseV3ReplicaSetting(raw: string): V3ReplicaSetting {
 }
 
 /**
- * The replica's identity, which a lineage records: a lineage continues only
- * under a root that matches it. An S3 root matches any endpoint spelling of
- * its bucket and path (swamp-club#3801).
+ * a lineage continues only under a root that matches; an S3 root matches any
+ * endpoint spelling of its bucket and path
  */
 export function replicaRootOf(setting: V3ReplicaSetting): ReplicaRoot {
   // Addressing style does not move the replica, so `forcePathStyle` is not

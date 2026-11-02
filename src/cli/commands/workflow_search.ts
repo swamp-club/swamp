@@ -49,9 +49,6 @@ import type { WorkflowSearchResponse } from "../../serve/protocol.ts";
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
 
-/**
- * Creates a fetchPreview closure that reads the workflow YAML file from disk.
- */
 function createWorkflowFetchPreview(
   repo: WorkflowRepository,
 ): WorkflowPreviewFetcher {
@@ -87,8 +84,7 @@ export async function workflowSearchAction(
         payload: { query },
       },
     );
-    // A remote search prints a plain list and never starts the picker
-    // (swamp-club#3917).
+    // a remote search prints a plain list and never starts the picker
     const renderer = createWorkflowSearchRenderer(
       interactiveOutputMode(ctx),
       undefined,

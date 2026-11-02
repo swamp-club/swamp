@@ -126,20 +126,14 @@ import {
   MODEL_TYPE_SEARCH_SYNTAX,
 } from "./type_search.ts";
 
-// Import models barrel to trigger self-registration
 import "../../domain/models/models.ts";
 
 await initializeLogging({});
 
 /**
- * The golden file pins everything a user or agent can see of the `swamp
- * model` tree: the `swamp help` JSON, the `--help` text of every command
- * (examples and usage are not in the schema) and the shell completion
- * scripts. The commands are built from factories shared with `swamp behavior`
- * (swamp-club#3330, swamp-club#3331); the behavior tree has its own golden
- * (behavior_cli_surface_test.ts). Regenerate this one only for an intended
- * surface change, with
- * `SWAMP_UPDATE_GOLDEN=1 deno run test src/cli/commands/model_cli_surface_test.ts`.
+ * pins everything a user or agent can see of the `swamp model` tree: help JSON,
+ * every command's --help text and the shell completion scripts. The commands
+ * share factories with `swamp behavior`, which has its own golden
  */
 const GOLDEN_PATH = fromFileUrl(
   new URL("./test_helpers/model_cli_surface.json", import.meta.url),
@@ -154,9 +148,9 @@ interface ModelCliSurface {
 }
 
 /**
- * A root shaped like `createRootCommand` (src/cli/mod.ts may not be imported
+ * a root shaped like `createRootCommand` (src/cli/mod.ts may not be imported
  * from src/), minus `.version()`, whose value changes with every build and
- * appears in subcommand help.
+ * appears in subcommand help
  */
 function surfaceRoot(model: AnyCommand): AnyCommand {
   return registerCompletionTypes(new Command())
@@ -260,11 +254,9 @@ function allCommands(command: AnyCommand, into: AnyCommand[] = []) {
 }
 
 /**
- * A `model` tree built entirely from factories, each leaf from its legacy
- * syntax constant. A syntax derived with `subcommandSyntax` has no preferred
- * spelling (that is a per-command example, swamp-club#3331), and the run
- * leaf has legacy text no derivation reproduces (`swamp model @type method
- * run …`), so every leaf is passed in.
+ * each leaf is built from its legacy syntax constant: a syntax derived with
+ * `subcommandSyntax` has no preferred spelling, and the run leaf has legacy
+ * text no derivation reproduces, so every leaf is passed in
  */
 function freshLegacyModelCommand(): AnyCommand {
   return createModelCommand(MODEL_SYNTAX, {

@@ -21,11 +21,6 @@ import { Command } from "@cliffy/command";
 import { type AnyCommand, buildCliSchema } from "../cli_schema.ts";
 import { VERSION } from "./version.ts";
 
-/**
- * Walks down the command tree following the given path segments, each of
- * which may be a command's name or one of its aliases.
- * Returns the matched command or null if a segment doesn't match.
- */
 function resolveSubcommand(
   root: AnyCommand,
   path: string[],
@@ -39,16 +34,6 @@ function resolveSubcommand(
   return current;
 }
 
-/**
- * Creates the help command. Hidden from normal CLI help — intended for AI
- * agent consumption. Always outputs JSON.
- *
- * Usage:
- *   swamp help              — full CLI schema
- *   swamp help model        — schema for the "model" subtree
- *   swamp help model method — schema for "model method" subtree
- *   swamp help --include-hidden — also list hidden commands and options
- */
 export function createHelpCommand(rootCommand: AnyCommand): AnyCommand {
   return new Command()
     .hidden()

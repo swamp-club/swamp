@@ -98,7 +98,6 @@ Deno.test("modelOutputSearch: returns all outputs sorted by startedAt descending
   >;
   assertEquals(completed.kind, "completed");
   assertEquals(completed.data.results.length, 2);
-  // Most recent first
   assertEquals(completed.data.results[0].id, "out-2");
   assertEquals(completed.data.results[1].id, "out-1");
 });
@@ -410,7 +409,6 @@ Deno.test("modelOutputSearch: rejects an unparseable since and a negative limit"
       { since: "yesterday" },
       { until: "nope" },
       { since: "7x" },
-      // A duration too long to resolve to a date.
       { since: "99999999999999999999d" },
       { limit: -1 },
     ]
@@ -426,7 +424,6 @@ Deno.test("modelOutputSearch: rejects an unparseable since and a negative limit"
   }
 });
 
-/** One output per definition id, all of one type, a second apart. */
 function outputsOf(definitionIds: string[], type = "command/shell") {
   return definitionIds.map((definitionId, i) => ({
     output: {
@@ -470,7 +467,6 @@ Deno.test("modelOutputSearch: names outputs of many deleted definitions from one
 Deno.test("modelOutputSearch: names an output after the first definition listed for its type and id", async () => {
   const deps = makeDeps({
     findAllOutputsGlobal: () => Promise.resolve(outputsOf(["shared"])),
-    // Primary definitions are listed before auto-definitions.
     findAllDefinitions: () =>
       Promise.resolve([
         {
@@ -520,14 +516,12 @@ Deno.test("modelOutputSearch: scans no definitions when no output needs a name",
         outputsOf(["def-1"], "aws/ec2-instance").map((o) => o.output),
       ),
   });
-  // The model filter already knows each output's name.
   const named = completedOf(
     await collect(
       modelOutputSearch(createLibSwampContext(), deps, { model: "my-ec2" }),
     ),
   );
   assertEquals(named.results.map((r) => r.modelName), ["my-ec2"]);
-  // A window no output falls in names nothing.
   const empty = completedOf(
     await collect(
       modelOutputSearch(createLibSwampContext(), deps, {
@@ -590,7 +584,6 @@ Deno.test("modelOutputSearch: names outputs through resolveModelNames instead of
   const lookups: Array<Array<[string, string]>> = [];
   const outputs = [
     ...outputsOf(["def-a", "def-a", "def-b", "def-gone"]),
-    // A definition id shared across types is asked for once per type.
     ...outputsOf(["def-a"], "aws/s3-bucket").map((o) => ({
       ...o,
       output: { ...o.output, id: "out-s3" },
@@ -648,7 +641,6 @@ Deno.test("modelOutputSearch: resolveModelNames is asked only for outputs inside
       return Promise.resolve(keys.map(() => "named"));
     },
   });
-  // outputsOf starts the outputs one second apart, from 10:00:00.
   const data = completedOf(
     await collect(
       modelOutputSearch(createLibSwampContext(), deps, {
@@ -729,7 +721,6 @@ Deno.test("modelOutputSearch: asks canRead about each key the scan finds, named 
             definitionId: "def-2",
             methodName: "sync",
           },
-          // A definition no longer found carries no name.
           {
             type: { normalized: "aws/s3-bucket" },
             definitionId: "gone",
@@ -798,11 +789,6 @@ Deno.test("modelOutputSearch: gives the full scan a selection only when canRead 
   assertEquals(typeof selected, "function");
 });
 
-/**
- * A newest-first read over `files`, given in the order the repository would
- * read them, counting what it reads and how often it is opened. `named: false`
- * is a file whose name says nothing about its start.
- */
 function fakeNewestFirst(
   files: Array<{ id: string; startedAt: string; named?: boolean }>,
 ) {
@@ -844,7 +830,6 @@ function fakeNewestFirst(
   return { dep, counts };
 }
 
-/** Deps whose only way to find outputs is the given newest-first read. */
 function newestFirstDeps(
   dep: NonNullable<ModelOutputSearchDeps["findOutputsNewestFirst"]>,
   overrides: Partial<ModelOutputSearchDeps> = {},
@@ -858,7 +843,6 @@ function newestFirstDeps(
   });
 }
 
-/** `count` files a minute apart, newest first. */
 function minutesApart(count: number) {
   return Array.from({ length: count }, (_, i) => ({
     id: `out-${i}`,
@@ -928,7 +912,6 @@ Deno.test("modelOutputSearch: with a limit, reads through outputs started in the
   );
 
   assertEquals(data.results.map((r) => r.id), ["tied-1"]);
-  // Every tied output, in batches of at least 16, and so the older one too.
   assertEquals(counts.read, 22);
 });
 
@@ -1032,19 +1015,12 @@ Deno.test("modelOutputSearch: reads every output newest first only with a limit 
   assertEquals(counts.opened, 0);
 });
 
-// --- A limited search for a model (swamp-club#4174) ---
-
-/** A model's definition as `resolveModel` answers it. */
 const shellDefinition = (definitionId: string, name = "watched") => ({
   definitionId,
   name,
   type: { normalized: "command/shell" },
 });
 
-/**
- * Deps whose only way to find a model's outputs is a newest-first read of each
- * definition, over the given files.
- */
 function definitionReadDeps(
   files: Record<string, Array<{ id: string; startedAt: string }>>,
   definitions = Object.keys(files).map((id) => shellDefinition(id)),

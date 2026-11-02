@@ -37,35 +37,25 @@ import {
 const logger = getLogger(["swamp", "persistence", "extension-catalog"]);
 
 /**
- * Marker key in bundle_meta recording that the per-extension-aggregate-v3
- * data migration has run successfully (or recovered via cold-start rebuild)
- * on this catalog. Set after the data-migration transaction commits;
- * checked at the top of the data-migration phase to skip the per-row
- * UPDATEs after the first successful run. Schema-level changes (ADD COLUMN)
- * are independently idempotent via pragma_table_info probes.
+ * records that the per-extension-aggregate-v3 data migration ran, so later
+ * opens skip the per-row updates; schema changes are idempotent via
+ * pragma_table_info probes
  */
 const PER_EXTENSION_AGGREGATE_V3_MIGRATION_KEY =
   "migration_applied:per-extension-aggregate-v3";
 
 /**
- * Marker key in bundle_meta recording that the W1b drop-validation-failed
- * migration has run successfully on this catalog. Set after the SQLite
- * recreate-table transaction commits; the migration probes both this
- * marker AND `pragma_table_info('bundle_types')` for `validation_failed`
- * (defence in depth — the marker is the primary signal, the pragma probe
- * handles a hypothetical delete-marker-but-keep-column corruption).
+ * primary signal that the drop-validation-failed migration ran; it also probes
+ * pragma_table_info for the column in case the marker was deleted but the
+ * column kept
  */
 const VALIDATION_FAILED_DROPPED_MIGRATION_KEY =
   "migration_applied:validation-failed-dropped-v1";
 
 /**
- * Marker key in bundle_meta recording that the extends_type backfill has
- * run on this catalog. Pre-fix catalogs (swamp-club#903) persisted
- * extension rows with an empty `extends_type` via the aggregate writer, so
- * `findExtensionsForType` never matched them and their methods were
- * dropped. The aggregate writer is fixed at the source, but existing rows
- * whose fingerprint is unchanged never transition and so are never
- * rewritten — this one-shot migration heals them on catalog open.
+ * one-shot heal on catalog open: rows persisted with an empty extends_type are
+ * never rewritten while their fingerprint is unchanged, so their methods would
+ * stay dropped
  */
 const EXTENDS_TYPE_BACKFILL_MIGRATION_KEY =
   "migration_applied:extension-extends-type-backfill-v1";
@@ -74,42 +64,28 @@ const DEDUP_NON_CANONICAL_MIGRATION_KEY =
   "migration_applied:dedup-non-canonical-source-paths-v1";
 
 /**
- * `bundle_meta` key prefix recording, per kind and source, the fingerprint
- * at which importing the source found no export of that kind
- * (swamp-club#2876). The warm scan treats every source without a row as
- * stale, so without this a test fixture holding export text in a string
- * would be bundled and imported on every command.
+ * fingerprint at which importing a source found no export of the kind; without
+ * it the warm scan treats the source as stale and bundles and imports it on
+ * every command
  */
 const NO_EXPORT_KEY_PREFIX = "no-export:";
 
 /**
- * Per-kind `bundle_meta` key prefix recording that the loader has
- * revalidated the kind's typeless Indexed rows (swamp-club#2490). Absent
- * on the first run after upgrade, and cleared whenever a row that claims
- * a type is deleted, since that row may have been the reason another row
- * lost its type.
+ * records that the loader revalidated the kind's typeless Indexed rows; cleared
+ * when a row claiming a type is deleted, since it may have been why another row
+ * lost its type
  */
-// v2 (swamp-club#2563): reruns the heal once on upgrade so a local
-// override that an older binary indexed typeless behind a mounted row's
-// type takes it back.
+// v2 reruns the heal once on upgrade so a local override that an older binary
+// indexed typeless behind a mounted row's type takes it back
 const TYPELESS_ROW_HEAL_KEY_PREFIX = "migration_applied:typeless-row-heal-v2:";
 
 /**
- * Bundle layout version stored in `bundle_meta`. Bumped whenever the
- * on-disk bundle path scheme changes; loaders compare this against the
- * catalog's current value via {@link ExtensionRepository.invalidationGuards}
- * and force a full rescan on mismatch. Hoisted from the model loader
- * (where the constant historically lived) to a shared location in W1b
- * so all 5 loaders reference the same source of truth (closing the
- * audit's "model has 3 guards, siblings have 1" coverage gap).
+ * bumped whenever the on-disk bundle path scheme changes; loaders compare it
+ * against the catalog and force a full rescan on mismatch; shared so all
+ * loaders use one source of truth
  */
 export const BUNDLE_LAYOUT_VERSION = "per-extension-aggregate-v4";
 
-/**
- * The kind of bundle entry — which registry type it belongs to.
- * Designed to support all registries from day one even though
- * only "model" and "extension" are wired up initially.
- */
 export type ExtensionKind =
   | "model"
   | "extension"
@@ -118,11 +94,6 @@ export type ExtensionKind =
   | "report"
   | "webhook";
 
-/**
- * Reported when {@link ExtensionCatalogStore.resolveOriginConflicts}
- * clears a pulled entry's `type_normalized` because a local source
- * already claims that `(kind, type)` pair.
- */
 export interface OriginConflict {
   readonly type: string;
   readonly kind: ExtensionKind;
@@ -130,40 +101,24 @@ export interface OriginConflict {
   readonly localSourcePath: string;
 }
 
-/**
- * Reported when {@link ExtensionCatalogStore.settlePulledTypeConflicts}
- * clears a pulled row's type because another pulled row wins the same
- * `(kind, type)`.
- */
 export interface PulledTypeConflict {
   readonly winner: ExtensionTypeRow;
   readonly loser: ExtensionTypeRow;
-  /** The winner's extension name, e.g. `@swamp/aws/cur`, when derivable. */
   readonly winnerName?: string;
-  /** The loser's extension name, when derivable. */
   readonly loserName?: string;
 }
 
-/**
- * Reported when {@link ExtensionCatalogStore.settleMountedTypeConflicts}
- * clears the type on a source-mounted row because a local row, or a row
- * under an earlier mount, claims the same `(kind, type)`.
- */
 export interface MountedTypeConflict {
   readonly winner: ExtensionTypeRow;
   readonly loser: ExtensionTypeRow;
 }
 
-/** Conflicts already reported this process, by kind, type and names. */
 const reportedPulledTypeConflicts = new Set<string>();
 
 /**
- * Warns about each settled conflict between two different pulled
- * extensions, naming the one kept and how to switch to the other. Shared
- * by the loader and the reconcile so both word it the same, and each
- * conflict is reported once per process: after a catalog rebuild the
- * reconcile settles it and the loader's first index pass settles it again
- * (swamp-club#2702).
+ * shared by the loader and the reconcile so both word it the same; each
+ * conflict is reported once per process because a catalog rebuild settles it
+ * twice
  */
 export function warnPulledTypeConflicts(
   log: Logger,
@@ -182,16 +137,14 @@ export function warnPulledTypeConflicts(
   }
 }
 
-/** Forgets which conflicts were reported, as a new process starts. For
- *  tests that stand in for several commands in one process. */
 export function resetPulledTypeConflictWarnings(): void {
   reportedPulledTypeConflicts.clear();
 }
 
 /**
- * The row's owning extension name. A row the loader has only just inserted
- * has no `extension_name` yet, so fall back to deriving it from the path,
- * which reads the full name (`@swamp/aws/cur`), not just its scope.
+ * a row the loader just inserted has no extension_name yet, so derive it from
+ * the path, which gives the full name (@swamp/aws/cur) rather than just the
+ * scope
  */
 function pulledExtensionName(
   row: ExtensionTypeRow,
@@ -202,9 +155,6 @@ function pulledExtensionName(
       ?.name;
 }
 
-/**
- * A single row in the bundle_types table.
- */
 export interface ExtensionTypeRow {
   type_normalized: string;
   kind: ExtensionKind;
@@ -215,74 +165,39 @@ export interface ExtensionTypeRow {
   extends_type: string;
   source_mtime: string;
   /**
-   * sha-256 fingerprint over the entry point + transitive local imports.
-   * Models loader uses this for freshness (issue #125 — mtime-only was
-   * fragile under atomic-rename saves and mtime-preserving sync tools).
-   * Optional while the sibling loaders (reports, datastores,
-   * vaults) still use mtime; they can omit it on upsert and the store
-   * coerces to "". Old catalog rows default to "" via the migration.
+   * sha-256 over the entry point and transitive local imports, used for
+   * freshness since mtime is fragile under atomic-rename saves and
+   * mtime-preserving sync tools; optional, coerced to empty
    */
   source_fingerprint?: string;
   /**
-   * RowState tag (issue swamp-club#211, W1). One of `'Indexed'`,
-   * `'Bundled'`, `'BundleBuildFailed'`, `'ValidationFailed'`,
-   * `'EntryPointUnreadable'`, `'OrphanedBundleOnly'`, `'Tombstoned'`.
-   * Optional on upsert. On INSERT: uses the column DEFAULT `'Indexed'`.
-   * On UPDATE: preserves the prior value by excluding the state field
-   * from the ON CONFLICT DO UPDATE clause. Callers that want to write
-   * a specific state must provide it explicitly.
-   *
-   * Reader contract: every row registration site filters on this value
-   * (`if (entry.state === 'ValidationFailed') continue;`). The
-   * `validation_failed` column above is no longer a reader signal —
-   * during the W1a → W1b release window it's a vestigial 0 for every
-   * row.
+   * optional on upsert: INSERT uses the column default Indexed, UPDATE
+   * preserves the prior value, so callers wanting a state pass it. Readers
+   * filter on this, not on validation_failed
    */
   state?: string;
   last_error?: string;
   /**
-   * Owning extension's logical name. Backfilled by the W1a migration
-   * (`@local/<repo-name>` for locals, `@scope/foo` parsed from
-   * pulled-extensions paths). Empty when the W1a heuristic couldn't
-   * derive an identity — the W1b ExtensionRepository's empty-identity
-   * fallback handles those rows by re-deriving via
-   * {@link deriveExtensionIdentity} or DELETing as orphans.
+   * empty when no identity could be derived; the repository's empty-identity
+   * fallback re-derives it or deletes the row as an orphan
    */
   extension_name?: string;
   /**
-   * Owning extension's CalVer string. Backfilled by W1a; deliberately
-   * empty for pulled rows because the on-disk pulled-extensions tree
-   * encodes only the name. The W1b ExtensionRepository consults the
-   * lockfile (`upstream_extensions.json`) at read time and writes back
-   * the resolved version.
+   * deliberately empty for pulled rows because the pulled tree encodes only the
+   * name; the repository resolves it from the lockfile at read time
    */
   extension_version?: string;
 }
 
-/**
- * SQLite-backed metadata catalog for extension bundle types.
- *
- * Stores one row per bundle type with metadata needed for lazy loading:
- * type name, bundle path, source mtime, and extension target. This allows
- * the model registry to know what types exist without importing any bundles.
- *
- * Completely independent of {@link CatalogStore} (data queries). Uses a
- * separate database file at `.swamp/_extension_catalog.db`.
- *
- * Self-heals by triggering a full import when the DB is missing or the
- * populated flag is not set.
- */
 export class ExtensionCatalogStore {
   private handle: DatabaseSync | undefined;
   private closed = false;
   private readonly dbPath: string;
 
   /**
-   * Opens the catalog, creating the database and its schema when missing.
-   * With `openOnFirstUse` nothing is opened or written until the first
-   * method that reads or writes the catalog, so a command that never uses
-   * it leaves the repository untouched (swamp-club#3139). Any method may
-   * then throw the error an eager open would have thrown.
+   * with openOnFirstUse nothing is opened or written until first use, so an
+   * unused catalog leaves the repository untouched; any method may then throw
+   * what an eager open would have
    */
   constructor(dbPath: string, options: { openOnFirstUse?: boolean } = {}) {
     this.dbPath = dbPath;
@@ -327,18 +242,9 @@ export class ExtensionCatalogStore {
   }
 
   /**
-   * Initializes WAL mode and schema with retry logic.
-   *
-   * `PRAGMA journal_mode=WAL` requires an **exclusive** lock to switch
-   * modes. When N concurrent processes open the database simultaneously
-   * (e.g. 10 concurrent `model create` during startup reconciliation),
-   * every process contending on the exclusive lock is the primary
-   * catalog-contention bottleneck.
-   *
-   * WAL mode persists on disk — once a database has been switched to WAL,
-   * re-opening it does not require another mode switch. We read the
-   * current journal mode first (a shared-lock operation) and only issue
-   * the mode switch when the database is not yet in WAL mode.
+   * switching to WAL needs an exclusive lock that contends under concurrent
+   * opens; WAL persists on disk, so read the journal mode first (shared lock)
+   * and switch only when it is not WAL
    */
   private initializeWithRetry(): void {
     const MAX_RETRIES = 5;
@@ -373,10 +279,6 @@ export class ExtensionCatalogStore {
   }
 
   private createSchema(): void {
-    // W1b: fresh catalogs no longer carry the vestigial validation_failed
-    // column — the W1a-era #1286 sentinel folded into the state TEXT
-    // discriminant. Old catalogs that still have the column get it
-    // dropped by `dropValidationFailedColumn()` during migrateSchema.
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS bundle_types (
         source_path        TEXT NOT NULL PRIMARY KEY,
@@ -415,57 +317,30 @@ export class ExtensionCatalogStore {
   }
 
   /**
-   * Adds columns introduced after the initial schema to existing DBs and
-   * runs the data-migration backfill for the per-extension-aggregate-v3
-   * layout (issue swamp-club#211, W1).
-   *
-   * Schema changes (ADD COLUMN) are idempotent via pragma_table_info
-   * probes, applied outside any transaction since SQLite ALTER TABLE has
-   * its own atomicity. The data-migration phase (canonicalize source_path,
-   * backfill state from validation_failed, backfill extension_name via
-   * the path heuristic, drop unmatched rows, post-condition verify)
-   * runs inside ONE transaction with explicit ROLLBACK on any failure;
-   * a marker key in bundle_meta records first-success so subsequent
-   * process restarts skip the per-row UPDATEs.
-   *
-   * On post-condition failure (heuristic gap that the unit tests didn't
-   * catch — typically a legacy on-disk path layout we don't recognize)
-   * the data-migration transaction rolls back, then a separate cold-
-   * start rebuild transaction drops every bundle_types row and clears
-   * the bundle_meta `populated:*` keys so the next loader pass
-   * reconstructs from disk. The loaders are the source of truth for
-   * everything except identity columns; rebuild is non-destructive in
-   * the meaningful sense (the disk state is preserved). Running this
-   * function inherits the lock-retry + backoff logic from
-   * initializeWithRetry.
+   * the data migration runs in one transaction; if its post-condition fails it
+   * rolls back and rebuilds cold, since loaders repopulate from disk; a marker
+   * key skips it on later opens
    */
   private migrateSchema(): void {
     this.addNewColumnsIfMissing();
     if (!this.isDataMigrationApplied()) {
       this.runDataMigrationTransaction();
     }
-    // W1b: drop the vestigial validation_failed column. Runs AFTER the
-    // data-migration phase so all rows already have `state` populated;
-    // gated on its own bundle_meta marker AND a pragma_table_info probe
-    // for defence in depth.
+    // runs after the data migration so every row has state; gated on its own
+    // marker and a pragma_table_info probe
     this.dropValidationFailedColumn();
-    // swamp-club#903: heal extension rows that were persisted with an empty
-    // extends_type before the aggregate-writer fix. Runs last so `state`
-    // and `extends_type` are guaranteed present; gated on its own marker.
+    // heals extension rows with an empty extends_type; runs last so state and
+    // extends_type exist; gated on its own marker
     this.backfillExtensionExtendsType();
-    // swamp-club#1065: heal ghost rows written with non-canonical Windows
-    // paths by a pre-fix warm-path loader. Runs last; gated on its own marker.
+    // heals ghost rows with non-canonical Windows paths from an older warm-path
+    // loader; gated on its own marker
     this.deduplicateNonCanonicalPaths();
-    // swamp-club#2876: drop conflicting type claims a pre-fix loader read
-    // out of string fixtures. Runs on every open; it reads no source unless
-    // the catalog already holds a duplicate claim.
+    // drops conflicting type claims read out of string fixtures; runs on every
+    // open but reads no source unless the catalog already holds a duplicate
+    // claim
     this.pruneUndeclaredTypeClaims();
   }
 
-  /**
-   * Returns true if {@link backfillExtensionExtendsType} has already run
-   * on this catalog.
-   */
   private isExtendsTypeBackfilled(): boolean {
     const stmt = this.db.prepare(
       "SELECT value FROM bundle_meta WHERE key = ?",
@@ -477,15 +352,9 @@ export class ExtensionCatalogStore {
   }
 
   /**
-   * swamp-club#903 data migration: backfill `extends_type` from
-   * `type_normalized` for Indexed extension rows left empty by the
-   * pre-fix aggregate writer. For an extension row `type_normalized` is
-   * the target type, and `extends_type` must equal it for the merge query
-   * (`findExtensionsForType`: WHERE extends_type = ? AND kind = 'extension')
-   * to match. Idempotent (empty-only predicate) and gated on a bundle_meta
-   * marker so it runs at most once. Extension rows are exempt from the
-   * I-Repo-1 uniqueness check, so backfilling cannot introduce a
-   * duplicate-type violation.
+   * backfills extends_type from type_normalized, which findExtensionsForType
+   * needs to match; idempotent and marker-gated, and extension rows are exempt
+   * from the uniqueness check
    */
   private backfillExtensionExtendsType(): void {
     if (this.isExtendsTypeBackfilled()) return;
@@ -506,14 +375,6 @@ export class ExtensionCatalogStore {
       .run(EXTENDS_TYPE_BACKFILL_MIGRATION_KEY);
   }
 
-  /**
-   * Phase 1: idempotent ADD COLUMN via pragma_table_info probes. Includes
-   * the columns added by previous migrations (source_fingerprint from #125,
-   * validation_failed from #1286) plus the per-extension-aggregate-v3
-   * columns (state, extension_name, extension_version). Order matches the
-   * order columns landed historically so probes against existing DBs
-   * produce stable results across migration generations.
-   */
   private addNewColumnsIfMissing(): void {
     const probe = this.db.prepare(
       "SELECT COUNT(*) AS cnt FROM pragma_table_info('bundle_types') WHERE name = ?",
@@ -527,10 +388,6 @@ export class ExtensionCatalogStore {
         "ALTER TABLE bundle_types ADD COLUMN source_fingerprint TEXT NOT NULL DEFAULT ''",
       );
     }
-    // validation_failed: NOT added here. W1a's #1286 column landed before
-    // W1b; fresh catalogs no longer carry it (createSchema omits it), and
-    // old catalogs that still have it get it dropped by
-    // dropValidationFailedColumn() later in migrateSchema.
     if (!hasColumn("state")) {
       this.db.exec(
         "ALTER TABLE bundle_types ADD COLUMN state TEXT NOT NULL DEFAULT 'Indexed'",
@@ -551,7 +408,8 @@ export class ExtensionCatalogStore {
         "ALTER TABLE bundle_types ADD COLUMN last_error TEXT NOT NULL DEFAULT ''",
       );
     }
-    // swamp-club#3487: source_modules, which a catalog written by the
+    // a catalog written by an earlier binary has source_modules without the
+    // graph_pending column
     // #3385 binary has without this column.
     const sourceModulesProbe = this.db.prepare(
       "SELECT COUNT(*) AS cnt FROM pragma_table_info('source_modules') WHERE name = ?",
@@ -566,10 +424,6 @@ export class ExtensionCatalogStore {
     }
   }
 
-  /**
-   * Returns true if {@link runDataMigrationTransaction} has already
-   * succeeded (or recovered via cold-start rebuild) on this catalog.
-   */
   private isDataMigrationApplied(): boolean {
     const stmt = this.db.prepare(
       "SELECT value FROM bundle_meta WHERE key = ?",
@@ -587,10 +441,6 @@ export class ExtensionCatalogStore {
     stmt.run(PER_EXTENSION_AGGREGATE_V3_MIGRATION_KEY);
   }
 
-  /**
-   * Returns true if {@link dropValidationFailedColumn} has already
-   * succeeded on this catalog.
-   */
   private isValidationFailedDropped(): boolean {
     const stmt = this.db.prepare(
       "SELECT value FROM bundle_meta WHERE key = ?",
@@ -609,38 +459,9 @@ export class ExtensionCatalogStore {
   }
 
   /**
-   * Phase 3: drop the vestigial `validation_failed` column via the
-   * SQLite recreate-table pattern (architect-required: NOT raw
-   * `ALTER TABLE DROP COLUMN`, which is unsupported on older SQLite
-   * versions Deno's `node:sqlite` runtime may bundle).
-   *
-   * Idempotent via two checks:
-   *   1. The bundle_meta marker key
-   *      `migration_applied:validation-failed-dropped-v1`. Set after
-   *      successful commit; subsequent calls return immediately.
-   *   2. `pragma_table_info('bundle_types')` probe for the
-   *      `validation_failed` column. Defence in depth — if the marker
-   *      is somehow set but the column survives (corrupt state), the
-   *      probe still triggers a drop. If the column is already absent
-   *      (fresh catalog from `createSchema`), we mark and return.
-   *
-   * The dance, inside one transaction with ROLLBACK on any step's
-   * failure:
-   *   1. CREATE TABLE bundle_types_new (all columns EXCEPT
-   *      validation_failed)
-   *   2. INSERT INTO bundle_types_new (explicit column list, no
-   *      SELECT *) SELECT (explicit column list) FROM bundle_types
-   *   3. DROP TABLE bundle_types
-   *   4. ALTER TABLE bundle_types_new RENAME TO bundle_types
-   *   5. CREATE INDEX idx_bundle_types_kind / _extends / _type
-   *      explicitly recreated; verify via sqlite_master post-condition.
-   *
-   * bundle_meta is a separate table; the recreate-table dance does NOT
-   * touch it; the W1a marker survives across the W1b drop.
-   *
-   * Forward-only on revert: post-PR, downgrade requires deleting
-   * `_extension_catalog.db` (cold-start rebuilds). This is documented
-   * in the PR description.
+   * recreates the table instead of DROP COLUMN, unsupported on older SQLite;
+   * guarded by a marker plus a pragma probe, in one transaction rolled back on
+   * failure
    */
   private dropValidationFailedColumn(): void {
     if (this.isValidationFailedDropped()) {
@@ -651,9 +472,7 @@ export class ExtensionCatalogStore {
     );
     const row = probe.get() as { cnt: number } | undefined;
     if ((row?.cnt ?? 0) === 0) {
-      // Column already absent (fresh catalog from createSchema, or a
-      // hypothetical previously-completed drop without the marker).
-      // Set the marker so subsequent runs short-circuit on check #1.
+      // column already absent: set the marker so later runs short-circuit
       this.markValidationFailedDropped();
       return;
     }
@@ -717,29 +536,9 @@ export class ExtensionCatalogStore {
   }
 
   /**
-   * Phase 2: data-migration transaction. Inside one BEGIN/COMMIT:
-   * canonicalize source_path, backfill state from validation_failed,
-   * backfill extension_name via deriveExtensionIdentity (also writing
-   * extension_version for local rows; pulled rows leave version empty
-   * for W1b's lockfile-backed fallback to populate at read time), drop
-   * unmatched rows, verify the post-condition (extension_name non-empty
-   * for every remaining row).
-   *
-   * On any throw inside the transaction we ROLLBACK and recover via
-   * a separate cold-start rebuild — drop every row, clear
-   * `populated:*` keys, mark the migration as applied so subsequent
-   * process restarts don't loop. The rebuild path is the only line
-   * of defense against a bad backfill heuristic; we deliberately do
-   * not propagate the throw because the loaders will repopulate the
-   * catalog from disk on the next access.
-   *
-   * Lock errors are the exception: they mean another process holds the
-   * catalog, not that the data is bad, so they roll back and propagate
-   * to {@link initializeWithRetry} for a retry with backoff. BEGIN
-   * IMMEDIATE takes the write lock before the first read, so a writer
-   * that commits while we wait cannot leave us on a stale WAL snapshot,
-   * and the marker is re-checked under the lock in case that writer
-   * already applied the migration (swamp-club#2671).
+   * on a non-lock failure roll back and rebuild cold (drop rows, clear
+   * populated keys, mark applied) rather than propagate, since loaders
+   * repopulate from disk; lock errors roll back and retry with backoff
    */
   private runDataMigrationTransaction(): void {
     this.db.exec("BEGIN IMMEDIATE");
@@ -749,11 +548,8 @@ export class ExtensionCatalogStore {
         return;
       }
       this.canonicalizeAllSourcePaths();
-      // The validation_failed → state backfill only runs against
-      // catalogs that still have the column. Fresh W1b catalogs
-      // (createSchema omits the column) and post-W1b-drop catalogs
-      // skip this step — their state column already carries the
-      // discriminant value directly.
+      // the validation_failed to state backfill runs only on catalogs that
+      // still have the column; others already carry state directly
       if (this.hasValidationFailedColumn()) {
         this.db.exec(
           "UPDATE bundle_types SET state = 'ValidationFailed' WHERE validation_failed = 1",
@@ -790,17 +586,9 @@ export class ExtensionCatalogStore {
   }
 
   /**
-   * TS-driven per-row UPDATE. SQLite has no canonicalizePath function;
-   * we iterate, compute canonical form in TypeScript, and UPDATE one
-   * row at a time. Inside the data-migration transaction so the writes
-   * roll back together on any failure. Skips rows whose source_path is
-   * already canonical (the common case on POSIX where canonicalizePath
-   * is the identity).
-   *
-   * If two rows canonicalize to the same string (only possible with
-   * mixed-case access on Windows), the second UPDATE hits a UNIQUE
-   * constraint failure on source_path. We DELETE the duplicate and log
-   * a structured warning rather than aborting the migration.
+   * SQLite has no canonicalizePath, so rows are updated one at a time; if two
+   * rows canonicalize to the same path (mixed-case Windows) the duplicate is
+   * deleted with a warning instead of aborting
    */
   private canonicalizeAllSourcePaths(): void {
     const rows = this.db
@@ -829,27 +617,13 @@ export class ExtensionCatalogStore {
   }
 
   /**
-   * TS-driven per-row UPDATE that calls deriveExtensionIdentity on each
-   * row's canonical source_path. Backfills extension_name for both
-   * pulled and local rows; backfills extension_version only for local
-   * rows (pulled rows leave extension_version empty for W1b's
-   * lockfile-backed fallback to populate at read time — see Option A
-   * note in plan v6 step 2 sub-step 6 and the helper's docstring).
-   * Rows where the helper returns null (unrecognized path layout) keep
-   * their column DEFAULTs (extension_name='') and are dropped by the
-   * subsequent DELETE in {@link runDataMigrationTransaction}.
-   *
-   * Only updates rows whose extension_name is currently empty — once a
-   * row has an identity, repeat migration runs are a no-op for that
-   * row.
+   * only rows with an empty extension_name are updated; pulled rows keep an
+   * empty version for the lockfile fallback; unrecognized layouts keep defaults
+   * and are deleted afterwards
    */
   private backfillExtensionIdentity(): void {
-    // canonicalizePath both sides — sub-step 4 already canonicalized
-    // every row's source_path, but inferRepoRootFromDbPath returns the
-    // raw dbPath form which is native (backslashes, mixed case) on
-    // Windows. deriveExtensionIdentity's docstring requires both inputs
-    // pre-canonicalized so prefix matching is stable across mixed-case
-    // filesystems; running canonicalizePath here makes the contract hold.
+    // Canonicalize both sides: inferRepoRootFromDbPath returns the native
+    // dbPath form but deriveExtensionIdentity needs canonical inputs.
     const repoRoot = canonicalizePath(inferRepoRootFromDbPath(this.dbPath));
     const rows = this.db
       .prepare(
@@ -867,16 +641,9 @@ export class ExtensionCatalogStore {
   }
 
   /**
-   * Post-condition for the data-migration transaction: every row must
-   * have a non-empty extension_name. extension_version is intentionally
-   * NOT checked because pulled rows leave it empty for W1b's lockfile
-   * fallback (see plan v6 step 2 sub-step 8 — the architect-pinned
-   * post-condition was narrowed when we discovered the issue body's
-   * "encodes name and version in path" assumption was incorrect).
-   *
-   * If verification fails the throw bubbles up to
-   * {@link runDataMigrationTransaction}'s catch, which runs ROLLBACK
-   * and falls back to cold-start rebuild.
+   * every row must have a non-empty extension_name; extension_version is not
+   * checked because pulled rows leave it empty for the lockfile fallback; a
+   * throw rolls back and triggers the cold-start rebuild
    */
   private verifyPostMigrationInvariant(): void {
     const stmt = this.db.prepare(
@@ -891,18 +658,9 @@ export class ExtensionCatalogStore {
   }
 
   /**
-   * Recovery path when the data-migration transaction rolls back. Drops
-   * every bundle_types row and clears the bundle_meta `populated:*`
-   * flags so the next loader pass reconstructs the catalog from disk.
-   * Marks the migration as applied even though rows are gone — the
-   * marker says "schema is at v3 and we've recovered," not "all rows
-   * have been backfilled." Subsequent restarts skip the data-migration
-   * phase; the loaders' populate paths fill the empty catalog.
-   *
-   * Wrapped in its own transaction so rebuild itself is atomic. If
-   * this fails too the catalog is left in whatever state ROLLBACK
-   * produced; downstream code re-enters migrateSchema on the next
-   * construction, which will retry the whole sequence.
+   * drops all rows and populated flags so loaders rebuild from disk, and marks
+   * the migration applied so restarts skip it; own transaction, and a failure
+   * is retried on the next construction
    */
   private runColdStartRebuild(): void {
     this.db.exec("BEGIN");
@@ -928,26 +686,9 @@ export class ExtensionCatalogStore {
   }
 
   /**
-   * Upserts a bundle type entry. INSERT path writes every payload
-   * column plus the W1a `state` column; UPDATE path (when a row with
-   * the same source_path already exists) writes the legacy columns +
-   * `state` but DELIBERATELY leaves `extension_name`, `extension_version`,
-   * and the vestigial `validation_failed` untouched.
-   *
-   * The intentional-not-in-SET list resolves ADV-V3-1: under the previous
-   * `INSERT OR REPLACE` pattern, omitted columns reset to DEFAULT on
-   * every UPDATE, which silently undid the migration's
-   * extension_name/extension_version backfill the first time a model-
-   * loader rescan upserted a row. ON CONFLICT DO UPDATE SET preserves
-   * the unwritten columns.
-   *
-   * `state` IS in the SET list because the loader is the source of
-   * truth for state — it transitions a row from `'ValidationFailed'`
-   * back to `'Indexed'` when validation later succeeds, and from
-   * `'Indexed'` to `'ValidationFailed'` via markCatalogValidationFailed.
-   * Callers that don't pass `row.state` get the column DEFAULT
-   * `'Indexed'` on INSERT and `'Indexed'` on UPDATE (since the bind
-   * defaults to `'Indexed'`).
+   * UPDATE leaves extension_name and extension_version untouched, since
+   * resetting them to defaults would undo the migration backfill on a loader
+   * rescan; state is written because the loader owns it
    */
   upsert(row: ExtensionTypeRow): void {
     const updateClauses = [
@@ -1014,9 +755,6 @@ export class ExtensionCatalogStore {
     }
   }
 
-  /**
-   * Returns the entry for a specific source path (PK lookup), or undefined.
-   */
   findBySourcePath(sourcePath: string): ExtensionTypeRow | undefined {
     const stmt = this.db.prepare(
       "SELECT * FROM bundle_types WHERE source_path = ?",
@@ -1027,9 +765,6 @@ export class ExtensionCatalogStore {
     return row ? this.mapRow(row) : undefined;
   }
 
-  /**
-   * Removes a bundle type entry by source path.
-   */
   removeBySourcePath(sourcePath: string): void {
     const stmt = this.db.prepare(
       "DELETE FROM bundle_types WHERE source_path = ? RETURNING kind, type_normalized",
@@ -1038,12 +773,9 @@ export class ExtensionCatalogStore {
   }
 
   /**
-   * Removes a bundle type entry by exact raw source_path — the value
-   * stored as the PK in the database, without re-canonicalizing. Use
-   * this when the caller already holds the raw row value from
-   * {@link findAll} and the stored PK may have been canonicalized by a
-   * different OS (e.g. WSL wrote mixed-case paths that Windows's
-   * {@link canonicalizePath} lowercases, breaking PK lookups).
+   * removes by the stored primary key without re-canonicalizing, for rows
+   * another OS wrote (e.g. WSL mixed-case paths that Windows canonicalizePath
+   * lowercases)
    */
   removeByRawSourcePath(rawSourcePath: string): void {
     const stmt = this.db.prepare(
@@ -1052,11 +784,6 @@ export class ExtensionCatalogStore {
     this.resetTypelessHealFor(stmt.all(rawSourcePath));
   }
 
-  /**
-   * Returns rows whose source_path starts with the given prefix.
-   * Used by the hot-reload path to find catalog rows belonging to a
-   * pulled extension regardless of whether extension_name is populated.
-   */
   findBySourcePathPrefix(sourcePrefix: string): ExtensionTypeRow[] {
     const stmt = this.db.prepare(
       "SELECT * FROM bundle_types WHERE source_path LIKE ? ESCAPE '\\' ORDER BY source_path",
@@ -1067,11 +794,6 @@ export class ExtensionCatalogStore {
     >[]).map((r) => this.mapRow(r));
   }
 
-  /**
-   * Removes all entries for a given source path prefix.
-   * Used when an extension is removed — deletes all types that came from
-   * source files under that directory.
-   */
   removeBySourcePrefix(sourcePrefix: string): number {
     const stmt = this.db.prepare(
       "DELETE FROM bundle_types WHERE source_path LIKE ? ESCAPE '\\' RETURNING kind, type_normalized",
@@ -1082,9 +804,8 @@ export class ExtensionCatalogStore {
   }
 
   /**
-   * Clears the typeless-row heal marker for the kind of every deleted row
-   * that claimed a type: that row may have been the reason another row of
-   * the same kind lost its type (swamp-club#2490).
+   * a deleted row that claimed a type may have been why another row of its kind
+   * lost its type, so clear the kind's heal marker
    */
   private resetTypelessHealFor(deleted: Record<string, unknown>[]): void {
     const kinds = new Set<string>();
@@ -1101,10 +822,8 @@ export class ExtensionCatalogStore {
   }
 
   /**
-   * Clears the typeless-row heal marker when an upsert is about to change
-   * the type an existing row claims: the type it gives up may be the one
-   * another row of its kind lost to it, just as when the row is deleted
-   * (swamp-club#2490).
+   * clears the heal marker when an upsert changes the type a row claims, since
+   * the type it gives up may be one another row lost to it, as with a delete
    */
   private resetTypelessHealOnRetype(
     sourcePath: string,
@@ -1118,10 +837,6 @@ export class ExtensionCatalogStore {
     }
   }
 
-  /**
-   * True once the loader has revalidated this kind's typeless Indexed rows
-   * since the last deletion of a row that claimed a type.
-   */
   isTypelessHealDone(kind: ExtensionKind): boolean {
     const row = this.db.prepare(
       "SELECT value FROM bundle_meta WHERE key = ?",
@@ -1131,7 +846,6 @@ export class ExtensionCatalogStore {
     return row?.value === "true";
   }
 
-  /** Records that this kind's typeless Indexed rows have been revalidated. */
   markTypelessHealDone(kind: ExtensionKind): void {
     this.db.prepare(
       "INSERT OR REPLACE INTO bundle_meta (key, value) VALUES (?, 'true')",
@@ -1139,18 +853,9 @@ export class ExtensionCatalogStore {
   }
 
   /**
-   * Coerces a raw SQLite row into a typed ExtensionTypeRow. Maps the
-   * INTEGER 0/1 `validation_failed` column to a boolean (SQLite has no
-   * native boolean type) and surfaces the W1a `state` column as a
-   * string with `'Indexed'` as defensive default.
-   *
-   * findByKind and findByType deliberately do NOT filter on `state` or
-   * `validation_failed`: findStaleFiles needs to see broken rows so the
-   * fingerprint match terminates the rebundle loop (swamp-club#209).
-   * Registration call sites filter on `state === 'ValidationFailed'`
-   * instead. The legacy `validation_failed` boolean is preserved on
-   * the row through the W1a → W1b release window for backwards
-   * compatibility with tests; W1b drops the column entirely.
+   * findByKind and findByType do not filter on state: findStaleFiles needs
+   * broken rows so the fingerprint match ends the rebundle loop; registration
+   * sites filter on state instead
    */
   private mapRow(raw: Record<string, unknown>): ExtensionTypeRow {
     const stateRaw = raw.state;
@@ -1178,12 +883,9 @@ export class ExtensionCatalogStore {
   }
 
   /**
-   * Returns all entries for a given kind (e.g. all "model" entries).
-   *
-   * Includes validation-failed rows; consumers that should not register
-   * broken types must filter on `row.validation_failed` themselves.
-   * findStaleFiles relies on this inclusion to terminate the rebundle
-   * loop on schema-invalid sources (swamp-club#209).
+   * includes validation-failed rows: findStaleFiles relies on them to end the
+   * rebundle loop on schema-invalid sources; consumers that must not register
+   * broken types filter themselves
    */
   findByKind(kind: ExtensionKind): ExtensionTypeRow[] {
     const stmt = this.db.prepare(
@@ -1195,12 +897,8 @@ export class ExtensionCatalogStore {
   }
 
   /**
-   * Returns the entry for a specific type and kind, or undefined.
-   *
-   * Validation-failed rows have empty `type_normalized` so they can
-   * never match a real type lookup here — the protection against
-   * surfacing broken types via this path is structural, not via a
-   * filter clause.
+   * validation-failed rows have empty type_normalized, so they never match a
+   * type lookup; this protection is structural, not a filter
    */
   findByType(
     typeNormalized: string,
@@ -1215,7 +913,6 @@ export class ExtensionCatalogStore {
     return row ? this.mapRow(row) : undefined;
   }
 
-  /** Returns every row claiming `typeNormalized` for `kind`. */
   findAllByType(
     typeNormalized: string,
     kind: ExtensionKind,
@@ -1228,14 +925,6 @@ export class ExtensionCatalogStore {
     ) => this.mapRow(r));
   }
 
-  /**
-   * Returns all extension entries that target a given base type.
-   * Used by ensureTypeLoaded() to find extensions that add methods
-   * to a base model type.
-   *
-   * Validation-failed rows have empty `extends_type` so they fall out
-   * of this query naturally.
-   */
   findExtensionsForType(baseType: string): ExtensionTypeRow[] {
     const stmt = this.db.prepare(
       "SELECT * FROM bundle_types WHERE extends_type = ? AND kind = 'extension' ORDER BY type_normalized",
@@ -1245,9 +934,6 @@ export class ExtensionCatalogStore {
     );
   }
 
-  /**
-   * Returns the total number of entries.
-   */
   count(kind?: ExtensionKind): number {
     if (kind) {
       const stmt = this.db.prepare(
@@ -1263,9 +949,6 @@ export class ExtensionCatalogStore {
     return row.cnt;
   }
 
-  /**
-   * Returns true if the catalog has been fully populated for a given kind.
-   */
   isPopulated(kind: ExtensionKind): boolean {
     const stmt = this.db.prepare(
       "SELECT value FROM bundle_meta WHERE key = ?",
@@ -1276,9 +959,6 @@ export class ExtensionCatalogStore {
     return row?.value === "true";
   }
 
-  /**
-   * Marks the catalog as fully populated for a given kind.
-   */
   markPopulated(kind: ExtensionKind): void {
     const stmt = this.db.prepare(
       "INSERT OR REPLACE INTO bundle_meta (key, value) VALUES (?, 'true')",
@@ -1286,10 +966,6 @@ export class ExtensionCatalogStore {
     stmt.run(`populated:${kind}`);
   }
 
-  /**
-   * Clears the populated flag for a given kind so the next access
-   * triggers a full rescan.
-   */
   invalidate(kind: ExtensionKind): void {
     const stmt = this.db.prepare(
       "DELETE FROM bundle_meta WHERE key = ?",
@@ -1319,11 +995,6 @@ export class ExtensionCatalogStore {
     }
   }
 
-  /**
-   * Returns the stored bundle layout version, or undefined if not set.
-   * Used to detect when the bundle path scheme has changed and a full
-   * rescan is needed.
-   */
   getLayoutVersion(): string | undefined {
     const stmt = this.db.prepare(
       "SELECT value FROM bundle_meta WHERE key = 'bundle_layout'",
@@ -1332,10 +1003,6 @@ export class ExtensionCatalogStore {
     return row?.value;
   }
 
-  /**
-   * Stores the bundle layout version. Set after a successful rescan
-   * so subsequent runs skip the migration check.
-   */
   setLayoutVersion(version: string): void {
     const stmt = this.db.prepare(
       "INSERT OR REPLACE INTO bundle_meta (key, value) VALUES ('bundle_layout', ?)",
@@ -1344,15 +1011,8 @@ export class ExtensionCatalogStore {
   }
 
   /**
-   * Returns the stored datastore base path, or undefined if not set.
-   * Used to detect when the datastore configuration has changed and a
-   * full rescan is needed so bundle paths point to the new location.
-   *
-   * @param kind - Optional extension kind for per-kind base paths (W1b
-   *   parity: each kind tracks its own base path so the 5 loaders don't
-   *   overwrite each other's value). When omitted, reads the legacy
-   *   global key (backward-compatible with model-loader catalogs that
-   *   predate per-kind support).
+   * per-kind keys keep loaders from overwriting each other's value; without a
+   * kind it reads the legacy global key
    */
   getDatastoreBasePath(kind?: ExtensionKind): string | undefined {
     const key = kind ? `datastore_base_path:${kind}` : "datastore_base_path";
@@ -1363,14 +1023,6 @@ export class ExtensionCatalogStore {
     return row?.value;
   }
 
-  /**
-   * Stores the datastore base path. Set after a successful catalog
-   * population so subsequent runs can detect datastore changes.
-   *
-   * @param basePath - The base path to store.
-   * @param kind - Optional extension kind for per-kind base paths. When
-   *   omitted, writes the legacy global key.
-   */
   setDatastoreBasePath(basePath: string, kind?: ExtensionKind): void {
     const key = kind ? `datastore_base_path:${kind}` : "datastore_base_path";
     const stmt = this.db.prepare(
@@ -1379,15 +1031,6 @@ export class ExtensionCatalogStore {
     stmt.run(key, basePath);
   }
 
-  /**
-   * Returns the stored source directories fingerprint, or undefined if not set.
-   * Used to detect when extension sources have been added or removed,
-   * triggering a full rescan so new source entries are discovered.
-   *
-   * @param kind - Optional extension kind for per-kind fingerprints. When
-   *   omitted, reads the legacy global key (backward-compatible with model
-   *   loader calls that predate per-kind support).
-   */
   getSourceDirsFingerprint(kind?: ExtensionKind): string | undefined {
     const key = kind
       ? `source_dirs_fingerprint:${kind}`
@@ -1399,14 +1042,6 @@ export class ExtensionCatalogStore {
     return row?.value;
   }
 
-  /**
-   * Stores a fingerprint of the current source directories. Set after a
-   * successful catalog population so subsequent runs can detect source changes.
-   *
-   * @param fingerprint - The fingerprint string to store.
-   * @param kind - Optional extension kind for per-kind fingerprints. When
-   *   omitted, writes the legacy global key.
-   */
   setSourceDirsFingerprint(fingerprint: string, kind?: ExtensionKind): void {
     const key = kind
       ? `source_dirs_fingerprint:${kind}`
@@ -1423,24 +1058,15 @@ export class ExtensionCatalogStore {
     ).run(fingerprint, sourcePath);
   }
 
-  /**
-   * Closes the database connection. A catalog that was never opened stays
-   * unopened.
-   */
   close(): void {
     this.closed = true;
     this.handle?.close();
   }
 
-  // ---- methods added for ExtensionRepository (W1b) ----
-
   /**
-   * Upserts a row with explicit extension identity (extension_name +
-   * extension_version) — the aggregate-shaped write path used by
-   * ExtensionRepository.saveAll. Differs from {@link upsert} only in
-   * that it writes the identity columns AND updates them on conflict
-   * (loader-shaped upsert deliberately preserves the migration-backfilled
-   * identity; aggregate-shaped saves are authoritative for it).
+   * writes the identity columns and updates them on conflict, since aggregate
+   * saves are authoritative for identity; the loader-shaped upsert deliberately
+   * preserves the backfilled identity
    */
   upsertWithIdentity(
     row: ExtensionTypeRow & {
@@ -1489,16 +1115,9 @@ export class ExtensionCatalogStore {
   }
 
   /**
-   * One-time migration: removes ghost rows whose source_path differs
-   * from its canonical form. A pre-fix warm-path code path wrote
-   * non-canonical Windows paths (backslash, original casing) alongside
-   * canonical rows for the same file, causing I-Repo-1 violations.
-   *
-   * For each non-canonical row, if a canonical row already exists for
-   * the same file, the non-canonical ghost is deleted. If no canonical
-   * row exists, the ghost is rewritten to its canonical form.
-   *
-   * Gated by a bundle_meta marker so it runs at most once per catalog.
+   * removes ghost rows with non-canonical paths: deleted if a canonical row
+   * exists for the file, else rewritten to canonical form; marker-gated to run
+   * once
    */
   deduplicateNonCanonicalPaths(): number {
     if (this.isDeduplicateNonCanonicalApplied()) return 0;
@@ -1526,23 +1145,9 @@ export class ExtensionCatalogStore {
   }
 
   /**
-   * Heals the I-Repo-1 state swamp-club#2876 left behind. A pre-fix loader
-   * indexed type claims from source text such as a test fixture holding
-   * `export const model = { type: ... }` in a string, writing rows with no
-   * extension identity. Two fixtures naming one type then made every later
-   * save fail I-Repo-1.
-   *
-   * Only rows already in that broken state are candidates: Indexed, outside
-   * a pulled extension, with no extension identity, and claiming a
-   * non-extension type another live row claims too. Of those, a row is
-   * deleted when its source declares no export of its kind in code. A real
-   * declaration the scanner misreads can only cost a row that was blocking
-   * every save, and the warm scan imports the source and writes it back.
-   *
-   * Reads are best-effort: a source that cannot be read keeps its row.
-   * Only catalog rows are deleted. With no duplicate claims this is a
-   * single query, so it runs on every open and also heals rows an older
-   * binary writes later.
+   * deletes only broken rows (Indexed, no identity, claiming a type another
+   * live row claims) whose source declares no export in code; unreadable
+   * sources keep their row
    */
   pruneUndeclaredTypeClaims(): number {
     const candidates = this.db.prepare(
@@ -1595,10 +1200,6 @@ export class ExtensionCatalogStore {
     return undeclared.length;
   }
 
-  /**
-   * True when importing `sourcePath` at `fingerprint` already found no
-   * export of `kind`, so bundling it again would find nothing.
-   */
   isKnownNoExport(
     kind: string,
     sourcePath: string,
@@ -1611,10 +1212,6 @@ export class ExtensionCatalogStore {
     return row?.value === fingerprint;
   }
 
-  /**
-   * Records that importing `sourcePath` at `fingerprint` found no export of
-   * `kind`. A changed source has a new fingerprint and is imported again.
-   */
   recordNoExport(kind: string, sourcePath: string, fingerprint: string): void {
     if (fingerprint === "") return;
     this.db.prepare(
@@ -1622,11 +1219,6 @@ export class ExtensionCatalogStore {
     ).run(noExportKey(kind, sourcePath), fingerprint);
   }
 
-  /**
-   * The local modules recorded for `sourcePath` when it was last bundled,
-   * or `undefined` when none are recorded or the stored value is not a list
-   * of at most {@link MAX_SOURCE_MODULES} paths.
-   */
   findSourceModules(sourcePath: string): readonly string[] | undefined {
     const row = this.db.prepare(
       "SELECT modules FROM source_modules WHERE source_path = ?",
@@ -1648,11 +1240,9 @@ export class ExtensionCatalogStore {
   }
 
   /**
-   * Records the local modules `sourcePath` was bundled from. `graphPending`
-   * marks a fallback walk recorded because the module graph could not be
-   * read, which the warm scan retries once (swamp-club#3487). Throws a
-   * RangeError for a list over {@link MAX_SOURCE_MODULES}, which
-   * {@link findSourceModules} would not read back.
+   * graphPending marks a fallback walk recorded because the module graph was
+   * unreadable, retried once by the warm scan; throws RangeError over
+   * MAX_SOURCE_MODULES, which findSourceModules would not read back
    */
   recordSourceModules(
     sourcePath: string,
@@ -1673,10 +1263,6 @@ export class ExtensionCatalogStore {
     );
   }
 
-  /**
-   * Whether the list recorded for `sourcePath` is marked graph pending by
-   * {@link recordSourceModules}.
-   */
   isSourceGraphPending(sourcePath: string): boolean {
     const row = this.db.prepare(
       "SELECT graph_pending FROM source_modules WHERE source_path = ?",
@@ -1687,10 +1273,8 @@ export class ExtensionCatalogStore {
   }
 
   /**
-   * Clears the graph-pending mark on `sourcePath`'s recorded list, and
-   * returns whether it was set: the caller is about to use up the one
-   * retry. Writes only when the mark is set, so a warm rebundle of a
-   * source with no mark takes no write lock.
+   * returns whether the mark was set, using up the one retry; writes only when
+   * set, so a warm rebundle of an unmarked source takes no write lock
    */
   takeSourceGraphPending(sourcePath: string): boolean {
     if (!this.isSourceGraphPending(sourcePath)) return false;
@@ -1702,7 +1286,6 @@ export class ExtensionCatalogStore {
     return Number(result.changes) > 0;
   }
 
-  /** Forgets the local modules recorded for `sourcePath`. */
   deleteSourceModules(sourcePath: string): void {
     this.db.prepare("DELETE FROM source_modules WHERE source_path = ?").run(
       canonicalizePath(sourcePath),
@@ -1720,18 +1303,9 @@ export class ExtensionCatalogStore {
   }
 
   /**
-   * Deletes non-Tombstoned rows whose source_path is not under the
-   * given canonical repo root. Returns the paths that were pruned.
-   * Designed to run inside a transaction before I-Repo-1 so stale rows
-   * from prior container sessions (bind-mounted at a different path)
-   * don't block catalog writes.
-   *
-   * `mounted` keeps the rows of sources mounted from outside the repo
-   * through `.swamp-sources.yaml` (swamp-club#2563): a row under one of
-   * `mounted.dirs` (canonical) whose source file still exists. Keeping
-   * every out-of-root row whose source exists would be wrong: a copied
-   * repo's rows for the original location would survive, and
-   * {@link resolveOriginConflicts} treats them as local.
+   * keeps rows of sources mounted from outside the repo whose file exists;
+   * keeping every out-of-root row would let a copied repo's rows for the
+   * original location survive and be treated as local
    */
   pruneUnreachableSources(
     canonicalRepoRoot: string,
@@ -1765,20 +1339,9 @@ export class ExtensionCatalogStore {
   }
 
   /**
-   * Enforces the `local > source-mounted > pulled` origin precedence
-   * rule at the catalog level. Scans all non-Tombstoned rows with
-   * non-empty type_normalized and kind !== "extension". When two rows
-   * from different origins claim the same (kind, type_normalized),
-   * clears the pulled row's type_normalized to empty so it no longer
-   * occupies the type namespace. Precedence is determined by
-   * source_path prefix: paths under `<repoRoot>/.swamp/pulled-extensions/`
-   * are pulled; everything else is local or source-mounted and wins.
-   *
-   * Mirrors {@link ExtensionRepository}'s `assertIRepo1` exclusions
-   * exactly — same Tombstoned skip, same empty-type skip, same
-   * extension-kind skip — but resolves instead of throwing.
-   *
-   * Idempotent: running twice produces the same result.
+   * enforces local > source-mounted > pulled: when rows of different origins
+   * claim a (kind, type), the pulled row's type is cleared; same exclusions as
+   * assertIRepo1 but resolves instead of throwing
    */
   resolveOriginConflicts(repoRoot: string): OriginConflict[] {
     const canonical = canonicalizePath(repoRoot);
@@ -1840,20 +1403,9 @@ export class ExtensionCatalogStore {
   }
 
   /**
-   * Settles type conflicts that involve rows of sources mounted through
-   * `.swamp-sources.yaml`, the `local > source-mounted` part of the
-   * precedence {@link resolveOriginConflicts} applies to pulled rows
-   * (swamp-club#2563). Among non-Tombstoned, non-extension rows sharing
-   * a `(kind, type_normalized)`, a local row (in the repo root, not
-   * pulled, not under a mount) beats a mounted one, a row under an earlier
-   * entry of `mountedDirs` beats one under a later entry, and the smaller
-   * canonical path breaks a tie. That is the loader's registration order:
-   * local directories first, then sources in `.swamp-sources.yaml` order,
-   * skipping a type already registered. Each mounted row that loses has
-   * its type cleared. Pulled rows are left to resolveOriginConflicts, and
-   * conflicts between local rows to I-Repo-1.
-   *
-   * @param mountedDirs Canonical mounted directories, in source order.
+   * a local row beats a mounted one, an earlier mount beats a later one, then
+   * the smaller canonical path, matching loader registration order; each losing
+   * mounted row has its type cleared
    */
   settleMountedTypeConflicts(
     canonicalRepoRoot: string,
@@ -1875,10 +1427,9 @@ export class ExtensionCatalogStore {
       group.push(row);
     }
 
-    // A path is matched in both spellings, as stored and symlink-resolved,
-    // against both spellings of each root: rows written from a directory
-    // walk and rows written from configuration can disagree (`/tmp` and
-    // `/private/tmp` on macOS). Resolved only for conflicting rows.
+    // match both spellings (stored and symlink-resolved) of path and roots,
+    // since walked and configured rows can disagree (/tmp vs /private/tmp on
+    // macOS); resolved only for conflicting rows
     const spellings = (p: string): string[] => {
       const real = realCanonicalPath(p);
       return real === p ? [p] : [p, real];
@@ -1887,9 +1438,9 @@ export class ExtensionCatalogStore {
     const mountPrefixes = mountedDirs.map((d) =>
       spellings(d).map(withTrailingSlash)
     );
-    // -1 for a local row, the mount's index for a mounted row, undefined
-    // for a pulled row or one outside both. Pulled is checked first, as the
-    // loader's contributorFor does.
+    // -1 for a local row, the mount's index for a mounted row, undefined for a
+    // pulled row or one outside both; pulled is checked first, as the loader's
+    // contributorFor does
     const rankOf = (canonical: string): number | undefined => {
       const forms = spellings(canonical);
       const pulled = spellings(canonicalRepoRoot).some((root) =>
@@ -1942,7 +1493,6 @@ export class ExtensionCatalogStore {
     stmt.run(sourcePath);
   }
 
-  /** True when any row's `bundle_path` equals `bundlePath` exactly. */
   hasRowWithBundlePath(bundlePath: string): boolean {
     return this.db.prepare(
       "SELECT 1 FROM bundle_types WHERE bundle_path = ? LIMIT 1",
@@ -1950,10 +1500,8 @@ export class ExtensionCatalogStore {
   }
 
   /**
-   * Writes `type_normalized` on the row stored at exactly
-   * `rawSourcePath`, leaving every other column untouched. Used by the
-   * loader's typeless-row heal, which must not disturb the row's
-   * fingerprint (swamp-club#2490).
+   * writes type_normalized only, leaving the fingerprint and every other column
+   * untouched, as the loader's typeless-row heal requires
    */
   setTypeNormalized(rawSourcePath: string, typeNormalized: string): void {
     this.db.prepare(
@@ -1962,23 +1510,9 @@ export class ExtensionCatalogStore {
   }
 
   /**
-   * Deletes rows that can only mislead type resolution (swamp-club#2490):
-   *
-   *   - (a) a row that claims a type (or, for `kind = 'extension'`, a
-   *     base type) whose source file is missing — importing it crashes
-   *     with ENOENT, or silently runs a stale bundle;
-   *   - (b) when `activePulledRoot` is known and is one of the two
-   *     pulled roots, a row under the other
-   *     pulled root (`.swamp/pulled-extensions/` vs
-   *     `.swamp/config/pulled-extensions/`), which a managedConfig
-   *     migration copies rather than moves. Datastore rows are exempt:
-   *     the on-disk datastore chooser may load from either root, and
-   *     `purgeUnchosenPulledDatastoreRows` owns them.
-   *
-   * Rows in `protectedPaths` (canonical), Tombstoned rows, and rows in
-   * a failure state ({@link CATALOG_FAILURE_STATES}, kept so doctor can
-   * report them) are never deleted. Deletes by the raw stored path so
-   * keys written on another OS still match. Returns the deleted rows.
+   * deletes rows whose claimed source is missing, or under the inactive pulled
+   * root (a managedConfig migration copies rather than moves); protected,
+   * Tombstoned, failure-state and datastore rows are kept
    */
   pruneStaleSources(args: {
     canonicalRepoRoot: string;
@@ -2024,21 +1558,9 @@ export class ExtensionCatalogStore {
   }
 
   /**
-   * Settles pulled-vs-pulled type conflicts the way
-   * {@link resolveOriginConflicts} settles pulled-vs-local ones: among
-   * pulled, non-Tombstoned, non-extension rows sharing a
-   * `(kind, type_normalized)`, the earliest-inserted row keeps the type
-   * and the others are cleared. That is the row an older binary's
-   * unordered `findByType` returned, so upgrading never moves a type to
-   * an extension pulled later; `upsert` keeps a row's rowid, so a
-   * rebundle does not reset its seniority.
-   *
-   * The loader calls it after its own catalog writes, which can type two
-   * pulled rows the same; I-Repo-1 would then reject every later save
-   * (swamp-club#2490). `ExtensionRepository.saveAll` calls it only when
-   * asked (`settlePulledTypeConflicts: true`), which only the reconcile
-   * does (swamp-club#2702), so a conflicting install still fails with
-   * DuplicateTypeError.
+   * among pulled rows sharing a (kind, type) the earliest-inserted keeps the
+   * type, as an older binary's findByType returned, so upgrading never moves a
+   * type to a later-pulled extension; upsert keeps the rowid
    */
   settlePulledTypeConflicts(repoRoot: string): PulledTypeConflict[] {
     const canonicalRoot = canonicalizePath(repoRoot);
@@ -2083,13 +1605,6 @@ export class ExtensionCatalogStore {
     return (stmt.all() as { source_path: string }[]).map((r) => r.source_path);
   }
 
-  /**
-   * Returns every row in `bundle_types`, ordered by source_path so the
-   * output is stable across runs. Used by ExtensionRepository.loadAll
-   * (which groups by extension identity) and by I-Repo-1 verification
-   * (which scans the post-save state for cross-aggregate (kind, type)
-   * collisions).
-   */
   findAll(): ExtensionTypeRow[] {
     const stmt = this.db.prepare(
       "SELECT * FROM bundle_types ORDER BY source_path",
@@ -2098,13 +1613,8 @@ export class ExtensionCatalogStore {
   }
 
   /**
-   * Returns rows owned by a specific (extension_name, extension_version)
-   * tuple. Used by ExtensionRepository.loadByName to materialise a single
-   * Extension aggregate without scanning the full catalog.
-   *
-   * Empty-identity rows (extension_name="" or extension_version="") never
-   * match this query; callers needing those must go through findAll and
-   * the repository's empty-identity fallback.
+   * rows with an empty extension_name or version never match; callers needing
+   * them go through findAll and the repository's empty-identity fallback
    */
   findByExtension(name: string, version: string): ExtensionTypeRow[] {
     const stmt = this.db.prepare(
@@ -2115,15 +1625,6 @@ export class ExtensionCatalogStore {
     );
   }
 
-  /**
-   * Updates a row's extension_name and extension_version. Used by the
-   * repository's empty-identity fallback to write back lockfile-resolved
-   * versions onto pulled rows that were left empty by W1a's deliberate
-   * "version unknown at migration time" choice.
-   *
-   * Idempotent — running twice with the same values is a no-op for the
-   * end state.
-   */
   updateExtensionIdentity(
     sourcePath: string,
     name: string,
@@ -2136,18 +1637,9 @@ export class ExtensionCatalogStore {
   }
 
   /**
-   * Runs `fn` inside an explicit `BEGIN` / `COMMIT`. If `fn` throws, runs
-   * `ROLLBACK` and re-throws the original error. Used by
-   * ExtensionRepository.saveAll to make diff-based persistence + I-Repo-1
-   * verification atomic against the bundle_types table.
-   *
-   * The `node:sqlite` driver auto-commits each statement by default, so
-   * an explicit transaction is required around the multi-statement diff.
-   *
-   * Retries with exponential backoff on transient "database is locked"
-   * errors caused by cross-process contention (e.g. rapid successive
-   * `swamp doctor extensions` invocations). Uses the same retry strategy
-   * as {@link initializeWithRetry}.
+   * the driver auto-commits each statement, so the multi-statement diff needs
+   * an explicit transaction; retries with backoff on cross-process 'database is
+   * locked'
    */
   runInTransaction<T>(fn: () => T): T {
     const MAX_RETRIES = 5;
@@ -2187,11 +1679,6 @@ export class ExtensionCatalogStore {
   }
 }
 
-/**
- * Stable fingerprint of a set of directories.
- * Used by loaders to detect when extension source directories have been
- * added or removed between runs, triggering a catalog invalidation.
- */
 export function sourceDirsFingerprint(
   primaryDir: string,
   additionalDirs?: string[],
@@ -2200,25 +1687,10 @@ export function sourceDirsFingerprint(
   return dirs.sort().join("\n");
 }
 
-// W1b: the standalone `forceCatalogRescan` helper that previously lived
-// here was DELETED — its behaviour now lives on
-// `ExtensionRepository.invalidateAll()`. Callers (open.ts,
-// doctor_extensions.ts) construct a temporary repository, invalidate,
-// then close.
-
 /**
- * Recovers the repository root from the catalog's database path.
- * The catalog opens at `<repoRoot>/.swamp/_extension_catalog.db`, so
- * `dirname(dirname(dbPath))` gives the repository root. Used by the
- * data-migration backfill to resolve `<repoRoot>/extensions/<kind>/`
- * and `<repoRoot>/.swamp/pulled-extensions/` prefixes against catalog
- * row source_paths without needing a separate constructor parameter.
- *
- * The catalog's dbPath is a hard-coded layout assumption (see
- * `swampPath(repoDir, "_extension_catalog.db")`); if that layout ever
- * changes, this helper has to change with it.
+ * the catalog lives at <repoRoot>/.swamp/_extension_catalog.db, so two dirnames
+ * give the repo root; this must change if that hard-coded layout does
  */
-/** The `bundle_meta` key for a source's no-export fingerprint. */
 function noExportKey(kind: string, sourcePath: string): string {
   return `${NO_EXPORT_KEY_PREFIX}${kind}:${canonicalizePath(sourcePath)}`;
 }
@@ -2232,10 +1704,8 @@ function withTrailingSlash(dir: string): string {
 }
 
 /**
- * Builds a `LIKE ... ESCAPE '\'` pattern that matches paths starting with
- * `prefix` literally. Unescaped, `_` in an extension name (`@acme/aws_ec2`)
- * matches any character, so the prefix would also select a sibling such as
- * `@acme/aws-ec2` (swamp-club#2355).
+ * escapes LIKE wildcards so _ in an extension name (@acme/aws_ec2) cannot match
+ * a sibling such as @acme/aws-ec2
  */
 function likePrefixPattern(prefix: string): string {
   return `${prefix.replace(/[\\%_]/g, (c) => `\\${c}`)}%`;

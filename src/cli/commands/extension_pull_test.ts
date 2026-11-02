@@ -132,20 +132,17 @@ Deno.test("LockfileRepository.writeEntry handles empty files array", async () =>
 Deno.test("detectConflicts uses nested path for bundles, not basename", async () => {
   const tmpDir = await Deno.makeTempDir({ prefix: "swamp_test_" });
   try {
-    // Set up extract dir with a nested bundle: bundles/k8s/netpol.js
     const extractDir = join(tmpDir, "extract");
     const bundleSubdir = join(extractDir, "bundles", "k8s");
     await Deno.mkdir(bundleSubdir, { recursive: true });
     await Deno.writeTextFile(join(bundleSubdir, "netpol.js"), "// bundle");
 
-    // Set up the repo with the same nested bundle already installed
     const repoDir = join(tmpDir, "repo");
     const bundlesDir = join(repoDir, ".swamp", "bundles");
     const nestedBundleDir = join(bundlesDir, "k8s");
     await Deno.mkdir(nestedBundleDir, { recursive: true });
     await Deno.writeTextFile(join(nestedBundleDir, "netpol.js"), "// existing");
 
-    // Also create empty dirs for models and workflows
     const modelsDir = join(repoDir, "extensions", "models");
     const workflowsDir = join(repoDir, "workflows");
     await Deno.mkdir(modelsDir, { recursive: true });
@@ -159,15 +156,13 @@ Deno.test("detectConflicts uses nested path for bundles, not basename", async ()
       repoDir,
     );
 
-    // Should detect the conflict at the nested path, not the flat basename,
-    // in the lockfile's / form on every OS
+    // the conflict is detected at the nested path, not the flat basename, in
+    // the lockfile's `/` form on every OS
     assertEquals(conflicts, [".swamp/bundles/k8s/netpol.js"]);
   } finally {
     await Deno.remove(tmpDir, { recursive: true });
   }
 });
-
-// ===== Overwrite prompt (swamp-club#2877) =====
 
 const REPLACEMENT = ExtensionReplacement.create({
   name: "@test/ext",
@@ -209,11 +204,6 @@ function stubResult(): InstallResult {
   };
 }
 
-/**
- * Runs pullExtension against an install that conflicts unless forced and,
- * when forced, reports the replacement and an unopted pre-release as the
- * real install does. Returns the console output and the prompt asked.
- */
 async function pullWithConflict(answer: boolean): Promise<{
   out: string;
   installs: boolean[];

@@ -55,8 +55,6 @@ async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
     await fn(dir);
   } finally {
     if (Deno.build.os === "windows") {
-      // Best-effort: EBUSY can fire when V8 hasn't GC'd native
-      // handles yet. Temp dir is ephemeral, OS reclaims.
       await Deno.remove(dir, { recursive: true }).catch(() => {});
     } else {
       await Deno.remove(dir, { recursive: true });
@@ -64,7 +62,6 @@ async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
   }
 }
 
-/** Builds an upstream-shaped tar.gz: the binary, LICENSE, README, etc/. */
 async function buildArchive(binary: Uint8Array): Promise<Uint8Array> {
   const file = (path: string, bytes: Uint8Array): TarStreamInput => ({
     type: "file",
@@ -115,7 +112,6 @@ async function fixture(
   };
 }
 
-/** A fetch that serves `body` and counts its calls. */
 function servingFetch(body: Uint8Array, status = 200) {
   const calls: string[] = [];
   const fetch = (url: string | URL): Promise<Response> => {
@@ -165,7 +161,6 @@ Deno.test("LitestreamBinaryProvider.resolve: downloads, verifies and caches the 
     assertEquals(served.calls, [fx.url]);
     assertEquals(await Deno.readFile(resolved.path), BINARY);
     assertEquals(await Deno.readFile(join(versionDir, "LICENSE")), LICENSE);
-    // Only the binary and its licence are kept, and no staging dir is left.
     assertEquals(await listNames(versionDir), ["LICENSE", "litestream"]);
     assertEquals(await listNames(join(dataDir, "litestream")), ["0.5.17"]);
     if (Deno.build.os !== "windows") {
@@ -214,7 +209,6 @@ Deno.test("LitestreamBinaryProvider.resolve: an archive that does not hash to th
 Deno.test("LitestreamBinaryProvider.resolve: a binary that does not hash to the pin is refused and not cached", async () => {
   await withTempDir(async (dataDir) => {
     const fx = await fixture();
-    // The archive matches the pin, the binary inside it does not.
     const other = await fixture("0.5.17", encoder.encode("other binary"));
     const pin = LitestreamPin.from({
       version: "0.5.17",
@@ -413,7 +407,6 @@ Deno.test("LitestreamBinaryProvider.resolve: concurrent first use settles on one
 Deno.test("LitestreamBinaryProvider.resolve: losing the rename race hashes the winner's binary and removes its own staging", async () => {
   await withTempDir(async (dataDir) => {
     const fx = await fixture();
-    // Another process installs the version just before this one renames.
     const fs: LitestreamFs = {
       ...denoLitestreamFs,
       async rename(from, to) {

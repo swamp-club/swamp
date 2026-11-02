@@ -19,46 +19,31 @@
 
 import type { WebhookPayload } from "../expressions/model_resolver.ts";
 
-/**
- * A custom HTTP response returned by {@link WebhookHandler.respond}.
- * `enqueue` decides whether the verified request still starts a workflow run.
- */
 export interface WebhookResponse {
   status: number;
   headers?: Record<string, string>;
-  /** Serialized as JSON unless it is already a string. */
   body?: unknown;
   enqueue: boolean;
 }
 
 /**
- * Handles one webhook request for a `swamp serve` endpoint. Built-in schemes
- * implement only the verification members; extension types may also reshape
- * the payload and control the response.
- *
- * Core always runs, in order: required-header check, body size limit,
- * `verify`, header redaction, `transform`, `respond`, queue backpressure.
- * The hooks never run for a request that failed verification.
+ * core runs required-header check, body size limit, verify, header redaction,
+ * transform, respond, queue backpressure, in that order; hooks never run for a
+ * request that failed verification
  */
 export interface WebhookHandler {
   /** Lowercased header carrying the signature/secret — never exposed to workflows. */
   readonly signatureHeader: string;
-  /** Lowercased headers that must be present before the body is read. */
   readonly requiredHeaders: readonly string[];
   verify(
     body: Uint8Array,
     headers: Headers,
     secret: string,
   ): Promise<boolean> | boolean;
-  /**
-   * Replaces the payload body exposed to the workflow. Receives the parsed
-   * body and the already-redacted header map.
-   */
   transform?(
     body: unknown,
     headers: Record<string, string>,
   ): unknown | Promise<unknown>;
-  /** Overrides the default `200 {status:"queued"}` response. */
   respond?(
     payload: WebhookPayload,
   ): WebhookResponse | undefined | Promise<WebhookResponse | undefined>;

@@ -168,13 +168,9 @@ import {
 type AnyOptions = any;
 
 /**
- * `doctor datastores --repair` after the format guard refused the repo's
- * datastore with `refusal` (swamp-club#3617): when the repo's config says
- * format 3 and its filesystem datastore is a v3 datastore whose marker a
- * crash lost, previews the restore, or with `confirm` restores the marker.
- * Resolves with the repair's status, or undefined when this is not such a
- * datastore, for the caller to rethrow the refusal unchanged. Nothing in
- * the datastore is opened before `confirm`.
+ * restores a v3 marker a crash lost when the repo's config says format 3;
+ * previews unless confirm. Returns undefined when it is not such a datastore,
+ * so the caller rethrows the refusal. Nothing is opened before confirm.
  */
 export async function repairLostV3FormatMarker(
   repoDir: string,
@@ -213,12 +209,6 @@ export async function repairLostV3FormatMarker(
   return renderer.overallStatus;
 }
 
-/**
- * Moves aside the records of a checkout the first v3 open refused because
- * its `.swamp/` holds them (swamp-club#3690), when `refusal` is that
- * refusal; previews without `confirm`. Returns the renderer's status, or
- * undefined when `refusal` is another error.
- */
 export async function repairPreV3CheckoutRecords(
   repoDir: string,
   refusal: unknown,
@@ -264,10 +254,8 @@ async function resolveProvider(
 }
 
 /**
- * Scans the repository's storage for items older than each kind's retention
- * (`--retention`, swamp-club#3473), through the read-only repository context:
- * no lock, no sync. Watermarks are read where the datastore keeps them
- * locally (a filesystem datastore).
+ * read-only repository context: no lock, no sync; watermarks are read only
+ * where the datastore keeps them locally.
  */
 async function checkRetention(
   repoDir: string,
@@ -352,8 +340,7 @@ async function createDoctorDatastoresDeps(
       return { unmigrated: found.length > 0, directories: found };
     },
     checkNamespaceContamination: async (config) => {
-      // A v3 datastore has no v2 namespace prefixes to contaminate
-      // (swamp-club#3534).
+      // a v3 datastore has no v2 namespace prefixes to contaminate.
       if (
         !config.namespace || !isCustomDatastoreConfig(config) ||
         config.format === 3
@@ -371,7 +358,7 @@ async function createDoctorDatastoresDeps(
         dryRun: true,
       });
     },
-    // A dry run on size and mtime only, bounded (swamp-club#4112).
+    // a dry run on size and mtime only, bounded.
     checkUnpushedFiles: async (config) => {
       if (!isCustomDatastoreConfig(config) || config.format === 3) return null;
       const provider = await resolveProvider(config);
@@ -395,22 +382,21 @@ async function createDoctorDatastoresDeps(
       });
     },
     checkCatalogCompleteness: () => checkCatalogCompleteness(repoDir),
-    // Only where every file is local: lazy hydration leaves files missing
-    // on purpose, and a v3 checkout has its own content check
-    // (swamp-club#3955).
+    // only where every file is local: lazy hydration leaves files missing on
+    // purpose, and a v3 checkout has its own content check.
     ...(v2Filesystem
       ? { checkUnreadableVersions: () => scanRepoUnreadableVersions(repoDir) }
       : {}),
     checkRetention: () => checkRetention(repoDir, outputMode),
-    // Checkout-local state and chunk stats only (swamp-club#3617).
+    // checkout-local state and chunk stats only.
     ...(engine === "v3"
       ? {
         checkV3Content: (config: DatastoreConfig) =>
           inspectV3Content({ repoDir, datastoreConfig: config }),
-        // The datastore's lineage records only (swamp-club#3801).
+        // the datastore's lineage records only.
         checkV3KeptLineages: (config: DatastoreConfig) =>
           inspectV3KeptLineages({ repoDir, datastoreConfig: config }),
-        // The checkout's own copy only (swamp-club#3935).
+        // the checkout's own copy only.
         checkV3ReplicaRestorable: (config: DatastoreConfig) =>
           inspectV3ReplicaRestorable({ repoDir, datastoreConfig: config }),
         checkV3Filter: (config: DatastoreConfig) =>
@@ -427,16 +413,9 @@ async function createDoctorDatastoresDeps(
 }
 
 /**
- * Compares the local catalog index against the on-disk data walk, per model
- * type, counting only latest-version records on both sides.
- *
- * Reads the catalog directly rather than issuing a data query: a query would
- * trigger the catalog backfill, which repairs the exact condition being
- * measured — the diagnostic would then always report health. Exported so that
- * property can be tested against a real damaged catalog rather than a fake.
- *
- * Only shortfalls are reported. A type with more indexed rows than the walk
- * can see is not a shortfall — that is what foreign-namespace rows look like.
+ * reads the catalog directly, not via a data query: a query triggers the
+ * catalog backfill, which repairs the very condition being measured. Only
+ * shortfalls are reported; extra indexed rows look like foreign-namespace rows.
  */
 export async function compareCatalogToDisk(
   catalogStore: CatalogStore,
@@ -470,9 +449,8 @@ export async function compareCatalogToDisk(
 }
 
 /**
- * The data dir the completeness check walks: the one every command reads,
- * as the repository factory resolves it. The local `.swamp/data` holds no
- * records when the datastore lives elsewhere (swamp-club#3238).
+ * the data dir every command reads, as the repository factory resolves it; the
+ * local .swamp/data holds no records when the datastore lives elsewhere.
  */
 export function catalogCompletenessDataDir(
   datastoreResolver: DatastorePathResolver,
@@ -506,11 +484,6 @@ async function checkCatalogCompleteness(
   }
 }
 
-/**
- * Every published data version of the repo's datastore that cannot be read
- * (swamp-club#3955), through its own catalog handle and data repository:
- * read-only, no lock, no data query.
- */
 async function scanRepoUnreadableVersions(
   repoDir: string,
 ): Promise<UnreadableDataVersion[]> {
@@ -538,10 +511,9 @@ async function scanRepoUnreadableVersions(
 }
 
 /**
- * Unreadable-version repair deps (swamp-club#3955). The scan is the check's;
- * the repair opens the repository to write, takes the affected models'
- * locks as `swamp data delete` does, and runs in a root unit, which pushes
- * and releases the locks when it ends, whether or not the repair failed.
+ * the repair takes the affected models' locks as swamp data delete does and
+ * runs in a root unit, which pushes and releases them when it ends even if the
+ * repair failed.
  */
 function createUnreadableVersionsRepairDeps(
   repoDir: string,
@@ -672,9 +644,8 @@ async function createRepairDeps(
 
   return {
     getDatastoreConfig: () => Promise.resolve(config),
-    // Each remote call is bounded: with -y it runs under the datastore lock
-    // the unpushed files stage takes (swamp-club#4112), which a hung call
-    // would hold, and the lock's heartbeat keeps renewing it.
+    // each remote call is bounded: with -y it runs under the datastore lock,
+    // which a hung call would hold while the heartbeat keeps renewing it.
     detectContamination: () =>
       runBoundedSync(
         config.type,
@@ -769,8 +740,8 @@ async function listFilesRecursive(
     for await (const entry of Deno.readDir(dir)) {
       const relPath = prefix ? join(prefix, entry.name) : entry.name;
       if (entry.isDirectory && !entry.isSymlink) {
-        // Loop, not push(...): one directory can hold more files than fit
-        // in a spread call (swamp-club#2565).
+        // loop, not push(...spread): one directory can hold more files than fit
+        // in a spread call.
         for (
           const file of await listFilesRecursive(join(dir, entry.name), relPath)
         ) {
@@ -786,7 +757,6 @@ async function listFilesRecursive(
   return files;
 }
 
-/** A datastore's `repairUnpushedFiles`, scoped to its namespace and bounded. */
 function boundedRepairUnpushed(
   syncService: DatastoreSyncService,
   config: CustomDatastoreConfig,
@@ -806,18 +776,12 @@ function boundedRepairUnpushed(
   );
 }
 
-/** What the unpushed cache files stage needs (swamp-club#4112). */
 interface UnpushedRepairSetup {
   deps: RepairUnpushedFilesDeps;
   cachePath: string;
-  /** The datastore lock a confirmed run holds; absent when unsupported. */
   lock?: ReturnType<typeof datastoreGlobalLock>;
 }
 
-/**
- * The unpushed cache files stage for a format 2 extension datastore with a
- * sync service, or null for any other datastore.
- */
 async function createUnpushedRepairSetup(
   repoDir: string,
 ): Promise<UnpushedRepairSetup | null> {
@@ -893,12 +857,6 @@ async function createUnmigratedRepairDeps(
   };
 }
 
-/**
- * Runs the v2 `doctor datastores --repair` stages in order, each reporting
- * through its renderer; under --json they record into `report`, which the
- * caller prints. Resolves true when any stage failed or was skipped for a
- * reason the user must act on, so the command exits 1.
- */
 async function runDatastoreRepairs(
   repoDir: string,
   cliCtx: CommandContext,
@@ -954,9 +912,8 @@ async function runDatastoreRepairs(
     }
   }
 
-  // Unreadable versions are rolled back before the catalog repair, so a
-  // rebuild it triggers indexes the repaired disk (swamp-club#3955). Only
-  // where every file is local, as the check.
+  // unreadable versions are rolled back before the catalog repair, so a rebuild
+  // it triggers indexes the repaired disk; only where every file is local.
   if (v2Filesystem) {
     const unreadableRenderer = createUnreadableVersionsRepairRenderer(
       cliCtx.outputMode,
@@ -1006,9 +963,9 @@ async function runDatastoreRepairs(
     failed = true;
   }
 
-  // Unpushed cache files run just before contamination repair, whose wipe
-  // would destroy them (swamp-club#4112). A confirmed run holds the
-  // datastore lock from here through that wipe, and no longer.
+  // unpushed cache files run just before contamination repair, whose wipe would
+  // destroy them; a confirmed run holds the datastore lock from here through
+  // the wipe, and not beyond it
   let unpushed: UnpushedRepairSetup | null = null;
   try {
     unpushed = await createUnpushedRepairSetup(repoDir);
@@ -1215,10 +1172,9 @@ export const doctorDatastoresCommand = withRemoteOptions(
   try {
     ({ engine, datastoreConfig } = await resolveDatastoreForRepo(repoDir));
   } catch (error) {
-    // A v3 datastore whose marker a crash lost is refused by the format
-    // guard; --repair restores the marker (swamp-club#3617). A checkout
-    // whose records stop it joining a v3 datastore has them moved aside
-    // (swamp-club#3690). Any other refusal is rethrown unchanged.
+    // the format guard refuses a v3 datastore whose marker a crash lost, or a
+    // checkout whose records stop it joining v3; --repair restores the marker
+    // or moves the records aside. Any other refusal is rethrown unchanged.
     const status = options.repair
       ? await repairLostV3FormatMarker(
         repoDir,
@@ -1233,19 +1189,16 @@ export const doctorDatastoresCommand = withRemoteOptions(
           Boolean(options.yes),
         )
       : undefined;
-    // A restore that fails throws from the renderer, as a UserError.
     if (status === undefined) throw error;
     return;
   }
   const libCtx = createLibSwampContext();
-  // A format 2 filesystem datastore, whose data files are all local
-  // (swamp-club#3955).
   const v2Filesystem = engine === "v2" &&
     !isCustomDatastoreConfig(datastoreConfig);
 
-  // The repairs are v2's: they rewrite datastore directories and the v2
-  // catalog, which a v3 datastore does not have, and none takes the v3
-  // writer lock (swamp-club#3279).
+  // the repairs are v2's: they rewrite datastore directories and the v2
+  // catalog, which a v3 datastore does not have, and none takes the v3 writer
+  // lock.
   if (options.repair && engine === "v3") {
     throw new UserError(
       "`swamp doctor datastores --repair` is not available for v3 " +
@@ -1256,11 +1209,9 @@ export const doctorDatastoresCommand = withRemoteOptions(
   }
 
   if (options.repair) {
-    // Each stage records its result here, and under --json the report is
-    // printed once, so the output is one JSON document (swamp-club#4011). It
-    // prints in the finally so a stage that throws still reports the stages
-    // that finished; Deno.exit skips pending finally blocks, so the exit
-    // comes after it.
+    // under --json the report prints once, in the finally, so a stage that
+    // throws still reports the stages that finished; Deno.exit skips pending
+    // finally blocks, so the exit comes after it.
     const report = new DatastoreRepairJsonReport();
     let failed: boolean;
     try {

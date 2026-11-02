@@ -28,10 +28,6 @@ import { UserError } from "../../domain/errors.ts";
 import { writeOutput } from "../../infrastructure/logging/logger.ts";
 import type { OutputMode } from "../output/output.ts";
 
-/**
- * Renderer for `swamp doctor audit`. Exposes `overallStatus` so the CLI
- * can exit non-zero on a failing report.
- */
 export interface AuditDoctorRenderer {
   handlers(): EventHandlers<AuditDoctorEvent>;
   readonly overallStatus: OverallStatus;
@@ -40,11 +36,11 @@ export interface AuditDoctorRenderer {
 function iconFor(status: CheckResult["status"]): string {
   switch (status) {
     case "pass":
-      return green("✓"); // ✓
+      return green("✓");
     case "fail":
-      return red("✗"); // ✗
+      return red("✗");
     case "skip":
-      return dim("–"); // –
+      return dim("–");
   }
 }
 
@@ -65,9 +61,7 @@ class LogAuditDoctorRenderer implements AuditDoctorRenderer {
   handlers(): EventHandlers<AuditDoctorEvent> {
     return {
       "check-started": () => {
-        // No-op. Checks run fast enough that an in-progress line is visual
-        // noise — users see the `✓/✗/–` line on check-completed and that's
-        // enough.
+        // no-op: checks finish fast enough that an in-progress line is noise
       },
       "check-completed": (e) => {
         const r = e.result;

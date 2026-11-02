@@ -22,7 +22,6 @@ import fc from "fast-check";
 import { parsesAsCel } from "./cel_grammar.ts";
 import { scanExpressions, type ScanWork } from "./expression_scanner.ts";
 
-/** The boundary every expression had before the scanner was quote-aware. */
 const LEGACY_PATTERN = /\$\{\{\s*(.+?)\s*\}\}/gs;
 
 function legacySpans(value: string): Array<{ raw: string; inner: string }> {
@@ -32,7 +31,6 @@ function legacySpans(value: string): Array<{ raw: string; inner: string }> {
   }));
 }
 
-/** Text built from fragments that stress quotes, comments and braces. */
 const arbValue = fc.array(
   fc.constantFrom(
     "${{",

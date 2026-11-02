@@ -145,7 +145,6 @@ Deno.test("extensionVersion: bumps past a prerelease published today to avoid co
 });
 
 Deno.test("extensionVersion: baseline is the highest version across all channels", async () => {
-  // stable is older; rc is the newest published version.
   const deps = makeDeps({
     getPublishedVersions: () =>
       Promise.resolve({

@@ -34,17 +34,10 @@ import { UserError } from "../../domain/errors.ts";
 import { lockingConfigOf } from "./datastore_lock_target.ts";
 import { FileLock } from "./file_lock.ts";
 
-// The datastore global lock, shared by the CLI and `swamp serve`.
-
-/**
- * Resolves a DatastoreProvider for a custom datastore config.
- * Ensures the datastore extension registry is loaded before lookup.
- */
 export async function resolveCustomProvider(
   config: CustomDatastoreConfig,
 ): Promise<DatastoreProvider> {
-  // Named, since a fresh checkout loads or installs the extension here
-  // (swamp-club#3803).
+  // named because a fresh checkout loads or installs the extension here
   await withSpan(
     "swamp.datastore.extensions.load",
     {},
@@ -65,22 +58,9 @@ export async function resolveCustomProvider(
 }
 
 /**
- * Lock options selecting the global datastore lock for a config's namespace
- * (giga-swamp Phase 3).
- *
- * Solo mode (no namespace) returns `undefined`, so the lock falls back to the
- * single shared `.datastore.lock` — byte-identical to before. When a namespace
- * is configured, returns `{ lockKey: ".datastore.lock", namespace }` so the
- * lock provider places the key at `{namespace}/.datastore.lock`, keeping it
- * within the namespace prefix for IAM-scoped credentials. Repos sharing a
- * datastore with different namespaces never contend on structural commands.
- *
- * Every construction of the GLOBAL datastore lock — the structural-command
- * acquire, the `acquireModelLocks` drain-coordination inspect, the per-model
- * flush push lock, and the breakglass status/release commands — must pass
- * these options so they all agree on the same namespaced key. A mismatch
- * would make the symmetric drain silently inspect a different lock than the
- * one held.
+ * every construction of the global datastore lock must pass these options so
+ * all agree on the same namespaced key; a mismatch makes the drain inspect a
+ * different lock than the one held
  */
 export function datastoreGlobalLockOptions(
   config: DatastoreConfig,
@@ -90,17 +70,10 @@ export function datastoreGlobalLockOptions(
   return { lockKey: ".datastore.lock", namespace };
 }
 
-/**
- * Creates the appropriate distributed lock for a datastore configuration.
- *
- * Used by the lock breakglass commands to inspect/release locks without
- * going through the full sync coordinator lifecycle, and by managed lockfile
- * transactions, in the CLI and in `swamp serve` (swamp-club#2838).
- */
 export async function createDatastoreLock(
   datastoreConfig: DatastoreConfig,
 ): Promise<DistributedLock> {
-  // A v3 bucket datastore locks as a filesystem one (swamp-club#3534).
+  // a v3 bucket datastore locks as a filesystem one
   const config = lockingConfigOf(datastoreConfig);
   const maxWaitMs = resolveLockTimeoutMs();
   const options = datastoreGlobalLockOptions(config);
@@ -113,9 +86,9 @@ export async function createDatastoreLock(
 }
 
 /**
- * The datastore global lock for `config`, created on the first acquire so
- * holding the handle costs nothing until it is used. Each acquire takes a
- * fresh lock instance; release releases the one last acquired.
+ * created on first acquire so holding the handle costs nothing until used; each
+ * acquire takes a fresh lock instance and release releases the last one
+ * acquired
  */
 export function datastoreGlobalLock(
   config: DatastoreConfig,

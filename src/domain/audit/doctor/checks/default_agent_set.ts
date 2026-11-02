@@ -21,9 +21,8 @@ import { join } from "@std/path";
 import type { PreflightCheck } from "../check.ts";
 
 /**
- * Kiro-only: verifies the workspace-level CLI settings point
- * `chat.defaultAgent` at `"swamp"`. Without this, plain `kiro-cli chat`
- * loads the built-in default agent and the swamp audit hook never fires.
+ * without chat.defaultAgent set to swamp, plain kiro-cli chat loads the
+ * built-in agent and the swamp audit hook never fires
  */
 export const defaultAgentSetCheck: PreflightCheck = {
   name: "default-agent-set",

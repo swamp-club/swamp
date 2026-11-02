@@ -17,13 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Chunk garbage collection (swamp-club#3249) on a real `commits.db` and the
- * filesystem `storage/1`: it reclaims the chunks no commit names, and a
- * fresh checkout can still replay the whole history afterwards, including
- * content later overwritten, deleted or garbage-collected.
- */
-
 import { assertEquals } from "@std/assert";
 import { join } from "@std/path";
 import { ChunkCollector } from "../src/domain/datastore_v3/chunk_collector.ts";
@@ -62,7 +55,6 @@ import {
 const PARTITION = modelPartition();
 const signal = () => AbortSignal.timeout(30_000);
 
-/** Content of several chunks, distinct per seed. */
 function content(seed: number): Uint8Array {
   return new Uint8Array(3 * TEST_CHUNK_BYTES + seed).map((_, i) =>
     (i * seed + seed) % 251
@@ -91,7 +83,6 @@ function remove(name: string, version: number) {
   });
 }
 
-/** Every chunk stored in a storage namespace. */
 async function storedChunks(env: V3Env, namespace: string): Promise<string[]> {
   const hashes: string[] = [];
   for await (const chunk of env.storage.list(namespace, signal())) {
@@ -100,11 +91,6 @@ async function storedChunks(env: V3Env, namespace: string): Promise<string[]> {
   return hashes.sort();
 }
 
-/**
- * A history of overwrites, a delete and a `data gc` in one namespace, plus
- * chunks a unit stored and then abandoned. Returns the chunks the commits
- * name and the abandoned ones.
- */
 async function writeHistory(env: V3Env, namespace: Namespace) {
   const store = (seed: number) =>
     env.chunkStore.write(namespace, content(seed), signal());
@@ -116,7 +102,6 @@ async function writeHistory(env: V3Env, namespace: Namespace) {
   const abandoned = [await store(6), await store(7)];
   const commits = [
     [await save("a", 1, v1), versionOp("a", 1)],
-    // The same key, overwritten: v1's chunks are only in history now.
     [await save("a", 1, overwritten)],
     [await save("b", 1, deleted), versionOp("b", 1)],
     [remove("b", 1)],
@@ -157,7 +142,6 @@ Deno.test("chunk gc: reclaims abandoned chunks, and a fresh checkout still repla
     await Deno.writeFile(temp, new Uint8Array([1]));
     await Deno.utime(temp, new Date(0), new Date(0));
 
-    // Every chunk is older than the grace period an hour from now.
     const collector = new ChunkCollector({
       commitStore: env.store,
       storage: fs,
@@ -175,7 +159,6 @@ Deno.test("chunk gc: reclaims abandoned chunks, and a fresh checkout still repla
     assertEquals(report.damaged, []);
     assertEquals(report.tempFilesRemoved, 1);
     assertEquals(await storedChunks(env, "_default"), solo.named);
-    // Another namespace is untouched until it is swept itself.
     assertEquals(
       await storedChunks(env, "acme"),
       [...acme.named, ...acme.abandoned].sort(),
@@ -183,7 +166,6 @@ Deno.test("chunk gc: reclaims abandoned chunks, and a fresh checkout still repla
     await collector.collect(restoreNamespace("acme"), { signal: signal() });
     assertEquals(await storedChunks(env, "acme"), acme.named);
 
-    // A checkout catching up from cursor 0 reads every put's chunks.
     const readModel = env.openReadModel();
     try {
       const result = await readModel.catchUp(signal());
@@ -207,7 +189,6 @@ Deno.test("chunk gc: reclaims abandoned chunks, and a fresh checkout still repla
   });
 });
 
-/** Content above the inline limit, so a unit stores it as chunks. */
 function large(seed: number): Uint8Array {
   return new Uint8Array(MAX_INLINE_BYTES + 3 * TEST_CHUNK_BYTES + seed).map((
     _,
@@ -215,19 +196,12 @@ function large(seed: number): Uint8Array {
   ) => (i * seed + seed) % 251);
 }
 
-/** A promise and the function that resolves it. */
 function deferred(): { promise: Promise<void>; resolve: () => void } {
   let resolve = () => {};
   const promise = new Promise<void>((done) => resolve = done);
   return { promise, resolve };
 }
 
-/**
- * Runs a sweep while a commit-log unit writes content whose chunks are old
- * and unreferenced (left by an abandoned unit). The unit stores (refreshes)
- * them after the sweep's first reference check; its commit lands either
- * before the sweep's re-check or after it. Returns the sweep's report.
- */
 async function sweepDuringWrite(
   env: V3Env,
   landing: "before re-check" | "after re-check",
@@ -271,8 +245,6 @@ async function sweepDuringWrite(
       if (landing === "before re-check" && lookups === 2) await committing;
       const found = await env.store.referencedChunks(namespace, hashes);
       if (lookups === 1) {
-        // The unit stores its content (has() finds the chunks, touch()
-        // refreshes them) and waits at its append.
         committing = unit.commit();
         await reachedAppend.promise;
       }
@@ -283,7 +255,6 @@ async function sweepDuringWrite(
     commitStore,
     storage: env.storage,
     graceMs: 0,
-    // The grace cutoff an hour ahead: every chunk listed is a candidate.
     clock: () => new Date(Date.now() + 60 * 60 * 1000),
   }).collect(SOLO_NAMESPACE, { signal: signal() });
   release.resolve();
@@ -305,11 +276,8 @@ for (const landing of ["before re-check", "after re-check"] as const) {
         chunks,
       );
       if (landing === "before re-check") {
-        // The sweep's re-check saw the commit and put the bytes back.
         assertEquals([report.deleted, report.restored], [0, chunks]);
       } else {
-        // The sweep deleted them; the writer's check after its commit
-        // landed stored them again.
         assertEquals([report.deleted, report.restored], [chunks, 0]);
       }
       const readModel = env.openReadModel();

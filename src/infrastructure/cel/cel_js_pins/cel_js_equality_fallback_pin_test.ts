@@ -17,13 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// Pins for equality fallback and container shortcuts
-// (design/enablers/typed-secrets.md Section 4.2, fact 2: "Container equality
-// and membership short-circuit on identity and type, and never call a
-// `Secret == string` overload for their elements. Direct dyn equality with no
-// matching overload falls back to identity without calling any handler. A
-// fault that only handlers record cannot see either case.").
-
 import { assertEquals, assertInstanceOf } from "@std/assert";
 import {
   type Environment,

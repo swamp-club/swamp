@@ -24,13 +24,11 @@ import type { LibSwampContext } from "../context.ts";
 import { notFound, validationFailed } from "../errors.ts";
 import { DEFAULT_TRUSTED, type TrustModifyEvent } from "./trust.ts";
 
-/** Dependencies for the trust rm operation, injected for testability. */
 export interface TrustRmDeps {
   readMarker: () => Promise<RepoMarkerData | null>;
   writeMarker: (data: RepoMarkerData) => Promise<void>;
 }
 
-/** Wires real infrastructure into TrustRmDeps. */
 export function createTrustRmDeps(repoDir: string): TrustRmDeps {
   const markerRepo = new RepoMarkerRepository();
   const repoPath = RepoPath.create(repoDir);
@@ -41,7 +39,6 @@ export function createTrustRmDeps(repoDir: string): TrustRmDeps {
   };
 }
 
-/** Removes a collective from the trusted list in .swamp.yaml. */
 export async function* trustRm(
   _ctx: LibSwampContext,
   deps: TrustRmDeps,

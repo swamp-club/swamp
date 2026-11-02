@@ -361,7 +361,6 @@ Deno.test("LogExtensionInfoRenderer: error event throws UserError", () => {
   );
 });
 
-/** The lines renderAcceptedWarnings logs, as the formatter would print them. */
 function acceptedWarningsLines(raw: unknown): string[] {
   const lines: string[] = [];
   const logger = {

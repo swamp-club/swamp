@@ -26,13 +26,9 @@ import { UserError } from "../../domain/errors.ts";
 import { dim } from "@std/fmt/colors";
 
 /**
- * Log mode deliberately splits the two streams: the URL alone on stdout, every
- * word of prose on stderr. That is what makes `swamp invite link | pbcopy`
- * capture a link and nothing else. Do not "tidy" the note onto stdout.
- *
- * The split needs help from outside this file to hold: log records reach stdout
- * by default, so this command is listed in `src/cli/stdout_contract.ts` to keep
- * them off it. Without that, `-v` alone breaks the contract above.
+ * log mode splits streams on purpose: the URL alone on stdout, all prose on
+ * stderr, so piping to pbcopy captures only the link. The command is listed in
+ * src/cli/stdout_contract.ts to keep log records off stdout.
  */
 class LogInviteLinkRenderer implements Renderer<InviteLinkEvent> {
   readonly #quiet: boolean;
@@ -49,19 +45,14 @@ class LogInviteLinkRenderer implements Renderer<InviteLinkEvent> {
         // the thing the user asked for.
         writeOutput(e.data.url);
 
-        // The note is non-essential by any reading, so `-q` silences it. It
-        // stays a direct console.error rather than a logger call: routing it
-        // through ctx.logger would get quiet handling for free but stamp
-        // designed prose with a timestamp, level and category.
+        // the note is non-essential so -q silences it; it uses console.error
+        // directly because the logger would stamp designed prose with a
+        // timestamp, level and category
         if (this.#quiet) return;
 
-        // Names the moment, not the amount. The payout lands only for a
-        // net-new account, and only when that recruit crosses the reward tier
-        // (swamp-club's `PLATFORM_INVITE_REWARD_TIER_ORDINAL`, ordinal 5 —
-        // Marsh Skulker) — never at signup. The point value lives server-side
-        // and will change, so it stays out of here; the rung is the stable
-        // part, and naming it is what stops "once they get established" from
-        // reading as "the moment they sign up".
+        // names the moment, not the amount: the payout lands only for a net-new
+        // account that crosses the reward tier, never at signup. The point
+        // value lives server-side and changes, so it stays out of here.
         console.error("");
         console.error(
           dim(
@@ -90,12 +81,8 @@ class JsonInviteLinkRenderer implements Renderer<InviteLinkEvent> {
 }
 
 /**
- * `quiet` rather than the CLI's `Verbosity`: a renderer is a pure output
- * formatter, and importing the CLI's type would point presentation at cli —
- * an edge `integration/ddd_layer_rules_test.ts` pins as frozen debt that may
- * shrink but never grow. The caller narrows, as `access_grant.ts` does. It is
- * also the more honest parameter: this renderer distinguishes quiet from
- * not-quiet and has nothing to say about verbose.
+ * takes quiet rather than the CLI's Verbosity because presentation must not
+ * import cli types; the caller narrows
  */
 export function createInviteLinkRenderer(
   mode: OutputMode,

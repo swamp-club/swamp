@@ -44,7 +44,6 @@ const workflow = Workflow.create({
   ],
 });
 
-/** A suspended run with `inputs` recorded. */
 function suspendedRun(inputs: Record<string, unknown>): WorkflowRun {
   const created = WorkflowRun.create(workflow);
   created.start();
@@ -93,7 +92,6 @@ Deno.test("checkResumeInputOverrides: refuses exactly when a key the run has wou
       if (refused) {
         assertEquals(refused.code, "resume_input_immutable");
         for (const k of changed) assert(refused.message.includes(`"${k}"`));
-        // Keys only added are not named.
         for (const k of Object.keys(supplied)) {
           if (!Object.hasOwn(stored, k)) {
             assertEquals(refused.message.includes(`"${k}"`), false);

@@ -31,7 +31,6 @@ Deno.test("generateDeviceCode - length is 9 (4 + hyphen + 4)", () => {
 });
 
 Deno.test("generateDeviceCode - contains no ambiguous characters", () => {
-  // Generate several codes to increase confidence
   for (let i = 0; i < 50; i++) {
     const code = generateDeviceCode();
     assertEquals(code.includes("0"), false, `code ${code} contains 0`);
@@ -47,6 +46,5 @@ Deno.test("generateDeviceCode - multiple calls produce different results", () =>
   for (let i = 0; i < 10; i++) {
     codes.add(generateDeviceCode());
   }
-  // With 31^8 possible codes, collisions in 10 calls are astronomically unlikely
   assertNotEquals(codes.size, 1, "all codes were identical");
 });

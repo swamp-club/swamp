@@ -102,7 +102,6 @@ Deno.test("reportSearch - finds markdown report entries", async () => {
 
   assertEquals(last.kind, "completed");
   if (last.kind === "completed") {
-    // Should only return markdown entries, not JSON pairs
     assertEquals(last.data.reports.length, 1);
     assertEquals(last.data.reports[0].reportName, "cost-report");
     assertEquals(last.data.reports[0].reportScope, "model");
@@ -187,7 +186,6 @@ Deno.test("reportSearch - type filter is exact, not substring", async () => {
   ]);
 
   const ctx = createLibSwampContext();
-  // A substring of the type name must not match — exact matching only.
   const events = await collect(
     reportSearch(ctx, deps, { type: "cost-audit-report" }),
   );

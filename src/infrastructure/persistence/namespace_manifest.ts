@@ -67,8 +67,8 @@ export async function readNamespaceManifest(
     throw error;
   }
 
-  // A hand-edited or corrupt manifest is a handled refusal, not a crash
-  // (swamp-club#3319). Only a missing file means "not registered".
+  // a hand-edited or corrupt manifest is a handled refusal, not a crash; only a
+  // missing file means not registered
   let parsed: unknown;
   try {
     parsed = JSON.parse(content);

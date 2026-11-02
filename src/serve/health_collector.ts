@@ -42,11 +42,8 @@ export interface HealthSnapshotSchedule {
   readonly cronExpression: string;
   readonly nextRun: string | null;
   readonly running: boolean;
-  /** Fires waiting to start. */
   readonly queued: number;
-  /** ISO-8601 fire (or, for a replayed run, enqueue) time of the oldest waiting fire. */
   readonly oldestQueuedAt: string | null;
-  /** Fire-to-start delay of the last run that started. */
   readonly lastQueueDelayMs: number | null;
 }
 
@@ -54,36 +51,26 @@ export interface HealthSnapshotWebhook {
   readonly route: string;
   readonly workflow: string;
   readonly scheme: string;
-  /** Runs taken off the queue and not yet settled. */
   readonly active: number;
-  /** Deliveries waiting to start. */
   readonly queued: number;
-  /** ISO-8601 enqueue time of the oldest waiting delivery. */
   readonly oldestQueuedAt: string | null;
-  /** Enqueue-to-start delay of the last run that started. */
   readonly lastQueueDelayMs: number | null;
 }
 
-/** One kind's last retention pass, from its watermark (swamp-club#3473). */
 export interface HealthSnapshotRetentionKind {
   readonly kind: string;
-  /** The configured retention, or null when the kind has none. */
   readonly retention: string | null;
-  /** The cutoff the last pass reaped before; null before any pass. */
   readonly cutoff: string | null;
   readonly lastPassAt: string | null;
-  /** False when the last pass stopped early; null before any pass. */
   readonly complete: boolean | null;
 }
 
-/** The repository's retention as health reports it: never a storage scan. */
 export interface HealthSnapshotRetention {
   readonly automatic: boolean;
   readonly configured: boolean;
   readonly kinds: HealthSnapshotRetentionKind[];
 }
 
-/** Gives health the retention component; cheap enough for every probe. */
 export interface RetentionHealthProvider {
   retention(): Promise<HealthSnapshotRetention | null>;
 }
@@ -100,10 +87,6 @@ export interface HealthSnapshot {
   readonly scheduling: {
     readonly enabled: boolean;
     readonly schedules: HealthSnapshotSchedule[];
-    /**
-     * The IANA time zone serve's scheduler evaluates cron expressions in
-     * (the serve host's local zone), so clients can preview fire times.
-     */
     readonly timeZone?: string;
   };
   readonly webhooks: HealthSnapshotWebhook[];
@@ -160,7 +143,6 @@ export interface HealthCollectorDeps {
   readonly scheduleEnabled: boolean;
   readonly webhookProvider: WebhookProvider | null;
   readonly remoteOnly: boolean;
-  /** Reports retention watermarks; absent, the snapshot has no retention. */
   readonly retentionProvider?: RetentionHealthProvider | null;
   /**
    * How long, in milliseconds, one collected snapshot is served to every
@@ -168,7 +150,6 @@ export interface HealthCollectorDeps {
    * collects (callers arriving while a collection runs still share it).
    */
   readonly snapshotMaxAgeMs?: number;
-  /** Monotonic clock for the snapshot age. Defaults to `performance.now`. */
   readonly now?: () => number;
   readonly onHealthTransition?: (
     previous: HealthStatus,
@@ -187,10 +168,8 @@ export function classifyHealthStatus(
   return "degraded";
 }
 
-/** How long a health snapshot waits for the retention watermarks. */
 export const RETENTION_HEALTH_READ_TIMEOUT_MS = 2_000;
 
-/** Resolves with the read, or null once `ms` pass first. */
 async function raceRetentionRead<T>(
   read: Promise<T | null>,
   ms: number,
@@ -218,12 +197,6 @@ export class HealthCollector {
     this.#deps = deps;
   }
 
-  /**
-   * Returns a health snapshot. Within `snapshotMaxAgeMs` of the last
-   * collection it returns that snapshot, so any number of readers and stream
-   * ticks cost one collection, component probes included. A failed
-   * collection is not kept.
-   */
   collect(signal?: AbortSignal): Promise<HealthSnapshot> {
     const now = this.#deps.now ?? (() => performance.now());
     const maxAgeMs = this.#deps.snapshotMaxAgeMs ?? 0;

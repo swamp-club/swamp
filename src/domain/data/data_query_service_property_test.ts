@@ -64,13 +64,11 @@ function makeRow(version: number, stepName: string): CatalogRow {
   };
 }
 
-/** Step names for versions 1..n of one data name; "" is a model-method write. */
 const arbStepNames = fc.array(fc.constantFrom("", "s1", "s2", "s3"), {
   minLength: 1,
   maxLength: 8,
 });
 
-/** Step names plus an arbitrary promotion order over their versions. */
 const arbWritesInOrder = arbStepNames.chain((steps) =>
   fc.tuple(
     fc.constant(steps),
@@ -140,12 +138,6 @@ Deno.test("property: upsertNewVersion in any promotion order matches computeLate
   }
 });
 
-/**
- * Step names for versions 1..n, plus an interleaving of at most one
- * promote and one remove per version. Every version starts as an in-flight
- * deferred write; removing one before it is promoted is a rollback, after
- * it is a delete.
- */
 const arbPromotionsAndRemovals = arbStepNames.chain((steps) =>
   fc.tuple(
     fc.constant(steps),
@@ -177,8 +169,6 @@ Deno.test("property: removals interleaved with out-of-order promotions match com
             promoted.add(version);
             store.upsertNewVersion(makeRow(version, steps[version - 1]));
           };
-          // Consecutive removals go through one bulkRemoveVersions call, a
-          // lone removal through removeVersion.
           let batch: number[] = [];
           const flushRemovals = () => {
             if (batch.length === 1) {
@@ -212,7 +202,6 @@ Deno.test("property: removals interleaved with out-of-order promotions match com
             }
           }
           flushRemovals();
-          // Promote whatever is still in flight, so every survivor counts.
           for (let version = 1; version <= steps.length; version++) {
             if (!removed.has(version) && !promoted.has(version)) {
               promote(version);
@@ -236,8 +225,6 @@ Deno.test("property: removals interleaved with out-of-order promotions match com
     }
   }
 });
-
-// ── Rename forwards (swamp-club#2968) ───────────────────────────────────────
 
 const NAMES = ["a", "b", "c", "d", "e", "f", "g", "h"];
 
@@ -272,11 +259,6 @@ function row(dataName: string): CatalogRow {
   };
 }
 
-/**
- * What an unversioned repository read of `start` returns: the name itself
- * when it has data, otherwise the end of its forward chain, following at
- * most five forwards and never revisiting a name.
- */
 function expectedTarget(
   start: string,
   forwards: Map<string, string>,
@@ -294,11 +276,6 @@ function expectedTarget(
   }
 }
 
-/**
- * The disk an unversioned repository read sees: a forwarded name's latest
- * version is its rename marker, any other live name holds data. Only the
- * methods rename-forward resolution reads are provided.
- */
 function diskRepo(forwards: Map<string, string>): UnifiedDataRepository {
   const disk = {
     namespace: "",
@@ -318,7 +295,6 @@ Deno.test("DataQueryService rename forwards: a read by any name matches what the
   try {
     fc.assert(
       fc.property(
-        // At most one forward per name, as a name has one latest version.
         fc.dictionary(fc.constantFrom(...NAMES), fc.constantFrom(...NAMES)),
         fc.subarray(NAMES),
         fc.constantFrom(...NAMES),
@@ -328,7 +304,6 @@ Deno.test("DataQueryService rename forwards: a read by any name matches what the
           try {
             catalog.markPopulated();
             const forwards = new Map(Object.entries(forwardRecord));
-            // A name whose latest version is a rename marker holds no data.
             const live = new Set(liveNames.filter((n) => !forwards.has(n)));
             for (const name of live) catalog.upsert(row(name));
             // The catalog may miss forwards beyond the first hop (a missed
@@ -379,7 +354,6 @@ const arbResourceOps = fc.array(
   { maxLength: 12 },
 );
 
-/** Rows as name@version:is_latest is_step_latest, sorted. */
 function catalogRows(catalog: CatalogStore): string[] {
   return [...catalog.iterate()]
     .map((r) => `${r.data_name}@${r.version}:${r.is_latest}${r.is_step_latest}`)
@@ -397,10 +371,9 @@ Deno.test("property: a catalog rebuilt from disk matches the write-through catal
         live.markPopulated();
         const repo = new FileSystemUnifiedDataRepository(dir, undefined, live);
         const modelId = crypto.randomUUID();
-        // A renamed-away name is never written again: re-saving it brings
-        // back its pre-rename versions on a rebuild (swamp-club#3707). Nor is
-        // a crashed name: a later save would leave the crashed version below
-        // the marker, where a rebuild still indexes it.
+        // a renamed-away or crashed name is never written again: re-saving
+        // would bring back its old versions, or leave the crashed version below
+        // the marker, on a rebuild
         const state = new Map<string, "active" | "deleted" | "retired">();
         const renamed: string[] = [];
         for (const [i, { kind, name }] of ops.entries()) {
@@ -436,9 +409,8 @@ Deno.test("property: a catalog rebuilt from disk matches the write-through catal
             state.set(target, "active");
             renamed.push(name);
           } else if (kind === "crash" && current === "active") {
-            // A save that died after metadata.yaml, before raw and the
-            // marker: the next version holds only renumbered metadata
-            // (swamp-club#4134).
+            // a save that died after metadata.yaml, before raw and the marker:
+            // the next version holds only renumbered metadata
             const latest = await repo.findByName(type, modelId, name);
             const metadata = parseYaml(
               Deno.readTextFileSync(

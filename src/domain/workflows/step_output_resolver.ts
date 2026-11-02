@@ -29,10 +29,8 @@ import type {
 import type { StepRun, WorkflowRun } from "./workflow_run.ts";
 
 /**
- * A resource a model_method step wrote, as recorded on the step's persisted
- * output. The run record keeps these references but never the attributes
- * (see stripResourceContent in execution_service.ts, swamp-club#1673), so
- * step outputs are read back from the datastore through these references.
+ * the run record keeps these references but never the attributes, so outputs
+ * are read back from the datastore through them
  */
 export interface StepResourceRef {
   dataId: string;
@@ -45,49 +43,34 @@ export interface StepResourceRef {
   contentType: string;
   tags: Record<string, string>;
   /**
-   * The namespace the record was written in, when the run record carries it
-   * (records written since `fromResourceHandle` set one). Absent on older
-   * run records; outputs are own-namespace by construction, so the reader
-   * supplies its own then.
+   * absent on older run records; outputs are own-namespace by construction, so
+   * the reader supplies its own
    */
   namespace?: string;
 }
 
-/** Reads a resource's attributes, or undefined when they are unavailable. */
 export type ResourceAttributeReader = (
   ref: StepResourceRef,
 ) => Promise<Record<string, unknown> | undefined>;
 
-/** Finds a child workflow run recorded on a parent workflow step. */
 export type ChildRunFinder = (
   workflowId: string,
   runId: string,
 ) => Promise<WorkflowRun | null>;
 
-/** Decides whether a resource's attributes may appear in resolved outputs. */
 export type ResourceReadPolicy = (ref: StepResourceRef) => Promise<boolean>;
 
-/** A step's outputs plus the attributes of each resource they came from. */
 export interface ResolvedStepOutputs {
-  /** Flat merge of the step's JSON resource attributes; undefined if none. */
   outputs?: Record<string, unknown>;
-  /** Attributes of each contributing resource, keyed by its dataId. */
   attributesByDataId: Record<string, Record<string, unknown>>;
-  /**
-   * The stored records the outputs were merged from, in write order, so a
-   * typed evaluator can view them through the accessor adapter with each
-   * tagged field a Secret (typed-secrets 4.2). Undefined when nothing
-   * contributes.
-   */
   sources?: StepOutputSources;
 }
 
 const JSON_CONTENT_TYPE = "application/json";
 
 /**
- * Merges resource attributes into one flat outputs record, in order. A later
- * resource wins when two share an attribute name. Returns undefined when
- * nothing contributes, so a step with no attributes has no outputs.
+ * a later resource wins when two share an attribute name; undefined when
+ * nothing contributes
  */
 export function mergeStepOutputs(
   attributeSets: ReadonlyArray<Record<string, unknown>>,
@@ -103,12 +86,6 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-/**
- * The JSON resource records a model_method step output holds, each with its
- * reference, in the order the step wrote them. Non-JSON resources carry no
- * attributes and are left out, as is a record missing what a reference
- * needs.
- */
 function jsonResourceRecords(
   output: unknown,
 ): { ref: StepResourceRef; record: Record<string, unknown> }[] {
@@ -154,19 +131,10 @@ function jsonResourceRecords(
   return found;
 }
 
-/**
- * Lists the JSON resources a model_method step output records, in the order
- * the step wrote them. Non-JSON resources carry no attributes and are left out.
- */
 export function stepResourceRefs(output: unknown): StepResourceRef[] {
   return jsonResourceRecords(output).map(({ ref }) => ref);
 }
 
-/**
- * The stored form of a resource for the accessor adapter: the reference's
- * identity and tags with the attributes as read. A reference from an older
- * run record names no namespace and takes the reader's.
- */
 function outputRecordOf(
   ref: StepResourceRef,
   attributes: Record<string, unknown>,
@@ -183,20 +151,12 @@ function outputRecordOf(
   };
 }
 
-/** One group at the step's own outputs, or none when nothing contributes. */
 function ownSources(
   records: readonly StepOutputRecord[],
 ): StepOutputSources | undefined {
   return records.length > 0 ? [{ path: [], records }] : undefined;
 }
 
-/**
- * Computes a model_method step's outputs from its full (unstripped) output,
- * whose resource records still carry the attributes loaded when the step ran.
- * Used during a live run so downstream steps need no datastore reads. The
- * sources are the same records as stored; `readerNamespace` stands in for
- * a record that names none.
- */
 export function liveStepOutputs(
   output: unknown,
   readerNamespace = "",
@@ -215,15 +175,8 @@ export function liveStepOutputs(
 }
 
 /**
- * Domain service that derives step outputs (`steps.<name>.outputs`) from a
- * persisted StepRun. A model_method step's outputs are the flat merge of the
- * attributes of the JSON resources it wrote; a workflow step's outputs are its
- * child run's model_method step outputs, keyed by child step name, one level
- * deep; a wait_for_signal step's outputs are the payload it received and the
- * signal's receipt. Resources the reader cannot find (ephemeral lifetime, collected
- * versions, an uncached remote datastore) or the policy rejects contribute
- * nothing. Each resolution also lists its sources, the records as read, so
- * a typed evaluator can adapt them (typed-secrets 4.2).
+ * resources the reader cannot find (ephemeral, collected, uncached remote) or
+ * the policy rejects contribute nothing
  */
 export class StepOutputResolver {
   private readonly readAttributes: ResourceAttributeReader;
@@ -236,15 +189,7 @@ export class StepOutputResolver {
     readAttributes: ResourceAttributeReader;
     findChildRun?: ChildRunFinder;
     canRead?: ResourceReadPolicy;
-    /**
-     * The reader's namespace, given to a source whose reference names none
-     * (an older run record). Outputs are own-namespace by construction.
-     */
     namespace?: string;
-    /**
-     * Stops resolving, with the signal's reason, once it aborts: checked
-     * before each resource and child run is read (swamp-club#3968).
-     */
     signal?: AbortSignal;
   }) {
     this.readAttributes = deps.readAttributes;
@@ -254,7 +199,6 @@ export class StepOutputResolver {
     this.signal = deps.signal;
   }
 
-  /** Resolves the outputs of one step from its persisted output. */
   async resolve(stepRun: StepRun): Promise<ResolvedStepOutputs> {
     const output = stepRun.output;
     if (!isRecord(output)) return { attributesByDataId: {} };
@@ -291,12 +235,9 @@ export class StepOutputResolver {
   }
 
   /**
-   * Resolves a child run's outputs for its parent workflow step: each
-   * succeeded model_method step's outputs keyed by step name, with each
-   * child step's sources grouped under its name. A step name is unique
-   * within a job only: a later job's step of the same name replaces the
-   * earlier one's outputs and sources alike. Nested workflow steps inside
-   * the child are not followed.
+   * a step name is unique within a job only, so a later job's step of the same
+   * name replaces the earlier one's outputs and sources; nested workflow steps
+   * in the child are not followed
    */
   async resolveChildOutputs(
     childRun: WorkflowRun,
@@ -345,9 +286,9 @@ export class StepOutputResolver {
       try {
         attributes = await this.readAttributes(ref);
       } catch (error) {
-        // A record the v3 datastore could not materialise fails the read
-        // with its code (swamp-club#3617); other unreadable data contributes
-        // nothing, like missing data.
+        // a record the v3 datastore could not materialise fails the read with
+        // its code; other unreadable data contributes nothing, like missing
+        // data
         if (isUnreadableContentError(error)) throw error;
         continue;
       }
@@ -356,7 +297,6 @@ export class StepOutputResolver {
       records.push(outputRecordOf(ref, attributes, this.namespace));
       if (ref.dataId) attributesByDataId[ref.dataId] = attributes;
     }
-    // Inside a diagnostic phase, merging is timed as the step's assembly.
     return currentDiagnosticTally().measureSync("assemble", () => ({
       outputs: mergeStepOutputs(attributeSets),
       attributesByDataId,
@@ -366,19 +306,13 @@ export class StepOutputResolver {
 }
 
 /**
- * Builds a reader over a data repository. When `getVaultService` is given,
- * the resource's sensitive fields are resolved from their vault references,
- * matching what `data.latest` exposes to CEL, and every resolved value is
- * recorded in the run's `sensitiveValues`; without it they stay as stored,
- * which is what a display path such as workflow history needs.
+ * without getVaultService sensitive fields stay as stored, which is what a
+ * display path such as workflow history needs
  */
 export function createDataRepositoryAttributeReader(
   dataRepo: UnifiedDataRepository,
 ): ResourceAttributeReader {
   return async (ref) => {
-    // Inside a diagnostic phase, the read and the parse are timed and
-    // counted apart. Content names never reuse the definition-file ones
-    // (`bytes_read`, `read_work_ms`) an owner lookup counts in the same phase.
     const tally = currentDiagnosticTally();
     let content: Uint8Array | null;
     try {

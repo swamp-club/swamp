@@ -17,15 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * A managed-config edit names the version it started from (swamp-club#4097):
- * two checkouts of one v3 datastore load a definition at the same version,
- * A saves an edit, and B's edit of the version it loaded is refused with
- * `config_edit_conflict` instead of replacing A's. Each command runs as its
- * own process would: the v3 handles close between commands, so the next one
- * catches its checkout up when it opens.
- */
-
 import "../src/domain/models/models.ts";
 import { assert, assertEquals } from "@std/assert";
 import { walk } from "@std/fs";
@@ -51,7 +42,6 @@ const json = (repoDir: string) => ["--repo-dir", repoDir, "--json"];
 
 type Kind = "workflow" | "model" | "vault";
 
-/** Runs one command in `repoDir` as its own process, returning its JSON. */
 async function cli(
   repoDir: string,
   args: string[],
@@ -69,7 +59,6 @@ async function cli(
   }
 }
 
-/** Runs one command that must fail, as its own process; returns its error. */
 async function cliRejecting(
   repoDir: string,
   args: string[],
@@ -89,10 +78,6 @@ async function cliRejecting(
   }
 }
 
-/**
- * The definition `name` of `kind` as checkout `repoDir` holds it, parsed,
- * after a `get` (its own command) caught the checkout up.
- */
 async function loaded(
   repoDir: string,
   kind: Kind,
@@ -116,7 +101,6 @@ async function loaded(
   throw new Error(`no ${kind} ${name} in ${repoDir}`);
 }
 
-/** Asserts `error` is the stale-edit refusal of `name`, saying who and when. */
 function assertConflict(error: unknown, kind: Kind, name: string): void {
   const conflict = configEditConflictOf(error);
   assert(conflict !== undefined, `not an edit conflict: ${error}`);
@@ -134,7 +118,6 @@ function assertConflict(error: unknown, kind: Kind, name: string): void {
   );
 }
 
-/** Creates `name` of `kind` in `repoDir`. */
 async function create(repoDir: string, kind: Kind, name: string) {
   switch (kind) {
     case "workflow":
@@ -146,7 +129,6 @@ async function create(repoDir: string, kind: Kind, name: string) {
   }
 }
 
-/** A field each kind keeps as given, and two values for it. */
 function withEdit(
   kind: Kind,
   doc: Record<string, unknown>,
@@ -167,7 +149,6 @@ for (const kind of ["workflow", "model", "vault"] as const) {
   Deno.test(`config edit conflict: B's stdin edit of the ${kind} version it loaded is refused after A saved, and A's edit stands`, async () => {
     await withV3RowRepos({ managedConfig: true }, async (repos) => {
       await create(repos.repoA, kind, "deploy");
-      // Both checkouts load deploy at the same version.
       const base = await loaded(repos.repoB, kind, "deploy");
       await loaded(repos.repoA, kind, "deploy");
 
@@ -183,7 +164,6 @@ for (const kind of ["workflow", "model", "vault"] as const) {
       );
       assertConflict(error, kind, "deploy");
 
-      // A's edit stands, in the log and in B's checkout.
       for (const repoDir of [repos.repoA, repos.repoB]) {
         assertEquals(
           editedBy(kind, await loaded(repoDir, kind, "deploy")),
@@ -202,7 +182,6 @@ for (const kind of ["workflow", "model", "vault"] as const) {
         [kind, "edit", "deploy"],
         stringifyYaml(withEdit(kind, base, "A")),
       );
-      // B loads A's version before it edits.
       const seen = await loaded(repos.repoB, kind, "deploy");
       assertEquals(editedBy(kind, seen), "A");
       await cli(
@@ -309,7 +288,6 @@ Deno.test("config edit conflict: B's stale edit is refused when its own earlier 
     await create(repos.repoA, "workflow", "deploy");
     await loaded(repos.repoA, "workflow", "deploy");
     const v1 = await loaded(repos.repoB, "workflow", "deploy");
-    // B edits; B's next command applies B's own commit at its catch-up.
     const v2 = withEdit("workflow", v1, "B");
     await cli(repos.repoB, ["workflow", "edit", "deploy"], stringifyYaml(v2));
     const seenByA = await loaded(repos.repoA, "workflow", "deploy");
@@ -318,7 +296,6 @@ Deno.test("config edit conflict: B's stale edit is refused when its own earlier 
       ["workflow", "edit", "deploy"],
       stringifyYaml({ ...seenByA, description: "from A" }),
     );
-    // B edits again from its own version, never having loaded A's.
     assertConflict(
       await cliRejecting(
         repos.repoB,
@@ -361,7 +338,6 @@ Deno.test("config edit conflict: a stale behavior delete is refused before it re
       "model",
       "deploy",
     );
-    // Nothing of the delete landed: A catches up to the same records.
     await loaded(repos.repoA, "model", "deploy");
     assertEquals(await datastoreRecords(repos.repoA), before);
   });
@@ -453,7 +429,6 @@ async function editorModeOpens(kind: Kind): Promise<void> {
       restore();
       await closeV3Datastores();
     }
-    // The edit succeeded and left A's version as it was.
     assertEquals(
       editedBy(kind, await loaded(repos.repoB, kind, "deploy")),
       "A",
@@ -474,7 +449,6 @@ async function pinDefaultVault(repos: { repoA: string; repoB: string }) {
   }
 }
 
-/** Deletes `name` of `kind`: `vault remove` is a vault config's delete. */
 function deleteArgs(kind: Kind, name: string): string[] {
   return kind === "vault"
     ? ["vault", "remove", name, "--yes"]

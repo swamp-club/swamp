@@ -22,24 +22,15 @@ import type { UnitOfWork } from "../domain/datastore/unit_of_work.ts";
 import { getSwampLogger } from "../infrastructure/logging/logger.ts";
 import { createLegacyUnitOfWork } from "../infrastructure/persistence/legacy_unit_of_work.ts";
 
-/**
- * Cross-cutting concern carrier for libswamp operations.
- * Carries cancellation signals and scoped metadata, following
- * the same pattern as Go's context.Context.
- */
 export interface LibSwampContext {
-  /** Cancellation signal. Abort to cancel the operation and all its children. */
   readonly signal: AbortSignal;
-  /** Scoped logger for this operation. */
   readonly logger: Logger;
   /**
    * Opens a fresh unit of work for one operation. Write use cases call it
    * through `withUnitOfWork`; nothing else should.
    */
   openUnitOfWork(): UnitOfWork;
-  /** Create a child context that cancels after the given duration. */
   withTimeout(ms: number): LibSwampContext;
-  /** Create a child context that cancels when either this context or the given signal aborts. */
   withSignal(signal: AbortSignal): LibSwampContext;
 }
 
@@ -57,11 +48,8 @@ export function createLibSwampContext(
     signal?: AbortSignal;
     logger?: Logger;
     /**
-     * Opens the unit of work for each write use case. Composition roots that
-     * hold a repository context pass one bound to that context's mark hook
-     * (`repoUnitOfWorkFactory` in
-     * `src/infrastructure/persistence/repo_unit_of_work.ts`). Child contexts
-     * keep it.
+     * composition roots that hold a repository context pass a factory bound to
+     * its mark hook (repoUnitOfWorkFactory); child contexts keep it
      */
     openUnitOfWork?: () => UnitOfWork;
   },

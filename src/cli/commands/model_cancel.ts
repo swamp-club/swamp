@@ -75,14 +75,12 @@ import { swampPath } from "../../infrastructure/persistence/paths.ts";
 type AnyOptions = any;
 
 /**
- * How long cancel waits for a method run's owning process to exit after
- * SIGTERM before it SIGKILLs it. The owner aborts the method, whose shell step
- * gets {@link KILL_GRACE_MS} between SIGTERM and SIGKILL, and then saves the
- * cancelled output, releases its locks and syncs; the margin covers that.
+ * the owner aborts the method, whose shell step gets KILL_GRACE_MS between
+ * SIGTERM and SIGKILL, then saves the cancelled output, releases its locks and
+ * syncs; the margin covers that.
  */
 export const METHOD_OWNER_STOP_GRACE_MS = KILL_GRACE_MS + 7_000;
 
-/** A process cancel stops, and how long it waits before SIGKILL. */
 export interface OwnerStop {
   pid: number;
   maxWaitMs: number;
@@ -93,23 +91,18 @@ export interface CancelModelMethodRunsDeps {
     RunTrackerRepository,
     "findAllRunning" | "findById" | "complete" | "recordCancelReason"
   >;
-  /** The method-run records an owner killed after its grace left open. */
   outputRepo: MethodRunOutputs;
-  /** Whether a stopped owner is gone; defaults to this host's process table. */
   liveness?: OwnerLiveness;
   killProcess?: (
     pid: number,
     options: { maxWaitMs: number },
   ) => Promise<boolean>;
-  /** Called with the owners about to be stopped, before waiting on them. */
   onStopping?: (stops: readonly OwnerStop[]) => void;
 }
 
 /**
- * The grace for stopping `pid`. A process that also owns a running workflow
- * run runs that run's cleanup steps when it is cancelled, so it gets the
- * workflow cancel grace; any other owner gets
- * {@link METHOD_OWNER_STOP_GRACE_MS}.
+ * a process that also owns a running workflow run runs that run's cleanup steps
+ * when cancelled, so it gets the workflow cancel grace.
  */
 export function ownerStopGraceMs(
   pid: number,
@@ -120,25 +113,15 @@ export function ownerStopGraceMs(
     : METHOD_OWNER_STOP_GRACE_MS;
 }
 
-/** How a method run ended once cancel was done with it. */
 export interface MethodRunCancelOutcome {
   run: ActiveRun;
-  /** `cancelled`, or how the run finished before the cancel took effect. */
   status: ActiveRunStatus;
 }
 
 /**
- * Cancels method runs: stops their owning processes together, each process
- * once, since the steps of one workflow share its process and a second
- * SIGTERM makes an owner exit at once. Then completes each tracker row as
- * cancelled. An owner that stopped in time completed its row itself, without
- * the reason, so the reason is recorded on it afterwards. An owner killed
- * after its grace saved nothing, so a method-run record it left `running` is
- * cancelled with {@link OWNER_STOPPED_STEP_ERROR}, as workflow cancel does,
- * before its row is completed. Returns each run's
- * final status: a run its owner finished another way during the wait keeps
- * that status. If stopping an owner fails, the other owners are still
- * stopped and their runs completed, then the first failure is thrown.
+ * stops owners together, each once (a second SIGTERM makes an owner exit at
+ * once); a record left running by an owner killed after its grace is cancelled
+ * with OWNER_STOPPED_STEP_ERROR
  */
 export async function cancelModelMethodRuns(
   runs: readonly ActiveRun[],
@@ -203,18 +186,14 @@ export async function cancelModelMethodRuns(
   return outcomes;
 }
 
-/** A method run a live `swamp serve` owns, which cancel must not stop. */
 export interface ServeOwnedMethodRun {
   run: ActiveRun;
-  /** The owning serve instance. */
   instanceId: string;
 }
 
 /**
- * The serve instance that owns `run`: its own instance id, or else the one
- * on a serve-owned workflow row that shares its pid and host. The fallback
- * covers step rows written by a serve binary that predates instance ids on
- * method rows.
+ * falls back to the instance on a serve-owned workflow row sharing its pid and
+ * host, for step rows written without an instance id.
  */
 function owningServeInstance(
   run: ActiveRun,
@@ -228,13 +207,9 @@ function owningServeInstance(
 }
 
 /**
- * Splits method runs into those cancel may stop and those a live
- * `swamp serve` owns. A serve-owned run's pid is the serve process, so
- * stopping it would shut down the whole server. A serve-owned run whose
- * owner is a dead process on this host is cancellable: there is nothing
- * left to signal, and cancel only completes its row. A pid from another
- * host says nothing about whether its serve is alive, so such a run is
- * always treated as live.
+ * a serve-owned run's pid is the serve process, so stopping it would shut down
+ * the server; a dead owner on this host only has its row completed; another
+ * host's pid says nothing, so it counts as live
  */
 export function splitServeOwnedRuns(
   runs: readonly ActiveRun[],
@@ -256,15 +231,11 @@ export function splitServeOwnedRuns(
   return { cancellable, serveOwned };
 }
 
-/** Which of a model's method runs cancel stops, and which it skips. */
 export interface MethodRunSelection {
-  /** The latest run cancel may stop; undefined when serve owns them all. */
   run: ActiveRun | undefined;
-  /** Runs a live `swamp serve` owns, newest first. */
   skipped: ServeOwnedMethodRun[];
 }
 
-/** Selects the latest of a model's method runs that cancel may stop. */
 export function selectMethodRunToCancel(
   runs: readonly ActiveRun[],
   runningRows: readonly ActiveRun[],
@@ -283,9 +254,7 @@ export function selectMethodRunToCancel(
   return { run: cancellable[0], skipped: serveOwned };
 }
 
-/** The running method runs a named cancel considers for one model. */
 export interface ModelMethodRuns {
-  /** The model's running method runs. */
   runs: ActiveRun[];
   /**
    * Running rows of the model's type that name no definition and that
@@ -294,20 +263,15 @@ export interface ModelMethodRuns {
   unattributed: ActiveRun[];
 }
 
-/**
- * What was found out about the rows that name no definition: the ids of
- * those that are the model's runs, and of those that are another model's.
- */
 export interface LegacyRunAttribution {
   own: ReadonlySet<string>;
   others: ReadonlySet<string>;
 }
 
 /**
- * Selects a model's running method runs by definition id, never by type
- * alone (swamp-club#3244). A row registered before the tracker recorded the
- * definition id (schema v4 and earlier) is the model's only when `legacy`
- * says so, and is unattributed unless `legacy` places it with another model.
+ * selects by definition id, never by type alone. A row without a recorded
+ * definition id is the model's only when legacy says so, and unattributed
+ * unless legacy places it with another model.
  */
 export function methodRunsOfModel(
   runningRows: readonly ActiveRun[],
@@ -329,25 +293,16 @@ export function methodRunsOfModel(
   };
 }
 
-/** What ties a row that names no definition to the model that runs it. */
 export interface LegacyRunEvidence {
-  /** The method-run records; a workflow step saves its own while running. */
   outputs: Pick<MethodRunOutputs, "findByIds">;
-  /** Reads the model's own lock, which a mutating method run holds. */
   inspectModelLock: () => Promise<LockInfo | null>;
   logger: Logger;
 }
 
 /**
- * {@link methodRunsOfModel} for a resolved model. A running row of its type
- * that names no definition is attributed from what its run left behind, and
- * nothing is read when there is no such row:
- *
- * 1. its method-run record, which carries the definition id and decides the
- *    row either way. Only a workflow step has one while it runs;
- * 2. failing that, the model's lock: the row is the model's when the row's
- *    process holds it and runs no other method. A direct run of a method
- *    that does not mutate takes no lock, so its row stays unattributed.
+ * an unattributed row is attributed from its method-run record (only a workflow
+ * step has one while running), else from the model's lock if its process holds
+ * it and runs no other method
  */
 export async function findMethodRunsOfModel(
   runningRows: readonly ActiveRun[],
@@ -424,7 +379,6 @@ function skippedFields({ run, instanceId }: ServeOwnedMethodRun) {
   return { ...methodRunFields(run), instanceId };
 }
 
-/** How to cancel a serve-owned method run, which cancel will not stop. */
 const SERVE_CANCEL_GUIDANCE =
   "for a workflow step, cancel its workflow run with swamp workflow cancel --run <workflow-run-id> --server <url>; " +
   "for a direct method run, stop the client that started it";
@@ -443,10 +397,6 @@ function warnServeOwnedSkipped(
   logger.warn(`To cancel one: ${SERVE_CANCEL_GUIDANCE}`);
 }
 
-/**
- * The owners in `stops` still running, and the longest cancel will wait on
- * them in seconds; undefined when none is running.
- */
 function liveStops(
   stops: readonly OwnerStop[],
 ): { live: OwnerStop[]; seconds: number } | undefined {
@@ -456,22 +406,15 @@ function liveStops(
   return { live, seconds: longest / 1000 };
 }
 
-/**
- * The hint for method runs an older swamp started without recording their
- * model: only cancelling every run reaches them. Names the command as the
- * user typed it on this surface.
- */
 export function cancelAllHint(syntax: CommandSyntax): string {
   return `'${syntax.invocation} --all' stops them, along with every other running method run a swamp serve does not own.`;
 }
 
-/** The preferred spelling: `swamp behavior cancel`. */
 export const BEHAVIOR_CANCEL_SYNTAX: CommandSyntax = {
   invocation: "swamp behavior cancel",
   surface: "behavior",
 };
 
-/** The legacy spelling: `swamp model cancel`. */
 export const MODEL_CANCEL_SYNTAX: CommandSyntax = {
   invocation: "swamp model cancel",
   surface: "model",
@@ -559,9 +502,9 @@ export function createModelCancelCommand(syntax: CommandSyntax) {
             return;
           }
 
-          // In a root unit of work with no push, so the run saves stage into
-          // it instead of reaching the hook through signalChange's fallback
-          // (swamp-club#3056). Nothing pushes, as before.
+          // in a root unit of work with no push, so the run saves stage into it
+          // instead of reaching the hook through signalChange's fallback.
+          // Nothing pushes.
           const outcomes = await runCommandInRootUnit(
             repoContext,
             { push: undefined },
@@ -620,7 +563,6 @@ export function createModelCancelCommand(syntax: CommandSyntax) {
           return;
         }
 
-        // Cancel a specific model's running output
         const definitionRepo = repoContext.definitionRepo;
         const resolved = await definitionRepo.findByNameGlobal(modelIdOrName!);
         if (!resolved) {

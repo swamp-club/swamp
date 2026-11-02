@@ -35,10 +35,8 @@ import type { ResolveBinary } from "./checks/resolve_binary.ts";
 import { makeSwampBinaryOnPathCheck } from "./checks/swamp_binary_on_path.ts";
 
 /**
- * Streaming events from the doctor audit pipeline. The `error` variant is
- * required by the libswamp stream-protocol type system (`HasTerminals<E>`)
- * and is available for future failure modes that need to short-circuit
- * the stream mid-run.
+ * the error variant is required by the libswamp stream-protocol type system and
+ * is available for failures that short-circuit the stream
  */
 export type AuditDoctorEvent =
   | { kind: "check-started"; name: PreflightCheckName }
@@ -46,32 +44,20 @@ export type AuditDoctorEvent =
   | { kind: "completed"; report: AuditDoctorReport }
   | { kind: "error"; error: SwampError };
 
-/** Deps for running the doctor. */
 export interface AuditDoctorDeps {
   repoPath: string;
   auditDir: string;
   tool: string;
   spawnSwamp: SpawnFn;
   abortSignal: AbortSignal;
-  /**
-   * Cross-platform PATH resolver. The CLI layer wires in
-   * `defaultCommandResolver()` from `infrastructure/process`; tests pass a
-   * fake. Required when `checks` is not supplied (the default check order
-   * uses it for the binary-on-PATH checks).
-   */
   resolveBinary?: ResolveBinary;
-  /** Override the default check set (tests only). */
   checks?: readonly PreflightCheck[];
 }
 
 /**
- * Canonical check run order. Fixed so the UI output is stable and so a
- * reviewer can see that later checks depend on earlier ones passing in
- * practice (e.g. smoke-test requires swamp on PATH).
- *
- * `resolveBinary` is injected so the domain layer doesn't import the
- * cross-platform `which`/`where` helper from infrastructure — the CLI
- * passes `defaultCommandResolver()` in.
+ * fixed so output is stable and later checks can rely on earlier ones passing;
+ * resolveBinary is injected so domain does not import the infrastructure
+ * resolver
  */
 export function defaultCheckOrder(
   resolveBinary: ResolveBinary,
@@ -102,12 +88,6 @@ function buildDefaultChecks(deps: AuditDoctorDeps): readonly PreflightCheck[] {
   return defaultCheckOrder(deps.resolveBinary);
 }
 
-/**
- * Runs preflight checks against the audit integration for the given tool.
- *
- * For tools without audit hooks (amp, codex, none), emits a single
- * skip result and returns a `warn` report.
- */
 export async function* auditDoctor(
   deps: AuditDoctorDeps,
 ): AsyncIterable<AuditDoctorEvent> {

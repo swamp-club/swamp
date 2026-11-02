@@ -37,7 +37,6 @@ Deno.test("encodeContent property: any bytes decode back to the input", () => {
   fc.assert(
     fc.property(fc.uint8Array({ maxLength: 512 }), (bytes) => {
       const encoded = encodeContent(bytes);
-      // utf-8 text drops a leading byte-order mark; base64 keeps every byte.
       const expected =
         encoded.contentEncoding === "utf-8" && startsWithBom(bytes)
           ? bytes.subarray(BOM.length)

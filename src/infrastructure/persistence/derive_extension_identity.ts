@@ -21,25 +21,9 @@ import { basename } from "@std/path";
 import { BEHAVIORS_DIR_NAME } from "../../domain/terminology/behavior_aliases.ts";
 
 /**
- * Logical identity of an extension as the catalog records it.
- *
- *   - For pulled extensions, `name` is parsed from the on-disk path
- *     (`.swamp/pulled-extensions/<name>/<kind>/...`); `version` is
- *     intentionally left empty because the on-disk layout encodes only
- *     the name. Version is owned by `upstream_extensions.json` (the
- *     lockfile) and consulted at read time by `ExtensionRepository`'s
- *     empty-version fallback (W1b). Treating the catalog and the
- *     lockfile as two systems of record — with the lockfile
- *     authoritative for version — keeps W1a's schema migration narrow.
- *
- *   - For local extensions (rows under `<repo>/extensions/<kind>/`),
- *     this function returns the synthetic `@local/<basename(repoRoot)>`
- *     at version `"0.0.0"`. When `extensions/manifest.yaml` declares
- *     both `name` and `version`, callers (e.g. {@link ExtensionRepository},
- *     {@link ReconcileFromDiskService}) override this synthetic identity
- *     with the manifest-sourced values. The override happens outside
- *     this function — `deriveExtensionIdentity` remains a pure string
- *     transform that does not read the filesystem beyond its inputs.
+ * pulled extensions get an empty version (the lockfile owns it); local ones get
+ * @local/<repo> at 0.0.0, which callers override from the manifest, keeping
+ * this a pure string transform
  */
 export interface ExtensionIdentity {
   readonly name: string;
@@ -47,90 +31,29 @@ export interface ExtensionIdentity {
 }
 
 /**
- * Derives the logical extension identity for a catalog row's
- * `source_path`. Returns `null` when the path matches neither layout —
- * the W1a migration converts null to "drop the row," and the W1b
- * `ExtensionRepository` fallback converts null to "skip + DELETE the
- * orphaned row" with a structured warning.
- *
- * The function is a pure string transform. It does not stat the
- * filesystem, does not read the lockfile, and does not normalize
- * `..`/`.` segments. Callers must pre-canonicalize `sourcePath` and
- * `repoRoot` (see {@link canonicalizePath}) so prefix matching is
- * stable across mixed-case filesystems.
- *
- * Layout rules (issue swamp-club#211, W1):
- *
- *   - Pulled: `<repoRoot>/.swamp/pulled-extensions/<name>/...`, or
- *     `<repoRoot>/.swamp/config/pulled-extensions/<name>/...` for
- *     managedConfig repos (swamp-club#2490). Both roots are checked
- *     before the local rule.
- *     Note <name> may contain forward slashes (scoped extension names
- *     like `@swamp/aws/ec2` are common). When `knownNames` (e.g. the
- *     lockfile's entries) contains a prefix of the path, the longest
- *     such name wins — this is the only way to resolve names that
- *     themselves contain a kind segment, like `@org/foo/webhooks`.
- *     Otherwise the function consumes everything between the
- *     `pulled-extensions/` prefix and the next known kind segment
- *     (`models`, `vaults`, `datastores`, `reports`, `webhooks`,
- *     `workflows`, `skills`) as the name, never splitting inside the
- *     two-segment minimum of a scoped name (`@org/webhooks`).
- *   - Local or source-mounted: any path containing an
- *     `/extensions/<kind>/` segment where `<kind>` is one of the known
- *     kind directory names. Both `<repoRoot>/extensions/<kind>/...`
- *     (repo-internal locals) and `<externalDir>/extensions/<kind>/...`
- *     (source-mounted via `swamp extension source add <externalDir>`)
- *     match this rule. They roll up into the same synthetic
- *     `@local/<basename(repoRoot)>` aggregate: per the design doc,
- *     `@local/<repo-name>` covers every Source under every
- *     `extensions/<kind>/` tree for the repo regardless of whether
- *     the source dir is inside the repo or mounted from outside.
- *   - Otherwise: `null`.
- *
- * Found-during-implementation correction from issue/v5 spec: the issue
- * body claimed pulled paths encode `<name>/<version>`. They encode
- * `<name>` only. Version comes from the lockfile.
- *
- * Source-mounted handling note: catalog rows for source-mounted
- * extensions have absolute paths outside `repoRoot` (e.g.
- * `/some/external/dir/extensions/models/foo.ts`). An earlier draft of
- * this helper only matched `<repoRoot>/extensions/` and missed those
- * rows; the generalised "any `/extensions/<kind>/` segment" rule
- * catches both layouts.
+ * pure string transform: callers must pre-canonicalize sourcePath and repoRoot
+ * so prefix matching is stable; the longest known name wins since names can
+ * contain kind segments
  */
 export function deriveExtensionIdentity(
   sourcePath: string,
   repoRoot: string,
   knownNames: readonly string[] = [],
 ): ExtensionIdentity | null {
-  // The migration's sub-step 4 has already canonicalized source_path
-  // (lowercase + forward-slash on Windows; raw on POSIX). We do the
-  // same prefix matching here so a TS-driven backfill loop and the
-  // W1b runtime fallback share the exact same matching semantics.
-  // pulledPrefix always ends in '/', so plain startsWith is correct —
-  // it can't match `/repo/.swamp/pulled-extensions-archive/...` because
-  // the literal `/` after `pulled-extensions` is part of the prefix.
-  //
-  // Both pulled roots are checked before the local rule, so a pulled
-  // extension whose name contains an `extensions/<kind>` pair (e.g.
-  // `@org/extensions/models/...`) is never mistaken for a local one.
+  // pulled roots are checked before the local rule so a pulled name containing
+  // extensions/<kind> is not taken as local; the trailing slash keeps
+  // pulled-extensions-archive from matching
   for (const root of PULLED_ROOTS) {
     const pulledPrefix = joinForward(repoRoot, root);
     if (!sourcePath.startsWith(pulledPrefix)) continue;
     const nameAndRest = sourcePath.slice(pulledPrefix.length);
     const name = extractPulledExtensionName(nameAndRest, knownNames);
     if (name === null) {
-      // Path is under pulled-extensions/ but doesn't have a recognizable
-      // <name>/<kind>/ segment — corrupt or non-standard layout.
       return null;
     }
     return { name, version: "" };
   }
 
-  // Local or source-mounted: any `/extensions/<kind>/` segment where
-  // <kind> is one of the known kind directory names. Catches both
-  // repo-internal locals (under `<repoRoot>/extensions/<kind>/`) and
-  // source-added external dirs (`/external/dir/extensions/<kind>/`).
   if (containsKnownExtensionsKindSegment(sourcePath)) {
     return {
       name: `@local/${basename(repoRoot)}`,
@@ -141,18 +64,11 @@ export function deriveExtensionIdentity(
   return null;
 }
 
-/** The pulled roots `resolvePulledExtensionsRoot` can return, relative
- *  to the repo root. */
 const PULLED_ROOTS = [
   ".swamp/pulled-extensions/",
   ".swamp/config/pulled-extensions/",
 ] as const;
 
-/**
- * Walks the path's `/extensions/<kind>/` segments looking for a known
- * kind directory after the literal `extensions/` segment. Returns true
- * if and only if the path contains `**\/extensions/<known-kind>/...`.
- */
 function containsKnownExtensionsKindSegment(path: string): boolean {
   const parts = path.split("/");
   for (let i = 0; i < parts.length - 1; i++) {
@@ -167,11 +83,6 @@ function containsKnownExtensionsKindSegment(path: string): boolean {
   return false;
 }
 
-/** Kind subdirectory names that delimit the end of an extension name
- *  inside the pulled-extensions tree. Matches the directories created
- *  by `installExtension` at `pull.ts:892` (per-kind subtree under the
- *  per-extension subtree).
- */
 const KIND_SEGMENTS = new Set([
   "models",
   "vaults",
@@ -183,29 +94,12 @@ const KIND_SEGMENTS = new Set([
 ]);
 
 /**
- * Kind directory names that exist only in local and source-mounted trees:
- * `extensions/behaviors/`, the behavior-spelled sibling of
- * `extensions/models/` (swamp-club#3338). A pulled tree never has one —
- * pushed archives carry those sources under `models/` — so these are kept
- * out of {@link KIND_SEGMENTS}, which also splits pulled names: a pulled
- * extension named `@org/behaviors/...` keeps its whole name.
+ * behaviors/ exists only in local and source-mounted trees, so it stays out of
+ * KIND_SEGMENTS, which also splits pulled names; a pulled @org/behaviors/...
+ * keeps its whole name
  */
 const LOCAL_ONLY_KIND_SEGMENTS = new Set([BEHAVIORS_DIR_NAME]);
 
-/**
- * Walks segment by segment through the trailing portion of a pulled
- * path until it hits a known kind segment, returning everything
- * consumed before that as the extension name. Returns null when the
- * path has no kind segment (corrupt/non-standard layout).
- *
- * Examples (sourcePath after `pulledPrefix` is stripped):
- *   "@scope/foo/models/x.ts"          → "@scope/foo"
- *   "@hivemq/harvester/kubeconfig/models/harvester/kubeconfig.ts"
- *                                     → "@hivemq/harvester/kubeconfig"
- *   "no-kind-segment/file.ts"         → null
- *   "models/at-the-root.ts"           → null (zero-length name)
- *   "@org/webhooks/models/hook.ts"    → "@org/webhooks"
- */
 function extractPulledExtensionName(
   nameAndRest: string,
   knownNames: readonly string[],
@@ -227,7 +121,7 @@ function extractPulledExtensionName(
   const minNameSegments = parts[0].startsWith("@") ? 2 : 0;
   for (let i = minNameSegments; i < parts.length; i++) {
     if (KIND_SEGMENTS.has(parts[i])) {
-      if (i === 0) return null; // Empty name — meaningless.
+      if (i === 0) return null;
       return parts.slice(0, i).join("/");
     }
   }
@@ -235,11 +129,8 @@ function extractPulledExtensionName(
 }
 
 /**
- * Joins a directory and a relative path with forward slashes, matching
- * the canonical form produced by {@link canonicalizePath} on Windows
- * and the natural form on POSIX. We deliberately do not use
- * `@std/path/join` here — `join` produces backslashes on Windows,
- * which would not match canonicalized source_path values.
+ * joins with forward slashes to match canonicalizePath output on Windows;
+ * @std/path join would emit backslashes
  */
 function joinForward(dir: string, rel: string): string {
   const trimmedDir = dir.endsWith("/") ? dir.slice(0, -1) : dir;

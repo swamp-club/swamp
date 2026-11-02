@@ -24,7 +24,6 @@ import {
 } from "./signal_wait.ts";
 import { StepTask, StepTaskSchema } from "./step_task.ts";
 
-/** The one schema issue a refused step task reports. */
 function refusalOf(input: unknown): string {
   const result = StepTaskSchema.safeParse(input);
   assertEquals(result.success, false);
@@ -158,8 +157,6 @@ Deno.test("StepTask.equals returns false for different task types", () => {
   assertEquals(task1.equals(task2), false);
 });
 
-// Schema validation tests
-
 Deno.test("StepTaskSchema rejects empty modelIdOrName", () => {
   assertThrows(() => {
     StepTaskSchema.parse({
@@ -189,8 +186,6 @@ Deno.test("StepTaskSchema rejects empty workflowIdOrName", () => {
   });
 });
 
-// Backward compatibility tests
-
 Deno.test("StepTaskSchema throws clear error for shell type", () => {
   assertStringIncludes(
     refusalOf({ type: "shell", command: "echo" }),
@@ -210,8 +205,6 @@ Deno.test("StepTaskSchema shell error suggests command/shell model", () => {
     "command/shell",
   );
 });
-
-// Direct type execution tests
 
 Deno.test("StepTask.directExecution creates direct type execution task", () => {
   const task = StepTask.directExecution(
@@ -290,8 +283,6 @@ Deno.test("StepTaskSchema rejects neither modelIdOrName nor modelType", () => {
   );
 });
 
-// globalArgs tests for direct type execution
-
 Deno.test("StepTaskSchema parses globalArgs with modelType + modelName", () => {
   const result = StepTaskSchema.parse({
     type: "model_method",
@@ -356,8 +347,6 @@ Deno.test("StepTaskSchema parses globalArgs without inputs", () => {
     assertEquals(result.inputs, undefined);
   }
 });
-
-// Manual approval tests
 
 Deno.test("StepTask.manualApproval creates manual approval task", () => {
   const task = StepTask.manualApproval("Verify SSH access before proceeding");
@@ -431,8 +420,6 @@ Deno.test("StepTaskSchema throws clear error for arguments instead of inputs", (
     'Did you mean "inputs"',
   );
 });
-
-// Dynamic expression inputs/globalArgs
 
 Deno.test("StepTaskSchema accepts expression string for model_method inputs", () => {
   const result = StepTaskSchema.parse({
@@ -638,7 +625,6 @@ Deno.test("StepTaskSchema: a wait_for_signal timeout is at most one year", () =>
 
   assertEquals(parse(SIGNAL_WAIT_MAX_TIMEOUT_SECONDS), true);
   assertEquals(parse(SIGNAL_WAIT_MAX_TIMEOUT_SECONDS + 1), false);
-  // Far enough out that the deadline would not be a date at all.
   assertEquals(parse(99999999999999), false);
   assertEquals(parse(Infinity), false);
 });

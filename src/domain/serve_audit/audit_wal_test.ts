@@ -208,15 +208,12 @@ Deno.test(
     const wal = new AuditWal({ dir, maxWalBytes: 1500 });
     await wal.initialize();
 
-    // Append segments and track which ones survive
     const s1 = await wal.append([makeEvent("first")]);
     const bytesPerSegment = wal.totalBytes;
     await wal.append([makeEvent("second")]);
     await wal.append([makeEvent("third")]);
     await wal.append([makeEvent("fourth")]);
 
-    // With 1500 byte limit and ~450-500 bytes per segment,
-    // we expect ~3 segments to fit, oldest evicted
     const segments = wal.listSegments();
     assertEquals(segments.includes(s1), false);
     assertEquals(wal.totalBytes <= 1500 + bytesPerSegment, true);
@@ -233,7 +230,6 @@ Deno.test(
     assertEquals(wal.isFull, false);
 
     await wal.append([makeEvent("fill")]);
-    // A single event's JSONL is likely > 100 bytes
     assertEquals(wal.isFull, true);
   }),
 );

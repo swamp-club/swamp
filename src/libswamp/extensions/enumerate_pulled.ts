@@ -31,7 +31,6 @@ import { CATALOG_FAILURE_STATES } from "../../domain/extensions/bundle_freshness
 import { PER_EXTENSION_SCAFFOLD_DIRS } from "./layout.ts";
 import { readInstalledEntries } from "../../infrastructure/persistence/installed_entries.ts";
 
-/** Types that can appear under a per-extension subtree. */
 export type PulledExtensionType =
   | "models"
   | "workflows"
@@ -42,22 +41,9 @@ export type PulledExtensionType =
   | "files";
 
 /**
- * Enumerates the per-extension type dirs for every installed pulled
- * extension that has a per-extension on-disk subtree present.
- *
- * Reads upstream_extensions.json, filters to entries whose per-extension
- * dir exists on disk (skipping extensions still in a legacy flat layout
- * or missing altogether), and returns absolute paths sorted for
- * deterministic output — required for sourceDirsFingerprint stability
- * across repeat loads.
- *
- * Callers pass each returned path as a separate element of
- * `additionalDirs` when invoking `UserModelLoader.loadModels` /
- * `buildIndex`, so the loader walks each extension's subtree in
- * isolation.
- *
- * `localLockfilePath` adds the entries of the transitional in-repo
- * auto-resolve lockfile (see `transitionalLocalLockfilePath`).
+ * sorted for deterministic output, required for sourceDirsFingerprint stability
+ * across repeat loads; each path is passed as a separate additionalDirs element
+ * so the loader walks each subtree in isolation
  */
 export async function enumeratePulledExtensionDirs(
   lockfilePath: string,
@@ -92,46 +78,18 @@ export async function enumeratePulledExtensionDirs(
   return dirs;
 }
 
-/** A pulled extension found on disk that ships datastore sources. */
 export interface OnDiskDatastoreExtension {
-  /** Extension name, e.g. `@swamp/s3-datastore`. */
   name: string;
-  /** The pulled root the extension was found under. */
   pulledRoot: string;
-  /** `<pulledRoot>/<name>/datastores`. */
   datastoresDir: string;
 }
 
-/** Deepest extension name to look for (`@scope/a/b/c/d/e`). */
 const MAX_EXTENSION_NAME_DEPTH = 6;
 
 /**
- * Finds pulled datastore extensions by scanning the in-repo pulled roots on
- * disk, without reading any lockfile (swamp-club#2483).
- *
- * In a managedConfig repo on an extension-backed datastore, the datastore
- * extension must load before the managed config base, and so the lockfile,
- * can be located. Both in-repo roots are scanned:
- * `.swamp/config/pulled-extensions` (managed) and `.swamp/pulled-extensions`
- * (where `datastore config migrate` leaves pre-migrate pulls, because it
- * copies the tree to the cache rather than to the managed in-repo root).
- *
- * An extension root is a directory under an `@`-prefixed path holding a
- * `manifest.yaml` whose `name` equals its path relative to the root. It is
- * returned only when its `datastores/` holds at least one `.ts` file (pull
- * always creates an empty `datastores/`). Scaffold kind dirs are not
- * descended into, but manifest-bearing dirs are, so nested names such as
- * `@a/b` and `@a/b/c` are both found.
- *
- * A name found under both roots is returned once, from the preferred root:
- * the managed root in managed repos, which is where auto-resolve and
- * explicit pulls write, otherwise the legacy root.
- *
- * @param options.onUnreadable Called for each directory the scan skipped
- *   because it could not read it, so a caller can tell an incomplete scan
- *   from an extension that is not on disk.
- * @returns Chosen extensions sorted by `datastoresDir`, for a stable
- *   source-dirs fingerprint.
+ * scans both in-repo pulled roots without a lockfile, since the datastore
+ * extension must load before the lockfile can be located; a name under both is
+ * returned once, from the managed root in managed repos, else the legacy one
  */
 export async function enumeratePulledDatastoreExtensionsOnDisk(
   repoDir: string,
@@ -162,9 +120,8 @@ export async function enumeratePulledDatastoreExtensionsOnDisk(
 const logger = getLogger(["swamp", "extensions", "enumerate-pulled"]);
 
 /**
- * Skips a directory the scan cannot read, so one unreadable subtree does
- * not hide every other datastore extension. A missing one is skipped
- * silently.
+ * one unreadable subtree must not hide every other datastore extension; a
+ * missing one is skipped silently
  */
 function skipUnreadable(
   dir: string,
@@ -242,7 +199,6 @@ async function containsTypeScriptFile(
   return false;
 }
 
-/** The catalog operations {@link purgeUnchosenPulledDatastoreRows} needs. */
 export interface DatastoreRowCatalog {
   findByKind(kind: "datastore"): Array<{
     source_path: string;
@@ -252,16 +208,9 @@ export interface DatastoreRowCatalog {
 }
 
 /**
- * Removes datastore catalog rows that sit under either in-repo pulled root
- * but outside every chosen `datastores/` dir, such as the copy of a
- * datastore extension that lost the on-disk dedupe. Failure-state rows are
- * kept, as the warm-path freshness check keeps them. Without this, a cold
- * rebuild would leave the losing copy's rows registered alongside the
- * chosen ones.
- *
- * `chosen` must come from a scan that skipped no unreadable directory;
- * otherwise the rows of an extension the scan could not read are purged
- * too.
+ * failure-state rows are kept, as the warm-path freshness check keeps them;
+ * chosen must come from a scan that skipped no unreadable directory, or the
+ * rows of an extension it could not read are purged too
  */
 export function purgeUnchosenPulledDatastoreRows(
   catalog: DatastoreRowCatalog,
@@ -288,12 +237,8 @@ export function purgeUnchosenPulledDatastoreRows(
 }
 
 /**
- * The pulled `datastores/` dirs the startup datastore loader reads in a
- * managedConfig repo on an extension-backed datastore: those chosen by
- * {@link enumeratePulledDatastoreExtensionsOnDisk}. After a complete scan
- * it also purges the catalog rows of copies that lost the dedupe. After a
- * scan that skipped an unreadable directory it purges nothing, because an
- * extension it could not read would look like a copy that lost.
+ * after a scan that skipped an unreadable directory it purges nothing, because
+ * an extension it could not read would look like a copy that lost
  */
 export async function choosePulledDatastoreDirsOnDisk(
   catalog: DatastoreRowCatalog,

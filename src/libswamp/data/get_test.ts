@@ -374,8 +374,6 @@ Deno.test("dataGet: byId without a by-id lookup fails instead of looking up by n
   assertEquals(nameLookups, 0);
 });
 
-// --- Workflow-scoped reads authorized before they read (swamp-club#2603) ---
-
 function pinnedDeps(overrides: Partial<DataGetDeps> = {}): DataGetDeps {
   return makeDeps({
     findWorkflowById: (id, expectedName) =>
@@ -521,7 +519,6 @@ Deno.test("dataGet with expectedOwner is not-found when the pinned workflow was 
   assertEquals(events[1].kind, "error");
 });
 
-/** A workflow-run item produced by `jobName`/`stepName` of `modelName`. */
 function producedBy(
   jobName: string,
   stepName: string,
@@ -709,7 +706,6 @@ Deno.test("dataGet: a binary item names a query that selects its content encodin
 
 Deno.test("dataGet: text content that is not UTF-8 names a query that selects its content encoding", async () => {
   const text = { ...makeDataItem(), contentType: "text/plain" };
-  // A UTF-16LE byte-order mark followed by "hi": not valid UTF-8.
   const utf16 = new Uint8Array([0xff, 0xfe, 0x68, 0x00, 0x69, 0x00]);
   const data = await readCompleted(
     makeDeps({
@@ -837,9 +833,6 @@ Deno.test("dataGet: a pinned read still warns about producers at another version
   assertEquals(data.modelId, PIN.modelId);
   assertEquals(data.alternatives?.map((alt) => alt.stepName), ["lint"]);
 });
-
-// A workflow read without --run follows the latest run; its notice names
-// the query that follows it too (swamp-club#2957).
 
 const LATEST_RUN_NOTICE = "to follow the workflow's latest run instead";
 

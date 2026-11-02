@@ -200,7 +200,6 @@ Deno.test("analyzeExpression: text that does not parse fails closed", () => {
 });
 
 Deno.test("analyzeExpression: a keyword model name fails closed by dot and is a target by bracket", () => {
-  // CEL does not parse these words as a member name after `model.`.
   for (const name of ["in", "true", "false", "null"]) {
     const dot = analyzeExpression(`model.${name}.resource.spec.x`);
     assertEquals(dot.unanalyzable, true);
@@ -277,7 +276,6 @@ Deno.test("expressionsAddedByEdit: any stored expression at a new path is checke
   const literal = '${{ data.latest("dev", "s") }}';
   const kept = '${{ data.latest("other", "s") }}';
   const before = contentOf({ a: computed, b: literal, k: kept });
-  // Copied to another place, where self or the destination may differ.
   const after = contentOf({
     a: computed,
     c: computed,
@@ -326,7 +324,6 @@ Deno.test("definitionRetargetSourcesChanged: what self and inputs read, expressi
     definitionRetargetSourcesChanged(base, { ...base, tags: { a: "b" } }),
     true,
   );
-  // Method arguments are not part of self.
   assertEquals(
     definitionRetargetSourcesChanged(base, {
       ...base,
@@ -334,7 +331,6 @@ Deno.test("definitionRetargetSourcesChanged: what self and inputs read, expressi
     }),
     false,
   );
-  // Key order is not a change.
   assertEquals(
     definitionRetargetSourcesChanged(
       { ...base, globalArguments: { a: "1", b: "2" } },
@@ -364,12 +360,9 @@ Deno.test("analyzeExpression: model used other than as a direct receiver may run
     assertEquals(r.runsComputed, true, cel);
     assertEquals(r.dataWide, true, cel);
   }
-  // Reading a model entry runs nothing.
   assertEquals(analyzeExpression("model.prod.resource.x").runsComputed, false);
   assertEquals(analyzeExpression('model["prod"].input').runsComputed, false);
 });
-
-// --- syncDataReads (swamp-club#3179) ---
 
 function syncReads(cel: string) {
   const reads = analyzeExpression(cel).syncDataReads;
@@ -477,8 +470,6 @@ Deno.test("analyzeExpression: stepTargets names the steps read by dot and bracke
     wide: true,
   });
   assertEquals(stepReads("steps.build.outputs["), { steps: [], wide: true });
-  // A string is text, a bound name shadows the map, and a field named
-  // steps on another binding is not the map.
   assertEquals(stepReads("literal('steps.build.outputs')"), {
     steps: [],
     wide: false,

@@ -487,12 +487,10 @@ Deno.test("claudeToolConfigFor: a CLAUDE.md holding only swamp's section imports
 });
 
 Deno.test("claudeToolConfigFor: CLAUDE.md with swamp's section keeps it and imports nothing else", () => {
-  // No AGENTS.md content to import.
   assertEquals(
     claudeTarget({ claudeMdExists: true, claudeMdHasSwampSection: true }),
     claudeMd,
   );
-  // The user wrote their own CLAUDE.md; what it loads is their choice.
   assertEquals(
     claudeTarget({
       claudeMdExists: true,

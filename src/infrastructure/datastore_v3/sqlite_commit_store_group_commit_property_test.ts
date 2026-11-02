@@ -17,19 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Group commit (swamp-club#3915) is invisible: a store that appends bursts
- * of commits concurrently, sharing transactions, gives every commit the
- * result a store appending them one at a time, ungrouped, gives it, and
- * ends with the same file content, row for row. The commits span four
- * partitions in two namespaces and mix valid appends, seq gaps, retries of
- * landed commits, stale and missing fences (a missing one on a fresh
- * partition is refused by the writer fence after the partition took it),
- * failed expects, and appends that fail after writing their rows. A small
- * cache and snapshot interval make bursts rebuild partitions mid-group and
- * restore them from snapshots.
- */
-
 import { assert, assertEquals } from "@std/assert";
 import { join } from "@std/path";
 import { DatabaseSync } from "node:sqlite";
@@ -67,10 +54,8 @@ const PARTITIONS: readonly PartitionKey[] = PARTITION_IDS.map((id) =>
 
 const NAMESPACES = ["", "acme"] as const;
 
-/** The writer fence the stores hold; valid commits carry a higher one. */
 const WRITER_FENCE = 3;
 const VALID_FENCE = 5;
-/** At or above the writer fence, below the valid commits'. */
 const STALE_FENCE = 4;
 
 function hash(char: string): string {
@@ -109,16 +94,11 @@ const arbCommand = fc.record({
 });
 type Command = typeof arbCommand extends fc.Arbitrary<infer T> ? T : never;
 
-/** Bursts of commands; each burst is appended concurrently. */
 const arbBursts = fc.array(
   fc.array(arbCommand, { minLength: 1, maxLength: 12 }),
   { minLength: 1, maxLength: 5 },
 );
 
-/**
- * A put of data `name` version 1 of the model whose partition is `index`:
- * stored as `blob`, or inline with an `expect` that never holds.
- */
 function put(index: number, name: string, blob: BlobRef | "expect-failed") {
   const id = PARTITION_IDS[index];
   return putOp({
@@ -135,13 +115,8 @@ function put(index: number, name: string, blob: BlobRef | "expect-failed") {
   });
 }
 
-/** Commits whose txnId starts with this fail after writing their rows. */
 const FAULT = "fault-";
 
-/**
- * Builds every burst's commits up front, from the seqs valid commits would
- * reach: the stores decide what actually lands.
- */
 async function buildBursts(bursts: Command[][]): Promise<Commit[][]> {
   const next = new Map<string, number>();
   const landed = new Map<string, Commit[]>();
@@ -273,8 +248,8 @@ function outcomeOf(settled: PromiseSettledResult<unknown>): Outcome {
 }
 
 /**
- * Every table's rows, in a fixed order, but the log's id: random per
- * store, so two stores never share one (swamp-club#4049).
+ * every table's rows in a fixed order, except the log's id: it is random per
+ * store, so two stores never share one
  */
 function allTables(path: string): Record<string, unknown> {
   const db = new DatabaseSync(path, { readOnly: true });
@@ -309,7 +284,6 @@ function storeOptions(groupCommit: boolean): SqliteCommitStoreOptions {
   };
 }
 
-/** Per-run coverage of each outcome, so the property is not vacuous. */
 const coverage = new Map<string, number>();
 let groupedRuns = 0;
 
@@ -351,7 +325,6 @@ Deno.test("SqliteCommitStore group commit: concurrent bursts give every commit t
             }
           }
           assertEquals(groupedOutcomes, soloOutcomes);
-          // Grouping happened: fewer transactions than the solo store.
           if (grouped.appendTransactions < solo.appendTransactions) {
             groupedRuns++;
           }
@@ -376,7 +349,6 @@ Deno.test("SqliteCommitStore group commit: concurrent bursts give every commit t
       await Deno.remove(dir, { recursive: true });
     }
   }
-  // Every case kind is exercised, and grouping actually saved transactions.
   for (
     const label of [
       "appended",

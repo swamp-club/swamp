@@ -162,8 +162,8 @@ export const workflowRejectCommand = withRemoteOptions(
         (runId) => evaluatedWorkflowRepo.findByRunId(runId),
         runTracker,
       );
-      // The suspended nested runs the rejected run waited on are cancelled
-      // with it (swamp-club#2867).
+      // the suspended nested runs the rejected run waited on are cancelled with
+      // it
       deps.cascade = localNestedCascade({
         workflowRepo: deps.workflowRepo,
         runRepo: deps.runRepo,
@@ -172,8 +172,8 @@ export const workflowRejectCommand = withRemoteOptions(
         runTracker,
       });
 
-      // A root of its own, so the result waits for the commit
-      // (swamp-club#3759); it pushes nothing, as the use case did not.
+      // a root of its own, so the result waits for the commit; it pushes
+      // nothing
       await runCommandInRootUnit(
         repoContext,
         { push: undefined },
@@ -209,10 +209,6 @@ export const workflowRejectCommand = withRemoteOptions(
   },
 );
 
-/**
- * Names what a reject leaves for nested runs (swamp-club#2736): child runs
- * the rejected run stopped waiting on, and a parent waiting on this run.
- */
 function logNestedRunFollowUps(
   cliCtx: CommandContext,
   data: WorkflowRejectData,

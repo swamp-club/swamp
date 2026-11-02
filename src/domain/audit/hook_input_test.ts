@@ -24,8 +24,6 @@ import {
   parseExitCode,
 } from "./hook_input.ts";
 
-// ---- parseExitCode ----
-
 Deno.test("parseExitCode extracts exit code from 'Exit code N' format", () => {
   assertEquals(parseExitCode("Exit code 254\n\nAn error occurred"), 254);
 });
@@ -41,8 +39,6 @@ Deno.test("parseExitCode returns undefined for unrecognized format", () => {
   assertEquals(parseExitCode("Something went wrong"), undefined);
 });
 
-// ---- cleanErrorMessage ----
-
 Deno.test("cleanErrorMessage strips Exit code prefix and collapses lines", () => {
   const result = cleanErrorMessage(
     "Exit code 1\n\nAn error occurred\nDetails here",
@@ -54,8 +50,6 @@ Deno.test("cleanErrorMessage handles message without Exit code prefix", () => {
   const result = cleanErrorMessage("Some error message");
   assertEquals(result, "Some error message");
 });
-
-// ---- Claude normalization ----
 
 Deno.test("normalizeHookInput claude: normalizes successful Bash tool", () => {
   const result = normalizeHookInput("claude", {
@@ -113,8 +107,6 @@ Deno.test("normalizeHookInput claude: returns null for missing command", () => {
   assertEquals(result, null);
 });
 
-// ---- Cursor normalization ----
-
 Deno.test("normalizeHookInput cursor: normalizes successful Shell tool", () => {
   const result = normalizeHookInput("cursor", {
     cwd: "/project",
@@ -160,8 +152,6 @@ Deno.test("normalizeHookInput cursor: does not include sessionId", () => {
 
   assertEquals(result?.sessionId, undefined);
 });
-
-// ---- Kiro normalization ----
 
 Deno.test("normalizeHookInput kiro: normalizes successful execute_bash", () => {
   const result = normalizeHookInput("kiro", {
@@ -261,8 +251,6 @@ Deno.test("normalizeHookInput kiro: normalizes Kiro IDE 1.0 'execute_pwsh' tool"
   });
 });
 
-// ---- Kiro IDE 0.x (USER_PROMPT camelCase format) normalization ----
-
 Deno.test("normalizeHookInput kiro: normalizes Kiro IDE camelCase successful execute_bash", () => {
   const result = normalizeHookInput("kiro", {
     toolName: "execute_bash",
@@ -312,8 +300,6 @@ Deno.test("normalizeHookInput kiro: returns null for Kiro IDE empty toolArgs", (
   assertEquals(result, null);
 });
 
-// ---- OpenCode normalization ----
-
 Deno.test("normalizeHookInput opencode: normalizes successful bash", () => {
   const result = normalizeHookInput("opencode", {
     session_id: "oc-session-1",
@@ -354,8 +340,6 @@ Deno.test("normalizeHookInput opencode: skips non-bash tools", () => {
   assertEquals(result, null);
 });
 
-// ---- Pi normalization ----
-
 Deno.test("normalizeHookInput pi: normalizes successful bash", () => {
   const result = normalizeHookInput("pi", {
     session_id: "pi-session-1",
@@ -395,8 +379,6 @@ Deno.test("normalizeHookInput pi: skips non-bash tools", () => {
 
   assertEquals(result, null);
 });
-
-// ---- AntiGravity normalization ----
 
 Deno.test("normalizeHookInput antigravity: normalizes successful run_command", () => {
   const result = normalizeHookInput("antigravity", {
@@ -440,8 +422,6 @@ Deno.test("normalizeHookInput antigravity: skips non-run_command tools", () => {
 
   assertEquals(result, null);
 });
-
-// ---- Copilot normalization (camelCase format) ----
 
 Deno.test("normalizeHookInput copilot: normalizes successful bash (camelCase)", () => {
   const result = normalizeHookInput("copilot", {
@@ -494,8 +474,6 @@ Deno.test("normalizeHookInput copilot: returns null for missing command (camelCa
 
   assertEquals(result, null);
 });
-
-// ---- Copilot normalization (snake_case format) ----
 
 Deno.test("normalizeHookInput copilot: normalizes successful bash (snake_case)", () => {
   const result = normalizeHookInput("copilot", {

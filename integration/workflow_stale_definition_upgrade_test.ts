@@ -17,17 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * A workflow step runs a definition whose `typeVersion` is behind its model
- * type (swamp-club#3196).
- *
- * The step's pre-run validation applies the upgrade chain in memory, so a
- * definition still in the old global-argument shape is not refused before the
- * method run that upgrades it. The run then saves the upgraded definition, as
- * a direct method run does. Runs go through `executeWorkflowWithLocks` against
- * a real repository.
- */
-
 import { join } from "@std/path";
 import { assertEquals } from "@std/assert";
 import { z } from "zod";
@@ -43,7 +32,6 @@ import { YamlWorkflowRepository } from "../src/infrastructure/persistence/yaml_w
 import { requireInitializedRepoUnlocked } from "../src/cli/repo_context.ts";
 import { executeWorkflowWithLocks } from "../src/serve/deps.ts";
 
-// Import models barrel to trigger built-in registration.
 import "../src/domain/models/models.ts";
 import { initializeLogging } from "../src/infrastructure/logging/logger.ts";
 
@@ -52,7 +40,6 @@ await initializeLogging({});
 const CURRENT_VERSION = "2026.02.01.1";
 const STALE_VERSION = "2026.01.01.1";
 
-/** Registers a type whose one upgrade renames `host` to `target`. */
 function registerModel(type: ModelType, seen: unknown[]): void {
   modelRegistry.register({
     type,

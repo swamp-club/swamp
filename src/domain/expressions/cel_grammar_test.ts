@@ -67,7 +67,6 @@ Deno.test("transformHyphenatedModelRefs: leaves string literals verbatim", () =>
 });
 
 Deno.test("transformHyphenatedModelRefs: is linear on a long hyphenated name that fails to match", () => {
-  // The older nested-quantifier pattern backtracked exponentially here.
   const text = "model.a" + "-a".repeat(5000) + "!";
   assertEquals(transformHyphenatedModelRefs(text), text);
   assertEquals(parsesAsCel(text), false);

@@ -55,11 +55,6 @@ import type { WorkflowHistorySearchResponse } from "../../serve/protocol.ts";
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
 
-/**
- * Creates a fetchPreview closure that fetches full workflow run detail data.
- * This bridges the presentation layer to the run repository, converting
- * WorkflowRun to WorkflowRunView.
- */
 function createHistoryFetchPreview(
   runRepo: YamlWorkflowRunRepository,
 ): (item: WorkflowHistorySearchItem) => Promise<WorkflowRunView> {
@@ -114,8 +109,7 @@ export async function workflowHistorySearchAction(
         },
       },
     );
-    // A remote search prints a plain list and never starts the picker
-    // (swamp-club#3917).
+    // a remote search prints a plain list and never starts the picker
     const renderer = createWorkflowHistorySearchRenderer(
       effectiveMode,
       undefined,
@@ -146,9 +140,8 @@ export async function workflowHistorySearchAction(
 
   const deps: WorkflowHistorySearchDeps = {
     findAllWorkflows: () => workflowRepo.findAll(),
-    // Use the lightweight summary projection, not the full-aggregate read:
-    // search only displays summary fields, and hydrating every run (with its
-    // inline step outputs) OOMs on workflows with a large run history (#1173).
+    // uses the lightweight summary projection: hydrating every run with its
+    // inline step outputs runs out of memory on workflows with a large history
     findAllRunsByWorkflowId: (id) =>
       runRepo.findAllSummariesFromIndex(createWorkflowId(id)),
     retentionWatermarks: repoContext.retentionWatermarks,
@@ -169,8 +162,7 @@ export async function workflowHistorySearchAction(
   let resultCount = 0;
   const handlers = renderer.handlers();
   const origCompleted = handlers.completed;
-  // Await the picker: an unawaited picker lets the command end under it
-  // (swamp-club#3917).
+  // await the picker: an unawaited picker lets the command end under it
   handlers.completed = async (e) => {
     resultCount = e.data.results.length;
     await origCompleted(e);
@@ -189,7 +181,6 @@ export async function workflowHistorySearchAction(
   const selected = renderer.selectedItem();
   if (selected) {
     ctx.logger.debug`Selected run: ${selected.runId}`;
-    // In JSON mode, still display the full run details after auto-select
     if (effectiveMode === "json") {
       const run = await runRepo.findById(
         createWorkflowId(selected.workflowId),

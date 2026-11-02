@@ -121,7 +121,6 @@ function createHarness(
       transitions.push(input);
       return Promise.resolve();
     },
-    // No expiry enforcement unless a test opts in with a real timestamp.
     readTokenExpiresAt: () => Promise.resolve(null),
     readTokenRecord: (name) => Promise.resolve(mintRecord(name, BASE_MINT)),
     findTokenDefinitionId: (name) => Promise.resolve(`def-${name}`),
@@ -153,7 +152,6 @@ function mintRecord(name: string, createdAt: string): EnrollmentToken {
   };
 }
 
-/** Wires a simulated worker control socket to the gateway. */
 function connectWorkerSocket(gateway: WorkerGateway): {
   workerChannel: RpcChannel;
   dropSocket: () => void;
@@ -164,7 +162,6 @@ function connectWorkerSocket(gateway: WorkerGateway): {
   const attached = gateway.attachTransport({
     send: (data) =>
       void Promise.resolve().then(() => workerChannel.handleRaw(data)),
-    // A gateway-initiated close surfaces like a real socket close.
   }, () => attached.closed());
   return { workerChannel, dropSocket: () => attached.closed() };
 }
@@ -306,7 +303,6 @@ Deno.test("WorkerGateway: a dispatch built for another protocol version than the
   );
 });
 
-/** Runs `fn` with the gateway's logs captured, as level and text. */
 async function capturingGatewayLogs(
   fn: () => Promise<void>,
 ): Promise<Array<{ level: string; message: string }>> {
@@ -468,7 +464,6 @@ Deno.test("WorkerGateway: a worker that needs a pass is refused before the token
     RpcError,
   );
   assertEquals(error.code, GATE_PASS_UNAVAILABLE);
-  // No redeem: the token's enrollment allowance is untouched.
   assertEquals(h.transitions, []);
   assertEquals(h.gateway.workers().length, 0);
   assertEquals(h.idle.length, 0);
@@ -560,7 +555,6 @@ Deno.test("WorkerGateway: dispatch streams events and records busy → idle", as
     .map((t) => t.inputs.status);
   assertEquals(statusTransitions, ["busy", "idle"]);
   assertEquals(h.gateway.worker("ci-runner-3")?.status, "idle");
-  // Idle fires at enrollment and again after the dispatch completes.
   assertEquals(h.idle.length, 2);
 });
 
@@ -626,10 +620,8 @@ Deno.test("WorkerGateway: onRegistered fires once, when the dispatch is already 
   const first = h.gateway.dispatch("ci-runner-3", dispatchParams("d-1"), {
     onRegistered,
   });
-  // Registered before dispatch() first yields, not at some later turn.
   assertEquals(listedAtRegistration, [["d-1"]]);
 
-  // A dispatch refused on a precondition never took a slot.
   await assertRejects(
     () =>
       h.gateway.dispatch("ci-runner-3", dispatchParams("d-2"), {
@@ -670,7 +662,6 @@ Deno.test("WorkerGateway: dispatch releases its slot when recording the busy sta
     Error,
     "stubbed failure: set_status",
   );
-  // The dispatch never reached the worker, and holds no slot.
   assertEquals(received, []);
   assertEquals(h.gateway.worker("ci-runner-3")?.activeDispatchIds, []);
   assertEquals(h.gateway.worker("ci-runner-3")?.status, "idle");
@@ -745,13 +736,11 @@ Deno.test("WorkerGateway: disconnect starts the grace window; reconnect cancels 
     "disconnected",
   );
 
-  // Same {token, instanceUuid} reconnects: same pool member, no re-enroll.
   const second = connectWorkerSocket(h.gateway);
   await enroll(second.workerChannel);
   assertEquals(h.gateway.pendingGraceWindows, 0);
   assertEquals(h.gateway.worker("ci-runner-3")?.connected, true);
   assertEquals(h.graceExpired.length, 0);
-  // Reconnect re-redeems but does NOT run worker enroll again.
   const enrolls = h.transitions.filter((t) => t.methodName === "enroll");
   assertEquals(enrolls.length, 1);
   second.dropSocket();
@@ -827,8 +816,6 @@ Deno.test("WorkerGateway: token expiry removes the worker and revokes its creden
   const result = await enroll(workerChannel);
   assertEquals(h.gateway.worker("ci-runner-3")?.connected, true);
 
-  // The expiry timer recorded the lapsed lifetime and removed the worker
-  // at once; the long grace window never started.
   await waitFor(() => h.removed.length === 1, "worker removed on expiry");
   const expires = h.transitions.filter((t) => t.methodName === "expire");
   assertEquals(expires.length, 1);
@@ -853,7 +840,6 @@ Deno.test("WorkerGateway: token expiry skips the expire record when the token's 
   definitionGone = true;
 
   await waitFor(() => h.removed.length === 1, "worker removed on expiry");
-  // The disconnect record is queued after the skipped expire record.
   await waitFor(
     () => h.transitions.some((t) => t.inputs.status === "disconnected"),
     "disconnect recorded",
@@ -913,9 +899,8 @@ Deno.test("WorkerGateway: dispatch ending after a socket drop does not mark idle
   await new Promise((r) => setTimeout(r, 10));
   dropSocket();
   await assertRejects(() => dispatch, Error);
-  // No idle status write may follow the disconnect record.
   assertEquals(h.transitions.at(-1)?.inputs.status, "disconnected");
-  assertEquals(h.idle.length, 1); // only the enrollment idle
+  assertEquals(h.idle.length, 1);
   await new Promise((r) => setTimeout(r, 50));
 });
 
@@ -963,8 +948,6 @@ Deno.test("WorkerGateway: a cancelled dispatch frees the worker only after it un
   );
   assertEquals(followUp.status, "success");
 });
-
-// ── Fleet token tests ──────────────────────────────────────────────────
 
 Deno.test("fleetMemberSuffix: returns a stable 8-char hex suffix", async () => {
   const a = await fleetMemberSuffix("machine-1");
@@ -1171,10 +1154,6 @@ Deno.test("WorkerGateway: verifyOnEnroll — probe error leaves worker unverifie
   assertEquals(h.idle.length, 0);
 });
 
-/**
- * A harness whose enrollment verification really dispatches a probe through
- * the gateway, as `swamp serve` does, instead of stubbing the result.
- */
 function createProbingHarness(): Harness & { enrolled: WorkerSnapshot[] } {
   const enrolled: WorkerSnapshot[] = [];
   const h: Harness = createHarness({
@@ -1269,7 +1248,6 @@ Deno.test("WorkerGateway: verifyOnEnroll — a dispatched probe that passes prom
   await enroll(workerChannel);
   await waitFor(() => probing, "the probe to reach the worker");
 
-  // Holding a slot, but not schedulable while the probe is unjudged.
   const during = h.gateway.worker("ci-runner-3");
   assertEquals(during?.status, "unverified");
   assertEquals(during?.activeDispatchIds, ["enroll-probe"]);
@@ -1365,7 +1343,6 @@ Deno.test("WorkerGateway: verifyOnEnroll — a worker that reconnects while a st
           logs: [],
           durationMs: 1,
         })
-        // The step is lost with the socket: it never answers.
         : new Promise(() => {}),
   );
   await enroll(first.workerChannel);
@@ -1398,7 +1375,6 @@ Deno.test("WorkerGateway: verifyOnEnroll — a worker that reconnects while a st
     () => h.gateway.worker("ci-runner-3")?.verifyFailureReason !== undefined,
     "the enrollment probe to be refused",
   );
-  // No slot for the probe while the lost step still holds it.
   assertEquals(h.gateway.worker("ci-runner-3")?.status, "unverified");
   assertEquals(probes, []);
 
@@ -1419,7 +1395,6 @@ Deno.test("WorkerGateway: verifyOnEnroll — a worker that reconnects while its 
   const h = createProbingHarness();
   const first = connectWorkerSocket(h.gateway);
   let probing = false;
-  // The first probe is lost with the socket: it never answers.
   first.workerChannel.register(WorkerMethod.dispatch, () => {
     probing = true;
     return new Promise(() => {});
@@ -1439,7 +1414,6 @@ Deno.test("WorkerGateway: verifyOnEnroll — a worker that reconnects while its 
     });
   });
   await enroll(second.workerChannel);
-  // The lost probe still holds the only slot.
   assertEquals(h.gateway.worker("ci-runner-3")?.status, "unverified");
   assertEquals(probes, []);
 
@@ -1457,7 +1431,7 @@ Deno.test("WorkerGateway: verifyOnEnroll — a worker that reconnects while its 
 });
 
 Deno.test("WorkerGateway: verifyOnEnroll — a held step ending while the reconnect's probe is still being prepared does not start a second probe (swamp-club#3388)", async () => {
-  // As in serve, the probe does asynchronous setup before it takes a slot.
+  // as in serve, the probe does asynchronous setup before it takes a slot
   let setup = Promise.resolve();
   let verifications = 0;
   const h: Harness = createHarness({
@@ -1507,7 +1481,6 @@ Deno.test("WorkerGateway: verifyOnEnroll — a held step ending while the reconn
   await enroll(second.workerChannel);
   assertEquals(verifications, 2);
 
-  // The step ends while the reconnect's probe has not yet taken a slot.
   first.dropSocket();
   assertEquals(await stepEnded, "rejected");
   assertEquals(h.gateway.worker("ci-runner-3")?.status, "unverified");
@@ -1523,13 +1496,6 @@ Deno.test("WorkerGateway: verifyOnEnroll — a held step ending while the reconn
   assertEquals(verifications, 2);
 });
 
-/**
- * As in serve, the enrollment probe does asynchronous setup before it takes
- * a slot: it waits on `setup`, which a test replaces with a gate. Every
- * probe that reaches the worker is answered with the result `answer` gives,
- * at once unless `holdProbes` is set; any other dispatch is held until
- * `release` is called with its id.
- */
 function createSlotRaceHarness(options?: {
   holdUnverifiedWrite?: Promise<void>;
   readTokenExpiresAt?: WorkerGatewayOptions["readTokenExpiresAt"];
@@ -1610,11 +1576,6 @@ function createSlotRaceHarness(options?: {
   };
 }
 
-/**
- * Enrolls the worker with its probe gated before it takes a slot, puts a
- * manual probe on the only slot, then lets the enrollment probe run so it is
- * refused for capacity. Returns the manual probe, still holding the slot.
- */
 async function refuseEnrollmentProbeForCapacity(
   h: ReturnType<typeof createSlotRaceHarness>,
 ): Promise<{ manual: Promise<unknown> }> {
@@ -1667,7 +1628,6 @@ Deno.test("WorkerGateway: verifyOnEnroll — a slot freed while the refused prob
   const h = createSlotRaceHarness({ holdUnverifiedWrite: hold.promise });
   const { manual } = await refuseEnrollmentProbeForCapacity(h);
 
-  // The refused run is still writing its unverified record.
   h.release("manual-probe");
   await manual;
   assertEquals(h.state.verifications, 1);
@@ -1701,7 +1661,6 @@ Deno.test("WorkerGateway: verifyOnEnroll — a probe sent again after a capacity
   );
   assertEquals(h.state.probes, ["enroll-probe-2"]);
 
-  // A later manual probe ending finds no refusal to answer for.
   const later = h.gateway.dispatch("ci-runner-3", {
     ...dispatchParams("manual-probe-2"),
     probeMarker: "fleet-verify",
@@ -1785,7 +1744,6 @@ Deno.test("WorkerGateway: verifyOnEnroll — a refusal seen before the worker wa
     () => h.held.has("enroll-probe-1"),
     "the enrollment probe to take the slot",
   );
-  // Refused while the enrollment probe holds the slot; that probe passes.
   await assertRejects(
     () =>
       h.gateway.dispatch("ci-runner-3", {
@@ -1806,8 +1764,6 @@ Deno.test("WorkerGateway: verifyOnEnroll — a refusal seen before the worker wa
   const stepEnded = step.then(() => "resolved", () => "rejected");
   await waitFor(() => h.held.has("step-1"), "the step to reach the worker");
 
-  // The reconnect turns the worker unverified, then waits on the token
-  // record before it starts its probe.
   const gate = Promise.withResolvers<string | null>();
   expiry = gate.promise;
   const second = connectWorkerSocket(h.gateway);
@@ -1854,7 +1810,6 @@ Deno.test("WorkerGateway: without verifyOnEnroll — worker becomes idle immedia
   assertEquals(enrolled.length, 1);
 });
 
-/** Status the worker model saves for the gateway's recorded enroll call. */
 async function savedEnrollStatus(h: Harness): Promise<unknown> {
   const transition = h.transitions.find((t) => t.methodName === "enroll");
   const { context, store } = createInMemoryWorkerContext(
@@ -1976,7 +1931,6 @@ Deno.test("WorkerGateway: verifyOnEnroll — a reconnect while a step holds a sl
           logs: [],
           durationMs: 1,
         })
-        // The step is lost with the socket: it never answers.
         : new Promise(() => {}),
   );
   await enroll(first.workerChannel);
@@ -1990,7 +1944,6 @@ Deno.test("WorkerGateway: verifyOnEnroll — a reconnect while a step holds a sl
     () => h.gateway.worker("ci-runner-3")?.status === "busy",
     "the step to be placed",
   );
-  // The busy record lands on the transition tail after the in-memory status.
   await waitFor(
     () =>
       h.transitions.some((t) =>
@@ -2105,8 +2058,6 @@ Deno.test("WorkerGateway: a refused dispatch names why the worker could not take
   );
   assertEquals(full.reason, "at_capacity");
 
-  // A worker that announces its drain with work in flight stays draining
-  // when that work ends, and takes nothing new.
   await first.workerChannel.call(RemoteMethod.drain, {});
   assertEquals(h.gateway.worker("ci-runner-3")?.status, "draining");
   gate.resolve();
@@ -2172,7 +2123,6 @@ Deno.test("WorkerGateway: revokeToken removes the worker, revokes its credential
   assertEquals(h.gateway.sessions.verify(result.sessionCredential), null);
   assertEquals(h.removed.map((w) => w.name), ["ci-runner-3"]);
   assertEquals(h.removed[0].connected, false);
-  // The socket close it forces is not treated as a drop.
   assertEquals(h.disconnected.length, 0);
   await waitFor(
     () =>
@@ -2303,7 +2253,6 @@ Deno.test("WorkerGateway: revokeToken waits for an enrollment in progress and cu
   });
   const { workerChannel } = connectWorkerSocket(h.gateway);
   const enrolling = enroll(workerChannel).catch((error: unknown) => error);
-  // The enrollment holds the transition tail before the revoke queues.
   await waitFor(() => redeemStarted, "redeem started");
 
   const revoking = h.gateway.revokeToken("ci-runner-3", "revoked");
@@ -2418,7 +2367,6 @@ Deno.test("WorkerGateway: redeem rejections reach the worker coded, whatever the
       "Enrollment token 'ci': enrollment allowance exhausted",
       "enrollment_allowance_exhausted",
     ],
-    // A name alone never supplies the reason.
     ["Enrollment token 'has-been-revoked' vault unavailable", "handler_failed"],
   ];
   for (const [message, code] of cases) {
@@ -2461,14 +2409,8 @@ Deno.test("WorkerGateway: a dispatch whose worker drops while its busy status is
   await assertRejects(() => dispatch, ChannelClosedError, "before dispatch");
 });
 
-/** The worker methods that record an enrollment, first-connect or reconnect. */
 const RECORDING_METHODS = ["enroll", "set_status"];
 
-/**
- * A harness whose held methods wait while held — redeem unless a test names
- * others — so a test can close the worker's socket while its token is being
- * redeemed or its enrollment recorded (swamp-club#3405, swamp-club#3984).
- */
 function createHeldHarness(
   overrides?: Partial<WorkerGatewayOptions>,
 ): Harness & {
@@ -2514,10 +2456,6 @@ function createHeldHarness(
   };
 }
 
-/**
- * Enrolls on a socket the worker closes while serve is still recording the
- * enrollment: the worker's enroll call timed out and it gave up on the socket.
- */
 async function enrollThenCloseMidway(
   h: ReturnType<typeof createHeldHarness>,
   params: Record<string, unknown> = enrollParams,
@@ -2578,7 +2516,6 @@ Deno.test("WorkerGateway: a reconnect finishing after its socket closed re-arms 
   await enroll(first.workerChannel);
   first.dropSocket();
   assertEquals(h.gateway.pendingGraceWindows, 1);
-  // Recorded before the hold, so the hold catches the reconnect's status.
   await waitFor(
     () => h.transitions.at(-1)?.inputs.status === "disconnected",
     "disconnect recorded",
@@ -2618,7 +2555,6 @@ Deno.test("WorkerGateway: an enrollment whose socket closed while it was queued 
   const liveEnroll = enroll(live.workerChannel);
   await waitFor(() => h.redeems() === 1, "first enrollment reached redeem");
 
-  // Queued behind the held enrollment; the worker gives up before its turn.
   const dead = connectWorkerSocket(h.gateway);
   const deadEnroll = dead.workerChannel.call(
     RemoteMethod.enroll,
@@ -2628,7 +2564,6 @@ Deno.test("WorkerGateway: an enrollment whose socket closed while it was queued 
   dead.dropSocket();
   h.release();
   await liveEnroll;
-  // Runs on the transition tail, so the queued enrollment has had its turn.
   await h.gateway.revokeToken("no-such-token", "revoked");
 
   assertEquals(h.redeems(), 1);
@@ -2640,11 +2575,6 @@ Deno.test("WorkerGateway: an enrollment whose socket closed while it was queued 
   await waitFor(() => h.gateway.worker("ci-runner-3") === null, "cleanup");
 });
 
-/**
- * Starts an enrollment on a fresh socket and holds it at redeem, where the
- * worker gives up on it: it closes the socket, or cancels the call and keeps
- * the socket for a retry. Settles once the gateway has finished with it.
- */
 async function enrollThenAbandonAtRedeem(
   h: ReturnType<typeof createHeldHarness>,
   how: "close" | "cancel",
@@ -2661,9 +2591,7 @@ async function enrollThenAbandonAtRedeem(
   if (how === "close") socket.dropSocket();
   else controller.abort();
   h.release();
-  // Runs on the transition tail, so the abandoned enrollment has finished.
   await h.gateway.revokeToken("no-such-token", "revoked");
-  // A closed socket never answers the call; the worker gives up on it.
   if (how === "close") socket.workerChannel.close("test done");
   await reply;
   return socket;
@@ -2697,8 +2625,6 @@ Deno.test("WorkerGateway: an enroll call cancelled while its token was redeemed 
   assertEquals(recorded(h), []);
   assertEquals(h.gateway.worker("ci-runner-3"), null);
 
-  // The worker retries on the same socket and machine: redeem runs again,
-  // re-authenticating the machine the first attempt bound.
   await enroll(workerChannel);
   assertEquals(h.redeems(), 2);
   assertEquals(recorded(h), ["enroll"]);
@@ -2708,8 +2634,8 @@ Deno.test("WorkerGateway: an enroll call cancelled while its token was redeemed 
 });
 
 Deno.test("WorkerGateway: a reconnect abandoned while its token was redeemed leaves the prior grace window running (swamp-club#3984)", async () => {
-  // Long enough that the window is still open when the abandoned attempt
-  // has been checked, on a loaded runner too.
+  // long enough that the grace window is still open when the abandoned attempt
+  // has been checked, even on a loaded runner
   const h = createHeldHarness({ graceWindowMs: 2_000 });
   const first = connectWorkerSocket(h.gateway);
   await enroll(first.workerChannel);
@@ -2733,7 +2659,6 @@ Deno.test("WorkerGateway: a reconnect abandoned while its token was redeemed lea
   assertEquals(h.graceExpired.length, 1);
 });
 
-/** A repo context whose token records hold `records`, read by the default reader. */
 function tokenRecordContext(records: EnrollmentToken[]): RepositoryContext {
   return {
     unifiedDataRepo: {
@@ -2792,7 +2717,6 @@ Deno.test("WorkerGateway: only enrollment preparation runs in the enrollment are
   assertEquals(areas, [
     ["redeem", "enrollment"],
     ["enroll", "enrollment"],
-    // Started by the enrollment, after its preparation: no area.
     ["set_status", undefined],
   ]);
 });
@@ -2845,10 +2769,8 @@ Deno.test("WorkerGateway: a cancel the worker sends mid-enrollment is recorded a
       typeof request.attributes["swamp.rpc.cancel_observed_ms"],
       "number",
     );
-    // The enrollment stops before recording the worker (swamp-club#3984).
     assertEquals(request.attributes["swamp.outcome"], "closed");
     assertEquals(h.transitions.map((t) => t.methodName), ["redeem"]);
-    // The record read after redeem saw the cancel, and still exported.
     const scan = findSpan(spans, "swamp.diagnostic.token_record_scan");
     assertEquals(scan.attributes["swamp.diagnostic.cancel_observed"], true);
     assertEquals(scan.attributes["swamp.outcome"], "ok");
@@ -2919,7 +2841,6 @@ Deno.test("WorkerGateway: an observer that throws on the cancel fields neither f
     const result = await enroll(workerChannel);
     assertEquals(result.workerId, "ci-runner-3");
 
-    // A cancel mid-enrollment calls the listener, which must not throw.
     const release = Promise.withResolvers<void>();
     let redeeming = false;
     const cancelled = createHarness({

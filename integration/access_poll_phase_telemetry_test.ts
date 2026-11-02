@@ -17,17 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * swamp-club#4005: an access-data poll exports its phases through the real
- * OTLP exporter, with parentage, value types, outcomes and counts intact.
- * Wires two instances of one checkout on a v2 filesystem datastore, the real
- * PolicySnapshotLoader, FilesystemAccessDataChangeSource, SyncGate and
- * AccessDataPoller; spans are exported over HTTP to a port-0 collector
- * (design/enablers/serve-phase-telemetry.md). The sync-pull branch uses an
- * in-process sync service over the same files, since a filesystem datastore
- * has none.
- */
-
 import "../src/domain/models/models.ts";
 import { assert, assertEquals } from "@std/assert";
 import { join } from "@std/path";
@@ -97,11 +86,6 @@ interface OtlpRequest {
   resourceSpans: { scopeSpans: { spans: OtlpSpan[] }[] }[];
 }
 
-/**
- * Runs `fn` with spans exported over HTTP by {@link FetchOtlpExporter} to a
- * port-0 collector. `fn` can read what the collector has received so far;
- * the result is every span, after a flush.
- */
 async function withExportedSpans(
   fn: (received: () => OtlpSpan[]) => Promise<void>,
 ): Promise<OtlpSpan[]> {
@@ -155,7 +139,6 @@ function str(span: OtlpSpan, key: string): string | undefined {
   return attribute(span, key)?.stringValue;
 }
 
-/** An integer attribute, failing if it was not exported as one. */
 function int(span: OtlpSpan, key: string): number | undefined {
   const value = attribute(span, key);
   if (value === undefined) return undefined;
@@ -163,7 +146,6 @@ function int(span: OtlpSpan, key: string): number | undefined {
   return Number(value.intValue);
 }
 
-/** A boolean attribute, failing if it was not exported as one. */
 function bool(span: OtlpSpan, key: string): boolean | undefined {
   const value = attribute(span, key);
   if (value === undefined) return undefined;
@@ -175,14 +157,12 @@ function d(key: string): string {
   return `swamp.diagnostic.${key}`;
 }
 
-/** One access-data poll: its root `swamp.serve.poll` and its `poll_cycle`. */
 interface PollTrace {
   root: OtlpSpan;
   cycle: OtlpSpan;
   spans: OtlpSpan[];
 }
 
-/** Access-data poll traces with a finished cycle, in the order they started. */
 function pollTraces(spans: OtlpSpan[]): PollTrace[] {
   return spans
     .filter((s) =>
@@ -201,7 +181,6 @@ function pollTraces(spans: OtlpSpan[]): PollTrace[] {
     });
 }
 
-/** The trace's `phase` spans whose parent is the cycle. */
 function underCycle(t: PollTrace, phase: string): OtlpSpan[] {
   return t.spans.filter((s) =>
     s.name === `swamp.diagnostic.${phase}` && s.parentSpanId === t.cycle.spanId
@@ -213,10 +192,9 @@ function diagnosticSpans(t: PollTrace): OtlpSpan[] {
 }
 
 /**
- * Whether `t` applied a reload whose snapshot build reports `value` for
- * `attribute`. A peer's save is several file writes, so a poll can apply what
- * only part of it left on disk: a test about the finished write selects the
- * poll that saw it, not the first one that applied anything.
+ * a peer's save is several file writes, so a poll can apply a partial one;
+ * select the poll that saw the finished write, not the first that applied
+ * anything
  */
 function appliedWithBuild(
   t: PollTrace,
@@ -239,7 +217,6 @@ function findPoll(
   return found;
 }
 
-/** Every access_poll phase of `t` carries the area and `mode`. */
 function assertArea(t: PollTrace, mode: string): void {
   assertEquals(t.cycle.parentSpanId, t.root.spanId);
   for (const span of diagnosticSpans(t)) {
@@ -261,10 +238,6 @@ interface Pair {
   loader: PolicySnapshotLoader;
 }
 
-/**
- * Two instances of one checkout on its default v2 filesystem datastore: the
- * writer saves records as a peer would, the reader runs serve's side.
- */
 async function withPair(fn: (pair: Pair) => Promise<void>): Promise<void> {
   const dir = await Deno.makeTempDir({ prefix: "swamp-access-poll-phases-" });
   let writer: Instance | undefined;
@@ -303,7 +276,6 @@ async function withPair(fn: (pair: Pair) => Promise<void>): Promise<void> {
   }
 }
 
-/** The local-change-source poller serve builds for a v2 filesystem datastore. */
 async function localPoller(pair: Pair): Promise<AccessDataPoller> {
   const poller = await createAccessDataPoller({
     pollIntervalMs: POLL_INTERVAL_MS,
@@ -318,10 +290,6 @@ async function localPoller(pair: Pair): Promise<AccessDataPoller> {
   return poller;
 }
 
-/**
- * A sync service over the shared files: each pull reports the count the
- * test queued, or throws the error it queued.
- */
 class QueuedSyncService implements DatastoreSyncService {
   pulls = 0;
   readonly #results: Array<number | void | Error> = [];
@@ -373,7 +341,6 @@ function grant(id: string): Grant {
   };
 }
 
-/** Saves a grant record as a peer's model run does, raw bytes allowed. */
 async function saveGrant(
   writer: Instance,
   modelId: string,
@@ -405,7 +372,6 @@ async function saveGrant(
   );
 }
 
-/** No diagnostic attribute names a path, a record id or record content. */
 function assertNoPayloads(
   spans: OtlpSpan[],
   forbidden: readonly string[],
@@ -548,7 +514,6 @@ Deno.test("access poll phases: a grant polled before its content lands is left o
     );
     assertEquals(int(partial, d("records_listed")), 2);
     assertEquals(int(partial, d("records_read")), 2);
-    // Mid-write, not damaged: nothing to retry until the content is a change.
     assertEquals(int(partial, d("unreadable")), 0);
     const [whole] = underCycle(
       findPoll(
@@ -597,7 +562,6 @@ Deno.test("access poll phases: a corrupt record is counted as unreadable, and th
     const [build] = underCycle(applied, "snapshot_build");
     assertEquals(int(build, d("unreadable")), 1);
     assertEquals(int(build, d("records_read")), 1);
-    // A corrupt record is not retried on its own.
     assertEquals(str(build, "swamp.outcome"), "ok");
     assertNoPayloads(spans, [pair.dir, id, "not json"]);
   });
@@ -621,7 +585,6 @@ Deno.test("access poll phases: a sync pull exports the gate wait and the pull, i
       poller.start();
       try {
         await waitFor(() => sync.pulls >= 5, "four queued pulls and one more");
-        // Hold the gate: the poller skips, escalates, then queues.
         await gate.acquireShared();
         await waitFor(() => gate.waiters === 1, "the poller queued");
       } finally {
@@ -757,7 +720,6 @@ Deno.test({
   },
 });
 
-/** Saves `count` grants and returns the diagnostic span count of the poll that applies them. */
 async function appliedPollSpanCount(count: number): Promise<number> {
   let phases = 0;
   await withPair(async (pair) => {
@@ -797,8 +759,6 @@ async function appliedPollSpanCount(count: number): Promise<number> {
 Deno.test("access poll phases: a poll's span count does not grow with the access catalog", async () => {
   const small = await appliedPollSpanCount(2);
   const large = await appliedPollSpanCount(300);
-  // poll_cycle, change_detection, catalog_invalidate, snapshot_queue_wait,
-  // snapshot_build.
   assertEquals(small, 5);
   assertEquals(large, small);
 });

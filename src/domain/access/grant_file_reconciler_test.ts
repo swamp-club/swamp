@@ -82,7 +82,6 @@ function createMockStore(
       grant: Grant,
     ) {
       written.set(instanceName, grant);
-      // Keyed by modelId, as the real store's queryFileGrants is.
       grants.set(_modelId, { grant, modelId: _modelId, instanceName });
       return Promise.resolve();
     },
@@ -619,8 +618,8 @@ Deno.test("reconcileAllFileGrants: does not count revoked grants as unchanged", 
 });
 
 Deno.test("reconcileAllFileGrants: revokes grants stored under a second source for the same file once", async () => {
-  // Grants stored twice before swamp-club#2788: once by bare filename, once
-  // by the grants-dir full path.
+  // grants were once stored twice: by bare filename and by the grants-dir full
+  // path
   const fullPath = "/srv/repo/grants/admin.yaml";
   const existing = new Map([
     [
@@ -685,8 +684,7 @@ const adamEntry: GrantFileEntry = {
 };
 
 Deno.test("reconcileAllFileGrants: revokes every active copy of a removed entry", async () => {
-  // Two serve instances on one datastore each created a copy
-  // (swamp-club#2822).
+  // two serve instances on one datastore each created a copy
   const store = createMockStore(
     duplicateCopies("file:team.yaml", ["model-b", "model-a"]),
   );
@@ -797,8 +795,7 @@ Deno.test("reconcileAllFileGrants: updates methods on the kept copy and revokes 
 });
 
 Deno.test("reconcileAllFileGrants: leaves the grants of an unavailable source unchanged", async () => {
-  // A file that failed to read or validate is not a deleted file
-  // (swamp-club#2823).
+  // a file that failed to read or validate is not a deleted file
   const existing = duplicateCopies("file:deny.yaml", ["model-a"], {
     effect: "deny",
   });
@@ -817,9 +814,9 @@ Deno.test("reconcileAllFileGrants: leaves the grants of an unavailable source un
   assertEquals(store.written.get("inst-model-g")?.state, "revoked");
 });
 
-// Grants stored before swamp-club#2848 carry the absolute path of their
-// --grants-dir file. No instance loads that source any more, so reconcile
-// revokes it and creates the grant under grants-dir/<name> in the same pass.
+// legacy grants carry the absolute path of their grants-dir file; no instance
+// loads that source, so reconcile revokes it and creates the grant under
+// grants-dir/<name> in the same pass
 Deno.test("reconcileAllFileGrants: replaces a legacy absolute-path source with its grants-dir source in one reconcile", async () => {
   const deny: GrantFileEntry = {
     subject: { kind: "user", name: "mallory" },
@@ -921,7 +918,6 @@ grants:
   assertEquals(store.written.size, 0);
 });
 
-/** A data repository holding two grants, one whose content read fails. */
 function repoWithUnreadableGrant(): UnifiedDataRepository {
   const data = Data.create({
     name: "grant-main",

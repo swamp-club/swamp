@@ -43,16 +43,14 @@ import { createExtensionPromoteRenderer } from "../../presentation/renderers/ext
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
 
-/** What the promote arguments name. */
 export type PromoteTarget =
   | { kind: "name"; name: string; version: string }
   | { kind: "manifest"; path: string };
 
 /**
- * Splits the promote arguments. An `@collective/name` argument is the name,
- * as it always was, and needs a version; anything else is a manifest path or
- * extension directory, whose manifest supplies the version and whose channel
- * the registry reports, so `--from-channel` does not apply to it.
+ * an @collective/name argument is the name and needs a version; anything else
+ * is a manifest path or directory whose manifest supplies the version, so
+ * --from-channel does not apply.
  */
 export function resolvePromoteTarget(
   target: string,
@@ -68,8 +66,8 @@ export function resolvePromoteTarget(
     return { kind: "name", name: target, version: versionArgument };
   }
   if (versionArgument !== undefined) {
-    // Two arguments mean the name form, so a name that does not match keeps
-    // the name error it always had.
+    // two arguments mean the name form, so a name that does not match keeps the
+    // name error.
     try {
       validateExtensionName(target);
     } catch (error) {
@@ -89,9 +87,9 @@ export function resolvePromoteTarget(
 }
 
 /**
- * Adds a name hint to a manifest-not-found error. A single argument that is
- * not `@collective/name` is read as a path, so a mistyped name with its
- * version left off would otherwise only hear that no manifest exists.
+ * a single argument that is not @collective/name is read as a path, so a
+ * mistyped name with its version left off would otherwise only hear that no
+ * manifest exists.
  */
 export function withExtensionNameHint(error: unknown): unknown {
   if (

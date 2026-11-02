@@ -187,7 +187,6 @@ Deno.test("CollectiveRefreshService: skips update when collectives unchanged", a
 
 Deno.test("CollectiveRefreshService: revokes token on 401 from userinfo", async () => {
   const deps = makeMockDeps({
-    // A revoked token is no longer active, as in the real token store.
     listActiveTokens: () =>
       Promise.resolve(
         deps.revokedTokens.includes("tok-1") ? [] : [
@@ -369,8 +368,6 @@ Deno.test("CollectiveRefreshService: passes the token and its vault name to getA
   );
   await svc.dispose();
 
-  // Refresh cycles repeat every intervalMs, so assert which token was read
-  // rather than how many cycles fit before dispose.
   assertEquals(new Set(lookedUp), new Set(["default/tok-migrated"]));
   assertEquals(deps.updatedTokens.get("tok-migrated"), ["new"]);
 });

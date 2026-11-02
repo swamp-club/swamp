@@ -34,7 +34,6 @@ const TYPE = { normalized: "test/model" };
 const DAY = 86_400_000;
 const EPOCH = Date.UTC(2026, 0, 1);
 
-/** Definitions the outputs may belong to; `def-gone` no longer resolves. */
 const DEFINITIONS = [
   { definition: { id: "def-a", name: "a" }, type: TYPE },
   { definition: { id: "def-b", name: "b" }, type: TYPE },
@@ -84,7 +83,6 @@ Deno.test("modelUsageSummary: counts equal those of an unlimited output search o
         );
         const last = searched[searched.length - 1];
         assert(last.kind === "completed");
-        // What the serve handler keeps of a search before it answers.
         const items = last.data.results.filter((item) =>
           readable.has(item.methodName)
         );
@@ -127,7 +125,6 @@ Deno.test("modelUsageSummary: counts equal those of an unlimited output search o
             [...model.methods].sort(),
             [...new Set(own.map((item) => item.methodName))].sort(),
           );
-          // The search sorts newest first; ties may come in either order.
           assertEquals(model.lastStartedAt, own[0].startedAt);
           assertEquals(
             model.recent.map((o) => o.startedAt),

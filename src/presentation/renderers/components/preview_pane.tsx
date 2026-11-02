@@ -21,17 +21,11 @@ import React from "react";
 import { Box } from "ink";
 
 export interface PreviewPaneProps<T, D> {
-  /** The currently highlighted item. */
   item: T | undefined;
-  /** Fetched detail data (undefined until loaded). */
   detail: D | undefined;
-  /** Available width for preview content (characters). */
   width: number;
-  /** Available height for preview content (lines). */
   height: number;
-  /** Scroll offset (lines from top). Defaults to 0. */
   scrollOffset?: number;
-  /** Render callback: receives item, optional detail, and dimensions. */
   renderPreview: (
     item: T,
     detail: D | undefined,
@@ -41,13 +35,9 @@ export interface PreviewPaneProps<T, D> {
 }
 
 /**
- * Preview content area that shows detail about the currently highlighted item.
- *
- * Windows the rendered children to the visible viewport — only the slice
- * [scrollOffset, scrollOffset + height) is rendered. This mirrors how
- * ResultsList receives pre-sliced visibleItems. Ink's overflow="hidden"
- * only affects Yoga layout math, not terminal output, so rendering excess
- * children would overwrite content below the preview pane.
+ * renders only the slice [scrollOffset, scrollOffset + height) of the children:
+ * Ink's overflow hidden affects only layout math, so excess children would
+ * overwrite content below the pane.
  */
 export function PreviewPane<T, D>(
   props: PreviewPaneProps<T, D>,

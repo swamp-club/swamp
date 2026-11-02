@@ -30,36 +30,23 @@ import {
   vaultReferenceText,
 } from "./run_sensitive_values.ts";
 
-/** A path into a persisted structure: object keys and array indexes. */
 export type DataPath = readonly (string | number)[];
 
 /**
- * One place where a persisted file holds a vault reference instead of the
- * sensitive value swamp wrote there. Rehydration uses only these entries, so
- * reference text that arrives as data elsewhere stays inert.
+ * rehydration uses only these entries, so reference text that arrives as data
+ * elsewhere stays inert
  */
 export interface WrittenReference {
   path: (string | number)[];
-  /** Which occurrence of the reference text in the string at `path`, from 0. */
   occurrence: number;
   vaultName: string;
   key: string;
-  /**
-   * How the value was written: `raw` text, `json` for its JSON-escaped form
-   * inside JSON text, or a whole `number`/`boolean` leaf a coercion produced.
-   */
   encoding: SecretEncoding;
-  /** Whether the value reached the file through a data read. */
   dataOrigin: boolean;
-  /**
-   * Set when the vault value is the JSON text of a value that is not a
-   * string, so a whole-value delivery parses it. Optional, so a reader that
-   * predates it drops it and delivers the text, as it always did.
-   */
+  /** optional so a reader that predates it drops it and delivers the text */
   jsonValue?: true;
 }
 
-/** Validates `writtenReferences` read back from a repo-local file. */
 export const WrittenReferenceSchema = z.object({
   path: z.array(z.union([z.string(), z.number().int().nonnegative()])),
   occurrence: z.number().int().nonnegative(),
@@ -71,21 +58,11 @@ export const WrittenReferenceSchema = z.object({
 });
 
 /**
- * Version of the persisted sensitive-value format. A cache or run record
- * without it was written before sensitive values were kept off disk. Version
- * 1 wrote every sensitive value as its vault reference. Version 2 also writes
- * the mask where a sensitive argument held a value that came from no vault,
- * and records those positions in the evaluated definition's `maskedPaths`
- * (swamp-club#3681). A reader at version 1 would run the mask as the value,
- * so a reader refuses a format newer than its own; see
- * `isNewerSensitiveFormat`. Version 3 records reliable reference origins.
- * Earlier writers could mark plaintext found through data as `dataOrigin:
- * false`; their readers restored every reference as data regardless of that
- * flag. Readers preserve that historical behavior for versions 1 and 2.
+ * readers refuse a format newer than their own; versions 1 and 2 keep the old
+ * behavior of restoring every reference as data
  */
 export const SENSITIVE_FORMAT_VERSION = 3;
 
-/** Data ready to persist, and where it holds references. */
 export interface PersistedForm<T> {
   data: T;
   writtenReferences: WrittenReference[];
@@ -93,14 +70,13 @@ export interface PersistedForm<T> {
 
 interface Segment {
   text: string;
-  /** Set when this segment is written reference text. */
   written?: Omit<WrittenReference, "path" | "occurrence"> & { ref: string };
 }
 
 /**
- * Writes only issued sentinels as their entry's reference and encoding.
- * Recorded plaintext values, coincidentally equal ordinary data and foreign
- * sentinel prefixes stay unchanged. Inserted reference text is never searched.
+ * writes only issued sentinels as references; recorded plaintext, equal
+ * ordinary data and foreign sentinel prefixes stay unchanged; inserted
+ * reference text is never searched
  */
 export function toPersistedForm<T>(
   data: T,
@@ -110,7 +86,6 @@ export function toPersistedForm<T>(
   const registry = values.sentinels;
   if (registry.isEmpty) return { data, writtenReferences };
 
-  /** The reference a sentinel is written as, from its entry. */
   const referenceOf = (sentinel: string): Segment["written"] => {
     const entry = registry.issuedEntryOf(sentinel);
     if (!entry) {
@@ -131,7 +106,6 @@ export function toPersistedForm<T>(
   };
 
   const persistString = (text: string, path: DataPath): string => {
-    // Sentinels first: exact splice positions, each from its entry.
     const segments: Segment[] = [];
     let last = 0;
     for (const match of text.matchAll(VaultSecretBag.SENTINEL_PATTERN)) {
@@ -196,20 +170,9 @@ function countOccurrences(text: string, needle: string): number {
 const RESERVED_VAULT = "_token-secrets";
 
 /**
- * Restores the written references of an existing file as sentinels, reading
- * no vault (typed-secrets 4.4, design/enablers/typed-secrets.md Section
- * 8.1): each entry becomes a sentinel `bag` issues for its reference, with
- * the file's encoding and origin (all data for formats before version 3),
- * spliced where the reference text sits, so
- * the run binds a reference where it held one and a delivery loads the
- * current value under current authorization. Only the listed entries are
- * touched: reference text anywhere else stays as it is, and a hand-edited
- * path through a prototype touches nothing. A reference to the reserved
- * token vault is refused before any sentinel is issued. `label` names the
- * record (a definition or workflow name, or a run id) in each entry's
- * location, for a failed load's error. The returned copy is the only copy:
- * a typed run has no raw and sanitized pair, because every position holds
- * the sentinel.
+ * reads no vault: each entry becomes a sentinel so delivery loads the current
+ * value; only listed entries are touched and the reserved token vault is
+ * refused
  */
 export function rehydrateReferences<T>(
   data: T,
@@ -244,7 +207,6 @@ export function rehydrateReferences<T>(
   return restored;
 }
 
-/** A written entry's path in dotted form, for a load's errors. */
 function spellPath(path: DataPath): string {
   return path.map((segment) =>
     typeof segment === "number" ? `[${segment}]` : segment

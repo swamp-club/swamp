@@ -18,13 +18,8 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * Runs a replication supervisor process (swamp-club#3416). `main.ts` calls
- * {@link runSupervisorMain} as its first statement when it is started with
- * the supervisor marker, so no CLI command, auth gate, telemetry or
- * extension loading runs; from source, `deno run` starts this file
- * directly.
- *
- * @module
+ * main.ts runs the supervisor before the CLI, so no command, auth gate,
+ * telemetry or extension loading runs
  */
 
 import { defaultLitestreamBinaryProvider } from "./litestream_binary_provider.ts";
@@ -40,7 +35,6 @@ import {
 
 export { isSupervisorInvocation } from "./litestream_processes.ts";
 
-/** The supervisor's real dependencies. */
 export function hostSupervisorDeps(
   stopRequested: Promise<void>,
 ): SupervisorDeps {
@@ -55,8 +49,7 @@ export function hostSupervisorDeps(
         stdin: "null",
         stdout: "null",
         stderr: "null",
-        // Only what its replica needs (swamp-club#3534); the supervisor
-        // keeps its own environment.
+        // only what its replica needs; the supervisor keeps its own environment
         ...(replicaType !== undefined
           ? {
             env: litestreamChildEnv(replicaType, Deno.env.toObject()),
@@ -100,12 +93,6 @@ export function hostSupervisorDeps(
   };
 }
 
-/**
- * Runs the supervisor `args` describe and resolves with its exit code: 0
- * when it ended normally (another supervisor runs, idle, Litestream exited,
- * or asked to stop), 2 for arguments that are not a supervisor's, 1 on a
- * failure.
- */
 export async function runSupervisorMain(
   args: readonly string[],
 ): Promise<number> {

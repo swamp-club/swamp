@@ -46,9 +46,6 @@ import {
   setActiveSpanAttributes,
   withGeneratorSpan,
 } from "../../infrastructure/tracing/mod.ts";
-/**
- * Data structure for the model edit output.
- */
 export interface ModelEditData {
   path: string;
   editor?: string;
@@ -67,9 +64,9 @@ export interface ModelEditData {
   type: string;
   editType: "definition";
   /**
-   * Problems worth reporting that do not make the edit invalid — currently a
-   * `typeVersion` that will not parse as CalVer. Carried on the data rather
-   * than logged so `--json` callers see it too (swamp-club#2412).
+   * problems worth reporting that do not make the edit invalid, currently a
+   * typeVersion that will not parse as CalVer; carried on the data so --json
+   * callers see it too
    */
   warnings?: string[];
 }
@@ -84,13 +81,9 @@ export type ModelEditEvent =
   | { kind: "error"; error: SwampError };
 
 /**
- * Reports a `typeVersion` that will not parse as CalVer.
- *
- * The editor is where a person is most likely to mistype the field and most
- * able to fix it, so the problem is surfaced as the editor closes rather than
- * waiting for a method run to fail on it. Absence is not a problem: it records
- * that nobody stated which version the arguments were authored for, which is a
- * legitimate state for a hand-written definition (swamp-club#2412).
+ * surfaced as the editor closes, where a person is best placed to fix it,
+ * rather than when a method run fails on it; an absent typeVersion is
+ * legitimate for a hand-written definition
  */
 function typeVersionWarning(definition: Definition): string | undefined {
   const recorded = definition.typeVersion;
@@ -100,7 +93,6 @@ function typeVersionWarning(definition: Definition): string | undefined {
     `until it is corrected or removed.`;
 }
 
-/** What a grant can match on for a model definition being edited. */
 export interface ModelEditTarget {
   name: string;
   modelType: string;
@@ -118,14 +110,12 @@ function editTarget(
   };
 }
 
-/** Input for the model edit operation. */
 export interface ModelEditInput {
   modelIdOrName: string;
   /**
-   * The new YAML. Without it, only a file that is not a stored definition
-   * (a legacy `models/<name>/definition.yaml` link) is opened in place; a
-   * stored definition is edited through {@link resolveModelEditFile} and a
-   * copy, then saved with this set (swamp-club#4107).
+   * the new YAML. Without it, only a file that is not a stored definition (a
+   * legacy link) is opened in place; a stored definition is edited on a copy
+   * and then saved with this set
    */
   stdinContent?: string | null;
   /**
@@ -134,7 +124,6 @@ export interface ModelEditInput {
    * stored definition saves nothing and completes as `unchanged`.
    */
   source?: "stdin" | "editor";
-  /** The editor that produced `stdinContent`, reported on completion. */
   editor?: string;
   /**
    * Treat `modelIdOrName` as a definition id already resolved by the caller,
@@ -153,27 +142,24 @@ export interface ModelEditInput {
    */
   principalId?: string;
   /**
-   * Lets a stdin update change the model's name. Without it an update whose
-   * `name` differs from the stored one is refused, so a content patch cannot
-   * rename its target as a side effect (swamp-club#3302). It states intent
-   * only: a rename onto a name another model holds is refused either way.
+   * lets a stdin update change the model's name; without it a differing name is
+   * refused so a content patch cannot rename its target. Intent only: a rename
+   * onto a name another model holds is refused either way
    */
   allowRename?: boolean;
   /**
-   * Called before every stdin update is saved, with the stored and the edited
-   * definition. Returning false leaves the file untouched. Serve uses it to
-   * authorize the edited definition; it runs on every save, not only when the
-   * name or tags change, so a concurrent retag cannot slip past it.
+   * called before every stdin update is saved, with the stored and edited
+   * definition; false leaves the file untouched. Serve authorizes with it on
+   * every save, so a concurrent retag cannot slip past
    */
   authorizeUpdate?: (
     before: ModelEditTarget,
     after: ModelEditTarget,
   ) => Promise<boolean> | boolean;
   /**
-   * Called before every stdin update is saved, after `authorizeUpdate`, with
-   * the stored and the edited definition. Returning false leaves the file
-   * untouched. Serve uses it to authorize the expressions the edit adds
-   * against the writer (swamp-club#2755).
+   * called before every stdin update is saved, after authorizeUpdate; false
+   * leaves the file untouched. Serve uses it to authorize the expressions the
+   * edit adds against the writer
    */
   authorizeContent?: (
     before: Definition,
@@ -181,7 +167,6 @@ export interface ModelEditInput {
   ) => Promise<boolean> | boolean;
 }
 
-/** Dependencies for the model edit operation. */
 export interface ModelEditDeps {
   lookupDefinition: (
     idOrName: string,
@@ -205,7 +190,6 @@ export interface ModelEditDeps {
   ) => Promise<Definition | null>;
 }
 
-/** Wires real infrastructure into ModelEditDeps. */
 export function createModelEditDeps(
   repoDir: string,
   injectedDefinitionRepo?: YamlDefinitionRepository,
@@ -240,11 +224,6 @@ export function createModelEditDeps(
   };
 }
 
-/**
- * The file a model edit acts on: a stored definition, saved through the
- * repository, or a file that is not one (a legacy link to a definition
- * whose YAML is broken), which can only be edited in place.
- */
 export type ModelEditFile =
   | {
     kind: "definition";
@@ -254,7 +233,6 @@ export type ModelEditFile =
   }
   | { kind: "file"; path: string };
 
-/** Resolves the file a model edit acts on, or null when there is none. */
 export async function resolveModelEditFile(
   ctx: LibSwampContext,
   deps: ModelEditDeps,
@@ -279,7 +257,6 @@ export async function resolveModelEditFile(
       .debug`Model lookup failed, will try symlink fallback: ${error}`;
   }
 
-  // If normal lookup didn't find the model, try symlink fallback
   const resolvedPath = await deps.resolveSymlink(modelIdOrName);
   if (resolvedPath) {
     ctx.logger
@@ -293,7 +270,6 @@ function sameDefinition(a: Definition, b: Definition): boolean {
   return JSON.stringify(a.toData()) === JSON.stringify(b.toData());
 }
 
-/** Edits a model definition via stdin update or editor. */
 export async function* modelEdit(
   ctx: LibSwampContext,
   deps: ModelEditDeps,
@@ -327,7 +303,6 @@ export async function* modelEdit(
 
         ctx.logger.debug`Using file path: ${filePath}`;
 
-        // Stdin update mode
         if (stdinContent !== undefined && stdinContent !== null) {
           ctx.logger.debug`Reading model content from stdin`;
 
@@ -352,7 +327,6 @@ export async function* modelEdit(
             // Set when the rename guard, rather than an authorization hook,
             // is what stopped the save.
             let renameRefusal: SwampError | undefined;
-            // Set when an editor closed on content equal to the stored one.
             let unchanged = false;
             const beforeSave = async (candidate: Definition) => {
               if (fromEditor && sameDefinition(candidate, stored)) {
@@ -457,10 +431,9 @@ export async function* modelEdit(
           return;
         }
 
-        // Editor mode: only a file that is not a stored definition opens in
-        // place. A stored definition edited in place would never be saved
-        // through the repository, so it would never be committed
-        // (swamp-club#4107).
+        // editor mode: only a file that is not a stored definition opens in
+        // place; a stored definition edited in place would never be saved
+        // through the repository, so never committed
         if (file.kind === "definition") {
           yield {
             kind: "error",
@@ -485,12 +458,9 @@ export async function* modelEdit(
         };
         const result = await launch.open();
 
-        // Only worth re-reading when the launch actually waited for the editor to
-        // close. A non-blocking editor returns before the human has typed
-        // anything, so checking here would report on the pre-edit content.
-        // A re-read that fails is not itself worth reporting: the file may have
-        // been renamed or left mid-edit, and `model edit` already tolerates YAML
-        // it cannot parse.
+        // re-read only when the launch waited for the editor to close; a
+        // non-blocking editor returns before anything is typed. A failed
+        // re-read is not worth reporting: the file may be renamed or mid-edit
         let warnings: string[] | undefined;
         if (launch.waitsForExit) {
           try {

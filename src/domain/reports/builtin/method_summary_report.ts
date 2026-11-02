@@ -37,9 +37,6 @@ function isMethodContext(ctx: ReportContext): ctx is MethodReportContext {
   return ctx.scope === "method";
 }
 
-/**
- * Builds a narrative description of what happened during the method execution.
- */
 function buildNarrative(
   definition: { name: string },
   modelType: string,
@@ -57,7 +54,6 @@ function buildNarrative(
     return `${methodName} on ${definition.name} (${modelType}) succeeded with no data output.`;
   }
 
-  // Group handles by specName
   const groups = new Map<string, { kind: string; count: number }>();
   for (const handle of dataHandles) {
     const existing = groups.get(handle.specName);
@@ -78,10 +74,6 @@ function buildNarrative(
   }.`;
 }
 
-/**
- * Renders the data pointers section: compact resource names grouped by spec,
- * with one example retrieval command.
- */
 function renderPointersMarkdown(
   context: MethodReportContext,
   dataHandles: DataHandle[],
@@ -104,9 +96,9 @@ function renderPointersMarkdown(
 }
 
 /**
- * Renders where the run came from, so a reader can compare two runs: a
- * changed definition hash or model version separates a definition change
- * or extension upgrade from a bad input (swamp-club#3722).
+ * shows where the run came from so a reader can compare runs: a changed
+ * definition hash or model version separates a definition change or extension
+ * upgrade from a bad input
  */
 function renderProvenanceMarkdown(provenance: ExecutionProvenance): string[] {
   const trigger = provenance.workflowRunId
@@ -151,7 +143,6 @@ export const methodSummaryReport: ReportDefinition = {
       provenance,
     } = context;
 
-    // Build narrative
     const narrative = buildNarrative(
       definition,
       modelType.normalized,
@@ -181,7 +172,7 @@ export const methodSummaryReport: ReportDefinition = {
       }
     }
 
-    // Arguments section — names only, never values (swamp-club#1746).
+    // arguments section shows names only, never values
     const globalKeys = Object.keys(globalArgs);
     const methodKeys = Object.keys(methodArgs);
 
@@ -213,7 +204,6 @@ export const methodSummaryReport: ReportDefinition = {
 
     const markdown = lines.join("\n");
 
-    // Build JSON
     const json: Record<string, unknown> = {
       status: executionStatus,
       ...(errorMessage ? { error: errorMessage } : {}),

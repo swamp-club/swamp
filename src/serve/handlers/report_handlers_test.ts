@@ -57,16 +57,10 @@ async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
 
 interface ReportFixture {
   ctx: ConnectionContext;
-  /** Data names whose metadata the handler read. */
   reads: string[];
   close(): void;
 }
 
-/**
- * A serve connection context over a temp repo holding one model ("alpha")
- * with one stored report beside ten non-report data items. The data
- * repository the handlers see refuses to walk, so a handler that walks fails.
- */
 async function createReportFixture(dir: string): Promise<ReportFixture> {
   const definitionRepo = new YamlDefinitionRepository(dir);
   const definition = Definition.create({ name: "alpha", globalArguments: {} });

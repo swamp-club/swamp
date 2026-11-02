@@ -46,46 +46,26 @@ import { VaultAccessDeniedError } from "../vaults/run_vault_access.ts";
 import { keySegment, ProvenanceMap } from "../expressions/provenance_map.ts";
 import { spliceOrigin } from "../expressions/splice_origin.ts";
 
-/** A forEach variable bound to one iteration. */
 export interface ForEachBinding {
   name: string;
   value: unknown;
-  /**
-   * Where data sits in `value`, taken from the `in` expression that produced
-   * it (swamp-club#3205). Absent means authored.
-   */
   provenance?: ProvenanceMap;
 }
 
-/**
- * One concrete step produced by forEach expansion.
- */
 export interface ExpandedStep {
   step: Step;
-  /** The expanded step name after evaluating expressions. */
   expandedName: string;
-  /** The forEach variable name and value bound to this iteration. */
   forEachVar: ForEachBinding;
 }
 
-/**
- * Result of resolving a forEach step name template.
- */
 export interface ResolvedStepName {
-  /** The resolved step name. */
   name: string;
-  /** Whether any expression evaluation failed during resolution. */
   hadEvalFailure: boolean;
 }
 
 /**
- * Resolves a forEach step name template by evaluating `${{ }}`
- * expressions, or falls back to appending a suffix when no expressions
- * are present.
- *
- * When expression evaluation fails, the raw expression is preserved
- * and the fallbackSuffix is appended to ensure uniqueness across
- * iterations.
+ * when expression evaluation fails the raw expression is preserved and
+ * fallbackSuffix appended so iterations stay unique
  */
 export function resolveForEachStepName(
   template: string,
@@ -94,7 +74,6 @@ export function resolveForEachStepName(
   celEvaluator: CelExpressionEvaluator,
   fallbackSuffix: string,
   authored: AuthoredExpressions,
-  /** Where data sits in `template` (swamp-club#3205). */
   provenance: ProvenanceMap = ProvenanceMap.authored(),
 ): ResolvedStepName {
   if (hasExpression) {
@@ -114,12 +93,9 @@ export function resolveForEachStepName(
       try {
         return String(celEvaluator.evaluate(span.inner, stepContext));
       } catch (error) {
-        // A secret refusal is loud and names the expression
-        // (design/enablers/typed-secrets.md Section 4.3): it fails the
-        // expansion rather than falling back to a suffixed raw name, and so
-        // does a read the run's vault access denies, which the typed
-        // evaluate raises for the record a name reads. Every other failure
-        // keeps the fallback this function exists for.
+        // a secret refusal, or a read the run's vault access denies, fails the
+        // expansion loudly naming the expression instead of falling back to a
+        // suffixed raw name; every other failure keeps the fallback
         if (error instanceof SecretRefusedError) throw error;
         if (
           error instanceof InvalidExpressionError &&
@@ -138,12 +114,9 @@ export function resolveForEachStepName(
 }
 
 /**
- * The expanded name with any sensitive value the run recorded replaced by a
- * stable placeholder, so a secret iterated over never becomes a step name in
- * memory, logs, events or the run record, and with any control character an
- * item value carried written as a visible escape, so an expanded name obeys
- * the same rule as an authored one and never drives the terminal
- * (swamp-club#3027).
+ * replaces recorded sensitive values with a stable placeholder so a secret
+ * never becomes a step name in memory, logs, events or the run record, and
+ * visibly escapes control characters as an authored name does
  */
 function nameWithoutSecrets(
   name: string,
@@ -157,23 +130,13 @@ function nameWithoutSecrets(
 }
 
 /**
- * The evaluator the expansion runs with. A pass evaluator in a typed run
- * carries `prepare`, the authorization step the synchronous step-name
- * evaluation needs (design/enablers/typed-secrets.md Section 3.4); a plain
- * evaluator has none and the names evaluate as they always did.
+ * a pass evaluator in a typed run carries prepare, the authorization step
+ * synchronous step-name evaluation needs; a plain evaluator has none
  */
 export type ForEachEvaluator = CelExpressionEvaluator & {
   prepare?(content: unknown, context: Record<string, unknown>): Promise<void>;
 };
 
-/**
- * Expands forEach steps in a job into multiple concrete steps.
- *
- * For steps with `forEach`, evaluates the `in` expression and creates
- * one expanded step per item. Pure transformation: takes a job + an
- * expression context, returns the expanded-step map. No I/O, no event
- * emission, no orchestration concerns.
- */
 export class ForEachExpansionService {
   constructor(private readonly celEvaluator: ForEachEvaluator) {}
 
@@ -181,7 +144,6 @@ export class ForEachExpansionService {
     job: Job,
     context: ExpressionContext,
     authored: AuthoredExpressions,
-    /** Where data sits in each step, keyed by Step instance. */
     stepProvenance: (step: Step) => ProvenanceMap = () =>
       ProvenanceMap.authored(),
   ): Promise<Map<string, ExpandedStep[]>> {
@@ -189,7 +151,6 @@ export class ForEachExpansionService {
 
     for (const step of job.steps) {
       if (!step.forEach) {
-        // Non-forEach step: single entry that's a no-op for the caller.
         result.set(step.name, [{
           step,
           expandedName: step.name,
@@ -281,13 +242,6 @@ export class ForEachExpansionService {
     return result;
   }
 
-  /**
-   * The authorization step before a name template is evaluated
-   * synchronously: in a typed run it authorizes the sensitive-field
-   * references the template can read, and a denied record a name reads
-   * fails the expansion when that name is evaluated. Nothing to do for a
-   * name without expressions or an evaluator without the step.
-   */
   private async prepareName(
     step: Step,
     nameHasExpression: boolean,

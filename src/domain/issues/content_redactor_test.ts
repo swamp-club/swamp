@@ -196,7 +196,6 @@ Deno.test("redactIssueContent: redacts SSN patterns", () => {
 });
 
 Deno.test("redactIssueContent: redacts credit cards with Luhn validation", () => {
-  // 4111111111111111 is a valid Luhn test number
   const result = redactIssueContent(
     "Card number 4111111111111111 was logged",
   );
@@ -306,7 +305,6 @@ Deno.test("redactIssueContent: replaces IPv4 with stable placeholders", () => {
   );
   assertStringIncludes(result.text, "[IP-1]");
   assertStringIncludes(result.text, "[IP-2]");
-  // Same IP gets the same placeholder
   const first = result.text.indexOf("[IP-1]");
   const second = result.text.lastIndexOf("[IP-1]");
   assertEquals(first !== second, true);
@@ -440,7 +438,7 @@ Deno.test("redactIssueContent: hex digest in JSON checksum field is not redacted
 });
 
 Deno.test("redactIssueContent: hex digest with various safe key names is not redacted", () => {
-  const hex = "a1b2c3d4e5f6".repeat(6); // 72 chars
+  const hex = "a1b2c3d4e5f6".repeat(6);
   for (const key of ["sha256", "sha1", "digest", "hash", "etag", "md5"]) {
     const input = `"${key}": "${hex}"`;
     const result = redactIssueContent(input);
@@ -488,8 +486,6 @@ Deno.test("redactIssueContent: IPv6 addresses are redacted", () => {
   );
 });
 
-// --- FQDN false-positive guards ---
-
 Deno.test("redactIssueContent: dotted code identifiers are not treated as hostnames", () => {
   const r1 = redactIssueContent("s.authScopes.includes(scope)");
   assertEquals(r1.text, "s.authScopes.includes(scope)");
@@ -519,8 +515,6 @@ Deno.test("redactIssueContent: real FQDNs are still redacted", () => {
   assertStringIncludes(result.text, "[HOST-");
   assertEquals(result.text.includes("api.acme-corp.prod.net"), false);
 });
-
-// --- Dotted code paths in code spans (swamp-club#3228) ---
 
 Deno.test("redactIssueContent: a dotted code path in an inline code span is not a hostname", () => {
   const input = "the field `work.workflow.name` is read, not `workflow.name`";
@@ -656,8 +650,6 @@ Deno.test("redactIssueTitleAndBody: a code path in a code span survives in the t
   assertEquals(result.summary.totalRedactions, 0);
 });
 
-// --- Safe IP addresses ---
-
 Deno.test("redactIssueContent: loopback IPv4 is not redacted", () => {
   const r1 = redactIssueContent("curl http://127.0.0.1:8080/api/health");
   assertEquals(r1.text, "curl http://127.0.0.1:8080/api/health");
@@ -765,8 +757,6 @@ Deno.test("redactIssueContent: real IPv6 with 3+ groups is still redacted", () =
   );
 });
 
-// --- Angle-bracket placeholder handling ---
-
 Deno.test("redactIssueContent: angle-bracket placeholders in env vars are not redacted", () => {
   const r1 = redactIssueContent("SWAMP_API_KEY=<collective token>");
   assertEquals(r1.text, "SWAMP_API_KEY=<collective token>");
@@ -787,14 +777,11 @@ Deno.test("redactIssueContent: real env-var secrets are still redacted alongside
   assertStringIncludes(result.text, "127.0.0.1");
 });
 
-// --- redactIssueTitleAndBody ---
-
 Deno.test("redactIssueTitleAndBody: shares placeholders across title and body", () => {
   const result = redactIssueTitleAndBody(
     "Error on 10.0.3.47",
     "The server 10.0.3.47 returned 500, also tried 10.0.3.48",
   );
-  // Same IP in title and body should get the same placeholder
   assertStringIncludes(result.title.text, "[IP-1]");
   assertStringIncludes(result.body.text, "[IP-1]");
   assertStringIncludes(result.body.text, "[IP-2]");
@@ -813,8 +800,6 @@ Deno.test("redactIssueTitleAndBody: returns combined summary", () => {
     true,
   );
 });
-
-// --- line-level changes ---
 
 Deno.test("redactIssueContent: reports per-line changes with line numbers", () => {
   const input = [
@@ -852,8 +837,6 @@ Deno.test("redactIssueTitleAndBody: reports changes per field", () => {
   assertEquals(result.body.changes.length, 0);
 });
 
-// --- formatRedactionDetails ---
-
 Deno.test("formatRedactionDetails: formats line number and before/after", () => {
   const lines = formatRedactionDetails([
     { lineNumber: 3, original: "TOKEN=abc", redacted: "TOKEN=[X-1]" },
@@ -879,8 +862,6 @@ Deno.test("formatRedactionDetails: escapes newlines and truncates long content",
   assertStringIncludes(lines[0], "…");
   assertStringIncludes(lines[0], "-> gone");
 });
-
-// --- formatRedactionSummary ---
 
 Deno.test("formatRedactionSummary: returns empty string for zero redactions", () => {
   assertEquals(
@@ -908,12 +889,6 @@ Deno.test("formatRedactionSummary: singular form for count of 1", () => {
   assertStringIncludes(msg, "1 email");
   assertEquals(msg.includes("emails"), false);
 });
-
-// ---- labelled keys: widening ----
-//
-// Secrets shaped <label><joiner><payload> escaped redaction entirely when the
-// label was not one of the enumerated six, because \b cannot fire between the
-// joiner and the payload. These cover the tiers that close that gap.
 
 Deno.test("redactIssueContent: redacts a first-party key with an unrecognised label", () => {
   const result = redactIssueContent(
@@ -943,7 +918,6 @@ Deno.test("redactIssueContent: redacts a labelled hex run", () => {
 });
 
 Deno.test("redactIssueContent: redacts label-prefixed card numbers, IDs and addresses", () => {
-  // Each of these is redacted when bare; the joiner used to hide them.
   assertEquals(
     redactIssueContent("card_4111111111111111 charged").text,
     "card_[REDACTED-CC] charged",
@@ -970,13 +944,6 @@ Deno.test("redactIssueContent: an address with a long local part is still redact
   );
   assertEquals(result.text, "contact [REDACTED-EMAIL] today");
 });
-
-// ---- labelled keys: narrowing ----
-//
-// The enumerated tier used to redact any payload of 20+ characters, including
-// word-structured identifiers, which destroyed the diagnostic content of
-// reports quoting cloud API enums. The payload must now carry key material.
-// Relaxing that gate is what these tests exist to prevent.
 
 Deno.test("redactIssueContent: enumerated labels in front of word-structured identifiers are not redacted", () => {
   for (
@@ -1011,29 +978,16 @@ Deno.test("redactIssueContent: bare UUIDs are run identifiers, not secrets", () 
   assertEquals(result.summary.totalRedactions, 0);
 });
 
-// ---- benign corpus ----
-//
-// Harvested from this repository, swamp-extensions, swamp-club, swamp-uat and
-// a third-party package cache: the strings that matched the labelled-key shape
-// without being secrets. Redacting any of them destroys the evidence a bug
-// report exists to carry, so these assert a redaction count of zero rather
-// than merely unchanged text.
-
 Deno.test("redactIssueContent: benign labelled identifiers survive redaction", () => {
   for (
     const benign of [
-      // Generated cloud API resource names, both joiners.
       "options_requestedPolicyVersion",
       "accounts-userlistdirectlicenses",
       "environments_userworkloadsconfigmaps",
       "API_DescribeLoadBalancers",
-      // Only digit is a trailing version suffix.
       "resource-elasticloadbalancingv2",
-      // First-party environment variable: payload carries separators.
       "SWAMP_GCS_REQUEST_TIMEOUT_MS",
-      // Lockfile integrity hash.
       "sha512-q6MMm2zhggzsHVNbabYwutQRSTUVWXYZabc",
-      // Branch name, test path, record id, version string.
       "cue/3-redaction-regex-boundary-bug-label-base6",
       "src/domain/issues/content_redactor_test.ts",
       "id_12345678901234567890123",
@@ -1054,8 +1008,6 @@ Deno.test("redactIssueContent: redacting already-redacted text is a no-op", () =
   assertEquals(twice.text, once.text);
   assertEquals(twice.summary.totalRedactions, 0);
 });
-
-// --- Git object ids and colon-separated runs (swamp-club#3686) ---
 
 Deno.test("redactIssueContent: a commit id after a git word is kept", () => {
   const sha1 = "a4fd943795dbca86a77083347c021a329fb32aa0";

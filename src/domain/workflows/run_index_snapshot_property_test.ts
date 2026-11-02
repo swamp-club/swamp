@@ -46,7 +46,6 @@ const arbBound = fc.option(
   { nil: undefined },
 );
 
-/** The reference: filter by the window, then a stable sort, newest first. */
 function reference(
   summaries: WorkflowRunSummary[],
   sinceMs: number | undefined,

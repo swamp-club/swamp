@@ -39,26 +39,20 @@ import type { SwampError } from "../errors.ts";
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
 
 /**
- * A definition holding one or more sensitive global arguments as cleartext
- * literals. The remediation guidance is value-free — it never echoes the
- * offending secret, only the field path and the vault coordinates to migrate
- * the value to.
+ * remediation guidance is value-free: it never echoes the secret, only the
+ * field path and the vault coordinates
  */
 export interface SensitiveLeakFinding {
   definitionId: string;
   definitionName: string;
   type: string;
-  /** Dot-paths of the sensitive global args holding a literal secret. */
   leakedPaths: string[];
-  /** Per-path remediation guidance. */
   remediations: SensitiveArgRemediation[];
 }
 
 /**
- * A definition whose type schema could not be resolved, so its sensitive
- * global args could not be assessed. Reported (not silently skipped) because it
- * is a best-effort residual: a missing/unloadable extension type means the scan
- * cannot vouch for that definition.
+ * reported, not skipped: with no resolvable type schema the scan cannot vouch
+ * for the definition
  */
 export interface UnresolvedDefinition {
   definitionId: string;
@@ -66,9 +60,7 @@ export interface UnresolvedDefinition {
   type: string;
 }
 
-/** Outcome of a `doctor secrets` scan. */
 export interface DoctorSecretsData {
-  /** Total definitions inspected (across models/ and auto-definitions). */
   scanned: number;
   findings: SensitiveLeakFinding[];
   unresolved: UnresolvedDefinition[];
@@ -79,27 +71,19 @@ export type DoctorSecretsEvent =
   | { kind: "completed"; data: DoctorSecretsData }
   | { kind: "error"; error: SwampError };
 
-/** Dependencies for the `doctor secrets` scan. */
 export interface DoctorSecretsDeps {
-  /** Enumerates every definition to scan, paired with its model type. */
   findAllDefinitions: () => Promise<
     { definition: Definition; type: ModelType }[]
   >;
-  /** Resolves the model definition (and thus the schema) for a type. */
   getModelDef: (
     type: ModelType,
   ) => ModelDefinition | undefined | Promise<ModelDefinition | undefined>;
 }
 
 /**
- * Wires real infrastructure into {@link DoctorSecretsDeps}.
- *
- * Scans two trees: the source-of-truth definitions under `models/` (these are
- * the datastore-synced files — a literal authored on another machine lands here
- * after a pull) and the locally auto-created definitions under
- * `.swamp/auto-definitions`. The public `findAllGlobal()` only walks its own
- * `baseDir`, so a second repository is pointed at the auto-definitions tree to
- * cover both without changing shared enumeration behaviour.
+ * scans models/ (datastore-synced) and .swamp/auto-definitions; findAllGlobal
+ * only walks its own baseDir, so a second repository covers the
+ * auto-definitions tree
  */
 export async function createDoctorSecretsDeps(
   repoDir: string,
@@ -128,12 +112,8 @@ export async function createDoctorSecretsDeps(
 }
 
 /**
- * Read-only scan that reports definitions whose `sensitive: true` global
- * arguments hold a cleartext literal value. It reuses the same domain rule
- * (`findLiteralSensitiveGlobalArgs`) that the persistence chokepoint enforces
- * at write time, so what this surfaces is exactly what a re-save would now
- * refuse. It never writes — reporting only, with value-free remediation
- * guidance the caller can render.
+ * read-only; reuses the rule the persistence chokepoint enforces at write time,
+ * so findings are what a re-save would refuse
  */
 export async function* doctorSecrets(
   _ctx: LibSwampContext,

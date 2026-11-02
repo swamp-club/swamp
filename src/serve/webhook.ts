@@ -17,12 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * HTTP webhook handler for triggering workflow runs from external events
- * (e.g. GitHub push webhooks). Verifies HMAC-SHA256 signatures and queues
- * workflow execution through executeWorkflowWithLocks.
- */
-
 import type { RepositoryContext } from "../infrastructure/persistence/repository_factory.ts";
 import type { DatastoreConfig } from "../domain/datastore/datastore_config.ts";
 import type { DatastoreSyncService } from "../domain/datastore/datastore_sync_service.ts";
@@ -58,7 +52,6 @@ import {
 
 const logger = getSwampLogger(["serve", "webhook"]);
 
-/** Default signature header — used by the github scheme. */
 const SIGNATURE_HEADER = "x-hub-signature-256";
 
 const REDACTED_HEADERS: ReadonlySet<string> = new Set([
@@ -75,7 +68,6 @@ const REDACTED_HEADERS: ReadonlySet<string> = new Set([
   "x-goog-iap-jwt-assertion",
   "cf-access-jwt-assertion",
   "x-forwarded-client-cert",
-  // The team's peer token on a forwarded delivery (swamp-club#4148).
   TEAM_PEER_HEADER,
 ]);
 
@@ -91,11 +83,8 @@ export function isSensitiveHeader(name: string): boolean {
 }
 
 /**
- * Builds the {@link WebhookPayload} exposed to a workflow's `trigger.inputs`
- * CEL expressions from a verified request. The body is JSON-parsed when
- * possible, falling back to the raw UTF-8 string for non-JSON payloads. Header
- * names are lowercased; the signature header and sensitive credential headers
- * are dropped so they can never leak into workflow inputs or persistent storage.
+ * the signature and sensitive credential headers are dropped so they never leak
+ * into workflow inputs or persistent storage
  */
 export function buildWebhookPayload(
   body: Uint8Array,
@@ -122,8 +111,6 @@ export function buildWebhookPayload(
 
   return { body: parsed, headers: exposedHeaders, route };
 }
-
-// ── Secret Resolution ─────────────────────────────────────────────────
 
 const ENV_PREFIX = "@env=";
 const FILE_PREFIX = "@file=";
@@ -219,12 +206,6 @@ export async function resolveSecret(
   return raw;
 }
 
-// ── Value Objects ──────────────────────────────────────────────────────
-
-/**
- * Immutable configuration for a single webhook endpoint.
- * Parsed from --webhook CLI flags.
- */
 export interface WebhookEndpoint {
   readonly route: string;
   readonly workflowIdOrName: string;
@@ -233,21 +214,9 @@ export interface WebhookEndpoint {
 }
 
 /**
- * Parse a --webhook flag value into a WebhookEndpoint.
- *
- * Format: `<route>:<workflow>:<secret>[:<scheme>[:<header>[:<prefix>]]]`
- *
- * The scheme is recognized only when the fourth field is a known scheme
- * keyword; otherwise the flag is parsed the legacy way — the secret is
- * everything after the second colon (so it may still contain colons) and the
- * scheme defaults to github. This keeps every existing flag working. The
- * consequence (a colon-bearing secret cannot be combined with an explicit
- * scheme, and a secret whose colon-tail begins with a reserved keyword would be
- * reinterpreted) is the accepted limitation tracked in #723. When a scheme is
- * given, the remaining fields are positional: `generic` requires a header name
- * (fifth field) and accepts an optional value prefix (sixth field). A webhook
- * extension type (`@collective/name`) is also accepted as the scheme, with an
- * empty config.
+ * the scheme counts only when the fourth field is a known keyword; otherwise
+ * the legacy form takes everything after the second colon as the secret, so a
+ * colon-bearing secret cannot combine with an explicit scheme
  */
 export async function parseWebhookFlag(
   flag: string,
@@ -316,11 +285,6 @@ export async function parseWebhookFlag(
   return { route, workflowIdOrName, secret, verifier };
 }
 
-/**
- * Resolve every extension-scheme endpoint at startup: the webhook extension
- * type must be installed (or auto-resolvable) and its config must satisfy the
- * type's configSchema. Returns the endpoints with schema-parsed config.
- */
 export async function resolveExtensionWebhookEndpoints(
   endpoints: readonly WebhookEndpoint[],
   resolveType: (type: string) => Promise<boolean>,
@@ -364,7 +328,6 @@ export async function resolveExtensionWebhookEndpoints(
   return resolved;
 }
 
-/** Convert an extension-supplied {@link WebhookResponse} to an HTTP response. */
 function toHttpResponse(response: WebhookResponse): Response {
   // The Response constructor enforces the upper bound but permits 101.
   if (response.status < 200) {
@@ -386,12 +349,6 @@ function toHttpResponse(response: WebhookResponse): Response {
   });
 }
 
-// ── Body Size Limit ────────────────────────────────────────────────────
-
-/**
- * Read a request body with a byte budget. Returns null if the body
- * exceeds the limit, cancelling the stream to avoid full allocation.
- */
 export async function readBodyWithLimit(
   req: Request,
   maxBytes: number,
@@ -426,8 +383,6 @@ export async function readBodyWithLimit(
   return result;
 }
 
-// ── Webhook Event Types ────────────────────────────────────────────────
-
 export type WebhookEvent =
   | {
     kind: "webhook_received";
@@ -437,10 +392,8 @@ export type WebhookEvent =
   | {
     kind: "webhook_rejected";
     route: string;
-    /** The workflow the route is configured to run. */
     workflowName: string;
     reason: string;
-    /** The sender's address, when the caller supplied it. */
     sourceIp?: string;
   }
   | {
@@ -449,7 +402,6 @@ export type WebhookEvent =
     workflowName: string;
   }
   | {
-    /** A run began executing; runId is known from here on. */
     kind: "webhook_started";
     route: string;
     workflowName: string;
@@ -458,7 +410,6 @@ export type WebhookEvent =
     replayed: boolean;
   }
   | {
-    /** Authorization refused the run; it never started. */
     kind: "webhook_denied";
     route: string;
     workflowName: string;
@@ -481,60 +432,46 @@ export type WebhookEvent =
 
 export type WebhookEventHandler = (event: WebhookEvent) => void;
 
-// ── Webhook Execution Service ──────────────────────────────────────────
-
 export interface WebhookServiceDeps {
   /**
-   * Whether this serve node takes runs: false on a follower in team mode
-   * (swamp-club#4096), which answers a verified delivery with a retryable
-   * 503 so the sender delivers it again, to the leader or once one leads.
+   * false on a follower in team mode, which answers a verified delivery with a
+   * retryable 503 so the sender retries to the leader or once one leads.
    * Absent, every node takes runs.
    */
   acceptsRuns?: () => boolean;
   /**
-   * A follower's route to the leader (swamp-club#4120): a delivery a node
-   * that takes no runs receives is passed on to the leader with its raw
-   * body and headers, before this node verifies it or runs any hook, so the
-   * leader verifies the signature and nothing about the delivery is
-   * trusted from the follower. Absent, or with no leader address known,
-   * the delivery is verified here and refused as before.
+   * a delivery received by a node that takes no runs is passed on raw before
+   * verification, so the leader checks the signature and nothing is trusted
+   * from the follower. Absent, it is verified here and refused
    */
   leaderLink?: LeaderLink;
   repoDir: string;
   repoContext: RepositoryContext;
   datastoreConfig: DatastoreConfig;
   endpoints: WebhookEndpoint[];
-  /** Shared sync service; see `design/enablers/datastores.md` markDirty contract. */
   syncService?: DatastoreSyncService;
   /**
-   * Serve's sync gate; webhook runs sync under its shared mode
-   * (swamp-club#2405). Required — `undefined` where no gate exists — so the
-   * wiring cannot be forgotten.
+   * webhook runs sync under the gate's shared mode. Required, undefined where
+   * no gate exists, so the wiring cannot be forgotten
    */
   syncGate: SyncGate | undefined;
   runTracker?:
     import("../infrastructure/persistence/run_tracker_store.ts").RunTrackerStore;
-  /** HA instance identifier — always generated at startup. */
   instanceId?: string;
-  /** Remote control-plane store for HA dual-write of pending runs. */
   controlPlaneStore?:
     import("../domain/datastore/control_plane_store.ts").ControlPlaneStore;
-  /** Recorded on every run as `initiatedBy` (the webhook principal). */
   initiatedBy?: string;
-  /** The repo's `defaultVault`, forwarded to each run (swamp-club#3680). */
   defaultVault?: string;
-  /** Serve's run write fence, forwarded to each run (swamp-club#4101). */
   runWriteFence?: RunWriteFence;
   /**
    * Authorizes each run at execution time, so queued and replayed runs are
    * both checked against the current policy. When absent every run proceeds.
    */
   authorizeRun?: WebhookRunAuthorizer;
-  /** Test seam; defaults to {@link executeWorkflowWithLocks}. */
   executeWorkflow?: typeof executeWorkflowWithLocks;
   /**
-   * Builds, per run, the vault scope of the webhook principal
-   * (swamp-club#2676). When absent runs are unscoped.
+   * builds, per run, the vault scope of the webhook principal; when absent runs
+   * are unscoped
    */
   createVaultAccess?: () => ServeRunVaultScope | undefined;
   /**
@@ -543,19 +480,13 @@ export interface WebhookServiceDeps {
    * time, in arrival order.
    */
   maxConcurrentRuns?: number;
-  /** Clock for queue-delay reporting, in epoch ms. Defaults to `Date.now`. */
   now?: () => number;
 }
 
-/** A webhook route's queue state, as reported in health. */
 export interface WebhookQueueStatus {
-  /** Runs taken off the queue and not yet settled. */
   readonly active: number;
-  /** Deliveries waiting to start. */
   readonly queued: number;
-  /** ISO-8601 enqueue time of the oldest waiting delivery. */
   readonly oldestQueuedAt: string | null;
-  /** Enqueue-to-start delay of the last run that started. */
   readonly lastQueueDelayMs: number | null;
 }
 
@@ -581,11 +512,9 @@ interface QueuedWebhookRun {
   tracestate?: string;
   sourceIp?: string;
   replayed?: boolean;
-  /** Epoch ms the entry joined the queue. */
   enqueuedAt: number;
 }
 
-/** What the webhook service asks before it starts a run. */
 export interface WebhookRunRequest {
   readonly workflowIdOrName: string;
   readonly route: string;
@@ -598,8 +527,8 @@ export interface WebhookRunAuthorization {
   /** The workflow to run: exactly the value authorization decided on. */
   readonly workflowIdOrName: string;
   /**
-   * The id of the workflow authorization decided on, when it exists; the run
-   * record carries it so cancel and attach authorize that workflow.
+   * the id of the workflow authorization decided on; the run record carries it
+   * so cancel and attach authorize that workflow
    */
   readonly workflowId?: string;
   readonly reason?: string;
@@ -609,13 +538,7 @@ export type WebhookRunAuthorizer = (
   request: WebhookRunRequest,
 ) => Promise<WebhookRunAuthorization>;
 
-/**
- * WebhookService manages webhook endpoint matching, signature verification,
- * and queued workflow execution. Up to `maxConcurrentRuns` queued runs
- * execute at once, as in ScheduledExecutionService, except that runs of the
- * same route or workflow may overlap: per-model locks guard shared state.
- */
-const MAX_WEBHOOK_BODY_BYTES = 10 * 1024 * 1024; // 10 MB
+const MAX_WEBHOOK_BODY_BYTES = 10 * 1024 * 1024;
 const MAX_QUEUE_DEPTH = 100;
 /**
  * Retry-After for deliveries rejected while serve shuts down. Short, so the
@@ -624,22 +547,21 @@ const MAX_QUEUE_DEPTH = 100;
  */
 const SHUTDOWN_RETRY_AFTER_SECONDS = 5;
 
-/**
- * Webhook endpoint info exposed to callers, without the secret.
- */
 export interface WebhookEndpointInfo {
   readonly route: string;
   readonly workflowIdOrName: string;
   readonly scheme: string;
 }
 
+/**
+ * up to maxConcurrentRuns queued runs execute at once; runs of the same route
+ * or workflow may overlap since per-model locks guard shared state
+ */
 export class WebhookService {
   private readonly runQueue: QueuedWebhookRun[] = [];
   private readonly maxConcurrentRuns: number;
   private readonly now: () => number;
-  /** Entries taken off the queue and not yet settled, by settle promise. */
   private readonly inFlight = new Map<Promise<void>, QueuedWebhookRun>();
-  /** Last enqueue-to-start delay, by route. */
   private readonly lastQueueDelayMs = new Map<string, number>();
   private eventHandler: WebhookEventHandler | null = null;
   private readonly running = new Map<
@@ -685,12 +607,6 @@ export class WebhookService {
     });
   }
 
-  /**
-   * Atomically replace the active endpoint list. In-flight runs continue
-   * against their already-matched endpoint; new requests match against the
-   * updated list. Returns the number of routes that changed (added + removed
-   * + modified).
-   */
   updateEndpoints(newEndpoints: readonly WebhookEndpoint[]): number {
     const oldByRoute = new Map(this.endpoints.map((e) => [e.route, e]));
     const newByRoute = new Map(newEndpoints.map((e) => [e.route, e]));
@@ -730,9 +646,6 @@ export class WebhookService {
     return changed;
   }
 
-  /**
-   * Returns the configured webhook endpoints (without secrets).
-   */
   listEndpoints(): ReadonlyArray<WebhookEndpointInfo> {
     return this.endpoints.map((e) => ({
       route: e.route,
@@ -741,11 +654,6 @@ export class WebhookService {
     }));
   }
 
-  /**
-   * Returns a route's queue state: its runs in flight, its deliveries waiting
-   * to start, the oldest one's enqueue time, and the last run's
-   * enqueue-to-start delay.
-   */
   queueStatus(route: string): WebhookQueueStatus {
     let active = 0;
     for (const entry of this.inFlight.values()) {
@@ -767,10 +675,6 @@ export class WebhookService {
     };
   }
 
-  /**
-   * Handle an incoming HTTP request. Returns a Response if the request
-   * matches a configured webhook route, or null if no route matched.
-   */
   async handleRequest(
     req: Request,
     sourceIp?: string,
@@ -850,7 +754,6 @@ export class WebhookService {
       }
     }
 
-    // Read body with size limit — streams to avoid unbounded allocation
     const body = await readBodyWithLimit(req, MAX_WEBHOOK_BODY_BYTES);
     if (body === null) {
       this.emit({
@@ -866,10 +769,9 @@ export class WebhookService {
       );
     }
 
-    // A follower passes the delivery on to the leader as it came, within
-    // the size limit, before verifying it or running any hook: the leader
-    // verifies the signature with its own endpoint config (swamp-club#4120).
-    // The reply names no leader, as the refusal below does not.
+    // a follower forwards the delivery to the leader as it came, within the
+    // size limit, before verifying; the leader verifies with its own endpoint
+    // config, and the reply names no leader
     const link = this.deps.leaderLink;
     if (
       this.deps.acceptsRuns?.() === false && link !== undefined &&
@@ -917,11 +819,9 @@ export class WebhookService {
       verifier.signatureHeader,
     );
 
-    // Extension hooks run only after successful verification, and only see
-    // the redacted payload. Any failure is a generic 500 raised before the
-    // run tracker or queue is touched.
-    // ponytail: extension hooks run inline with no timeout — operator-installed
-    // code; add an AbortSignal deadline if hung handlers become a problem.
+    // extension hooks run only after verification and see the redacted payload;
+    // a failure is a generic 500 before the run tracker or queue is touched.
+    // Hooks run inline with no timeout.
     let serializedPayload: string;
     let customResponse: WebhookResponse | undefined;
     let httpResponse: Response | undefined;
@@ -937,7 +837,6 @@ export class WebhookService {
       }
       serializedPayload = JSON.stringify(webhookPayload);
       customResponse = await verifier.respond?.(JSON.parse(serializedPayload));
-      // Throws for a status outside 200–599 or a body on a null-body status.
       if (customResponse) httpResponse = toHttpResponse(customResponse);
     } catch (error) {
       logger.warn("Webhook handler hook failed on {route}: {error}", {
@@ -953,8 +852,8 @@ export class WebhookService {
     // queued after it would be acknowledged and then aborted unreplayed.
     if (this.draining) return this.shuttingDownResponse(endpoint, sourceIp);
 
-    // After verification, so only a verified sender learns this node does
-    // not lead; the reply names no leader (swamp-club#4096).
+    // after verification, so only a verified sender learns this node does not
+    // lead; the reply names no leader
     if (this.deps.acceptsRuns?.() === false) {
       this.emit({
         kind: "webhook_rejected",
@@ -972,7 +871,6 @@ export class WebhookService {
       );
     }
 
-    // Queue the workflow run (with backpressure)
     if (this.runQueue.length >= MAX_QUEUE_DEPTH) {
       this.emit({
         kind: "webhook_rejected",
@@ -1134,12 +1032,6 @@ export class WebhookService {
     this.processQueue();
   }
 
-  /**
-   * Begin shutdown: reject new deliveries with 503, drop queued runs (their
-   * run-tracker pending entries stay, so boot reconciliation replays them),
-   * and wait up to `timeoutMs` for the in-flight runs to finish. A timeout
-   * of 0 returns at once. Call {@link stop} afterwards to abort what is left.
-   */
   async drain(timeoutMs: number): Promise<void> {
     this.draining = true;
     // A dropped entry's control-plane write is what a replacement instance
@@ -1161,9 +1053,6 @@ export class WebhookService {
     }
   }
 
-  /**
-   * Gracefully stop: abort in-flight runs and wait for them to settle.
-   */
   async stop(): Promise<void> {
     this.stopped = true;
     for (const entry of this.runQueue) entry.queueObservation?.end("cancelled");
@@ -1171,16 +1060,11 @@ export class WebhookService {
     for (const { controller } of this.running.values()) {
       controller.abort();
     }
-    // Runs exit quickly after abort
     while (this.inFlight.size > 0) {
       await Promise.allSettled([...this.inFlight.keys()]);
     }
   }
 
-  /**
-   * Cancels an in-flight webhook run by its run id. Returns true if found and
-   * aborted. `reason` becomes the run's `cancel_reason`.
-   */
   cancelByRunId(runId: string, reason = "cancelled by user"): boolean {
     // An empty id would match every run whose start is not recorded yet.
     if (runId === "") return false;
@@ -1194,9 +1078,6 @@ export class WebhookService {
     return false;
   }
 
-  /**
-   * Cancels every in-flight webhook run. Returns the number of runs cancelled.
-   */
   cancelAllRuns(reason = "cancelled by user"): number {
     let count = 0;
     for (const entry of this.running.values()) {
@@ -1207,10 +1088,6 @@ export class WebhookService {
     return count;
   }
 
-  /**
-   * Starts queued entries, in arrival order, until `maxConcurrentRuns` are in
-   * flight. Called on every enqueue and whenever a run settles.
-   */
   private processQueue(): void {
     while (
       this.inFlight.size < this.maxConcurrentRuns && this.runQueue.length > 0
@@ -1278,9 +1155,9 @@ export class WebhookService {
           });
         }
       }
-      // Each entry starts outside any vault scope: the run enters its own
+      // each entry starts outside any vault scope: the run enters its own
       // principal's scope, and the queue's inherited context never carries
-      // another entry's (swamp-club#2676).
+      // another entry's
       await observation.run(() =>
         withoutVaultAccess(() => this.executeWorkflow(entry, observation))
       );
@@ -1332,8 +1209,8 @@ export class WebhookService {
       );
       return;
     }
-    // Events and bookkeeping keep the configured value, as before; only the
-    // run executes the value authorization decided on.
+    // events and bookkeeping keep the configured value; only the run executes
+    // the value authorization decided on
     const { workflowIdOrName } = entry;
 
     const controller = new AbortController();
@@ -1429,11 +1306,9 @@ export class WebhookService {
         },
       );
 
-      // Success requires an explicit "succeeded" status. A run that ends any
-      // other way — a failed step, a cancellation, an error event carrying a
-      // pre-run failure — must not be reported as a completion, because
-      // webhook_completed feeds the "completed" bucket of the health
-      // endpoint's throughput metrics.
+      // success needs an explicit succeeded status; any other end must not
+      // count as a completion, because webhook_completed feeds the health
+      // endpoint's throughput metrics
       if (completedRun?.status === "succeeded") {
         observation.end("ok");
         this.emit({

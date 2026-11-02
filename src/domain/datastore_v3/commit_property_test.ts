@@ -29,7 +29,6 @@ import {
   versionOp,
 } from "./v3_test_helpers.ts";
 
-/** A recipe for one op, built asynchronously because puts hash content. */
 const arbOpRecipe = fc.oneof(
   fc.record({
     kind: fc.constant("put" as const),

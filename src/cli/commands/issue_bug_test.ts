@@ -110,7 +110,6 @@ Deno.test("buildBugTemplate: auto-populates environment values", () => {
     `- Shell: ${Deno.env.get("SHELL") ?? "unknown"}`,
   );
   assertStringIncludes(template, "- swamp version: ");
-  // Version is non-empty
   const versionMatch = template.match(/- swamp version: (.+)/);
   assertEquals(versionMatch !== null, true);
   assertEquals(versionMatch![1].trim().length > 0, true);

@@ -17,49 +17,32 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// Compile-time enforcement that the domain-local FreshnessKind union in
-// src/domain/extensions/bundle_freshness.ts stays in sync with the
-// infrastructure ExtensionKind union in
-// src/infrastructure/persistence/extension_catalog_store.ts.
-//
-// FreshnessKind is declared inline in the domain layer so the freshness
-// helper does not import from infrastructure (domain→infrastructure
-// boundary — see CLAUDE.md and the ddd skill). That split leaves the
-// two unions free to drift. A test file can cross the layer boundary
-// because tests sit outside production code — importing both types
-// here, and asserting mutual extension, makes divergence a hard
-// `deno check` error.
-//
-// If a new kind is added to one union without updating the other, one
-// of the assertions below fails to type-check, surfacing the problem
-// at compile time rather than as a silent rebundle storm at runtime.
+// FreshnessKind is inline in the domain to avoid importing infrastructure;
+// asserting mutual extension with ExtensionKind here makes drift a type-check
+// error, not a silent rebundle storm
 
 import type { ExtensionKind } from "../src/infrastructure/persistence/extension_catalog_store.ts";
 import type { FreshnessKind } from "../src/domain/extensions/bundle_freshness.ts";
 
 type AssertExtends<A, B> = A extends B ? true : false;
 
-// Every ExtensionKind must be representable as a FreshnessKind.
 const _everyExtensionKindIsFreshnessKind: AssertExtends<
   ExtensionKind,
   FreshnessKind
 > = true;
 
-// Every FreshnessKind must be representable as an ExtensionKind.
 const _everyFreshnessKindIsExtensionKind: AssertExtends<
   FreshnessKind,
   ExtensionKind
 > = true;
 
-// Touch the unused bindings so the linter doesn't flag them — the
-// value of these constants is the fact that they type-check at all.
+// touched so the linter does not flag the unused bindings; their value is that
+// they type-check
 void _everyExtensionKindIsFreshnessKind;
 void _everyFreshnessKindIsExtensionKind;
 
-// A tiny runtime smoke test so this file also shows up as a "1 passed"
-// in the test summary rather than a silent no-op. If you reach this
-// runtime assertion it means the compile-time checks above passed,
-// which is the real thing being tested.
+// runtime smoke test so the file shows as passed rather than a silent no-op;
+// reaching it means the compile-time checks passed
 Deno.test("FreshnessKind stays in sync with ExtensionKind (compile-time)", () => {
   // The real assertions are the type-level constants above, enforced
   // by `deno check`. This body is intentionally trivial.

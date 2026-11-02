@@ -42,25 +42,19 @@ import { inManagedLockfileTransaction } from "./managed_lockfile_transaction.ts"
 import { PER_EXTENSION_SCAFFOLD_DIRS } from "./layout.ts";
 
 /**
- * A tracked file that `extension rm` could not delete. `reason` is the
- * Deno error name (e.g. `PermissionDenied`), never the error message,
- * so no absolute path reaches a serve client.
+ * reason is the Deno error name, never the message, so no absolute path reaches
+ * a serve client.
  */
 export interface FailedFile {
   path: string;
   reason: string;
 }
 
-/**
- * A tracked path `extension rm` kept because other installed extensions
- * still claim it: a shared skill dir they list, or list files under.
- */
 export interface RetainedFile {
   path: string;
   claimedBy: string[];
 }
 
-/** Result of `RemoveExtensionService.execute()`. */
 export interface RemoveExtensionResult {
   name: string;
   version: string;
@@ -68,61 +62,26 @@ export interface RemoveExtensionResult {
   filesSkipped: number;
   dirsRemoved: number;
   /**
-   * Tracked files left on disk because deleting them failed. The
-   * catalog and lockfile no longer track them, so the user has to
-   * remove them by hand.
+   * tracked files left on disk because deleting them failed; the catalog and
+   * lockfile do not track them, so the user has to remove them by hand
    */
   failedFiles: FailedFile[];
   /**
-   * Tracked paths left on disk because another installed extension
-   * claims them. For a kept skill dir, the files this extension wrote
-   * there stay too and are no longer tracked by any entry; remove them
-   * by hand if they are unwanted.
+   * for a kept skill dir, the files this extension wrote there stay too and no
+   * entry tracks them any more.
    */
   retainedFiles: RetainedFile[];
 }
 
-/** Removes a filesystem path. Defaults to `Deno.remove`. */
 export type RemovePathFn = (
   path: string,
   options?: Deno.RemoveOptions,
 ) => Promise<void>;
 
 /**
- * W2 lifecycle service for removing an installed extension. **Closes
- * swamp-club#201**: today's `extension rm` does not touch the catalog
- * at all, leaving stale `(kind, type)` rows that survive removal. This
- * service makes the catalog write the FIRST step of removal so the
- * Extension aggregate is gone before any other state is touched.
- *
- * **Asymmetric ordering with `InstallExtensionService`.** Install is
- * filesystem → lockfile → catalog. Remove is the **inverse**: catalog
- * → lockfile → filesystem. The architecture-agent's "expensive miss
- * #1": if rm went FS-first, the catalog would briefly point at deleted
- * bundles and resolution would crash for that window. Catalog-first
- * means a mid-rm crash leaves files on disk but the catalog clean — the
- * next loader pass surfaces the orphans via the existing
- * `findStaleFiles` fallback. Pinned in plan v4.
- *
- * **Validate before mutating.** Every tracked path is checked before
- * the catalog write, so a path outside the repo fails the rm with
- * nothing changed and a retry still sees the extension installed.
- * Once the catalog and lockfile are updated, a file that cannot be
- * deleted is reported in `failedFiles` instead of aborting the rm
- * halfway (swamp-club#2489).
- *
- * **Idempotency.** A double-rm yields a clean `UserError("not
- * installed")` on the second call, NOT silent success and NOT an
- * ambiguous error. Pin in plan v4 challenge #9.
- *
- * **Tombstoned-row interaction.** An extension with leftover
- * `Tombstoned` Sources from a prior failed upgrade can still be rm'd
- * cleanly — `tombstoneAll()` is idempotent (already-tombstoned Sources
- * stay tombstoned).
- *
- * **W4-inherits.** The service shape is W4-stable. Future cleanup is
- * just "delete the service" if/when the catalog-write boundary is
- * unified into a single lifecycle layer.
+ * removal order is catalog, lockfile, filesystem, so a mid-rm crash leaves
+ * files but a clean catalog, surfaced by findStaleFiles; paths are validated
+ * before any write
  */
 export class RemoveExtensionService {
   private readonly repository: ExtensionRepository;
@@ -148,28 +107,14 @@ export class RemoveExtensionService {
   }
 
   /**
-   * Removes the extension named `name`. Throws {@link UserError} if
-   * `name` is not installed, or if any tracked path resolves outside
-   * the repo (nothing is changed in that case). Returns counts of
-   * files deleted, skipped (already-missing), and parent directories
-   * pruned, plus the files that could not be deleted and the paths
-   * kept because another installed extension claims them.
-   *
-   * Ordering: path validation → catalog tombstone-save → lockfile
-   * remove → filesystem delete → empty-dir prune.
-   *
-   * Runs under the checkout's pulled-extensions lock, so it cannot
-   * interleave with an install or another removal. The lockfile
-   * snapshot is refreshed first under the lock, so the entry removed
-   * and the other entries' claims are the ones on disk
-   * (swamp-club#2709). Crash recovery of interrupted installs runs next,
-   * before anything is removed (swamp-club#2723).
+   * runs under the pulled-extensions lock so it cannot interleave with an
+   * install or removal; the lockfile snapshot is refreshed first so entries and
+   * claims are those on disk
    */
   async execute(name: string): Promise<RemoveExtensionResult> {
-    // A managed lockfile's transaction fetches the shared lockfile under
-    // the datastore global lock first and publishes the removal after, so
-    // a removal from a stale cache cannot revert other checkouts' entries
-    // (swamp-club#2838).
+    // a managed lockfile's transaction fetches the shared lockfile under the
+    // datastore global lock first and publishes the removal after, so a removal
+    // from a stale cache cannot revert other checkouts' entries.
     return await inManagedLockfileTransaction(
       this.lockfileRepository.lockfilePath,
       () =>
@@ -188,10 +133,8 @@ export class RemoveExtensionService {
   }
 
   private async removeLocked(name: string): Promise<RemoveExtensionResult> {
-    // 1. Idempotency check — surface a clean error if the extension
-    //    isn't installed. Both the catalog AND the lockfile must
-    //    confirm absence before we treat it as not-installed; either
-    //    one being non-empty means there's still cleanup to do.
+    // both the catalog and the lockfile must confirm absence before this counts
+    // as not installed; either being non-empty means there is cleanup to do.
     const extensions = this.repository.loadByName(name);
     const lockfileEntry = this.lockfileRepository.getEntry(name);
     if (extensions.length === 0 && lockfileEntry === null) {
@@ -206,11 +149,9 @@ export class RemoveExtensionService {
     // those files too.
     const otherEntries = this.lockfileRepository.getAllEntries();
 
-    // 1b. Validate every tracked path before changing anything. A path
-    //     outside the repo (e.g. a pre-.swamp lockfile written with
-    //     SWAMP_MODELS_DIR outside the repo) would otherwise fail
-    //     mid-delete, after the catalog and lockfile had already
-    //     forgotten the extension.
+    // validate every tracked path before changing anything: a path outside the
+    // repo would otherwise fail mid-delete, after the catalog and lockfile had
+    // forgotten the extension.
     const uncontained: string[] = [];
     for (const filePath of trackedFiles) {
       try {
@@ -230,12 +171,9 @@ export class RemoveExtensionService {
       );
     }
 
-    // 2. Catalog tombstone-save FIRST. saveAll([tombstoneAll(ext)])
-    //    DELETEs every row owned by this extension in one SQLite
-    //    transaction. If the process crashes between this step and
-    //    the lockfile write, the catalog is clean but the lockfile +
-    //    filesystem still hold the extension — the next loader pass
-    //    surfaces them via findStaleFiles.
+    // catalog tombstone-save first: one SQLite transaction deletes every row
+    // this extension owns. A crash before the lockfile write leaves the catalog
+    // clean and the next loader pass surfaces the rest via findStaleFiles.
     if (extensions.length > 0) {
       try {
         this.repository.saveAll(extensions.map(tombstoneAll));
@@ -253,16 +191,13 @@ export class RemoveExtensionService {
       }
     }
 
-    // 3. Lockfile remove. Cache + disk both flush in writeEntry's
-    //    re-read-under-lock path.
     if (lockfileEntry !== null) {
       await this.lockfileRepository.removeEntry(name);
     }
 
-    // 4. Filesystem delete. Last step — by the time we get here the
-    //    catalog and lockfile have already forgotten this extension,
-    //    so a failed delete is recorded and the loop carries on
-    //    rather than leaving the remaining files half-removed.
+    // last step: the catalog and lockfile have already forgotten this
+    // extension, so a failed delete is recorded and the loop carries on rather
+    // than leaving files half-removed.
     let filesDeleted = 0;
     let filesSkipped = 0;
     const failedFiles: FailedFile[] = [];
@@ -294,14 +229,9 @@ export class RemoveExtensionService {
       }
     }
 
-    // 5. Add the per-extension scaffold subdirs that `pull` creates
-    //    unconditionally — they are never recorded as tracked files,
-    //    so without this push `pruneEmptyDirs` would see them as
-    //    "non-empty entries" when walking up through the extension
-    //    root and bail. For legacy gen-1 / gen-2 installs these paths
-    //    don't exist on disk; `pruneEmptyDirs`'s `try/catch` around
-    //    `Deno.readDir` absorbs the resulting `NotFound` safely, so
-    //    the push is unconditional.
+    // pull creates these scaffold subdirs unconditionally and never records
+    // them as tracked files, so push them or pruneEmptyDirs would see them as
+    // non-empty. Where absent (legacy installs), its NotFound is absorbed.
     const extensionRoot = join(
       this.pulledExtensionsRoot,
       name,
@@ -310,12 +240,9 @@ export class RemoveExtensionService {
       parentDirs.push(join(extensionRoot, scaffoldDir));
     }
 
-    // 6. Delete the bundle namespace dirs that `pull` creates for each
-    //    per-extension kind dir. The lockfile does not list bundle files
-    //    (their namespace hash differs between OSes), and each namespace
-    //    holds only this extension's bundles: `pull` replaces it whole.
-    //    Maps source kind → top-level bundle kind, matching the bundle
-    //    mkdir+copyDir pairs in pull.ts.
+    // the lockfile does not list bundle files (their namespace hash differs
+    // between OSes) and each namespace holds only this extension's bundles, so
+    // delete the namespace dirs pull creates.
     const BUNDLE_MAPPINGS: ReadonlyArray<[string, string]> = [
       ["models", "bundles"],
       ["vaults", "vault-bundles"],
@@ -345,8 +272,6 @@ export class RemoveExtensionService {
       parentDirs.push(kindDir);
     }
 
-    // 7. Prune empty parent directories up to (but not including)
-    //    the repo root.
     const dirsRemoved = bundleDirsRemoved +
       await pruneEmptyDirs(parentDirs, this.repoDir);
 
@@ -362,11 +287,6 @@ export class RemoveExtensionService {
   }
 }
 
-/**
- * Removes empty parent directories up to (but not including) the
- * stop directory. Returns the number of directories removed. Walks
- * upward, deepest-first; stops at the first non-empty directory.
- */
 async function pruneEmptyDirs(
   dirs: string[],
   stopDir: string,

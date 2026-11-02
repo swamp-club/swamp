@@ -18,42 +18,17 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * Fills `~/.config/swamp/verify.env` from 1Password.
- *
- * The verification workflows need credentials that nothing in this repository
- * can supply. Setting them up has been a paragraph of documentation and a
- * heredoc, which is why a machine can sit for weeks with
- * `TESSL_TOKEN=replace-me-from-1p-value` in place of a token and only discover
- * it when `skill-review` exits 1 partway through a run.
- *
- * One item per variable, titled by the variable's own name, so nothing here
- * names a vault, an item path or a team. That matters: this repository is
- * public, and a script that hardcoded `op://SomeTeamVault/...` would publish
- * an internal detail just as surely as committing a config file would.
- *
- * Deliberately generates a file rather than resolving secrets at run time. A
- * workflow that reached for 1Password mid-run would hit the unlock prompt
- * inside a step, where there is nowhere for a prompt to go. Writing the file
- * keeps the unlock at a moment you chose.
- *
- * Usage:
- *   deno run setup-verify-env [--account <name>] [--check]
- *
- * `--check` reports what is missing and writes nothing, which is worth running
- * before a verification rather than discovering a gap several minutes in.
+ * one item per variable, titled by its own name, so this public repo names no
+ * vault or item path. generates a file rather than resolving secrets mid-run,
+ * where an unlock prompt has nowhere to go
  */
 
 import { parseArgs } from "@std/cli/parse-args";
 import { dirname, join } from "@std/path";
 
 /**
- * The variables the verification workflows read, and what their absence costs.
- *
- * Only `TESSL_TOKEN` is listed: a missing one fails loudly and stops the run.
- * `ANTHROPIC_API_KEY` is deliberately absent. The trigger evals and the agent
- * reviews both run through `claude -p` on a claude.ai login, so no local run
- * needs the key; it exists only as a CI secret for the API route. The evals
- * never skip for want of it either, so there is no quiet gap left to list.
+ * ANTHROPIC_API_KEY is absent on purpose: local evals and reviews run through
+ * claude -p on a login, and the key is only a CI secret for the API route
  */
 export const VERIFY_KEYS: ReadonlyArray<{
   name: string;
@@ -69,7 +44,6 @@ export const VERIFY_KEYS: ReadonlyArray<{
   },
 ];
 
-// -- 1Password item shape (the subset this reads) ---------------------------
 
 interface OpField {
   id?: string;
@@ -86,13 +60,8 @@ export interface OpItem {
 }
 
 /**
- * The secret out of a 1Password item, whatever shape the item is.
- *
- * An API Credential keeps it in `credential`, a Login or Password item in
- * `password`, and a custom item in a concealed field of its own naming. Trying
- * them in order beats requiring everyone's items to be the same category,
- * which is the sort of constraint that turns a setup script into a second
- * setup task.
+ * tries credential, then password, then a concealed custom field, so items need
+ * not share one category
  */
 export function selectSecretValue(item: OpItem): string | null {
   const fields = item.fields ?? [];
@@ -114,12 +83,8 @@ export function selectSecretValue(item: OpItem): string | null {
 }
 
 /**
- * Renders the env file, replacing what we fetched and keeping everything else.
- *
- * Keys this script does not manage are preserved verbatim, comments included.
- * The file is a hand-edited dotfile on someone's machine; a setup helper that
- * silently dropped a line somebody added is a worse failure than not running
- * at all.
+ * keys this script does not manage are kept verbatim, comments included: the
+ * file is hand-edited, and silently dropping a line is worse than not running
  */
 export function renderEnvFile(
   existing: string,
@@ -151,17 +116,14 @@ export function renderEnvFile(
 }
 
 /**
- * Single-quoted so the file survives `.` in a shell regardless of what the
- * token contains. The documented format was bare `KEY=value`, which works
- * until a credential contains a space or a `$`.
+ * single-quoted so the file survives being sourced in a shell whatever the
+ * token contains (spaces, $)
  */
 function quote(value: string): string {
   return `'${value.replaceAll("'", `'\\''`)}'`;
 }
 
-// -- I/O shell ---------------------------------------------------------------
 
-/** The path the conventions doc names, honouring XDG and HOME. */
 export function verifyEnvPath(env: {
   XDG_CONFIG_HOME?: string;
   HOME?: string;
@@ -192,12 +154,8 @@ async function opAccounts(): Promise<OpAccount[]> {
 }
 
 /**
- * Reads one item, letting `op` own the terminal.
- *
- * stdin and stderr are inherited rather than piped, because unlocking is
- * interactive: piping them leaves `op` waiting for input nobody can give and
- * the script hanging with no output. Only stdout is captured, since that is
- * the JSON.
+ * stdin and stderr are inherited because unlocking is interactive; piping them
+ * leaves op waiting with no output. only stdout, the JSON, is captured
  */
 async function opItemGet(
   title: string,
@@ -317,10 +275,6 @@ async function main(): Promise<number> {
   await Deno.chmod(path, 0o600);
 
   console.error(`\nwrote ${path} (0600, ${updates.size} key(s))`);
-  // The file is not read by anything: the conventions doc says to export it
-  // before running the workflow, and the shell model passes the swamp
-  // process's own environment to each step. Writing it without saying so
-  // leaves someone wondering why skill-review still fails.
   console.error(
     "\nnothing reads this file automatically — export it in the shell that " +
       "runs verification:\n" +

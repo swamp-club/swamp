@@ -22,41 +22,17 @@ import { STOPPED, stoppedBy, untilStopped } from "./until_stopped.ts";
 
 const logger = getSwampLogger(["serve", "run-index-warmup"]);
 
-/** What the warm-up reads. */
 export interface RunIndexWarmupDeps {
-  /** The ids of every workflow, read through the workflow listings. */
   listWorkflowIds(): Promise<string[]>;
-  /**
-   * How many run records a workflow has, counted without reading them.
-   * Stops when `signal` aborts.
-   */
   countRunRecords(workflowId: string, signal: AbortSignal): Promise<number>;
-  /**
-   * The most runs a snapshot may hold and still be cached. A workflow with
-   * more is not warmed: its snapshot would be built and dropped.
-   */
   maxRuns: number;
-  /**
-   * Reads one workflow's run index snapshot, which keeps it cached. The caller
-   * stops when `signal` aborts; shared work continues for its other readers.
-   */
   warm(workflowId: string, signal: AbortSignal): Promise<unknown>;
 }
 
 /**
- * Reads every workflow's run index snapshot once serve is listening, so the
- * dashboard's first requests find them cached rather than building them
- * (swamp-club#3443). One workflow at a time, so requests that arrive
- * meanwhile interleave with it; a request for a workflow it is loading
- * waits on that load rather than starting another. Stopping the warm-up
- * releases its wait without cancelling a request sharing the load. A workflow
- * whose index cannot be read is left to the request that needs it, as is one
- * with more runs than the cache keeps.
- *
- * Stopping does not wait for the load in flight (swamp-club#3468): filesystem
- * reads already underway and shared work another reader needs may continue.
- * The warm-up races its own signal against each dependency's promise so even
- * an uncancellable dependency cannot hold shutdown for as long as it takes.
+ * one workflow at a time so requests interleave. Stopping does not wait for the
+ * load in flight: the signal is raced against each dependency's promise so an
+ * uncancellable one cannot hold shutdown.
  */
 export class RunIndexWarmup {
   readonly #deps: RunIndexWarmupDeps;
@@ -76,26 +52,18 @@ export class RunIndexWarmup {
     this.#running = this.#warmAll(this.#abort.signal);
   }
 
-  /**
-   * Resolves when the warm-up has finished, or was never started. Once it
-   * is stopped, that is as soon as it lets go of the load in flight.
-   */
   async finished(): Promise<void> {
     if (this.#running) await this.#running;
   }
 
   /**
-   * Stops the warm-up without waiting for it. It lets go of the load in
-   * flight at once; that load stops between records if no other reader
-   * needs its rebuild or repair, and otherwise runs on
-   * unwatched. Shutdown calls this before it drains runs, and waits with
-   * `finished` after.
+   * returns at once, letting go of the load in flight; shutdown calls this
+   * before draining runs and waits with finished after
    */
   stop(): void {
     this.#abort.abort();
   }
 
-  /** Stops the warm-up and waits for it. */
   async dispose(): Promise<void> {
     this.stop();
     await this.finished();

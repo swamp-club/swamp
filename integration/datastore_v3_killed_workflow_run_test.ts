@@ -18,17 +18,9 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * A workflow run whose process is SIGKILLed mid-run on a v3 datastore
- * (swamp-club#3587). The run commits a checkpoint after every save, so the
- * next command's interrupted-writer recovery keeps the run at its last
- * checkpoint, with the data of the steps that finished, instead of deleting
- * it; `workflow recover` then settles it as interrupted, and a second
- * checkout sees the same run and data.
- *
  * SIGKILL cannot be delivered in-process, so each case spawns a child deno
- * program (not the swamp CLI) that opens the repository as the CLI does and
- * runs the workflow through serve's `executeWorkflowWithLocks`, as
- * `datastore_sync_sigint_test.ts` does for SIGINT.
+ * program (not the swamp CLI) that opens the repo as the CLI does and runs the
+ * workflow through serve's executeWorkflowWithLocks
  */
 
 import "../src/domain/models/models.ts";
@@ -63,35 +55,20 @@ await initializeLogging({});
 
 const REPO_ROOT = fromFileUrl(new URL("..", import.meta.url));
 
-/** The module URL of `path`, relative to the repository root. */
 function src(path: string): string {
   return toFileUrl(join(REPO_ROOT, ...path.split("/"))).href;
 }
 
-/** What the child prints with READY: the ids the parent asserts on. */
 interface ChildIds {
   workflowId: string;
-  /** The parent workflow's id, in the nested variant. */
   outerWorkflowId?: string;
   writerId: string;
   typeName: string;
-  /** Whether a second checkout saw s2 running before READY (v3 only). */
   committed?: boolean;
 }
 
-/** The data name step s1 writes. */
 const S1_DATA = "s1-out";
 
-/**
- * A child that opens `repoDir` as `workflow run` opens it, saves a writer
- * model, a blocker model and the workflow `flow` (s1 writes `s1-out`, then
- * s2 blocks forever), and runs it through `executeWorkflowWithLocks` with
- * the real run tracker. It prints `READY <ids>` once s2 is running locally
- * and, with `probeDir`, once a fresh checkout of the datastore at that dir
- * sees the committed run with s2 running: the step_started checkpoint can
- * land after s2's body starts. With `nested`, `flow` is instead a single
- * step `call` that runs that workflow, named `inner`, as a child workflow.
- */
 function workflowChild(
   repoDir: string,
   probe?: { dir: string; datastorePath: string },
@@ -299,12 +276,6 @@ await running;
 `;
 }
 
-/**
- * A child that runs the writer model's `write` method inside a root that
- * commits only on success, as `model method run` runs it, and prints READY
- * once the resource is written; the method then blocks, so the root never
- * commits before the parent's SIGKILL.
- */
 function methodRunChild(repoDir: string): string {
   return `
 import ${JSON.stringify(src("src/domain/models/models.ts"))};
@@ -402,7 +373,6 @@ await runInRootUnitOfWork(repoContext, {
 `;
 }
 
-/** Reads until a full `READY` line or the stream ends; returns what was read. */
 async function readUntilReady(
   reader: ReadableStreamDefaultReader<string>,
 ): Promise<string> {
@@ -415,10 +385,6 @@ async function readUntilReady(
   return text;
 }
 
-/**
- * Spawns `program`, waits for its `READY <json>` line, SIGKILLs it and waits
- * for it to exit. Resolves with the JSON the child printed.
- */
 async function runChildAndKill<T>(program: string): Promise<T> {
   const child = new Deno.Command(Deno.execPath(), {
     args: ["run", "-A", "-"],
@@ -457,7 +423,6 @@ async function runChildAndKill<T>(program: string): Promise<T> {
   return JSON.parse(line.slice("READY ".length)) as T;
 }
 
-/** The run's status and each step's, by step name. */
 function summary(run: WorkflowRun): {
   status: string;
   steps: Record<string, string>;
@@ -499,17 +464,12 @@ interface KilledRepos {
   datastorePath: string;
 }
 
-/**
- * A fresh v3 filesystem datastore with checkouts A (the killed writer's), B
- * and a probe dir for the child, none opened in this process. Everything is
- * closed and removed in a `finally`.
- */
 async function withKilledRepos(
   format: 2 | 3,
   fn: (repos: KilledRepos) => Promise<void>,
 ): Promise<void> {
-  // The CLI resolves a --repo-dir through a symlink (swamp-club#3552), and
-  // the macOS temp dir is one, so the repos are spelled that way too.
+  // the CLI resolves --repo-dir through a symlink and the macOS temp dir is
+  // one, so the repos are spelled that way too
   const dir = await Deno.realPath(
     await Deno.makeTempDir({ prefix: "swamp-killed-run-" }),
   );
@@ -545,12 +505,10 @@ async function withKilledRepos(
   }
 }
 
-/** Opens `repoDir` as a writing command does: recovery runs first. */
 async function openWriting(repoDir: string) {
   return await requireInitializedRepoUnlocked({ repoDir, outputMode: "json" });
 }
 
-/** The runs of `workflowId` and s1's data content, read through `repoDir`. */
 async function observe(
   repoDir: string,
   ids: ChildIds,
@@ -580,7 +538,6 @@ const IGNORE_WINDOWS = Deno.build.os === "windows";
 Deno.test({
   name:
     "v3 killed workflow run: recovery keeps the run at its last checkpoint with s1's data, recover settles it, and a second checkout agrees (POSIX)",
-  // Windows has no SIGKILL to send to a child process.
   ignore: IGNORE_WINDOWS,
   fn: async () => {
     await withKilledRepos(3, async (repos) => {
@@ -596,14 +553,11 @@ Deno.test({
         "a second checkout saw the run with s2 running before the kill",
       );
 
-      // 1, 2: the next writing command recovers the checkout and keeps the
-      // checkpointed run and s1's data.
       const recovered = await observe(repos.repoA, ids);
       assertEquals(recovered.runs, [KILLED]);
       assertExists(recovered.s1, "s1's data survives recovery");
       assert(recovered.s1.includes("hello-from-s1"), recovered.s1);
 
-      // 3: workflow recover's dead-owner settling marks it interrupted.
       const { repoContext } = await openWriting(repos.repoA);
       const workflowId = createWorkflowId(ids.workflowId);
       const [run] = await repoContext.workflowRunRepo.findAllByWorkflowId(
@@ -637,7 +591,6 @@ Deno.test({
       assertEquals(reopened.runs, [interrupted], "the settled run committed");
       await closeV3Datastores();
 
-      // 4: a second checkout over the same datastore sees the same.
       const b = await observe(repos.repoB, ids);
       assertEquals(b.runs, [interrupted]);
       assertEquals(b.s1, recovered.s1);
@@ -660,7 +613,6 @@ Deno.test({
   },
 });
 
-/** The data files under `root` whose path names `dataName`. */
 async function dataFiles(root: string, dataName: string): Promise<string[]> {
   const paths: string[] = [];
   try {
@@ -751,8 +703,6 @@ Deno.test({
         }),
       );
 
-      // The restarted serve opens the repo and reaps as its boot does, with
-      // an instance id of its own.
       const { repoContext } = await openWriting(repos.repoA);
       const instanceId = crypto.randomUUID();
       const tracker = RunTrackerStore.fromSwampDir(swampPath(repos.repoA));

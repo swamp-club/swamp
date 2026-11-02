@@ -26,7 +26,6 @@ import {
 } from "./swamp_club_client.ts";
 import { UserError } from "../../domain/errors.ts";
 
-/** Start a simple mock HTTP server that returns canned responses. */
 function startMockServer(
   handler: (req: Request) => Response | Promise<Response>,
 ): { port: number; shutdown: () => Promise<void> } {
@@ -573,7 +572,6 @@ Deno.test("SwampClubClient - retries a rate-limited GET with a fresh request", a
         },
       },
     );
-    // The second attempt's 404 reaches the caller: the retry happened.
     await assertRejects(
       () => client.fetchIssue(undefined, 1),
       UserError,
@@ -612,8 +610,6 @@ Deno.test("SwampClubClient - does not retry a rate-limited PATCH", async () => {
     await mock.shutdown();
   }
 });
-
-// ── Identity header injection ─────────────────────────────────────────
 
 Deno.test("SwampClubClient sends both identity headers when constructed with bearerToken and distinctId", async () => {
   const captured: Record<string, string | null> = {};
@@ -691,8 +687,8 @@ Deno.test("SwampClubClient sends constructor bearer when no caller Authorization
     const client = new SwampClubClient(`http://localhost:${mock.port}`, {
       bearerToken: "swamp_only-from-constructor",
     });
-    // fetchIssue passes apiKey via `x-api-key`, NOT Authorization, so the
-    // constructor's Authorization Bearer is the only one set on this call.
+    // fetchIssue passes apiKey via x-api-key, not Authorization, so the
+    // constructor's bearer is the only Authorization on this call
     await client.fetchIssue(undefined, 1);
     assertEquals(captured.authorization, "Bearer swamp_only-from-constructor");
   } finally {
@@ -701,10 +697,9 @@ Deno.test("SwampClubClient sends constructor bearer when no caller Authorization
 });
 
 Deno.test("SwampClubClient lets caller-supplied Authorization win over constructor identity", async () => {
-  // Half (b) of the precedence contract: createApiKey() sends its own
-  // Authorization header carrying the BetterAuth session token. That
-  // caller-supplied header must win over the constructor's personal-key
-  // bearer or the user-session flow breaks.
+  // createApiKey sends its own Authorization with the session token; it must
+  // win over the constructor's personal-key bearer or the user-session flow
+  // breaks
   const captured: Record<string, string | null> = {};
   const mock = startMockServer((req) => {
     captured.authorization = req.headers.get("authorization");
@@ -717,17 +712,12 @@ Deno.test("SwampClubClient lets caller-supplied Authorization win over construct
       distinctId: "device-1",
     });
     await client.createApiKey("session-token-xyz", "my-laptop");
-    // Caller's session-token Authorization wins.
     assertEquals(captured.authorization, "Bearer session-token-xyz");
-    // Constructor's distinctId still goes out — the caller didn't set
-    // Swamp-Distinct-Id, so there is no conflict.
     assertEquals(captured.distinctId, "device-1");
   } finally {
     await mock.shutdown();
   }
 });
-
-// ── submitComment response validation ────────────────────────────────
 
 Deno.test("submitComment: returns id on valid response", async () => {
   const mock = startMockServer((_req) =>
@@ -783,8 +773,6 @@ Deno.test("submitComment: throws when id is empty string", async () => {
     await mock.shutdown();
   }
 });
-
-// ── fetchIssue commentCount ──────────────────────────────────────────
 
 Deno.test("fetchIssue: reads commentCount from top-level comments array", async () => {
   const mock = startMockServer((_req) =>
@@ -876,8 +864,6 @@ Deno.test("fetchIssue: commentCount is 0 when no comments array in response", as
   }
 });
 
-// ── Timeout and retry ────────────────────────────────────────────────
-
 Deno.test("fetch: connection-refused error has no timeout code", async () => {
   const client = new SwampClubClient("http://localhost:1");
   const err = await assertRejects(
@@ -959,8 +945,6 @@ Deno.test("submitIssue: respects caller abort signal", async () => {
   }
 });
 
-// --- getCollectives: the extension-push authorization path (issue #1544) ---
-
 Deno.test("getCollectives: returns slugs from organizations", () => {
   const slugs = getCollectives({
     authenticated: true,
@@ -1028,21 +1012,9 @@ Deno.test("getCollectives: undefined when the server sends no organizations", ()
   assertEquals(getCollectives({ authenticated: true }), undefined);
 });
 
-// ── WhoamiOrganization key-set pin (compile-time) ─────────────────────────
-//
-// CLAUDE.md (Code Style): the `organizations` array from GET /api/whoami is
-// an authorization contract, not a general-purpose payload — extension push
-// and pull authorize namespace ownership from it. New server-supplied data
-// must be added as its own optional top-level field joined on `slug` (as
-// `collectiveEntitlements` is), never as extra keys on the organization
-// entries, so changes to unrelated concerns can never reach the publish
-// path.
-//
-// This assertion pins the exact key set of WhoamiOrganization: widening
-// (or shrinking) the interface fails `deno check` here. If you hit this
-// error, add the new data as a top-level whoami field instead — and only
-// update this pin for a deliberate change to the authorization contract
-// itself.
+// pins WhoamiOrganization's exact key set at compile time; new whoami data goes
+// in its own top-level field, because push and pull authorize namespaces from
+// organizations
 
 type WhoamiOrganizationPinnedKeys = "slug" | "name" | "role" | "personal";
 
@@ -1137,8 +1109,6 @@ Deno.test("SwampClubClient - fetchRecruitLink surfaces the server error string v
       () => client.fetchRecruitLink("swamp_test_key"),
       UserError,
     );
-    // The server's sentence survives intact, and the JSON envelope does not
-    // leak into the message the way `Failed to ...: ${text}` would.
     assertEquals(
       err.message,
       "Could not get your recruit link (HTTP 403): Your account is suspended",
@@ -1714,7 +1684,6 @@ Deno.test("SwampClubClient.verifyIdentity: a 200 that is not swamp-club's answer
 
 Deno.test("SwampClubClient.verifyIdentity: a body cut off by the timeout is unreachable", async () => {
   const mock = startMockServer(() => {
-    // Headers now, a body that never finishes.
     const stream = new ReadableStream({ start() {} });
     return new Response(stream, { status: 200 });
   });

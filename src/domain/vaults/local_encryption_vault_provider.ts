@@ -47,39 +47,21 @@ import { errorPaths, markErrorPaths } from "../errors.ts";
 
 const logger = getLogger(["vaults", "local-encryption"]);
 
-/**
- * Configuration options for local encryption vault.
- */
 export interface LocalEncryptionConfig {
-  /** Path to SSH private key file (defaults to ~/.ssh/id_rsa) */
   ssh_key_path?: string;
-  /** Auto-generate an encryption key if no SSH key specified */
   auto_generate?: boolean;
-  /** Custom path for auto-generated key file (defaults to computed secrets dir/.key) */
   key_file?: string;
-  /** Base directory for the repository (defaults to current working directory) */
   base_dir?: string;
 }
 
-/**
- * Encrypted data format stored in files.
- */
 interface EncryptedData {
-  /** Base64-encoded initialization vector */
   iv: string;
-  /** Base64-encoded encrypted data */
   data: string;
-  /** Salt used for key derivation (base64) */
   salt: string;
-  /** Format version for future compatibility */
   version: number;
 }
 
-/**
- * The directory holding a local_encryption vault's secrets, key, annotations
- * and refresh hooks: {base_dir}/.swamp/secrets/local_encryption/{vault_name}.
- * Storage is keyed on the vault name, so a rename must move this directory.
- */
+/** storage is keyed on the vault name, so a rename must move this directory */
 export function localEncryptionSecretsDir(
   baseDir: string,
   vaultName: string,
@@ -93,14 +75,9 @@ export function localEncryptionSecretsDir(
 }
 
 /**
- * Moves a local_encryption vault's storage from one vault name to another
- * under the same base directory (swamp-club#2681). The whole directory moves
- * in one rename, so the auto-generated key moves with the secrets it
- * encrypts.
- *
- * Returns false when the vault has no stored secrets yet. An empty directory
- * under the new name is replaced; a non-empty one is refused, because it holds
- * another vault's secrets under a different key.
+ * the whole directory moves in one rename so the generated key moves with its
+ * secrets; a non-empty target is refused as it holds another vault's secrets
+ * under a different key
  */
 export async function moveLocalEncryptionSecrets(
   baseDir: string,
@@ -137,14 +114,8 @@ export async function moveLocalEncryptionSecrets(
 }
 
 /**
- * The vault's storage directory when something is already stored there: a
- * key, secrets, annotations, refresh hooks, or a file or symlink in the
- * directory's place. Undefined when the directory is missing or empty.
- *
- * Storage is keyed on the vault name, so whatever is there was left by an
- * earlier vault of that name, and a new vault would adopt its key and secrets
- * (swamp-club#3614). The rule is the one {@link moveLocalEncryptionSecrets}
- * applies to a rename target.
+ * storage is keyed on the vault name, so leftovers from an earlier vault of
+ * that name would be adopted, key and secrets included, by a new vault
  */
 export async function findLocalEncryptionLeftovers(
   baseDir: string,
@@ -155,9 +126,8 @@ export async function findLocalEncryptionLeftovers(
 }
 
 /**
- * A secrets directory as an error message names it: relative to `repoDir`
- * when it is inside, so a refusal sent to a serve client carries no host
- * path. A `base_dir` outside the repository is named in full.
+ * relative to repoDir when inside, so a refusal sent to a serve client carries
+ * no host path
  */
 export function secretsDirForDisplay(
   directory: string,
@@ -169,27 +139,16 @@ export function secretsDirForDisplay(
     : rel;
 }
 
-/** What {@link removeLocalEncryptionSecrets} found and removed. */
 export interface RemovedLocalEncryptionSecrets {
-  /** The vault's secrets directory. */
   directory: string;
-  /** Whether anything was there to remove. */
   removed: boolean;
-  /** The secrets the directory held. */
   secretCount: number;
 }
 
 /**
- * Removes a local_encryption vault's storage when the vault is removed
- * (swamp-club#3597): its secrets, annotations, refresh hooks and generated
- * key. A key file or SSH key the config names elsewhere is left alone.
- *
- * The vault name and base dir come from a committed config, so the name must
- * be one path segment and the directory's parent must resolve inside
- * `boundary`, the `.swamp` of the repository being changed: `../../data`
- * would otherwise reach `.swamp/data`, and a `base_dir` recorded by another
- * checkout would reach that checkout's secrets. A symlinked directory is
- * unlinked, never followed.
+ * name and base dir come from committed config, so the name must be one path
+ * segment and the parent must resolve inside boundary; a symlinked directory is
+ * unlinked, never followed
  */
 export async function removeLocalEncryptionSecrets(
   baseDir: string,
@@ -217,10 +176,6 @@ export async function removeLocalEncryptionSecrets(
   return { directory, removed: true, secretCount };
 }
 
-/**
- * Whether {@link removeLocalEncryptionSecrets} may remove the vault's
- * storage: its directory's parent resolves inside `boundary`.
- */
 export async function localEncryptionSecretsWithin(
   baseDir: string,
   vaultName: string,
@@ -236,10 +191,6 @@ export async function localEncryptionSecretsWithin(
   }
 }
 
-/**
- * The secrets stored directly in `directory`: none when it is missing or is
- * not a directory (a symlink is not followed).
- */
 export async function countLocalEncryptionSecrets(
   directory: string,
 ): Promise<number> {
@@ -257,9 +208,8 @@ export async function countLocalEncryptionSecrets(
 }
 
 /**
- * {@link localEncryptionSecretsDir}, refusing a vault name that is not one
- * path segment, so the directory can only be a child of the local_encryption
- * secrets root.
+ * refuses a vault name that is not one path segment, so the directory can only
+ * be a child of the secrets root
  */
 export function localEncryptionSecretsDirFor(
   baseDir: string,
@@ -287,11 +237,6 @@ async function isAbsentOrEmptyDir(path: string): Promise<boolean> {
   return true;
 }
 
-/**
- * Local encryption vault provider that stores encrypted secrets in local files.
- * Uses Web Crypto API with AES-GCM encryption and SSH key-based key derivation.
- * Supports both SSH private key files and auto-generated encryption keys.
- */
 export class LocalEncryptionVaultProvider
   implements
     VaultProvider,
@@ -303,7 +248,10 @@ export class LocalEncryptionVaultProvider
   private readonly config: LocalEncryptionConfig;
   private readonly vaultDir: string;
   private readonly secretsBoundary: string;
-  /** Cache for key material (not the derived key, since each secret has unique salt) */
+  /**
+   * caches key material, not the derived key, since each secret has a unique
+   * salt
+   */
   private keyMaterialCache?: CryptoKey;
 
   constructor(name: string, config: LocalEncryptionConfig = {}) {
@@ -337,21 +285,9 @@ export class LocalEncryptionVaultProvider
   }
 
   /**
-   * Answers whether {@link get} would succeed, without reading or decrypting
-   * the value. One file holds one secret, so opening that file read-only and
-   * closing it unread answers presence and read permission together, and
-   * loading the cached key material confirms the credential `get` needs: a
-   * missing or unreadable key source rejects here with the same wrapping
-   * `get` uses. The file's contents are never read, so a file
-   * that exists but cannot be parsed or decrypted (corrupt, or written under
-   * another key) answers `true`; that is an integrity fault only a read can
-   * detect, which the `VaultExistenceProvider` contract forbids, so `get`
-   * reports it at load. With `auto_generate` and a secret file present but
-   * no key file, loading key material writes a new `.key`, exactly as `get`
-   * would in that state. Like `put` and `delete`, `has` also holds the path
-   * inside the secrets boundary with `assertSafePath`; `get` relies on
-   * `validateSecretKey` alone, so a vault directory symlinked out of the
-   * boundary makes `has` reject where `get` would read. That fails safe.
+   * opens the file read-only without reading it, so a corrupt file still
+   * answers true; unlike get it asserts the path inside the secrets boundary,
+   * so a symlinked vault dir fails safe
    */
   async has(secretKey: string): Promise<boolean> {
     this.validateSecretKey(secretKey);
@@ -384,7 +320,6 @@ export class LocalEncryptionVaultProvider
     return true;
   }
 
-  /** The error {@link get} and {@link has} raise for a key that exists but cannot be served. */
   private retrieveError(secretKey: string, error: unknown): Error {
     return new Error(
       `Failed to retrieve secret '${secretKey}': ${
@@ -438,7 +373,6 @@ export class LocalEncryptionVaultProvider
       }
     } catch (error) {
       if (error instanceof Deno.errors.NotFound) {
-        // Vault directory doesn't exist yet, return empty list
         return [];
       }
       throw new Error(
@@ -690,16 +624,13 @@ export class LocalEncryptionVaultProvider
   }
 
   /**
-   * Derives the master encryption key for a specific salt.
-   * Note: Each secret has a unique salt, so we cannot cache the derived key.
-   * We cache the key material instead to avoid repeated file reads.
+   * each secret has a unique salt so the derived key cannot be cached; the key
+   * material is cached instead
    */
   private async getMasterKey(saltBase64: string): Promise<CryptoKey> {
     const keyMaterial = await this.getKeyMaterial();
     const salt = this.base64ToArrayBuffer(saltBase64);
 
-    // Derive AES key using PBKDF2 from SSH key or generated key
-    // Each salt produces a unique derived key, so this must be done per-secret
     const key = await crypto.subtle.deriveKey(
       {
         name: "PBKDF2",
@@ -716,12 +647,7 @@ export class LocalEncryptionVaultProvider
     return key;
   }
 
-  /**
-   * Gets the key material from SSH key or auto-generated key.
-   * Key material is cached to avoid repeated file reads.
-   */
   private async getKeyMaterial(): Promise<CryptoKey> {
-    // Return cached key material if available
     if (this.keyMaterialCache) {
       return this.keyMaterialCache;
     }
@@ -731,11 +657,7 @@ export class LocalEncryptionVaultProvider
     return keyMaterial;
   }
 
-  /**
-   * Loads key material from SSH key or auto-generated key file.
-   */
   private async loadKeyMaterial(): Promise<CryptoKey> {
-    // Try SSH key if explicitly configured
     if (this.config.ssh_key_path) {
       try {
         return await this.readAndValidateSshKey(this.config.ssh_key_path);
@@ -750,11 +672,9 @@ export class LocalEncryptionVaultProvider
             [this.config.ssh_key_path, ...errorPaths(error)],
           );
         }
-        // Fall through to auto-generation if SSH key fails and auto_generate is enabled
       }
     }
 
-    // Try default SSH key only if no explicit path and no auto_generate
     if (!this.config.ssh_key_path && !this.config.auto_generate) {
       const defaultSshKeyPath = "~/.ssh/id_rsa";
       try {
@@ -771,7 +691,6 @@ export class LocalEncryptionVaultProvider
       }
     }
 
-    // Auto-generate key if SSH key not available or configured
     if (this.config.auto_generate) {
       const keyFile = this.config.key_file || join(this.vaultDir, ".key");
 
@@ -796,9 +715,8 @@ export class LocalEncryptionVaultProvider
         if (!(error instanceof Deno.errors.NotFound)) {
           throw error;
         }
-        // Key file doesn't exist (or is empty) — generate a new one with exclusive creation
         await this.ensureVaultDirectory();
-        const generatedKey = crypto.randomUUID() + crypto.randomUUID(); // 72 chars
+        const generatedKey = crypto.randomUUID() + crypto.randomUUID();
 
         try {
           // createNew: true uses O_CREAT | O_EXCL — atomic exclusive creation
@@ -861,12 +779,8 @@ export class LocalEncryptionVaultProvider
   }
 
   /**
-   * Warns when an existing key file is readable beyond its owner. Swamp
-   * creates the file at `0o600`, but a copy restored from a backup or
-   * extracted from an archive can arrive wider. Unlike SSH keys this only
-   * warns, so a vault that works today keeps working. Skipped on Windows,
-   * where Deno ignores the creation mode and the file inherits its folder's
-   * ACL.
+   * only warns, unlike SSH keys, so a vault that works today keeps working;
+   * skipped on Windows, where Deno ignores the creation mode
    */
   private async warnIfKeyFileBroadlyReadable(keyFile: string): Promise<void> {
     if (Deno.build.os === "windows") return;
@@ -883,11 +797,6 @@ export class LocalEncryptionVaultProvider
     }
   }
 
-  /**
-   * Reads an SSH private key file, validates its permissions and encryption
-   * status, extracts binary key material from the PEM envelope, and imports
-   * it as PBKDF2 key material.
-   */
   private async readAndValidateSshKey(
     sshKeyPath: string,
   ): Promise<CryptoKey> {
@@ -917,11 +826,6 @@ export class LocalEncryptionVaultProvider
     );
   }
 
-  /**
-   * Extracts the binary key material from a PEM-encoded SSH key.
-   * Strips the PEM header/footer lines and decodes the base64 body,
-   * returning only the raw key bytes for use as PBKDF2 input.
-   */
   private extractPemKeyMaterial(content: string): Uint8Array {
     const lines = content.split(/\r?\n/);
     const base64Lines = lines.filter((line) => {
@@ -938,11 +842,8 @@ export class LocalEncryptionVaultProvider
   }
 
   /**
-   * Validates that an SSH key file is not broadly readable. On POSIX this
-   * enforces `0o600` (no group/other bits). On Windows it shells out to
-   * `icacls` and rejects any ACE granting Read or higher to broad
-   * principals (Everyone, Authenticated Users, etc.). The detailed scope
-   * of the Windows check lives in `file_security_check.ts`.
+   * POSIX enforces 0o600; Windows shells out to icacls and rejects any ACE
+   * granting Read or higher to broad principals
    */
   private async validateSshKeyPermissions(path: string): Promise<void> {
     const result = await checkFileNotBroadlyReadable(path);
@@ -954,10 +855,6 @@ export class LocalEncryptionVaultProvider
     }
   }
 
-  /**
-   * Detects passphrase-encrypted legacy PEM keys (RSA/DSA/EC) by checking
-   * for the Proc-Type encryption header.
-   */
   private detectEncryptedPemKey(content: string): void {
     if (content.includes("Proc-Type: 4,ENCRYPTED")) {
       throw new Error(
@@ -969,21 +866,17 @@ export class LocalEncryptionVaultProvider
   }
 
   /**
-   * Detects passphrase-encrypted OpenSSH keys by reading the cipher name
-   * from the binary key format (magic "openssh-key-v1\0", then uint32
-   * length-prefixed cipher name). Only rejects confirmed encrypted keys;
-   * parsing failures are silently allowed through.
+   * only rejects confirmed encrypted keys; parsing failures are silently
+   * allowed through
    */
   private detectEncryptedOpenSshKey(decodedBytes: Uint8Array): void {
     const magic = new TextEncoder().encode("openssh-key-v1\0");
 
-    // Verify we have enough bytes and the magic matches
     if (decodedBytes.length < magic.length + 4) return;
     for (let i = 0; i < magic.length; i++) {
       if (decodedBytes[i] !== magic[i]) return;
     }
 
-    // Read cipher name length (uint32 big-endian)
     const offset = magic.length;
     const cipherNameLen = (decodedBytes[offset] << 24) |
       (decodedBytes[offset + 1] << 16) |
@@ -1004,15 +897,12 @@ export class LocalEncryptionVaultProvider
     }
   }
 
-  /**
-   * Encrypts a value using AES-GCM.
-   */
   private async encrypt(
     value: string,
     key: CryptoKey,
     salt: Uint8Array,
   ): Promise<EncryptedData> {
-    const iv = crypto.getRandomValues(new Uint8Array(12)); // 96-bit IV for AES-GCM
+    const iv = crypto.getRandomValues(new Uint8Array(12));
     const encodedValue = new TextEncoder().encode(value);
 
     const encrypted = await crypto.subtle.encrypt(
@@ -1032,9 +922,6 @@ export class LocalEncryptionVaultProvider
     };
   }
 
-  /**
-   * Decrypts encrypted data using AES-GCM.
-   */
   private async decrypt(
     encryptedData: EncryptedData,
     key: CryptoKey,
@@ -1054,11 +941,6 @@ export class LocalEncryptionVaultProvider
     return new TextDecoder().decode(decrypted);
   }
 
-  /**
-   * Validates that a secret key does not contain path traversal characters.
-   * Rejects keys containing '..', '/', '\', or null bytes to prevent
-   * file operations outside the vault directory.
-   */
   private validateSecretKey(secretKey: string): void {
     if (
       secretKey.includes("..") ||
@@ -1072,9 +954,6 @@ export class LocalEncryptionVaultProvider
     }
   }
 
-  /**
-   * Ensures the vault directory exists.
-   */
   private async ensureVaultDirectory(): Promise<void> {
     await assertSafePath(this.vaultDir, this.secretsBoundary);
     try {
@@ -1093,9 +972,6 @@ export class LocalEncryptionVaultProvider
     }
   }
 
-  /**
-   * Converts ArrayBuffer to base64 string.
-   */
   private arrayBufferToBase64(buffer: ArrayBuffer | Uint8Array): string {
     const bytes = new Uint8Array(buffer);
     let binary = "";
@@ -1105,9 +981,6 @@ export class LocalEncryptionVaultProvider
     return btoa(binary);
   }
 
-  /**
-   * Converts base64 string to ArrayBuffer.
-   */
   private base64ToArrayBuffer(base64: string): ArrayBuffer {
     const binary = atob(base64);
     const bytes = new Uint8Array(binary.length);

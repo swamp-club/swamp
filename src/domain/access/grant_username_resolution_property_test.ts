@@ -31,7 +31,6 @@ const arbName = fc.stringOf(
   { minLength: 1, maxLength: 8 },
 );
 
-/** Subjects written as username:<name> or user:<sub>, never naming one twice. */
 const arbSubjects = fc.uniqueArray(
   fc.tuple(fc.boolean(), arbName),
   { minLength: 1, maxLength: 8, selector: ([, name]) => name },
@@ -65,7 +64,6 @@ function grantFile(subjects: string[]): string {
 Deno.test("resolveGrantFileUsernames: a resolved file grants exactly what the same file written with subs grants", async () => {
   await fc.assert(
     fc.asyncProperty(arbSubjects, async (subjects) => {
-      // Each name resolves to its own sub, so no two entries collide.
       const subs = new Map(subjects.map(([, name]) => [name, `sub-${name}`]));
       const written = subjects.map(([asUsername, name]) =>
         asUsername ? `username:${name}` : `user:sub-${name}`

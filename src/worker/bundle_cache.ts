@@ -17,19 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Worker-side bundle cache (see design/enablers/remote-execution.md, "Shipping
- * extension code").
- *
- * A dispatch references its model by bundle fingerprint. `builtin:<type>`
- * sentinels resolve from the worker's own registry — built-ins ship inside
- * the swamp binary, and enrollment already guaranteed version lockstep.
- * Anything else is fetched once from the data plane, written under the
- * cache directory, imported in-process, and memoized; co-located assets are
- * prefetched beside it so the synchronous `extensionFile()` context member
- * can resolve local paths.
- */
-
 import { dirname, join, toFileUrl } from "@std/path";
 import { modelRegistry } from "../domain/models/model.ts";
 import { wordedError, wordedText } from "../domain/behavior_wording.ts";
@@ -44,12 +31,10 @@ import { getSwampLogger } from "../infrastructure/logging/logger.ts";
 
 const logger = getSwampLogger(["worker", "bundle-cache"]);
 
-/** Sentinel prefix for models compiled into the swamp binary. */
 export const BUILTIN_BUNDLE_PREFIX = "builtin:";
 
 export interface LoadedBundle {
   modelDef: ModelDefinition;
-  /** Local directory the bundle's co-located assets were prefetched to. */
   filesDir?: string;
 }
 
@@ -63,7 +48,6 @@ export class WorkerBundleCache {
     this.#client = client;
   }
 
-  /** Resolve a dispatch's model, fetching and importing on cache miss. */
   load(fingerprint: string, signal?: AbortSignal): Promise<LoadedBundle> {
     const cached = this.#loaded.get(fingerprint);
     if (cached !== undefined) {
@@ -116,8 +100,8 @@ export class WorkerBundleCache {
       string,
       unknown
     >;
-    // `behavior` is the other spelling of `model` (swamp-club#3338); a bundle
-    // exporting both as definitions is refused rather than one winning.
+    // `behavior` is the other spelling of `model`; a bundle exporting both as
+    // definitions is refused rather than one winning
     const modelDef = (primaryExport(module, {
       primaryExportKey: MODEL_EXPORT_NAME,
       primaryExportAliases: [BEHAVIOR_EXPORT_NAME],

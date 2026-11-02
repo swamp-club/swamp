@@ -17,17 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Architecture fitness rule: a CLI command or renderer that rethrows a
- * libswamp stream error must keep it a UserError (swamp-club#2899).
- *
- * A stream's SwampError is a refusal the user can act on. Rethrown as a
- * plain `Error`, the top-level handler logs it as a crash with a stack
- * trace, and `--json` gains a `stack` field and loses the error code.
- * `userErrorFromSwampError` keeps the message and code and renders the
- * one-line `Error:` form.
- */
-
 import { join } from "@std/path";
 import {
   assertPinnedSet,
@@ -38,13 +27,8 @@ import {
 const ROOT = join(import.meta.dirname!, "..");
 const SCANNED_DIRS = ["src/cli", "src/presentation"];
 
-/** `new Error(e.error.message)`, whatever the event variable is called. */
 const PLAIN_RETHROW_RE = /\bnew Error\(\s*\w+\.error\.message\s*\)/g;
 
-/**
- * Plain-Error rethrows of stream errors, keyed by file with an occurrence
- * suffix, so a new one in an already-pinned file is still reported.
- */
 async function plainRethrows(): Promise<string[]> {
   const keys: string[] = [];
   for (const dir of SCANNED_DIRS) {

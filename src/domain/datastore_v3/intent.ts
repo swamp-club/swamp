@@ -18,21 +18,8 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * Typed intents: the domain operation each v3 op performs (swamp-club#3233).
- *
- * An op carries both the path it projects to (a {@link RecordKey}) and the
- * operation it performs. Serve authorises on the intent, never on the path.
- * The partition aggregate reads a removed data version from a `data.delete`
- * or `data.gc` intent; new versions come from `data-version` ops' metadata.
- * Every intent belongs to exactly one partition ({@link intentPartition}).
- *
- * The list covers every write swamp makes to aggregate storage today, from
- * the libswamp use cases and the serve handlers that write outside them.
- * Writes the datastore does not sync (bundles, pulled extension sources, the
- * repo marker, vault secrets, control-plane store keys) have no intent; see
- * "v3 domain model" in `design/enablers/datastores.md`.
- *
- * @module
+ * serve authorises on the intent, never on the path; every intent belongs to
+ * exactly one partition; writes the datastore does not sync have no intent
  */
 
 import { ModelType } from "../models/model_type.ts";
@@ -44,34 +31,25 @@ import {
   partitionOf,
 } from "./partition_key.ts";
 
-/** A model, by its normalized type and id. Build it with {@link modelRef}. */
 export interface ModelRef {
-  /** The ModelType's normalized form, never a raw spelling. */
   readonly type: string;
   readonly id: string;
 }
 
-/** A workflow run. */
 export interface RunRef {
   readonly workflowId: string;
   readonly runId: string;
 }
 
-/** A managed-config definition, by kind and name. */
 export interface DefinitionRef {
   readonly kind: DefinitionKind;
   readonly name: string;
 }
 
-/** An auto-definition, by id. */
 export interface AutoDefinitionRef {
   readonly id: string;
 }
 
-/**
- * A model reference from a ModelType: only its normalized form is kept, and
- * the id is lowercased.
- */
 export function modelRef(type: ModelType, id: string): ModelRef {
   if (!(type instanceof ModelType)) {
     throw new TypeError("modelRef needs a ModelType");
@@ -79,12 +57,11 @@ export function modelRef(type: ModelType, id: string): ModelRef {
   return { type: type.normalized, id: id.toLowerCase() };
 }
 
-/** Intents on a model partition that name a data name and version. */
 type DataIntent =
   | {
     /**
-     * `data.append` adds content to a live version in place: its commit
-     * re-records that version's metadata (swamp-club#3250).
+     * data.append adds content to a live version in place, so its commit
+     * re-records that version's metadata
      */
     readonly kind: "data.save" | "data.append";
     readonly model: ModelRef;
@@ -109,18 +86,12 @@ type DataIntent =
     readonly to: string;
   };
 
-/** Intents on a model partition that name an output. */
 type OutputIntent = {
   readonly kind: "output.save" | "output.delete";
   readonly model: ModelRef;
   readonly outputId: string;
 };
 
-/**
- * Intents on a model partition that need nothing beyond the model. The
- * control-plane ones require the model's type: a grant intent a grant, a
- * group intent a group, and so on ({@link CONTROL_PLANE_INTENT_TYPES}).
- */
 type ModelOnlyIntent = {
   readonly kind:
     | "evaluated-definition.save"
@@ -138,7 +109,6 @@ type ModelOnlyIntent = {
   readonly model: ModelRef;
 };
 
-/** Intents on a workflow run's partition. */
 type RunIntent = {
   readonly kind:
     | "run.create"
@@ -149,7 +119,6 @@ type RunIntent = {
   readonly run: RunRef;
 };
 
-/** Intents on a managed-config definition's partition. */
 type DefinitionIntent =
   | {
     readonly kind:
@@ -161,25 +130,16 @@ type DefinitionIntent =
     readonly definition: DefinitionRef;
   }
   | {
-    /** A rename's write under the new name; `from` is the old name. */
     readonly kind: "definition.rename-to";
     readonly definition: DefinitionRef;
     readonly from: string;
   }
   | {
-    /** A rename's removal under the old name; `to` is the new name. */
     readonly kind: "definition.rename-from";
     readonly definition: DefinitionRef;
     readonly to: string;
   };
 
-/**
- * The domain operation an op performs. Each kind belongs to one aggregate:
- * a model (`data.*`, `output.*`, `evaluated-definition.*` and the
- * control-plane kinds), a workflow run (`run.*`, `run-snapshot.*`), a
- * managed-config definition (`definition.*`, `evaluated-workflow.*`), an
- * auto-definition, or the extension lockfile.
- */
 export type Intent =
   | DataIntent
   | OutputIntent
@@ -192,14 +152,8 @@ export type Intent =
   }
   | { readonly kind: "lockfile.write" };
 
-/** Every intent kind. */
 export type IntentKind = Intent["kind"];
 
-/**
- * The model type each control-plane intent requires, as
- * `normalizeModelTypeName` gives it (so `@swamp/grant` and `swamp/grant`
- * both qualify).
- */
 export const CONTROL_PLANE_INTENT_TYPES: Readonly<
   Partial<Record<IntentKind, string>>
 > = {
@@ -215,7 +169,6 @@ export const CONTROL_PLANE_INTENT_TYPES: Readonly<
   "worker.delete": "swamp/worker",
 };
 
-/** The fields each kind carries beyond `kind` and its reference. */
 type Shape =
   | "model"
   | "data"
@@ -266,15 +219,13 @@ const SHAPES: Readonly<Record<IntentKind, Shape>> = {
   "lockfile.write": "lockfile",
 };
 
-/** Every intent kind, in a stable order. */
 export const INTENT_KINDS: readonly IntentKind[] = Object.keys(
   SHAPES,
 ) as IntentKind[];
 
 /**
- * The kinds that change a managed-config definition itself. The evaluated
- * workflow a run stages shares the definition's partition but is not the
- * definition (swamp-club#3760).
+ * the evaluated workflow a run stages shares the definition's partition but is
+ * not the definition
  */
 const DEFINITION_CHANGE_KINDS: ReadonlySet<IntentKind> = new Set<IntentKind>([
   "definition.create",
@@ -284,21 +235,12 @@ const DEFINITION_CHANGE_KINDS: ReadonlySet<IntentKind> = new Set<IntentKind>([
   "definition.rename-from",
 ]);
 
-/** Whether `intent` creates, edits, deletes or renames a definition. */
 export function changesDefinition(intent: Intent): boolean {
   return DEFINITION_CHANGE_KINDS.has(intent.kind);
 }
 
-/** The longest name, id or type string an intent accepts. */
 export const MAX_FIELD_LENGTH = 1024;
 
-/**
- * Checks an intent and returns a canonical copy: exactly the fields its
- * kind carries, in a fixed order, frozen. Throws for an unknown kind, a
- * missing or extra field, a malformed reference (see {@link partitionOf}), a
- * data name that could escape its directory, a version that is not a
- * positive integer, or a control-plane intent on a model of another type.
- */
 export function createIntent(value: unknown): Intent {
   const json = asObject(value, "Intent");
   const kind = json.kind;
@@ -309,12 +251,10 @@ export function createIntent(value: unknown): Intent {
   const shape = SHAPES[intentKind];
   const intent = build(intentKind, shape, json);
   requireOnlyFields(json, Object.keys(intent), intentKind);
-  // Every reference must form a valid partition key.
   intentPartition(intent);
   return deepFreeze(intent);
 }
 
-/** The partition an intent's aggregate is stored in. */
 export function intentPartition(intent: Intent): PartitionKey {
   if ("model" in intent) {
     return partitionOf({
@@ -343,7 +283,6 @@ export function intentPartition(intent: Intent): PartitionKey {
   return partitionOf({ kind: "lockfile" });
 }
 
-/** Two intents are equal when their canonical forms are. */
 export function intentEquals(a: Intent, b: Intent): boolean {
   return JSON.stringify(a) === JSON.stringify(b);
 }
@@ -471,7 +410,6 @@ function readDefinition(value: unknown, kind: IntentKind): DefinitionRef {
   };
 }
 
-/** A data name, by the rule DataMetadataSchema applies. */
 function readDataName(value: unknown): string {
   const name = readString(value, "data name");
   if (

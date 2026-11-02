@@ -293,7 +293,6 @@ Deno.test("doctorVaults: no fallback warning when every sensitive output names i
         id: "d1",
         name: "pinned",
         globalArguments: {},
-        // A definition-level override naming the vault for the spec.
         resources: { creds: { vaultName: "local-secrets" } },
       } as DefStub,
       type: "test/sensitive",

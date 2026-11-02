@@ -17,27 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * What the inbox notice costs a fast command (swamp-club#4059): `swamp data
- * list` timed with two compiled binaries, this branch and `main`, against
- * the same repository. A fast command reads only the inbox cache and makes no
- * request, so the two should differ by one small file read. Runs alternate
- * between the binaries so drift on the host affects both alike.
- *
- * Each run gets a cleared environment and a scratch HOME, never the user's
- * own: a copy of the signed-in credentials and auth-gate stamps, so the gate
- * passes without a request, and an inbox cache seeded with an unread message
- * in both cache layouts, so both binaries print the notice. Every run checks
- * that it did. The user's real `inbox/` and `inbox-v2/` are checksummed before
- * and after, and the script fails if either changed. Update checks and
- * telemetry are switched off, so neither adds network time. Run with:
- *
- * ```
- * deno run -A scripts/bench_inbox_notice.ts \
- *   --branch ./swamp --main /path/to/main/swamp --repo /path/to/repo \
- *   --behavior <name> [--runs 30]
- * ```
- */
 
 import { parseArgs } from "@std/cli/parse-args";
 import { join } from "@std/path";
@@ -64,7 +43,6 @@ if (!Number.isInteger(runs) || runs < 1) {
 }
 const binaries = { branch: flags.branch, main: flags.main };
 
-/** The files the auth gate reads, copied so it passes without a request. */
 const AUTH_FILES = [
   "auth.json",
   "auth_verified.json",
@@ -75,7 +53,6 @@ const AUTH_FILES = [
 
 const NEWEST_ID = "01JBX5Q8ZK00000000000000ZX";
 
-/** A digest of every file under `dir`, or "absent" when it does not exist. */
 async function checksum(dir: string): Promise<string> {
   const entries: string[] = [];
   try {
@@ -96,10 +73,6 @@ async function checksum(dir: string): Promise<string> {
   return entries.sort().join("\n");
 }
 
-/**
- * A scratch HOME whose config dir holds a copy of the real credentials and
- * gate stamps, and an inbox cache that shows a notice in both layouts.
- */
 async function seedHome(realConfig: string, home: string): Promise<void> {
   const config = join(home, ".config", "swamp");
   await Deno.mkdir(config, { recursive: true, mode: 0o700 });
@@ -133,12 +106,10 @@ async function seedHome(realConfig: string, home: string): Promise<void> {
     },
     schedule: { lastPolledAt: Date.now(), nextPollAt: null, stop: null },
   };
-  // The branch binary's layout.
   await new InboxCacheFileRepository(config).save(
     InboxCacheKey.of(auth.serverUrl, fingerprint),
     state,
   );
-  // The first layout, one file per fingerprint, which main still reads.
   await Deno.mkdir(join(config, "inbox"), { recursive: true });
   await Deno.writeTextFile(
     join(config, "inbox", `${fingerprint}.json`),

@@ -25,27 +25,17 @@ import {
   LifetimeSchema,
 } from "../data/mod.ts";
 
-/**
- * Override for data output specification.
- * Value object - immutable.
- */
 export interface DataOutputOverride {
-  /** The spec name to override */
   specName: string;
 
-  /** Override lifetime */
   lifetime?: Lifetime;
 
-  /** Override garbage collection */
   garbageCollection?: GarbageCollectionPolicy;
 
-  /** Additional tags to merge */
   tags?: Record<string, string>;
 
-  /** Input key names to vary by — produces composite data names per dimension */
   vary?: string[];
 
-  /** Override vault name for sensitive field storage */
   vaultName?: string;
 }
 

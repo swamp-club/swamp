@@ -37,7 +37,6 @@ const credentials: AuthCredentials = {
   username: "keeb",
 };
 
-/** The response a current swamp-club returns for an owner (see whoami_test). */
 const ownerFixture: WhoamiResponse = JSON.parse(
   await Deno.readTextFile(
     new URL("../auth/whoami_response.fixture.json", import.meta.url),

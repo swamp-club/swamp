@@ -22,21 +22,12 @@ import type { DefinitionId } from "../definitions/definition.ts";
 import { markModelWording, modelWording } from "../behavior_wording.ts";
 import { errorPaths, markErrorPaths } from "../errors.ts";
 
-/**
- * Branded type for ModelOutput IDs.
- */
 export type ModelOutputId = string & { readonly _brand: unique symbol };
 
-/**
- * Creates a ModelOutputId from a string.
- */
 export function createModelOutputId(id: string): ModelOutputId {
   return id as ModelOutputId;
 }
 
-/**
- * Valid execution statuses.
- */
 export const ExecutionStatuses = [
   "pending",
   "running",
@@ -55,40 +46,25 @@ export function isSettledStatus(status: ExecutionStatus): boolean {
     status === "cancelled";
 }
 
-/**
- * What triggered the execution.
- */
 export const TriggerTypes = ["manual", "workflow", "model"] as const;
 export type TriggerType = typeof TriggerTypes[number];
 
-/**
- * Zod schema for execution error details.
- */
 export const ExecutionErrorSchema = z.object({
   message: z.string(),
   stack: z.string().optional(),
 });
 
-/**
- * Type representing execution error details.
- */
 export type ExecutionError = z.infer<typeof ExecutionErrorSchema>;
 
-/** Masks text the way the run's redactor does. */
 export interface ErrorRedactor {
   readonly hasSecrets: boolean;
   redact(text: string): string;
 }
 
 /**
- * The {@link ExecutionError} a failure record holds for `error`, its message
- * and stack passed through the run's redactor, so a method error that echoes
- * a delivered value, or a sentinel in a typed run, lands masked in
- * `outputs/<type>/<method>/*.yaml` (design/enablers/typed-secrets.md Section
- * 7.1). Without a redactor, or with one holding nothing, the text is kept as
- * it is. The method boundary builds its failure record's error here; the run
- * and workflow entry points, which write their own records, adopt it when
- * Phase 3.5 and Phase 4 wire them.
+ * the failure record's error with message and stack redacted, so an error
+ * echoing a delivered value or sentinel lands masked on disk. Without a
+ * redactor holding secrets the text is kept as is.
  */
 export function executionErrorFrom(
   error: unknown,
@@ -105,18 +81,9 @@ export function executionErrorFrom(
 }
 
 /**
- * `error` with its message and stack passed through `redactor`, as
- * {@link executionErrorFrom} reads them, for a caller that rethrows or
- * reports it (swamp-club#3681). A string `code` is passed through it too,
- * since a workflow step records it next to the message (swamp-club#3773).
- * It is the same value when the redactor holds
- * nothing or nothing changes. Otherwise an Error becomes a copy that keeps
- * its class, name, cause, own properties (a code, recovered data handles,
- * written versions, an AggregateError's errors), marked paths and model
- * spelling, the spelling redacted too. Any other value becomes its redacted
- * `String()` text, which is how every reader shows a thrown non-Error. Only
- * the error's own message and stack are read, as `executionErrorFrom` reads
- * them: a wrapped cause is kept as it is.
+ * error with message, stack and string code redacted; the same value when
+ * nothing changes, else a copy keeping class, own properties, marked paths and
+ * model spelling. A wrapped cause is kept as is.
  */
 export function redactedError(
   error: unknown,
@@ -160,8 +127,8 @@ export function redactedError(
       configurable: true,
     });
   }
-  // The class is kept, so a coded UserError is still one and a workflow step
-  // keeps its error code (swamp-club#3748).
+  // the class is kept, so a coded UserError is still one and a workflow step
+  // keeps its error code
   Object.setPrototypeOf(cleaned, Object.getPrototypeOf(error));
   const spelling = modelWording(error);
   if (spelling !== undefined) {
@@ -170,9 +137,6 @@ export function redactedError(
   return markErrorPaths(cleaned, errorPaths(error));
 }
 
-/**
- * Zod schema for execution provenance.
- */
 export const ExecutionProvenanceSchema = z.object({
   definitionHash: z.string(),
   modelVersion: z.preprocess(
@@ -189,31 +153,21 @@ export const ExecutionProvenanceSchema = z.object({
   bundleFingerprint: z.string().optional(),
 });
 
-/**
- * Type representing execution provenance.
- */
 export type ExecutionProvenance = z.infer<typeof ExecutionProvenanceSchema>;
 
-/**
- * Represents a reference to a Data artifact.
- */
 export interface DataArtifactRef {
   dataId: string;
   name: string;
   version: number;
   tags: Record<string, string>;
   /**
-   * The SHA-256 of the version's content, recorded on a v3 datastore
-   * (swamp-club#3279), where a removed version can be written again: it
-   * tells the content this run produced from a later re-save. Absent on v2
-   * records, and on any version whose save reported no checksum.
+   * SHA-256 of the version's content, recorded on a v3 datastore where a
+   * removed version can be rewritten; tells this run's content from a later
+   * re-save. Absent on v2 records.
    */
   sha256?: string;
 }
 
-/**
- * Zod schema for a data artifact reference.
- */
 export const DataArtifactRefSchema = z.object({
   dataId: z.string().uuid(),
   name: z.string().min(1),
@@ -222,21 +176,12 @@ export const DataArtifactRefSchema = z.object({
   sha256: z.string().regex(/^[0-9a-f]{64}$/).optional(),
 });
 
-/**
- * Zod schema for artifacts produced by the execution.
- */
 export const ArtifactsProducedSchema = z.object({
   dataArtifacts: z.array(DataArtifactRefSchema).default([]),
 });
 
-/**
- * Type representing artifacts produced.
- */
 export type ArtifactsProduced = z.infer<typeof ArtifactsProducedSchema>;
 
-/**
- * Zod schema for the core properties of a ModelOutput.
- */
 export const ModelOutputSchema = z.object({
   id: z.string().uuid(),
   definitionId: z.string().uuid(),
@@ -253,14 +198,8 @@ export const ModelOutputSchema = z.object({
   pid: z.number().int().positive().optional(),
 });
 
-/**
- * Type representing the data stored in a ModelOutput.
- */
 export type ModelOutputData = z.infer<typeof ModelOutputSchema>;
 
-/**
- * Properties required to create a new ModelOutput.
- */
 export interface CreateModelOutputProps {
   id?: string;
   definitionId: DefinitionId;
@@ -284,11 +223,6 @@ function durationBetween(startedAt: Date, completedAt: Date): number {
   return Math.max(0, completedAt.getTime() - startedAt.getTime());
 }
 
-/**
- * ModelOutput is an entity tracking execution state and metadata for each method run.
- *
- * Tracks status, timing, errors, provenance (what triggered it), and artifacts produced.
- */
 export class ModelOutput {
   private constructor(
     readonly id: ModelOutputId,
@@ -306,12 +240,6 @@ export class ModelOutput {
     private _pid: number | undefined = undefined,
   ) {}
 
-  /**
-   * Creates a new ModelOutput instance.
-   *
-   * @param props - Properties for the new output
-   * @returns A new ModelOutput instance
-   */
   static create(props: CreateModelOutputProps): ModelOutput {
     const id = props.id ?? crypto.randomUUID();
     const startedAt = props.startedAt ?? new Date();
@@ -349,14 +277,8 @@ export class ModelOutput {
   }
 
   /**
-   * Reconstructs a ModelOutput from persisted data.
-   *
-   * A negative durationMs is read as 0. Records written before durations
-   * were clamped carry one when the clock stepped backward mid-run; the
-   * timestamps themselves are kept as recorded.
-   *
-   * @param data - The persisted data
-   * @returns A ModelOutput instance
+   * a negative durationMs is read as 0: older records carry one when the clock
+   * stepped backward mid-run; timestamps are kept as recorded
    */
   static fromData(data: ModelOutputData): ModelOutput {
     const validated = ModelOutputSchema.parse(
@@ -381,9 +303,6 @@ export class ModelOutput {
     );
   }
 
-  /**
-   * Gets the current execution status.
-   */
   get status(): ExecutionStatus {
     return this._status;
   }
@@ -392,60 +311,36 @@ export class ModelOutput {
     return this._pid;
   }
 
-  /**
-   * Gets the completion timestamp.
-   */
   get completedAt(): Date | undefined {
     return this._completedAt;
   }
 
-  /**
-   * Gets the duration in milliseconds.
-   */
   get durationMs(): number | undefined {
     return this._durationMs;
   }
 
-  /**
-   * Gets the error details if the execution failed.
-   */
   get error(): ExecutionError | undefined {
     return this._error ? { ...this._error } : undefined;
   }
 
-  /**
-   * Gets the retry count.
-   */
   get retryCount(): number {
     return this._retryCount;
   }
 
-  /**
-   * Gets the artifacts produced by this execution.
-   */
   get artifacts(): ArtifactsProduced {
     return {
       dataArtifacts: [...this._artifacts.dataArtifacts],
     };
   }
 
-  /**
-   * Gets the log file path for this execution.
-   */
   get logFile(): string | undefined {
     return this._logFile;
   }
 
-  /**
-   * Sets the log file path for this execution.
-   */
   setLogFile(path: string): void {
     this._logFile = path;
   }
 
-  /**
-   * Marks the execution as running.
-   */
   markRunning(pid?: number): void {
     if (this._status !== "pending") {
       throw new Error(
@@ -456,11 +351,6 @@ export class ModelOutput {
     this._pid = pid;
   }
 
-  /**
-   * Marks the execution as succeeded.
-   *
-   * @param completedAt - The completion timestamp (defaults to now)
-   */
   markSucceeded(completedAt?: Date): void {
     if (this._status !== "running") {
       throw new Error(
@@ -473,12 +363,6 @@ export class ModelOutput {
     this._durationMs = durationBetween(this.startedAt, completed);
   }
 
-  /**
-   * Marks the execution as failed.
-   *
-   * @param error - The error details
-   * @param completedAt - The completion timestamp (defaults to now)
-   */
   markFailed(error: ExecutionError, completedAt?: Date): void {
     if (this._status !== "running") {
       throw new Error(
@@ -492,11 +376,6 @@ export class ModelOutput {
     this._error = error;
   }
 
-  /**
-   * Marks the execution as cancelled.
-   *
-   * @param reason - Optional reason for cancellation
-   */
   markCancelled(reason?: string): void {
     if (
       this._status !== "pending" && this._status !== "running"
@@ -514,34 +393,19 @@ export class ModelOutput {
     }
   }
 
-  /**
-   * Increments the retry count.
-   */
   incrementRetryCount(): void {
     this._retryCount++;
   }
 
-  /**
-   * Adds a data artifact reference to this execution.
-   *
-   * @param artifact - The data artifact reference to add
-   */
   addDataArtifact(artifact: DataArtifactRef): void {
-    // Validate the artifact
     DataArtifactRefSchema.parse(artifact);
     this._artifacts.dataArtifacts.push({ ...artifact });
   }
 
-  /**
-   * Checks if the execution is in a terminal state.
-   */
   get isComplete(): boolean {
     return isSettledStatus(this._status);
   }
 
-  /**
-   * Converts the output to a plain data object for persistence.
-   */
   toData(): ModelOutputData {
     const data: ModelOutputData = {
       id: this.id,
@@ -576,12 +440,6 @@ export class ModelOutput {
   }
 }
 
-/**
- * Computes a hash of the definition attributes for provenance tracking.
- *
- * @param attributes - The attributes to hash
- * @returns The hex-encoded SHA-256 hash
- */
 export async function computeDefinitionHash(
   attributes: Record<string, unknown>,
 ): Promise<string> {

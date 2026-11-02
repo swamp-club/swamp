@@ -18,33 +18,9 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * Lands what a dead writer left in the commit outbox (swamp-club#3490). Runs
- * under a writer hold, before the interrupted-writer recovery
- * (swamp-club#3299), which then keeps the files the landed commits own and
- * removes the rest.
- *
- * An entry its unit abandoned is dropped quietly: the unit reported its
- * failure. One whose txnId landed already settles, whatever drop reason it
- * would otherwise meet (swamp-club#3586). For each entry
- * {@link planOutboxRecovery} keeps, in preparation order:
- *
- * - its txnId already landed (the writer died before settling): the chunk
- *   check runs again and the entry settles;
- * - the partition head is still the entry's base: its commit is rebuilt at
- *   the head under this writer's fence and identity, after a check that its
- *   chunks are present and the chunk barrier over them (swamp-club#3617),
- *   and appended;
- * - otherwise the partition moved on, and the entry is dropped: landing it
- *   now could overwrite what was committed since.
- *
- * A refusal drops the entry, serve's 403 on a forwarded commit included;
- * with either, the unit's run entries go too
- * (decision 7). Each drop is logged once. Entries of a writer that may
- * still be running are left for it, and marked so: the floor, which then
- * rises to this writer's fence, does not drop them (swamp-club#3564), and a
- * later recovery lands them once their writer is gone.
- *
- * @module
+ * lands what a dead writer left in the outbox; an entry whose partition moved
+ * on is dropped, since landing it could overwrite later commits; entries of a
+ * writer that may still run are left, marked
  */
 
 import { SOLO_NAMESPACE } from "../../domain/data/namespace.ts";
@@ -79,40 +55,23 @@ import type { SqliteCommitStore } from "./sqlite_commit_store.ts";
 
 const logger = getSwampLogger(["datastore", "v3"]);
 
-/** What {@link recoverCommitOutbox} works over: a v3 datastore handle's parts. */
 export interface OutboxRecoveryTarget {
   readonly outbox: CommitOutbox & { readonly path: string };
   readonly commitStore:
     & Pick<SqliteCommitStore, "append" | "headIdentity" | "landedSeq">
     & {
-      /**
-       * Sends a commit naming the model lease `leaseId`, or none: a serve
-       * target's append (swamp-club#4121). Absent for a local store.
-       */
       readonly appendUnderLease?: (
         commit: Commit,
         leaseId: string | undefined,
       ) => Promise<unknown>;
     };
   readonly chunkStore: Pick<ChunkStore, "missing" | "syncStored">;
-  /**
-   * A serve-mode handle's flush of what it queued offline
-   * (swamp-club#4195); absent elsewhere, where nothing is queued.
-   */
   readonly offline?: OfflineFlushPort;
 }
 
-/** Options for {@link recoverCommitOutbox}. */
 export interface RecoverCommitOutboxOptions {
-  /** The fence of the writer lease this process holds. */
   readonly fence: number;
-  /** Who lands the recovered commits: this process's writer identity. */
   readonly writer: CommitWriter;
-  /**
-   * Whether an entry's writer may still be running; by default this
-   * process's own writers, and processes judged alive by the identity they
-   * prepared it under.
-   */
   readonly writerAlive?: (
     writer: CommitWriter,
     process: ProcessIdentity | undefined,
@@ -120,37 +79,25 @@ export interface RecoverCommitOutboxOptions {
   readonly clock?: () => Date;
   readonly signal?: AbortSignal;
   /**
-   * Whether the target's appends go to serve (swamp-club#3985). An entry
-   * whose base is not serve's head is dropped as `head-moved`, as a local
-   * one is, and one serve answers with a moved head too: it is never built
-   * again on a newer head, where a put or tombstone with no `expect` would
-   * overwrite a newer record (swamp-club#4121). An entry built under a
-   * fenced model lease is sent naming that lease, and one serve refuses
-   * because the lease ended is dropped as `lease-superseded`.
+   * an entry serve answers with a moved head is dropped, never built again on a
+   * newer head, where a put or tombstone with no `expect` would overwrite a
+   * newer record
    */
   readonly forwarded?: boolean;
 }
 
 /**
- * Why a forwarded entry's moved head is not always visible in the copy: a
- * caller's copy leaves out the commits it may not read.
+ * a caller's copy leaves out the commits it may not read, so a forwarded
+ * entry's moved head is not always visible in it
  */
 const FORWARDED_HEAD_MOVED =
   "serve's partition moved on since, possibly by commits this checkout " +
   "cannot read";
 
-/** What {@link recoverCommitOutbox} did. */
 export interface OutboxRecoveryReport {
-  /** Entries whose commit was appended now. */
   readonly landed: number;
-  /** Entries whose commit had landed before its writer died. */
   readonly settled: number;
-  /**
-   * Quarantined entries whose commit landed because an admin accepted it
-   * at serve (swamp-club#4195): settled, and counted apart.
-   */
   readonly accepted?: number;
-  /** Entries of writers that may still be running, left alone. */
   readonly skipped: number;
   readonly drops: readonly OutboxDrop[];
 }
@@ -179,19 +126,14 @@ export class CommitOutboxUnreadableError extends UserError {
  */
 const ownInstances = new Set<string>();
 
-/** Records a writer identity this process commits under. */
 export function registerOwnCommitWriter(writer: CommitWriter): void {
   ownInstances.add(writer.instance);
 }
 
 /**
- * Whether `writer`, which prepared an entry under `process`, may still be
- * running, judged from `local`: one of this process's, or a process judged
- * alive (swamp-club#3564). A process with this process's pid but another
- * instance is a predecessor (a restarted container) and is gone. One this
- * process cannot judge (another host, namespace or boot, or an entry from a
- * swamp before identities) is taken as gone: the recovery runs under a
- * newer lease, so that writer is fenced already.
+ * a writer this process cannot judge (another host, namespace or boot, or a
+ * pre-identity entry) counts as gone, since recovery runs under a newer lease
+ * and it is fenced already
  */
 export function writerAliveFrom(
   local: LocalProcess,
@@ -209,15 +151,6 @@ export function writerAliveFrom(
   };
 }
 
-/**
- * Lands, settles or drops each entry of the outbox, as the module doc
- * describes. Run it holding the writer lease at `options.fence`, after the
- * fence was recorded in the outbox's chain.
- *
- * @throws CommitOutboxUnreadableError when the outbox cannot be read
- * @throws WriterFencedError when the lease is lost meanwhile; what was
- *   landed or dropped so far stays so, the rest is left for the next writer
- */
 export async function recoverCommitOutbox(
   target: OutboxRecoveryTarget,
   options: RecoverCommitOutboxOptions,
@@ -245,8 +178,8 @@ export async function recoverCommitOutbox(
   // An unreadable entry names no writer to judge; under the lease, only this
   // process's own units could still be using one, and theirs parse.
   for (const { key, detail, state } of listing.unreadable) {
-    // One queued offline, rejected or quarantined may be the only record of
-    // what a run changed (swamp-club#4195): kept, never dropped.
+    // one queued offline, rejected or quarantined may be the only record of
+    // what a run changed: kept, never dropped
     if (state !== undefined) {
       logger
         .warn`Kept an unreadable v3 commit outbox entry for partition ${key.partition} (${state}) in this checkout's outbox; it is not sent: ${detail}`;
@@ -256,7 +189,7 @@ export async function recoverCommitOutbox(
     logger
       .warn`Dropped an unreadable v3 commit outbox entry for partition ${key.partition}: ${detail}`;
   }
-  // Read before judging: a landed entry settles, never drops (swamp-club#3586).
+  // read before judging: a landed entry settles, never drops
   const landedKeys = new Set<OutboxEntry>();
   for (const entry of listing.entries) {
     if (entry.abandonedAt !== undefined) continue;
@@ -304,19 +237,17 @@ export async function recoverCommitOutbox(
   };
   let landed = 0;
   let settled = 0;
-  // Quarantined entries an admin accepted at serve (swamp-club#4195).
   let accepted = 0;
   for (const entry of plan.settles) {
-    // It landed before its writer died: run the check it never ran.
     await warnMissingChunks(
       target.chunkStore,
       entry.commit.namespace as Namespace,
       entry.commit,
       signal,
     );
-    // An offline entry a cut-off flush landed: recorded as this checkout's
+    // an offline entry a cut-off flush landed is recorded as this checkout's
     // own, with what it renumbered, before it leaves the outbox, so the
-    // partition's later entries follow it (swamp-club#4195).
+    // partition's later entries follow it
     if (entry.state === "offline") {
       await recordLandedOffline(target.offline, entry, clock().getTime());
     }
@@ -324,8 +255,6 @@ export async function recoverCommitOutbox(
     if (entry.state === "quarantined") accepted++;
     else settled++;
   }
-  // Quarantined entries an admin discarded at serve: declined, kept as
-  // rejected and never sent (swamp-club#4195).
   const discarded = await settleDiscarded(target.offline, plan.held);
   for (const planned of plan.drops) {
     await drop(
@@ -377,8 +306,8 @@ export async function recoverCommitOutbox(
     remaining = remaining.filter((other) => !withIt.includes(other));
     for (const other of withIt) await drop(other, "unit-dropped");
   }
-  // What the checkout queued while serve was unreachable, once everything
-  // else landed (swamp-club#4195). Never dropped: kept when it cannot land.
+  // what the checkout queued while serve was unreachable goes last, once
+  // everything else landed; never dropped, kept when it cannot land
   if (plan.offline.length > 0 && target.offline !== undefined) {
     await flushOfflineEntries(target.offline, plan.offline, {
       writer: options.writer,
@@ -415,11 +344,6 @@ export async function recoverCommitOutbox(
 
 type EntryOutcome =
   | { readonly kind: "landed" | "settled" }
-  /**
-   * Left in the outbox for a later recovery: serve refused it only because
-   * another holder's lease covers its partition now, and its head has not
-   * moved, so it can still land (swamp-club#4121).
-   */
   | { readonly kind: "deferred" }
   | {
     readonly kind: "dropped";
@@ -445,7 +369,6 @@ async function recoverEntry(
     ) !==
       undefined
   ) {
-    // It landed before its writer died: run the check it never ran.
     await warnMissingChunks(chunkStore, namespace, commit, signal);
     return { kind: "settled" };
   }
@@ -460,10 +383,9 @@ async function recoverEntry(
       ...(options.forwarded === true ? { detail: FORWARDED_HEAD_MOVED } : {}),
     };
   }
-  // Its content cannot be stored again, so a commit naming a missing chunk
-  // never lands; the outbox kept its chunks from sweeps, so this is damage.
-  // On a storage that reads sizes, a chunk a crash left short (torn) is
-  // missing too (swamp-club#3617).
+  // its content cannot be stored again, so a commit naming a missing chunk
+  // never lands; the outbox kept its chunks from sweeps, so this is damage; on
+  // sized storage a torn chunk counts as missing
   const missing = await missingChunks(chunkStore, namespace, commit, signal);
   if (missing.length > 0) {
     return {
@@ -472,10 +394,9 @@ async function recoverEntry(
       detail: `chunk ${missing[0]} is missing or damaged`,
     };
   }
-  // The chunk barrier (swamp-club#3617): a swamp from before it prepared
-  // entries with its chunks' renames perhaps still in the page cache, so
-  // their names are made durable before the commit naming them lands. A
-  // failed barrier leaves the entry for the next recovery.
+  // chunk barrier: an older swamp may have prepared entries with chunk renames
+  // still in the page cache, so their names are made durable before the commit
+  // lands; a failed barrier leaves the entry for the next recovery
   await chunkStore.syncStored(
     namespace || SOLO_NAMESPACE,
     [...new Set(blobsOf(commit).flatMap((blob) => blob.chunkHashes()))],
@@ -532,8 +453,8 @@ async function recoverEntry(
       await commitStore.append(rebuilt);
     }
   } catch (error) {
-    // Serve's head moved past the copy's: it is never built again on the
-    // newer head (swamp-club#4121).
+    // serve's head moved past the copy's: the entry is never built again on the
+    // newer head
     if (
       options.forwarded === true &&
       error instanceof CommitRejectedError && error.reason === "seq-gap"
@@ -561,10 +482,9 @@ async function recoverEntry(
         detail: error.message,
       };
     }
-    // Serve refusing a forwarded commit on the caller's access or its
-    // content is final: it never landed, and a narrowed grant refuses it
-    // on every recovery (swamp-club#4089). If an earlier attempt landed
-    // it, the next catch-up brings it back.
+    // serve refusing a forwarded commit on the caller's access or content is
+    // final: it never landed, and a narrowed grant refuses it every time. If an
+    // earlier attempt landed it, the next catch-up brings it back
     if (
       error instanceof CommitRejectedError ||
       error instanceof ServeCommitRefusedError
@@ -604,9 +524,8 @@ async function missingChunks(
 }
 
 /**
- * The post-commit check for a commit that has landed. Nothing can store a
- * missing chunk again (its writer is gone), so it is reported; a check that
- * fails is reported too, and never fails the recovery (swamp-club#3586).
+ * nothing can store a missing chunk again (its writer is gone), so it is
+ * reported; a check that fails is reported too, never failing the recovery
  */
 async function warnMissingChunks(
   chunkStore: Pick<ChunkStore, "missing">,
@@ -675,22 +594,8 @@ function messageOf(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-/** Why a quarantined entry an admin discarded at serve is rejected. */
 export const DISCARDED_AT_SERVE_REASON = "discarded at serve by an admin";
 
-/**
- * Marks each quarantined entry of `held` whose deposit an admin discarded
- * at serve as rejected, with {@link DISCARDED_AT_SERVE_REASON}: kept, never
- * sent. Serve is asked once per entry; an entry it cannot answer for stays
- * quarantined until a later recovery asks again. Returns how many were
- * marked.
- */
-/**
- * Records an offline entry found already landed as this checkout's own,
- * with what its landing renumbered and rewrote, read from the commit the
- * copy holds under its txnId. Without that commit nothing is carried, but
- * the entry is still recorded as its own.
- */
 async function recordLandedOffline(
   port: OfflineFlushPort | undefined,
   entry: OutboxEntry,

@@ -174,7 +174,6 @@ Deno.test("renderWorkflowRunDisplay: a signal held as pending says so, on a wait
   );
   assertEquals(done.includes("a resume applies it"), false);
 
-  // A receipt of a signal sent to an open wait adds nothing to a settled step.
   const plain = suspendedOn({
     id: WAIT_ID,
     deadline: DEADLINE,

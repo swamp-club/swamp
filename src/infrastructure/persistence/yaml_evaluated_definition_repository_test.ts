@@ -94,23 +94,18 @@ Deno.test(
         name: "test-def",
       });
 
-      // Each mutation marks before it and again after it
-      // (swamp-club#2421).
-      // save → per-definition yaml path (name-based for kebab-case names)
+      // each mutation marks its path before the write and again after it
       await repo.save(testType, definition, undefined);
       const savedPath = repo.getPath(testType, definition.id);
       assertEquals(calls, [savedPath, savedPath]);
 
-      // delete → notifies with the resolved path
       await repo.delete(testType, definition.id);
       assertEquals(calls.length, 4);
 
-      // Reads do not notify.
       await repo.findAll(testType);
       await repo.findById(testType, definition.id);
       assertEquals(calls.length, 4);
 
-      // clearAll → baseDir path (whole evaluated-definitions tree removed)
       await repo.save(testType, definition, undefined);
       assertEquals(calls.length, 6);
       await repo.clearAll();
@@ -132,11 +127,9 @@ Deno.test("YamlEvaluatedDefinitionRepository.save writes name-based filename", a
 
     await repo.save(testType, definition, undefined);
 
-    // File should be at {name}.yaml
     const path = repo.getPath(testType, definition.id);
     assertStringIncludes(path, "my-eval-def.yaml");
 
-    // findById should return it
     const loaded = await repo.findById(testType, definition.id);
     assertNotEquals(loaded, null);
     assertEquals(loaded!.name, "my-eval-def");
@@ -153,7 +146,6 @@ Deno.test("YamlEvaluatedDefinitionRepository.save migrates UUID file to name-bas
       name: "migrate-eval",
     });
 
-    // Manually write a UUID-named file (simulating legacy)
     const typeDir = join(
       dir,
       ".swamp",
@@ -166,17 +158,14 @@ Deno.test("YamlEvaluatedDefinitionRepository.save migrates UUID file to name-bas
     data.type = testType.normalized;
     await Deno.writeTextFile(uuidPath, toCleanYaml(data));
 
-    // Load and re-save — should migrate
     const loaded = await repo.findById(testType, definition.id);
     assertNotEquals(loaded, null);
     await repo.save(testType, loaded!, undefined);
 
-    // Name-based file should exist
     const namePath = join(typeDir, "migrate-eval.yaml");
     const stat = await Deno.stat(namePath);
     assertEquals(stat.isFile, true);
 
-    // UUID file should be gone
     try {
       await Deno.stat(uuidPath);
       assertEquals(true, false, "UUID file should have been removed");
@@ -216,7 +205,6 @@ Deno.test("YamlEvaluatedDefinitionRepository.findByName falls through when file 
 
     await repo.save(testType, definition, undefined);
 
-    // Rename file on disk but keep content name as "actual-name"
     const typeDir = join(
       dir,
       ".swamp",
@@ -227,7 +215,6 @@ Deno.test("YamlEvaluatedDefinitionRepository.findByName falls through when file 
     const wrongPath = join(typeDir, "wrong-name.yaml");
     await Deno.rename(namePath, wrongPath);
 
-    // findByName("wrong-name") should fall through since content says "actual-name"
     const found = await repo.findByName(testType, "wrong-name");
     assertEquals(found, null);
   });
@@ -235,7 +222,6 @@ Deno.test("YamlEvaluatedDefinitionRepository.findByName falls through when file 
 
 Deno.test("YamlEvaluatedDefinitionRepository.delete handles name-based files on cold cache", async () => {
   await withTempDir(async (dir) => {
-    // Save with one repo instance
     const repo1 = new YamlEvaluatedDefinitionRepository(dir);
     const definition = Definition.create({
       type: testType.normalized,
@@ -244,7 +230,6 @@ Deno.test("YamlEvaluatedDefinitionRepository.delete handles name-based files on 
     });
     await repo1.save(testType, definition, undefined);
 
-    // Delete with a fresh instance (cold cache)
     const repo2 = new YamlEvaluatedDefinitionRepository(dir);
     await repo2.delete(testType, definition.id);
 
@@ -397,7 +382,6 @@ Deno.test("YamlEvaluatedDefinitionRepository: persistedProvenance is written bes
       ranges: { "globalArguments.note": [[7, 8]] },
     });
 
-    // A cache written without it reads back with none.
     await repo.save(testType, definition, undefined);
     assertEquals(
       (await new YamlEvaluatedDefinitionRepository(dir)
@@ -479,9 +463,8 @@ Deno.test("YamlEvaluatedDefinitionRepository: records the source typeVersion ver
 
     await repo.save(type, definition, undefined);
 
-    // Evaluated definitions are derived data replayed under --last-evaluated.
-    // Restamping here would reintroduce the staleness masking that was fixed
-    // in the source repository (swamp-club#900).
+    // evaluated definitions are derived data replayed under --last-evaluated,
+    // so restamping typeVersion here would reintroduce staleness masking
     const reloaded = await repo.findByName(type, "stale-evaluated");
     assertEquals(reloaded?.typeVersion, "2026.01.01.1");
   });
@@ -582,7 +565,6 @@ Deno.test("YamlEvaluatedDefinitionRepository: findByNameGlobal of a name the loo
   await withTempDir(async (dir) => {
     const baseDir = join(dir, ".swamp", "definitions-evaluated");
     const type = ModelType.create("test/evaluated-listed");
-    // A type with no directory left in this checkout.
     const lost = join(baseDir, "test", "gone", "lost.yaml");
     const listedLost = join(baseDir, type.toDirectoryPath(), "lost2.yaml");
     const { lookup, errors } = fakeUnreadableLookup([lost, listedLost]);
@@ -667,7 +649,6 @@ Deno.test("YamlEvaluatedDefinitionRepository: save refuses a plaintext literal u
       const read = await repo.findByNameWithProvenance(type, "safe");
       assertEquals(read?.definition.globalArguments, { apiKey: "***" });
       assertEquals(read?.definition.getMethodArguments("run"), { token: ref });
-      // The masked position is recorded with the file and read back.
       assertEquals(read?.maskedPaths, [["globalArguments", "apiKey"]]);
 
       // An author-written expression joined to text is not a value yet, so
@@ -698,9 +679,8 @@ Deno.test("YamlEvaluatedDefinitionRepository: save refuses a plaintext literal u
       assertEquals((await repo.findByName(type, "joined"))?.globalArguments, {
         apiKey: `Bearer ${ref}`,
       });
-      // Unless the text beside it is data: a reference vouches only for
-      // itself, so data joined to it is refused, whether the ranges come
-      // from the raw provenance or the persisted text's (swamp-club#3744).
+      // a reference vouches only for itself, so data joined to it is refused,
+      // whether the ranges come from the raw provenance or the persisted text's
       const prefix = ProvenanceMap.authored().withRanges(
         "globalArguments.apiKey",
         [[0, "Bearer ".length]],
@@ -754,7 +734,6 @@ Deno.test("YamlEvaluatedDefinitionRepository: save of an unregistered type has n
     await repo.save(testType, definition, undefined);
     const read = await repo.findByNameWithProvenance(testType, "unknown-type");
     assertEquals(read?.definition.globalArguments, { apiKey: "any-value" });
-    // A cache written with no masked positions reads back with none.
     assertEquals(read?.maskedPaths, []);
   });
 });

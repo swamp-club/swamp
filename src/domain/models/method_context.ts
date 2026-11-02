@@ -29,12 +29,8 @@ import type { DefinitionRepository } from "../definitions/repositories.ts";
 import type { ModelTypeInput } from "./model_type.ts";
 
 /**
- * Startup-scoped dependencies shared across every method invocation in a
- * single execution context. A host (CLI, server, workflow runner) constructs
- * these once and feeds them to `buildMethodContext` for each method call.
- *
- * Field types are reused from MethodContext via indexed access so this file
- * does not add any new infrastructure imports to the domain layer.
+ * field types are reused from MethodContext via indexed access so this file
+ * adds no infrastructure imports to the domain layer
  */
 export interface CommonMethodContextDeps {
   dataRepository: MethodContext["dataRepository"];
@@ -45,19 +41,12 @@ export interface CommonMethodContextDeps {
   dataQueryService?: MethodContext["dataQueryService"];
   cloudControlClientFactory?: MethodContext["cloudControlClientFactory"];
   /**
-   * Factory that builds a fresh cel-js Environment with swamp's baseline
-   * arithmetic-overload registrations for extension use. Passed in by the
-   * application layer (libswamp / CLI) so the domain layer does not need
-   * to import the cel-js binding directly. See
-   * `src/infrastructure/cel/cel_evaluator.ts#createExtensionCelEnvironment`.
+   * passed in by the application layer so the domain layer does not import the
+   * cel-js binding directly
    */
   createCelEnvironment: MethodContext["createCelEnvironment"];
 }
 
-/**
- * Per-invocation overlay describing the model and method being executed.
- * Populated fresh for each call into `buildMethodContext`.
- */
 export interface MethodInvocationContext {
   signal: MethodContext["signal"];
   repoDir: MethodContext["repoDir"];
@@ -92,14 +81,9 @@ export interface MethodInvocationContext {
 }
 
 /**
- * Assembles a `MethodContext` from startup-scoped dependencies and
- * per-invocation overlay. This is the single production entry point for
- * MethodContext construction — every method execution path (manual runs,
- * workflow steps, pre-flight check validation) routes through here.
- *
- * `queryData` is intentionally not an input. The InProcessExecutor derives
- * it from `dataQueryService` at execution time, with a fallback for test
- * fixtures that set `queryData` directly.
+ * queryData is intentionally not an input: InProcessExecutor derives it from
+ * dataQueryService at execution time, with a fallback for test fixtures that
+ * set it directly
  */
 export function buildMethodContext(
   common: CommonMethodContextDeps,

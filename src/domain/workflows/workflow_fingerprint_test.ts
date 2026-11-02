@@ -73,7 +73,6 @@ Deno.test("computeWorkflowFingerprint: ignores workflow UUID", async () => {
   const wf1 = createWorkflow("same-name");
   const wf2 = createWorkflow("same-name");
 
-  // Both have different UUIDs (from Workflow.create) but same structure
   assertNotEquals(wf1.id, wf2.id);
 
   const fp1 = await computeWorkflowFingerprint(wf1);

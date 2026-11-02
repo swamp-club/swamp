@@ -33,7 +33,6 @@ const KINDS: ResourceKind[] = ["workflow", "model", "data", "access", "vault"];
 
 const arbKind = fc.constantFrom(...KINDS);
 
-/** Pattern bodies never contain '*' so wildcard placement stays explicit. */
 const arbStarFreePattern = fc.stringOf(
   fc.constantFrom(..."abcdefgh0123-_@/.:".split("")),
   { minLength: 1, maxLength: 20 },
@@ -55,7 +54,6 @@ Deno.test("parseResourceSelector: round-trips through resourceSelectorToString",
         assertEquals(parsed.kind, kind);
         assertEquals(parsed.pattern, pattern);
         assertEquals(resourceSelectorToString(parsed), raw);
-        // Re-parsing the formatted form is a fixed point.
         assertEquals(parseResourceSelector(resourceSelectorToString(parsed)), {
           kind,
           pattern,
@@ -156,7 +154,6 @@ Deno.test("parseResourceSelector: rejects a wildcard that is not last", () => {
 Deno.test("parseResourceSelector: rejects repeated wildcards", () => {
   fc.assert(
     fc.property(arbKind, arbStarFreePattern, (kind, pattern) => {
-      // Only the last character may be '*', so "ab**" fails on the first star.
       assertThrows(
         () => parseResourceSelector(`${kind}:${pattern}**`),
         Error,
@@ -204,10 +201,8 @@ Deno.test("resourceSelectorMatches: 'prefix*' matches exactly the prefixed names
       }),
       (kind, prefix, suffix) => {
         const selector = { kind, pattern: `${prefix}*` };
-        // Anything carrying the prefix matches, including the bare prefix.
         assert(resourceSelectorMatches(selector, prefix));
         assert(resourceSelectorMatches(selector, prefix + suffix));
-        // A name shorter than the prefix can never carry it.
         assertEquals(
           resourceSelectorMatches(selector, prefix.slice(0, -1)),
           false,

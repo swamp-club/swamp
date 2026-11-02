@@ -18,11 +18,9 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * Probing a recorded pid never disturbs it (swamp-club#3564): a stopped
- * process stays stopped through every liveness probe swamp runs, v3 writer
- * lease and non-v3 locks alike, and a zombie holder is taken over at once.
- * These spawn real children, so they live here rather than beside the
- * probes. POSIX only: Windows has no stopped or zombie processes to probe.
+ * probing a recorded pid never disturbs it: a stopped process stays stopped
+ * through every liveness probe and a zombie holder is taken over at once; real
+ * children are spawned, POSIX only
  */
 
 import { assert, assertEquals, assertRejects } from "@std/assert";
@@ -63,7 +61,6 @@ async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
   }
 }
 
-/** The process state `ps` reports: `T` stopped, `Z` zombie, `S` sleeping. */
 function stateOf(pid: number): string {
   const { stdout } = new Deno.Command("ps", {
     args: ["-o", "stat=", "-p", String(pid)],
@@ -72,7 +69,6 @@ function stateOf(pid: number): string {
   return new TextDecoder().decode(stdout).trim().slice(0, 1);
 }
 
-/** Runs `fn` with a stopped child, killed after. */
 async function withStoppedChild(
   fn: (pid: number) => Promise<void>,
 ): Promise<void> {
@@ -165,7 +161,6 @@ Deno.test({
   async fn() {
     await withStoppedChild((pid) => {
       assertEquals(localOwnerLiveness().isDead(pid), false);
-      // The probe serve hands reapOrphanedWorkflowRuns.
       assertEquals(isProcessGone(pid), false);
       return Promise.resolve();
     });

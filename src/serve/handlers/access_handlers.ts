@@ -17,10 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Access-control request handlers (access.* verbs).
- */
-
 import { join } from "@std/path";
 import { ACCESS_DATA_SUBDIRS } from "../access_data_poller.ts";
 import { isCustomDatastoreConfig } from "../../domain/datastore/datastore_config.ts";
@@ -184,8 +180,8 @@ export async function handleAccessGrantList(
           data.name,
         );
       } catch (error) {
-        // One record the datastore could not materialise is left out of
-        // the listing rather than failing it (swamp-club#3617).
+        // one record the datastore could not materialise is left out of the
+        // listing rather than failing it
         if (!isUnreadableContentError(error)) throw error;
         listLogger.warn(
           "Skipping unreadable {kind} record {dataName}: {error}",
@@ -255,9 +251,9 @@ export async function handleAccessGrantList(
               const tokenSub = token.principalId.startsWith("user:")
                 ? token.principalId.slice(5)
                 : token.principalId;
-              // `access token mint` without --email stores the principal
-              // itself as principalEmail; that is no display name, and the
-              // renderer would print it as user:user:<sub> (swamp-club#3547).
+              // `access token mint` without --email stores the principal itself
+              // as principalEmail; that is no display name and the renderer
+              // would print it as user:user:<sub>
               const isPrincipalItself =
                 token.principalEmail === token.principalId ||
                 token.principalEmail === tokenSub;
@@ -329,8 +325,8 @@ export async function handleAccessGroupList(
           data.name,
         );
       } catch (error) {
-        // One record the datastore could not materialise is left out of
-        // the listing rather than failing it (swamp-club#3617).
+        // one record the datastore could not materialise is left out of the
+        // listing rather than failing it
         if (!isUnreadableContentError(error)) throw error;
         listLogger.warn(
           "Skipping unreadable {kind} record {dataName}: {error}",
@@ -490,9 +486,8 @@ export async function handleAccessCheck(
     const isSelfCheck = principal !== null &&
       principal.kind === targetPrincipal.kind &&
       principal.id === targetPrincipal.id;
-    // The caller's own memberships come from its session; for another
-    // subject the server knows none, so only memberships the request
-    // simulates are used.
+    // the caller's own memberships come from its session; for another subject
+    // the server knows none, so only memberships the request simulates are used
     const simulatedCollectives = stringList(payload.collectives);
     const simulatedGroups = stringList(payload.groups);
     const collectives = isSelfCheck
@@ -501,7 +496,7 @@ export async function handleAccessCheck(
     const groups = isSelfCheck
       ? getConnectionGroups(socket)
       : simulatedGroups ?? [];
-    // A service principal has no memberships to omit.
+    // a service principal has no memberships to omit
     const omittedMemberships = isSelfCheck ||
         targetPrincipal.kind === "service"
       ? []
@@ -847,8 +842,8 @@ export async function handleAccessReload(
       }
     }
 
-    // Every source loaded, or the reload stopped above, so this resolve may
-    // forget the pins of names no file names any more (swamp-club#3123).
+    // every source loaded, or the reload stopped above, so this resolve may
+    // forget the pins of names no file names any more
     const resolution = await resolveGrantFileUsernames(
       parsed,
       ctx.grantUsernameResolver ??
@@ -887,12 +882,9 @@ export async function handleAccessReload(
       false,
       ctx.repoContext.markDirty,
     );
-    // Paths the reconcile wrote, re-marked just before the push. The
-    // repositories mark each path before writing it, and a push that lands
-    // in between takes the path as a delete and clears the mark. The sync
-    // gate keeps run pushes out of this handler (swamp-club#2405); the
-    // re-mark, as in the OAuth mint, keeps the push correct if one ever
-    // interleaves (swamp-club#2408, swamp-club#2421).
+    // re-mark written paths just before the push: repositories mark each path
+    // before writing it, and a push landing in between takes the path as a
+    // delete and clears the mark. The sync gate keeps run pushes out.
     const writtenPaths: string[] = [];
     const store = createFileGrantStore(
       ctx.repoContext.definitionRepo,
@@ -914,10 +906,8 @@ export async function handleAccessReload(
       },
     };
 
-    // The reconcile writes run in a root unit of work with no push, so their
-    // marks stage into it instead of reaching the hook through
-    // signalChange's fallback (swamp-club#3056). The push below opens its own
-    // root once this one has ended.
+    // reconcile writes run in a root unit with no push so their marks stage
+    // into it; the push below opens its own root once this one has ended
     const reconcileResult = await runInRootUnitOfWork(
       ctx.repoContext,
       { flush: undefined },
@@ -942,10 +932,9 @@ export async function handleAccessReload(
         ? ctx.datastoreConfig.namespace
         : undefined;
       try {
-        // Per path, not bare: a bare markDirty() sets bulkInvalidated and
-        // turns every reload's push into a walk of the whole cache
-        // (swamp-club#2415). A reload that changed nothing marks nothing,
-        // and still pushes.
+        // per path, not bare: a bare markDirty() makes every reload's push a
+        // walk of the whole cache; a reload that changed nothing marks nothing
+        // and still pushes
         const syncService = ctx.syncService;
         await stageWritesThenPush(ctx.repoContext, writtenPaths, {
           flush: () => pushNamespace(syncService, namespace),
@@ -1048,14 +1037,9 @@ export async function handleAccessTokenList(
 }
 
 /**
- * Runs a token mint, rotate or revoke holding the token's name lock, so the
- * handler's pull, writes and push are one critical section across every
- * process that writes the datastore (swamp-club#2482).
- *
- * Called at the dispatch site, around the sync gate: a replica must never
- * wait on a distributed lock while it holds the gate. A caller the handler
- * is about to refuse takes no lock, so only an admin can make serve create
- * or wait on one.
+ * called around the sync gate because a replica must never wait on a
+ * distributed lock while holding the gate; a caller about to be refused takes
+ * no lock, so only an admin can make serve create or wait on one
  */
 export async function withServerTokenWriteLock(
   socket: WebSocket,
@@ -1072,13 +1056,12 @@ export async function withServerTokenWriteLock(
   }, ctx);
   if (!admin) return await fn();
 
-  // Until the handler starts, nothing has replied to the client, so a
-  // failure to resolve or take the lock is answered here. Once it has
-  // started it replies to its own failures.
+  // until the handler starts nothing has replied, so a failure to resolve or
+  // take the lock is answered here; once started it replies to its own failures
   let started = false;
   try {
-    // Rotate and revoke accept a definition id; lock the name it resolves to
-    // so they exclude the same token's writers by name.
+    // rotate and revoke accept a definition id; lock the name it resolves to so
+    // they exclude the same token's writers by name
     const tokenName = await serverTokenLockName(
       ctx.repoContext.definitionRepo,
       tokenIdOrName,
@@ -1090,8 +1073,8 @@ export async function withServerTokenWriteLock(
   } catch (error) {
     if (started) throw error;
     if (error instanceof LockTimeoutError) {
-      // The code and details serve's other lock timeouts carry, so a client
-      // retries this one the same way.
+      // the code and details serve's other lock timeouts carry, so a client
+      // retries this one the same way
       sendError(socket, requestId, "lock_timeout", error.message, {
         retryable: true,
         exceptionType: "LockTimeoutError",
@@ -1108,10 +1091,8 @@ export async function withServerTokenWriteLock(
 }
 
 /**
- * Brings the local copy of the datastore up to date before a token write, so
- * the handler decides on the record another replica last pushed. Runs inside
- * the handler's exclusive hold of the sync gate. A failed pull fails the
- * request: writing over a stale record is what the lock exists to prevent.
+ * a failed pull fails the request: writing over a stale record is what the lock
+ * exists to prevent
  */
 async function pullBeforeTokenWrite(ctx: ConnectionContext): Promise<void> {
   if (!ctx.syncService) return;
@@ -1174,9 +1155,9 @@ export async function handleAccessTokenRevoke(
           });
         }
 
-        // The revoke is persisted even if the request was cancelled, so every
-        // session opened with any mint of the name ends. Runs after the reply
-        // so a caller revoking their own token still gets it.
+        // the revoke is persisted even if the request was cancelled, so every
+        // session opened with any mint of the name ends; runs after the reply
+        // so a caller revoking their own token still gets it
         terminateTokenSessions(payload.name, {
           code: 4003,
           reason: TOKEN_REVOKED_REASON,
@@ -1248,7 +1229,7 @@ export async function handleAccessTokenRotate(
           });
         }
 
-        // The rotation is persisted even if the request was cancelled.
+        // the rotation is persisted even if the request was cancelled
         await terminateRotatedSessions(payload.name, ctx, requestId, principal);
       } catch (error) {
         const message = sanitizeErrorForClient(error);
@@ -1266,11 +1247,9 @@ function initiatorOf(
 }
 
 /**
- * Ends the sessions opened with a token's old credential after a rotate.
- * Sessions opened with the replacement (a client may already have reconnected)
- * are kept by excluding the new mint's createdAt. If the new record cannot be
- * read, every session of the name closes: the old credential is certainly
- * dead, and a holder of the new one can reconnect. Never throws.
+ * sessions opened with the replacement are kept by excluding the new mint's
+ * createdAt; if the new record cannot be read every session of the name closes,
+ * since a holder of the new credential can reconnect
  */
 async function terminateRotatedSessions(
   name: string,
@@ -1335,9 +1314,9 @@ export async function handleAccessTokenMint(
             principalEmail: payload.principalEmail,
             durationMs: payload.durationMs,
             // serve always registers the control-plane vault at boot, so name
-            // it explicitly (as the local CLI path does). Leaving it unset
-            // makes resolveVaultName count _token-secrets alongside any user
-            // vault and fail with "Multiple vaults are configured".
+            // it explicitly; leaving it unset makes resolveVaultName count
+            // _token-secrets alongside any user vault and fail with Multiple
+            // vaults
             vaultName: TOKEN_SECRETS_VAULT_NAME,
           }),
           withDefaults({
@@ -1368,19 +1347,15 @@ export async function handleAccessTokenMint(
   );
 }
 
-/** The strings of a payload list, or `undefined` when it is not a list. */
 function stringList(value: unknown): string[] | undefined {
   if (!Array.isArray(value)) return undefined;
   return value.filter((v): v is string => typeof v === "string");
 }
 
 /**
- * The run-time decision of a concrete `vault:<name>` read or write for
- * `principal` (swamp-club#2676), reported beside the request decision so one
- * check answers both. A wildcard, another kind or another action has none.
- * `omittedMemberships` names the memberships the decision was made without
- * (another subject, with none of that kind simulated), and the reason says
- * so.
+ * reported beside the request decision so one check answers both; a wildcard,
+ * another kind or another action has none. omittedMemberships names memberships
+ * the decision was made without
  */
 function runVaultAccessReport(
   service: GrantBasedAccessDecisionService,
@@ -1401,8 +1376,8 @@ function runVaultAccessReport(
       action,
     );
   } catch (error) {
-    // The run-time line is extra; failing to compute it must not cost the
-    // caller the request decision.
+    // the run-time line is extra; failing to compute it must not cost the
+    // caller the request decision
     runVaultLogger.warn("Could not decide the run-time vault access: {error}", {
       error: error instanceof Error ? error.message : String(error),
     });
@@ -1426,11 +1401,6 @@ function runVaultAccessReport(
   };
 }
 
-/**
- * The resource an access check explains, judged as a request would judge it
- * (swamp-club#2675). The local `swamp access check` explains through the same
- * function (swamp-club#3224).
- */
 function explainedResource(
   ctx: ConnectionContext,
   kind: ResourceKind,

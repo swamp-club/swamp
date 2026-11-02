@@ -23,22 +23,13 @@ import { atomicWriteTextFile } from "./atomic_write.ts";
 
 const PREFERENCES_FILE_NAME = "workspaces.yaml";
 
-/**
- * User-level workspace preferences, persisted at `<config>/workspaces.yaml`.
- * Set with `swamp config set workspaces.dir <folder>`.
- */
 export interface WorkspacePreferences {
-  /**
-   * The absolute folder new workspaces are created in; unset means
-   * `<data dir>/workspaces`.
-   */
   readonly dir?: string;
 }
 
 /**
- * Reads and writes the workspace preferences file. Never throws on read: a
- * missing or malformed file, or a `dir` that isn't an absolute path, yields
- * no preference.
+ * never throws on read: a missing or malformed file, or a dir that is not an
+ * absolute path, yields no preference
  */
 export class WorkspacePreferencesFileRepository {
   private readonly filePath: string;

@@ -17,13 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * The v3 read model (swamp-club#3239) on real temp directories: idempotence,
- * crash safety, partition catch-up, concurrency, aborts, catalog rebuilds,
- * the key guard and the failure policy. Its agreement with v2 is in
- * `datastore_v3_read_model_v2_oracle_test.ts`.
- */
-
 import {
   assert,
   assertEquals,
@@ -107,10 +100,8 @@ function latestPut(name: string, version: number) {
   });
 }
 
-/** Content stored as several chunks. */
 const LARGE = new Uint8Array(5 * TEST_CHUNK_BYTES + 7).map((_, i) => i % 251);
 
-/** A small history: saves (inline and multi-chunk), a delete, a lease. */
 async function appendScenario(env: V3Env): Promise<number> {
   const blob = await env.chunkStore.write(SOLO_NAMESPACE, LARGE, signal());
   const commits: Op[][] = [
@@ -137,7 +128,6 @@ async function appendScenario(env: V3Env): Promise<number> {
   return commits.length;
 }
 
-/** What a clean read model produces for the scenario. */
 async function cleanResult(): Promise<unknown> {
   let result: unknown;
   await withV3Env(async (env) => {
@@ -162,7 +152,6 @@ async function observe(env: V3Env): Promise<unknown> {
   }
 }
 
-/** A catalog that throws once, before or after applying a commit's actions. */
 class FailingCatalog implements ReadModelCatalog {
   #armed = true;
   constructor(
@@ -225,7 +214,6 @@ Deno.test("read model: applies a history of saves, a delete and a lease", async 
         ),
         LARGE,
       );
-      // a@1 was deleted, and its version directory pruned.
       await assertRejects(
         () =>
           Deno.stat(
@@ -238,7 +226,6 @@ Deno.test("read model: applies a history of saves, a delete and a lease", async 
         rows.map((r) => [r.data_name, r.version, r.is_latest]),
         [["a", 2, 1], ["b", 1, 1]],
       );
-      // The index lists a@2's chunks, parts expanded.
       const chunks = await readModel.chunksInUse("");
       assertEquals(chunks.size, Math.ceil(LARGE.length / TEST_CHUNK_BYTES));
     } finally {
@@ -291,7 +278,6 @@ for (const when of ["before", "after"] as const) {
   });
 }
 
-/** A catalog that throws once, on applying the commit with seq `seq`. */
 class FailAtSeqCatalog implements ReadModelCatalog {
   #applied = 0;
   constructor(readonly inner: V3Catalog, readonly seq: number) {}
@@ -331,10 +317,6 @@ class FailAtSeqCatalog implements ReadModelCatalog {
   }
 }
 
-/**
- * The cursor another connection sees: what the state has committed, which
- * is what survives a crash. 0 before any.
- */
 function committedCursor(env: V3Env): number {
   const db = new DatabaseSync(join(env.stateDir, READ_MODEL_STATE_FILE), {
     readOnly: true,
@@ -348,7 +330,6 @@ function committedCursor(env: V3Env): number {
   }
 }
 
-/** Counts the transactions `store` begins, through its connection. */
 function countTransactions(store: CatalogStore): { begun: number } {
   const db = (store as unknown as { db: DatabaseSync }).db;
   const exec = db.exec.bind(db);
@@ -372,13 +353,11 @@ Deno.test("read model: a page's catalog actions land in one catalog transaction 
     } finally {
       await readModel.close();
     }
-    // The five commits fit one page.
     assertEquals(transactions.begun, 1);
     assertEquals(await observe(env), clean);
   });
 });
 
-/** A catalog whose batch commits, then throws once: a crash before the state. */
 class CrashAfterCatalogCommit implements ReadModelCatalog {
   #armed = true;
   constructor(readonly inner: V3Catalog) {}
@@ -434,7 +413,6 @@ Deno.test("read model: a crash after a page's catalog commits but before its sta
         Error,
         "injected crash after the page's catalog",
       );
-      // The catalog is ahead; the state committed nothing.
       assertEquals(committedCursor(env), 0);
     } finally {
       await crashing.close();
@@ -449,7 +427,6 @@ Deno.test("read model: a crash after a page's catalog commits but before its sta
   });
 });
 
-/** A catalog that aborts `controller` once the commit with seq `seq` is applied. */
 class AbortAfterSeqCatalog implements ReadModelCatalog {
   #applied = 0;
   constructor(
@@ -512,7 +489,6 @@ for (const seq of [1, 2, 3, 4]) {
       } finally {
         await killed.close();
       }
-      // A later process: a read model of its own over the same checkout.
       const next = env.openReadModel();
       try {
         assertEquals((await next.catchUp(signal())).cursor, 5);
@@ -524,11 +500,6 @@ for (const seq of [1, 2, 3, 4]) {
   });
 }
 
-/**
- * A batch that records the paths it writes, and fails its barrier once
- * while `control.armed`: `before` syncs nothing, `during` syncs the files
- * and fails on the first directory.
- */
 class CrashingBatch extends DurableWriteBatch {
   constructor(
     readonly control: { armed: "before" | "during" | false; written: string[] },
@@ -564,7 +535,6 @@ class CrashingBatch extends DurableWriteBatch {
   }
 }
 
-/** Commits whose early versions later ones replace or remove. */
 async function appendChurn(env: V3Env): Promise<void> {
   const commits: Op[][] = [
     [await savePut("a", 1), versionOp("a", 1)],
@@ -581,7 +551,6 @@ async function appendChurn(env: V3Env): Promise<void> {
   }
 }
 
-/** What a full replay of {@link appendChurn} leaves. */
 async function cleanChurn(): Promise<unknown> {
   let result: unknown;
   await withV3Env(async (env) => {
@@ -597,7 +566,6 @@ async function cleanChurn(): Promise<unknown> {
   return result;
 }
 
-/** A batch that fails its barrier on page `at` (from 1). */
 class CrashAtPageBatch extends DurableWriteBatch {
   constructor(readonly control: { pages: number; at: number }) {
     super();
@@ -626,9 +594,7 @@ for (const at of [2, 3, 4]) {
       } finally {
         await cut.close();
       }
-      // Its state is there, so the checkout is a v3 one: it joins.
       await assertV3CheckoutJoinable(env.repoDir);
-      // A reader of a checkout another process writes finishes it.
       const reader = env.openReadModel({ pageSize: 1 });
       try {
         assertEquals(await reader.catchUpUnlessComplete(signal(), 1_000), true);
@@ -665,7 +631,6 @@ Deno.test("read model: a recovery replays in full, never net (swamp-club#3803)",
   });
 });
 
-/** A batch whose barrier waits for `gate`, holding a catch-up mid-page. */
 class GatedBatch extends DurableWriteBatch {
   constructor(
     readonly reached: () => void,
@@ -686,7 +651,6 @@ Deno.test("read model: a reader arriving during another read model's catch-up wa
     await appendScenario(env);
     const reached = Promise.withResolvers<void>();
     const gate = Promise.withResolvers<void>();
-    // Another process's read model: its own lock handle and state connection.
     const catchingUp = env.openReadModel({
       writeBatch: () => new GatedBatch(reached.resolve, gate.promise),
     });
@@ -710,7 +674,6 @@ Deno.test("read model: a reader arriving during another read model's catch-up wa
           return caughtUp;
         },
       );
-      // Still waiting while the other catch-up holds the lock.
       await waitFor(() => lockPolls >= 2, "the reader to wait on the lock");
       assertEquals(settled, false);
       gate.resolve();
@@ -858,7 +821,6 @@ Deno.test("read model: a page's state commits only after its barrier (swamp-club
     } finally {
       await readModel.close();
     }
-    // Pages [1, 2], [3, 4] and [5]: each barrier sees only the pages before.
     assertEquals(atBarrier, [0, 2, 4]);
     assertEquals(await observe(env), clean);
   });
@@ -895,7 +857,6 @@ Deno.test("read model: a failed commit keeps the commits before it in its page, 
   }
 });
 
-/** How many files the state lists as written without a sync. */
 function unsyncedCount(env: V3Env): number {
   const db = new DatabaseSync(join(env.stateDir, READ_MODEL_STATE_FILE), {
     readOnly: true,
@@ -923,8 +884,6 @@ Deno.test("read model: files a reboot lost after their page committed are repair
       await first.close();
     }
     assert(unsyncedCount(env) > 0, "the catch-up listed no unsynced files");
-    // A power loss: one file comes back empty, one not at all, and the
-    // removal of a@1 never reached the disk.
     const root = swampPath(env.repoDir);
     const fileOf = (key: RecordKey) => join(root, ...key.toString().split("/"));
     await Deno.truncate(fileOf(dataKey("b", 1)), 0);
@@ -934,8 +893,7 @@ Deno.test("read model: files a reboot lost after their page committed are repair
     boot = "boot-id:2";
     const reopened = open();
     try {
-      // Each file is rewritten or removed to match the state, without a
-      // replay (swamp-club#3617).
+      // each file is rewritten or removed to match the state, without a replay
       assertEquals(await reopened.catchUp(signal()), { applied: 0, cursor: 5 });
     } finally {
       await reopened.close();
@@ -944,7 +902,6 @@ Deno.test("read model: files a reboot lost after their page committed are repair
   });
 });
 
-/** What a clean load of the compacted {@link appendScenario} leaves. */
 async function cleanCompactedResult(): Promise<unknown> {
   let result: unknown;
   await withV3Env(async (env) => {
@@ -975,9 +932,7 @@ Deno.test("read model: a compacted base's files a reboot lost are repaired on th
     } finally {
       await first.close();
     }
-    // The load wrote the base's files unsynced, and listed them.
     assert(unsyncedCount(env) > 0, "the base load listed no unsynced files");
-    // A power loss: one base file comes back empty, one not at all.
     const root = swampPath(env.repoDir);
     const fileOf = (key: RecordKey) => join(root, ...key.toString().split("/"));
     await Deno.truncate(fileOf(dataKey("b", 1)), 0);
@@ -993,7 +948,6 @@ Deno.test("read model: a compacted base's files a reboot lost are repaired on th
   });
 });
 
-/** A batch whose `fail`th write throws, as a process killed mid-load. */
 class FailingWriteBatch extends DurableWriteBatch {
   constructor(readonly control: { writes: number; fail: number | undefined }) {
     super({ sync: false });
@@ -1061,7 +1015,6 @@ Deno.test("read model: syncUnsyncedFiles makes the listed files durable and clea
       assert(listed > 0, "the catch-up listed no unsynced files");
       assertEquals(await model.syncUnsyncedFiles(), listed);
       assertEquals(unsyncedCount(env), 0);
-      // Nothing left to sync; the files are untouched.
       assertEquals(await model.syncUnsyncedFiles(), 0);
     } finally {
       await model.close();
@@ -1135,7 +1088,6 @@ Deno.test("read model: a commit whose unsynced keys cannot be recorded is not re
     const readModel = env.openReadModel({
       bootIdentity: () => Promise.resolve("boot-id:1"),
     });
-    // Recording unsynced keys fails, as on a full disk.
     const db = new DatabaseSync(join(env.stateDir, READ_MODEL_STATE_FILE));
     db.exec(
       "CREATE TRIGGER refuse_unsynced BEFORE INSERT ON unsynced_keys BEGIN SELECT RAISE(ABORT, 'injected: disk full'); END",
@@ -1185,7 +1137,7 @@ Deno.test({
       boot = "boot-id:2";
       const reopened = open();
       try {
-        // Rewritten from the state, without a replay (swamp-club#3617).
+        // rewritten from the state, without a replay
         assertEquals(await reopened.catchUp(signal()), {
           applied: 0,
           cursor: 5,
@@ -1202,8 +1154,6 @@ Deno.test("read model: when SQLite rolls a page back itself, the error that caus
   const clean = await cleanResult();
   await withV3Env(async (env) => {
     await appendScenario(env);
-    // A boot identity makes the catch-up record unsynced keys, which the
-    // injected trigger refuses; without one it syncs instead.
     const readModel = env.openReadModel({
       bootIdentity: () => Promise.resolve("boot-id:1"),
     });
@@ -1293,7 +1243,6 @@ Deno.test("read model: without a boot identity the catch-up syncs and lists noth
       await first.close();
     }
     assert(unsyncedCount(env) > 0);
-    // The boot can no longer be named: the files are rewritten, synced.
     boot = undefined;
     const unnamed = open();
     try {
@@ -1366,8 +1315,6 @@ Deno.test("read model: a read made during a page waits for it and never sees wha
       await readModel.catchUp(signal());
       const before = await readModel.chunksInUse("");
       assertEquals(before.size, Math.ceil(LARGE.length / TEST_CHUNK_BYTES));
-      // A page that deletes a@2, the only version holding chunks, then
-      // fails at its barrier and rolls back.
       await env.store.append(
         modelCommit(6, [deleteVersion("a", 2)], { fence: 1 }),
       );
@@ -1409,9 +1356,8 @@ Deno.test("read model: a syncing removal syncs the deepest directory its cleanup
       },
     });
     try {
-      // The put is caught up first, so the removal acts on its file: a
-      // catch-up from the start of the feed would leave both off disk
-      // (swamp-club#3803).
+      // the put is caught up first, so the removal acts on its file: a catch-up
+      // from the start of the feed would leave both off disk
       assertEquals((await readModel.catchUp(signal())).cursor, 1);
       await env.store.append(
         commitOf({
@@ -1461,7 +1407,6 @@ Deno.test("read model: a page that cannot open its state batch leaves reads work
     try {
       await assertRejects(() => readModel.catchUp(signal()));
       db.exec("ROLLBACK");
-      // The read settles rather than waiting for a page that never started.
       const deadline = AbortSignal.timeout(10_000);
       const outcome = await Promise.race([
         readModel.chunksInUse("").then(
@@ -1510,7 +1455,6 @@ Deno.test("read model: a partition catch-up is not applied again by catchUp", as
 Deno.test("read model: its index is not read after a reset until a catch-up drains the feed", async () => {
   await withV3Env(async (env) => {
     await appendScenario(env);
-    // Another partition, whose chunk a partial index would leave out.
     const otherId = "7a2b3c4d-5e6f-4a1b-8c2d-3e4f5a6b7c8d";
     const other = partitionOf({ kind: "model", type: MODEL_TYPE, id: otherId });
     const blob = await env.chunkStore.write(
@@ -1537,15 +1481,12 @@ Deno.test("read model: its index is not read after a reset until a catch-up drai
 
     const fresh = env.openReadModel();
     try {
-      // Nothing applied yet.
       await assertRejects(
         () => fresh.chunksInUse(""),
         ReadModelIncompleteError,
       );
       await fresh.catchUp(signal());
       const all = await fresh.chunksInUse("");
-      // A deleted catalog resets the state; a partition catch-up then fills
-      // only the fixture partition.
       await fresh.close();
       for (const suffix of ["", "-wal", "-shm"]) {
         await Deno.remove(`${catalogV3Path(env)}${suffix}`).catch(() => {});
@@ -1584,7 +1525,6 @@ Deno.test("read model: two read models catching up at once agree", async () => {
         b.catchUp(signal()),
       ]);
       assertEquals(results.map((r) => r.cursor), [5, 5]);
-      // The lock serializes them: one applies everything, the other nothing.
       assertEquals(results.map((r) => r.applied).sort(), [0, 5]);
     } finally {
       await a.close();
@@ -1617,7 +1557,6 @@ Deno.test("read model: an abort during a chunk read leaves no partial file and r
     }
     const resumed = env.openReadModel();
     try {
-      // Commit 1 landed before the abort; commit 2 holds the blob.
       assertEquals(await resumed.catchUp(signal()), { applied: 4, cursor: 5 });
     } finally {
       await resumed.close();
@@ -1696,7 +1635,6 @@ Deno.test("read model: recover replays a compacted history and removes only the 
           "config/pulled-extensions/.swamp-staging/abc/journal.json",
         ]
       ) {
-        // Each kept file is still there.
         await Deno.remove(join(root, ...key.split("/")));
       }
       await Deno.remove(join(root, "config"), { recursive: true });
@@ -1857,7 +1795,6 @@ Deno.test("read model: refuses keys outside the synced directories but indexes t
         cursor: 2,
       });
       assertEquals(await readModel.liveRecords("", PARTITION), []);
-      // The tombstones removed nothing either.
       assertEquals(
         await Deno.readTextFile(join(root, "data", "_catalog.db")),
         "sentinel",
@@ -1888,12 +1825,9 @@ Deno.test("read model: skips a put where a file and a directory claim one path, 
       putOp({ intent, key: RecordKey.create(key), inline: base64(key) });
     const commits: Op[][] = [
       [await put("data/x")],
-      // data/x is a file, so it cannot hold data/x/y.
       [await put("data/x/y")],
       [await put("data/d/e")],
-      // data/d is a directory, so it cannot be a file.
       [await put("data/d")],
-      // A tombstone under a file has nothing to remove.
       [tombstoneOp({ intent, key: RecordKey.create("data/x/y") })],
       [await put("data/after")],
     ];
@@ -1918,7 +1852,6 @@ Deno.test("read model: skips a put where a file and a directory claim one path, 
         await Deno.readTextFile(join(root, "data", "after")),
         "data/after",
       );
-      // The skipped puts are indexed, so the index stays exact.
       assertEquals(
         (await readModel.liveRecords("", PARTITION)).map((r) =>
           r.key.toString()
@@ -2040,8 +1973,6 @@ for (const at of ["directory", "file"] as const) {
         await Deno.writeTextFile(join(outside, "raw"), "untouched");
         const base = join(root, "data", MODEL_TYPE.normalized, MODEL_ID);
         await Deno.mkdir(join(base, "b"), { recursive: true });
-        // data/.../a leads out of the cache, or data/.../b/raw is a symlink
-        // to a file out of it.
         if (at === "directory") {
           await Deno.symlink(outside, join(base, "a"), { type: "dir" });
         } else {
@@ -2119,8 +2050,6 @@ Deno.test("read model: a missing chunk makes its record unreadable, not the comm
     let now = new Date("2026-10-19T00:00:00Z");
     const readModel = env.openReadModel({ clock: () => now });
     try {
-      // The commit applies, the index completes, and the record is
-      // recorded as unreadable with no file.
       assertEquals(await readModel.catchUp(signal()), {
         applied: 1,
         cursor: 1,
@@ -2133,7 +2062,6 @@ Deno.test("read model: a missing chunk makes its record unreadable, not the comm
       assertEquals(record?.chunk, firstPart);
       assertEquals(record?.reason, "missing");
       await assertRejects(() => Deno.stat(path), Deno.errors.NotFound);
-      // Listed under its directory too (swamp-club#3617).
       assertEquals(
         (await readModel.unreadableRecordsUnder("", "data")).map((r) =>
           r.recordKey
@@ -2167,7 +2095,6 @@ Deno.test("read model: a chunk of the wrong bytes is recorded as the damaged chu
   await withV3Env(async (env) => {
     const blob = await env.chunkStore.write(SOLO_NAMESPACE, LARGE, signal());
     const damaged = blob.parts![1].sha256;
-    // Same size, wrong bytes: the read of that part names it.
     await Deno.writeFile(
       join(
         env.dir,
@@ -2309,7 +2236,6 @@ Deno.test("read model: a same-boot catalog reset keeps a file tombstoned in this
       await readModel.close();
     }
     await env.store.compactHistory(Number.MAX_SAFE_INTEGER);
-    // A live writer in this boot writes the key again, not yet committed.
     await Deno.mkdir(dirname(path), { recursive: true });
     await Deno.writeTextFile(path, "uncommitted");
     const catalog = new CatalogStore(catalogV3Path(env));
@@ -2363,7 +2289,6 @@ Deno.test("read model: the check after a reboot reads the commit at a mark once 
     const paths = ["a", "b"].map((name) =>
       join(swampPath(env.repoDir), ...dataKey(name, 1).toString().split("/"))
     );
-    // A power cut lost both files.
     for (const path of paths) await Deno.remove(path);
     boot = "boot-id:2";
     markReads = 0;

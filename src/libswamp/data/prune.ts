@@ -43,7 +43,6 @@ import { withUnitOfWork } from "../unit_of_work.ts";
 import type { SwampError } from "../errors.ts";
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
 
-/** Preview item for a single orphaned model whose data would be reclaimed. */
 export interface DataPrunePreviewItem {
   type: string;
   modelId: string;
@@ -53,12 +52,10 @@ export interface DataPrunePreviewItem {
   bytesReclaimed: number;
 }
 
-/** Preview data returned before confirmation. */
 export interface DataPrunePreview {
   items: DataPrunePreviewItem[];
 }
 
-/** Data structure for the data prune completed event. */
 export interface DataPruneData {
   modelsReclaimed: number;
   dataEntriesReclaimed: number;
@@ -82,25 +79,21 @@ export type DataPruneEvent =
   | { kind: "completed"; data: DataPruneData }
   | { kind: "error"; error: SwampError };
 
-/** Input for the data prune operation. */
 export interface DataPruneInput {
   dryRun: boolean;
 }
 
-/** Dependencies for the data prune operation. */
 export interface DataPruneDeps {
   findOrphanedData: () => Promise<OrphanedDataInfo[]>;
   deleteOrphanedData: (opts: {
     dryRun: boolean;
   }) => Promise<OrphanReclamationResult>;
-  /** Checkpoints the catalog WAL. Omit in tests that don't need compaction. */
   compactCatalog?: () => {
     walPagesTotal: number;
     walPagesCheckpointed: number;
   };
 }
 
-/** Wires real infrastructure into DataPruneDeps. */
 export function createDataPruneDeps(
   repoDir: string,
   datastoreResolver?: DatastorePathResolver,
@@ -134,11 +127,8 @@ export function createDataPruneDeps(
     workflowRunRepo,
   );
 
-  // The definition repository resolves models from BOTH models/ and
-  // .swamp/auto-definitions/ (the constructor default), matching what
-  // `swamp model get <id>` reports. isModelLive MUST use this per-item lookup —
-  // NOT model search / findAllGlobal, which skip auto-definitions and would
-  // falsely flag every auto-definition-backed model as orphaned.
+  // isModelLive must use this per-item lookup, which resolves models and
+  // auto-definitions; others would flag auto-definition models orphaned.
   const autoDefDir = dsPath(SWAMP_SUBDIRS.autoDefinitions);
   const definitionRepo = injectedDefinitionRepo ??
     new YamlDefinitionRepository(
@@ -186,7 +176,6 @@ export function createDataPruneDeps(
   };
 }
 
-/** Gathers preview info for the data prune operation. */
 export async function dataPrunePreview(
   ctx: LibSwampContext,
   deps: DataPruneDeps,
@@ -205,7 +194,6 @@ export async function dataPrunePreview(
   };
 }
 
-/** Reclaims orphaned data whose owning model definition no longer exists. */
 export async function* dataPrune(
   ctx: LibSwampContext,
   deps: DataPruneDeps,

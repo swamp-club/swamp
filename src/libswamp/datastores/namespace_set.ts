@@ -49,7 +49,6 @@ export interface NamespaceRegistration {
 export interface NamespaceSetDeps {
   getDatastorePath: () => string;
   getCurrentNamespace: () => string | undefined;
-  /** The repo's configured datastore-tier directories. */
   getDatastoreDirectories: () => readonly string[];
   listNamespaces: () => Promise<NamespaceRegistration[]>;
   registerNamespace: (namespace: string, repoId: string) => Promise<void>;

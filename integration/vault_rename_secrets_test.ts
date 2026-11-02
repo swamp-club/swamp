@@ -17,10 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// Integration tests for renaming a local_encryption vault through vault edit:
-// the vault's stored secrets move with the rename and stay readable through
-// VaultService under the new name (swamp-club#2681).
-
 import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
 import { join } from "@std/path";
 import { createLibSwampContext } from "../src/libswamp/context.ts";

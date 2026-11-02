@@ -53,6 +53,23 @@ the work yourself step by step rather than author a swamp workflow.
 Changes should only touch what's necessary — don't refactor adjacent code that
 isn't part of the task. Keep the blast radius small.
 
+## Comments
+
+A comment carries what the code cannot: a decision, a tradeoff, a limit or a
+shrug, in one line at the line it governs. An invariant in concurrency,
+persistence or security code may take up to three lines.
+
+No narration, history, issue references, measurements or dates; git holds those.
+No commands for the reader to run; those belong in the contributing docs. No
+file headers explaining architecture, banners, or JSDoc restating a signature.
+Stale comments are deleted, not repaired. Pragmas and the licence header are not
+prose; leave them.
+
+This applies to `src/`, `integration/` and `scripts/`. This file follows the
+same rule: a new subsystem gets a pointer, not an essay.
+`agent-constraints/comment-review-dimensions.md` is the enforcement, and lists
+what breaks when comments are stripped carelessly.
+
 ## Commands
 
 Use `deno run` to get a complete list of custom tasks. `deno run dev` runs the

@@ -21,9 +21,6 @@ import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
 
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
-/**
- * A single workflow search result item.
- */
 export interface WorkflowSearchItem {
   id: string;
   name: string;
@@ -34,9 +31,6 @@ export interface WorkflowSearchItem {
   trigger?: { schedule?: string; inputs?: Record<string, unknown> };
 }
 
-/**
- * Data payload for the completed event.
- */
 export interface WorkflowSearchData {
   query: string;
   results: WorkflowSearchItem[];
@@ -47,9 +41,6 @@ export type WorkflowSearchEvent =
   | { kind: "completed"; data: WorkflowSearchData }
   | { kind: "error"; error: SwampError };
 
-/**
- * Dependencies for the workflow search generator.
- */
 export interface WorkflowSearchDeps {
   findAllWorkflows(): Promise<
     Array<{
@@ -63,19 +54,10 @@ export interface WorkflowSearchDeps {
   >;
 }
 
-/**
- * Input for the workflow search generator.
- */
 export interface WorkflowSearchInput {
   query?: string;
 }
 
-/**
- * Searches workflow definitions.
- *
- * Returns all workflows — filtering for JSON mode is handled by the renderer.
- * The Ink renderer uses fzf for interactive fuzzy matching.
- */
 export async function* workflowSearch(
   _ctx: LibSwampContext,
   deps: WorkflowSearchDeps,

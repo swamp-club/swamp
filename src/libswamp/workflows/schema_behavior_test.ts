@@ -17,9 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// `swamp workflow schema` documents the behavior spelling of a step task
-// (swamp-club#3334) beside every model_method variant.
-
 import { assert, assertEquals } from "@std/assert";
 import { createLibSwampContext } from "../context.ts";
 import { collect } from "../testing.ts";
@@ -33,7 +30,6 @@ function variantType(node: unknown): unknown {
   return (props?.type as { const?: unknown } | undefined)?.const;
 }
 
-/** Every oneOf/anyOf list in `node` that holds a model_method variant. */
 function taskLists(node: unknown, out: unknown[][] = []): unknown[][] {
   if (Array.isArray(node)) {
     for (const n of node) taskLists(n, out);
@@ -69,7 +65,6 @@ Deno.test("workflowSchema: a behavior variant follows every model_method variant
       const model = list[at] as Node;
       const behavior = list[at + 1] as Node;
       assert(!("$schema" in behavior), key);
-      // Field parity: each behavior field stands for a model_method field.
       const modelProps = Object.keys(model.properties as Node);
       const behaviorProps = Object.keys(behavior.properties as Node);
       assertEquals(

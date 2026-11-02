@@ -32,7 +32,6 @@ import {
   spliceOrigin,
 } from "./splice_origin.ts";
 
-// Keys that stress path spelling: plain, dotted, bracketed, quoted, empty.
 const key = fc.constantFrom(
   "a",
   "b",
@@ -70,7 +69,6 @@ const tree = fc.letrec((tie) => ({
   ),
 })).node;
 
-/** The authored raws of `value` as found before the scan skipped data. */
 function referenceRaws(value: unknown, map: ProvenanceMap): Set<string> {
   const raws = new Set<string>();
   if (map.isWholeData) return raws;
@@ -82,7 +80,6 @@ function referenceRaws(value: unknown, map: ProvenanceMap): Set<string> {
   return raws;
 }
 
-/** Real node paths, including container ancestors and keys needing quoting. */
 function nodePaths(
   value: unknown,
   path = "",
@@ -114,8 +111,6 @@ Deno.test("spliceOrigin: the authored raws of a computed read match the unskippe
       fc.array(fc.tuple(fc.nat(), fc.nat(), fc.nat()), { maxLength: 4 }),
       fc.array(fc.nat(), { maxLength: 4 }),
       (inputs, wholePicks, rangePicks, keyPicks) => {
-        // Data paths drawn from the paths the value actually has, plus
-        // their ancestors, so whole-data subtrees nest and overlap.
         const paths = extractExpressions(inputs).map((e) => e.path);
         const nodes = nodePaths(inputs);
         const whole = wholePicks.map((i) => nodes.all[i % nodes.all.length]);
@@ -153,8 +148,6 @@ Deno.test("spliceOrigin: the authored raws of a computed read match the unskippe
   );
 });
 
-// Behavior names and fields as the model namespace binds them: names that
-// need quoting in a path, definition fields beside data fields.
 const modelName = fc.constantFrom("db", "web.1", "a[0]", 'q"x', "", "[x");
 const modelField = fc.constantFrom(
   "definition",
@@ -176,12 +169,6 @@ const modelNamespace = fc.array(
   { maxLength: 4 },
 );
 
-/**
- * The namespace twice: plain, and with every data field behind a getter
- * that counts its reads, as ModelResolver.buildContext puts loaders on
- * resources and files. An aliased entry is bound under a second key, as a
- * behavior is under its id.
- */
 function buildModelNamespace(
   entries: [string, [string, unknown][] | null | string, boolean][],
 ) {
@@ -222,7 +209,6 @@ function buildModelNamespace(
   return { plain, lazy, loads };
 }
 
-/** The model namespace map as built one withWholeData call per path. */
 function incrementalModelMap(
   model: Record<string, unknown>,
   only?: string,
@@ -247,13 +233,10 @@ Deno.test("spliceOrigin: a model read matches the unskipped scan and reads no da
   fc.assert(
     fc.property(
       modelNamespace,
-      // Computed reads of the model root, with whether they also read a
-      // namespace that is always data.
       fc.constantFrom<[string, boolean]>(
         ['model.db.input.?url.orValue("") + ""', false],
         ["string(size(model))", false],
         ['model[env.K].definition + ""', true],
-        // Unparsable text: every authored root is scanned.
         ["model.(", true],
       ),
       tree,
@@ -289,8 +272,6 @@ Deno.test("spliceOrigin: a model read matches the unskipped scan and reads no da
             readSetMap(value, expected).toData(),
           );
         }
-        // A direct read of one behavior carries its map, scanning the
-        // value it read without touching that behavior's data fields.
         for (const name of Object.keys(plain)) {
           const direct = spliceOrigin(
             `model[${JSON.stringify(name)}]`,

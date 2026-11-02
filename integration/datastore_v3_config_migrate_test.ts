@@ -17,13 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Turning managedConfig on in a v3 repo keeps the config it already has
- * (swamp-club#3300): `datastore config migrate` commits the repo's model
- * definitions, workflows and vault configs into the config tier, and a
- * writing command adopts them when managedConfig was set by hand.
- */
-
 import "../src/domain/models/models.ts";
 import {
   assert,
@@ -71,7 +64,6 @@ async function cli(repoDir: string, ...args: string[]): Promise<unknown> {
   return text === "" ? undefined : JSON.parse(text);
 }
 
-/** `workflow get` without the checkout-specific file path. */
 async function workflowOf(repoDir: string, name: string): Promise<unknown> {
   const { path: _path, ...rest } = await cli(
     repoDir,
@@ -82,7 +74,6 @@ async function workflowOf(repoDir: string, name: string): Promise<unknown> {
   return rest;
 }
 
-/** The managed-config warnings `fn` logs, or those of `category`. */
 async function managedConfigWarnings(
   fn: () => Promise<void>,
   category: string[] = ["cli", "managed-config"],
@@ -112,7 +103,6 @@ async function vaultNames(repoDir: string): Promise<string[]> {
   return listed.results.map((v) => v.name).sort();
 }
 
-/** Sets `datastore.managedConfig: true` in a checkout's `.swamp.yaml`. */
 async function turnOnManagedConfigByHand(repoDir: string): Promise<void> {
   const path = join(repoDir, ".swamp.yaml");
   const text = await Deno.readTextFile(path);
@@ -122,17 +112,12 @@ async function turnOnManagedConfigByHand(repoDir: string): Promise<void> {
   );
 }
 
-/** The commits the datastore holds. */
 async function commitCount(repos: RowRepos): Promise<number> {
   const config = repos.a.datastoreConfig;
   if (isCustomDatastoreConfig(config)) throw new Error("v3 is filesystem");
   return (await v3DatastoreFor(repos.repoA, config).describe()).storedCommits;
 }
 
-/**
- * Copies the git-tracked config of checkout A into checkout B, as a git
- * clone holds it: same ids, same bytes.
- */
 async function cloneConfig(repos: RowRepos): Promise<void> {
   for (const dir of ["models", "workflows", "vaults"]) {
     await Deno.remove(join(repos.repoB, dir), { recursive: true }).catch(
@@ -143,9 +128,8 @@ async function cloneConfig(repos: RowRepos): Promise<void> {
 }
 
 /**
- * Gives each of B's repo-local config files bytes A never committed, at the
- * same key: B's caught-up config tier then does not already hold them, so a
- * stale view of the commit log is all that would let B create them.
+ * gives each of B's repo-local config files bytes A never committed at the same
+ * key, so only a stale view of the commit log would let B create them
  */
 async function divergeConfig(repoDir: string): Promise<void> {
   for (const dir of ["models", "workflows", "vaults"]) {
@@ -159,18 +143,10 @@ async function divergeConfig(repoDir: string): Promise<void> {
   }
 }
 
-/**
- * The vault `swamp repo init` writes into `vaults/` (swamp-club#3259); the
- * fixture's init leaves it out.
- */
 async function initDefaultVault(repoDir: string): Promise<void> {
   await cli(repoDir, "vault", "create", "local_encryption", "default");
 }
 
-/**
- * The adopted file under a checkout's config tier whose name is `name`; with
- * an empty name, the first `v2` vault config.
- */
 async function configFile(
   repoDir: string,
   tree: string,
@@ -192,7 +168,6 @@ async function configFile(
   throw new Error(`no ${name || "v2 vault"} under ${tree}`);
 }
 
-/** Runs an edit command with `doc` as the new content on stdin. */
 async function edit(
   repoDir: string,
   args: string[],
@@ -205,7 +180,6 @@ async function edit(
   );
 }
 
-/** A, with init's default vault, a model, a workflow and a second vault. */
 async function seedRepoLocalConfig(repoDir: string): Promise<void> {
   await initDefaultVault(repoDir);
   await cli(repoDir, "model", "create", "command/shell", "m1");
@@ -236,7 +210,6 @@ Deno.test("v3 config migrate: commits the init vault, a model, a workflow and a 
     assertEquals(migrated.managedConfigSet, true);
     assertEquals(migrated.skipped, []);
 
-    // All of it stays visible in this checkout, read from the config tier.
     assertEquals(await vaultNames(repos.repoA), ["default", "v2"]);
     const model = await cli(repos.repoA, "model", "get", "m1") as {
       name: string;
@@ -247,7 +220,6 @@ Deno.test("v3 config migrate: commits the init vault, a model, a workflow and a 
     };
     assertEquals(workflow.name, "w1");
 
-    // A second checkout catches up to the same records.
     await assertCheckoutsAgree(repos, datastorePath, "after migrate");
     await turnOnManagedConfigByHand(repos.repoB);
     assertEquals(await vaultNames(repos.repoB), ["default", "v2"]);
@@ -288,7 +260,6 @@ Deno.test("v3 config migrate: a name deleted from the config tier is not brought
     await seedRepoLocalConfig(repos.repoA);
     await cli(repos.repoA, "datastore", "config", "migrate");
     await cli(repos.repoA, "model", "delete", "m1", "--force");
-    // The repo-local copy is still there, as after a v2 migrate.
     assert(
       (await Deno.stat(join(repos.repoA, "models"))).isDirectory,
     );
@@ -415,7 +386,6 @@ Deno.test("v3 managedConfig by hand: a writing command adopts the repo's config,
       "a read-only open commits nothing",
     );
 
-    // The first writing command adopts it.
     await cli(repos.repoA, "model", "create", "command/shell", "m2");
     assertEquals(await vaultNames(repos.repoA), ["default", "v2"]);
     const m1 = await cli(repos.repoA, "model", "get", "m1") as {
@@ -427,7 +397,6 @@ Deno.test("v3 managedConfig by hand: a writing command adopts the repo's config,
     };
     assertEquals(w1.name, "w1");
 
-    // Config migrate afterwards finds nothing left to do.
     const migrated = await cli(
       repos.repoA,
       "datastore",
@@ -442,8 +411,6 @@ Deno.test("v3 managedConfig by hand: a writing command adopts the repo's config,
 
 Deno.test("v3 managedConfig by hand: the swamp-uat#623 sequence shows clone A's config on clone B", async () => {
   await withV3RowRepos({}, async (repos) => {
-    // Both clones turn managedConfig on by hand as they join, as the UAT's
-    // v3 backend does; B is a clone of A.
     await initDefaultVault(repos.repoA);
     await turnOnManagedConfigByHand(repos.repoA);
     await cloneConfig(repos);
@@ -516,15 +483,12 @@ Deno.test("v3 managedConfig by hand: a refused adoption warns and the writing co
       store.head = realHead;
       handle.catchUp = realCatchUp;
     }
-    // The refused adoption wrote nothing; catching up gives B's config tier
-    // what the commit log says: A's bytes.
     await handle.catchUp();
     const tierFile = (repoDir: string) =>
       Deno.readTextFile(
         swampPath(repoDir, "config", "models", "command", "shell", "m1.yaml"),
       );
     assertEquals(await tierFile(repos.repoB), await tierFile(repos.repoA));
-    // A writing command then runs as usual.
     await cli(repos.repoB, "model", "create", "command/shell", "after");
   });
 });
@@ -626,7 +590,6 @@ Deno.test("v3 config migrate: namespaced checkouts commit into their namespace",
   });
 });
 
-/** A repo-local lockfile naming one pulled extension, and its sources. */
 async function seedPulledExtension(repoDir: string): Promise<void> {
   const lockfile = join(
     repoDir,
@@ -688,7 +651,6 @@ Deno.test("v3 config migrate: the repo's extension lockfile is committed and its
     assertEquals(migrated.copiedLockfile, true);
     assertEquals(migrated.copiedPulledExtensions, true);
 
-    // Managed config reads the lockfile and pulled sources from the tier.
     assertEquals(await lockfileEntries(repos.repoA), ["@test/ext"]);
     assert(
       (await Deno.stat(
@@ -750,7 +712,6 @@ Deno.test("v3 managedConfig by hand: an unreadable leftover neither fails a comm
     await Deno.chmod(locked, 0o000);
     try {
       await turnOnManagedConfigByHand(repos.repoA);
-      // Read-only and writing commands both still run.
       assertEquals(await vaultNames(repos.repoA), []);
       await cli(repos.repoA, "model", "create", "command/shell", "m2");
       assertEquals(await vaultNames(repos.repoA), ["default", "v2"]);
@@ -789,7 +750,6 @@ Deno.test("v3 config migrate: a tier copy the commit log never held does not sto
   });
 });
 
-/** Runs a command whose output the test does not read. */
 async function run(repoDir: string, ...args: string[]): Promise<void> {
   await withMockedEnv(
     UNSET_ENV,
@@ -797,11 +757,6 @@ async function run(repoDir: string, ...args: string[]): Promise<void> {
   );
 }
 
-/**
- * Gives the seeded `m1` a command and `w1` a step that runs it, then runs
- * both: the workflow run stages its evaluated workflow into `w1`'s config
- * partition, and the method run stages `m1`'s evaluated definition.
- */
 async function runSeededConfig(repoDir: string): Promise<void> {
   const modelPath = join(repoDir, "models", "command", "shell", "m1.yaml");
   const model = parseYaml(await Deno.readTextFile(modelPath)) as Record<
@@ -826,7 +781,6 @@ async function runSeededConfig(repoDir: string): Promise<void> {
   await run(repoDir, "model", "method", "run", "m1", "execute");
 }
 
-/** The v3 datastore of a row's checkout A. */
 function datastoreOf(repos: RowRepos) {
   const config = repos.a.datastoreConfig;
   if (isCustomDatastoreConfig(config)) throw new Error("v3 is filesystem");
@@ -886,7 +840,6 @@ Deno.test("v3 config migrate: a re-run commits the workflows an affected version
     );
     await commitConfigAdoption(a.repoContext, configBase, affected);
     await turnOnManagedConfigByHand(repos.repoA);
-    // Reads hide the repo-local copy and the tier has none.
     const missing = await withMockedEnv(
       UNSET_ENV,
       () =>
@@ -941,7 +894,6 @@ Deno.test("v3 config migrate: a workflow deleted after it ran and was committed 
   });
 });
 
-/** Compacts every commit checkout A's datastore holds. */
 async function compactAll(repos: RowRepos): Promise<void> {
   const store = datastoreOf(repos).commitStore;
   const changes = await store.changesSince(0, 10_000);

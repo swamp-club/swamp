@@ -18,18 +18,9 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * Explicit model leases (swamp-club#4121): a fenced lease a serve-mode
- * checkout takes with `swamp model lease acquire <behavior> --for
- * <duration>` and holds across commands. Serve holds it for its hold
- * between renewals; the checkout records it next to its copy, every swamp
- * command in the checkout renews it while it lives, and a command that
- * takes the behavior's lock uses it instead of asking for another.
- *
- * The record is this checkout's note of what it holds, never authority:
- * serve decides every renewal and every commit, so a hand-edited record
- * can at worst name a lease serve refuses.
- *
- * @module
+ * the record is this checkout's note of what it holds, never authority: serve
+ * decides every renewal and commit, so a hand-edited record can at worst name a
+ * lease serve refuses
  */
 
 import { join } from "@std/path";
@@ -47,24 +38,17 @@ import { ServeUnreachableError } from "./serve_upstream_errors.ts";
 
 const logger = getSwampLogger(["datastore", "v3", "lease"]);
 
-/** The file, in a checkout's local root, that records its explicit leases. */
 export const EXPLICIT_LEASES_FILE = "model_leases.json";
 
-/** An explicit lease this checkout holds at serve. */
 export interface ExplicitLease {
   readonly leaseId: string;
-  /** Serve's canonical lock key, with no namespace. */
   readonly lockKey: string;
   readonly fence: number;
-  /** Each renewal extends the lease by this long. */
   readonly holdMs: number;
-  /** When the lease ends unless renewed, by serve's clock. */
   readonly expiresAt: string;
-  /** The data-version floor serve gave when the lease was taken. */
   readonly floor: readonly DataNameMarks[];
 }
 
-/** What the explicit-lease operations need of serve's datastore API. */
 export type ExplicitLeaseClient = Pick<
   ServeDatastoreClient,
   "acquireLock" | "renewLock" | "releaseLock"
@@ -173,7 +157,6 @@ async function withRecordLock<T>(
   return await lock.withLock(fn);
 }
 
-/** The recorded lease on `lockKey` for `root`, if any. */
 export async function explicitLeaseOn(
   root: string,
   lockKey: string,
@@ -183,7 +166,6 @@ export async function explicitLeaseOn(
   );
 }
 
-/** Records `lease` for `root`, replacing any recorded on its key. */
 export async function recordExplicitLease(
   root: string,
   lease: ExplicitLease,
@@ -197,9 +179,9 @@ export async function recordExplicitLease(
 }
 
 /**
- * Raises the floor recorded for explicit lease `leaseId` by versions a
- * commit under it recorded (swamp-club#4121), so the next command's floor
- * includes them; nothing when the record no longer names that lease.
+ * raises the floor recorded for the lease by versions a commit under it
+ * recorded, so the next command's floor includes them; does nothing when the
+ * record does not name that lease
  */
 export async function raiseExplicitLeaseFloor(
   root: string,
@@ -221,7 +203,6 @@ export async function raiseExplicitLeaseFloor(
   });
 }
 
-/** Forgets the recorded lease `leaseId` for `root`. */
 export async function forgetExplicitLease(
   root: string,
   leaseId: string,
@@ -252,18 +233,14 @@ export function explicitLeaseFrom(
   };
 }
 
-/** What renewing a checkout's explicit leases found. */
 export interface ExplicitLeaseRenewal {
   readonly renewed: readonly ExplicitLease[];
-  /** Leases serve no longer holds: their records are forgotten. */
   readonly ended: readonly ExplicitLease[];
 }
 
 /**
- * Renews every explicit lease recorded for `root` at serve, as each swamp
- * command in the checkout does while the lease lives. A lease serve no
- * longer holds is forgotten; one that could not be renewed (serve away)
- * keeps its record, and lapses at serve once its hold passes.
+ * a lease serve does not hold is forgotten; one that could not be renewed
+ * (serve away) keeps its record and lapses at serve once its hold passes
  */
 export async function renewExplicitLeases(
   root: string,
@@ -288,9 +265,9 @@ export async function renewExplicitLeases(
       }
       renewed.push({ ...lease, expiresAt: reply.expiresAt });
     } catch (error) {
-      // Serve away: no other lease renews either, and each keeps its
-      // record, judged by its recorded end offline (swamp-club#4195). Said
-      // once, without the failure's stack.
+      // serve away: no other lease renews either, and each keeps its record,
+      // judged by its recorded end offline; said once, without the failure's
+      // stack
       if (error instanceof ServeUnreachableError) {
         logger
           .info`Serve is unreachable, so this checkout's model leases were not renewed; each holds until its recorded end`;
@@ -327,7 +304,6 @@ export async function renewExplicitLeases(
   return { renewed, ended };
 }
 
-/** Serve granted the lock to someone else for the whole wait. */
 export class ExplicitLeaseHeldError extends Error {
   constructor(
     readonly lockKey: string,
@@ -347,7 +323,6 @@ export class ExplicitLeaseHeldError extends Error {
   }
 }
 
-/** Serve granted a lease it does not fence: it is too old to hold one. */
 export class ExplicitLeaseUnsupportedError extends Error {
   constructor() {
     super(
@@ -358,23 +333,13 @@ export class ExplicitLeaseUnsupportedError extends Error {
   }
 }
 
-/** The short TTL an explicit lease is first taken for, before it is recorded. */
 const ACQUIRE_TTL_MS = 30_000;
-/** The longest one acquire request asks serve to wait. */
 const ACQUIRE_REQUEST_WAIT_MS = 10_000;
 
 /**
- * Takes an explicit lease on `lockKey` for `root`, held for `holdMs`
- * between renewals, waiting up to `maxWaitMs` while another holds the
- * lock, and records it. A lease this checkout already records on the key
- * is renewed for `holdMs` and returned instead (`existing: true`).
- *
- * The lease is taken for a command's short TTL, recorded, and only then
- * extended to `holdMs`: a reply lost on the way strands it for that short
- * TTL, never for its whole hold.
- *
- * @throws ExplicitLeaseHeldError when the lock is still held after the wait
- * @throws ExplicitLeaseUnsupportedError when serve does not fence leases
+ * the lease is first taken for a short TTL, recorded, then extended to
+ * `holdMs`: a reply lost on the way strands it for the short TTL, never its
+ * whole hold
  */
 export async function acquireExplicitLease(
   root: string,
@@ -461,11 +426,6 @@ export async function acquireExplicitLease(
   }
 }
 
-/**
- * Ends the explicit lease this checkout records on `lockKey` at serve and
- * forgets it. False when none is recorded. A lease serve already ended is
- * forgotten all the same.
- */
 export async function releaseExplicitLease(
   root: string,
   client: Pick<ExplicitLeaseClient, "releaseLock">,

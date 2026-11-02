@@ -33,39 +33,27 @@ import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
 
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
-/** A single extension entry for list output. */
 export interface ExtensionListEntry {
   name: string;
   version: string;
   pulledAt: string;
   files: string[];
-  /** The channel the install follows; absent means stable. */
   channel?: string;
-  /**
-   * The channel the registry listed the installed version on when it was
-   * pulled, when recorded. Differs from `channel` when an exact version
-   * was pulled from another channel.
-   */
+  /** differs from channel when an exact version was pulled from another channel */
   publishedChannel?: string;
   /**
-   * The version in the extension's on-disk manifest, present only when it
-   * differs from the lockfile's pinned `version`: the loaded code is not
-   * what the lockfile pins.
+   * present only when it differs from the lockfile's pinned version: the loaded
+   * code is not what the lockfile pins
    */
   onDiskVersion?: string;
   /**
-   * Present when the entry comes only from the transitional in-repo
-   * auto-resolve lockfile (swamp-club#2483), not the team's lockfile.
+   * present when the entry comes only from the transitional in-repo
+   * auto-resolve lockfile, not the team's lockfile
    */
   autoResolved?: true;
-  /**
-   * On an auto-resolved entry: the repo-relative paths to delete so the
-   * auto-resolver reinstalls it (its directory and any pulled skill dirs).
-   */
   removeToReinstall?: string[];
 }
 
-/** Data payload for the completed event. */
 export interface ExtensionListData {
   extensions: ExtensionListEntry[];
 }
@@ -75,25 +63,13 @@ export type ExtensionListEvent =
   | { kind: "completed"; data: ExtensionListData }
   | { kind: "error"; error: SwampError };
 
-/** Dependencies for the extension list operation. */
 export interface ExtensionListDeps {
-  /**
-   * Lockfile repository pre-constructed by the caller. Captures a
-   * snapshot of upstream_extensions.json at construction.
-   */
   lockfileRepository: LockfileRepository;
-  /**
-   * Reads the version of an extension from its on-disk manifest, or null
-   * when unknown. Used to flag lockfile/disk version skew.
-   */
   readOnDiskVersion?: (name: string) => string | null;
-  /** Names found only in the transitional in-repo auto-resolve lockfile. */
   autoResolvedNames?: ReadonlySet<string>;
-  /** The paths to delete so an auto-resolved extension is reinstalled. */
   removeToReinstall?: (name: string) => string[];
 }
 
-/** Retry delay for a lockfile caught mid-rewrite. */
 const LOCKFILE_RETRY_DELAY_MS = 75;
 
 const waitBeforeRetryDefault = () =>
@@ -116,21 +92,14 @@ async function readEntriesWithRetry(
 }
 
 /**
- * Wires real infrastructure into ExtensionListDeps.
- *
- * @param lockfilePath The resolved extension lockfile: the managed config
- *   base's under managedConfig, `<modelsDir>/upstream_extensions.json`
- *   otherwise (swamp-club#2508).
- * @param localLockfilePath The transitional in-repo auto-resolve lockfile,
- *   whose entries are listed too (the resolved entry wins on a clash),
- *   except one gone from disk that awaits reinstall.
+ * the resolved entry wins on a clash, and an auto-resolved entry gone from disk
+ * that awaits reinstall is not listed
  */
 export async function createExtensionListDeps(
   repoDir: string,
   lockfilePath: string,
   localLockfilePath?: string,
   options?: {
-    /** Test seam: waits before re-reading a lockfile that failed to parse. */
     waitBeforeRetry?: () => Promise<void>;
   },
 ): Promise<ExtensionListDeps> {
@@ -159,7 +128,6 @@ export async function createExtensionListDeps(
   };
 }
 
-/** Yields the list of installed upstream extensions. */
 export async function* extensionList(
   _ctx: LibSwampContext,
   deps: ExtensionListDeps,

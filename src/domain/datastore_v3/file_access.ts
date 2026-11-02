@@ -18,20 +18,10 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * The access a materialised file keeps besides its bytes (swamp-club#3693):
- * whether it is executable, and whether it is private (no group or other
- * access). A put records it from the file the writer staged, and every
- * checkout's read model gives the file it writes the same access, so an
- * output made executable runs anywhere and a 0600 file never widens.
- *
- * Only these two facts travel, never a full POSIX mode, owner or umask: the
- * mode a checkout writes is derived from the mode its own umask gave the
- * new file ({@link modeWithAccess}). A plain file records none.
- *
- * @module
+ * only executable and private travel, never a full mode, owner or umask: a
+ * checkout derives the mode from the one its own umask gave the new file
  */
 
-/** A file's access, when it is not a plain file. */
 export type FileAccess = "executable" | "private" | "private-executable";
 
 const FILE_ACCESSES: readonly FileAccess[] = [
@@ -41,10 +31,8 @@ const FILE_ACCESSES: readonly FileAccess[] = [
 ];
 
 /**
- * The access a file with `mode` (as `Deno.FileInfo.mode` reports it) has:
- * executable when any execute bit is set, private when no group or other
- * bit is. Undefined for a plain file, and when the platform reports no mode
- * (Windows), so a Windows writer records nothing.
+ * undefined for a plain file and when the platform reports no mode (Windows),
+ * so a Windows writer records nothing
  */
 export function fileAccessOf(mode: number | null): FileAccess | undefined {
   if (mode === null) return undefined;
@@ -56,12 +44,6 @@ export function fileAccessOf(mode: number | null): FileAccess | undefined {
   return undefined;
 }
 
-/**
- * The permission bits a file created with `created` gets for `access`:
- * private keeps only the owner's bits, executable adds an execute bit
- * wherever a read bit is set. Under umask 022 a new 0644 file becomes 0755,
- * 0600 or 0700; a plain file keeps its bits.
- */
 export function modeWithAccess(
   created: number,
   access: FileAccess | undefined,
@@ -77,11 +59,8 @@ export function modeWithAccess(
 }
 
 /**
- * Whether a file with `mode` already has `access`, whatever umask made it:
- * an execute bit exactly when the access is executable, and no group or
- * other bit when it is private. A plain or executable file may be private
- * as well, since a restrictive umask makes every new file so; a file
- * {@link modeWithAccess} derived always satisfies its access.
+ * a plain or executable file may be private too, since a restrictive umask
+ * makes every new file so
  */
 export function satisfiesAccess(
   mode: number,
@@ -94,7 +73,6 @@ export function satisfiesAccess(
   return !isPrivate || (mode & 0o077) === 0;
 }
 
-/** Throws unless `access` is undefined or a {@link FileAccess}. */
 export function readFileAccess(access: unknown): FileAccess | undefined {
   if (access === undefined) return undefined;
   if (FILE_ACCESSES.includes(access as FileAccess)) {

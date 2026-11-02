@@ -74,12 +74,9 @@ Deno.test("DeferredExpression: durable bindings round-trip and references keep s
     fc.property(
       fc.uuid(),
       fc.uuid(),
-      // A binding key of "__proto__" cannot survive the round-trip: zod
-      // rebuilds a parsed record by assignment, and Deno disables assignment
-      // to `Object.prototype.__proto__`, so the entry is silently dropped.
-      // Dropping it is the prototype-pollution-safe behaviour and not what
-      // this property pins, so keep it out of the generated keys rather than
-      // failing on whichever seed happens to produce it.
+      // __proto__ keys are excluded: zod rebuilds records by assignment, which
+      // Deno disables for __proto__, so the entry is dropped (the
+      // prototype-pollution-safe outcome)
       fc.dictionary(
         fc.string().filter((key) => key !== "__proto__"),
         fc.jsonValue(),

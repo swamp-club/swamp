@@ -20,15 +20,13 @@
 import type { ExtensionApiClient } from "../../infrastructure/http/extension_api_client.ts";
 import type { PublishedVersion } from "../../domain/extensions/extension_publish_checks.ts";
 
-/** Release channels a version may be published on. */
 const ALL_RELEASE_CHANNELS = ["stable", "rc", "beta"];
 const VERSIONS_PAGE_SIZE = 100;
 const VERSIONS_MAX_PAGES = 50;
 
 /**
- * Finds a published version of an extension on any release channel, or null
- * when no channel carries it. Push and promote both ask through here, with a
- * client each builds the same way, so they agree on where a version lives.
+ * push and promote both ask through here, with a client each builds the same
+ * way, so they agree on where a version lives
  */
 export async function findPublishedVersion(
   client: Pick<ExtensionApiClient, "listVersions">,
@@ -40,12 +38,6 @@ export async function findPublishedVersion(
   return found.get(version) ?? null;
 }
 
-/**
- * Finds several published versions of an extension in one scan of its
- * versions list, stopping once every one is found. A version no channel
- * carries is absent from the returned map. Pull asks for the installed and
- * the incoming version together.
- */
 export async function findPublishedVersions(
   client: Pick<ExtensionApiClient, "listVersions">,
   name: string,

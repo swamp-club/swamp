@@ -18,12 +18,9 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * Decides what a slow lock acquisition should tell the user.
- *
- * A namespace scopes the datastore global lock, so it only helps when
- * another repo can reach that lock. Per-model locks are already keyed by
- * model type and id: a slow wait there comes from concurrent runs against
- * one model instance, and a namespace changes nothing (swamp-club#2941).
+ * a namespace scopes only the global lock; per-model locks are keyed by type
+ * and id, so a slow wait there is concurrent runs on one instance and a
+ * namespace changes nothing
  */
 
 import { join, resolve } from "@std/path";
@@ -32,10 +29,8 @@ import {
   isCustomDatastoreConfig,
 } from "./datastore_config.ts";
 
-/** Waits longer than this (ms) are reported as slow. */
 export const SLOW_LOCK_THRESHOLD_MS = 5_000;
 
-/** Which lock a slow acquisition waited on. */
 export type LockScope =
   | { readonly kind: "global" }
   | {
@@ -44,29 +39,15 @@ export type LockScope =
     readonly modelId: string;
   };
 
-/** What a slow acquisition should say, if anything. */
 export type SlowLockAdvice = "namespace" | "model-contention";
 
-/** Inputs to {@link slowLockAdvice}. */
 export interface SlowLockAdviceInput {
-  /** How long the acquisition waited, in ms. */
   readonly waitedMs: number;
-  /** Which lock was waited on. */
   readonly scope: LockScope;
-  /** Whether another repo can reach this datastore. */
   readonly shareable: boolean;
-  /** The datastore namespace, if one is set. */
   readonly namespace?: string;
 }
 
-/**
- * Returns the advice for a lock acquisition, or `undefined` when the wait
- * was not slow or no advice would help.
- *
- * - Per-model lock: name the real cause, concurrent runs on one instance.
- * - Global lock on a shareable datastore with no namespace: suggest one.
- * - Anything else: say nothing.
- */
 export function slowLockAdvice(
   input: SlowLockAdviceInput,
 ): SlowLockAdvice | undefined {
@@ -77,10 +58,8 @@ export function slowLockAdvice(
 }
 
 /**
- * Whether another repo can reach this datastore, and so share its global
- * lock. Extension datastores are remote and always can. A filesystem
- * datastore at the repo's own `.swamp` directory cannot; one at any other
- * path might.
+ * extension datastores are remote and always shareable; a filesystem datastore
+ * at the repo's own .swamp directory is not, any other path might be
  */
 export function isShareableDatastore(
   config: DatastoreConfig,

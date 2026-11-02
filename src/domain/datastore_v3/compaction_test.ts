@@ -43,7 +43,6 @@ import {
 const SUBDIRS = new Set(["data", "definitions"]);
 const MODEL = modelPartition().toString();
 
-/** The compacted base as plain maps. */
 class MemoryBase implements CompactedBaseWriter {
   readonly records = new Map<string, BaseRecord>();
   readonly versions = new Map<string, readonly LiveDataVersion[]>();
@@ -137,7 +136,6 @@ Deno.test("foldCommit: the base keeps a put's file access (swamp-club#3693)", as
     content: plain.content,
     access: "executable",
   });
-  // A later plain put of the key leaves a plain record.
   foldCommit(base, modelCommit(2, [plain]), 11, SUBDIRS);
   assertEquals(base.records.get(key), {
     sha256: plain.sha256,
@@ -169,7 +167,6 @@ Deno.test("foldCommit: a refused key and a put under a file are indexed but neve
     [`|${MODEL}|data/x`, `|${MODEL}|data/x/y`, `|${MODEL}|secrets/x`],
   );
   assertEquals([...base.files.keys()], ["|data/x"]);
-  // A put at a directory holding a present file is skipped too.
   const dir = await putOp({
     intent: modelIntent({ kind: "data.save", name: "a", version: 1 }),
     key: RecordKey.create("data"),

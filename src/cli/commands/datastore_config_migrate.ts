@@ -57,10 +57,8 @@ import {
 import { v3DatastoreConfigOf } from "../../infrastructure/datastore_v3/v3_repo_context.ts";
 
 /**
- * Pulls the datastore's config tier into the cache, so the migration
- * sentinel check sees a migration another repo published since this cache
- * last pulled (swamp-club#2621). A failed pull refuses before anything is
- * written.
+ * pulls the config tier so the sentinel check sees a migration another repo
+ * published; a failed pull refuses before anything is written.
  */
 async function pullConfigTier(
   syncService: DatastoreSyncService,
@@ -90,12 +88,8 @@ async function pullConfigTier(
 }
 
 /**
- * Sets `managedConfig: true` in the repo's `.swamp.yaml` when the marker's
- * datastore does not already have it. Returns whether the marker was written.
- *
- * Runs on both the first migration and the already-migrated path: the
- * migration sentinel lives in the shared datastore, so a second repo joining
- * an already-migrated datastore still needs its own marker updated.
+ * runs on the already-migrated path too: the sentinel lives in the shared
+ * datastore, so a second repo joining still needs its own marker updated.
  */
 export async function ensureManagedConfig(
   markerRepo: RepoMarkerRepository,
@@ -111,12 +105,6 @@ export async function ensureManagedConfig(
   return true;
 }
 
-/**
- * Reports a v3 migration (swamp-club#3300) in the v2 output's shape: the
- * lockfile is committed into its partition, and pulled extension sources
- * are copied into the managed root in this checkout only. `skipped` names
- * the repo-local files that were not committed and why.
- */
 function renderV3Migration(
   ctx: CommandContext,
   plan: ConfigAdoptionPlan,
@@ -178,7 +166,6 @@ function renderV3Migration(
   }
 }
 
-/** Why `config migrate` left a repo-local file out, in words. */
 const SKIP_REASON_TEXT: Record<ConfigAdoptionSkipReason, string> = {
   "unnamed": "it declares no usable name",
   "unreadable": "it could not be read",
@@ -190,7 +177,6 @@ const SKIP_REASON_TEXT: Record<ConfigAdoptionSkipReason, string> = {
   "duplicate-name": "another file declares the same name",
 };
 
-/** The command that recreates a definition of `kind`, for a skip's way out. */
 const RECREATE_COMMAND: Record<SkippedConfigFile["kind"], string | undefined> =
   {
     model: "behavior",
@@ -199,7 +185,6 @@ const RECREATE_COMMAND: Record<SkippedConfigFile["kind"], string | undefined> =
     lockfile: undefined,
   };
 
-/** A skip's reason in words, with the way out when there is one. */
 function skipReasonText(s: SkippedConfigFile): string {
   const text = SKIP_REASON_TEXT[s.reason];
   const command = RECREATE_COMMAND[s.kind];
@@ -249,15 +234,14 @@ export const datastoreConfigMigrateCommand = new Command()
       );
     }
 
-    // A v3 config tier is what its commits say, so the repo's existing
-    // config is committed rather than copied (swamp-club#3300).
+    // a v3 config tier is what its commits say, so the repo's existing config
+    // is committed rather than copied.
     if (repoContext.commitLog !== undefined) {
       const configBase = datastoreResolver.resolvePath("config");
       const v3ModelsDir = resolveModelsDir(marker);
       const plan = await adoptV3Config({
         repoContext,
         repoDir,
-        // A bucket datastore's location (swamp-club#3534).
         config: await v3DatastoreConfigOf(repoDir, datastoreConfig),
         configBase,
         lockfileSource: join(
@@ -306,10 +290,9 @@ export const datastoreConfigMigrateCommand = new Command()
       await pullConfigTier(syncService, datastoreConfig, namespace);
     }
 
-    // The migrated files are pushed at a checkpoint, and the sentinel is
-    // written only after that push and pushed as the root's flush, so the
-    // datastore's sentinel always means its migration is published. Either
-    // push failing leaves migrate re-runnable (swamp-club#3117).
+    // migrated files push at a checkpoint and the sentinel is written only
+    // after, so a sentinel always means published; either push failing leaves
+    // migrate re-runnable.
     const sentinelPath = getMigrationSentinelPath(configRoot);
     const publish = syncService
       ? async () => {

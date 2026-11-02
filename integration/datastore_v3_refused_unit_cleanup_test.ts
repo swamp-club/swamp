@@ -17,14 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Work a v3 command drops never stays in its checkout (swamp-club#3553): a
- * refused commit, an abandoned root or a use case that threw leaves the
- * files its repositories wrote. The command recovers its checkout before it
- * exits when it still holds the writer lease; one that lost it keeps its
- * writer marker, and the next command in the checkout recovers.
- */
-
 import "../src/domain/models/models.ts";
 import { assert, assertEquals, assertExists, assertRejects } from "@std/assert";
 import { join } from "@std/path";
@@ -71,7 +63,6 @@ function inRoot<T>(repos: RowRepos, fn: () => Promise<T>): Promise<T> {
   return runInRootUnitOfWork(repos.a.repoContext, { flush: undefined }, fn);
 }
 
-/** The versions of `name` A's checkout holds, from its version directories. */
 async function localVersions(repos: RowRepos, name: string): Promise<number[]> {
   const versions = new Set<number>();
   for (const key of (await datastoreRecords(repos.repoA)).keys()) {
@@ -84,7 +75,6 @@ async function localVersions(repos: RowRepos, name: string): Promise<number[]> {
   return [...versions].sort((x, y) => x - y);
 }
 
-/** The data name's latest marker in A's checkout, or undefined. */
 async function latestMarker(
   repos: RowRepos,
   name: string,
@@ -97,14 +87,12 @@ async function latestMarker(
   )).trim();
 }
 
-/** Every file A's checkout holds under `name`, as record keys. */
 async function recordsOf(repos: RowRepos, name: string): Promise<string[]> {
   return [...(await datastoreRecords(repos.repoA)).keys()].filter((key) =>
     key.split("/").includes(name)
   );
 }
 
-/** The fenced refusal `error` is, or carries as its cause. */
 function fencedRefusal(error: unknown): WriterFencedError | undefined {
   for (let e = error; e instanceof Error; e = e.cause) {
     if (e instanceof WriterFencedError) return e;
@@ -112,7 +100,6 @@ function fencedRefusal(error: unknown): WriterFencedError | undefined {
   return undefined;
 }
 
-/** A model with one committed version of `name`, saved through A. */
 async function committedModel(
   repos: RowRepos,
   name: string,
@@ -156,7 +143,6 @@ Deno.test("v3 dropped work: a writer refused after another process took its leas
     const model = await committedModel(repos, "glass");
     assertEquals(await localVersions(repos, "glass"), [1]);
 
-    // Another process takes the lease while A is paused, as breakglass does.
     const taker = await plantV3WriterLease(datastorePath, { pid: Deno.pid });
     const store = SqliteCommitStore.open(join(datastorePath, "commits.db"));
     try {
@@ -176,7 +162,6 @@ Deno.test("v3 dropped work: a writer refused after another process took its leas
     assertExists(marker, "a writer that dropped work keeps its marker");
     await taker.release();
 
-    // The next command, once A's process is gone, recovers the checkout.
     await Deno.writeTextFile(
       writerMarkerPath(repos.repoA),
       JSON.stringify({ ...marker, pid: GONE_PID, instance: undefined }),
@@ -190,7 +175,6 @@ Deno.test("v3 dropped work: a writer refused after another process took its leas
     assert(await assertCheckoutsAgree(repos, datastorePath, "recovered") > 0);
     await closeV3Datastores();
 
-    // A's next write takes the number after the committed one.
     const next = await requireInitializedRepoUnlocked({
       repoDir: repos.repoA,
       outputMode: "json",
@@ -238,7 +222,6 @@ Deno.test("v3 dropped work: a use case that threw inside a root that commits lea
     const model = await committedModel(repos, "glass");
     await inRoot(repos, async () => {
       await saveData(repos.serveRepo, model, "kept");
-      // A use case's own unit, inside the command's root, that throws.
       await runInRootUnitOfWork(repos.a.repoContext, {
         flush: undefined,
         pushWhen: "completed",

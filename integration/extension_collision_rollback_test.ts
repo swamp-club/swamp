@@ -42,11 +42,9 @@ import {
 } from "../src/libswamp/extensions/update.ts";
 import { UpgradeExtensionService } from "../src/libswamp/extensions/upgrade_extension_service.ts";
 
-// swamp-club#2724: an `extension update` whose new version collides with
-// a type another extension already claims must leave the repo exactly as
-// it was: the previous version's files, bundles, skills, lockfile entry
-// and catalog rows. The real install, catalog, repository and lockfile
-// are wired together on a temp repo; only the registry is faked.
+// an update whose new version collides with a type another extension claims
+// must leave the repo exactly as it was: files, bundles, skills, lockfile entry
+// and catalog rows; only the registry is faked
 
 await initializeLogging({});
 
@@ -109,10 +107,6 @@ async function exists(path: string): Promise<boolean> {
   }
 }
 
-/**
- * Every entry under `dir`, keyed by its `/`-separated relative path:
- * a directory as `<dir>`, a symlink as its target, a file as its text.
- */
 async function tree(dir: string): Promise<Record<string, string> | null> {
   if (!(await exists(dir))) return null;
   const out: Record<string, string> = {};
@@ -142,9 +136,7 @@ interface Fixture {
   nameB: string;
   sharedType: string;
   aOnlyType: string;
-  /** Installs `name@version` the way `extension pull` does. */
   install(name: string, version: string): Promise<unknown>;
-  /** Runs `extension update` for every installed extension. */
   update(latest: Record<string, string>): Promise<ExtensionUpdateEvent[]>;
   snapshot(): Promise<RepoSnapshot>;
 }
@@ -216,7 +208,6 @@ async function withFixture(
       }).execute({ name, version }, ctx);
     };
 
-    // Wired as the serve `extension.update` handler wires it.
     const update = async (latest: Record<string, string>) => {
       const deps: ExtensionUpdateDeps = {
         lockfileRepository: await LockfileRepository.create(lockfilePath),
@@ -297,11 +288,9 @@ Deno.test("extensionUpdate: a type collision leaves the previous version install
         "models/a_v1_model.ts": modelSource(aOnlyType, V1),
         "skills/a-skill/SKILL.md": "# a-skill v1\n",
       }),
-      // v2 claims B's type and ships a new skill file. Skill dirs are not
-      // swapped: a file v2 overwrites in one keeps v2's content after a
-      // rollback (see design/primitives/extensions.md), so v2 ships the
-      // same SKILL.md here and only adds a file, which the rollback
-      // removes.
+      // skill dirs are not swapped: a file v2 overwrites keeps v2's content
+      // after rollback, so v2 ships the same SKILL.md and only adds a file,
+      // which rollback removes
       [`${nameA}@${V2}`]: await buildArchive(nameA, V2, {
         "models/a_v2_model.ts": modelSource(sharedType, V2),
         "skills/a-skill/SKILL.md": "# a-skill v1\n",
@@ -313,8 +302,6 @@ Deno.test("extensionUpdate: a type collision leaves the previous version install
       await f.install(f.nameA, V1);
 
       const before = await f.snapshot();
-      // The fixture covers what it claims to: A v1's files, bundle,
-      // skill, lockfile entry and catalog rows are all there.
       assert(before.pulledExtensions, "pulled-extensions missing");
       assertEquals(
         before.pulledExtensions[`${f.nameA}/models/a_v1_model.ts`],

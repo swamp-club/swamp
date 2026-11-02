@@ -220,7 +220,6 @@ Deno.test("findDenoCommandUse: a file that does not parse misses an alias, as th
 });
 
 Deno.test("findDenoCommandUse: uses the program it is given", () => {
-  // A null program means the caller's parse failed: the text check runs.
   assertEquals(
     findDenoCommandUse('// new Deno.Command("ls")', null).map((f) => f.kind),
     ["unparsed-text"],

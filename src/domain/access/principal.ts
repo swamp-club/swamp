@@ -24,8 +24,8 @@ export const PrincipalKindSchema = z.enum(["user", "worker", "service"]);
 export type PrincipalKind = z.infer<typeof PrincipalKindSchema>;
 
 /**
- * The built-in service principals. No other `service:` id exists, so a
- * misspelt one is refused rather than silently matching nothing.
+ * no other service: id exists, so a misspelt one is refused rather than
+ * silently matching nothing
  */
 export const SERVICE_PRINCIPAL_IDS = ["scheduler", "webhook"] as const;
 
@@ -33,12 +33,10 @@ export function isServicePrincipalId(id: string): boolean {
   return (SERVICE_PRINCIPAL_IDS as readonly string[]).includes(id);
 }
 
-/** The valid service principals, as named in error messages. */
 export const SERVICE_PRINCIPAL_CHOICES = SERVICE_PRINCIPAL_IDS.map((id) =>
   `"service:${id}"`
 ).join(" or ");
 
-/** Joins quoted items as `"a", "b" or "c"` for error messages. */
 function describeAlternatives(items: readonly string[]): string {
   const quoted = items.map((item) => `"${item}"`);
   return `${quoted.slice(0, -1).join(", ")} or ${quoted[quoted.length - 1]}`;
@@ -56,9 +54,8 @@ export function parsePrincipal(value: string): Principal {
 }
 
 /**
- * Parses a principal, accepting only the given kinds. Error messages name
- * exactly those kinds, so a caller that cannot take every kind (token mint)
- * never suggests one it would then refuse.
+ * error messages name exactly the accepted kinds, so a caller that cannot take
+ * every kind never suggests one it would refuse
  */
 export function parsePrincipalOfKinds(
   value: string,

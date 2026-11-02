@@ -95,15 +95,14 @@ export const extensionQualityCommand = new Command()
       const cliCtx = createContext(options, ["extension", "quality"]);
       cliCtx.logger.debug`Starting extension quality`;
 
-      // The repo context and the package cache open the resolved repo dir;
-      // the extension's files resolve and report under the spelling the
-      // user gave (swamp-club#3536).
+      // the repo context and package cache open the resolved repo dir; the
+      // extension's files resolve and report under the spelling the user gave.
       const storageRepoDir = resolveRepoDir(options.repoDir);
       const repoDir = repoDirAsGiven(options.repoDir, storageRepoDir);
       const cwd = logicalCwd();
-      // Arguments resolve as before, against the process cwd and the
-      // resolved repo dir, so `..` means what it means to every other tool;
-      // the results are then spelled under the given repo dir.
+      // arguments resolve against the process cwd and the resolved repo dir, so
+      // `..` means what it means to every other tool; the results are then
+      // spelled under the given repo dir.
       const resolvedExtensionsDir = resolveExtensionsDir(options.extensionsDir);
       const extensionsDir = resolvedExtensionsDir === undefined
         ? undefined
@@ -194,8 +193,8 @@ export const extensionQualityCommand = new Command()
             registryChecks: "skip",
             denoConfigPath,
             packageJsonDir: resolved.packageJsonDir,
-            // The workspace root lock, --no-config and an ignored member
-            // lock, as push reads them (swamp-club#3971).
+            // the workspace root lock, --no-config and an ignored member lock,
+            // as push reads them.
             ...(resolved.workspaceRootConfigPath
               ? { workspaceRootConfigPath: resolved.workspaceRootConfigPath }
               : {}),
@@ -237,7 +236,7 @@ export const extensionQualityCommand = new Command()
             includeFilePaths: resolved.includeFilePaths,
             denoConfigPath,
             packageJsonPath: undefined,
-            // The lock the bundle runs --frozen against (swamp-club#3662).
+            // the lock the bundle runs --frozen against.
             ...(await readOnlyLockFor({
               denoConfigPath,
               packageJsonDir: resolved.packageJsonDir,

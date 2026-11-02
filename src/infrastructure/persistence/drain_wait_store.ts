@@ -28,24 +28,13 @@ import {
 } from "../../domain/datastore/drain_wait.ts";
 import { atomicWriteTextFile } from "./atomic_write.ts";
 
-/**
- * The directory, under the datastore root or its namespace, that holds one
- * marker per waiting drain. It sits outside `data/`, so the per-model lock
- * scan never sees it.
- */
+/** sits outside data/ so the per-model lock scan never sees it */
 export const DRAIN_WAITS_DIR = "drain-waits";
 
-/** The most directory entries one {@link DrainWaitStore.list} looks at. */
 export const MAX_DRAIN_WAIT_ENTRIES = 256;
 
-/** The largest marker file {@link DrainWaitStore.list} reads, in bytes. */
 const MAX_DRAIN_WAIT_BYTES = 256 * 1024;
 
-/**
- * The drain-wait markers of a filesystem datastore: one small JSON file per
- * structural command currently waiting on per-model locks
- * (design/enablers/datastores.md, "Parent-Process Lock Awareness").
- */
 export class DrainWaitStore {
   readonly #dir: string;
 
@@ -55,7 +44,6 @@ export class DrainWaitStore {
       : join(datastorePath, DRAIN_WAITS_DIR);
   }
 
-  /** Writes or replaces the marker for `wait`. */
   async publish(wait: DrainWait): Promise<void> {
     await ensureDir(this.#dir);
     await atomicWriteTextFile(
@@ -65,11 +53,9 @@ export class DrainWaitStore {
   }
 
   /**
-   * The unexpired waits other drains have published, at most
-   * {@link MAX_DRAIN_WAIT_ENTRIES} directory entries deep. A file that
-   * cannot be read or validated is skipped. Anything that is not a live
-   * marker and has not been written for a full ttl is deleted, which clears
-   * what a killed drain left behind.
+   * a file that cannot be read or validated is skipped; anything that is not a
+   * live marker and is unwritten for a full ttl is deleted, clearing what a
+   * killed drain left behind
    */
   async list(nowMs: number): Promise<DrainWait[]> {
     const waits: DrainWait[] = [];
@@ -96,7 +82,6 @@ export class DrainWaitStore {
     return waits;
   }
 
-  /** Deletes the marker for the wait named `id`, if it is still there. */
   async remove(id: string): Promise<void> {
     try {
       await Deno.remove(join(this.#dir, `${id}.json`));

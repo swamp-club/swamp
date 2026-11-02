@@ -51,11 +51,6 @@ function makeCtx(
   };
 }
 
-/**
- * A fake SpawnFn that simulates `swamp audit record --from-hook` by
- * extracting the command from the stdin payload and writing a matching
- * audit row. Simulates the successful-hook case.
- */
 function makeFakeSpawnThatWritesRow(auditDir: string): SpawnFn {
   return async (_args, stdin) => {
     const raw = JSON.parse(stdin) as {
@@ -79,7 +74,6 @@ function makeFakeSpawnThatWritesRow(auditDir: string): SpawnFn {
   };
 }
 
-/** A fake SpawnFn that no-ops, simulating a dropped hook payload. */
 function makeFakeSpawnThatDropsRow(): SpawnFn {
   return () => Promise.resolve({ exitCode: 0, stdout: "", stderr: "" });
 }
@@ -145,7 +139,6 @@ Deno.test(
       let receivedSignal: AbortSignal | undefined;
       const captureSpawn: SpawnFn = (_args, stdin, _env, signal) => {
         receivedSignal = signal;
-        // Simulate a hook that drops the row, so the run still completes.
         return makeFakeSpawnThatDropsRow()(_args, stdin);
       };
       const ctx: CheckContext = {
@@ -198,8 +191,8 @@ Deno.test(
     await ensureDir(auditDir);
     await Deno.chmod(auditDir, 0o500);
     try {
-      // Repro of swamp-uat#161 scenario 4: audit dir exists, ensureDir is a
-      // silent no-op, write-probe must catch the unwritable state.
+      // the audit dir exists and ensureDir is a silent no-op, so the write
+      // probe must catch the unwritable state
       const result = await recordingSmokeTestCheck.run(
         makeCtx(auditDir, "claude", makeFakeSpawnThatDropsRow()),
       );

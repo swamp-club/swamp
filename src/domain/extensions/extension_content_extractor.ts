@@ -39,9 +39,8 @@ import type {
 import { MARKED_SENSITIVE } from "@swamp-club/extension-scoring/secret-docs";
 
 /**
- * Reads a source file for its metadata, refusing a symlink: the safety gate
- * refuses it later, and what its target declares must not reach the
- * content-collective check, which quotes it (swamp-club#3420).
+ * refuses a symlink: the safety gate refuses it later, and what its target
+ * declares must not reach the content-collective check, which quotes it
  */
 async function readSourceText(path: string): Promise<string> {
   if ((await Deno.lstat(path)).isSymlink) {
@@ -51,9 +50,8 @@ async function readSourceText(path: string): Promise<string> {
 }
 
 /**
- * The `fileName` the registry receives for `filePath`: relative to `dir`,
- * with forward slashes on every OS, so a push from Windows sends what a push
- * from macOS or Linux sends.
+ * relative to dir with forward slashes on every OS, so a Windows push sends
+ * what macOS and Linux send
  */
 export function contentFileName(dir: string, filePath: string): string {
   const rel = relative(dir, filePath);
@@ -61,13 +59,8 @@ export function contentFileName(dir: string, filePath: string): string {
 }
 
 /**
- * Extracts content metadata from model source files and workflow YAML files.
- *
- * This metadata is sent to the registry during `extension push` so the server
- * can index extension contents without re-parsing the archive.
- *
- * Extraction is best-effort: individual file failures are silently skipped
- * and partial results are returned.
+ * extraction is best-effort: files that fail to read or parse are skipped and
+ * partial results returned
  */
 export async function extractContentMetadata(
   modelFiles: string[],
@@ -183,10 +176,6 @@ export async function extractContentMetadata(
   };
 }
 
-/**
- * Extracts model metadata from a TypeScript source file.
- * Returns null if the file doesn't contain a recognizable model definition.
- */
 function extractModelFromSource(
   content: string,
   filePath: string,
@@ -214,11 +203,6 @@ function extractModelFromSource(
   };
 }
 
-/**
- * Extracts extension metadata from a TypeScript source file that uses
- * `export const extension = { type: "...", methods: [...] }`.
- * Returns null if the file doesn't contain a recognizable extension definition.
- */
 function extractExtensionFromSource(
   content: string,
   filePath: string,
@@ -247,10 +231,6 @@ function extractExtensionFromSource(
   };
 }
 
-/**
- * Extracts methods from an extension's `methods` array.
- * Extension methods use an array-of-records pattern: `methods: [{ name: { ... } }]`.
- */
 function extractExtensionMethods(
   extensionBody: string,
   fullContent: string,
@@ -275,11 +255,6 @@ function extractExtensionMethods(
   return methods;
 }
 
-/**
- * Extracts the content between balanced square brackets, starting after an
- * opening bracket. Returns the content between the brackets (excluding the
- * outer brackets themselves).
- */
 function extractBalancedBrackets(
   text: string,
   startAfterBracket: number,
@@ -298,32 +273,23 @@ function extractBalancedBrackets(
 }
 
 /**
- * The opening of a model entry point's plain object literal:
- * `export const model = {`, or else its behavior spelling
- * `export const behavior = {` (swamp-club#3338). Both read the same, so a
- * behavior-spelled extension reaches the registry catalog exactly as its
- * model-spelled twin does. The model spelling is looked for first, so a
- * model file that also exports an unrelated `behavior` object reads as it
- * always has.
+ * both spellings read the same; the model spelling is tried first so a model
+ * file that also exports an unrelated behavior object reads as before
  */
 function matchModelExportObject(content: string): RegExpMatchArray | null {
   const model = content.match(/export\s+const\s+model\s*=\s*\{/);
   if (model) return model;
-  // The behavior spelling reads exactly as the model spelling does (first
-  // match), but only in a file that holds a behavior definition at all: an
-  // object that declares methods, as the loader requires. A helper whose
-  // only export is an unrelated config such as `{ type: "retry" }` has none.
+  // the behavior spelling is read only in a file with a behavior definition (an
+  // object declaring methods); a helper exporting an unrelated config like {
+  // type: "retry" } has none
   return hasBehaviorDefinition(content)
     ? content.match(/export\s+const\s+behavior\s*=\s*\{/)
     : null;
 }
 
 /**
- * Whether `content` declares `export const behavior` with an object that
- * declares methods (swamp-club#3338): the first object after the `=`, so a
- * plain literal (`= { ... }`), a wrapped one (`= make({ ... })`) and an
- * annotated one (`: T = { ... }`) all count, and an unrelated config such as
- * `{ type: "retry" }` does not.
+ * the first object after the = counts, whether plain, wrapped in a call or
+ * annotated; an unrelated config like { type: "retry" } does not
  */
 export function hasBehaviorDefinition(content: string): boolean {
   for (
@@ -340,33 +306,20 @@ export function hasBehaviorDefinition(content: string): boolean {
   return false;
 }
 
-/**
- * Whether an object body declares a `methods` property, written out
- * (`methods: {`) or as a shorthand (`methods,`, or last in the body). Used to tell a
- * behavior-spelled definition from an unrelated `behavior` binding
- * (swamp-club#3338).
- */
 export function declaresMethods(body: string): boolean {
   return /(?<![.\w])methods\s*(?:[:,}(]|$)/.test(body);
 }
 
 /**
- * Extracts the model type string.
- * Matches `ModelType.create("...")` or `type: "..."` patterns.
- *
- * Scopes the `type:` literal search to the `export const model = { ... }`
- * object body to avoid false positives from string literals elsewhere in
- * the file (e.g. embedded LLM prompts containing `type: "anime"`).
+ * the type: literal search is scoped to the model export body to avoid false
+ * positives from strings elsewhere, such as embedded LLM prompts
  */
 export function extractModelType(content: string): string | null {
-  // Match ModelType.create("type-name") or ModelType.create('type-name')
   const modelTypeMatch = content.match(
     /ModelType\.create\(\s*["']([^"']+)["']\s*\)/,
   );
   if (modelTypeMatch) return modelTypeMatch[1];
 
-  // Scope the type: search to the model export object body to avoid matching
-  // type: patterns inside string literals elsewhere in the file.
   const body = extractModelExportBody(content);
   if (!body) return null;
 
@@ -377,10 +330,8 @@ export function extractModelType(content: string): string | null {
 }
 
 /**
- * The text inside the braces of the `export const model = { ... }` object,
- * or null when the export is not written as a plain object literal (a type
- * annotation, or an initializer that is not an object) or its braces do not
- * balance. Every field the catalog reads from a model comes from this body.
+ * null when the export is not a plain object literal or its braces do not
+ * balance; every catalog field for a model comes from this body
  */
 export function extractModelExportBody(content: string): string | null {
   const modelExportMatch = matchModelExportObject(content);
@@ -390,9 +341,6 @@ export function extractModelExportBody(content: string): string | null {
   return extractBalancedBraces(content, bodyStart);
 }
 
-/**
- * Extracts the model version string from the `export const model` body.
- */
 export function extractModelVersion(content: string): string | null {
   const body = extractModelExportBody(content);
   if (!body) return null;
@@ -401,10 +349,6 @@ export function extractModelVersion(content: string): string | null {
   return match ? match[1] : null;
 }
 
-/**
- * Extracts the last upgrade `toVersion` from the `export const model` body.
- * Returns null when no upgrades array is present or no toVersion is found.
- */
 export function extractLastUpgradeToVersion(
   content: string,
 ): string | null {
@@ -430,13 +374,9 @@ export function extractLastUpgradeToVersion(
   return toVersionMatches[toVersionMatches.length - 1][1];
 }
 
-/**
- * Extracts global arguments from the model source.
- * Looks for top-level `globalArguments: z.object({...})` or a named schema reference.
- */
 function extractGlobalArguments(content: string): ExtractedArgument[] {
-  // Match top-level globalArguments: z.object({...}) — use negative lookbehind
-  // to avoid matching nested keys (e.g. inside a method entry).
+  // the negative lookbehind avoids matching nested keys, such as inside a
+  // method entry
   const inlineMatch = content.match(
     /(?<![.\w])globalArguments:\s*z\.object\(\s*\{/,
   );
@@ -448,11 +388,9 @@ function extractGlobalArguments(content: string): ExtractedArgument[] {
     }
   }
 
-  // Check for a named schema reference: globalArguments: SomeSchema
   const refMatch = content.match(/(?<![.\w])globalArguments:\s*(\w+)/);
   if (refMatch) {
     const schemaName = refMatch[1];
-    // Skip z.object — already handled above
     if (schemaName !== "z") {
       const namedPattern = new RegExp(
         `(?:const|let)\\s+${schemaName}\\s*=\\s*z\\.object\\(\\s*\\{`,
@@ -471,20 +409,13 @@ function extractGlobalArguments(content: string): ExtractedArgument[] {
   return [];
 }
 
-/**
- * Extracts vault metadata from a TypeScript source file.
- * Returns null if the file doesn't contain a recognizable vault definition.
- * Uses `createProvider` as the discriminator to distinguish vault files from model files.
- */
 export function extractVaultFromSource(
   content: string,
   filePath: string,
   vaultsDir: string,
 ): ExtractedVault | null {
-  // Must contain createProvider to be a vault file
   if (!/createProvider/.test(content)) return null;
 
-  // Find the vault export object body
   const vaultMatch = content.match(/export\s+const\s+vault\s*=\s*\{/);
   if (!vaultMatch || vaultMatch.index === undefined) return null;
 
@@ -492,7 +423,6 @@ export function extractVaultFromSource(
   const vaultBody = extractBalancedBraces(content, vaultStart);
   if (!vaultBody) return null;
 
-  // Extract type
   const typeMatch = vaultBody.match(/type:\s*["']([^"']+)["']/);
   if (!typeMatch) return null;
 
@@ -500,10 +430,8 @@ export function extractVaultFromSource(
   // so a nested `name:` is never mistaken for the vault's own.
   const topLevel = topLevelStringValues(vaultBody);
 
-  // Check for configSchema presence
   const hasConfigSchema = /configSchema\s*[:,}]/.test(vaultBody);
 
-  // Extract config fields if configSchema uses z.object
   let configFields: ExtractedArgument[] = [];
   const configInline = vaultBody.match(/configSchema:\s*z\.object\(\s*\{/);
   if (configInline && configInline.index !== undefined) {
@@ -513,9 +441,7 @@ export function extractVaultFromSource(
       configFields = parseZodObjectFields(schemaBody);
     }
   } else if (hasConfigSchema) {
-    // Check for named schema reference: configSchema: SomeName
     const configRef = vaultBody.match(/configSchema:\s*(\w+)/);
-    // Also check shorthand property: configSchema,
     const shorthandRef = !configRef
       ? vaultBody.match(/configSchema\s*[,\n}]/)
       : null;
@@ -547,10 +473,9 @@ export function extractVaultFromSource(
 }
 
 /**
- * The top-level entries of an object literal body whose whole value is a
- * constant string, by key. A value that only starts with a string literal,
- * such as `"Foo" + suffix` or a template with a substitution, is computed
- * and is left out. A repeated key takes its last entry, as it does at runtime.
+ * only a whole constant-string value counts; computed values like "Foo" +
+ * suffix or a template with a substitution are left out; a repeated key takes
+ * its last entry, as at runtime
  */
 function topLevelStringValues(body: string): Map<string, string> {
   const values = new Map<string, string>();
@@ -574,15 +499,8 @@ const SIMPLE_ESCAPES: Readonly<Record<string, string>> = {
   "0": "\0",
 };
 
-// What may follow a constant string without changing its value.
 const TYPE_ONLY_SUFFIX = /(?:as\s+const|satisfies\s+string)\b/y;
 
-/**
- * The value of `expression` when it is one string literal or several joined
- * with `+`, with escape sequences decoded. Comments around the literals and a
- * trailing `as const` or `satisfies string` are ignored. Undefined for
- * anything else.
- */
 function evaluateStringExpression(expression: string): string | undefined {
   let result = "";
   let i = 0;
@@ -658,23 +576,13 @@ function evaluateStringExpression(expression: string): string | undefined {
   }
 }
 
-/**
- * Extracts method definitions from the source.
- * Handles three patterns:
- *   1. Inline: `methods: { name: { description: "..." } }`
- *   2. Shorthand property: `methods,` (references a variable named `methods`)
- *   3. Variable reference: `methods: someVar` (references a named variable)
- */
 function extractMethods(content: string): ExtractedMethod[] {
-  // Try inline methods block first: methods: { ... }
   const inlineMethods = extractMethodsFromBlock(content, content);
   if (inlineMethods.length > 0) return inlineMethods;
 
-  // Try variable reference: methods: someVar or shorthand methods,
   const refName = resolveMethodsReference(content);
   if (!refName) return [];
 
-  // Look up the referenced variable in the same file
   const varBlock = findVariableObjectBody(content, refName);
   if (varBlock) {
     return extractMethodsFromBlock(varBlock, content);
@@ -683,9 +591,6 @@ function extractMethods(content: string): ExtractedMethod[] {
   return [];
 }
 
-/**
- * Extracts methods from an inline `methods: { ... }` block within the content.
- */
 function extractMethodsFromBlock(
   searchContent: string,
   fullContent: string,
@@ -706,22 +611,15 @@ function extractMethodsFromBlock(
   return extractMethodsFromEntries(methodsBlock, fullContent);
 }
 
-/**
- * Resolves the variable name referenced by the `methods` property.
- * Returns the variable name for `methods: someVar` or `methods` (shorthand).
- * Returns null if methods are defined inline or not found.
- */
 function resolveMethodsReference(content: string): string | null {
-  // Match shorthand property: methods, or methods } (end of object)
-  // This pattern appears when an imported variable named `methods` is used
-  // as a shorthand property in the model object literal.
+  // shorthand methods appears when an imported variable named methods is used
+  // in the model object literal
   const shorthandMatch = content.match(
     /(?:export\s+const\s+(?:model|extension)\s*=\s*\{[\s\S]*?)(?<![.\w])methods\s*[,}]/,
   ) ?? content.match(
     /(?:export\s+const\s+behavior\s*=\s*\{[\s\S]*?)(?<![.\w])methods\s*[,}]/,
   );
   if (shorthandMatch) {
-    // Verify it's not `methods: {` (inline) or `methods: someRef` (reference)
     const beforeMethods = content.slice(
       0,
       (shorthandMatch.index ?? 0) + shorthandMatch[0].length,
@@ -731,7 +629,6 @@ function resolveMethodsReference(content: string): string | null {
     }
   }
 
-  // Match reference: methods: someVar (not followed by { which is inline)
   const refMatch = content.match(/methods:\s*(\w+)\s*[,}\n]/);
   if (refMatch && refMatch[1] !== "{") {
     return refMatch[1];
@@ -740,11 +637,6 @@ function resolveMethodsReference(content: string): string | null {
   return null;
 }
 
-/**
- * Finds the body of a `const varName = { ... }` or `export const varName = { ... }`
- * declaration and returns the full declaration text including `varName: { ... }` wrapper
- * so that extractMethodsFromBlock can find `methodName: { description: ... }` entries.
- */
 function findVariableObjectBody(
   content: string,
   varName: string,
@@ -764,10 +656,8 @@ function findVariableObjectBody(
 }
 
 /**
- * Builds one method per top-level object entry of a methods block. The
- * description and arguments are read from the entry's own body, so values
- * nested inside it (e.g. `checks: { ... }`) are never mistaken for the
- * method's own.
+ * description and arguments come from the entry's own body, so nested values
+ * like checks: { ... } are never mistaken for the method's own
  */
 function extractMethodsFromEntries(
   methodsBlock: string,
@@ -788,10 +678,6 @@ function extractMethodsFromEntries(
   return methods;
 }
 
-/**
- * Returns the bodies of the object literals that are direct elements of an
- * array body, e.g. the records in `methods: [{ ... }, { ... }]`.
- */
 function extractArrayObjectBodies(arrayBody: string): string[] {
   const bodies: string[] = [];
   let i = 0;
@@ -808,16 +694,11 @@ function extractArrayObjectBodies(arrayBody: string): string[] {
   return bodies;
 }
 
-/**
- * A top-level entry of an object literal body. `body` is set when the value
- * is an inline object; `value` is set when the value starts with a string
- * literal (the first literal, so `"a " + "b"` yields `a `).
- */
+/** value is the first string literal only, so "a " + "b" yields "a " */
 interface TopLevelEntry {
   key: string;
   body?: string;
   value?: string;
-  /** Source text of a value that starts with a string literal, up to its comma. */
   raw?: string;
 }
 
@@ -827,12 +708,9 @@ const LEADING_STRING_LITERAL =
   /\s*(?:"((?:[^"\\\n]|\\.)*)"|'((?:[^'\\\n]|\\.)*)'|`((?:[^`\\]|\\.)*)`)/y;
 
 /**
- * Walks the top-level entries of an object literal body. Only text at brace
- * depth 0 is interpreted: keys (bare or quoted), the start of each value, and
- * comments. Nested bodies and the rest of each value are skipped with the
- * same literal-aware scan extractBalancedBraces uses, so braces, quotes or
- * commas inside strings, comments or regex literals cannot throw the walk
- * off. Spreads, computed keys and shorthand entries are skipped.
+ * only brace-depth-0 text is interpreted; nested bodies are skipped with the
+ * same literal-aware scan as extractBalancedBraces, so braces or quotes in
+ * strings, comments or regexes cannot throw it off
  */
 function extractTopLevelEntries(block: string): TopLevelEntry[] {
   const entries: TopLevelEntry[] = [];
@@ -936,15 +814,10 @@ function extractTopLevelEntries(block: string): TopLevelEntry[] {
   return entries;
 }
 
-/**
- * Extracts method arguments from a Zod schema.
- * Looks for `arguments: z.object({ ... })` or a reference to a named schema.
- */
 function extractMethodArguments(
   methodEntry: string,
   fullContent: string,
 ): ExtractedArgument[] {
-  // Check for inline z.object({...})
   const inlineMatch = methodEntry.match(/arguments:\s*z\.object\(\s*\{/);
   if (inlineMatch && inlineMatch.index !== undefined) {
     const start = inlineMatch.index + inlineMatch[0].length;
@@ -954,11 +827,9 @@ function extractMethodArguments(
     }
   }
 
-  // Check for reference to a named schema variable
   const refMatch = methodEntry.match(/arguments:\s*(\w+)/);
   if (refMatch) {
     const schemaName = refMatch[1];
-    // Look up the named schema in the full file content
     const namedPattern = new RegExp(
       `(?:const|let)\\s+${schemaName}\\s*=\\s*z\\.object\\(\\s*\\{`,
     );
@@ -975,10 +846,6 @@ function extractMethodArguments(
   return [];
 }
 
-/**
- * Parses individual fields from a z.object({...}) body.
- * Extracts field name, type, description, and whether it's required.
- */
 /**
  * A `.describe("...")` call, removed from a field's chain before looking for
  * the sensitive marker so describe text that mentions it does not count.
@@ -999,12 +866,9 @@ function parseZodObjectFields(schemaBody: string): ExtractedArgument[] {
     const baseType = startMatch[4];
     const afterParen = startMatch.index + startMatch[0].length;
 
-    // Use balanced paren matching to find the end of z.type(...)
     const parenEnd = findBalancedParen(schemaBody, afterParen);
     if (parenEnd === -1) continue;
 
-    // Extract chain methods after the initial z.type(...) call
-    // e.g. .optional().describe("...")
     let chain = "";
     const calls: ChainCall[] = [];
     let pos = parenEnd + 1;
@@ -1024,11 +888,9 @@ function parseZodObjectFields(schemaBody: string): ExtractedArgument[] {
 
     const description = fieldDescription(calls, chain);
 
-    // A field is required unless its chain lets undefined through
-    // (optional, nullish) or replaces it (default, catch, prefault), or
-    // the field itself is written as z.optional(...) / z.nullish(...).
-    // nullable stays here for compatibility with what was published
-    // before, although Zod itself still rejects undefined for it.
+    // required unless the chain lets undefined through or replaces it
+    // (optional, nullish, default, catch, prefault); nullable counts too, kept
+    // for compatibility though Zod rejects undefined for it
     const wrapperBase = baseType === "optional" || baseType === "nullish";
     const required = !wrapperBase &&
       !chain.includes(".optional()") &&
@@ -1048,24 +910,20 @@ function parseZodObjectFields(schemaBody: string): ExtractedArgument[] {
         : {}),
     });
 
-    // Advance past this field
     fieldStartPattern.lastIndex = pos;
   }
 
   return args;
 }
 
-/** One call chained directly on a field, such as `.describe("...")`. */
 interface ChainCall {
   method: string;
-  /** The text between the call's parentheses. */
   args: string;
 }
 
 /**
- * The text of a string literal at the start of `text`, up to the first quote
- * of the same kind, as the describe pattern has always read it. A template
- * literal counts only without interpolation.
+ * reads up to the first quote of the same kind; a template literal counts only
+ * without interpolation
  */
 function leadingStringLiteral(text: string): string | undefined {
   const match = text.match(/^\s*(?:"([^"]*?)"|'([^']*?)'|`([^`]*?)`)/);
@@ -1078,11 +936,6 @@ function leadingStringLiteral(text: string): string | undefined {
 
 const META_DESCRIPTION_KEY = /^(?:description|"description"|'description')\s*:/;
 
-/**
- * The `description` set by a `.meta({...})` call's own object literal: its
- * text, "" when the key is there but its value is not a string literal, or
- * undefined when the object sets no description.
- */
 function metaDescription(args: string): string | undefined {
   const body = args.trimStart();
   if (!body.startsWith("{")) return undefined;
@@ -1114,10 +967,8 @@ function metaDescription(args: string): string | undefined {
 }
 
 /**
- * A field's description. The first `.describe` with a quoted string anywhere
- * in the chain is used, as it always has been. Otherwise the last call on the
- * field that sets one decides, as zod keeps the last: a `.describe` with a
- * template literal, or a `.meta({...})` with a `description` key.
+ * the first .describe with a quoted string wins; otherwise the last call that
+ * sets a description decides, as zod keeps the last
  */
 function fieldDescription(calls: ChainCall[], chain: string): string {
   const descMatch = chain.match(
@@ -1135,11 +986,6 @@ function fieldDescription(calls: ChainCall[], chain: string): string {
   return "";
 }
 
-/**
- * Finds the position of the closing parenthesis matching an opening one.
- * `start` is the position right after the opening `(`.
- * Returns the index of the closing `)` or -1 if not found.
- */
 function findBalancedParen(text: string, start: number): number {
   let depth = 1;
   let i = start;
@@ -1153,13 +999,9 @@ function findBalancedParen(text: string, start: number): number {
   return depth === 0 ? i - 1 : -1;
 }
 
-/**
- * Extracts resource output specs from the source.
- */
 function extractResources(content: string): ExtractedResource[] {
   const resources: ExtractedResource[] = [];
 
-  // Find the resources block (but not inside methods)
   const match = content.match(/(?<![.\w])resources:\s*\{/);
   if (!match || match.index === undefined) return resources;
 
@@ -1167,7 +1009,6 @@ function extractResources(content: string): ExtractedResource[] {
   const block = extractBalancedBraces(content, start);
   if (!block) return resources;
 
-  // Find each entry key and extract its balanced block
   const keyPattern = /["']?(\w[\w-]*)["']?\s*:\s*\{/g;
   let keyMatch;
   while ((keyMatch = keyPattern.exec(block)) !== null) {
@@ -1187,20 +1028,15 @@ function extractResources(content: string): ExtractedResource[] {
       lifetime: lifetimeMatch[1],
     });
 
-    // Advance past this entry to avoid re-matching nested braces
     keyPattern.lastIndex = entryStart + (entryBody?.length ?? 0) + 1;
   }
 
   return resources;
 }
 
-/**
- * Extracts file output specs from the source.
- */
 function extractFiles(content: string): ExtractedFile[] {
   const files: ExtractedFile[] = [];
 
-  // Find the files block
   const match = content.match(/(?<![.\w])files:\s*\{/);
   if (!match || match.index === undefined) return files;
 
@@ -1208,7 +1044,6 @@ function extractFiles(content: string): ExtractedFile[] {
   const block = extractBalancedBraces(content, start);
   if (!block) return files;
 
-  // Find each entry key and extract its balanced block
   const keyPattern = /["']?(\w[\w-]*)["']?\s*:\s*\{/g;
   let keyMatch;
   while ((keyMatch = keyPattern.exec(block)) !== null) {
@@ -1228,7 +1063,6 @@ function extractFiles(content: string): ExtractedFile[] {
       contentType: ctMatch[1],
     });
 
-    // Advance past this entry
     keyPattern.lastIndex = entryStart + (entryBody?.length ?? 0) + 1;
   }
 
@@ -1236,9 +1070,8 @@ function extractFiles(content: string): ExtractedFile[] {
 }
 
 /**
- * A step's task in its stored form: a behavior-spelled task is rewritten to
- * `model_method` (swamp-club#3334). Metadata extraction is best-effort, so a
- * task the rewrite refuses is read as written.
+ * a behavior-spelled task is rewritten to model_method; extraction is
+ * best-effort, so a task the rewrite refuses is read as written
  */
 function readTask(raw: unknown): Record<string, unknown> | undefined {
   let task: unknown = raw;
@@ -1252,10 +1085,6 @@ function readTask(raw: unknown): Record<string, unknown> | undefined {
     : undefined;
 }
 
-/**
- * Extracts workflow metadata from a YAML file content.
- * Returns null if the content doesn't contain a valid workflow structure.
- */
 function extractWorkflowFromYaml(
   content: string,
   fileName: string,
@@ -1325,11 +1154,6 @@ function extractWorkflowFromYaml(
   return { fileName, id, name, description, jobs };
 }
 
-/**
- * Extracts datastore metadata from a TypeScript source file.
- * Returns null if the file doesn't contain a recognizable datastore definition.
- * Uses `createProvider` as the discriminator combined with `export const datastore`.
- */
 export function extractDatastoreFromSource(
   content: string,
   filePath: string,
@@ -1340,7 +1164,6 @@ export function extractDatastoreFromSource(
   );
   if (!datastoreMatch || datastoreMatch.index === undefined) return null;
 
-  // Must contain createProvider to be a datastore file
   if (!/createProvider/.test(content)) return null;
 
   const datastoreStart = datastoreMatch.index + datastoreMatch[0].length;
@@ -1364,9 +1187,7 @@ export function extractDatastoreFromSource(
       configFields = parseZodObjectFields(schemaBody);
     }
   } else if (hasConfigSchema) {
-    // Check for named schema reference: configSchema: SomeName
     const configRef = datastoreBody.match(/configSchema:\s*(\w+)/);
-    // Also check shorthand property: configSchema,
     const shorthandRef = !configRef
       ? datastoreBody.match(/configSchema\s*[,\n}]/)
       : null;
@@ -1397,11 +1218,6 @@ export function extractDatastoreFromSource(
   };
 }
 
-/**
- * Extracts report metadata from a TypeScript source file.
- * Returns null if the file doesn't contain a recognizable report definition.
- * Uses `execute` as the discriminator combined with `export const report`.
- */
 function extractReportFromSource(
   content: string,
   filePath: string,
@@ -1410,7 +1226,6 @@ function extractReportFromSource(
   const reportMatch = content.match(/export\s+const\s+report\s*=\s*\{/);
   if (!reportMatch || reportMatch.index === undefined) return null;
 
-  // Must contain execute to be a report file
   if (!/execute/.test(content)) return null;
 
   const reportStart = reportMatch.index + reportMatch[0].length;
@@ -1426,7 +1241,6 @@ function extractReportFromSource(
 
   const scopeMatch = reportBody.match(/(?<![.\w])scope:\s*["']([^"']+)["']/);
 
-  // Extract labels array
   const labels: string[] = [];
   const labelsMatch = reportBody.match(/(?<![.\w])labels:\s*\[([^\]]*)\]/);
   if (labelsMatch) {
@@ -1447,11 +1261,6 @@ function extractReportFromSource(
   };
 }
 
-/**
- * Extracts webhook metadata from a TypeScript source file.
- * Returns null if the file doesn't contain a recognizable webhook definition.
- * Uses `createHandler` as the discriminator combined with `export const webhook`.
- */
 function extractWebhookFromSource(
   content: string,
   filePath: string,
@@ -1462,7 +1271,6 @@ function extractWebhookFromSource(
   );
   if (!webhookMatch || webhookMatch.index === undefined) return null;
 
-  // Must contain createHandler to be a webhook file
   if (!/createHandler/.test(content)) return null;
 
   const webhookStart = webhookMatch.index + webhookMatch[0].length;
@@ -1485,11 +1293,6 @@ function extractWebhookFromSource(
   };
 }
 
-/**
- * Extracts the content between balanced braces, starting after an opening brace.
- * Returns the content between the braces (excluding the outer braces themselves).
- * Braces inside string, template, comment and regex literals are not counted.
- */
 function extractBalancedBraces(
   text: string,
   startAfterBrace: number,
@@ -1500,11 +1303,6 @@ function extractBalancedBraces(
   return end === -1 ? null : text.slice(startAfterBrace, end);
 }
 
-/**
- * Returns the index of the brace that closes the one at `start`, or -1 when
- * it never closes. Literals are skipped with skipNonCode, so a brace inside a
- * string, template, comment or regex does not change the depth.
- */
 function findClosingBrace(
   source: string,
   start: number,
@@ -1551,13 +1349,9 @@ const CONTROL_KEYWORDS = new Set(["if", "while", "for", "with"]);
 const MAX_TEMPLATE_DEPTH = 64;
 
 /**
- * State carried through one brace scan. `noRegexBefore` records that a regex
- * failed to close before its newline; every later slash before that newline
- * is then read as division. That is a heuristic, not a proof (a slash inside
- * a failed `[` class can hide a real regex after it), and it is what keeps
- * the scan linear on lines full of slashes. `controlParens` holds one
- * entry per open paren: whether it opens an if/while/for/with header, after
- * which a slash starts a regex.
+ * after a regex fails to close, later slashes on that line read as division (a
+ * heuristic that keeps the scan linear); controlParens flags if/while/for/with
+ * headers, after which a slash starts a regex
  */
 interface ScanState {
   noRegexBefore: number;
@@ -1587,7 +1381,6 @@ function trackParen(source: string, i: number, scan: ScanState): void {
   }
 }
 
-/** The identifier ending just before `i`, or "" when it is a property name. */
 function wordBefore(source: string, i: number): string {
   let end = i;
   while (end > 0 && /\s/.test(source[end - 1])) end--;
@@ -1601,16 +1394,9 @@ function isComment(source: string, i: number): boolean {
 }
 
 /**
- * Returns the index past a string, template, comment or regex literal at `i`,
- * or `i` when there is none. An unterminated string or regex ends at its
- * newline so one stray quote cannot swallow the file. Template expressions
- * are scanned as code, up to MAX_TEMPLATE_DEPTH levels deep.
- *
- * Telling a regex from division is a heuristic. Known misreadings: a
- * variable named like a keyword (`of`, `in`, `yield`, `await`) followed by
- * division is taken as a regex start, and JSX text (`</tag>`, an apostrophe
- * in `Don't`) is read as regex or string syntax. Each can only affect the
- * rest of one line, since unclosed regexes and strings stop at the newline.
+ * regex vs division is a heuristic: a keyword-named variable (of, in, yield,
+ * await) before division reads as a regex, and JSX text can read as regex or
+ * string; damage ends at the newline
  */
 function skipNonCode(
   source: string,

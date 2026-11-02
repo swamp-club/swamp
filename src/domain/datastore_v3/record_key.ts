@@ -17,33 +17,15 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * The path a v3 record projects to (swamp-club#3233).
- *
- * @module
- */
-
-/** The longest record key accepted, in UTF-16 code units. */
 export const MAX_RECORD_KEY_LENGTH = 4096;
 
 /**
- * Where a record lands when it is materialised as a real file: a path
- * relative to the namespace, with forward slashes, in today's cache layout
- * (e.g. `data/aws-ec2/<id>/vpc/7/raw`), so every consumer that reads real
- * paths keeps working.
- *
- * A record key is a projection detail. The partition aggregate never parses
- * it: what an op means comes from its intent and metadata, never from where
- * it lands.
+ * the partition aggregate never parses a key; what an op means comes from its
+ * intent and metadata, never from where it lands
  */
 export class RecordKey {
   private constructor(private readonly value: string) {}
 
-  /**
-   * Throws for an empty or overlong key, an absolute path, a backslash or
-   * NUL, an empty segment (`a//b`, a trailing slash), or a `.` or `..`
-   * segment.
-   */
   static create(value: string): RecordKey {
     if (typeof value !== "string" || value.length === 0) {
       throw new Error("Record key must be a non-empty string");
@@ -68,7 +50,6 @@ export class RecordKey {
     return new RecordKey(value);
   }
 
-  /** Parses the serialized form; the same rules as {@link RecordKey.create}. */
   static fromJSON(value: unknown): RecordKey {
     if (typeof value !== "string") {
       throw new TypeError("Record key must be a string");

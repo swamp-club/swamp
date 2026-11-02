@@ -73,18 +73,15 @@ Deno.test("migrateRepoTelemetryToGlobal: moves unflushed entries and leaves flus
     const count = await migrateRepoTelemetryToGlobal(repoDir, destDir);
     assertEquals(count, 2);
 
-    // Unflushed entries moved to the destination...
     assert(await fileExists(join(destDir, unflushedA)));
     assert(await fileExists(join(destDir, unflushedB)));
     assertEquals(
       await Deno.readTextFile(join(destDir, unflushedA)),
       '{"id":"a"}',
     );
-    // ...and removed from the source.
     assertEquals(await fileExists(join(spool, unflushedA)), false);
     assertEquals(await fileExists(join(spool, unflushedB)), false);
 
-    // The already-flushed entry is left behind and not copied.
     assert(await fileExists(join(spool, flushed)));
     assertEquals(await fileExists(join(destDir, flushed)), false);
 
@@ -185,7 +182,7 @@ Deno.test("migrateHomeRepoTelemetry: returns 0 when home is not a swamp repo", a
     const homeDir = join(dir, "home");
     const destDir = join(dir, "global");
     await ensureDir(homeDir);
-    const [name] = await seedHomeRepo(homeDir); // spool exists, no marker
+    const [name] = await seedHomeRepo(homeDir);
 
     const count = await migrateHomeRepoTelemetry(homeDir, destDir);
     assertEquals(count, 0);

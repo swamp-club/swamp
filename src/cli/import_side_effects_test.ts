@@ -18,14 +18,9 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * Guards the CLI import path against HTTP clients built at module-evaluation
- * time. `Deno.createHttpClient` reads the platform certificate store, so a
- * client constructed while the module graph evaluates makes every command —
- * including offline ones like `swamp help` and `swamp model search` — depend
- * on that read succeeding (swamp-club#2293).
- *
- * This file must NOT statically import `./mod.ts`: the counter has to be in
- * place before the graph is evaluated for the first time in this isolate.
+ * a module-level Deno.createHttpClient reads the platform cert store and would
+ * make every command, even offline ones, depend on it. Do not statically import
+ * ./mod.ts: the counter must be in place before the graph first evaluates.
  */
 
 import { assertEquals } from "@std/assert";

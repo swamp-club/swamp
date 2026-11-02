@@ -17,11 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// Moving `_token-secrets` from its co-located key to an operator-supplied
-// external key (serve.yaml token-secrets, swamp-club#2324), against a real
-// control-plane store on disk: concurrent instances, an interrupted
-// migration, and what an instance without the key sees afterwards.
-
 import { assert, assertEquals, assertRejects } from "@std/assert";
 import { walk } from "@std/fs";
 import { join } from "@std/path";
@@ -68,7 +63,6 @@ async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
   }
 }
 
-/** A control plane written by a swamp without the opt-in: co-located key. */
 async function seedCoLocated(dir: string): Promise<Uint8Array> {
   const legacy = new ControlPlaneVaultProvider(
     new FileSystemControlPlaneStore(dir),
@@ -90,7 +84,6 @@ function external(dir: string, key: Uint8Array): ControlPlaneVaultProvider {
   });
 }
 
-/** Every file under the control plane that decrypts with the given key. */
 async function filesOpenedBy(
   dir: string,
   keyBytes: Uint8Array,
@@ -112,7 +105,6 @@ async function filesOpenedBy(
   return opened;
 }
 
-/** Every file under the control plane, keyed by path relative to it. */
 async function snapshotControlPlane(dir: string): Promise<Map<string, string>> {
   const files = new Map<string, string>();
   const root = join(dir, "_control");
@@ -149,7 +141,6 @@ Deno.test("initializeControlPlaneVault: without a token secrets key, the co-loca
     }
     assertEquals(await snapshotControlPlane(dir), before);
 
-    // New secrets still go under the same co-located key.
     await provider.put("server-token-new", "new-secret");
     assertEquals(await Deno.readFile(keyRecordPath(dir)), legacyKey);
     assertEquals(
@@ -189,7 +180,6 @@ Deno.test("initializeControlPlaneVault: an unusable token secrets key refuses to
       assertEquals(await snapshotControlPlane(dir), before, label);
     }
 
-    // Dropping the block returns to the default with every secret intact.
     const { provider } = await initializeControlPlaneVault(
       new FileSystemControlPlaneStore(dir),
       true,
@@ -237,7 +227,6 @@ Deno.test("ControlPlaneVaultProvider: the next start completes an interrupted mi
     await seedCoLocated(dir);
     const key = crypto.getRandomValues(new Uint8Array(32));
 
-    // Crash after one secret was re-encrypted, before the marker.
     const blob = await aesGcmEncrypt(
       SECRETS["server-token-bob"],
       await importAesKey(key),
@@ -284,7 +273,6 @@ Deno.test("ControlPlaneVaultProvider: after migration an instance without the ke
       UserError,
       "is not the key",
     );
-    // Refusing writes nothing: no fresh key, no marker, no re-encryption.
     assertEquals(await snapshotControlPlane(dir), migrated);
     // A swamp release without external-key support reads the record as a raw
     // key; the marker must fail that import rather than be replaced.

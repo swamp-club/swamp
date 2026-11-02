@@ -17,12 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * VaultService.has() and supportsExistenceCheck(): the existence capability
- * behind the run vault access scope, with no refresh, no audit and no value
- * read.
- */
-
 import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
 import {
   createVaultTestContext,
@@ -43,9 +37,8 @@ import type {
 } from "./vault_audit_repository.ts";
 
 /**
- * Registers a per-run vault type backed by the testing package's in-memory
- * vault and binds it under `vaultName`. Both built-in types implement has(),
- * so a provider without it has to come from here (withExistence unset).
+ * both built-in types implement has(), so a provider without it has to come
+ * from this per-run test vault (withExistence unset)
  */
 async function withTestVault(
   vaultName: string,
@@ -180,7 +173,6 @@ Deno.test("has: records no audit entry even when reads are audited", async () =>
   assertEquals(await service.has("audited", "missing"), false);
   assertEquals(auditRepo.entries.length, 0);
 
-  // Control: a read of the same key is audited.
   await service.get("audited", "k", "test-caller");
   assertEquals(auditRepo.entries.length, 1);
   assertEquals(auditRepo.entries[0].action, "get");

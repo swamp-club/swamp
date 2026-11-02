@@ -21,36 +21,30 @@ import { join, resolve } from "@std/path";
 import { MAX_LOCKFILE_BYTES } from "@swamp-club/extension-scoring/dependency-audit";
 
 /**
- * Whether a package.json project's `package-lock.json` describes what push
- * bundled (swamp-club#3970). It counts as a lock only when every
- * node_modules package the bundle takes code from is in it at the version
- * installed there; otherwise push treats the project as having no lock and
- * warns with `reason`. No `package-lock.json` at all is no lock, with no
- * warning.
+ * a lock only when every node_modules package the bundle takes code from is in
+ * it at the installed version, else push warns with reason and treats it as no
+ * lock; no file means no lock, no warning
  */
 export type PackageLockValidity =
   | { valid: true; lockPath: string }
   | { valid: false; lockPath: string; reason: string }
   | { valid: false; lockPath: null };
 
-/** One installed package the bundle takes code from. */
 export interface InstalledPackage {
   /**
    * The package directory, relative to the package.json directory, with
    * forward slashes: `node_modules/ms`, `node_modules/a/node_modules/ms`.
    */
   path: string;
-  /** The version its package.json names. */
   version: string;
 }
 
 const NO_LOCK = "treated as no lock";
 
 /**
- * Reads `<packageDir>/package-lock.json` and checks it against `installed`.
- * The lock is repo-controlled JSON, so it is read as data: every shape is
- * checked, and only an `installed` path that is relative and stays inside
- * `packageDir` is looked up in it.
+ * the lock is repo-controlled JSON, so it is read as data: every shape is
+ * checked, and only a relative installed path that stays inside packageDir is
+ * looked up
  */
 export async function readPackageLockValidity(
   packageDir: string,

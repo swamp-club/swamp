@@ -21,24 +21,14 @@ import { z } from "zod";
 import type { ModelDefinition } from "./model.ts";
 import type { OutputSpecInfo } from "../reports/report_context.ts";
 
-/**
- * Converts a Zod schema to JSON Schema, with a manual fallback.
- */
 function zodToJsonSchema(schema: z.ZodTypeAny): object {
   try {
     return z.toJSONSchema(schema);
   } catch {
-    // Fallback: return a minimal schema object
     return { type: "object" };
   }
 }
 
-/**
- * Builds OutputSpecInfo[] from a ModelDefinition's resource and file specs.
- *
- * Used by both the CLI model method run path and the workflow step execution
- * path to populate report context with output spec metadata.
- */
 export function buildOutputSpecs(modelDef: ModelDefinition): OutputSpecInfo[] {
   const specs: OutputSpecInfo[] = [];
   if (modelDef.resources) {

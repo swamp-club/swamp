@@ -28,47 +28,27 @@ import {
 } from "../models/data_writer.ts";
 import type { Workflow } from "./workflow.ts";
 
-/**
- * How {@link reservedWorkflowTags} finds what a step names. Each lookup is
- * optional: without it, steps of that kind are not followed. A lookup that
- * throws counts as not found; the step that uses it reports the problem when
- * it runs.
- */
 export interface ReservedTagLookups {
-  /** The stored definition a step names, by name or id. */
   findDefinition?: (
     idOrName: string,
   ) => Promise<{ name: string; tags: Record<string, string> } | null>;
-  /** The workflow a step runs, by name or id. */
   findWorkflow?: (idOrName: string) => Promise<Workflow | null>;
 }
 
-/** One step on the way to a reserved tag, outermost first. */
 export interface ReservedTagStep {
   jobName: string;
   stepName: string;
-  /** Set when the step runs a nested workflow the key is found in. */
   workflow?: string;
 }
 
-/**
- * A reserved tag key a workflow supplies (swamp-club#3635). Every method run
- * refuses one; a workflow run, a resume and `workflow validate` find them
- * before any step runs.
- */
 export interface ReservedWorkflowTag {
-  /** The steps that lead to the key; empty for the workflow's own tags. */
   steps: ReservedTagStep[];
   refusal: WordedText;
 }
 
 /**
- * The reserved tag keys a workflow supplies: in its own tags, every step's
- * data output overrides, the stored definition each step names (its
- * `modelIdOrName`, or the `modelName` a direct type execution adopts), and,
- * recursively, each nested workflow a step runs. A name written as an
- * expression is not followed, nor is a workflow already on the path, so a
- * cycle ends. Spec default tags are left to the step's own validation.
+ * a name written as an expression is not followed, nor is a workflow already on
+ * the path, so a cycle ends
  */
 export async function reservedWorkflowTags(
   workflow: Workflow,
@@ -140,20 +120,10 @@ async function definitionRefusal(
   );
 }
 
-/** Whether a step names what it runs literally, not with an expression. */
 function isLiteral(ref: string | undefined): ref is string {
   return ref !== undefined && ref !== "" && !ref.includes("${{");
 }
 
-/**
- * The first reserved tag key a workflow run or resume would refuse, found
- * before any step runs: in `--tag`, then anywhere
- * {@link reservedWorkflowTags} looks. A step that names what it runs with an
- * expression, and each type's spec defaults, are left to the refusal each
- * method run makes when it starts.
- *
- * @returns The refusal, prefixed with the steps it is about, or undefined
- */
 export async function reservedWorkflowRunTag(
   workflow: Workflow,
   runtimeTags: Record<string, string> | undefined,
@@ -165,7 +135,6 @@ export async function reservedWorkflowRunTag(
   return first && atSteps(first);
 }
 
-/** A finding's refusal, prefixed with each step on the way to it. */
 export function atSteps(found: ReservedWorkflowTag): WordedText {
   const prefix = found.steps.map((step) =>
     `Step '${step.stepName}' in job '${step.jobName}'${

@@ -20,20 +20,12 @@
 import type { WorkflowRepository } from "./repositories.ts";
 import { type Workflow, workflowDeclaresInputs } from "./workflow.ts";
 
-/**
- * What a listing of workflows needs to know of one: its identity, and
- * whether it declares inputs (swamp-club#3443). A read projection of the
- * {@link Workflow} aggregate, so read paths such as run search need not
- * rebuild every aggregate on each request. Immutable.
- */
 export interface WorkflowListing {
   readonly id: string;
   readonly name: string;
-  /** The workflow declares inputs, so a resume may need `--input`. */
   readonly declaresInputs: boolean;
 }
 
-/** The listing of `workflow`. */
 export function workflowListingOf(workflow: Workflow): WorkflowListing {
   return Object.freeze({
     id: workflow.id,
@@ -42,10 +34,6 @@ export function workflowListingOf(workflow: Workflow): WorkflowListing {
   });
 }
 
-/**
- * The listings of every workflow `repo` holds, in `findAll` order: from its
- * own listing when it has one, else from `findAll`.
- */
 export async function listWorkflows(
   repo: WorkflowRepository,
 ): Promise<WorkflowListing[]> {

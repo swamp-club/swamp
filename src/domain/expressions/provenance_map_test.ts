@@ -51,7 +51,6 @@ import { partitionAuthoredAt } from "./expression_evaluation_service.ts";
 import { staticAccessPath } from "./cel_grammar.ts";
 import { attachBindingProvenance, spliceOrigin } from "./splice_origin.ts";
 
-/** The reference every secret of these tests stands for. */
 const REF = { vaultName: "v", key: "k" };
 
 Deno.test("ProvenanceMap.overlapsData: partial overlap counts, adjacency does not", () => {
@@ -81,7 +80,6 @@ Deno.test("ProvenanceMap.subtree and graft re-root paths", () => {
   assertEquals(step.isWholeDataAt("guard"), true);
   const moved = ProvenanceMap.authored().graft("jobs[2].steps[0]", step);
   assertEquals(moved.rangesAt("jobs[2].steps[0].task.inputs.x"), [[0, 3]]);
-  // A graft replaces what was there.
   assertEquals(
     map.graft("jobs[0].steps[1]", ProvenanceMap.authored()).isAuthored,
     true,
@@ -149,7 +147,6 @@ Deno.test("mergeRanges: sorts, merges overlaps and drops empty ranges", () => {
 Deno.test("replaceExpressionsTracked: a data copy of an authored raw is never substituted", () => {
   const raw = "${{ env.SECRET }}";
   const text = `ok ${raw} x ${raw}`;
-  // The second occurrence came from data.
   const dataStart = text.lastIndexOf(raw);
   const map = ProvenanceMap.authored().withRanges("v", [[
     dataStart,
@@ -162,7 +159,6 @@ Deno.test("replaceExpressionsTracked: a data copy of an authored raw is never su
     () => AUTHORED_ORIGIN,
   );
   assertEquals((result.data as { v: string }).v, `ok S x ${raw}`);
-  // The surviving data copy is still data, shifted to its new offset.
   const out = (result.data as { v: string }).v;
   assertEquals(
     result.provenance.overlapsData("v", out.indexOf(raw), out.length),
@@ -225,7 +221,6 @@ Deno.test("spliceOrigin: a direct read carries the binding's map", () => {
     spliceOrigin("inputs.b", ctx, "${{ env.X }}").map.isWholeData,
     true,
   );
-  // Data namespaces are data.
   assertEquals(
     spliceOrigin('data.latest("m", "d")', ctx, "${{ env.X }}").map.isAuthored,
     false,
@@ -263,15 +258,12 @@ Deno.test("alignProvenance: a differing value carries its data onto the other co
     { a: "xxyy", b: "z", c: "same", n: "1" },
     { a: "__SENTINEL__yy", b: "z", c: "same", n: 1 },
   );
-  // The replaced span is data, the unchanged suffix keeps its standing.
   assertEquals(aligned.rangesAt("a"), [[0, 12]]);
   assertEquals(aligned.rangesAt("b"), [[0, 1]]);
-  // A value that changed type is data in its entirety.
   assertEquals(aligned.isWholeDataAt("n"), true);
 });
 
 Deno.test("alignProvenance: only the differing span of a string becomes data", () => {
-  // "S3CRET" was spliced from data; the sanitized copy holds a sentinel.
   const raw = "Bearer S3CRET ${{ env.X }}";
   const other = "Bearer __SWAMP_VAULT_0__ ${{ env.X }}";
   const map = ProvenanceMap.authored().withRanges("v", [[7, 13]]);
@@ -354,7 +346,6 @@ Deno.test("ProvenanceMap: a sibling graft cannot erase a dotted key's data", () 
     .graft(keyPath("cfg", "a"), ProvenanceMap.authored());
   assertEquals(map.isWholeDataAt(keyPath("cfg", "a.b")), true);
   assertEquals(map.isWholeDataAt(keyPath("cfg", "a")), false);
-  // A quoted segment is one segment: its dots are not boundaries.
   assertEquals([...ancestorsOf('cfg["a.b"].c')], [
     'cfg["a.b"].c',
     'cfg["a.b"]',
@@ -485,7 +476,6 @@ Deno.test("provenance property: caller data under arbitrary object keys never pa
 Deno.test("canonicalPath: folds an unquoted .[ but never inside a quoted key", () => {
   assertEquals(canonicalPath("x.[0]"), "x[0]");
   assertEquals(canonicalPath(keyPath("x", "a.[b")), keyPath("x", "a.[b"));
-  // Two distinct quoted keys stay distinct, so a graft on one keeps the other.
   const map = ProvenanceMap.authored()
     .withWholeData(keyPath("inputs", "a[b"))
     .graft(keyPath("inputs", "a.[b"), ProvenanceMap.authored());
@@ -532,8 +522,6 @@ Deno.test("alignStrings: resolving both copies keeps a sentinel from an earlier 
   const early = new VaultSecretBag(registry).addDataSecret("early-pw", REF);
   const stepBag = new VaultSecretBag(registry);
   const late = stepBag.addDataSecret("late-pw", REF);
-  // The raw copy already carries the earlier sentinel; the sanitized copy
-  // carries it too and new sentinels where the raw copy holds the value.
   const raw = `late-pw A ${early} B late-pw`;
   const sanitized = `${late} A ${early} B ${late}`;
   const ranges = [
@@ -567,8 +555,6 @@ Deno.test("sentinelStandInOf: a data sentinel stands in for its value and a vaul
   assertEquals(standIn(vault), sentinelIdentityOf(registry)(vault));
   assertEquals(standIn("__SWAMP_VSEC_" + "0".repeat(32) + "_0__"), undefined);
 
-  // The raw copy holds the data value and the earlier vault sentinel; the
-  // sanitized copy holds the data sentinel and the vault sentinel's twin.
   const raw = `pw1secret \${{ env.A }} ${vault}`;
   const sanitized = `${data} \${{ env.A }} ${twin}`;
   const aligned = alignStrings(
@@ -607,12 +593,10 @@ Deno.test("ProvenanceMap: an object's own keys can be data while its values are 
   assertEquals(map.isWholeDataAt("tokens"), false);
   assertEquals(map.hasDataAtOrBelow("tokens"), true);
   assertEquals(map.hasDataAtOrBelow(""), true);
-  // The values keep their own standing: an expression at a key is authored.
   assertEquals(map.hasDataAtOrBelow("tokens.expr"), false);
   assertEquals(map.overlapsData("tokens.expr", 0, 10), false);
   assertEquals(map.isWholeDataAt("tokens.secret"), true);
   assertEquals(map.hasDataKeysAt("tokens.secret"), true);
-  // Carried through re-rooting, grafting and union; persisted and read back.
   assertEquals(map.subtree("tokens").hasDataKeysAt(""), true);
   const grafted = ProvenanceMap.authored().graft(
     "methods.run.arguments.tokens",
@@ -634,13 +618,11 @@ Deno.test("ProvenanceMap: an object's own keys can be data while its values are 
     ProvenanceMap.fromData(map.toData()).hasDataKeysAt("tokens"),
     true,
   );
-  // Under a subtree that is data whole the entry is redundant and dropped.
   assertEquals(map.withWholeData("tokens").toData(), {
     whole: ["tokens"],
     ranges: {},
   });
   assertEquals(map.graft("tokens", ProvenanceMap.authored()).isAuthored, true);
-  // A map written before the field existed reads back as it was written.
   assertEquals(
     ProvenanceMap.fromData({ whole: [], ranges: {} }).isAuthored,
     true,
@@ -671,19 +653,14 @@ Deno.test("readSetMap: a caller's object holding a vouched expression keeps its 
   assertEquals(map.isWholeDataAt(keyPath("nested", "INNER-KEY")), true);
   assertEquals(map.hasDataAtOrBelow("nested.list[0]"), false);
   assertEquals(map.isWholeDataAt("nested.list[1]"), true);
-  // A subtree with no vouched occurrence is data whole, keys included.
   assertEquals(map.isWholeDataAt("plain"), true);
-  // Nothing vouched, or no expression at all: data whole, as before.
   assertEquals(readSetMap(value, new Set()).isWholeData, true);
   assertEquals(readSetMap({ "SECRET-KEY": null }, vouched).isWholeData, true);
-  // An occurrence nothing vouches for is data like any other text.
   assertEquals(
     readSetMap({ a: "${{ env.X }}", b: constant }, vouched).isWholeDataAt("a"),
     true,
   );
 
-  // Spliced whole into an argument, the keys stay data at their new
-  // position and the vouched occurrences still pass the gate.
   const at = "methods.run.arguments.tokens";
   const spliced = replaceExpressionsTracked(
     { methods: { run: { arguments: { tokens: "${{ inputs.key }}" } } } },
@@ -731,7 +708,6 @@ Deno.test("sentinelReferenceTextOf: a persisted copy aligns exactly onto a senti
     run: `echo ${refShort} and ${refLong} ${"${{ env.X }}"}`,
   };
   const restored = { run: `echo ${short} and ${long} ${"${{ env.X }}"}` };
-  // Data: both references, and the word before the trailing expression.
   const andStart = persisted.run.indexOf(" and ") + 1;
   const map = ProvenanceMap.authored().withRanges("run", [
     [5, 5 + refShort.length],
@@ -754,10 +730,8 @@ Deno.test("sentinelReferenceTextOf: a persisted copy aligns exactly onto a senti
     [restoredAnd, restoredAnd + 3],
     [restored.run.indexOf(long), restored.run.indexOf(long) + long.length],
   ]);
-  // The trailing expression stays authored in the sentinel copy.
   const expr = restored.run.indexOf("${{");
   assertEquals(aligned.overlapsData("run", expr, restored.run.length), false);
-  // Text that is not a sentinel of the run is left alone.
   assertEquals(
     sentinelReferenceTextOf(registry)("__SWAMP_VSEC_x_0__"),
     undefined,

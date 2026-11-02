@@ -28,7 +28,6 @@ export const RUNS_INDEX_FILENAME = ".runs-index.json";
 // old on-disk indices are rebuilt instead of serving stale data.
 export const INDEX_SCHEMA_VERSION = 4;
 
-/** A run record's file name: `workflow-run-<runId>.yaml`. */
 const RUN_FILE_PREFIX = "workflow-run-";
 const RUN_FILE_SUFFIX = ".yaml";
 
@@ -46,24 +45,22 @@ export interface WorkflowRunIndexEntry {
   failureReason?: string;
   stepProgress?: { completed: number; total: number };
   awaitingResume?: boolean;
-  // Nested workflow links (swamp-club#2736). Read back leniently: the index
-  // file is not trusted, so a malformed value is dropped.
+  // read back leniently: the index file is not trusted, so a malformed value is
+  // dropped
   parentRun?: unknown;
   waitingOnRun?: unknown;
   waitsOnlyOnNestedRuns?: boolean;
   /**
-   * The stat of the run record file this entry was built from, so a record
-   * replaced since can be told apart without reading it (swamp-club#3051).
-   * Optional and read back leniently: an entry without a valid one is
-   * checked by reading its record.
+   * stat of the record file the entry was built from, so a replaced record is
+   * told apart without reading it; an entry without a valid one is checked by
+   * reading its record
    */
   record?: RecordFingerprint;
 }
 
 /**
- * What a stat of a run record file says about its version. An atomic write
- * replaces the inode, and `utime` can set mtime back but not ctime; a
- * platform that reports neither (Windows) is left with mtime and size.
+ * an atomic write replaces the inode, and utime can set mtime back but not
+ * ctime; a platform that reports neither (Windows) is left with mtime and size
  */
 export interface RecordFingerprint {
   mtimeMs: number;
@@ -84,12 +81,9 @@ export interface ReadIndexResult {
 }
 
 /**
- * Removes the run index of every workflow under `workflowRunsRoot`, the
- * checkout's `workflow-runs` directory, so the next read rebuilds each from
- * its run records (swamp-club#3802). A v3 recovery that puts back the
- * committed version of a run record leaves the index entry the dropped save
- * wrote, and the index only repairs itself when its count of runs differs,
- * so without this a search would keep reporting the dropped status.
+ * a v3 recovery that restores a committed run record leaves the index entry the
+ * dropped save wrote, and the index repairs itself only when its run count
+ * differs, so remove it
  */
 export async function removeRunIndexes(
   workflowRunsRoot: string,
@@ -109,12 +103,8 @@ export async function removeRunIndexes(
 }
 
 /**
- * Removes the run indexes of the checkout at `repoDir` (swamp-club#3802)
- * when its run records no longer match what an index says: a v3 recovery
- * ran, finished or not, whose replay puts back the committed version of each
- * run record, or a workflow run's final save was dropped after its index
- * entry was written. Each index is rebuilt from the records on its next read;
- * one that cannot be removed is warned about, never failing the caller.
+ * each index is rebuilt from the records on its next read; one that cannot be
+ * removed is warned about, never failing the caller
  */
 export async function removeStaleRunIndexes(repoDir: string): Promise<void> {
   try {
@@ -126,18 +116,9 @@ export async function removeStaleRunIndexes(repoDir: string): Promise<void> {
 }
 
 /**
- * Drops the index entries of the run records `keys` name, in the checkout at
- * `repoDir` (swamp-club#3985). `keys` are record keys a v3 catch-up rewrote
- * or removed: another writer's commits, which reach the record files but not
- * the index beside them. The index is trusted while it lists as many runs as
- * there are records, so a run another writer changed would keep the status
- * it was indexed with. Without its entry the count disagrees, and the next
- * read repairs the index, reading only the records it does not list or that
- * changed since their entry was written (swamp-club#3443).
- *
- * Each index is rewritten in the queue of its own updates, so a save in this
- * process cannot write the dropped entries back. An index that is absent, or
- * of another schema version, is left: its next read rebuilds it anyway.
+ * the index is trusted while its run count matches the records, so a run
+ * another writer changed would keep its indexed status; dropping its entry
+ * makes the counts differ and the next read repairs it
  */
 export async function dropRunIndexEntries(
   repoDir: string,
@@ -234,7 +215,6 @@ export async function deleteRunIndex(
   }
 }
 
-/** Whether a directory entry is a workflow run record. */
 export function isYamlRunFile(entry: Deno.DirEntry): boolean {
   return entry.isFile && entry.name.startsWith(RUN_FILE_PREFIX) &&
     entry.name.endsWith(RUN_FILE_SUFFIX);
@@ -271,13 +251,12 @@ export function isIndexStale(
     Object.keys(result.entries).length !== yamlFileCount;
 }
 
-/** Index updates in flight, one chain per index file. */
 const indexQueues = new Map<string, Promise<unknown>>();
 
 /**
- * Identity of the work last queued for an index. A pending repair may gain a
- * reader only while it is still the tail: a writer queued since must precede
- * that reader's validation, even if its write restores the record count.
+ * a pending repair may gain a reader only while it is still the tail: a writer
+ * queued since must precede that reader's validation, even if its write
+ * restores the record count
  */
 export function indexQueueGeneration(
   workflowRunsDir: string,
@@ -286,10 +265,9 @@ export function indexQueueGeneration(
 }
 
 /**
- * Runs `fn` after every index operation already queued for the same index
- * directory in this process, so one read-modify-write of the index file
- * never interleaves with another. A failed `fn` does not hold up the ones
- * queued behind it. `fn` must not queue on the same directory itself.
+ * serializes read-modify-write of an index per directory in this process; a
+ * failed fn does not hold up later ones, and fn must not queue on the same
+ * directory
  */
 export async function withIndexQueue<T>(
   workflowRunsDir: string,
@@ -303,12 +281,10 @@ export async function withIndexQueue<T>(
   try {
     return await run;
   } finally {
-    // Drop the chain once nothing is queued behind it.
     if (indexQueues.get(key) === tail) indexQueues.delete(key);
   }
 }
 
-/** What `info` says of a record's version; undefined without an mtime. */
 export function fingerprintOf(
   info: Deno.FileInfo,
 ): RecordFingerprint | undefined {
@@ -321,10 +297,6 @@ export function fingerprintOf(
   };
 }
 
-/**
- * Stats a run record file. Returns null when it does not exist, and
- * undefined when the platform gives no mtime to fingerprint it by.
- */
 export async function statRecord(
   path: string,
 ): Promise<RecordFingerprint | undefined | null> {
@@ -338,11 +310,7 @@ export async function statRecord(
   return fingerprintOf(info);
 }
 
-/**
- * Whether `stored`, an entry's fingerprint as read from the index file,
- * names the same version of the record as `current`. The index is not
- * trusted, so anything that is not a fingerprint never matches.
- */
+/** the index is not trusted, so anything that is not a fingerprint never matches */
 export function fingerprintMatches(
   stored: unknown,
   current: RecordFingerprint,

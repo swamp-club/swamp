@@ -62,7 +62,6 @@ Deno.test("createInviteLinkRenderer: log mode puts the bare URL alone on stdout"
   // Exactly one stdout line, and it is the URL with nothing around it — this
   // is what keeps `swamp invite link | pbcopy` usable.
   assertEquals(out, ["https://swamp.club/r/abc123"]);
-  // The prose exists, but on the other stream.
   assertStringIncludes(err.join("\n"), "Marsh Skulker");
 });
 
@@ -78,7 +77,6 @@ Deno.test("createInviteLinkRenderer: json mode emits exactly the two documented 
   assertEquals(out.length, 1);
   assertEquals(JSON.parse(out[0]), LINK);
   assertEquals(Object.keys(JSON.parse(out[0])).sort(), ["code", "url"]);
-  // Nothing on stderr in json mode — a --json consumer gets a clean pipe.
   assertEquals(err, []);
 });
 
@@ -113,8 +111,7 @@ Deno.test("createInviteLinkRenderer: -q suppresses the note but never the link",
     );
   });
 
-  // The link is what the user asked for — `-q` suppresses commentary, not
-  // output. This assertion matters as much as the one below it.
+  // the link is what the user asked for: -q suppresses commentary, not output
   assertEquals(out, ["https://swamp.club/r/abc123"]);
   assertEquals(err, []);
 });

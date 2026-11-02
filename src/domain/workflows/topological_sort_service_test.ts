@@ -59,8 +59,6 @@ Deno.test("sorts linear dependency chain", () => {
 });
 
 Deno.test("sorts diamond dependency pattern", () => {
-  // a -> b -> d
-  // a -> c -> d
   const nodes: GraphNode[] = [
     { name: "a", weight: 0, dependencies: [] },
     { name: "b", weight: 0, dependencies: ["a"] },
@@ -80,7 +78,6 @@ Deno.test("sorts by weight within same level", () => {
   ];
 
   const result = service.sort(nodes);
-  // Sorted by weight ascending: c(1), b(5), a(10)
   assertEquals(result.levels, [["c", "b", "a"]]);
 });
 
@@ -102,16 +99,10 @@ Deno.test("weight takes precedence over name", () => {
   ];
 
   const result = service.sort(nodes);
-  // bravo has lower weight, so comes first despite alphabetical order
   assertEquals(result.levels, [["bravo", "alpha"]]);
 });
 
 Deno.test("handles complex dependency graph", () => {
-  // Build:
-  //   level 0: start (no deps)
-  //   level 1: build1, build2 (depend on start)
-  //   level 2: test1, test2 (test1 depends on build1, test2 depends on build2)
-  //   level 3: deploy (depends on test1 and test2)
   const nodes: GraphNode[] = [
     { name: "start", weight: 0, dependencies: [] },
     { name: "build1", weight: 1, dependencies: ["start"] },
@@ -144,7 +135,7 @@ Deno.test("detects simple cycle", () => {
 Deno.test("detects cycle in larger graph", () => {
   const nodes: GraphNode[] = [
     { name: "a", weight: 0, dependencies: [] },
-    { name: "b", weight: 0, dependencies: ["a", "d"] }, // d creates cycle
+    { name: "b", weight: 0, dependencies: ["a", "d"] },
     { name: "c", weight: 0, dependencies: ["b"] },
     { name: "d", weight: 0, dependencies: ["c"] },
   ];
@@ -192,7 +183,6 @@ Deno.test("flatten produces ordered array", () => {
   const result = service.sort(nodes);
   const flattened = service.flatten(result);
 
-  // Check that dependencies come before dependents
   const indexOf = (name: string) => flattened.indexOf(name);
   assertEquals(indexOf("a") < indexOf("b"), true);
   assertEquals(indexOf("b") < indexOf("d"), true);
@@ -207,14 +197,12 @@ Deno.test("deterministic output for identical input", () => {
     { name: "a", weight: 0, dependencies: [] },
   ];
 
-  // Run multiple times
   const result1 = service.flatten(service.sort(nodes));
   const result2 = service.flatten(service.sort(nodes));
   const result3 = service.flatten(service.sort(nodes));
 
   assertEquals(result1, result2);
   assertEquals(result2, result3);
-  // All in same level, sorted by weight then name
   assertEquals(result1, ["a", "b", "c", "d"]);
 });
 
@@ -230,7 +218,6 @@ Deno.test("CyclicDependencyError contains cycle path", () => {
     throw new Error("Expected CyclicDependencyError");
   } catch (error) {
     if (error instanceof CyclicDependencyError) {
-      // Cycle should contain all three nodes
       assertEquals(error.cycle.length >= 3, true);
     } else {
       throw error;
@@ -280,8 +267,6 @@ Deno.test("sort: lists all duplicate names sorted alphabetically", () => {
 });
 
 Deno.test("sorts forEach-expanded nodes where each expansion depends on all expansions of predecessor", () => {
-  // Simulates two forEach steps: deploy and smoke-test, each expanded over [dev, staging, prod]
-  // smoke-test-* should depend on ALL deploy-* expansions
   const nodes: GraphNode[] = [
     { name: "deploy-dev", weight: 0, dependencies: [] },
     { name: "deploy-staging", weight: 0, dependencies: [] },
@@ -315,9 +300,6 @@ Deno.test("sorts forEach-expanded nodes where each expansion depends on all expa
   );
 });
 
-// --- forEach iterations keep list order (swamp-club#3318) ---
-
-/** The iterations a forEach expands to, in list order, grouped under `template`. */
 function iterations(
   template: string,
   names: string[],

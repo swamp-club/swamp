@@ -21,12 +21,8 @@ import { z } from "zod";
 import { argumentParseContext } from "../untrusted_parse.ts";
 
 /**
- * Internal Zod definition structure for schema introspection.
- *
- * Extensions must use Zod v4 — v3 imports are rejected at bundle time.
- * The v3 field variants (`typeName`, `shape` as function) are retained
- * here for backwards compatibility with already-installed extensions
- * that were bundled before the v3 gate was added.
+ * extensions must use Zod v4; the v3 field variants stay for already-installed
+ * extensions bundled before the v3 gate
  */
 interface ZodDef {
   type?: string;
@@ -79,12 +75,8 @@ export function schemaTransformsValues(schema: z.ZodTypeAny): boolean {
 }
 
 /**
- * Every object key `schema` declares, at any depth: the keys of each object
- * shape reachable through wrappers, array elements, tuple items, record
- * values, union and intersection members, lazy schemas and both sides of a
- * pipe. A key a parse reports that neither this set nor the input spells
- * came from the schema's own code, which may have made it from a value
- * (swamp-club#3681).
+ * a key a parse reports that is in neither this set nor the input came from the
+ * schema's own code, which may have built it from a value
  */
 export function schemaDeclaredKeys(schema: z.ZodTypeAny): Set<string> {
   const keys = new Set<string>();
@@ -124,18 +116,10 @@ export function schemaDeclaredKeys(schema: z.ZodTypeAny): Set<string> {
   return keys;
 }
 
-/**
- * Gets the internal definition from a Zod schema.
- */
 function getSchemaDef(schema: z.ZodTypeAny): ZodDef {
   return (schema as unknown as { _def: ZodDef })._def;
 }
 
-/**
- * Returns a normalized type name ("object", "optional", "effects", ...) for
- * a Zod schema. Maps Zod v3 typeName values (e.g. "ZodObject") to Zod v4
- * type values (e.g. "object").
- */
 function getSchemaType(schema: z.ZodTypeAny): string {
   const def = getSchemaDef(schema);
   if (!def) return "";
@@ -146,18 +130,11 @@ function getSchemaType(schema: z.ZodTypeAny): string {
   return "";
 }
 
-/**
- * Returns the field shape of a ZodObject, accepting both Zod v3 (where
- * `_def.shape` is a function) and Zod v4 (where `_def.shape` is a value).
- */
 function readShape(def: ZodDef): Record<string, z.ZodTypeAny> | undefined {
   if (typeof def.shape === "function") return def.shape();
   return def.shape;
 }
 
-/**
- * Unwraps optional, nullable, default, and effects wrappers to get the leaf type.
- */
 function unwrapSchema(schema: z.ZodTypeAny): z.ZodTypeAny {
   const schemaType = getSchemaType(schema);
   const def = getSchemaDef(schema);
@@ -172,22 +149,10 @@ function unwrapSchema(schema: z.ZodTypeAny): z.ZodTypeAny {
   return schema;
 }
 
-/**
- * Coerces string values in `args` to match the expected types in a Zod object schema.
- *
- * When CLI flags like `--input key=true` are parsed, all values arrive as strings.
- * This function converts `"true"`/`"false"` to booleans and numeric strings to numbers,
- * and JSON-parses strings for array, object and record fields, so that Zod validation
- * succeeds.
- *
- * Non-string values and strings that don't match a known coercion pass through unchanged.
- * Keys not present in the schema are also passed through unchanged (Zod will handle them).
- */
 export function coerceMethodArgs(
   args: Record<string, unknown>,
   zodSchema: z.ZodTypeAny,
 ): Record<string, unknown> {
-  // Unwrap wrappers to find the object shape
   const unwrapped = unwrapSchema(zodSchema);
   const schemaType = getSchemaType(unwrapped);
 
@@ -254,12 +219,8 @@ export function coerceMethodArgs(
 }
 
 /**
- * Returns the field shape of the inner ZodObject for a schema, unwrapping
- * optional/nullable/default/effects wrappers. Returns undefined when the
- * schema does not resolve to a ZodObject (e.g. a primitive or a union).
- *
- * Used to detect unknown keys passed via CLI flags before Zod's default
- * strip mode silently discards them.
+ * used to detect unknown keys passed via CLI flags before Zod's default strip
+ * mode silently discards them
  */
 export function getObjectShape(
   schema: z.ZodTypeAny,
@@ -272,9 +233,8 @@ export function getObjectShape(
 }
 
 /**
- * Whether an input key belongs to a method schema, without parsing values or
- * running transforms. Used when caching forwarded step inputs: composite
- * schemas and catchalls accept keys that a single object shape cannot list.
+ * checks a key without parsing values or running transforms; composite schemas
+ * and catchalls accept keys a single object shape cannot list
  */
 export function acceptsMethodArgumentKey(
   schema: z.ZodTypeAny,
@@ -319,18 +279,13 @@ export function acceptsMethodArgumentKey(
   return visit(schema);
 }
 
-/**
- * Result of {@link parseGlobalArgumentsLeniently}: the parsed values on
- * success, or the Zod issues (with paths rooted at the global argument key).
- */
 export type LenientParseResult =
   | { success: true; data: Record<string, unknown> }
   | { success: false; issues: z.ZodIssue[] };
 
 /**
- * Returns the schema's `.partial()` form, "none" when the schema has no
- * `.partial()` (e.g. a transform), or "refused" when calling it throws — Zod
- * v4 throws for object schemas that carry refinements.
+ * Zod v4 throws from partial() on object schemas that carry refinements, which
+ * is the refused answer; a schema without partial() is none
  */
 function tryPartial(schema: z.ZodTypeAny): z.ZodTypeAny | "none" | "refused" {
   if (!("partial" in schema) || typeof schema.partial !== "function") {
@@ -344,14 +299,9 @@ function tryPartial(schema: z.ZodTypeAny): z.ZodTypeAny | "none" | "refused" {
 }
 
 /**
- * Runs the whole schema over the raw values of the shape's keys and returns
- * its issues, leaving out every issue rooted at a `missing` key: a field that
- * is absent and fails on its own, which the lenient check does not require.
- * Issues at the root, at a present key or at an absent optional key are kept,
- * so a refinement's own issues are reported. The raw values are parsed, not
- * the field outputs, since a transformed field would not parse a second time.
- * A schema whose refinements are async cannot be checked by a synchronous
- * parse, so it reports nothing.
+ * drops issues rooted at a missing key; parses the raw values since a
+ * transformed field would not parse twice; async refinements cannot run
+ * synchronously, so they report nothing
  */
 function objectRefinementIssues(
   schema: z.ZodTypeAny,
@@ -364,10 +314,9 @@ function objectRefinementIssues(
   );
   let result;
   try {
-    // Every issue, never argumentParseContext(): issues rooted at a missing
-    // key are dropped below, so stopping at the first failing key could hide
-    // a failing present one. This runs only once every field has passed its
-    // own parse, so a full parse cannot grow with the input (swamp-club#3862).
+    // every issue, not stopping at the first: issues at missing keys are
+    // dropped below, so stopping early could hide a failing present key; runs
+    // only after every field passed
     result = schema.safeParse(raw, { reportInput: true });
   } catch (error) {
     if (error instanceof z.core.$ZodAsyncError) return [];
@@ -380,28 +329,9 @@ function objectRefinementIssues(
 }
 
 /**
- * Validates global arguments against a model's schema without requiring the
- * fields that are missing: provided fields are checked and missing fields get
- * their Zod defaults.
- *
- * - A schema that supports `.partial()` is parsed with its partial form.
- * - An object schema whose `.partial()` throws (a Zod v4 object with
- *   refinements) is parsed field by field against its shape. When every field
- *   passes and no key is skipped, the whole schema then runs over the input,
- *   so object-level refinements are enforced. Zod skips them while a
- *   required field is missing, so an incomplete object is not refined.
- * - Any other schema (no `.partial()`, e.g. a transform) is parsed as-is,
- *   unless keys are skipped: it cannot check an incomplete object, so the
- *   input is returned unchecked.
- *
- * Keys in `skipKeys` (global arguments holding an unresolved expression) are
- * neither parsed nor returned, so a default can never replace them.
- *
- * Every issue carries the `input` the failing check received, which under a
- * transform is what the transform made of the value, so a caller can
- * register what a sensitive field's refusal may echo before it reports it
- * (swamp-club#3681). A parse that delivers a scalar, null or an array is
- * refused with a value-free issue: global arguments are a record.
+ * checks only provided fields and applies defaults; skipKeys (unresolved
+ * expressions) are neither parsed nor returned; issues carry the failing input
+ * so callers can register sensitive echoes first
  */
 export function parseGlobalArgumentsLeniently(
   schema: z.ZodTypeAny,
@@ -463,10 +393,9 @@ export function parseGlobalArgumentsLeniently(
     typeof result.data !== "object" || result.data === null ||
     Array.isArray(result.data)
   ) {
-    // Global arguments are a record. A schema delivering a scalar, null or
-    // an array cannot be stored as them, and spreading a string would store
-    // it one character per key (swamp-club#3681). The refusal names the
-    // shape, never the value. An instance is stored by its own properties.
+    // global arguments are a record: a scalar, null or array result is refused,
+    // naming the shape and never the value, since spreading a string would
+    // store one character per key
     return {
       success: false,
       issues: [{
@@ -491,11 +420,6 @@ function describeShape(value: unknown): string {
   return `a ${typeof value}`;
 }
 
-/**
- * Returns true when the schema (after unwrapping optional/nullable/default/
- * effects wrappers) resolves to a ZodRecord. Record schemas accept arbitrary
- * string keys, so key-based routing and unknown-key checks don't apply.
- */
 export function isRecordSchema(schema: z.ZodTypeAny): boolean {
   const unwrapped = unwrapSchema(schema);
   return getSchemaType(unwrapped) === "record";

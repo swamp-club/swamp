@@ -16,16 +16,6 @@
 //
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
-/**
- * The writer's check of its own replica, and the new lineage it leads to
- * (swamp-club#3935), against a real Litestream and a file replica.
- *
- * A broken lineage is built the way the reported one looked to a reader: a
- * lineage Litestream restores without complaint into a database that fails
- * SQLite's integrity check, while the writer's own copy is intact. These
- * tests spawn the supervisor (from its entry file) and Litestream, like the
- * other sidecar tests, and kill every one they start.
- */
 
 import {
   assert,
@@ -70,10 +60,6 @@ import {
 
 const ignore = SIDECAR_TESTS_IGNORED;
 
-/**
- * Every replica-check temp file beside the copy or in the private
- * directory (swamp-club#4261).
- */
 async function verifyLeftovers(
   paths: { sharedDir: string; privateDir: string },
 ): Promise<string[]> {
@@ -90,10 +76,6 @@ async function verifyLeftovers(
   return found;
 }
 
-/**
- * Writes the config a sidecar replicating lineage `fence` runs with, as the
- * supervisor does, and returns its path.
- */
 async function sidecarConfig(
   env: ReplicationEnv,
   paths: Awaited<ReturnType<ReplicationEnv["paths"]>>,
@@ -110,7 +92,6 @@ async function sidecarConfig(
   return paths.config;
 }
 
-/** Waits for the env's sidecar to idle out, so nothing writes its lineage. */
 async function sidecarGone(env: ReplicationEnv): Promise<void> {
   await waitFor(
     async () => await presenceOf(env) === undefined,
@@ -119,12 +100,6 @@ async function sidecarGone(env: ReplicationEnv): Promise<void> {
   );
 }
 
-/**
- * Replaces the files of lineage `fence` with a whole lineage of a copy of
- * the writer's database whose index on the commits table has a damaged
- * root page: Litestream restores it cleanly, and SQLite's integrity check
- * fails on it. Returns the TXID that lineage reaches.
- */
 async function breakLineage(
   env: ReplicationEnv,
   fence: number,
@@ -150,7 +125,6 @@ async function breakLineage(
   } finally {
     conn.close();
   }
-  // An index b-tree page retyped as a table leaf (0x0d).
   const file = await Deno.open(db, { read: true, write: true });
   try {
     await file.seek((rootpage - 1) * pageSize, Deno.SeekMode.Start);
@@ -170,8 +144,8 @@ async function breakLineage(
     stderr: "null",
   }).spawn();
   try {
-    // Up to its snapshot (swamp-club#4261): a new snapshot is what starts
-    // the writer's next check.
+    // wait for a snapshot: a new snapshot is what starts the writer's next
+    // check
     await waitFor(
       async () => (await ltxFiles(join(replica, "ltx", "9"))).length > 0,
       "Litestream to replicate and snapshot the broken copy",
@@ -190,7 +164,6 @@ async function breakLineage(
   return txids.sort().at(-1)!;
 }
 
-/** The paths of Litestream's local L0 files beside `commitsDb`. */
 async function localL0Files(commitsDb: string): Promise<string[]> {
   const dir = join(dirname(commitsDb), ".commits.db-litestream", "ltx", "0");
   const found: string[] = [];
@@ -200,7 +173,6 @@ async function localL0Files(commitsDb: string): Promise<string[]> {
   return found;
 }
 
-/** Whether process `pid` still runs (`kill -0`). */
 async function processAlive(pid: number): Promise<boolean> {
   const result = await new Deno.Command("kill", {
     args: ["-0", String(pid)],
@@ -210,7 +182,6 @@ async function processAlive(pid: number): Promise<boolean> {
   return result.success;
 }
 
-/** The LTX file names under `dir`, recursively. */
 async function ltxFiles(dir: string): Promise<string[]> {
   const found: string[] = [];
   try {
@@ -244,7 +215,6 @@ Deno.test({
       await writeCommand(env, 3);
       const paths = await env.paths();
       const first = (await readLineage(paths))!.lineageFence;
-      // The real supervisor checks what its writer acknowledged.
       await waitFor(
         async () => {
           const verdict = await readReplicaVerification(paths);
@@ -254,14 +224,11 @@ Deno.test({
         { timeoutMs: 20_000 },
       );
       await sidecarGone(env);
-      // Restored beside the copy, and nothing left there or under /tmp.
       assertEquals(await verifyLeftovers(paths), []);
 
       const txid = await breakLineage(env, first);
       const copy = (await readCopyState(paths))!;
       await writeCopyState(paths, { ...copy, txid });
-      // The broken lineage carries a new snapshot, which is what starts this
-      // check under swamp-club#4261's rule; it still finds the damage.
       const snapshot = await readNewestSnapshotTxid({
         binary: LITESTREAM_BINARY!,
         config: await sidecarConfig(env, paths, first),
@@ -284,11 +251,9 @@ Deno.test({
       assertEquals(verdict?.snapshotTxid, snapshot);
       assertEquals(await verifyLeftovers(paths), []);
 
-      // The next writer restarts from its intact copy, at its own fence.
       await writeCommand(env, 2);
       const next = (await readLineage(paths))!;
       assert(next.lineageFence > first);
-      // Once the new lineage is confirmed, collection removes the broken one.
       await assertRejects(
         () => Deno.stat(replicaPathFor(env.replicaRoot, first)),
         Deno.errors.NotFound,
@@ -322,9 +287,8 @@ Deno.test({
         "the sidecar to check its new lineage",
         { timeoutMs: 20_000 },
       );
-      // Its first listing can run before Litestream writes the lineage's
-      // first snapshot. Then the next acknowledgement is checked once that
-      // snapshot is seen, at the latest when the sidecar goes idle.
+      // the first listing can run before Litestream writes the first snapshot;
+      // the next acknowledgement is then checked once the snapshot is seen
       if ((await readReplicaVerification(paths))?.snapshotTxid === undefined) {
         await writeCommand(env, 1);
       }
@@ -387,7 +351,6 @@ Deno.test({
           { timeoutMs: 20_000 },
         );
         assert(v3WriterFence(env.datastorePath)! > fenceBefore);
-        // Serve keeps writing on the new fence.
         await commitIn(env, 1);
       } finally {
         await upkeep.stop();
@@ -411,7 +374,6 @@ Deno.test({
   ignore,
   async fn() {
     await withReplicationEnv(async (env) => {
-      // Each command syncs: local L0 files at several TXIDs.
       for (let i = 0; i < 3; i++) await writeCommand(env, 1);
       const paths = await env.paths();
       const first = (await readLineage(paths))!.lineageFence;
@@ -461,7 +423,6 @@ Deno.test({
         lineageFence: 2,
         txid: "0000000000000005",
       });
-      // A Litestream whose restore never finishes, recording its pid.
       const pidFile = join(dir, "restore.pid");
       const stall = join(dir, "litestream");
       await Deno.writeTextFile(
@@ -485,10 +446,9 @@ Deno.test({
         DOMException,
       );
       assertEquals(rejection.name, "TimeoutError");
-      // Only the deadline ends it: the stalled restore was killed. A deadline
-      // that fires first kills the stub before it records its pid, and the
-      // check has waited for its exit, so there is no process left to find.
-      // Never read an empty file as pid 0: kill -0 0 is our own process group.
+      // only the deadline ends it: one firing first kills the stub before it
+      // records its pid; never read an empty pid file as 0, since kill -0 0
+      // targets our own process group
       const recorded = await Deno.readTextFile(pidFile)
         .then((text) => text.trim())
         .catch((error) => {
@@ -530,8 +490,6 @@ Deno.test({
         lineageFence: 2,
         txid: "0000000000000005",
       });
-      // A Litestream that records where it was told to restore, writes the
-      // files a stopped restore leaves, then fails or stalls.
       const recorded = join(dir, "restore-target");
       const stub = (tail: string) =>
         `#!/bin/sh\nwhile [ "$1" != "-o" ]; do shift; done\n` +
@@ -564,7 +522,6 @@ Deno.test({
         const target = (await Deno.readTextFile(recorded)).trim();
         assertEquals(dirname(target), paths.sharedDir);
         assertEquals(await verifyLeftovers(paths), []);
-        // No verdict: a restore that could not run never restarts a lineage.
         assertEquals(await readReplicaVerification(paths), undefined);
       }
     } finally {
@@ -625,7 +582,6 @@ Deno.test({
         }),
         newest,
       );
-      // A replica it cannot list reads as unknown.
       assertEquals(
         await readNewestSnapshotTxid({
           binary: LITESTREAM_BINARY!,

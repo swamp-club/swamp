@@ -17,9 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// The behaviors: manifest key, the behavior spelling of models:
-// (swamp-club#3338).
-
 import { assertEquals, assertThrows } from "@std/assert";
 import fc from "fast-check";
 import { parseExtensionManifest } from "./extension_manifest.ts";
@@ -64,8 +61,8 @@ Deno.test("parseExtensionManifest: behaviors: alone satisfies the at-least-one-e
 });
 
 Deno.test("parseExtensionManifest: a manifest with models: reads exactly as before, ignoring a stray behaviors: key", () => {
-  // Before behaviors: existed, the key was dropped beside models:; it still
-  // is, so no manifest that parsed before parses differently now.
+  // the behaviors: key is still dropped beside models:, so no manifest that
+  // parsed before parses differently
   for (
     const [withStray, without] of [
       [{ models: ["a.ts"], behaviors: ["b.ts"] }, { models: ["a.ts"] }],
@@ -77,7 +74,6 @@ Deno.test("parseExtensionManifest: a manifest with models: reads exactly as befo
       parseExtensionManifest(JSON.stringify({ ...base, ...without })),
     );
   }
-  // An empty models: list still needs some other entry point, as before.
   assertThrows(() =>
     parseExtensionManifest(
       JSON.stringify({ ...base, models: [], behaviors: ["b.ts"] }),

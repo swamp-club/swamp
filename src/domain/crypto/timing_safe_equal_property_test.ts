@@ -47,7 +47,6 @@ Deno.test("timingSafeEqual: is true for a string against itself", () => {
   fc.assert(
     fc.property(arbText, (a) => {
       assert(timingSafeEqual(a, a));
-      // Comparing against an independently built copy behaves the same.
       assert(timingSafeEqual(a, `${a}`));
     }),
     { numRuns: 500 },

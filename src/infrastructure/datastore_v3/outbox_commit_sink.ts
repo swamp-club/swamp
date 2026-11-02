@@ -17,19 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * The commit sink of a v3 datastore handle (swamp-club#3490): the commit
- * store's append behind the writer lease's check, with the commit outbox.
- * Built in one place, `openV3Datastore`, so every unit the handle opens
- * prepares its commits.
- *
- * Phase 5's team-mode sink, which forwards commits to serve's leader, is
- * this sink over a store whose append goes to serve: `serve_commit_sink.ts`
- * (swamp-club#3985).
- *
- * @module
- */
-
 import type { Commit } from "../../domain/datastore_v3/commit.ts";
 import type {
   CommitOutbox,
@@ -39,38 +26,26 @@ import type { CommitStoreAppendResult } from "../../domain/datastore_v3/commit_s
 import type { CommitSink } from "./commit_log_unit_of_work.ts";
 import type { SqliteCommitStore } from "./sqlite_commit_store.ts";
 
-/** What {@link createOutboxCommitSink} composes. */
 export interface OutboxCommitSinkOptions {
   readonly commitStore: Pick<
     SqliteCommitStore,
     "append" | "head" | "headIdentity" | "dataHighWater" | "landedSeq"
   >;
   readonly outbox: CommitOutbox;
-  /**
-   * The chunk sweep batch this process is running on the outbox's copy, if
-   * any (swamp-club#3586): resolves once it has deleted and re-checked.
-   */
   readonly sweepBatch?: () => Promise<void>;
-  /**
-   * Throws once this process's writer lease was taken over or released:
-   * checked before each prepare and each append.
-   */
   readonly assertWriterCurrent?: () => void;
   readonly clock?: () => Date;
 }
 
-/** A {@link CommitSink} with an outbox, and the removals it still owes. */
 export interface OutboxCommitSink extends CommitSink {
   /**
-   * Retries the removals of entries that failed (a unit's discard after a
-   * failure, usually for the same cause): called when the handle closes.
-   * An entry that cannot be removed is marked abandoned instead, which
-   * recovery honours (swamp-club#3586). Rejects when neither can be written.
+   * retries failed removals when the handle closes; an entry that cannot be
+   * removed is marked abandoned, which recovery honours. Rejects when neither
+   * can be written
    */
   retryOwedRemovals(): Promise<void>;
 }
 
-/** Builds the sink a v3 datastore handle gives every unit it opens. */
 export function createOutboxCommitSink(
   options: OutboxCommitSinkOptions,
 ): OutboxCommitSink {

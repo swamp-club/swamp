@@ -17,13 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Serve's run entry points enter the vault scope of the principal that
- * triggered the run (swamp-club#2676): both `model.method.run` paths,
- * `workflow.run`, and resumes — which are held to the run's recorded
- * principal, never the resumer, and fail closed when the run recorded none.
- */
-
 import { assertEquals } from "@std/assert";
 import { join } from "@std/path";
 import { z } from "zod";
@@ -67,7 +60,6 @@ import "../domain/models/models.ts";
 
 await initializeLogging({});
 
-/** What the probe method saw of its run's vault scope. */
 interface Probe {
   scoped: boolean;
   erp?: boolean;
@@ -92,7 +84,6 @@ function grant(overrides: Partial<Grant>): Grant {
   };
 }
 
-/** bot runs anything and reads only vault:roomcontrol; root runs anything. */
 const GRANTS: Grant[] = [
   grant({}),
   grant({ resource: { kind: "workflow", pattern: "*" } }),
@@ -137,7 +128,6 @@ interface Harness {
   ctx: ConnectionContext;
   probes: Probe[];
   audits: AuditEvent[];
-  /** Calls to the probe that fail before recording. */
   failNext: { count: number };
   definitionName: string;
 }
@@ -172,7 +162,6 @@ async function withHarness(
             roomcontrol: access &&
               (await access.decide("roomcontrol", "read")).allowed,
           });
-          // A refused read is audited.
           await access?.check("erp", "read", "password").catch(() => {});
           return {};
         },

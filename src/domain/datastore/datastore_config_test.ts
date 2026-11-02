@@ -116,8 +116,6 @@ Deno.test("resolveSyncTimeoutMs: no override, no config, no env returns default"
   });
 });
 
-// --- resolveLockTimeoutMs ---
-
 Deno.test("resolveLockTimeoutMs: override wins over env and default", () => {
   withMockedEnv({ [LOCK_TIMEOUT_ENV_VAR]: "120000" }, () => {
     assertEquals(resolveLockTimeoutMs(30_000), 30_000);
@@ -160,8 +158,6 @@ Deno.test("resolveLockTimeoutMs: negative env var falls through to default", () 
     assertEquals(resolveLockTimeoutMs(), DEFAULT_LOCK_TIMEOUT_MS);
   });
 });
-
-// --- getDatastoreDirectories / ALWAYS_LOCAL_SUBDIRS ---
 
 Deno.test("getDatastoreDirectories: excludes secrets from default list", () => {
   const dirs = getDatastoreDirectories(filesystemConfig);

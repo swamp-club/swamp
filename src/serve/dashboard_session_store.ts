@@ -27,7 +27,6 @@ const SLOT_KEY_PREFIX = `${SESSION_KEY_PREFIX}slots/`;
 const SESSION_ID_PATTERN = /^[a-f0-9]{64}$/;
 const MAX_SLOT_PROBES = 64;
 
-/** An absolute lifetime bounds inactive dashboard-session coordination data. */
 export const DASHBOARD_SESSION_TTL_MS = 8 * 60 * 60 * 1000;
 export const MAX_DASHBOARD_SESSIONS = 10_000;
 export const MAX_DASHBOARD_SESSIONS_PER_TOKEN = 100;
@@ -51,11 +50,9 @@ const DashboardSessionSlotSchema = z.object({
 });
 
 /**
- * An opaque browser-session entity held in the control plane.
- *
- * It deliberately contains a server-token reference and mint identity, never
- * the token's bearer secret. The server-token aggregate remains the authority
- * for principal, policy snapshot, expiry, and revocation.
+ * holds a server-token reference and mint identity, never the bearer secret;
+ * the server-token aggregate stays the authority for principal, policy
+ * snapshot, expiry and revocation
  */
 export type DashboardSession = z.infer<typeof DashboardSessionSchema>;
 
@@ -88,10 +85,8 @@ export interface ControlPlaneDashboardSessionStoreOptions {
 }
 
 /**
- * A shared control-plane repository for dashboard sessions.
- *
- * Control-plane backends are scoped by the configured datastore namespace, so
- * every serve replica for one namespace resolves the same opaque cookie id.
+ * backends are scoped by datastore namespace, so every serve replica for a
+ * namespace resolves the same opaque cookie id
  */
 export class ControlPlaneDashboardSessionStore
   implements DashboardSessionStore {

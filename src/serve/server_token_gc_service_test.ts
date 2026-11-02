@@ -75,7 +75,7 @@ Deno.test("runOnce: skips expired tokens within the grace period", async () => {
   const token = makeToken({
     name: "oauth-recent",
     state: "expired",
-    expiresAt: new Date(Date.now() - 30 * 60 * 1000).toISOString(), // 30 min ago
+    expiresAt: new Date(Date.now() - 30 * 60 * 1000).toISOString(),
   });
   const deps = makeMockDeps([token]);
   const service = new ServerTokenGcService(deps);
@@ -90,7 +90,7 @@ Deno.test("runOnce: collects expired tokens past the grace period", async () => 
   const token = makeToken({
     name: "oauth-old",
     state: "expired",
-    expiresAt: new Date(Date.now() - 2 * ONE_HOUR).toISOString(), // 2 hours ago
+    expiresAt: new Date(Date.now() - 2 * ONE_HOUR).toISOString(),
   });
   const deps = makeMockDeps([token]);
   const service = new ServerTokenGcService(deps);
@@ -105,7 +105,7 @@ Deno.test("runOnce: collects revoked tokens immediately without grace period", a
   const token = makeToken({
     name: "oauth-revoked",
     state: "revoked",
-    expiresAt: new Date(Date.now() + THIRTY_DAYS).toISOString(), // not yet expired
+    expiresAt: new Date(Date.now() + THIRTY_DAYS).toISOString(),
     revokedAt: new Date().toISOString(),
   });
   const deps = makeMockDeps([token]);
@@ -137,7 +137,6 @@ Deno.test("runOnce: re-checks each token against the same policy when collecting
   const verdicts: boolean[] = [];
   const deps = makeMockDeps([listed], {
     collectToken: (_token, isEligible) => {
-      // Rotated since the listing: active again, with a fresh expiry.
       verdicts.push(isEligible(makeToken({ name: "oauth-revoked" })));
       verdicts.push(isEligible(listed));
       verdicts.push(
@@ -202,7 +201,7 @@ Deno.test("runOnce: handles mix of eligible and ineligible tokens", async () => 
     makeToken({
       name: "oauth-recent",
       state: "expired",
-      expiresAt: new Date(Date.now() - 10 * 60 * 1000).toISOString(), // 10 min ago
+      expiresAt: new Date(Date.now() - 10 * 60 * 1000).toISOString(),
     }),
     makeToken({
       name: "oauth-old",
@@ -357,8 +356,6 @@ Deno.test("ServerTokenGcService: a tick runs with no active span when started un
   });
 });
 
-// --- per-sweep cap (swamp-club#2535) ---
-
 function revokedTokens(count: number, prefix = "t"): TokenGcInfo[] {
   return Array.from({ length: count }, (_, i) =>
     makeToken({
@@ -417,11 +414,9 @@ Deno.test("runOnce: failures count toward the cap and failed tokens are retried 
   };
   const service = new ServerTokenGcService(deps);
 
-  // The first sweep spends the cap on the failing block.
   assertEquals(await service.runOnce(), 0);
   assertEquals(attempted.length, MAX_TOKENS_PER_SWEEP);
 
-  // The next sweep tries the others first.
   attempted.length = 0;
   assertEquals(await service.runOnce(), 3);
   assertEquals(attempted.slice(0, 3), ["good0", "good1", "good2"]);
@@ -453,13 +448,11 @@ Deno.test("runOnce: a failed token the cap left untried stays at the back", asyn
   await service.runOnce();
   assertEquals(attempted, ["bad"]);
 
-  // The fresh tokens fill the cap, so "bad" is not tried this sweep.
   tokens = [bad, ...fresh];
   attempted.length = 0;
   await service.runOnce();
   assert(!attempted.includes("bad"));
 
-  // It still goes after a token it was listed ahead of.
   tokens = [bad, later];
   attempted.length = 0;
   await service.runOnce();

@@ -90,7 +90,6 @@ Deno.test("CelEvaluator: container and branch composition preserves the selected
         );
         assertEquals(error instanceof MissingModelDataError, selectsMissing);
         if (selectsMissing) assertEquals(reads, 1);
-        // Some invalid literal receivers are rejected by CEL before execution.
         else assert(reads <= 1);
       },
     ),
@@ -101,10 +100,8 @@ Deno.test("CelEvaluator: container and branch composition preserves the selected
 const LOWER = "abcdefghijklmnopqrstuvwxyz".split("");
 
 /**
- * CEL reserved words and literal keywords are outside the domain of variable
- * identifiers (fast-check found `as`: "Reserved identifier: as"), plus macro
- * and builtin names excluded defensively. Generated identifiers must dodge
- * them all.
+ * CEL reserved words, literal keywords, macro and builtin names are not valid
+ * variable identifiers, so generated identifiers must avoid them
  */
 const CEL_RESERVED = new Set([
   "as",
@@ -128,7 +125,6 @@ const CEL_RESERVED = new Set([
   "var",
   "void",
   "while",
-  // macros / builtins
   "all",
   "dyn",
   "exists",
@@ -138,7 +134,6 @@ const CEL_RESERVED = new Set([
   "matches",
   "size",
   "type",
-  // cel-js type keywords resolve as type references, not variable lookups
   "bool",
   "bytes",
   "double",
@@ -147,9 +142,8 @@ const CEL_RESERVED = new Set([
   "null_type",
   "string",
   "uint",
-  // cel-js binds these names itself; they resolve to built-in namespace
-  // objects and shadow a context variable of the same name (fast-check found
-  // `cel`: expected "0a", got "{}a")
+  // cel-js binds these names itself as built-in namespace objects, shadowing a
+  // context variable of the same name
   "cel",
   "google",
   "optional",
@@ -169,9 +163,6 @@ const arbHyphenModelName = fc
   .array(arbIdent, { minLength: 2, maxLength: 3 })
   .map((parts) => parts.join("-"));
 
-// Evaluated atoms use input/execution/definition only: model.*.resource and
-// model.*.file additionally route through the deprecation-warning logger,
-// which is not the surface under test here.
 const arbEvalDepType = fc.constantFrom(
   "input" as const,
   "execution" as const,
@@ -190,7 +181,6 @@ const arbModelAtom: fc.Arbitrary<ModelAtom> = fc.record({
   field: arbIdent,
 });
 
-/** Valid-by-construction CEL expressions (brace-free, pre-trimmed). */
 const arbCelExpr = fc.oneof(
   arbIdent,
   fc.tuple(arbIdent, arbIdent).map(([a, b]) => `${a} + ${b}`),
@@ -199,9 +189,10 @@ const arbCelExpr = fc.oneof(
     .map(([m, t, f]) => `model.${m}.${t}.${f}`),
 );
 
-/** Record keys are drawn from a small safe alphabet so no generated key can
- * collide with `__proto__` or the reserved namespace keys (file, data,
- * workers, modelMethod) that wrapNamespaces intercepts. */
+/**
+ * keys come from a small safe alphabet so none collides with __proto__ or the
+ * reserved namespace keys that wrapNamespaces intercepts
+ */
 const arbKey = fc.stringOf(fc.constantFrom(..."abcdefgh".split("")), {
   minLength: 1,
   maxLength: 6,
@@ -215,8 +206,6 @@ const arbJsonValue: fc.Arbitrary<unknown> = fc.oneof(
   fc.array(fc.string({ maxLength: 5 }), { maxLength: 3 }),
 );
 
-/** Arbitrary — mostly malformed — expression text: raw fuzz plus near-miss
- * mutations of valid grammar output. */
 const arbAnyExpressionText = fc.oneof(
   fc.string(),
   fc.unicodeString(),
@@ -230,8 +219,6 @@ const arbContext = fc.dictionary(arbKey, arbJsonValue, { maxKeys: 3 });
 const arbLetters = fc.stringOf(fc.constantFrom(...LOWER), { maxLength: 6 });
 
 Deno.test("CelEvaluator.evaluate: returns a value or throws InvalidExpressionError for arbitrary input", () => {
-  // Crash guard for user-authored expressions: no unhandled non-typed error
-  // may escape, whatever the input string or context shape.
   fc.assert(
     fc.property(arbAnyExpressionText, arbContext, (expression, context) => {
       try {
@@ -296,8 +283,6 @@ Deno.test("CelEvaluator.evaluate: dependency extraction agrees with evaluation",
           .map((a) => `model.${a.model}.${a.type}.${a.field}`)
           .join(" + ");
 
-        // The extractor reports exactly the generated model refs and
-        // (model, type) pairs, deduplicated.
         assertEquals(
           [...new Set(atoms.map((a) => a.model))].sort(),
           extractModelRefs(expression).sort(),
@@ -309,9 +294,6 @@ Deno.test("CelEvaluator.evaluate: dependency extraction agrees with evaluation",
             .sort(),
         );
 
-        // A context providing exactly the extracted dependencies evaluates
-        // successfully (later duplicate atoms overwrite earlier values, so
-        // the expected result reads from the final context).
         const model: Record<
           string,
           Record<string, Record<string, string>>
@@ -326,8 +308,6 @@ Deno.test("CelEvaluator.evaluate: dependency extraction agrees with evaluation",
           .join("");
         assertEquals(evaluator.evaluate(expression, { model }), expected);
 
-        // Removing any one referenced model makes evaluation fail with the
-        // typed error — the extracted dependency set is not over-reported.
         const victim = atoms[victimSeed % atoms.length].model;
         const withoutVictim = Object.fromEntries(
           Object.entries(model).filter(([name]) => name !== victim),
@@ -350,12 +330,10 @@ Deno.test("CelEvaluator.evaluate: integer arithmetic matches JS on safe integers
       fc.integer({ min: -1_000_000, max: 1_000_000 }),
       fc.integer({ min: -1000, max: 1000 }),
       (a, b) => {
-        // Literal ints exercise the bigint → number coercion path.
         const sum = evaluator.evaluate(`${a} + ${b}`, {});
         assertEquals(typeof sum, "number");
         assertEquals(sum, a + b);
         assertEquals(evaluator.evaluate(`${a} * ${b}`, {}), a * b);
-        // Context-provided JS numbers exercise the double path.
         assertEquals(evaluator.evaluate("a + b", { a, b }), a + b);
       },
     ),
@@ -381,8 +359,6 @@ Deno.test("CelEvaluator.evaluate: whole-string interpolation preserves the evalu
             evaluator.evaluate(location.celExpression, { [ident]: value }),
           ],
         ]);
-        // The evaluated value is substituted as-is — numbers stay numbers,
-        // booleans stay booleans.
         assertEquals(replaceExpressions(data, values), value);
       },
     ),
@@ -410,15 +386,14 @@ Deno.test("CelEvaluator.evaluate: embedded interpolation yields the literal text
         const data = pieces
           .map(([lit, ident]) => `${lit}\${{ ${ident} }}`)
           .join("") + lastLiteral;
-        // Strings that both start with "${{" and end with "}}" hit the
-        // single-expression fast path in replaceExpressions and are returned
-        // unreplaced — see the BUG CANDIDATE property in
-        // expression_parser_property_test.ts. Out of scope here.
+        // strings that start with ${{ and end with }} take the
+        // single-expression fast path and come back unreplaced; out of scope
+        // here
         fc.pre(!(data.startsWith("${{") && /\}\}\s*$/.test(data)));
 
         const context: Record<string, unknown> = {};
         for (const [, ident, value] of pieces) {
-          context[ident] = value; // duplicates: last write wins
+          context[ident] = value;
         }
 
         const locations = extractExpressions(data);
@@ -436,8 +411,6 @@ Deno.test("CelEvaluator.evaluate: embedded interpolation yields the literal text
           .join("") + lastLiteral;
         assertEquals(result, expected);
 
-        // Stability: the interpolated text carries no expressions, so
-        // re-running the pipeline is the identity.
         assertEquals(extractExpressions(result), []);
         assertEquals(replaceExpressions(result, values), result);
       },
@@ -446,7 +419,6 @@ Deno.test("CelEvaluator.evaluate: embedded interpolation yields the literal text
   );
 });
 
-/** JSON-like values whose integers are safe-range bigints, as cel-js returns ints. */
 const arbCelJson = fc.letrec((tie) => ({
   value: fc.oneof(
     { depthSize: "small" },
@@ -483,7 +455,6 @@ Deno.test("coerceBigInts: JSON-like values come through with ints as numbers", (
   );
 });
 
-/** A cel-js duration's value in nanoseconds, the sum cel-js's own valueOf takes. */
 function durationNanos(duration: unknown): bigint {
   const { seconds, nanos } = duration as { seconds: bigint; nanos: number };
   return seconds * 1_000_000_000n + BigInt(nanos);
@@ -491,7 +462,6 @@ function durationNanos(duration: unknown): bigint {
 
 Deno.test("CelEvaluator.evaluate: duration addition and subtraction match the nanosecond totals", () => {
   const evaluator = new CelEvaluator();
-  // Sub-second, multi-second and far-out totals, either sign.
   const arbNanos = fc.oneof(
     fc.bigInt({ min: -999_999_999n, max: 999_999_999n }),
     fc.bigInt({ min: -1_000_000_000_000n, max: 1_000_000_000_000n }),
@@ -527,8 +497,6 @@ Deno.test("coerceBigInts: a duration's string parses back to the duration it was
   const arbNanos = fc.integer({ min: -1e12, max: 1e12 });
   fc.assert(
     fc.property(arbNanos, arbNanos, (a, b) => {
-      // A parsed duration and a difference of two durations are built by
-      // different cel-js paths; each must format to the value it holds.
       for (
         const expression of [
           `duration('${a}ns')`,

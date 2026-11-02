@@ -17,13 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// `swamp datastore setup extension` copies .swamp/ into the extension cache
-// behind the sync service, then pushes. When an earlier setup or pull had
-// left that cache with a clean sync sidecar (a committed repoId maps every
-// clone to the same cache), the push took the zero-diff fast path and
-// uploaded nothing, while setup reported the files copied and deleted them
-// from .swamp/ (swamp-club#4100). The in-memory remote models that fast path.
-
 import "../src/domain/models/models.ts";
 import { assert, assertEquals } from "@std/assert";
 import { dirname, join } from "@std/path";
@@ -78,11 +71,6 @@ async function exists(path: string): Promise<boolean> {
   }
 }
 
-/**
- * A repo with local data the remote lacks, beside a remote that already
- * holds a teammate's file. With `hydrated`, the repo's cache was pulled once
- * before setup, leaving a clean sidecar.
- */
 async function arrange(
   dir: string,
   remote: ReturnType<typeof createInMemoryRemote>,

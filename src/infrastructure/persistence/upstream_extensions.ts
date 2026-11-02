@@ -22,42 +22,31 @@ import { errorPaths, markErrorPaths } from "../../domain/errors.ts";
 import { ReleaseChannel } from "../../domain/extensions/release_channel.ts";
 import { isBundleArtifactPath } from "./paths.ts";
 
-/** Entry in upstream_extensions.json. */
 export interface UpstreamExtensionEntry {
   version: string;
   pulledAt: string;
   files?: string[];
   include?: string[];
-  /** SHA-256 checksum of the extension archive, for verification on re-install. */
   checksum?: string;
   /**
-   * Rolled-up SHA-256 digest of the on-disk per-extension subtree at install
-   * time. Distinct from `checksum` (which hashes the archive bytes): this
-   * anchors the EXTRACTED files so auto-update can detect local edits
-   * before overwriting. Absent on pre-anchor lockfile entries (grandfather
-   * path) — consumers must tolerate the missing value.
+   * digest of the extracted files, so auto-update can detect local edits before
+   * overwriting; absent on older lockfile entries, so consumers must tolerate
+   * it
    */
   filesChecksum?: string;
-  /** Registry server URL used when pulling, for non-default registries. */
   serverUrl?: string;
-  /**
-   * Release channel the extension was installed from. Absent on pre-channel
-   * lockfile entries — consumers default to "stable" when missing.
-   */
+  /** absent on older lockfile entries; consumers default to stable when missing */
   channel?: string;
   /**
-   * Release channel the registry listed the installed version on when it
-   * was pulled. Differs from `channel` (the channel the install follows)
-   * when an exact version was pulled from another channel. Absent when it
-   * was not known. Read it through {@link readPublishedChannel}.
+   * channel the registry listed the pulled version on; differs from channel
+   * when an exact version was pulled from another channel
    */
   publishedChannel?: string;
 }
 
 /**
- * The entry's published channel, or null when it is absent or not a
- * release channel name. The lockfile is repo-controlled, so a hand-edited
- * value is ignored rather than shown.
+ * the lockfile is repo-controlled, so a hand-edited value is ignored rather
+ * than shown
  */
 export function readPublishedChannel(
   entry: Pick<UpstreamExtensionEntry, "publishedChannel">,
@@ -68,33 +57,24 @@ export function readPublishedChannel(
     : null;
 }
 
-/** Shape of upstream_extensions.json. */
 export type UpstreamExtensionsMap = Record<string, UpstreamExtensionEntry>;
 
 /**
- * A lockfile path with forward slashes. `relative()` writes the OS
- * separator, so a lockfile written on Windows holds backslashes; on POSIX
- * those would read as part of a file name.
+ * relative() writes the OS separator, so a Windows lockfile holds backslashes
+ * that POSIX would read as part of a file name
  */
 export function canonicalLockfilePath(path: string): string {
   return path.replaceAll("\\", "/");
 }
 
-/**
- * The path from `from` to `to` in the lockfile's form, which every
- * extension report also uses: `relative()` with forward slashes.
- */
 export function lockfileRelative(from: string, to: string): string {
   return canonicalLockfilePath(relative(from, to));
 }
 
 /**
- * The entry in the form every checkout writes and reads: `files` and
- * `include` with forward slashes, and `files` without bundle cache
- * paths. A bundle namespace is a hash of an OS-separated path, so its
- * directory differs between Windows and POSIX checkouts, and bundles are
- * rebuilt locally. Key order, array order, unknown keys and non-string
- * array items are kept, and applying it twice changes nothing.
+ * bundle namespaces hash an OS-separated path and bundles are rebuilt locally,
+ * so bundle cache paths are dropped from files; applying it twice changes
+ * nothing
  */
 export function canonicalLockfileEntry<T>(entry: T): T {
   if (typeof entry !== "object" || entry === null || Array.isArray(entry)) {
@@ -123,15 +103,8 @@ export function canonicalLockfileEntry<T>(entry: T): T {
 }
 
 /**
- * Reads upstream_extensions.json and returns the parsed map, each entry in
- * its {@link canonicalLockfileEntry} form, so a lockfile written on another
- * OS reads the same. A missing file reads as an empty map.
- *
- * Content that is not valid JSON, or is valid JSON but not an object (such
- * as `null` or an array), throws a `SyntaxError` naming the file, so callers
- * treat both as the same corrupt lockfile.
- *
- * @param lockfilePath Full path to the upstream_extensions.json file.
+ * invalid JSON or a non-object throws a SyntaxError naming the file, so callers
+ * treat both as the same corrupt lockfile
  */
 export async function readUpstreamExtensions(
   lockfilePath: string,

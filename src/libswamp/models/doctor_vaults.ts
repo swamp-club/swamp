@@ -36,19 +36,12 @@ import { VaultService } from "../../domain/vaults/vault_service.ts";
 
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
 
-/**
- * A model definition whose registered type has sensitive resource output
- * fields but no vault is configured in the repository.
- */
 export interface VaultRequiredFinding {
   definitionId: string;
   definitionName: string;
   type: string;
 }
 
-/**
- * A definition whose type schema could not be resolved.
- */
 export interface UnresolvedVaultDefinition {
   definitionId: string;
   definitionName: string;
@@ -56,23 +49,17 @@ export interface UnresolvedVaultDefinition {
 }
 
 /**
- * The repository has several user vaults and no default vault in effect, so
- * the sensitive outputs that name no vault of their own are stored in the
- * first user vault (by vault type, then id). Advisory: it does not fail the
- * scan.
+ * several user vaults and no default in effect: sensitive outputs naming no
+ * vault go to the first user vault (by vault type, then id); advisory, does not
+ * fail the scan
  */
 export interface VaultFallbackWarning {
-  /** The vault those outputs are stored in. */
   fallbackVault: string;
-  /** Every user vault, in the order the fallback picks from. */
   userVaults: string[];
-  /** `defaultVault` from `.swamp.yaml`, when it names no registered vault. */
   unregisteredDefaultVault?: string;
-  /** The definitions with sensitive outputs that use the fallback. */
   definitions: VaultRequiredFinding[];
 }
 
-/** Outcome of a `doctor vaults` scan. */
 export interface DoctorVaultsData {
   scanned: number;
   hasVault: boolean;
@@ -81,13 +68,9 @@ export interface DoctorVaultsData {
   fallbackWarning?: VaultFallbackWarning;
 }
 
-/** The vaults the sensitive-output fallback chooses between. */
 export interface DoctorVaultsVaultState {
-  /** User vaults, in the order the fallback picks from. */
   userVaultNames: string[];
-  /** The default vault, when `defaultVault` names a registered vault. */
   defaultVaultName?: string;
-  /** `defaultVault` from `.swamp.yaml`, whether or not it is registered. */
   configuredDefaultVault?: string;
 }
 
@@ -96,7 +79,6 @@ export type DoctorVaultsEvent =
   | { kind: "completed"; data: DoctorVaultsData }
   | { kind: "error"; error: SwampError };
 
-/** Dependencies for the `doctor vaults` scan. */
 export interface DoctorVaultsDeps {
   findAllDefinitions: () => Promise<
     { definition: Definition; type: ModelType }[]
@@ -105,13 +87,9 @@ export interface DoctorVaultsDeps {
     type: ModelType,
   ) => ModelDefinition | undefined | Promise<ModelDefinition | undefined>;
   hasVault: () => Promise<boolean>;
-  /** The vault state behind the fallback warning; no warning when absent. */
   vaultState?: () => Promise<DoctorVaultsVaultState>;
 }
 
-/**
- * Wires real infrastructure into {@link DoctorVaultsDeps}.
- */
 export async function createDoctorVaultsDeps(
   repoDir: string,
   options?: { vaultsDir?: string; defaultVaultName?: string },
@@ -158,11 +136,6 @@ export async function createDoctorVaultsDeps(
   };
 }
 
-/**
- * Read-only scan that reports model definitions with sensitive resource
- * outputs when no vault is configured. These models will fail at runtime
- * when they try to write sensitive data.
- */
 export async function* doctorVaults(
   _ctx: LibSwampContext,
   deps: DoctorVaultsDeps,
@@ -228,11 +201,6 @@ export async function* doctorVaults(
   );
 }
 
-/**
- * The fallback warning, when sensitive outputs that name no vault would be
- * stored in whichever user vault sorts first: several user vaults, no default
- * vault in effect, and at least one definition that relies on the fallback.
- */
 function vaultFallbackWarning(
   state: DoctorVaultsVaultState | undefined,
   definitions: VaultRequiredFinding[],

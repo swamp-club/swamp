@@ -31,7 +31,6 @@ import { ExtensionRepository } from "../../infrastructure/persistence/extension_
 import { LockfileRepository } from "../../infrastructure/persistence/lockfile_repository.ts";
 import type { DenoRuntime } from "../runtime/deno_runtime.ts";
 
-/** Stub runtime that returns "deno" as the binary path. */
 class StubDenoRuntime implements DenoRuntime {
   ensureDeno(): Promise<string> {
     return Promise.resolve("deno");
@@ -41,7 +40,6 @@ class StubDenoRuntime implements DenoRuntime {
   }
 }
 
-/** W1b/(a-2): construct an ExtensionRepository wrapping a test catalog. */
 function makeRepoForCatalog(
   catalog: ExtensionCatalogStore,
   repoRoot: string,
@@ -301,14 +299,12 @@ export const datastore = {
     prefix: "datastore_cache_test_stores_",
   });
   try {
-    // Write initial files
     await Deno.writeTextFile(join(datastoresDir, "helper.ts"), helperCode);
     await Deno.writeTextFile(
       join(datastoresDir, "my_store.ts"),
       datastoreCode,
     );
 
-    // First load — populates cache
     const loader1 = new ExtensionLoader(
       new StubDenoRuntime(),
       datastoreKindAdapter,
@@ -316,7 +312,6 @@ export const datastore = {
     );
     await loader1.load(datastoresDir);
 
-    // Read the cached bundle content (namespaced by baseDir hash)
     const { bundleNamespace } = await import(
       "../../infrastructure/persistence/paths.ts"
     );
@@ -330,7 +325,6 @@ export const datastore = {
     );
     const cachedBundle1 = await Deno.readTextFile(bundlePath);
 
-    // Modify only the dependency (not the entry point)
     await Deno.writeTextFile(
       join(datastoresDir, "helper.ts"),
       `export const storeName = "updated";`,
@@ -340,7 +334,6 @@ export const datastore = {
     const bumped = new Date(Date.now() + 5_000);
     await Deno.utime(join(datastoresDir, "helper.ts"), bumped, bumped);
 
-    // Second load — should detect dependency change and rebundle
     const loader2 = new ExtensionLoader(
       new StubDenoRuntime(),
       datastoreKindAdapter,
@@ -348,7 +341,6 @@ export const datastore = {
     );
     await loader2.load(datastoresDir);
 
-    // The bundle should have been regenerated with the new dependency content
     const cachedBundle2 = await Deno.readTextFile(bundlePath);
     assertEquals(cachedBundle1 !== cachedBundle2, true);
   } finally {
@@ -608,7 +600,6 @@ export const datastore = {
       extends_type: "",
       source_mtime: "2026-05-01T12:00:00.000Z",
       source_fingerprint: "deadbeef-broken",
-      // W1b: validation_failed dropped — state="ValidationFailed" is the signal.
     });
 
     const loader2 = new ExtensionLoader(
@@ -631,8 +622,6 @@ export const datastore = {
     await Deno.remove(datastoresDir, { recursive: true });
   }
 });
-
-// ===== Pin 1 (W2) =====
 
 Deno.test(
   "UserDatastoreLoader.bundleAndIndexOne: returns datastore metadata without writing catalog rows (Pin 1)",

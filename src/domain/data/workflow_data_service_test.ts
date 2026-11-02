@@ -30,12 +30,8 @@ import {
   Definition,
 } from "../definitions/definition.ts";
 
-// Import models barrel to trigger self-registration
 import "../models/models.ts";
 
-/**
- * Creates a test Data instance.
- */
 async function createTestData(
   name: string,
   tags: Record<string, string> = { type: "resource" },
@@ -58,9 +54,6 @@ async function createTestData(
   });
 }
 
-/**
- * Creates a mock FileSystemUnifiedDataRepository.
- */
 function createMockDataRepo(
   globalData: Array<{ data: Data; modelType: ModelType; modelId: string }>,
   storedVersions: Array<
@@ -96,9 +89,6 @@ function createMockDataRepo(
   } as unknown as FileSystemUnifiedDataRepository;
 }
 
-/**
- * Creates a mock YamlDefinitionRepository.
- */
 function createMockDefinitionRepo(
   definitions: Map<string, Definition> = new Map(),
 ): YamlDefinitionRepository {
@@ -114,9 +104,6 @@ const TEST_WORKFLOW_ID = "550e8400-e29b-41d4-a716-446655440002";
 const TEST_GC_DATA_ID = "550e8400-e29b-41d4-a716-446655440099";
 const TEST_MODEL_ID = "550e8400-e29b-41d4-a716-446655440003";
 
-/**
- * Creates a test workflow run with the given step data.
- */
 function createTestRun(
   steps: Array<{
     stepName: string;
@@ -388,7 +375,6 @@ Deno.test("WorkflowDataService.findByNameInWorkflowRun: falls back to specName t
     createMockDataRepo(globalData),
   );
 
-  // Querying by spec name should resolve via fallback
   const result = await service.findByNameInWorkflowRun(run, "classification");
   assertEquals(result !== null, true);
   assertEquals(result!.data.name, "classification-main");
@@ -434,7 +420,6 @@ Deno.test("WorkflowDataService.findByNameInWorkflowRun: exact name match takes p
     createMockDataRepo(globalData),
   );
 
-  // Exact name match should win over specName fallback
   const result = await service.findByNameInWorkflowRun(run, "classification");
   assertEquals(result !== null, true);
   assertEquals(result!.data.name, "classification");
@@ -467,7 +452,6 @@ Deno.test("WorkflowDataService.findByNameInWorkflowRun: specName fallback skips 
     createMockDataRepo(globalData),
   );
 
-  // No specName tag on the data, so fallback should not match
   const result = await service.findByNameInWorkflowRun(run, "nonexistent");
   assertEquals(result, null);
 });
@@ -521,11 +505,10 @@ Deno.test("WorkflowDataService.findAllForWorkflowRun resolves workflow-scope art
   assertEquals(result.length, 1);
   assertEquals(result[0].data.name, "report-swamp-workflow-summary");
   assertEquals(result[0].modelType.normalized, "workflow");
-  // Named by the workflow, not its id, matching the tags.modelName search
-  // authorizes on (swamp-club#2603).
+  // named by the workflow, not its id, matching the tags.modelName search that
+  // authorization relies on
   assertEquals(result[0].modelName, "test-workflow");
   assertEquals(result[0].modelId, TEST_WORKFLOW_ID);
-  // Workflow-scope items have no owning job or step.
   assertEquals(result[0].jobName, undefined);
   assertEquals(result[0].stepName, undefined);
 });
@@ -601,9 +584,6 @@ Deno.test("WorkflowDataService.findAllForWorkflowRun returns both step and workf
 const OTHER_MODEL_ID = "550e8400-e29b-41d4-a716-446655440004";
 const OTHER_RUN_ID = "550e8400-e29b-41d4-a716-446655440005";
 
-/**
- * Creates test data owned by a model method and recorded against a run.
- */
 async function createRunData(
   name: string,
   runId: string,

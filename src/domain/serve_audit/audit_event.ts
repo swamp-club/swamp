@@ -44,10 +44,6 @@ export interface AuditDecision {
   readonly principalGroups: readonly string[];
 }
 
-/**
- * Who a user is beyond their stable id: the username and the email their OAuth
- * login supplied, each present only when known.
- */
 export interface ActorIdentity {
   readonly username?: string;
   readonly email?: string;
@@ -66,9 +62,7 @@ export interface AuditEvent {
   readonly principalKind: string;
   readonly principalId: string;
   readonly initiatedBy: string;
-  /** The user's username, when known (swamp-club#3076). */
   readonly principalUsername?: string;
-  /** The user's email from their OAuth login, when known (swamp-club#3076). */
   readonly principalEmail?: string;
   readonly sourceIp: string;
   readonly requestId: string;

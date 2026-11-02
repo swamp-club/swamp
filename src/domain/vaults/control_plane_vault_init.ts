@@ -39,11 +39,6 @@ export interface ControlPlaneVaultInitResult {
   isRemote: boolean;
 }
 
-/**
- * Builds the UserError reported when the control-plane vault cannot be
- * initialized, keeping the cause's message and logging the original error
- * (with its stack) at debug level.
- */
 export function controlPlaneVaultInitError(
   err: unknown,
   isRemote: boolean,
@@ -62,7 +57,6 @@ export function controlPlaneVaultInitError(
   );
 }
 
-/** Reads secrets from the vault that holds the external token key. */
 export interface TokenSecretsKeyVaultReader {
   get(
     vaultName: string,
@@ -72,9 +66,8 @@ export interface TokenSecretsKeyVaultReader {
 }
 
 /**
- * Reads and decodes the external token key named by serve.yaml
- * `token-secrets`. Fails closed with a UserError when the vault or secret is
- * missing or the value is not a usable key; messages never include the value.
+ * fails closed with a UserError when the vault or secret is missing or the
+ * value is not a usable key; messages never include the value
  */
 export async function resolveTokenSecretsKey(
   ref: TokenSecretsKeyRef,
@@ -114,25 +107,19 @@ export async function resolveTokenSecretsKey(
 
 export interface ControlPlaneVaultInitOptions {
   /**
-   * The serve.yaml `token-secrets` reference. When set, the key is read from
-   * that vault and the control plane never stores key bytes. It must come
-   * from local configuration only, never from datastore content.
+   * when set, the key is read from that vault and the control plane never
+   * stores key bytes; it must come from local configuration only, never
+   * datastore content
    */
   readonly tokenSecretsKey?: TokenSecretsKeyRef;
-  /** Builds the vault service used to read the key; only called when needed. */
   readonly vaultService?: () => Promise<TokenSecretsKeyVaultReader>;
-  /** Passed to the provider; the token commands set false. */
   readonly migrate?: boolean;
 }
 
 /**
- * Initializes the `_token-secrets` control-plane vault and registers it as a
- * global vault provider.
- *
- * Throws a UserError carrying the underlying cause when the provider cannot
- * initialize. There is deliberately no fallback to a user vault: serve only
- * reads token secrets from `_token-secrets`, so a secret written anywhere else
- * produces a token that never authenticates.
+ * no fallback to a user vault: serve only reads token secrets from
+ * _token-secrets, so a secret written elsewhere yields a token that never
+ * authenticates
  */
 export async function initializeControlPlaneVault(
   store: ControlPlaneStore,

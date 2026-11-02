@@ -150,31 +150,25 @@ Deno.test("scanTemplateSyntax: an unclosed expression is reported instead of the
 });
 
 Deno.test("scanTemplateSyntax: every shape of an unclosed expression is reported", () => {
-  // Swallows a later expression.
   assertEquals(unclosed("echo ${{ self.name } && echo ${{ self.version }}"), [
     "${{ self.name } && echo ${{ self.version }}",
   ]);
-  // Runs on to a }} that closes JSON, after a lone } typed for }}.
   assertEquals(unclosed('curl ${{ self.name } -d \'{"a": {"b": 1}}\''), [
     '${{ self.name } -d \'{"a": {"b": 1}}',
   ]);
-  // Both braces missing.
   assertEquals(
     unclosed("echo ${{ self.name && docker ps --format '{{.Names}}'"),
     ["${{ self.name && docker ps --format '{{.Names}}"],
   );
-  // No }} after it at all: reported to the end of its line.
   assertEquals(unclosed("echo ${{ self.name } && ls"), [
     "${{ self.name } && ls",
   ]);
   assertEquals(unclosed("echo ${{ self.name }\nls -la\n"), [
     "${{ self.name }",
   ]);
-  // A lone } after optional syntax.
   assertEquals(unclosed("echo ${{ self.?name } && ls }}"), [
     "${{ self.?name } && ls }}",
   ]);
-  // An extra opening brace.
   assertEquals(unclosed("echo ${{{ self.name }}}"), ["${{{ self.name }}"]);
   assertEquals(unclosed("${{{'a': 1}}}"), ["${{{'a': 1}}"]);
 });
@@ -248,16 +242,13 @@ Deno.test("scanTemplateSyntax: closed text that is not CEL passes through", () =
 });
 
 Deno.test("scanTemplateSyntax: a map literal cut short by its own }} is not reported yet (swamp-club#2492)", () => {
-  // Known gap: the span shows no sign of running on, so it passes through as
-  // text swamp cannot attribute. A quote- and brace-aware scanner fixes it.
+  // known gap: the span shows no sign of running on, so it passes through as
+  // text swamp cannot attribute
   assertEquals(classify("${{ {'a': {'b': 1}} }}"), "none");
-  // Only the first } is checked for a lone brace, so one inside a string
-  // hides a later typo.
   assertEquals(classify("${{ 'a}b' + self.name } && ls }}"), "none");
 });
 
 Deno.test("scanTemplateSyntax: a comment and a string holding }} leave the expression sound", () => {
-  // A CEL comment hides the lone }, and the string after it holds a }}.
   const scan = scanTemplateSyntax({ v: "${{ a // }\n + 'x}}' }}" }, noInputs);
   assertEquals(scan.malformed, []);
 });
@@ -279,14 +270,10 @@ Deno.test("scanTemplateSyntax: unclosed expressions are reported in a declared f
 
 Deno.test("scanTemplateSyntax: bounds the closing }} tried for each expression", () => {
   const closers = " }}".repeat(40);
-  // A string that closes after many }} is one expression.
   assertEquals(unclosed("${{ '{{a}}" + closers + "' }}"), []);
-  // A string that never closes is unclosed, however many }} follow it.
   assertEquals(unclosed("${{ '{{a}}" + closers + '" }}'), [
     "${{ '{{a}}",
   ]);
-  // Many unclosed expressions, each followed by many closers, are each
-  // reported once.
   const value = "${{ x } {{a}} ".repeat(200) + "}} ".repeat(200);
   assertEquals(unclosed(value).length, 200);
 });

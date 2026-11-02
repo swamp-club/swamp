@@ -26,9 +26,6 @@ import {
 } from "../models/model_lookup.ts";
 import { wordedError, wordedText } from "../behavior_wording.ts";
 
-/**
- * Result of a data delete operation.
- */
 export interface DeleteResult {
   modelType: string;
   modelId: string;
@@ -38,10 +35,6 @@ export interface DeleteResult {
   versionsDeleted: number;
 }
 
-/**
- * Read-only preview of a delete operation. Used by the CLI to render the
- * confirmation prompt with an exact version count without mutating state.
- */
 export interface DeletePreview {
   modelType: string;
   modelId: string;
@@ -85,25 +78,15 @@ function matchesFilter(
   }
 }
 
-/** How a data operation resolves its model reference. */
 export interface ModelRefOptions {
-  /**
-   * Treat the model reference as a definition id the caller already
-   * resolved, and look it up by id only.
-   */
   byId?: boolean;
   /**
-   * With `byId`, the model name the caller authorized: ids are not
-   * guaranteed unique, so only a model with this name and the id matches.
+   * ids are not guaranteed unique, so with byId only a model with this name and
+   * the id matches
    */
   expectedName?: string;
 }
 
-/**
- * Resolves the model a data operation targets: by name then exact id, or by
- * id only when the caller already resolved it and must act on exactly that
- * model.
- */
 function lookupModel(
   definitionRepo: DefinitionRepository,
   modelRef: string,
@@ -115,16 +98,8 @@ function lookupModel(
 }
 
 /**
- * Service for deleting data instances.
- *
- * Pre-checks (in order):
- *   1. Model exists (resolved by id-or-name)
- *   2. Data artifact exists (listVersions non-empty)
- *   3. When a specific version is requested, that version exists in listVersions
- *
- * The third pre-check closes the silent-no-op surface left by
- * UnifiedDataRepository.delete catching Deno.errors.NotFound on a missing
- * version directory.
+ * the third pre-check closes the silent no-op left by the repository delete
+ * catching NotFound on a missing version directory
  */
 export class DataDeleteService {
   constructor(

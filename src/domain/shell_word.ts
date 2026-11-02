@@ -22,20 +22,12 @@ import {
   mapControlCharacters,
 } from "./control_characters.ts";
 
-/** A POSIX shell word made only of these characters needs no quoting. */
 const SHELL_SAFE_WORD = /^[A-Za-z0-9_@%+=:,./-]+$/;
 
 /**
- * Quotes a value for a command printed for the user to paste into a POSIX
- * shell. A value made only of safe characters is returned as-is; anything
- * else is single-quoted, each embedded single quote written as `'"'"'`.
- *
- * A value holding a control character is written in ANSI-C form instead
- * (`$'…'` with each control character as a `\xNN` escape), so the hint is
- * visibly escaped and cannot drive the terminal, and still pastes correctly
- * in bash and zsh (swamp-club#3027). Step and job names refuse control
- * characters at validation, so this form only appears for a name that
- * reached the client from an older server or from a forEach item value.
+ * a value with a control character uses ANSI-C form so the hint is visibly
+ * escaped, cannot drive the terminal, and still pastes correctly in bash and
+ * zsh
  */
 export function quoteShellWord(value: string): string {
   if (SHELL_SAFE_WORD.test(value)) return value;
@@ -44,9 +36,8 @@ export function quoteShellWord(value: string): string {
 }
 
 /**
- * ANSI-C quoting. A C0 or DEL character is one byte in UTF-8, so `\xNN`
- * pastes back to the same character; a C1 character is two bytes, so it is
- * written as `\uNNNN` (bash 4.2+ and zsh) to survive the round trip.
+ * C0 and DEL are one UTF-8 byte so \xNN round-trips; C1 is two bytes so it is
+ * written as \uNNNN (bash 4.2+ and zsh)
  */
 function ansiCQuote(value: string): string {
   const escaped = value.replaceAll("\\", "\\\\").replaceAll("'", "\\'");

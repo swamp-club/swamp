@@ -17,9 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// An audit subscription written in the behavior spelling receives the
-// model-spelled events (swamp-club#3334).
-
 import { assertEquals } from "@std/assert";
 import { createAuditEvent } from "../../domain/serve_audit/audit_event.ts";
 import type { AuditEvent } from "../../domain/serve_audit/audit_event.ts";
@@ -81,7 +78,6 @@ Deno.test("WebSocketSink: behavior-spelled actions and resource kind match the m
     sink.subscribe({ id: "sub", socket: s.socket, filter });
     await sink.write(events);
     assertEquals(receivedActions(s.sent), expected, JSON.stringify(filter));
-    // The caller's filter is not rewritten.
     assertEquals(filter, original);
   }
 });

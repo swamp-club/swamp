@@ -69,7 +69,6 @@ Deno.test("RunIndexSnapshot.between: since is inclusive, until exclusive, and ei
   assertEquals(ids(snapshot.between(T0, T0 + 2000)), ["b", "a"]);
   assertEquals(ids(snapshot.between(T0 + 3000)), []);
   assertEquals(ids(snapshot.between()), ["c", "b", "a", "none"]);
-  // A window that spans the epoch still leaves startless runs out.
   assertEquals(ids(snapshot.between(-1)), ["c", "b", "a"]);
   assertEquals(ids(snapshot.between(undefined, 1)), []);
 });

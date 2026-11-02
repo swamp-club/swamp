@@ -67,9 +67,7 @@ import {
 } from "../infrastructure/runtime/process_ancestry.ts";
 import { loadIdentity } from "./load_identity.ts";
 
-/** How long the gate waits for swamp-club when there is no valid proof. */
 export const BLOCKING_CHECK_TIMEOUT_MS = 10_000;
-/** How long it waits for a signin-token check or the weekly refresh. */
 export const SHORT_CHECK_TIMEOUT_MS = 3_000;
 
 export interface AuthGateCredential {
@@ -77,24 +75,18 @@ export interface AuthGateCredential {
   readonly serverUrl: string;
 }
 
-/** Whether a nested pass's issuer is a live ancestor of this process. */
 export type AncestorCheck =
   | {
     readonly kind: "ok";
-    /** When the ancestor started, in Unix seconds. */
     readonly startedAt: number;
   }
   | { readonly kind: "failed"; readonly reason: string };
 
-/** What the gate needs to accept a nested pass (design: "Nested runs"). */
 export interface NestedGateDeps {
-  /** The pass inherited from a parent swamp, if any. */
   loadPass(): NestedGatePass | null;
-  /** Whether `pid` is a live ancestor running this process's executable. */
   checkAncestor(pid: number): AncestorCheck;
 }
 
-/** The signed proof a pass rests on, handed down to nested runs. */
 export interface GateHandoff {
   readonly proof: string;
   readonly signature: string;
@@ -107,10 +99,8 @@ export interface GateHandoff {
 }
 
 /**
- * The SWAMP_NESTED_GATE_PASS value a run that passed hands to the swamps it
- * starts, or undefined when it has nothing to hand down. A run admitted on
- * its own proof names itself; one admitted on an inherited pass passes that
- * pass on, still naming the original issuer.
+ * a run admitted on its own proof names itself; one admitted on an inherited
+ * pass passes that pass on, still naming the original issuer.
  */
 export function nestedGatePassValue(
   handoff: GateHandoff | undefined,
@@ -125,20 +115,17 @@ export function nestedGatePassValue(
 }
 
 export interface AuthGateDeps {
-  /** The active credential, honouring the usual key-source precedence. */
   loadCredential(): Promise<AuthGateCredential | null>;
   readonly verificationRepo: AuthVerificationRepository;
   verifyIdentity(
     credential: AuthGateCredential,
     signal: AbortSignal,
   ): Promise<IdentityCheckResult>;
-  /** Unix seconds. */
   now(): number;
   /**
-   * False when this process does not own the config dir — a system-mode
-   * daemon running as root against the enabling user's dir. The gate then
-   * reads but never writes there, so it leaves no root-owned files the user
-   * cannot read back. Defaults to true.
+   * false when this process does not own the config dir (a system-mode daemon
+   * as root): the gate reads but never writes there, so it leaves no root-owned
+   * files the user cannot read. Defaults to true.
    */
   readonly canWrite?: boolean;
   /** Omitted, no nested pass is ever accepted. */
@@ -149,17 +136,12 @@ export type AuthGateOutcome =
   | {
     readonly kind: "pass";
     readonly authMode: AuthMode;
-    /** The verified whoami response, when the gate called swamp-club. */
     readonly liveResponse?: WhoamiResponse;
-    /** Shown once logging is up, when the run proceeds unverified. */
     readonly warning?: string;
-    /** The weekly refresh, present when the file proof is due one. */
     readonly refresh?: () => Promise<void>;
     /**
-     * The proof nested runs inherit: a fresh whoami proof, else the valid
-     * file proof, else the proof this run itself inherited. Never a
-     * signin-token proof. Absent when there is no such proof, for example a
-     * run that passed offline on its signin token alone.
+     * the proof nested runs inherit: a fresh whoami proof, else the valid file
+     * proof, else the one this run inherited; never a signin-token proof.
      */
     readonly handoff?: GateHandoff;
   }
@@ -167,14 +149,12 @@ export type AuthGateOutcome =
 
 interface ProofAssessment {
   readonly verdict: LocalProofVerdict;
-  /** The fingerprint the valid signin-token proof was issued for. */
   readonly tokenFpr?: string;
   /**
    * The proof a nested run may inherit: the valid file proof, never a
    * signin-token proof (see {@link validFileProof}).
    */
   readonly handoffProof?: GateHandoff;
-  /** True when the file proof belongs to the active key (or is unreadable). */
   readonly fileProofIsActiveKeys: boolean;
 }
 
@@ -235,9 +215,9 @@ async function assessProofs(
 }
 
 /**
- * The file proof when it verifies for the active key. A run that passed on
- * its signin token hands this down instead: the token is a CI secret that
- * method children must never see (swamp-club#2032), under any name.
+ * the file proof when it verifies for the active key. A run on a signin token
+ * hands this down instead, because the token is a CI secret method children
+ * must never see.
  */
 async function validFileProof(
   candidates: readonly ProofCandidate[],
@@ -261,10 +241,6 @@ function fileMatches(
   return !payload || payload.fpr === activeFpr;
 }
 
-/**
- * Record what a live check changed. Returns whether the fail-open window was
- * recorded, so the warning can say when the 24-hour limit cannot apply.
- */
 async function applyEffects(
   effects: GateEffects,
   deps: AuthGateDeps,
@@ -285,7 +261,6 @@ async function applyEffects(
       await write();
       return true;
     } catch {
-      // Best effort — see above.
       return false;
     }
   };
@@ -318,12 +293,6 @@ async function applyEffects(
   return failOpenRecorded;
 }
 
-/**
- * Decide whether this invocation may run. Reads the credential and proofs,
- * asks the policy, calls swamp-club only when the policy says to, and
- * records what the answer changes (a fresh proof, a revoked key, the
- * fail-open window, a verified signin token).
- */
 export async function runAuthGate(
   deps: AuthGateDeps,
 ): Promise<AuthGateOutcome> {
@@ -431,7 +400,6 @@ export async function runAuthGate(
   };
 }
 
-/** The fresh proof a verified whoami answer carried, if any. */
 function liveProof(response?: WhoamiResponse): GateHandoff | undefined {
   return response?.verificationProof && response.verificationSignature
     ? {
@@ -447,13 +415,9 @@ interface NestedAssessment {
 }
 
 /**
- * Check a pass inherited from a parent swamp: swamp-club signed its proof
- * (checked against the keys the gate already trusts, never a key the pass
- * supplies) and the pid that issued it is a live ancestor running this same
- * executable. `exp` is judged at the ancestor's start, not now: the ancestor
- * was admitted on this proof and runs on it for its whole life, so its
- * children may too, but a proof that had expired before the ancestor started
- * (or has no `exp` at all) admits nothing.
+ * swamp-club must have signed the pass (against trusted keys, never one the
+ * pass supplies) and its issuer pid be a live ancestor; exp is judged at the
+ * ancestor's start, absent or expired admits nothing
  */
 async function assessNestedPass(
   deps: AuthGateDeps,
@@ -512,25 +476,15 @@ async function verifyWithTrustedKeys(
   });
 }
 
-/**
- * Why a worker without a credential was not admitted:
- * - `no_pass`: the orchestrator sent none (it predates worker gate passes);
- * - `serve_without_proof`: it refused, having passed the gate without a
- *   signed proof of its own (offline on a signin token alone, or fail-open);
- * - `expired_pass`: its pass had expired, so it could not refresh it;
- * - `rejected_pass`: its pass is malformed or not signed by a trusted key.
- */
 export type OrchestratorBlockCause =
   | "no_pass"
   | "serve_without_proof"
   | "expired_pass"
   | "rejected_pass";
 
-/** What a worker without a credential made of its orchestrator's pass. */
 export type OrchestratorAdmission =
   | {
     readonly kind: "pass";
-    /** The proof the worker hands down, naming the worker itself. */
     readonly handoff: GateHandoff;
   }
   | {
@@ -540,13 +494,9 @@ export type OrchestratorAdmission =
   };
 
 /**
- * Admit a worker that has no credential on the pass the serve enrolling it
- * sent (design/surfaces/auth-gate.md, "Remote workers"). The serve admitting
- * the worker stands in for the nested pass's ancestry check; the proof gets
- * the same checks otherwise: swamp-club signed it (against the keys the gate
- * already trusts), and it has an `exp` later than `gateTime`, when this
- * worker reached the gate. The handoff carries no issuer pid, so the worker
- * names itself to the dispatch runners it starts.
+ * the serve stands in for the ancestry check; swamp-club must have signed the
+ * proof against trusted keys and exp must be later than gateTime. The handoff
+ * has no issuer pid, so the worker names itself
  */
 export async function admitOrchestratorPass(
   repo: AuthVerificationRepository,
@@ -600,27 +550,18 @@ export async function admitOrchestratorPass(
 }
 
 /**
- * The pass a serve hands the workers it enrolls, kept fresh while it runs.
- * A serve passes the gate once, on a proof that expires 14 days after it
- * was issued, and its weekly refresh otherwise runs only at exit; without
- * this, a serve up for longer could no longer admit a worker without a
- * credential. `tick` re-verifies with swamp-club when the held proof is
- * older than the weekly-refresh age, at most once an hour. The refreshed
- * proof is held in memory, so a process that may not write its config dir
- * still hands it out. A rejection drops it, so the serve stops vouching.
+ * keeps the pass a serve hands enrolling workers fresh, since the weekly
+ * refresh otherwise runs only at exit. Refreshed proofs are held in memory, and
+ * a rejection drops it so the serve stops vouching.
  */
 export interface GatePassKeeper {
-  /** The pass to hand an enrolling worker, if this serve has one. */
   current(): OrchestratorGatePass | undefined;
-  /** One check; refreshes only when the held proof is due. */
   tick(): Promise<void>;
   /** Check every `intervalMs`, unref'd so it never holds the process open. */
   start(intervalMs: number): void;
-  /** Stop checking and wait for a check in flight. */
   stop(): Promise<void>;
 }
 
-/** How often a serve's gate-pass keeper checks whether its proof is due. */
 export const GATE_PASS_KEEPER_INTERVAL_MS = 60 * 60 * 1000;
 
 export function createGatePassKeeper(
@@ -684,16 +625,13 @@ export function createGatePassKeeper(
   };
 }
 
-/** The manual page covering CI credentials and daemons. */
 const ACCOUNT_REQUIREMENT_URL =
   "https://swamp-club.com/manual/reference/swamp-account-requirement";
 
 /**
- * `windowUnrecorded` is true when this run should have started the 24-hour
- * fail-open window but could not record it (a read-only config dir, or a
- * process that does not own it). The run still passes — the stamp is not a
- * security boundary (design/surfaces/auth-gate.md) — but the warning must not
- * promise a limit that cannot apply.
+ * true when the 24-hour fail-open window could not be recorded (read-only or
+ * unowned config dir). The run still passes, since the stamp is not a security
+ * boundary, but the warning must not promise a limit that cannot apply.
  */
 function offlineWarning(
   outcome: IdentityCheckResult["outcome"]["kind"],
@@ -715,17 +653,15 @@ function offlineWarning(
     `once it has been unable to verify you for a day.`;
 }
 
-/** What a proof refresh heard, and the fresh proof a verified answer carried. */
 export interface ProofRefreshResult {
   readonly outcome: IdentityCheckOutcome;
   readonly proof?: GateHandoff;
 }
 
 /**
- * The weekly background refresh: re-verify a file proof older than seven
- * days. It never changes the run that already passed. A rejection deletes
- * the proof so the next command blocks; any failure keeps it for next time.
- * Returns undefined when there is no credential to refresh with.
+ * the weekly background refresh never changes the run that already passed. A
+ * rejection deletes the proof so the next command blocks; any other failure
+ * keeps it.
  */
 export async function runProofRefresh(
   deps: AuthGateDeps,
@@ -765,9 +701,9 @@ export async function runProofRefresh(
 }
 
 /**
- * The gate's real dependencies. With `liveChecks: false` (hook mode, which
- * must stay fast and never touch the network) every live check reports
- * swamp-club unreachable, so only a locally valid proof lets the run through.
+ * with liveChecks false (hook mode, which must stay fast and never touch the
+ * network) every live check reports swamp-club unreachable, so only a locally
+ * valid proof passes.
  */
 export function createAuthGateDeps(
   options: { liveChecks: boolean; canWrite: boolean },
@@ -784,10 +720,9 @@ export function createAuthGateDeps(
       try {
         credentials = await new AuthRepository().load();
       } catch (error) {
-        // With no config dir at all (no HOME) there is no stored credential,
-        // which is "no account". Anything else — a misconfigured key source,
-        // an auth.json the user cannot read — is reported as itself, so the
-        // message points at the real fix rather than at `auth login`.
+        // no config dir (no HOME) means no stored credential; anything else,
+        // such as a bad key source or unreadable auth.json, is reported as
+        // itself so the message points at the real fix.
         if (!hasConfigDir && !(error instanceof UserError)) return null;
         throw error;
       }
@@ -836,7 +771,6 @@ function plural(count: number, unit: string): string {
   return `${count} ${unit}${count === 1 ? "" : "s"}`;
 }
 
-/** A Retry-After wait in the largest whole unit: 45s, 2 minutes, 1 hour. */
 function formatWait(seconds: number): string {
   if (seconds < 120) return `${seconds}s`;
   if (seconds < 2 * 3600) return plural(Math.ceil(seconds / 60), "minute");
@@ -845,7 +779,6 @@ function formatWait(seconds: number): string {
 
 const LOGIN_HINT = "Run `swamp auth login` to sign in again.";
 
-/** The message a blocked run exits with, per the design's user experience. */
 export function blockMessage(reason: BlockReason): string {
   switch (reason.kind) {
     case "no_credential":
@@ -909,12 +842,6 @@ export function blockMessage(reason: BlockReason): string {
   }
 }
 
-/**
- * The error a worker without a credential exits with when its orchestrator
- * did not vouch for it. Its reason is `no_credential`, as for any run
- * without a credential; the message says why the orchestrator's pass did
- * not count.
- */
 export function orchestratorBlockedError(
   cause: OrchestratorBlockCause,
   detail: string,
@@ -955,7 +882,6 @@ export function orchestratorBlockedError(
   );
 }
 
-/** The error a blocked run exits with, carrying the design's message. */
 export function authGateBlockedError(
   reason: BlockReason,
 ): AuthGateBlockedError {

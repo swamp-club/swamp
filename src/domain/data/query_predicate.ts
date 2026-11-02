@@ -26,7 +26,6 @@ import {
   MODEL_QUERY_NAME_FIELD,
 } from "../terminology/behavior_aliases.ts";
 
-/** Known root-level fields available in query predicates. */
 export const QUERY_FIELDS = new Set([
   "id",
   "name",
@@ -36,7 +35,6 @@ export const QUERY_FIELDS = new Set([
   "attributes",
   "tags",
   "modelName",
-  // The behavior spelling of modelName (swamp-club#3410): the same value.
   "behaviorName",
   "modelId",
   "modelType",
@@ -60,13 +58,11 @@ export const QUERY_FIELDS = new Set([
 ]);
 
 /**
- * Fields whose presence in a predicate causes the query service to skip
- * the implicit `isLatest == true` injection. A caller that mentions either
- * field is opting into explicit version/latest handling.
+ * a caller that mentions either field opts into explicit version handling, so
+ * the implicit isLatest == true is skipped
  */
 export const HISTORY_OPT_IN_FIELDS = new Set(["version", "isLatest"]);
 
-/** CEL built-in identifiers that may appear as root `id` nodes. */
 export const CEL_BUILTINS = new Set([
   "true",
   "false",
@@ -90,18 +86,11 @@ export const CEL_BUILTINS = new Set([
   "endsWith",
 ]);
 
-/** AST node from cel-js parse(). */
 export interface ASTNode {
   op: string;
   args: unknown;
 }
 
-/**
- * Recursively collects root-level identifiers from a cel-js AST.
- *
- * Root identifiers are `{op: "id", args: "name"}` nodes that represent
- * top-level variable references (not member access names).
- */
 export function collectRootIdentifiers(node: ASTNode): string[] {
   if (!node || typeof node !== "object" || !("op" in node)) return [];
 
@@ -118,7 +107,6 @@ export function collectRootIdentifiers(node: ASTNode): string[] {
     return collectRootIdentifiers(arr[0]);
   }
 
-  // Index access: recurse into both container and index
   if (op === "[]" || op === "[?]") {
     const arr = args as [ASTNode, ASTNode];
     return [
@@ -127,13 +115,11 @@ export function collectRootIdentifiers(node: ASTNode): string[] {
     ];
   }
 
-  // Function call: args is [name, argNodes[]]
   if (op === "call") {
     const arr = args as [string, ASTNode[]];
     return arr[1].flatMap(collectRootIdentifiers);
   }
 
-  // Receiver method call: args is [name, receiver, argNodes[]]
   if (op === "rcall") {
     const arr = args as [string, ASTNode, ASTNode[]];
     return [
@@ -142,23 +128,19 @@ export function collectRootIdentifiers(node: ASTNode): string[] {
     ];
   }
 
-  // Ternary: args is [cond, trueExpr, falseExpr]
   if (op === "?:") {
     const arr = args as [ASTNode, ASTNode, ASTNode];
     return arr.flatMap(collectRootIdentifiers);
   }
 
-  // Unary: args is a single ASTNode
   if (op === "!_" || op === "-_") {
     return collectRootIdentifiers(args as ASTNode);
   }
 
-  // List literal: args is ASTNode[]
   if (op === "list") {
     return (args as ASTNode[]).flatMap(collectRootIdentifiers);
   }
 
-  // Map literal: args is Array<[ASTNode, ASTNode]> (key-value tuples)
   if (op === "map") {
     const entries = args as Array<[ASTNode, ASTNode]>;
     return entries.flatMap(([key, value]) => [
@@ -167,12 +149,10 @@ export function collectRootIdentifiers(node: ASTNode): string[] {
     ]);
   }
 
-  // Value literal: no identifiers
   if (op === "value") {
     return [];
   }
 
-  // Binary operators and logical ops: args is [ASTNode, ASTNode]
   if (Array.isArray(args)) {
     return (args as unknown[]).flatMap((a) => {
       if (a && typeof a === "object" && "op" in (a as ASTNode)) {
@@ -185,13 +165,8 @@ export function collectRootIdentifiers(node: ASTNode): string[] {
   return [];
 }
 
-/**
- * The query function that resolves a workflow's most recent run id, as
- * `swamp data get --workflow` does without `--run` (swamp-club#2957).
- */
 export const LATEST_RUN_FUNCTION = "latestRun";
 
-/** The AST nodes directly under `node`, in source order. */
 function childNodes(node: ASTNode): ASTNode[] {
   const { op, args } = node;
   switch (op) {
@@ -221,10 +196,8 @@ function childNodes(node: ASTNode): ASTNode[] {
 }
 
 /**
- * Collects the distinct workflow arguments of every `latestRun(...)` call in
- * the AST. Each call must take exactly one non-empty string literal, so the
- * run can be resolved once per query rather than per row; anything else is
- * a UserError.
+ * each call must take exactly one non-empty string literal so the run resolves
+ * once per query, not per row; anything else is a UserError
  */
 export function collectLatestRunWorkflows(node: ASTNode): string[] {
   const workflows = new Set<string>();
@@ -258,10 +231,8 @@ export function collectLatestRunWorkflows(node: ASTNode): string[] {
 }
 
 /**
- * Extracts the workflow argument from a top-level
- * `workflowRunId == latestRun("<workflow>")` equality in the AST, for SQL
- * pushdown once the run is resolved. Walks through AND conjuncts but does
- * not descend into OR branches. Returns null if there is none.
+ * walks AND conjuncts but not OR branches, so the pushdown holds for every
+ * matching row
  */
 export function extractWorkflowRunIdLatestRun(ast: ASTNode): string | null {
   if (ast.op === "==") {
@@ -287,52 +258,34 @@ function latestRunEquality(field: ASTNode, call: ASTNode): string | null {
   return arg.op === "value" && typeof arg.args === "string" ? arg.args : null;
 }
 
-/**
- * The query function that matches rows by model, resolving a model name or
- * definition id as `swamp data get <model>` does (swamp-club#2960).
- */
 export const MODEL_FUNCTION = MODEL_QUERY_FUNCTION;
 
-/**
- * The behavior spelling of {@link MODEL_FUNCTION} (swamp-club#3410):
- * `behavior("x")` resolves and matches exactly as `model("x")` does, and is
- * collected, authorized and pushed down by the same code.
- */
 export const BEHAVIOR_FUNCTION = BEHAVIOR_QUERY_FUNCTION;
 
-/** The model-matching query functions: `model` and its behavior spelling. */
 export const MODEL_FUNCTIONS: ReadonlySet<string> = new Set([
   MODEL_FUNCTION,
   BEHAVIOR_FUNCTION,
 ]);
 
-/** The noun a model-matching function's messages use: model or behavior. */
 function modelFunctionNoun(fn: string): string {
   return fn === BEHAVIOR_FUNCTION ? "behavior" : "model";
 }
 
-/**
- * The fields that read a row's model name: `modelName` and its behavior
- * spelling `behaviorName` (swamp-club#3410).
- */
 export const MODEL_NAME_FIELDS: ReadonlySet<string> = new Set([
   MODEL_QUERY_NAME_FIELD,
   BEHAVIOR_QUERY_NAME_FIELD,
 ]);
 
 /**
- * Most distinct models one query may name with `model()`. Each is a
- * definition lookup, so a predicate cannot make the query do unbounded work.
+ * each model is a definition lookup, so a predicate cannot make the query do
+ * unbounded work
  */
 export const MAX_MODEL_REFERENCES = 32;
 
 /**
- * Collects the distinct arguments of every `model(...)` and `behavior(...)`
- * call in the AST — one set, so serve authorizes either spelling with the
- * same resolver. Each call must take exactly one non-empty string literal,
- * so the model can be resolved once per query rather than per row; anything
- * else, or more than {@link MAX_MODEL_REFERENCES} distinct models, is a
- * UserError naming the function as it was typed.
+ * one set so serve authorizes either spelling with the same resolver; each call
+ * takes exactly one non-empty string literal so the model resolves once per
+ * query
  */
 export function collectModelReferences(node: ASTNode): string[] {
   const references = new Set<string>();
@@ -383,11 +336,6 @@ export function collectModelReferences(node: ASTNode): string[] {
   return [...references];
 }
 
-/**
- * The model-matching functions (`model`, `behavior`) the AST calls, in any
- * form, malformed calls included, in {@link MODEL_FUNCTIONS} order. Used to
- * name the function as it was typed when it cannot be used.
- */
 export function calledModelFunctions(node: ASTNode): string[] {
   const called = new Set<string>();
   const visit = (n: ASTNode) => {
@@ -402,7 +350,6 @@ export function calledModelFunctions(node: ASTNode): string[] {
   return [...MODEL_FUNCTIONS].filter((fn) => called.has(fn));
 }
 
-/** A top-level model-matching call: the function as typed and its argument. */
 function modelCallOf(
   conjunct: ASTNode,
 ): { fn: string; reference: string } | null {
@@ -416,12 +363,6 @@ function modelCallOf(
   return null;
 }
 
-/**
- * Extracts the argument of a top-level `model("<model>")` or
- * `behavior("<behavior>")` conjunct, for SQL pushdown once the model is
- * resolved. Walks through AND conjuncts but does not descend into OR
- * branches. Returns null if there is none.
- */
 export function extractModelCall(ast: ASTNode): string | null {
   for (const conjunct of topLevelConjuncts(ast)) {
     const call = modelCallOf(conjunct);
@@ -430,34 +371,19 @@ export function extractModelCall(ast: ASTNode): string | null {
   return null;
 }
 
-/**
- * Checks whether the AST references the `attributes` identifier at root level.
- */
 export function referencesAttributes(node: ASTNode): boolean {
   return collectRootIdentifiers(node).includes("attributes");
 }
 
-/**
- * Checks whether the AST references the `content` identifier at root level.
- */
 export function referencesContent(node: ASTNode): boolean {
   return collectRootIdentifiers(node).includes("content");
 }
 
-/**
- * Checks whether a select expression reads an item's bytes: `content`, or
- * `contentEncoding`, which exists only in a projection and says how
- * `content` represents them.
- */
 export function selectReadsContent(node: ASTNode): boolean {
   const ids = collectRootIdentifiers(node);
   return ids.includes("content") || ids.includes("contentEncoding");
 }
 
-/**
- * Reads a `field == literal` comparison, with the identifier on either side.
- * Returns null for any other node.
- */
 function equalityOperands(
   node: ASTNode,
 ): { field: string; value: unknown } | null {
@@ -473,9 +399,8 @@ function equalityOperands(
 }
 
 /**
- * Flattens the top-level AND conjuncts of a predicate. Does not descend
- * into OR branches or negations, so every conjunct returned must hold for
- * a row to match.
+ * does not descend into OR branches or negations, so every conjunct returned
+ * must hold for a row to match
  */
 function topLevelConjuncts(ast: ASTNode): ASTNode[] {
   if (ast.op !== "&&") return [ast];
@@ -483,11 +408,6 @@ function topLevelConjuncts(ast: ASTNode): ASTNode[] {
   return [...topLevelConjuncts(left), ...topLevelConjuncts(right)];
 }
 
-/**
- * Extracts a string literal from a top-level `field == "literal"` equality
- * in the AST. Walks through AND conjuncts but does not descend into OR
- * branches. Returns null if no pushdown-eligible equality is found.
- */
 export function extractStringEquality(
   ast: ASTNode,
   field: string,
@@ -495,7 +415,6 @@ export function extractStringEquality(
   return extractAnyStringEquality(ast, new Set([field]));
 }
 
-/** Whether a node reads the type tag: `dataType`, `tags.type` or `tags["type"]`. */
 function isTypeTagReference(node: ASTNode): boolean {
   if (node.op === "id") return node.args === "dataType";
   if (node.op !== "." && node.op !== "[]") return false;
@@ -507,10 +426,8 @@ function isTypeTagReference(node: ASTNode): boolean {
 }
 
 /**
- * The type a predicate requires with a top-level equality between the type
- * tag (`tags.type`, `tags["type"]` or `dataType`) and a non-empty string
- * literal, or null. The catalog's data_type column holds the type tag or "",
- * so the value pushes down exactly to `data_type = ?` (swamp-club#4177).
+ * the data_type column holds the type tag or empty, so a non-empty literal
+ * pushes down exactly
  */
 export function extractTypeTagEquality(ast: ASTNode): string | null {
   for (const conjunct of topLevelConjuncts(ast)) {
@@ -528,10 +445,6 @@ export function extractTypeTagEquality(ast: ASTNode): string | null {
   return null;
 }
 
-/**
- * The first top-level `field == "literal"` equality, in conjunct order,
- * whose field is any of `fields`.
- */
 function extractAnyStringEquality(
   ast: ASTNode,
   fields: ReadonlySet<string>,
@@ -546,20 +459,14 @@ function extractAnyStringEquality(
 }
 
 /**
- * Extracts a string literal from a top-level `modelName == "literal"` or
- * `behaviorName == "literal"` equality in the AST — whichever comes first,
- * so respelling one as the other pushes down the same literal. Returns null
- * if no pushdown-eligible equality is found.
+ * whichever comes first, so respelling one as the other pushes down the same
+ * literal
  */
 export function extractModelNameEquality(ast: ASTNode): string | null {
   return extractAnyStringEquality(ast, MODEL_NAME_FIELDS);
 }
 
-/**
- * String fields a spec-name fallback carries over from the original
- * predicate when they are compared to a string literal. Keeping them keeps
- * the fallback scoped as the original was (the same model, run or step).
- */
+/** keeps the fallback scoped as the original was (same model, run or step) */
 const FALLBACK_STRING_FIELDS = new Set([
   "id",
   "modelName",
@@ -580,32 +487,16 @@ const FALLBACK_STRING_FIELDS = new Set([
   "ns",
 ]);
 
-/**
- * The spec-name counterpart of a predicate that matches one data instance
- * name exactly, and the same scope matched by name.
- */
 export interface SpecNameFallback {
-  /** The kept conjuncts with `name == "x"` as `specName == "x"`. */
   specNamePredicate: string;
-  /** The kept conjuncts as they were, `name == "x"` included. */
   namePredicate: string;
-  /** Whether conjuncts that are not simple equalities were left out. */
   droppedConjuncts: boolean;
 }
 
 /**
- * Builds the spec-name counterpart of a predicate that matches one data
- * instance name exactly: the top-level `name == "x"` becomes
- * `specName == "x"`, and every other top-level equality of a string field
- * to a string literal, of `version` to an int literal, or a
- * `model("<literal>")` call, is kept. Other
- * conjuncts are dropped, so the result can match more than the original
- * would have; callers verify it matches before suggesting it, and check
- * `namePredicate` to tell whether a dropped conjunct, not the name, is what
- * excluded the data.
- *
- * Returns null when the predicate has no single top-level name equality,
- * or already mentions specName.
+ * other conjuncts are dropped, so the result can match more than the original;
+ * callers verify it before suggesting it and check namePredicate to tell
+ * whether a dropped conjunct excluded the data
  */
 export function buildSpecNameFallback(ast: ASTNode): SpecNameFallback | null {
   if (collectRootIdentifiers(ast).includes("specName")) return null;
@@ -631,9 +522,8 @@ export function buildSpecNameFallback(ast: ASTNode): SpecNameFallback | null {
     } else if (eq?.field === "version" && typeof eq.value === "bigint") {
       clause = `version == ${eq.value}`;
     } else {
-      // A model("<literal>") scope is kept like a modelName equality, so the
-      // hint for the documented model() form stays on that model; a
-      // behavior("<literal>") scope is kept as typed.
+      // a model literal scope is kept like a modelName equality so the hint
+      // stays on that model; a behavior scope is kept as typed
       const call = modelCallOf(conjunct);
       if (call !== null) {
         clause = `${call.fn}(${celString(call.reference)})`;
@@ -654,10 +544,6 @@ export function buildSpecNameFallback(ast: ASTNode): SpecNameFallback | null {
   };
 }
 
-/**
- * Validates that all root identifiers in the AST are known query fields
- * or CEL built-ins. Throws UserError on unknown fields.
- */
 export function validateFieldReferences(identifiers: string[]): void {
   const unknown = identifiers.filter(
     (id) => !QUERY_FIELDS.has(id) && !CEL_BUILTINS.has(id),

@@ -17,13 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// An install held uncommitted across the catalog save, and what its
-// commit and rollback do on disk (swamp-club#2724). These drive the real
-// installExtension through InstallExtensionService with a fake registry
-// and real archives. There is no install_rollback.ts: the code under test
-// is PendingInstall and applyInstall/installExtension in pull.ts, phase 8
-// in install_extension_service.ts, and UpgradeExtensionService.
-
 import {
   assert,
   assertEquals,
@@ -95,11 +88,8 @@ export const model = {
 };
 `;
 
-/** What one archive ships. */
 interface ArchiveSpec {
-  /** Model file name to the type it declares. */
   models?: Record<string, string>;
-  /** Skill name to its files (relative path to content). */
   skills?: Record<string, Record<string, string>>;
   dependencies?: string[];
 }
@@ -151,7 +141,6 @@ async function buildArchive(
   }
 }
 
-/** A temp repo with a real catalog, lockfile and a fake registry. */
 class Repo {
   readonly lockfilePath: string;
   readonly skillsDir: string;
@@ -173,7 +162,6 @@ class Repo {
     );
   }
 
-  /** Publishes `name@version` to the fake registry as its latest. */
   async publish(name: string, version: string, spec: ArchiveSpec) {
     this.#archives.set(
       `${name}@${version}`,
@@ -182,12 +170,10 @@ class Repo {
     this.#latest.set(name, version);
   }
 
-  /** Makes every download of `name` fail. */
   failDownloadOf(name: string) {
     this.#failDownload.add(name);
   }
 
-  /** A fresh context per command, as the CLI builds one. */
   async ctx(overrides: Partial<InstallContext> = {}): Promise<InstallContext> {
     return {
       getExtension: (n) => {
@@ -229,7 +215,6 @@ class Repo {
     });
   }
 
-  /** Installs through InstallExtensionService, as `extension pull` does. */
   async install(
     name: string,
     version: string,
@@ -243,7 +228,6 @@ class Repo {
     return JSON.parse(await Deno.readTextFile(this.lockfilePath));
   }
 
-  /** Everything on disk that belongs to `name`: root, bundles and entry. */
   async snapshot(name: string): Promise<Record<string, unknown>> {
     const roots = extensionInstallRoots(this.repoDir, name);
     const out: Record<string, unknown> = {
@@ -275,10 +259,6 @@ async function withRepo(fn: (repo: Repo) => Promise<void>): Promise<void> {
   }
 }
 
-/**
- * Every file and link under `dir` with its content or link target, or
- * null when `dir` is absent.
- */
 async function tree(dir: string): Promise<Record<string, string> | null> {
   if (!(await exists(dir))) return null;
   const out: Record<string, string> = {};
@@ -301,7 +281,6 @@ async function exists(path: string): Promise<boolean> {
   }
 }
 
-/** Staging dirs and journals left anywhere under `.swamp`. */
 async function stagingLeft(repoDir: string): Promise<string[]> {
   const out: string[] = [];
   for await (const entry of walk(swampPath(repoDir), { includeFiles: false })) {
@@ -325,7 +304,6 @@ function ids() {
   };
 }
 
-/** B claims `shared`; A v1 installed with its own type. */
 async function installBAndAv1(
   repo: Repo,
   n: ReturnType<typeof ids>,
@@ -366,7 +344,6 @@ Deno.test("InstallExtensionService.execute: an upgrade that collides leaves the 
     assertStringIncludes(thrown.message, `${n.a}@${V1} remains installed`);
     assertEquals(await repo.snapshot(n.a), before);
     assertEquals(await stagingLeft(repo.repoDir), []);
-    // The catalog still holds v1 only.
     const ctx = await repo.ctx();
     assertEquals(
       repo.repository(ctx).loadByName(n.a).map((e) => e.version),
@@ -378,7 +355,6 @@ Deno.test("InstallExtensionService.execute: an upgrade that collides leaves the 
 Deno.test("InstallExtensionService.execute: a collision removes a dependency installed with it and leaves an installed one alone (swamp-club#2724)", async () => {
   await withRepo(async (repo) => {
     const n = ids();
-    // E is installed before; D is new with A v2.
     await repo.publish(n.e, V1, { models: { "e.ts": n.own("e") } });
     await repo.install(n.e, V1);
     await installBAndAv1(repo, n);
@@ -413,8 +389,6 @@ Deno.test("InstallExtensionService.execute: a first install that collides leaves
     await repo.publish(n.c, V1, { models: { "c.ts": n.shared } });
     await assertRejects(() => repo.install(n.c, V1), DuplicateTypeUserError);
 
-    // No root, no entry, and no bundle dir, including the one the
-    // catalog save's loader wrote bundles into after the swap.
     for (const [key, value] of Object.entries(await repo.snapshot(n.c))) {
       assertEquals(value, null, key);
     }
@@ -442,8 +416,6 @@ Deno.test("UpgradeExtensionService.execute: an upgrade that collides keeps the p
     assertEquals(await repo.snapshot(n.a), before);
   });
 });
-
-// ===== Skills =====
 
 Deno.test("InstallExtensionService.execute: a skill file only the previous version shipped survives a rollback (swamp-club#2724)", async () => {
   await withRepo(async (repo) => {
@@ -581,15 +553,13 @@ Deno.test("PendingInstall.commit: the skill prune walk never descends a symlink 
       skills: { [skill]: { "a.md": "from a", "sub/a2.md": "from a" } },
     });
     const skillDir = join(repo.skillsDir, skill);
-    // A link inside the dropped dir to files elsewhere.
     const target = join(repo.repoDir, "user-data");
     await ensureDir(target);
     await Deno.writeTextFile(join(target, "keep.md"), "keep");
     await Deno.symlink(target, join(skillDir, "linked"), { type: "dir" });
 
-    // A new dependency merges into the dropped dir, and (standing in for
-    // any entry written before the install commits) another entry claims
-    // a dir inside it: the commit walks the dir file by file.
+    // a new dependency merges into the dropped dir and another entry claims a
+    // dir inside it, so the commit walks the dir file by file
     await repo.publish(n.d, V1, { skills: { [skill]: { "d.md": "from d" } } });
     await upgradeWith(repo, n, async (pending) => {
       const ctx = await repo.ctx();
@@ -648,9 +618,6 @@ Deno.test("InstallExtensionService.execute: a rollback removes a skill dir the i
   });
 });
 
-// ===== The handle =====
-
-/** Runs an A v1 -> v2 upgrade whose phase 8 is `underLock`. */
 async function upgradeWith(
   repo: Repo,
   n: ReturnType<typeof ids>,
@@ -684,7 +651,6 @@ Deno.test("PendingInstall: rollback and commit are idempotent and only the first
     ]);
     assertEquals(await repo.snapshot(n.a), before);
 
-    // Commit first: a later rollback moves nothing.
     await upgradeWith(repo, n, async (pending) => {
       await pending.commit();
       await pending.commit();
@@ -766,7 +732,6 @@ Deno.test("installExtension: a dependency that fails to install leaves the ones 
       "cannot download",
     );
 
-    // The parent's entry had landed, so it rolls forward; D stays.
     const lockfile = await repo.lockfile();
     assertEquals((lockfile[n.a] as { version: string }).version, V2);
     assertEquals((lockfile[n.d] as { version: string }).version, V1);
@@ -775,9 +740,6 @@ Deno.test("installExtension: a dependency that fails to install leaves the ones 
   });
 });
 
-// ===== A lockfile that cannot be restored =====
-
-/** Makes the context's restoreEntries run `fault` instead. */
 function faultRestore(
   ctx: InstallContext,
   fault: (restore: () => Promise<void>) => Promise<void>,
@@ -812,7 +774,6 @@ Deno.test("InstallExtensionService.execute: when the lockfile cannot be restored
         { name: n.d, version: V1, priorVersion: null },
       ],
     });
-    // Files and entries agree on the new version, the dependency included.
     const lockfile = await repo.lockfile();
     assertEquals((lockfile[n.a] as { version: string }).version, V2);
     assertEquals((lockfile[n.d] as { version: string }).version, V1);
@@ -872,8 +833,6 @@ Deno.test("InstallExtensionService.execute: a lockfile that cannot be read back 
     assertEquals(thrown.rolledBack, false);
     assert((await stagingLeft(repo.repoDir)).length > 0);
 
-    // Once the lockfile is readable again (here, back to v1's entry), the
-    // next recovery settles the install from it: back to v1.
     await Deno.writeTextFile(repo.lockfilePath, priorLockfile);
     await recoverPulledExtensionStaging(repo.repoDir, {
       lockfilePaths: [repo.lockfilePath],

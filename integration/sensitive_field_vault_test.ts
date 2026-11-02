@@ -17,13 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Integration tests for sensitive field vault storage.
- *
- * Tests the full flow: resource data with sensitive fields → processSensitiveResourceData →
- * vault storage → data has vault references instead of plaintext.
- */
-
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import { basename, dirname, join } from "@std/path";
 import { ensureDir, walk } from "@std/fs";
@@ -132,17 +125,14 @@ Deno.test("Integration: sensitive output fields stored in vault with references 
     "main",
   );
 
-  // Non-sensitive fields unchanged
   assertEquals(data.keyId, "key-12345");
   assertEquals(data.publicKey, "ssh-rsa AAAAB3... user@host");
 
-  // Sensitive field replaced with vault reference
   const keyMaterialRef = data.keyMaterial as string;
   assertStringIncludes(keyMaterialRef, "vault.get");
   assertStringIncludes(keyMaterialRef, "'test-vault'");
   assertStringIncludes(keyMaterialRef, "${{ vault.get('test-vault'");
 
-  // Verify the actual secret was stored in the vault
   const vaultKey =
     `test-sensitive-output-${modelId}-${methodName}-keypair-main-keyMaterial`;
   const storedSecret = await vaultService.get("test-vault", vaultKey);
@@ -151,7 +141,6 @@ Deno.test("Integration: sensitive output fields stored in vault with references 
     "-----BEGIN RSA PRIVATE KEY-----\nSECRET\n-----END RSA PRIVATE KEY-----",
   );
 
-  // Verify data can be serialized to JSON (simulates persistence)
   const persistedJson = JSON.stringify(data);
   const parsed = JSON.parse(persistedJson);
   assertEquals(parsed.keyId, "key-12345");
@@ -197,11 +186,9 @@ Deno.test("Integration: sensitiveOutput flag vaults all fields", async () => {
     "main",
   );
 
-  // Both fields should be vault references
   assertStringIncludes(data.field1 as string, "vault.get");
   assertStringIncludes(data.field2 as string, "vault.get");
 
-  // Verify values stored in vault
   const key1 =
     `test-all-sensitive-${modelId}-${methodName}-secrets-main-field1`;
   const key2 =
@@ -252,23 +239,17 @@ Deno.test("Integration: custom vaultKey from schema metadata", async () => {
     "main",
   );
 
-  // Verify vault reference uses custom key with quoted strings
   assertEquals(
     data.apiKey,
     "${{ vault.get('test-vault', 'generated-api-key') }}",
   );
 
-  // Verify stored with custom key
   assertEquals(
     await vaultService.get("test-vault", "generated-api-key"),
     "sk-live-abc123def456",
   );
 });
 
-/**
- * The persisted payloads of the resources the given behavior type wrote,
- * keyed by data name (the directory holding each version).
- */
 async function persistedResources(
   repoDir: string,
   modelType: ModelType,
@@ -283,21 +264,12 @@ async function persistedResources(
   for await (const entry of walk(root, { includeDirs: false })) {
     if (entry.name !== "raw") continue;
     const name = basename(dirname(dirname(entry.path)));
-    // Method summary reports are written beside the resources.
     if (name.startsWith("report-")) continue;
     byName.set(name, JSON.parse(await Deno.readTextFile(entry.path)));
   }
   return byName;
 }
 
-/**
- * Runs a workflow whose forEach step writes a sensitive token per value of
- * `envs`, varying the `creds` spec on that input, against a temp repo with a
- * local_encryption vault. Hands `check` the persisted records by data name
- * and the repo's vault service. `names` lengthens the behavior type and
- * method, and nests the token under `credentials`, as a realistic
- * provider-style behavior would.
- */
 async function withVaryWorkflowRun(
   envs: string[],
   check: (
@@ -431,7 +403,6 @@ Deno.test("Integration: a forEach step varying on its input vaults each instance
       const [, vaultName, vaultKey] = match;
       keys.add(vaultKey);
       assertStringIncludes(vaultKey, `-creds-creds-${env}-token`);
-      // Each record's reference reads back its own environment's value.
       assertEquals(
         await vaultService.get(vaultName, vaultKey),
         `token-for-${env}`,
@@ -459,9 +430,8 @@ Deno.test("Integration: vary values the key sanitizer would fold together, or to
 });
 
 Deno.test("Integration: a vary write by a long-named behavior stays within local_encryption's file name limit (swamp-club#3633)", async () => {
-  // These names alone give a key of over 210 bytes, close to the 255-byte
-  // file name local_encryption stores it under. Before the vary suffix was
-  // capped at the hashed form's length, a 61-character value overflowed it.
+  // these names alone give a key of over 210 bytes, close to the 255-byte file
+  // name limit local_encryption stores it under
   const envs = ["k".repeat(32), "s".repeat(61), "ip-10-0-0-1.ec2.internal"];
   await withVaryWorkflowRun(
     envs,
@@ -485,26 +455,13 @@ Deno.test("Integration: a vary write by a long-named behavior stays within local
   );
 });
 
-/**
- * Runs a one-step workflow whose method writes a sensitive token, against a
- * temp repo with two local_encryption vaults, and returns the fallback vault
- * (the first user vault) and the vault the stored reference names. `setup`
- * is handed the vault that is not the fallback, and returns the definition's
- * resources overrides, the step's data output override and the run inputs.
- */
 async function storedVaultOfStepRun(
   setup: (target: string, fallback: string) => {
     resources?: Record<string, { vaultName?: string }>;
     override?: { specName: string; vaultName?: string; vary?: string[] };
     inputs?: Record<string, unknown>;
-    /** The repo's defaultVault, passed to the run as serve passes it. */
     defaultVault?: string;
-    /**
-     * Puts a manual approval gate before the step, so the step runs when
-     * the approved run is resumed.
-     */
     gated?: boolean;
-    /** Runs the step in a child workflow the run's one step invokes. */
     nested?: boolean;
   },
 ): Promise<{ fallback: string; target: string; stored: string }> {
@@ -660,7 +617,6 @@ async function storedVaultOfStepRun(
       ) {
         if (event.kind === "error") throw new Error(event.error.message);
       }
-      // Resumed through serve's run deps, as its resume launcher does.
       const deps = await createWorkflowRunDeps(
         resolved,
         repoContext,
@@ -766,8 +722,6 @@ Deno.test("Integration: a step in a nested workflow stores in the repo's default
   assertEquals(stored, target);
 });
 
-// --- fields inside arrays, records and unions (swamp-club#3038) ---
-
 async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
   const dir = await Deno.makeTempDir({ prefix: "swamp-sensitive-elements-" });
   try {
@@ -783,7 +737,6 @@ async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
   }
 }
 
-/** A resource shaped like a generated cloud app spec. */
 const appSpec: ResourceOutputSpec = {
   schema: z.object({
     spec: z.object({
@@ -792,7 +745,6 @@ const appSpec: ResourceOutputSpec = {
         image: z.object({
           registry_credentials: z.string().meta({ sensitive: true }),
         }),
-        // Not strings: they must read back as a number and an object.
         port: z.number().meta({ sensitive: true }),
         env: z.record(z.string(), z.string()).meta({ sensitive: true }),
       })),
@@ -805,7 +757,6 @@ const appSpec: ResourceOutputSpec = {
       }),
       z.object({ kind: z.literal("none") }),
     ]),
-    // Not sensitive: a reference-shaped string here must stay as written.
     notes: z.record(z.string(), z.unknown()),
   }),
   lifetime: "infinite",
@@ -842,7 +793,6 @@ function appData(): Record<string, unknown> {
     },
     tokens: { prod: "token-prod", "eu.west": "token-eu" },
     auth: { kind: "basic", password: "basic-password" },
-    // Where a dot split of tokens.eu.west would land, were it written so.
     notes: { eu: { west: "${{ vault.get('test-vault', 'planted') }}" } },
   };
 }
@@ -875,7 +825,6 @@ async function writeApp(dir: string) {
     record = await dataRepo.findByName(modelType, modelId, "main");
     content = await dataRepo.getContent(modelType, modelId, "main");
   } catch (error) {
-    // The caller closes the catalog only once it has this fixture.
     catalog.close();
     throw error;
   }
@@ -938,7 +887,6 @@ Deno.test("Integration: sensitive fields inside arrays, records and unions are s
         ["spec", "services", 1, "env"],
       ]);
 
-      // readResource, as a method sees prior state.
       const redactor = new SecretRedactor();
       const readResource = createResourceReader(
         w.dataRepo,
@@ -953,7 +901,6 @@ Deno.test("Integration: sensitive fields inside arrays, records and unions are s
         "creds *** and ***",
       );
 
-      // data get, through the data record mapper.
       const mapped = await fromData(
         w.record,
         w.modelType,
@@ -972,8 +919,6 @@ Deno.test("Integration: CEL reads every vaulted place of an array, record and un
   await withTempDir(async (dir) => {
     const w = await writeApp(dir);
     try {
-      // As data.latest() reads it: the stored record, references in place,
-      // through the typed-secret accessor adapter.
       const stored = await fromData(
         w.record,
         w.modelType,
@@ -1005,14 +950,11 @@ Deno.test("Integration: CEL reads every vaulted place of an array, record and un
         storedKeys.add(keyOf(tokens.prod));
         storedKeys.add(keyOf(tokens["eu.west"]));
         storedKeys.add(keyOf((app.auth as Record<string, unknown>).password));
-        // Nine distinct vault keys, every one the record holds.
         assertEquals(storedKeys.size, 9);
         assertEquals(
           [...scope.sensitiveReferences.values()].map((r) => r.key).sort(),
           [...storedKeys].sort(),
         );
-        // Text that only looks like a reference, where nothing was vaulted,
-        // stays text.
         assertEquals(app.notes, appData().notes);
       });
     } finally {
@@ -1025,7 +967,6 @@ Deno.test("Integration: a number the JSON tag lists reaches a step as a number a
   await withTempDir(async (dir) => {
     const w = await writeApp(dir);
     try {
-      // As data.latest() reads it, released from CEL into a run's bag.
       const stored = await fromData(
         w.record,
         w.modelType,
@@ -1056,8 +997,6 @@ Deno.test("Integration: a number the JSON tag lists reaches a step as a number a
         };
       });
       const loader = new SecretLoader(() => Promise.resolve(w.vaultService));
-      // The port as the number written; the env map as its JSON text, which
-      // is what the run's redactor holds.
       const expected = {
         port: 8080,
         nested: { env: '{"API_KEY":"env-web"}', list: [8080] },
@@ -1066,7 +1005,6 @@ Deno.test("Integration: a number the JSON tag lists reaches a step as a number a
       };
       assertEquals((await loader.load(bag, args)).resolveDeep(args), expected);
 
-      // A resumed run restores the references with their marks.
       const form = toPersistedForm(args, values);
       const resumed = new VaultSecretBag(new SecretBagRegistry());
       const restored = rehydrateReferences(
@@ -1149,7 +1087,6 @@ Deno.test("Integration: a sensitive container holding sensitive fields reads in 
       const record = await dataRepo.findByName(modelType, modelId, "main");
       assert(record);
 
-      // As data.latest() and model.<name>.resource read it.
       const stored = await fromData(record, modelType, modelId, dataRepo);
       runInFaultScope((scope) => {
         const view = adaptDataRecord(stored, undefined, "data.latest") as {
@@ -1167,7 +1104,6 @@ Deno.test("Integration: a sensitive container holding sensitive fields reads in 
         assertEquals(scope.faults, []);
       });
 
-      // As a method reads its prior state.
       const readResource = createResourceReader(
         dataRepo,
         modelType,
@@ -1188,9 +1124,9 @@ Deno.test("Integration: a release that reads only the dot-path tag resolves ever
   await withTempDir(async (dir) => {
     const w = await writeApp(dir);
     try {
-      // How swamp releases before swamp-club#3038 resolve a record: the dot
-      // paths of _swamp.sensitiveFields, through getNestedValue and
-      // setNestedValue, and nothing from the key-list tag.
+      // older releases resolve a record by the dot paths of
+      // _swamp.sensitiveFields through getNestedValue and setNestedValue,
+      // ignoring the key-list tag
       const data = JSON.parse(w.stored) as Record<string, unknown>;
       for (const path of JSON.parse(w.record.tags[SENSITIVE_FIELDS_TAG])) {
         const ref = getNestedValue(data, path) as string;
@@ -1207,16 +1143,12 @@ Deno.test("Integration: a release that reads only the dot-path tag resolves ever
         { registry_credentials: "registry-zero" },
         { registry_credentials: "registry-one" },
       ]);
-      // Such a release ignores the JSON tag and reads values that were not
-      // strings as their JSON text, as it reads top-level ones.
       assertEquals(services.map((s) => [s.port, s.env]), [
         ["8080", '{"API_KEY":"env-web"}'],
         ["9090", '{"API_KEY":"env-worker"}'],
       ]);
       assertEquals((app.tokens as Record<string, string>).prod, "token-prod");
       assertEquals(app.auth, { kind: "basic", password: "basic-password" });
-      // The value under a key holding a dot stays a reference for such a
-      // release, and nothing reached the reference-shaped note.
       assertStringIncludes(
         (app.tokens as Record<string, string>)["eu.west"],
         "vault.get",

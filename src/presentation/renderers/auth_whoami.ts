@@ -74,9 +74,8 @@ class LogAuthWhoamiRenderer implements Renderer<AuthWhoamiEvent> {
           return;
         }
 
-        // No entitlement from this server — an older or self-hosted
-        // swamp-club. Fall back to the exact output shipped before this
-        // existed, so upgrading the CLI alone changes nothing.
+        // no entitlement from this server (older or self-hosted): print exactly
+        // what shipped before, so upgrading the CLI alone changes nothing
         if (e.identity.collectives && e.identity.collectives.length > 0) {
           writeOutput(`Collectives: ${e.identity.collectives.join(", ")}`);
         }

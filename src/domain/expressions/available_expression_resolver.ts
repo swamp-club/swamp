@@ -37,48 +37,15 @@ import { ProvenanceMap } from "./provenance_map.ts";
 import { spliceOrigin } from "./splice_origin.ts";
 import { hasStepOutputDependency } from "./dependency_extractor.ts";
 
-/**
- * A synchronous CEL evaluator: evaluates a single CEL expression against a
- * context and returns the resulting value. Both `WorkflowEvaluateDeps.evaluateCel`
- * and `CelEvaluator.evaluate` satisfy this shape.
- */
 export type SyncCelEvaluator = (
   expression: string,
   context: Record<string, unknown>,
 ) => unknown;
 
 /**
- * Resolves every `${{ }}` expression anywhere in `data` that can be evaluated
- * against `context` right now, deferring only the kinds that must be resolved at
- * a later, dedicated stage:
- *
- *   - `vault.*` / `env.*` (via {@link containsRuntimeExpression}) — resolved at
- *     runtime through the secret bag.
- *   - step-output / `data.*` dependencies (via {@link hasStepOutputDependency}) —
- *     resolved at step-execution time, once upstream outputs exist.
- *
- * Everything else is evaluated against `context`. An expression that throws —
- * because it references a binding not yet in `context` (e.g. `run.*` during
- * workflow evaluation) or because it is a bad reference — is left raw. This
- * makes the resolver context-adaptive: the same function resolves `self.*`
- * during forEach expansion and additionally `run.*` and available step outputs
- * at execution time, with no per-call configuration. It is the inverse of the
- * skip-list in `WorkflowExpressionEvaluator.evaluate()` (which defers the same
- * runtime/execution-stage kinds), and the two should stay in sync. Another
- * templating system's text that evaluator left raw in a step argument fails
- * here too, and stays raw the same way.
- *
- * This replaces the per-field allowlists that previously lived in
- * `resolveForEachTaskExpressions` (libswamp/workflows/evaluate.ts) and
- * `executeModelMethod` (workflows/execution_service.ts), so no task field can be
- * accidentally omitted from resolution.
- *
- * The input is never mutated. A whole-string single expression keeps the
- * evaluated value's native type; expressions embedded in a larger string are
- * stringified and substituted in place (see {@link replaceExpressions}). A
- * reference that cannot be resolved survives as its literal `${{ }}` text and
- * surfaces later as a clear downstream error (e.g. "workflow not found") rather
- * than as silent data loss.
+ * an expression that throws is left raw and surfaces later as a clear
+ * downstream error, not silent data loss; the deferred kinds must stay in sync
+ * with the skip-list in WorkflowExpressionEvaluator.evaluate
  */
 export function resolveAvailableExpressions(
   data: unknown,
@@ -109,9 +76,8 @@ export function resolveAvailableExpressions(
 }
 
 /**
- * {@link resolveAvailableExpressions} over data whose provenance is known: an
- * occurrence overlapping data is neither evaluated nor substituted, and the
- * result's map records where each spliced value's data now sits.
+ * an occurrence overlapping data is neither evaluated nor substituted; the
+ * result's map records where each spliced value's data now sits
  */
 export function resolveAvailableExpressionsTracked(
   data: unknown,
@@ -145,11 +111,6 @@ export function resolveAvailableExpressionsTracked(
   );
 }
 
-/**
- * {@link resolveAvailableExpressions} over a raw/sanitized pair: each
- * expression is evaluated once from the raw copy and spliced into both, the
- * sanitized copy through `sanitizer`.
- */
 export function resolveAvailableExpressionsPair<T>(
   pair: SplicePair<T>,
   context: Record<string, unknown>,

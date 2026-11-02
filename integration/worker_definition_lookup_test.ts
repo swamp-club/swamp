@@ -17,14 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Serve's worker definitions resolved through the real wiring: the worker run
- * deps' type-scoped lookup, the repository's auto-definitions name index, and
- * resolveOrCreateDefinition's lock (swamp-club#3984). A worker name new to
- * the repository reads only the files stored since the last lookup, while
- * legacy uuid-named and non-filename-safe definitions are still adopted.
- */
-
 import { assertEquals } from "@std/assert";
 import { join } from "@std/path";
 import { ensureDir } from "@std/fs";
@@ -59,7 +51,6 @@ async function writeWorkerDefinition(
   return id;
 }
 
-/** How many files the name index read across the captured spans. */
 function filesParsed(spans: readonly ReadableSpan[]): number {
   return spans
     .filter((s) => s.name === "swamp.definition.name_index.validate")
@@ -98,7 +89,6 @@ Deno.test("integration: serve's worker definitions resolve through the auto-defi
     const runDeps = await createWorkerModelRunDeps(dir, ctx, {
       definitionType: WORKER_MODEL_TYPE,
     });
-    // As modelMethodRun adapts the run deps for direct type execution.
     const deps = {
       lookupDefinition: runDeps.lookupDefinition,
       getModelDef: runDeps.getModelDef,
@@ -132,16 +122,13 @@ Deno.test("integration: serve's worker definitions resolve through the auto-defi
     await withCapturedSpans(async (spans) => {
       const second = await resolve("worker-new-2");
       assertEquals(second.ok && second.created, true);
-      // No stored definition is read again but the one created since, and
-      // the two stored under their ids while their stats are too recent to
-      // trust: each check reads those again until they settle, and a new
-      // name is checked twice, before the auto-definition lock and under it.
-      // So 1 + 2 * 2 at most, against the STORED a full scan would read.
+      // only the new definition and the two id-named ones are re-read while
+      // their stats are recent, and a new name is checked twice, so at most 1 +
+      // 2 * 2 files, not a full scan
       const parsed = filesParsed(spans);
       assertEquals(parsed >= 1 && parsed <= 5, true, `read ${parsed} files`);
     });
 
-    // Created at their name-derived paths, so their lookups are direct.
     const again = await resolve("worker-new-1");
     assertEquals(again.ok && !again.created, true);
     assertEquals(

@@ -60,7 +60,6 @@ Deno.test("TransitionTail: settled waits for every transition, including one enq
   const first = tail.run("first", async () => {
     await gate.promise;
     order.push("first");
-    // Enqueued after settled() began waiting.
     late = tail.run("late", () => {
       order.push("late");
       return Promise.resolve();
@@ -94,7 +93,6 @@ Deno.test("TransitionTail: each transition's span records its tail, operation an
     const second = tail.run("worker_busy", () => Promise.resolve());
     gate.resolve();
     await Promise.all([first, second]);
-    // Nothing is ahead once both settled.
     await tail.run("worker_idle", () => Promise.resolve());
 
     const transitions = spans.filter((s) =>
@@ -178,7 +176,6 @@ Deno.test("TransitionTail: transitions of different keys run at once, and one ke
     order.push("a:fail");
     return Promise.resolve();
   }, "a");
-  // Another key finishes while "a" is still held.
   await tail.run("step_lease.complete", () => {
     order.push("b:complete");
     return Promise.resolve();
@@ -247,7 +244,6 @@ Deno.test("TransitionTail: a key's chain is dropped once it drains, including af
   );
   assertEquals(tail.keyedChainCountForTesting, 0);
 
-  // A key reused after its chain was dropped still runs.
   assertEquals(await tail.run("again", () => Promise.resolve(2), "a"), 2);
   assertEquals(tail.keyedChainCountForTesting, 0);
 });
@@ -275,7 +271,6 @@ Deno.test("TransitionTail: settled waits for every key, including a key first en
 
   gateB.resolve();
   await b;
-  // A full turn, so every microtask settled() could resolve on has run.
   await new Promise((r) => setTimeout(r, 0));
   assertEquals(order, ["b"]);
 

@@ -42,7 +42,6 @@ const fixture = JSON.parse(
   ),
 );
 
-/** A fresh copy of the fixture's single message, to mutate per test. */
 function message(): Record<string, unknown> {
   return structuredClone(fixture.message);
 }
@@ -340,7 +339,6 @@ Deno.test("parseInboxMessage: strips bidi and zero-width characters from every t
       action: { label: `Up${c}date`, command: "swamp update" },
     });
     const name = `U+${c.codePointAt(0)!.toString(16)}`;
-    // The joiners stay in prose, the body and the title.
     const joiner = c === "\u200c" || c === "\u200d";
     assert(parsed, name);
     assertEquals(parsed.kind, "announcement", name);
@@ -390,7 +388,6 @@ Deno.test("parseInboxMessage: drops a command holding an invisible character rat
 });
 
 Deno.test("parseInboxMessage: cuts a title on code points, never inside a surrogate pair", () => {
-  // The emoji straddles the cut: code unit MAX - 2 starts it.
   const title = "t".repeat(MAX_INBOX_TITLE_LENGTH - 2) + "😀😀😀";
   const parsed = parseInboxMessage({ ...message(), title });
   assert(parsed);
@@ -399,12 +396,10 @@ Deno.test("parseInboxMessage: cuts a title on code points, never inside a surrog
   assertEquals(codePoints.at(-1), "…");
   assertEquals(codePoints.at(-2), "😀");
   assert(parsed.title.isWellFormed());
-  // Well formed in JSON too.
   assertEquals(JSON.parse(JSON.stringify(parsed.title)), parsed.title);
 });
 
 Deno.test("parseInboxMessage: measures an action label in code points", () => {
-  // 40 code points, 42 code units: fits whole.
   const label = "l".repeat(MAX_INBOX_ACTION_LABEL_LENGTH - 2) + "😀😀";
   const parsed = parseInboxMessage({
     ...message(),
@@ -478,7 +473,6 @@ Deno.test("parseInboxMessagePage: refuses a malformed envelope", () => {
     parseInboxMessagePage({ messages: [], nextCursor: "a\x1bb" }),
     undefined,
   );
-  // Not a message id: shell text must never reach the older-page command.
   assertEquals(
     parseInboxMessagePage({
       messages: [],
@@ -555,7 +549,6 @@ Deno.test("isInboxMessageId: accepts a ULID in either case and nothing else", ()
   assert(isInboxMessageId("01jbx5q8zk00000000000000zf"));
   assertEquals(isInboxMessageId(""), false);
   assertEquals(isInboxMessageId("01JBX5Q8ZK00000000000000Z"), false);
-  // I, L, O and U are not Crockford base32.
   assertEquals(isInboxMessageId("01JBX5Q8ZK00000000000000ZU"), false);
   assertEquals(isInboxMessageId("01JBX5Q8ZK00000000000000ZF "), false);
 });

@@ -166,10 +166,6 @@ import {
   startDiagnosticPhase,
 } from "../../domain/diagnostics/diagnostic_phase.ts";
 
-/**
- * Events emitted by the libswamp model method run generator.
- */
-/** Describes a single env var usage in a definition. */
 export interface EnvVarUsage {
   path: string;
   envVar: string;
@@ -246,9 +242,6 @@ export type ModelMethodRunEvent =
   }
   | { kind: "error"; error: SwampError };
 
-/**
- * Log context for a single model method run.
- */
 export interface RunLog {
   logFilePath: string;
   redactor: SecretRedactor;
@@ -257,9 +250,8 @@ export interface RunLog {
 }
 
 /**
- * The versions `handles` name that the caller's lock publishes: ephemeral
- * data is never published. Report handles are included, since a report
- * writes its data under the run's model (swamp-club#3934).
+ * ephemeral data is never published; report handles are included, since a
+ * report writes its data under the run's model
  */
 function writtenVersionsOfHandles(
   handles: readonly DataHandle[],
@@ -277,32 +269,26 @@ function writtenVersionsOfHandles(
     }));
 }
 
-/** The data handles `results` wrote. */
 function reportDataHandles(
   results: readonly ReportExecutionResult[],
 ): DataHandle[] {
   return results.flatMap((result) => result.dataHandles ?? []);
 }
 
-/**
- * Dependencies injected into the model method run generator.
- */
 export interface ModelMethodRunDeps {
   repoDir: string;
   /**
-   * Told, in this process, the data versions the method wrote, on success
-   * and on failure, so the caller's model lock can publish them and check
-   * the remote holds them (swamp-club#3146). Never part of the event stream.
+   * told, in this process, the data versions the method wrote, on success and
+   * failure, so the caller's model lock can publish them and check the remote
+   * holds them; never part of the event stream
    */
   onWrittenVersions?: (
     versions: readonly WrittenVersion[],
     outcome: "completed" | "failed",
   ) => void;
-  /** Looks up by name, then by exact id. */
   lookupDefinition: (
     idOrName: string,
   ) => Promise<{ definition: Definition; type: ModelType } | null>;
-  /** Looks up by exact id only; required for a `byId` request. */
   lookupDefinitionById?: (
     id: string,
     expectedName?: string,
@@ -320,10 +306,8 @@ export interface ModelMethodRunDeps {
       authoredExpressions: ReadonlySet<string>;
       deferredExpressions?: readonly DeferredExpression[];
       writtenReferences?: readonly WrittenReference[];
-      /** See the evaluated cache's `maskedPaths`; absent on older caches. */
       maskedPaths?: readonly MaskedPath[];
       persistedProvenance?: ProvenanceMap | "unreadable";
-      /** See the evaluated cache's `provenance`; absent on older caches. */
       provenance?: ProvenanceMap | "unreadable";
       sensitiveFormat?: number;
     } | null
@@ -331,11 +315,9 @@ export interface ModelMethodRunDeps {
   saveEvaluatedDefinition: (
     type: ModelType,
     definition: Definition,
-    /** Where data sits in the definition's raw copy (swamp-club#3205). */
     provenance: ProvenanceMap,
     authoredExpressions: ReadonlySet<string>,
     writtenReferences?: readonly WrittenReference[],
-    /** Where the definition holds the mask (swamp-club#3681). */
     maskedPaths?: readonly MaskedPath[],
     persistedProvenance?: ProvenanceMap,
   ) => Promise<void>;
@@ -365,16 +347,12 @@ export interface ModelMethodRunDeps {
     import("../../domain/workflows/repositories.ts").WorkflowRunRepository;
 }
 
-/**
- * Input for the model method run generator.
- */
 export interface ModelMethodRunInput {
   modelIdOrName: string;
   /**
-   * Treat `modelIdOrName` as a definition id the caller already resolved,
-   * and look it up by id only, so the run executes the model the caller
-   * authorized. Applies to the standard path only; direct type execution
-   * resolves `definitionName` itself.
+   * treat modelIdOrName as an already-resolved definition id and look it up by
+   * id only, so the run executes the authorized model. Standard path only;
+   * direct type execution resolves definitionName itself
    */
   byId?: boolean;
   /**
@@ -385,15 +363,13 @@ export interface ModelMethodRunInput {
   methodName: string;
   inputs: Record<string, unknown>;
   /**
-   * Treat `inputs` as data: expression text in them is never evaluated, and
-   * a global argument holding any is refused rather than persisted
-   * (swamp-club#3205). Cannot be combined with `lastEvaluated`.
+   * treat inputs as data: expression text in them is never evaluated, and a
+   * global argument holding any is refused rather than persisted. Cannot be
+   * combined with lastEvaluated
    */
   literalInputs?: boolean;
   lastEvaluated: boolean;
-  /** When present, enables direct type execution (auto-create-then-run). */
   typeArg?: string;
-  /** Definition name for direct type execution (separate from modelIdOrName). */
   definitionName?: string;
   /**
    * With `definitionName`, the id of the definition the caller authorized,
@@ -401,10 +377,9 @@ export interface ModelMethodRunInput {
    */
   expectedDefinitionId?: string | null;
   /**
-   * Called when `expectedDefinitionId` is null (no definition had the name)
-   * and a concurrent run has since created one. The run proceeds on it only
-   * if this allows it, so the caller authorizes what actually runs
-   * (swamp-club#2672).
+   * called when expectedDefinitionId is null (no definition had the name) and a
+   * concurrent run has since created one; the run proceeds on it only if this
+   * allows it, so the caller authorizes what actually runs
    */
   authorizeResolvedDefinition?: (
     found: { definition: Definition; type: ModelType },
@@ -420,19 +395,12 @@ export interface ModelMethodRunInput {
   reportLabels?: string[];
   swampSha?: string;
   autoGc?: boolean;
-  /** W3C traceparent header for per-invocation trace context. */
   traceparent?: string;
-  /** W3C tracestate header for per-invocation trace context. */
   tracestate?: string;
-  /** Identity of the user who initiated this run (e.g. "user:paul"). */
   initiatedBy?: string;
-  /** The `swamp serve` instance running this method run, when serve runs it. */
   instanceId?: string;
 }
 
-/**
- * Executes a model method, yielding progress events as a libswamp stream.
- */
 export async function* modelMethodRun(
   ctx: LibSwampContext,
   deps: ModelMethodRunDeps,
@@ -464,7 +432,6 @@ export async function* modelMethodRun(
               preparing.end("error");
               return event;
             };
-            // Runs a preparation step as a child of `prepare`.
             const inPrepare = <A extends unknown[], R>(
               fn: (...args: A) => Promise<R>,
             ) =>
@@ -487,7 +454,6 @@ export async function* modelMethodRun(
               deps = { ...deps, ...wrapped };
             }
 
-            // --- Validate inputs phase ---
             yield { kind: "validating_inputs" };
             if (input.literalInputs && input.lastEvaluated) {
               // The cached evaluation may hold expressions an earlier run's
@@ -504,22 +470,20 @@ export async function* modelMethodRun(
             // Keys the caller supplied; under literalInputs they are data.
             const callerInputKeys = new Set(Object.keys(input.inputs));
 
-            // --- Resolve model ---
             yield {
               kind: "resolving_model",
               modelIdOrName: input.modelIdOrName,
             };
 
             let definition: Definition;
-            // Where data sits in the definition before evaluation: the global
-            // arguments a direct execution routed from literal inputs
-            // (swamp-club#3205). Authored everywhere else.
+            // where data sits in the definition before evaluation: the global
+            // arguments a direct execution routed from literal inputs; authored
+            // everywhere else
             let routedGlobalsProvenance = ProvenanceMap.authored();
             let modelType: ModelType;
             let modelDef: ModelDefinition;
 
             if (input.typeArg && input.definitionName) {
-              // Direct type execution path: auto-create-then-run
               const typeArg = input.typeArg;
               let resolvedType = ModelType.create(typeArg);
 
@@ -569,12 +533,9 @@ export async function* modelMethodRun(
                     ? deps.lookupDefinition
                     : async (name) => {
                       const found = await deps.lookupDefinition(name);
-                      // Only a definition created since a check that found
-                      // none (a concurrent run) may be adopted, if the caller
-                      // may run it: creation is serialized by the
-                      // auto-definition lock. One renamed in or deleted since
-                      // is refused, since the lock held is not its lock and
-                      // what would be created was never authorized.
+                      // Adopt only a definition created since a check that
+                      // found none (a concurrent run), if the caller may run
+                      // it; one renamed or deleted since is refused.
                       const adoptable = input.expectedDefinitionId === null &&
                         found !== null &&
                         input.authorizeResolvedDefinition?.(found) === true;
@@ -655,7 +616,6 @@ export async function* modelMethodRun(
                 inputs: { ...result.routedInputs.methodArguments },
               };
             } else {
-              // Standard path: look up existing definition
               const lookupDefinition = selectLookup(
                 "model method run",
                 input.byId,
@@ -703,7 +663,6 @@ export async function* modelMethodRun(
               }
             }
 
-            // Validate method exists
             const method = modelDef.methods[input.methodName];
             if (!method) {
               const availableMethods = Object.keys(modelDef.methods).join(", ");
@@ -718,7 +677,6 @@ export async function* modelMethodRun(
               return;
             }
 
-            // Coerce and validate inputs against model's input schema
             const inputs = { ...input.inputs };
             if (definition.inputs) {
               const coercedInputs = coerceInputTypes(inputs, definition.inputs);
@@ -730,7 +688,6 @@ export async function* modelMethodRun(
                 definition.inputs,
               );
 
-              // Build effective schema: only require inputs referenced by the method's arguments
               const referencedInputs = extractInputReferences(
                 definition.getMethodArguments(input.methodName),
               );
@@ -771,7 +728,6 @@ export async function* modelMethodRun(
               methodName: input.methodName,
             };
 
-            // --- Check for env var usage and warn ---
             const envVarUsages = detectEnvVarUsageInDefinition(definition);
             if (envVarUsages.length > 0) {
               const worded = envVarWarningText();
@@ -783,7 +739,6 @@ export async function* modelMethodRun(
               }, worded.modelText);
             }
 
-            // --- Set up logging ---
             preparing.end();
             const setupSpan = getTracer().startSpan("swamp.model.method.setup");
             const runLog = await deps.createRunLog(
@@ -792,9 +747,9 @@ export async function* modelMethodRun(
               definition.id,
             );
             const { logFilePath, redactor } = runLog;
-            // Every sensitive value this run resolves for an expression is
-            // recorded here and forwarded to the run's redactor. The registry
-            // it carries is the run's typed-secrets switch (typed-secrets 3.5).
+            // every sensitive value this run resolves for an expression is
+            // recorded here and forwarded to the run's redactor; the registry
+            // it carries is the run's typed-secrets switch
             const sensitiveValues = new RunSensitiveValues(redactor);
             if (runLog.runId) {
               runLogger = getRunLogger(
@@ -805,7 +760,6 @@ export async function* modelMethodRun(
             }
 
             try {
-              // --- Evaluate expressions ---
               const exprSpan = getTracer().startSpan(
                 "swamp.model.method.evaluate_expressions",
               );
@@ -814,42 +768,30 @@ export async function* modelMethodRun(
                 lastEvaluated: input.lastEvaluated,
               };
 
-              // Over the stored definition, before the --input overrides below
-              // write into it (a definition with no expressions is not copied
-              // first): the hash then tells a definition edit from a different
-              // input, and no input value reaches it (swamp-club#3722).
+              // hashed over the stored definition, before the --input overrides
+              // write into it, so the hash tells a definition edit from a
+              // different input and no input value reaches it
               const definitionHash = await definition.computeHash();
 
               const evaluationService = deps.createEvaluationService();
               let evaluatedDefinition = definition;
-              // The copy that executes: the same splices as evaluatedDefinition,
-              // with sensitive data values in its arguments replaced by
-              // sentinels from this step's bag. evaluatedDefinition keeps real
-              // values for caching, reports and self.globalArguments.
+              // The copy that executes: same splices as evaluatedDefinition,
+              // with sensitive data values replaced by sentinels;
+              // evaluatedDefinition keeps real values.
               let executedDefinition = definition;
-              // Where data sits in the executed copy's data (swamp-club#3205).
               let executedProvenance = ProvenanceMap.authored();
-              // Where data sits in the raw copy, as the evaluated cache stores it.
               let rawProvenance = ProvenanceMap.authored();
-              // Method arguments the operator set whole with --input. The
-              // value is the operator's own text for that argument, not data
-              // spliced into the definition's, so a method that places data
-              // text reads it as authored, as it reads the definition
-              // (swamp-club#3868).
+              // Method arguments the operator set whole with --input: the value
+              // is the operator's own text, not spliced data, so a method reads
+              // it as authored.
               const operatorArgumentKeys: string[] = [];
               const stepSecretBag = new VaultSecretBag(
                 sensitiveValues.sentinels,
               );
 
-              // Provenance for the runtime pass, collected from the SOURCE
-              // definition — never from the evaluated one, which already has data
-              // content spliced into it. Cached provenance is unioned below for
-              // --last-evaluated. Inputs are typed by the operator
-              // running the command (or an authenticated serve caller), so
-              // expressions in them — schema-declared or method overrides — are
-              // author-written too.
-              // Under literalInputs the caller's inputs are data: they vouch for
-              // nothing, and every key they supplied is data in the context.
+              // collected from the source definition, never the evaluated one,
+              // which has data spliced in; under literalInputs the inputs vouch
+              // for nothing and all their keys are data
               const sourceExpressions = collectAuthoredExpressions(
                 definition.toData(),
               );
@@ -859,13 +801,9 @@ export async function* modelMethodRun(
                   inputs,
                   new Set(sourceExpressions),
                 );
-              // Where data sits in the inputs. The values an operator types are
-              // the run's data, not the definition's source: spliced into a
-              // sensitive argument they are masked in the cache and the
-              // reports like any other data (swamp-club#3681). Only the
-              // expression occurrences the operator typed stay authored, so
-              // they still resolve. Under literalInputs every value is data
-              // whole. A schema default is the definition's own.
+              // Operator-typed values are run data, so in a sensitive argument
+              // they are masked in cache and reports; only typed expressions
+              // stay authored and resolve.
               let inputsProvenance = ProvenanceMap.authored();
               for (const [key, value] of Object.entries(inputs)) {
                 if (!callerInputKeys.has(key)) {
@@ -919,9 +857,8 @@ export async function* modelMethodRun(
                   };
                   return;
                 }
-                // A newer swamp may have written a sensitive value in a form
-                // this one does not recognise, as the mask is to a reader
-                // before it (swamp-club#3681).
+                // a newer swamp may have written a sensitive value in a form
+                // this one does not recognise
                 if (isNewerSensitiveFormat(lastEval)) {
                   exprSpan.end();
                   setupSpan.end();
@@ -943,13 +880,8 @@ export async function* modelMethodRun(
                   };
                   return;
                 }
-                // A cache holds a sensitive argument that did not come from a
-                // vault as the mask, or in plaintext when an older swamp wrote
-                // it; neither replays (swamp-club#3681). Checked before
-                // rehydration and provenance alignment, which such a cache
-                // would not survive. Only this method's arguments count, and
-                // one an --input override replaces below never executes from
-                // the cache, so it is left out.
+                // A cache holding a sensitive argument not from a vault, as
+                // mask or plaintext, never replays; checked before rehydration.
                 const plaintextArgs = findPlaintextSensitiveArguments(
                   modelDef,
                   lastEval.definition.toData(),
@@ -978,10 +910,9 @@ export async function* modelMethodRun(
                   };
                   return;
                 }
-                // A cache written before provenance cannot say which text
-                // came from data, and a method that places data text
-                // (command/shell) would run all of it as authored
-                // (swamp-club#3868).
+                // a cache written before provenance cannot say which text came
+                // from data, and a method that places data text would run all
+                // of it as authored
                 if (
                   !(lastEval.provenance instanceof ProvenanceMap) &&
                   method.placeDataSplices !== undefined
@@ -1020,8 +951,7 @@ export async function* modelMethodRun(
                   rawProvenance = restored.provenance;
                   executedProvenance = restored.provenance;
                 } else {
-                  // A cache without provenance predates it and replays as it
-                  // always did.
+                  // a cache without provenance replays without it
                   rawProvenance = lastEval.provenance ??
                     ProvenanceMap.authored();
                   executedProvenance = alignProvenance(
@@ -1035,10 +965,10 @@ export async function* modelMethodRun(
                 for (const expression of lastEval.authoredExpressions) {
                   authoredExpressions.add(expression);
                 }
-                // A partial evaluation leaves failed CEL as authored text.
-                // Recheck only what this method still needs, using the cache's
+                // a partial evaluation leaves failed CEL as authored text;
+                // recheck only what this method still needs, using the cache's
                 // globals and provenance. Resolved values stay frozen; data
-                // text and other methods never enter this replay pass.
+                // text and other methods never enter this pass
                 if (
                   evaluationService.hasDefinitionExpressions(
                     evaluatedDefinition,
@@ -1103,13 +1033,9 @@ export async function* modelMethodRun(
                   failedExpressions = evalResult.failedExpressions ??
                     failedExpressions;
                 }
-                // Saved once the argument check below passes, so a run that
-                // fails it never replaces the last good evaluation that
-                // --last-evaluated reuses. Snapshotted now because the --input
-                // overrides below mutate the definition and are not persisted.
-                // Built from the executed copy, so sensitive values are written
-                // as the vault references they came from, and a literal under a
-                // sensitive argument as the mask, never in plaintext.
+                // Saved only after the argument check passes, so a failing run
+                // never replaces the last good evaluation; snapshotted before
+                // --input overrides.
                 const persisted = persistEvaluatedDefinition(
                   executedDefinition,
                   [],
@@ -1126,15 +1052,11 @@ export async function* modelMethodRun(
                 pendingProvenance = rawProvenance;
               }
 
-              // Where data sits in the raw copy as reports and the completed
-              // event show it: the evaluation's map, plus each override below.
               let shownProvenance = rawProvenance;
 
-              // Merge override inputs into method arguments.
-              // Override inputs are --input flags whose keys are not model inputs
-              // schema keys (i.e. not used for CEL expression evaluation). They map
-              // directly to method argument schema keys, so reject unknown ones here
-              // before Zod's default strip mode silently discards them.
+              // Override inputs are --input keys outside the model input
+              // schema; they map to method argument keys, so unknown ones are
+              // rejected before Zod strips.
               const overrideInputs = Object.fromEntries(
                 Object.entries(inputs).filter(([key]) =>
                   !definitionInputKeys.includes(key)
@@ -1218,13 +1140,9 @@ export async function* modelMethodRun(
                 };
                 return;
               }
-              // Written by the execution service once the method's arguments
-              // pass their schema (its onArgumentsValidated), so a run the
-              // schema refuses never replaces the last good evaluation that
-              // --last-evaluated reuses (swamp-club#3681). The cache carries
-              // the source's expressions and those an input contributed that
-              // it still holds; an input expression the evaluation consumed
-              // names nothing a replay needs and may hold what was typed.
+              // written once the method's arguments pass their schema, so a
+              // refused run never replaces the last good evaluation; the cache
+              // carries the source's expressions and those an input contributed
               const saveEvaluation = pendingSave === undefined
                 ? undefined
                 : ((saved: Definition) => () =>
@@ -1244,13 +1162,9 @@ export async function* modelMethodRun(
 
               exprSpan.end();
 
-              // Capture pre-vault args for report context (so vault secrets stay as expressions)
-              // Reports and the completed event show arguments to the user and are
-              // persisted with report output, so sensitive values are masked there,
-              // by the walk the evaluated cache uses: a sensitive argument that
-              // holds data (an input's value, a data read), a literal, or keys
-              // that came with data, is the mask; then values read from a vault
-              // wherever they sit (swamp-club#3681).
+              // Reports and the completed event are shown and persisted, so
+              // sensitive values are masked: data-holding or literal ones, then
+              // vault reads.
               const shownArguments = maskSensitiveArgumentsForDisplay(
                 modelDef,
                 evaluatedDefinition.toData(),
@@ -1264,10 +1178,9 @@ export async function* modelMethodRun(
                 shownArguments.methods?.[input.methodName]?.arguments ?? {},
               ) as Record<string, unknown>;
 
-              // Resolve runtime expressions (vault and env).
-              // Vault secrets become sentinel tokens; the secretBag maps sentinels to raw values.
-              // The expression context is passed so that dynamic vault.get() arguments
-              // (e.g. vault.get(inputs.vaultName, inputs.secretKey)) can be CEL-evaluated.
+              // vault secrets become sentinel tokens, with the secretBag
+              // mapping them to raw values; the expression context lets dynamic
+              // vault.get() arguments be CEL-evaluated
               const runtimeSpan = getTracer().startSpan(
                 "swamp.model.method.resolve_runtime",
               );
@@ -1283,7 +1196,6 @@ export async function* modelMethodRun(
                 );
               attachBindingProvenance(runtimeContext, {
                 inputs: inputsProvenance,
-                // Bound as self.globalArguments in the runtime pass.
                 self: ProvenanceMap.authored().graft(
                   "globalArguments",
                   rawProvenance.subtree("globalArguments").union(
@@ -1291,13 +1203,9 @@ export async function* modelMethodRun(
                   ),
                 ),
               });
-              // A whole argument the operator typed with --input is the
-              // operator's own command text, so a command/shell run given that
-              // way runs as written; the splices the runtime pass makes into
-              // it are still data, recorded on top. Under literalInputs the
-              // caller said the text is data, so it stays data. Every
-              // expression the operator typed is already authored, so this
-              // changes nothing the pass resolves.
+              // A whole argument typed with --input is the operator's own
+              // command text, so it runs as written; runtime splices into it
+              // stay data.
               const placementProvenance = input.literalInputs
                 ? executedProvenance
                 : operatorArgumentKeys.reduce(
@@ -1366,7 +1274,6 @@ export async function* modelMethodRun(
 
               runtimeSpan.end();
 
-              // --- Execute ---
               runLogger.debug("Executing method {method}", {
                 method: input.methodName,
               });
@@ -1377,7 +1284,6 @@ export async function* modelMethodRun(
                 methodName: input.methodName,
               };
 
-              // Create ModelOutput for tracking
               const preExecSpan = getTracer().startSpan(
                 "swamp.model.method.pre_execute",
               );
@@ -1405,8 +1311,7 @@ export async function* modelMethodRun(
               });
               methodProgress.enter("executing");
 
-              // Register with the run tracker (if available).
-              // Output YAML is only written in terminal state (write-once).
+              // output YAML is only written in terminal state (write-once)
               let heartbeatInterval: ReturnType<typeof setInterval> | undefined;
               if (deps.runTracker) {
                 const activeRun = ActiveRun.createModelMethodRun({
@@ -1456,7 +1361,6 @@ export async function* modelMethodRun(
               // workflow gates from model code bypasses authorization. Use the
               // CLI (swamp workflow approve/reject) or WebSocket API instead.
 
-              // Start heartbeat inside the try so it's always cleaned up on error.
               if (deps.runTracker) {
                 heartbeatInterval = setInterval(() => {
                   try {
@@ -1557,10 +1461,9 @@ export async function* modelMethodRun(
                 methodProgress.enter("finalizing");
               } catch (error) {
                 methodProgress.enter("finalizing");
-                // The record, the failed-run report and the error event carry
-                // the message and stack through the run's redactor: a method
-                // that echoes a sensitive argument in its error lands it in
-                // none of them (swamp-club#3681).
+                // The record, failed-run report and error event carry the
+                // message and stack through the run's redactor, so an echoed
+                // sensitive argument leaks nowhere.
                 const failure = executionErrorFrom(error, redactor);
                 const errorMessage = failure.message;
 
@@ -1587,9 +1490,8 @@ export async function* modelMethodRun(
                     deps.runTracker.complete(output.id, "cancelled", cause);
                   }
                   // Tell the unit the run reached its cancelled outcome before
-                  // the stream says so, so on v3 the record and the outputs
-                  // written before the abort commit even if the consumer stops
-                  // short of the cancelled event below (swamp-club#3299).
+                  // the stream says so, so on v3 the record and outputs written
+                  // before the abort commit.
                   markOutcomeReported();
                 } else {
                   output.markFailed(failure);
@@ -1605,8 +1507,6 @@ export async function* modelMethodRun(
                   }
                 }
 
-                // Run method-summary report for failed executions so JSON consumers
-                // see structured error output (not just the raw error event).
                 let failedReportHandles: DataHandle[] = [];
                 if (
                   output.status === "failed" && !input.skipAllReports &&
@@ -1701,8 +1601,8 @@ export async function* modelMethodRun(
                 ], "failed");
 
                 if (output.status === "cancelled") {
-                  // The caller learns of a cancelled run from this event: ending
-                  // the stream silently reads as a success (swamp-club#3317).
+                  // the caller learns of a cancelled run from this event:
+                  // ending the stream silently reads as a success
                   yield {
                     kind: "cancelled",
                     run: {
@@ -1731,7 +1631,6 @@ export async function* modelMethodRun(
                 return;
               }
 
-              // --- Process data artifacts ---
               const postExecSpan = getTracer().startSpan(
                 "swamp.model.method.post_execute",
               );
@@ -1763,7 +1662,6 @@ export async function* modelMethodRun(
                       : {}),
                   });
 
-                  // Parse content if JSON for display
                   let attributes: Record<string, unknown> | undefined;
                   if (handle.metadata.contentType === "application/json") {
                     try {
@@ -1804,7 +1702,6 @@ export async function* modelMethodRun(
                 { method: input.methodName, model: definition.name },
               );
 
-              // Mark output as succeeded and save (write-once)
               if (heartbeatInterval) {
                 clearInterval(heartbeatInterval);
               }
@@ -1833,7 +1730,6 @@ export async function* modelMethodRun(
                 );
               }
 
-              // --- Post-run reports ---
               const reportsSpan = getTracer().startSpan(
                 "swamp.model.method.reports",
               );
@@ -1843,7 +1739,6 @@ export async function* modelMethodRun(
               if (!input.skipAllReports && reportRegistry.getAll().length > 0) {
                 const dataHandles = execResult.dataHandles ?? [];
 
-                // Run method-scope reports
                 const methodContext = buildMethodReportContext(
                   {
                     repoDir: deps.repoDir,
@@ -1894,7 +1789,6 @@ export async function* modelMethodRun(
                   [...BUILTIN_METHOD_REPORTS, ...(modelDef.reports ?? [])],
                 );
 
-                // Yield report events and collect results
                 reportResults = {};
                 for (const result of methodSummary.results) {
                   yield {
@@ -1922,7 +1816,6 @@ export async function* modelMethodRun(
                 }
                 reportFailures += methodSummary.failures;
 
-                // Run model-scope reports
                 const modelContext: ModelReportContext = {
                   ...methodContext,
                   scope: "model",
@@ -1949,8 +1842,6 @@ export async function* modelMethodRun(
                   input.methodName,
                   [...BUILTIN_METHOD_REPORTS, ...(modelDef.reports ?? [])],
                   undefined,
-                  // The method-scope call above already emitted failures for
-                  // unresolvable required reports — suppress duplicates.
                   false,
                 );
 
@@ -1996,7 +1887,6 @@ export async function* modelMethodRun(
               reportsSpan.end();
               postExecSpan.end();
 
-              // --- Complete ---
               const view: ModelMethodRunView = {
                 modelId: definition.id,
                 modelName: definition.name,
@@ -2065,9 +1955,6 @@ export async function* modelMethodRun(
   }
 }
 
-/**
- * Creates a SwampError for a missing model.
- */
 export function modelNotFound(idOrName: string): SwampError {
   return wordedSwampError(
     "model_not_found",
@@ -2075,9 +1962,6 @@ export function modelNotFound(idOrName: string): SwampError {
   );
 }
 
-/**
- * Creates a SwampError for an unknown model type.
- */
 export function unknownModelType(type: string): SwampError {
   return wordedSwampError(
     "unknown_model_type",
@@ -2085,9 +1969,6 @@ export function unknownModelType(type: string): SwampError {
   );
 }
 
-/**
- * Creates a SwampError for an unknown method.
- */
 export function unknownMethod(
   methodName: string,
   modelType: string,
@@ -2102,9 +1983,6 @@ export function unknownMethod(
   };
 }
 
-/**
- * Creates a SwampError when no evaluated definition is available for --last-evaluated.
- */
 export function noEvaluatedDefinition(
   name: string,
 ): SwampError {
@@ -2114,10 +1992,6 @@ export function noEvaluatedDefinition(
   };
 }
 
-/**
- * Creates a SwampError for a cached evaluation written before sensitive
- * values were kept off disk, which --last-evaluated must not replay.
- */
 export function evaluatedCacheMayHoldSecrets(name: string): SwampError {
   return {
     code: "evaluated_cache_may_hold_secrets",
@@ -2127,10 +2001,9 @@ export function evaluatedCacheMayHoldSecrets(name: string): SwampError {
 }
 
 /**
- * Creates a SwampError for a cached evaluation written in a sensitive-value
- * format newer than this swamp's, which --last-evaluated must not replay: a
- * value in a form this swamp does not recognise would run as it is
- * (swamp-club#3681).
+ * a value in a form this swamp does not recognise would run as it is, so
+ * --last-evaluated must not replay a cache written in a newer sensitive-value
+ * format
  */
 export function evaluatedCacheFormatNewer(name: string): SwampError {
   return {
@@ -2141,8 +2014,8 @@ export function evaluatedCacheFormatNewer(name: string): SwampError {
 }
 
 /**
- * Creates a SwampError for a cached evaluation whose provenance record does
- * not parse: replaying it could evaluate data as authored (swamp-club#3205).
+ * replaying a cache whose provenance record does not parse could evaluate data
+ * as authored
  */
 export function evaluatedCacheProvenanceUnreadable(name: string): SwampError {
   return {
@@ -2153,10 +2026,8 @@ export function evaluatedCacheProvenanceUnreadable(name: string): SwampError {
 }
 
 /**
- * Creates a SwampError for a cached evaluation whose sensitive argument holds
- * a value that did not come from a vault — the mask this swamp writes, or
- * plaintext an older one wrote — which --last-evaluated must not replay
- * (swamp-club#3681). Names the paths, never a value.
+ * the cache holds the mask or older plaintext in a sensitive argument, neither
+ * of which --last-evaluated may replay; names the paths, never a value
  */
 export function evaluatedCacheHoldsSensitiveArguments(
   name: string,
@@ -2172,14 +2043,9 @@ export function evaluatedCacheHoldsSensitiveArguments(
   };
 }
 
-/** The error code of a replay refused for want of provenance. */
 export const EVALUATED_CACHE_WITHOUT_PROVENANCE_CODE =
   "evaluated_cache_without_provenance";
 
-/**
- * The error for a `--last-evaluated` replay of a method that places data
- * text, from a cache that records no provenance (swamp-club#3868).
- */
 export function evaluatedCacheWithoutProvenance(
   name: string,
   methodName: string,
@@ -2194,16 +2060,15 @@ export function evaluatedCacheWithoutProvenance(
 }
 
 /**
- * Creates a SwampError for a method execution failure. With a redactor, the
- * message and the cause's stack are passed through it, so a method that
- * echoes a sensitive argument in its error never shows it (swamp-club#3681).
+ * with a redactor, the message and the cause's stack pass through it, so a
+ * method echoing a sensitive argument in its error never shows it
  */
 export function methodExecutionFailed(
   cause: unknown,
   redactor?: ErrorRedactor,
 ): SwampError {
   const shown = redactedError(cause, redactor);
-  // Keeps the cause's model spelling for `swamp model …` (swamp-club#3437).
+  // keeps the cause's model wording
   return carryModelWording(shown, {
     code: secretRefusalCode(cause) ?? "method_execution_failed",
     message: executionErrorFrom(cause, redactor).message,
@@ -2212,11 +2077,9 @@ export function methodExecutionFailed(
 }
 
 /**
- * The authored set an evaluated cache carries: the source definition's
- * expressions, and those the run's inputs contributed that `persisted`
- * still holds, for the runtime pass of a replay. An input expression the
- * evaluation consumed — a constant, say — names nothing a replay needs, and
- * may hold what the operator typed (swamp-club#3681).
+ * the source definition's expressions plus those the run's inputs contributed
+ * that persisted still holds, for a replay's runtime pass; a consumed input
+ * expression names nothing a replay needs and may hold what the operator typed
  */
 function persistedAuthoredExpressions(
   source: ReadonlySet<string>,
@@ -2231,9 +2094,6 @@ function persistedAuthoredExpressions(
   return kept;
 }
 
-/**
- * Converts a ReportExecutionResult to a ReportResultView.
- */
 export function toReportResultView(
   result: ReportExecutionResult,
 ): ReportResultView {

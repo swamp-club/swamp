@@ -45,7 +45,7 @@ Deno.test("isExtensionCheckStale: returns true for stale entry", () => {
 
 Deno.test("isExtensionCheckStale: returns false for fresh entry", () => {
   const now = new Date();
-  const freshTime = new Date(now.getTime() - 1000); // 1 second ago
+  const freshTime = new Date(now.getTime() - 1000);
   const cache = {
     "@swamp/s3-datastore": {
       checkedAt: freshTime.toISOString(),
@@ -107,13 +107,10 @@ Deno.test("isExtensionCheckStale: with channel looks up correct key", () => {
       latestVersion: "2026.03.15.1",
     },
   };
-  // The beta-keyed entry is fresh
   assertEquals(
     isExtensionCheckStale(cache, "@swamp/ext", now, "beta"),
     false,
   );
-  // The bare (stable) key is missing, so stale
   assertEquals(isExtensionCheckStale(cache, "@swamp/ext", now), true);
-  // rc key is also missing
   assertEquals(isExtensionCheckStale(cache, "@swamp/ext", now, "rc"), true);
 });

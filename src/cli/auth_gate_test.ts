@@ -178,7 +178,6 @@ Deno.test("runAuthGate: first run verifies live and caches the proof", async () 
     assertEquals(h.calls.length, 1);
     const [cached] = await h.repo.loadCandidates();
     assertEquals(cached.verification.proof, fresh.proof);
-    // The next run needs no network.
     const again = await runAuthGate(h.deps());
     assert(again.kind === "pass");
     assertEquals(h.calls.length, 1);
@@ -272,7 +271,6 @@ Deno.test("runAuthGate: a 5xx without a proof fails open for 24 hours, then bloc
       h.deps({ answer, now: NOW + DAY - 1 }),
     );
     assertEquals(later.kind, "pass");
-    // The window keeps its original start.
     assertEquals(await h.repo.readFailOpenSince(), NOW);
 
     const dayLater = await runAuthGate(h.deps({ answer, now: NOW + DAY }));
@@ -317,7 +315,6 @@ Deno.test("runAuthGate: without a proof a 429 or a proxy 403 blocks", async () =
 Deno.test("runAuthGate: a signin token is checked live, then trusted for an hour", async () => {
   await withHarness(
     async (h) => {
-      // Cache the signing key the way a past whoami would have.
       await saveProof(
         h,
         await mintTestProof(h.key, "swamp_unrelated", { iat: NOW - DAY }),
@@ -336,7 +333,6 @@ Deno.test("runAuthGate: a signin token is checked live, then trusted for an hour
       assertEquals(h.calls.length, 2);
     },
     async (key) => {
-      // The token verifies with the key cached by an earlier whoami.
       return toSigninToken(
         await mintTestProof(key, API_KEY, { iat: NOW - 90 * DAY }),
       );
@@ -347,7 +343,6 @@ Deno.test("runAuthGate: a signin token is checked live, then trusted for an hour
 Deno.test("runAuthGate: a signin token runs offline when swamp-club is down", async () => {
   await withHarness(
     async (h) => {
-      // Cache the signing key the way a past whoami would have.
       await saveProof(
         h,
         await mintTestProof(h.key, "swamp_unrelated", { iat: NOW - DAY }),
@@ -385,7 +380,6 @@ Deno.test("runAuthGate: a revoked signin token blocks and forgets its check", as
         h.deps({ answer: { outcome: { kind: "rejected", status: 401 } } }),
       );
       assertEquals(outcome, { kind: "block", reason: { kind: "revoked" } });
-      // The personal login's proof belongs to another key and survives.
       assert(await fileExists(join(h.dir, "auth_verified.json")));
       assertEquals(
         await fileExists(join(h.dir, "auth_token_check.json")),
@@ -473,7 +467,6 @@ Deno.test("runAuthGate: a read-only config dir does not fail a passing run", asy
         h.deps({ answer: { outcome: { kind: "server_error", status: 500 } } }),
       );
       assert(outcome.kind === "pass");
-      // The window could not be recorded, so no 24-hour limit is promised.
       assertStringIncludes(outcome.warning ?? "", "cannot record");
       assert(!outcome.warning?.includes("24 hours"));
     } finally {
@@ -579,7 +572,6 @@ Deno.test("runAuthGate: a process that does not own the config dir reads but nev
     assertStringIncludes(outage.warning ?? "", "cannot record");
     assertEquals([...Deno.readDirSync(h.dir)], [], "nothing written");
 
-    // It still passes on a proof the owner cached, and offers no refresh.
     await saveProof(
       h,
       await mintTestProof(h.key, API_KEY, {
@@ -595,10 +587,8 @@ Deno.test("runAuthGate: a process that does not own the config dir reads but nev
 });
 
 const PARENT_PID = 4242;
-/** When the parent swamp in these tests started. */
 const PARENT_STARTED_AT = NOW - 60;
 
-/** Nested deps that hand over `minted` from PARENT_PID. */
 function nestedFrom(
   minted: MintedProof | null,
   ancestor: NestedGateDeps["checkAncestor"] = () => ({
@@ -624,7 +614,6 @@ function nestedFrom(
   };
 }
 
-/** Cache the test key's public key, the way an earlier whoami would. */
 async function cacheTestKey(h: Harness): Promise<void> {
   await saveProof(
     h,
@@ -656,7 +645,6 @@ Deno.test("runAuthGate: no credential with a valid nested pass passes and hands 
 Deno.test("runAuthGate: a nested pass is accepted past its exp under an ancestor started before it", async () => {
   await withHarness(async (h) => {
     await cacheTestKey(h);
-    // A daemon admitted 30 days ago on a proof that has since expired.
     const expired = await mintTestProof(h.key, "parent_key", {
       iat: NOW - 31 * DAY,
       exp: NOW - 17 * DAY,
@@ -677,7 +665,6 @@ Deno.test("runAuthGate: a nested pass is accepted past its exp under an ancestor
 Deno.test("runAuthGate: a nested pass whose proof expired before its ancestor started blocks", async () => {
   await withHarness(async (h) => {
     await cacheTestKey(h);
-    // A leaked old proof, named by a process started after it expired.
     const old = await mintTestProof(h.key, "parent_key", {
       iat: NOW - 31 * DAY,
       exp: NOW - 17 * DAY,
@@ -711,7 +698,6 @@ Deno.test("runAuthGate: a nested pass signed by an untrusted key blocks", async 
     const nested = nestedFrom(forged);
     const outcome = await runAuthGate(h.deps({ credential: null, nested }));
     assertEquals(outcome, { kind: "block", reason: { kind: "no_credential" } });
-    // The signature fails first; ancestry is never consulted.
     assertEquals(nested.checked, []);
   });
 });
@@ -741,8 +727,6 @@ Deno.test("runAuthGate: a credential takes precedence over a nested pass", async
     await cacheTestKey(h);
     const parentProof = await mintTestProof(h.key, "parent_key", { iat: NOW });
     const nested = nestedFrom(parentProof);
-    // The run's own key has no proof, so it is checked live and the
-    // rejection blocks, whatever the inherited pass says.
     const outcome = await runAuthGate(
       h.deps({
         nested,
@@ -827,7 +811,6 @@ Deno.test("runAuthGate: a pass on a signin token hands down the file proof, neve
 Deno.test("runAuthGate: a pass on a signin token alone hands nothing down", async () => {
   await withHarness(
     async (h) => {
-      // Only the signing key is cached; the file proof is for another key.
       await cacheTestKey(h);
       const outcome = await runAuthGate(
         h.deps({ answer: { outcome: { kind: "unreachable", reason: "dns" } } }),
@@ -855,8 +838,8 @@ Deno.test("nestedGatePassValue: names this run for its own proof, the issuer for
 Deno.test("runAuthGate: a grandchild passes under a daemon that outlived its proof", async () => {
   await withHarness(async (h) => {
     await cacheTestKey(h);
-    // The daemon (PARENT_PID) was admitted 20 days ago on a proof that
-    // expired 6 days later. The nested run in between started today.
+    // the daemon was admitted on a proof that has since expired; the nested run
+    // in between started later
     const daemonStart = NOW - 20 * DAY;
     const proof = await mintTestProof(h.key, "daemon_key", {
       iat: NOW - 21 * DAY,
@@ -875,7 +858,6 @@ Deno.test("runAuthGate: a grandchild passes under a daemon that outlived its pro
     }));
     assert(middle.kind === "pass");
 
-    // What the nested run publishes for its own children.
     const value = nestedGatePassValue(middle.handoff, middlePid);
     assert(value !== undefined);
     const checked: number[] = [];
@@ -890,7 +872,6 @@ Deno.test("runAuthGate: a grandchild passes under a daemon that outlived its pro
       },
     }));
     assertEquals(grandchild.kind, "pass");
-    // Judged against the daemon, not the nested run that started today.
     assertEquals(checked, [PARENT_PID]);
   });
 });
@@ -910,7 +891,6 @@ Deno.test("runAuthGate: a process that does not own the config dir honours a run
   });
 });
 
-/** An orchestrator's pass for `minted`, as a serve sends it at enrollment. */
 function orchestratorPass(minted: MintedProof): string {
   return formatOrchestratorGatePass(minted);
 }
@@ -931,7 +911,6 @@ Deno.test("admitOrchestratorPass: a signed proof valid at the gate admits the wo
       kind: "pass",
       handoff: { proof: serveProof.proof, signature: serveProof.signature },
     });
-    // No issuer pid: the worker's own pid goes into the pass it hands down.
     assert(admission.kind === "pass");
     assertEquals(
       parseNestedGatePass(nestedGatePassValue(admission.handoff, 777)!)
@@ -1130,7 +1109,6 @@ Deno.test("createGatePassKeeper: refreshes a week-old proof in memory, even with
       proof: fresh.proof,
       signature: fresh.signature,
     });
-    // Held in memory only: this process may not write its config dir.
     assertEquals((await h.repo.loadCandidates()).length, 0);
   });
 });
@@ -1214,7 +1192,6 @@ Deno.test("createGatePassKeeper: stop clears the timer and waits for a check in 
     const keeper = createGatePassKeeper(deps, startup);
     keeper.start(60 * 60 * 1000);
     const ticking = keeper.tick();
-    // A second tick while one is in flight joins it.
     assert(keeper.tick() === ticking);
     const stopped = keeper.stop();
     release();

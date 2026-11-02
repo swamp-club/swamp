@@ -164,8 +164,8 @@ export const accessCheckCommand = new Command()
           payload: {
             subject: options.subject as string,
             action: options.action as string,
-            // The canonical spelling, so a server that predates the behavior
-            // spelling of a selector (swamp-club#3334) still reads it.
+            // sent in the canonical spelling so a server that predates the
+            // behavior spelling still reads it.
             resource: canonicalResourceSelectorString(options.on as string),
           },
         },
@@ -227,8 +227,8 @@ export const accessCheckCommand = new Command()
         collectives,
         groups,
       };
-      // Resolve the named resource from the repo as serve does, so a grant on
-      // its stored type or a condition on its tags applies (swamp-club#3224).
+      // resolve the resource from the repo as serve does, so a grant on its
+      // stored type or a condition on its tags applies.
       const accessResource = await explainedAccessResource(
         repoContext,
         resource.kind,

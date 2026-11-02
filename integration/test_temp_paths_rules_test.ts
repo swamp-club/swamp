@@ -17,22 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// Architectural fitness test: no test opens a database at a fixed host path.
-//
-// A database file at a literal path such as `/tmp/test-repo/_catalog.db` is
-// shared by every test run on the host, including parallel verification runs
-// from worktrees on different code. Two runs on different catalog schema
-// versions raced on one such file and left it in a state that failed every
-// later run (swamp-club#2994). Tests open their databases under a per-test
-// `Deno.makeTempDir` (or `withTempDir`) directory, or use `:memory:`.
-//
-// The scan is textual and spans line breaks, because `deno fmt` wraps a long
-// path onto the line after the constructor. It does not see a path held in a
-// variable, built with `path.join` or `resolve`, or started by template
-// interpolation, nor a fixed repo dir handed to code that derives the database
-// path itself. The pattern self-check below proves it still matches the shapes
-// it targets.
-
 import { assert, assertEquals, assertGreater } from "@std/assert";
 import { walk } from "@std/fs";
 import { fromFileUrl, join } from "@std/path";
@@ -45,12 +29,10 @@ const SCAN_DIRS = [
   join(ROOT, "src"),
   join(ROOT, "integration"),
   join(ROOT, "packages"),
-  // Extension tests run in the same `deno test --parallel` process.
+  // extension tests run in the same parallel test process
   join(ROOT, "extensions"),
 ];
 
-// A database constructor whose first argument is an absolute string literal,
-// directly or as the first argument of `join(...)`.
 const FIXED_PATH_DATABASE =
   /\bnew\s+(?:CatalogStore|ExtensionCatalogStore|DatabaseSync)\(\s*(?:join\(\s*)?["'`](?:\/|\\|[A-Za-z]:[\\/])/g;
 

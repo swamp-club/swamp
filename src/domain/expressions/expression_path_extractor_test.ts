@@ -24,8 +24,6 @@ import {
   extractSelfReferences,
 } from "./expression_path_extractor.ts";
 
-// extractPathReferences tests
-
 Deno.test("extractPathReferences extracts simple resource path", () => {
   const refs = extractPathReferences("model.my-vpc.resource.attributes.VpcId");
   assertEquals(refs.length, 1);
@@ -120,8 +118,6 @@ Deno.test("extractPathReferences handles deeply nested paths", () => {
   ]);
 });
 
-// extractSelfReferences tests
-
 Deno.test("extractSelfReferences extracts simple self reference", () => {
   const refs = extractSelfReferences("self.attributes.VpcId");
   assertEquals(refs.length, 1);
@@ -171,8 +167,6 @@ Deno.test("extractSelfReferences returns empty for no self references", () => {
   const refs = extractSelfReferences("model.vpc.input.x");
   assertEquals(refs.length, 0);
 });
-
-// extractEnvReferences tests
 
 Deno.test("extractEnvReferences extracts simple env reference", () => {
   const refs = extractEnvReferences("env.HOME");

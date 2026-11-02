@@ -89,10 +89,7 @@ export function createVaultRemoveRenderer(
   }
 }
 
-/**
- * Says what the removal will destroy, before the confirmation prompt. Only
- * log mode prompts, so only log mode warns.
- */
+/** only log mode prompts, so only log mode warns */
 export function renderVaultRemoveWarnings(
   preview: VaultRemovePreview,
   mode: OutputMode,

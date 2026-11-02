@@ -280,7 +280,6 @@ Deno.test("withVaultReferences: admits references the arguments no longer show, 
       hasDynamicRefs: false,
     },
   );
-  // The input is not changed.
   assertEquals(extracted.staticRefs, [{ vaultName: "v", secretKey: "shown" }]);
 });
 

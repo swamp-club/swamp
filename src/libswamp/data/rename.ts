@@ -36,9 +36,6 @@ import type { SwampError } from "../errors.ts";
 import { validationFailed } from "../errors.ts";
 
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
-/**
- * Data structure for the data rename output.
- */
 export interface DataRenameData {
   oldName: string;
   newName: string;
@@ -55,7 +52,6 @@ export type DataRenameEvent =
   | { kind: "completed"; data: DataRenameData }
   | { kind: "error"; error: SwampError };
 
-/** Input for the data rename operation. */
 export interface DataRenameInput {
   modelIdOrName: string;
   oldName: string;
@@ -66,14 +62,9 @@ export interface DataRenameInput {
    * authorized.
    */
   byId?: boolean;
-  /**
-   * With `byId`, the model name the caller authorized: ids are not
-   * guaranteed unique, so only a model with this name and the id matches.
-   */
   expectedName?: string;
 }
 
-/** Dependencies for the data rename operation. */
 export interface DataRenameDeps {
   rename: (
     modelIdOrName: string,
@@ -84,7 +75,6 @@ export interface DataRenameDeps {
   ) => Promise<RenameResult>;
 }
 
-/** Wires real infrastructure into DataRenameDeps. */
 export function createDataRenameDeps(
   repoDir: string,
   datastoreResolver?: DatastorePathResolver,
@@ -118,7 +108,6 @@ export function createDataRenameDeps(
   };
 }
 
-/** Renames a data instance with backwards-compatible forwarding. */
 export async function* dataRename(
   ctx: LibSwampContext,
   deps: DataRenameDeps,
@@ -134,7 +123,6 @@ export async function* dataRename(
         ctx.logger
           .debug`Renaming data: model=${input.modelIdOrName}, ${input.oldName} -> ${input.newName}`;
 
-        // Validate names are different
         if (input.oldName === input.newName) {
           yield {
             kind: "error",

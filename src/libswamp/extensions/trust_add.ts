@@ -26,13 +26,11 @@ import { DEFAULT_TRUSTED, type TrustModifyEvent } from "./trust.ts";
 
 const COLLECTIVE_NAME_RE = /^[a-z0-9][a-z0-9_-]*$/;
 
-/** Dependencies for the trust add operation, injected for testability. */
 export interface TrustAddDeps {
   readMarker: () => Promise<RepoMarkerData | null>;
   writeMarker: (data: RepoMarkerData) => Promise<void>;
 }
 
-/** Wires real infrastructure into TrustAddDeps. */
 export function createTrustAddDeps(repoDir: string): TrustAddDeps {
   const markerRepo = new RepoMarkerRepository();
   const repoPath = RepoPath.create(repoDir);
@@ -43,7 +41,6 @@ export function createTrustAddDeps(repoDir: string): TrustAddDeps {
   };
 }
 
-/** Adds a collective to the trusted list in .swamp.yaml. */
 export async function* trustAdd(
   _ctx: LibSwampContext,
   deps: TrustAddDeps,

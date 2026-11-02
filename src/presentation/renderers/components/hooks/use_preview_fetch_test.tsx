@@ -26,8 +26,6 @@ import { LruCache, usePreviewFetch } from "./use_preview_fetch.ts";
 
 const inkTestOptions = { sanitizeOps: false, sanitizeResources: false };
 
-// --- LruCache unit tests ---
-
 Deno.test("LruCache: get returns undefined for missing key", () => {
   const cache = new LruCache<string, number>(3);
   assertEquals(cache.get("a"), undefined);
@@ -47,7 +45,6 @@ Deno.test("LruCache: evicts oldest when over capacity", () => {
   cache.set("c", 3);
   assertEquals(cache.size, 3);
 
-  // Adding a 4th should evict "a" (oldest)
   cache.set("d", 4);
   assertEquals(cache.size, 3);
   assertEquals(cache.get("a"), undefined);
@@ -62,10 +59,8 @@ Deno.test("LruCache: get moves item to most-recently-used", () => {
   cache.set("b", 2);
   cache.set("c", 3);
 
-  // Access "a" to make it most-recently-used
   cache.get("a");
 
-  // Adding "d" should evict "b" (now the oldest), not "a"
   cache.set("d", 4);
   assertEquals(cache.get("a"), 1);
   assertEquals(cache.get("b"), undefined);
@@ -79,12 +74,10 @@ Deno.test("LruCache: set overwrites existing key and moves to end", () => {
   cache.set("b", 2);
   cache.set("c", 3);
 
-  // Overwrite "a" with new value
   cache.set("a", 10);
   assertEquals(cache.get("a"), 10);
   assertEquals(cache.size, 3);
 
-  // Adding "d" should evict "b" (now oldest), not "a" (just refreshed)
   cache.set("d", 4);
   assertEquals(cache.get("a"), 10);
   assertEquals(cache.get("b"), undefined);
@@ -107,8 +100,6 @@ Deno.test("LruCache: size 1 always evicts on new insert", () => {
   assertEquals(cache.get("a"), undefined);
   assertEquals(cache.get("b"), 2);
 });
-
-// --- usePreviewFetch hook tests ---
 
 interface Deferred<T> {
   promise: Promise<T>;
@@ -165,7 +156,6 @@ Deno.test({
       return Promise.resolve(bResult);
     };
 
-    // Start with B to populate the LRU cache
     const { unmount } = render(
       <UpdatableProbe
         initialItem="B"
@@ -182,16 +172,14 @@ Deno.test({
       item: string,
     ) => void;
 
-    // Switch to A — starts an async fetch (uncached)
     setItem("A");
     await waitFor(() => aRequested && detail === undefined, "A's fetch");
 
-    // Switch to B — cache hit, should show B's detail immediately
-    // and invalidate A's in-flight fetch via the fetch-id bump
+    // a cache hit shows B at once, and the fetch-id bump invalidates A's
+    // in-flight fetch
     setItem("B");
     await waitFor(() => detail === bResult, "B's cached detail");
 
-    // Resolve A's fetch — must NOT overwrite B's detail.
     fetchA.resolve("A-detail-stale");
     await fetchA.promise;
 

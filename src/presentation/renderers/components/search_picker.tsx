@@ -23,7 +23,6 @@ import { Box, render, Text, useApp, useInput } from "ink";
 import { Fzf, type FzfResultItem } from "fzf";
 import { suppressInkTtyErrors } from "../../output/ink_lifecycle.ts";
 
-/** Thin cursor character for the search input. */
 const CURSOR = "\u258F";
 import {
   usePreviewFetch,
@@ -39,27 +38,20 @@ import { PreviewPane } from "./preview_pane.tsx";
 import { BorderedSplitLayout, StackedLayout } from "./picker_borders.tsx";
 
 /**
- * Props for the SearchPicker component.
- *
- * The two type params allow the preview to render richer data (`D`) than the
- * search item (`T`) contains. When `fetchPreview` is not provided, `D` defaults
- * to `T` and `detail` is always `undefined`.
+ * D is the richer detail the preview renders; without fetchPreview, D defaults
+ * to T and detail is always undefined.
  */
 export interface SearchPickerProps<T, D = T> {
   items: T[];
   initialQuery: string;
-  /** Extracts searchable text for fzf matching. */
   selector: (item: T) => string;
-  /** Renders a single-line summary for the results list. */
   renderResultLine: (item: T) => React.ReactElement;
-  /** Renders preview content for the highlighted item. */
   renderPreview: (
     item: T,
     detail: D | undefined,
     width: number,
     height: number,
   ) => React.ReactElement;
-  /** Produces plain-text scrollback output on selection. */
   renderScrollback: (item: T, detail: D | undefined) => string;
   /**
    * How many rows the preview renders at `width`, the width `renderPreview`
@@ -67,34 +59,17 @@ export interface SearchPickerProps<T, D = T> {
    * line count stands in, which undercounts a preview that wraps.
    */
   previewLineCount?: (item: T, detail: D | undefined, width: number) => number;
-  /** Async function to fetch full detail for preview. Optional. */
   fetchPreview?: (item: T) => Promise<D>;
-  /** Extracts a stable cache key for the LRU preview cache. */
   previewKeyFn?: (item: T) => unknown;
-  /** Plural label for the item type (e.g., "models", "data"). */
   itemLabel: string;
-  /** Command name shown on the branding line (e.g., "model search"). */
   commandName?: string;
-  /** Hint shown when no results match the query. */
   emptyHint?: (query: string) => React.ReactElement | undefined;
-  /** Domain-specific action keys. */
   actions?: ActionDef[];
-  /** The row highlighted at first, before any query is typed. Defaults to 0. */
   initialIndex?: number;
-  /** Called when the user selects an item. Receives the scrollback text. */
   onSelect: (item: T, scrollback: string, action?: string) => void;
-  /** Called when the user cancels. */
   onCancel: () => void;
 }
 
-/**
- * Telescope-inspired search picker with three bordered regions: prompt,
- * results list, and preview pane. Prompt always has focus — typing always
- * filters, arrows always navigate results, Ctrl-u/d scrolls preview.
- *
- * Gracefully degrades through four tiers based on terminal size:
- * bordered-split → stacked → inline → minimal.
- */
 export function SearchPicker<T, D = T>(
   props: SearchPickerProps<T, D>,
 ): React.ReactElement {
@@ -123,7 +98,6 @@ export function SearchPicker<T, D = T>(
   const { width, height } = useTerminalSize();
   const layout = computePickerLayout(width, height);
 
-  // fzf fuzzy matching
   const fzf = useMemo(() => {
     const FzfCtor = Fzf as unknown as new (...args: unknown[]) => {
       find(query: string): FzfResultItem<T>[];
@@ -133,7 +107,6 @@ export function SearchPicker<T, D = T>(
 
   const results: FzfResultItem<T>[] = fzf.find(query);
 
-  // Scrollable results list
   const {
     selectedIndex,
     setSelectedIndex,
@@ -141,12 +114,10 @@ export function SearchPicker<T, D = T>(
     scrollMetrics,
   } = useScrollableList(results, layout.resultsHeight, [query], initialIndex);
 
-  // Currently highlighted item
   const highlightedItem = results.length > 0 && selectedIndex < results.length
     ? results[selectedIndex].item
     : undefined;
 
-  // Async preview fetch with debounce + LRU cache
   const { detail } = usePreviewFetch(
     highlightedItem,
     fetchPreview,
@@ -225,13 +196,11 @@ export function SearchPicker<T, D = T>(
       return;
     }
 
-    // Ctrl-u: scroll preview up half page
     if (key.ctrl && input === "u") {
       scrollUp();
       return;
     }
 
-    // Ctrl-d: scroll preview down half page
     if (key.ctrl && input === "d") {
       scrollDown();
       return;
@@ -251,7 +220,6 @@ export function SearchPicker<T, D = T>(
       }
     }
 
-    // Regular character input
     if (input && !key.ctrl && !key.meta) {
       setQuery((q) => q + input);
     }
@@ -259,7 +227,6 @@ export function SearchPicker<T, D = T>(
 
   const hasPreview = layout.previewHeight > 0;
 
-  // Shared prompt content — no border wrapping, just search input and count
   const promptContent = (
     <Box justifyContent="space-between" width={width}>
       <Box>
@@ -276,7 +243,6 @@ export function SearchPicker<T, D = T>(
     </Box>
   );
 
-  // Results content
   const resultsContent = results.length === 0
     ? (
       <Box flexDirection="column" paddingLeft={1}>
@@ -294,7 +260,6 @@ export function SearchPicker<T, D = T>(
       />
     );
 
-  // Preview content
   const previewContent = hasPreview
     ? (
       <PreviewPane
@@ -308,10 +273,8 @@ export function SearchPicker<T, D = T>(
     )
     : null;
 
-  // Help bar content
   const helpContent = <HelpBar hasPreview={hasPreview} actions={actions} />;
 
-  // Render based on tier
   if (layout.tier === "bordered-split") {
     return (
       <BorderedSplitLayout
@@ -383,7 +346,6 @@ export function SearchPicker<T, D = T>(
     );
   }
 
-  // Minimal tier: same layout as existing SearchTUI
   return (
     <Box flexDirection="column">
       {/* Search input */}
@@ -418,18 +380,11 @@ export function SearchPicker<T, D = T>(
   );
 }
 
-/**
- * Result returned from renderInteractivePicker.
- */
 export interface PickerResult<T> {
   item: T;
   action?: string;
 }
 
-/**
- * Launches a SearchPicker inside an Ink render context and returns the selected
- * item (or `undefined` if the user cancelled).
- */
 export async function renderInteractivePicker<T, D = T>(
   items: T[],
   initialQuery: string,
@@ -460,9 +415,8 @@ export async function renderInteractivePicker<T, D = T>(
   let pendingScrollback: string | undefined;
   const isTTY = Deno.stdout.isTerminal();
 
-  // Enter alternate screen buffer so the picker UI doesn't pollute scrollback.
-  // When we exit the alternate screen, the terminal restores to its pre-picker
-  // state — no blank lines, no border remnants. Same technique as fzf/Telescope.
+  // the alternate screen buffer keeps the picker out of scrollback; leaving it
+  // restores the terminal with no blank lines or border remnants
   if (isTTY) {
     Deno.stdout.writeSync(new TextEncoder().encode("\x1b[?1049h"));
   }
@@ -505,12 +459,10 @@ export async function renderInteractivePicker<T, D = T>(
     });
   });
 
-  // Exit alternate screen buffer — terminal restores to pre-picker state
   if (isTTY) {
     Deno.stdout.writeSync(new TextEncoder().encode("\x1b[?1049l"));
   }
 
-  // Print scrollback on the normal screen
   if (pendingScrollback) {
     console.log(pendingScrollback);
   }

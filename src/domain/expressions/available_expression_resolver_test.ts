@@ -28,12 +28,6 @@ import { VaultSecretBag } from "../vaults/vault_secret_bag.ts";
 import { SecretBagRegistry } from "../vaults/secret_bag_registry.ts";
 import { sensitiveSpliceSanitizer, SplicePair } from "./splice_pair.ts";
 
-/**
- * Deterministic stub evaluator: resolves a dotted CEL path against the context
- * and throws when any segment is missing — mirroring how the real CEL evaluator
- * fails on an unbound reference. Records the expressions it was asked to
- * evaluate so tests can assert deferred kinds are never evaluated.
- */
 function makeEvaluator(): { evaluate: SyncCelEvaluator; calls: string[] } {
   const calls: string[] = [];
   const evaluate: SyncCelEvaluator = (expr, ctx) => {
@@ -101,7 +95,6 @@ Deno.test("resolveAvailableExpressions: vault and env expressions are always lef
     "unrestricted",
   );
   assertEquals(result, data);
-  // Deferred kinds must never be handed to the evaluator.
   assertEquals(calls, []);
 });
 
@@ -124,7 +117,6 @@ Deno.test("resolveAvailableExpressions: step-output / data.* dependencies are le
 Deno.test("resolveAvailableExpressions: run.* resolves when in context, stays raw when not", () => {
   const { evaluate } = makeEvaluator();
 
-  // run not in context -> evaluator throws -> left raw (the evaluate-stage case)
   const evalStage = resolveAvailableExpressions(
     { modelIdOrName: "scan-${{ run.id }}" },
     { self: { item: {} } },
@@ -133,7 +125,6 @@ Deno.test("resolveAvailableExpressions: run.* resolves when in context, stays ra
   );
   assertEquals(evalStage, { modelIdOrName: "scan-${{ run.id }}" });
 
-  // run in context -> resolves (the execution-stage case)
   const runStage = resolveAvailableExpressions(
     { modelIdOrName: "scan-${{ run.id }}" },
     { run: { id: "abc123" } },
@@ -226,8 +217,6 @@ Deno.test("resolveAvailableExpressionsPair: evaluates once and keeps plain value
     "unrestricted",
     sensitiveSpliceSanitizer(bag),
   );
-  // Each expression is evaluated once for both copies; one that cannot be
-  // resolved yet is left as written in both.
   assertEquals(calls, ["self.item", "steps.a.outputs.x"]);
   assertEquals(pair.raw, {
     run: "echo Pl41n-s3cret s3",

@@ -25,30 +25,15 @@ import { buildErrorJson } from "../presentation/output/error_output.ts";
 import { takeAuthGateWarning } from "../presentation/renderers/auth_gate_warning.ts";
 import { isBooleanFlag } from "./boolean_flags.ts";
 
-/**
- * Extracts the unknown command name from a Cliffy "Unknown command" error message.
- *
- * Cliffy formats these as: `Unknown command "foo".` or `Unknown command "foo". Did you mean command "bar"?`
- */
 export function extractUnknownName(errorMessage: string): string | undefined {
   const match = errorMessage.match(/^Unknown command "([^"]+)"/);
   return match?.[1];
 }
 
-/**
- * Gets the names of all visible subcommands for a given command.
- * Passing `false` to `getCommands` filters out hidden commands.
- */
 export function getSubcommandNames(cmd: Command): string[] {
   return cmd.getCommands(false).map((c) => c.getName());
 }
 
-/**
- * Builds context-aware suggestions when a user provides an unknown subcommand.
- *
- * Instead of Cliffy's generic "Did you mean 'create'?", this produces
- * suggestions that match the user's likely intent based on the command context.
- */
 export function buildUnknownCommandMessage(
   unknownName: string,
   cmd: Command,
@@ -57,14 +42,12 @@ export function buildUnknownCommandMessage(
   const subcommands = getSubcommandNames(cmd);
   const commandPath = cmd.getPath();
 
-  // Check if the unknown name is a close typo of a real subcommand
   const typoMatch = findClosestMatch(unknownName, subcommands);
   if (typoMatch) {
     return `Unknown command "${unknownName}". Did you mean "${typoMatch}"?\n\n` +
       `  Run "${commandPath} --help" for available subcommands.`;
   }
 
-  // Not a typo — build context-aware suggestions based on the command context
   const suggestions = buildContextSuggestions(unknownName, cmd, rawArgs);
 
   if (suggestions.length > 0) {
@@ -80,14 +63,10 @@ export function buildUnknownCommandMessage(
     return lines.join("\n");
   }
 
-  // Generic fallback
   return `Unknown command "${unknownName}".\n\n` +
     `  Run "${commandPath} --help" for available subcommands.`;
 }
 
-/**
- * Builds context-specific suggestions based on which command the user is in.
- */
 function buildContextSuggestions(
   unknownName: string,
   cmd: Command,
@@ -96,11 +75,9 @@ function buildContextSuggestions(
   const suggestions: string[] = [];
   const parentName = cmd.getName();
 
-  // A legacy word under the new group, or a new word under the old one:
-  // `swamp behavior method run p1 ping`, `swamp model run p1 ping`,
-  // `swamp behavior method describe p1 ping`, `swamp model history p1`. The
-  // positionals that follow are what the user meant to pass to the behavior
-  // form (swamp-club#3265, swamp-club#3331).
+  // a legacy word under the new group or a new word under the old one (`swamp
+  // model run p1 ping`, `swamp behavior method run p1 ping`); the trailing
+  // positionals are what the user meant for the behavior form
   const hybrid = hybridWord(parentName, unknownName);
   if (hybrid !== undefined) {
     const trailing = extractPositionalArgs(
@@ -108,9 +85,7 @@ function buildContextSuggestions(
       `${cmd.getPath()} ${unknownName}`,
       [...pathSpellings(cmd), new Set([unknownName])],
     );
-    // After `behavior method`, the next word names the leaf.
     const leaf = hybrid === "method" ? methodLeaf(trailing[0]) : hybrid;
-    // `run` itself is dropped by the run suggestion, as it always was.
     const rest = hybrid === "method" && leaf !== "run" && trailing[0] === leaf
       ? trailing.slice(1)
       : trailing;
@@ -126,10 +101,9 @@ function buildContextSuggestions(
     `${cmd.getPath()} ${unknownName}`,
     [...pathSpellings(cmd), new Set([unknownName])],
   );
-  // `swamp model my-model method run create`, or `swamp model @type method
-  // ping name` with `run` left out, which `rewriteDirectTypeArgs` does not
-  // rewrite — the legacy model-first order. `method` (and a `run` after it)
-  // is the command word, not the method the user meant.
+  // `swamp model my-model method run create`, or `model @type method ping
+  // name`, which `rewriteDirectTypeArgs` does not rewrite: `method` (and a
+  // `run` after it) is the command word, not the method meant
   const legacyModelFirst = parentName === "model" && trailing[0] === "method";
   // `swamp behavior my-server run deploy` — `run` after the model instead of
   // before it. Here too `run` is the command word, not the method.
@@ -192,7 +166,6 @@ function buildContextSuggestions(
       `swamp ... history search`,
     );
   } else if (parentName === "output") {
-    // The group as reached: `swamp behavior output` or `swamp model output`.
     const output = cmd.getPath();
     suggestions.push(
       `${output} get ${unknownName}`,
@@ -221,7 +194,6 @@ function buildContextSuggestions(
       `swamp update`,
     );
   } else {
-    // Generic: just list available subcommands
     const subcommands = getSubcommandNames(cmd);
     if (subcommands.length > 0) {
       const listed = subcommands.slice(0, 5).join(", ");
@@ -236,14 +208,12 @@ function buildContextSuggestions(
   return suggestions;
 }
 
-/** The `swamp behavior` leaf a hybrid word stands for. */
 type HybridLeaf = "run" | "describe" | "history";
 
 /**
- * Recognises a word from one tree typed in the other: `method` under
- * `behavior` (which has no `method` level), or `run`, `describe` and
- * `history` under `model` (which has them only under `model method`).
- * Returns `"method"` for the former, since the leaf is the word after it.
+ * recognises a word from one tree typed in the other: `method` under
+ * `behavior`, or `run`, `describe` and `history` under `model`; returns
+ * "method" for the former since the leaf is the next word
  */
 function hybridWord(
   parentName: string,
@@ -260,16 +230,13 @@ function hybridWord(
   return undefined;
 }
 
-/** The leaf named after `behavior method`; `run` when it names none. */
 function methodLeaf(word: string | undefined): HybridLeaf {
   return word === "describe" || word === "history" ? word : "run";
 }
 
 /**
- * The behavior form of a hybrid invocation, filled from the positionals. A
- * positional the user left out is shown as a placeholder named in the words
- * of the tree they typed in: `<behavior>` under `behavior`, `<model>` under
- * `model` (swamp-club#3409).
+ * a positional the user left out is shown as a placeholder in the words of the
+ * tree they typed: `<behavior>` under `behavior`, `<model>` under `model`
  */
 function hybridSuggestionFor(
   leaf: HybridLeaf,
@@ -294,9 +261,8 @@ function hybridSuggestionFor(
 }
 
 /**
- * `swamp behavior run <model> <method>`, filled from what the user typed
- * after the model. An `@type` can only be run directly, and that form also
- * needs a definition name (swamp-club#3265).
+ * an `@type` can only be run directly, and that form also needs a definition
+ * name
  */
 function runSuggestionFor(model: string, rest: string[]): string {
   const method = rest[0] ?? "<method>";
@@ -305,13 +271,8 @@ function runSuggestionFor(model: string, rest: string[]): string {
 }
 
 /**
- * Extracts positional arguments from the raw CLI args for a given command path.
- *
- * Walks past the command-path segments, then collects non-flag tokens
- * (anything not starting with `-`). Flag *values* (the token after a
- * `--flag <value>` pair) are skipped by consuming the next token when a
- * flag is seen — unless the flag never takes a value (`--json`, `--log`,
- * `--skip-checks`; see `BOOLEAN_FLAGS`) or carries its value (`--x=y`).
+ * flag values are skipped by consuming the next token, unless the flag never
+ * takes a value (see BOOLEAN_FLAGS) or carries it (`--x=y`)
  */
 export function extractPositionalArgs(
   rawArgs: string[],
@@ -365,7 +326,6 @@ const VALUE_TAKING_UNDER_GROUPS: ReadonlySet<string> = new Set([
   "-V",
 ]);
 
-/** Whether the token after `flag` is its value rather than a word. */
 function takesNextArg(flag: string, next: string | undefined): boolean {
   return next !== undefined && !next.startsWith("-") &&
     (VALUE_TAKING_UNDER_GROUPS.has(flag) || !isBooleanFlag(flag)) &&
@@ -373,10 +333,8 @@ function takesNextArg(flag: string, next: string | undefined): boolean {
 }
 
 /**
- * The spellings each segment of `cmd`'s path may have been typed as — the
- * command's name and its aliases, root first. `cmd.getPath()` is the
- * canonical spelling, so without these an alias (`behaviour` for `behavior`)
- * would be taken for a positional (swamp-club#3265).
+ * `cmd.getPath()` is the canonical spelling, so without these an alias
+ * (`behaviour` for `behavior`) would be taken for a positional
  */
 function pathSpellings(cmd: Command): ReadonlySet<string>[] {
   const chain: Command[] = [];
@@ -390,10 +348,6 @@ function pathSpellings(cmd: Command): ReadonlySet<string>[] {
   return chain.map((c) => new Set([c.getName(), ...c.getAliases()]));
 }
 
-/**
- * Builds a helpful error message when a command receives too many positional
- * arguments — typically because the user passed an unquoted multi-word value.
- */
 export function buildTooManyArgumentsMessage(
   cmd: Command,
   rawArgs: string[],
@@ -417,19 +371,9 @@ export function buildTooManyArgumentsMessage(
 }
 
 /**
- * When a group command is handed a positional that is not one of its
- * subcommands together with an option it does not declare — `swamp behavior
- * @acme/t run ping name --input k=v`, `swamp model p1 --input k=v` — Cliffy
- * reports the option before the command, so the user sees `Unknown option
- * "--input"` instead of the unknown-command suggestions. This finds that
- * positional so the handler can report it as the unknown command it is.
- *
- * Returns undefined, leaving Cliffy's message to stand, when the option
- * really is the problem: `cmd` has no subcommands; it declares positionals of
- * its own (`model output <id>`, `workflow history <name>`), so the positional
- * is legitimate; no positional was typed, or it is one of the subcommands; or
- * the option came before the positional (`behavior --skip-checks run …`),
- * where a flag read as taking a value would have swallowed the subcommand.
+ * Cliffy reports an undeclared option before an unknown subcommand, hiding the
+ * suggestions; this finds that positional so the handler can report the unknown
+ * command
  */
 export function unknownSubcommandBehindOption(
   cmd: Command,
@@ -469,13 +413,9 @@ function exitWithMessage(message: string): never {
 }
 
 /**
- * Cliffy error handler that intercepts "Unknown command", "Unknown option"
- * on a group that was really given an unknown command, and "Too many
- * arguments" errors and provides context-aware suggestions.
- *
  * Cliffy's `getErrorHandler()` only checks the current command and its
  * immediate parent, so this handler must be attached to each command that
- * should provide improved error messages.
+ * should give improved messages
  */
 export function unknownCommandErrorHandler(error: Error, cmd: Command): void {
   if (error instanceof ValidationError) {

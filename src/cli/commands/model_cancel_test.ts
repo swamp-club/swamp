@@ -47,7 +47,6 @@ import { createDefinitionId } from "../../domain/definitions/definition.ts";
 import { OWNER_STOPPED_STEP_ERROR } from "../../domain/workflows/workflow_run.ts";
 import { YamlOutputRepository } from "../../infrastructure/persistence/yaml_output_repository.ts";
 
-// Import models barrel to trigger self-registration
 import "../../domain/models/models.ts";
 
 await initializeLogging({});
@@ -55,7 +54,6 @@ await initializeLogging({});
 // A PID that is not this process, so cancel asks to stop it.
 const OWNER_PID = Deno.pid + 1;
 
-/** An output repository holding no method-run records. */
 const noOutputs: MethodRunOutputs = {
   findByIds: () => Promise.resolve(new Map()),
   save: () => Promise.reject(new Error("unexpected output save")),
@@ -72,8 +70,6 @@ async function withTracker(
   } finally {
     tracker.close();
     if (Deno.build.os === "windows") {
-      // Best-effort: EBUSY can fire when V8 hasn't GC'd native
-      // handles yet. Temp dir is ephemeral, OS reclaims.
       await Deno.remove(dir, { recursive: true }).catch(() => {});
     } else {
       await Deno.remove(dir, { recursive: true });
@@ -104,7 +100,6 @@ function readCancelReason(dbPath: string, runId: string): string | null {
   }
 }
 
-/** A killProcess that records each call and reports the owner stopped. */
 function recordingKill(calls: OwnerStop[]) {
   return (pid: number, { maxWaitMs }: { maxWaitMs: number }) => {
     calls.push({ pid, maxWaitMs });
@@ -332,10 +327,8 @@ Deno.test("cancelModelMethodRuns: still stops the other owners and completes the
   });
 });
 
-// A pid standing in for a running swamp serve process.
 const SERVE_PID = Deno.pid + 2;
 
-/** A running tracker row, as findAllRunning returns it. */
 function trackerRow(opts: {
   runKind?: "model_method" | "workflow";
   pid: number;
@@ -511,7 +504,6 @@ Deno.test("selectMethodRunToCancel: selects nothing when serve owns every run, n
   assertEquals(skipped.map((s) => s.run), [newer, older]);
 });
 
-/** A workflow step's method-run record, saved `running` by process `pid`. */
 async function saveStepOutput(
   outputRepo: YamlOutputRepository,
   run: ActiveRun,
@@ -582,7 +574,6 @@ Deno.test("cancelModelMethodRuns: leaves the record of an owner that saved its o
       },
       killProcess: async (pid) => {
         if (pid === OWNER_PID) {
-          // The owner saves its own cancelled record and completes its row.
           finishedOutput.markCancelled("The signal has been aborted");
           await outputRepo.save(type, "execute", finishedOutput);
           tracker.complete(finished.id, "cancelled");
@@ -712,7 +703,6 @@ const idle = {
   type: ModelType.create("command/shell"),
 };
 
-/** A method-run record of `definitionId` under a tracker row's id. */
 function recordFor(row: ActiveRun, definitionId: string): ModelOutput {
   return ModelOutput.fromData({
     ...ModelOutput.create({
@@ -728,7 +718,6 @@ function recordFor(row: ActiveRun, definitionId: string): ModelOutput {
   });
 }
 
-/** Evidence holding the given records and lock, counting each read. */
 function evidenceOf(
   records: ModelOutput[] | Error,
   lock: Partial<LockInfo> | null | Error,

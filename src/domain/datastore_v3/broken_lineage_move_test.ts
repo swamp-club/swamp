@@ -20,11 +20,6 @@
 import { assertEquals } from "@std/assert";
 import { BrokenLineageMoveGuard } from "./broken_lineage_move.ts";
 
-/**
- * Drives the guard as serve's probe does, through replacement outcomes in
- * order (true: succeeded, keeping the broken lineage), and counts the
- * moves of the lease.
- */
 function movesThrough(
   guard: BrokenLineageMoveGuard,
   lineageFence: number,

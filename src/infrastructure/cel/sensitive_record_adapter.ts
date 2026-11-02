@@ -18,58 +18,9 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * The accessor adapter of typed secrets (design/enablers/typed-secrets.md
- * Section 6.1, typed-secrets 3.3). The tagged sensitive fields of a trusted
- * own-namespace data record reach CEL as data-origin `Secret` values, never
- * as the stored reference text and never as plaintext. This module is the
- * only producer of data-origin Secrets.
- *
- * - A record from another namespace is returned as stored, its tag unread:
- *   that namespace's tags must not choose which of this repository's secrets
- *   are read (swamp-club#3306), and its references name vaults this
- *   repository does not have. Own and other are decided as the data layer
- *   decides them (`isForeignToReader`): a record stamped with the solo
- *   namespace in a namespaced repository was written before it set a
- *   namespace and is the reader's own, unless the reader reads the solo
- *   namespace as another namespace, as a v3 checkout does
- *   (swamp-club#3785). A record with no tag is returned as it is.
- * - A tagged record is validated whole before CEL sees it, against what the
- *   writer can store. The tag is read strictly, with the key lists of
- *   `_swamp.sensitiveFieldKeys` as more tagged paths (swamp-club#3038): a
- *   place a dot path cannot name, under a key holding a dot, an empty key, or
- *   a prototype property's name, all walked and viewed as own properties.
- *   Under the star value every field is sensitive at any depth: the writer
- *   stores each top-level field as a reference, and a container appears only
- *   where a schema marks a parent and a child inside it sensitive, holding
- *   the child's reference. Under a path list each path is walked through own
- *   properties only, as the writer's own lookup walks; a tagged value that is
- *   absent or null stays so, a stored reference becomes a Secret, and a
- *   tagged path that is a strict prefix of another tagged path may hold a
- *   container whose leaves are all tagged, which is the writer's
- *   parent-and-child artifact. Anything else refuses with
- *   `secret_reference_invalid`, recording the fault first so
- *   an absorbing operator cannot hide it. The refusal names the accessor, the
- *   model, the record id, the version and the field path: never the data
- *   name, which a vary suffix can fill from a resolved secret
- *   (swamp-club#3585), and never a value.
- * - Every reference the record holds is recorded in the evaluation's fault
- *   scope, selected or not, and the evaluator authorizes each after release.
- * - The adapter builds new objects. Each tagged leaf is a getter that returns
- *   one cached Secret and counts a read for the container rule (Section 4.3
- *   item 5); untagged values are carried as they are; the record, the
- *   context and the model map are never mutated. For a JSON resource
- *   `content` and `attributes` are one object, and stay one view. When the
- *   run's registry is non-empty the boundary conversion views the bindings
- *   too, so a leaf read through the model map counts twice; the container
- *   rule is a boolean, so that is harmless.
- * - The model map view is lazy: the original `resource` and `file` loaders
- *   fire only when CEL reads them, each original object has one view per
- *   evaluation, so `model.<name>` and `model["<id>"]` share it, and each
- *   record is adapted at first read.
- * - The steps view (typed-secrets 4.2) reads `steps.<name>.outputs` as the
- *   merge of the adapted records the outputs came from, which the step
- *   context carries as its output sources (`step_output_sources.ts`), so a
- *   tagged output field is a Secret too. See {@link stepsView}.
+ * other-namespace records pass through with tags unread, so foreign tags cannot
+ * choose which secrets are read; a tagged own record is validated whole first
+ * and refused with secret_reference_invalid
  */
 
 import {
@@ -115,7 +66,6 @@ export type DataAccessor =
   | "model.method"
   | `steps.${string}.outputs`;
 
-/** The fields of a record the adapter reads. Anything else passes through. */
 interface RecordLike {
   readonly tags: Record<string, string>;
   readonly attributes: Record<string, unknown>;
@@ -145,10 +95,6 @@ function defineValue(target: object, key: string, value: unknown): void {
   });
 }
 
-/**
- * A getter that reads once, on first access, and answers the same value
- * afterwards. Nothing it reads is read before CEL asks for the key.
- */
 function defineLazy(target: object, key: string, read: () => unknown): void {
   let done = false;
   let value: unknown;
@@ -165,24 +111,17 @@ function defineLazy(target: object, key: string, read: () => unknown): void {
   });
 }
 
-/**
- * Every view this module built: the attribute views and the record views of
- * {@link adaptDataRecord}. The query view keeps one by identity when a
- * projection returns it (design/enablers/typed-secrets.md Section 6.2).
- */
+/** the query view keeps one by identity when a projection returns it */
 const views = new WeakSet<object>();
 
-/** Whether `value` is a view this module built. */
 export function isAdaptedView(value: unknown): boolean {
   return typeof value === "object" && value !== null && views.has(value);
 }
 
-/** Identifies a record without its data name or any value. */
 function describeRecord(record: RecordLike, accessor: DataAccessor): string {
   return `model '${record.modelName}' record ${record.id} version ${record.version} (${accessor})`;
 }
 
-/** The value at `path` walked through own properties only, or undefined. */
 function valueAt(
   attributes: Record<string, unknown>,
   path: readonly string[],
@@ -197,7 +136,6 @@ function valueAt(
   return current;
 }
 
-/** The tagged paths as a trie, each node holding the Secret read there. */
 interface PathNode {
   secret?: Secret;
   readonly children: Map<string, PathNode>;
@@ -220,15 +158,9 @@ function nodeAt(root: PathNode, path: readonly string[]): PathNode {
 // apart.
 const pathKey = (path: readonly string[]): string => JSON.stringify(path);
 
-/**
- * Validates every sensitive field of `record` against what the writer can
- * store, records each reference it holds, and returns the trie of Secrets
- * the view hands out.
- */
 class Validation {
   private readonly root: PathNode = { children: new Map() };
   private readonly location: string;
-  /** The places whose vault value is JSON text, by {@link pathKey}. */
   private readonly jsonPlaces: ReadonlySet<string>;
 
   constructor(
@@ -356,11 +288,6 @@ class Validation {
   }
 }
 
-/**
- * A view of `original` where each path the trie names a Secret at is a
- * recording getter, each container a path passes through is viewed in turn,
- * and everything else is carried as it is.
- */
 function viewOf(original: object, node: PathNode): object {
   const define = (view: object, key: string, value: unknown): void => {
     const child = node.children.get(key);
@@ -399,12 +326,8 @@ function viewOf(original: object, node: PathNode): object {
 }
 
 /**
- * `record` as CEL reads it: unchanged when it is not a record, belongs to a
- * namespace foreign to `reader` or carries no tag; otherwise a new record
- * whose tagged fields are data-origin Secrets, validated whole first.
- * `reader` is undefined when every record is the reader's own by
- * construction, as the model map's are: the resolver builds it from the
- * local repository alone.
+ * reader is undefined when every record is the reader's own by construction, as
+ * the model map's are
  */
 export function adaptDataRecord(
   record: unknown,
@@ -448,13 +371,9 @@ export function adaptDataRecord(
 }
 
 /**
- * What `model.method` returns to CEL (design/enablers/typed-secrets.md
- * Section 4.5 item 4): the attributes of the stored record its delegate
- * returned in a typed run, adapted so each tagged field is a `Secret`, as
- * `data.latest` returns them, so a stored reference never comes back as a
- * comparable string. A value that is not a record, the delegate's raw
- * result, is returned as it is. The record is the run's own by
- * construction, so no namespace check applies.
+ * adapted so each tagged field is a Secret, as data.latest returns them, so a
+ * stored reference never comes back as a comparable string; the record is the
+ * run's own, so no namespace check applies
  */
 export function adaptModelMethodResult(result: unknown): unknown {
   if (!isRecordLike(result)) return result;
@@ -463,11 +382,8 @@ export function adaptModelMethodResult(result: unknown): unknown {
 }
 
 /**
- * {@link adaptDataRecord} over what an accessor answers: a record, a list of
- * records, null, or a Promise of one of those. A rejected adaptation is a
- * refusal cel-js observes when it awaits the result; the Promise is also
- * marked handled, so an evaluation abandoned before that leaves no
- * unobserved rejection.
+ * a rejected adaptation is a refusal cel-js observes on await; the Promise is
+ * also marked handled so an abandoned evaluation leaves no unobserved rejection
  */
 export function adaptDataResult(
   result: unknown,
@@ -488,14 +404,9 @@ export function adaptDataResult(
 }
 
 /**
- * A lazy view of the plain model map for one evaluation: each
- * `model.<name>.resource.<spec>.<instance>` record is adapted when CEL first
- * reads it, every other key is passed through, and the original lazy
- * `resource` and `file` loaders fire only when CEL reads them. One view per
- * original object, so a model indexed by name and by id reads alike. Any
- * value that is not a plain map is returned as it is. The map holds only
- * this repository's records, so with `reader` undefined every record
- * is adapted; a known namespace is checked as well, as defense in depth.
+ * with reader undefined every record is adapted, since the map holds only this
+ * repository's records; a known namespace is checked as well, as defense in
+ * depth
  */
 export function modelMapView(
   model: unknown,
@@ -543,30 +454,9 @@ export function modelMapView(
 }
 
 /**
- * A lazy view of the `steps` map for one evaluation (typed-secrets 4.2). A
- * step context that carries its output sources (`step_output_sources.ts`)
- * reads its `outputs` as the merge of the adapted records of every group,
- * built on first read: each record is adapted as `data.latest` adapts one,
- * under the accessor `steps.<name>.outputs`, and its attributes are laid
- * over the group's path in write order, so a later record's field wins, as
- * the flat merge decided, a later group at the same path replaces the
- * earlier one, as a repeated child step name does in the flat outputs, and
- * a tagged field stays a recording getter. The maps the view builds have no
- * prototype and the path walk steps into own properties only, so a step
- * named `__proto__` reaches nothing shared. All of a step's records are
- * adapted on that first read, selected or not, so
- * every reference is recorded and a denied one fails the evaluation before
- * its result is used (the set-read rule). A context with no sources, such
- * as the payload of a signal wait, passes through unchanged, as does
- * anything that is not a plain map. The original map and contexts are
- * never mutated.
- *
- * The sources of a reconstructed or child output carry the tag the run
- * record kept, as today's reader takes it. A tag tampered with there can
- * only refuse (a tagged path holding no stored reference) or leave a field
- * as inert reference text: it names only content the datastore holds, and
- * every reference is authorized under the run's access before its result
- * is used, so it cannot load what that access would not allow.
+ * all of a step's records are adapted on first read, selected or not, so every
+ * reference is recorded and a denied one fails before its result is used; a
+ * step named __proto__ reaches nothing shared
  */
 export function stepsView(
   steps: unknown,
@@ -584,7 +474,6 @@ export function stepsView(
   return view;
 }
 
-/** One step context with its outputs viewed, or the context as it is. */
 function stepContextView(
   stepName: string,
   context: unknown,
@@ -605,12 +494,9 @@ function stepContextView(
 }
 
 /**
- * The outputs a step's sources merge to: each group's adapted records laid
- * over the group's path, a later record's field winning. Records are walked
- * last to first, keeping the first definition of each key, so the winning
- * getter is defined once and keeps the adapter's descriptor. Of two groups
- * at one path only the last counts: a child step name repeated across jobs
- * replaces the earlier step's outputs, as `resolveChildOutputs` records it.
+ * records are walked last to first keeping the first definition of each key; of
+ * two groups at one path only the last counts, as resolveChildOutputs records
+ * it
  */
 function mergedOutputsView(
   stepName: string,
@@ -657,12 +543,9 @@ function mergedOutputsView(
 }
 
 /**
- * The stored references a record's sensitive-fields tag names, read as
- * {@link adaptDataRecord} would read them and without recording or
- * refusing anything: the leaves under a star tag, and the values at each
- * tagged path, including the leaves of a container the writer left at a
- * tagged prefix. A tag or a field the adapter would refuse yields nothing
- * here and is refused when the record is adapted.
+ * read as adaptDataRecord would but without recording or refusing; a tag or
+ * field the adapter would refuse yields nothing here and is refused when the
+ * record is adapted
  */
 function storedReferencesOf(record: RecordLike): SecretReference[] {
   let tag: SensitiveFieldsTag;
@@ -691,21 +574,9 @@ function storedReferencesOf(record: RecordLike): SecretReference[] {
 }
 
 /**
- * The sensitive-field references a synchronous evaluation of `celExpression`
- * can read through the model map and the steps map: those of every
- * `model.<name>.resource` record of the models the expression names, as the
- * same analysis the data namespace's `prepare` runs lists them
- * (`syncDataReads`), and those of the output sources of every step the
- * expression names (`stepTargets`, typed-secrets 4.2), restricted to the
- * records {@link modelMapView} and {@link stepsView} adapt (own-namespace,
- * or every record when `reader` is undefined). Reading a model's
- * `resource` map fires the context's own lazy loader, which the caller has
- * made local first. The authorization step of the synchronous passes
- * authorizes each (design/enablers/typed-secrets.md Section 3.4,
- * typed-secrets 4.1); an expression that reads either map by a computed key
- * names nothing, a step context without sources holds nothing, and an
- * absent map contributes nothing, so such a read still fails closed at
- * evaluation.
+ * an expression that reads either map by a computed key names nothing, and a
+ * step context without sources holds nothing, so such a read still fails closed
+ * at evaluation
  */
 export function synchronousSensitiveReferences(
   celExpression: string,

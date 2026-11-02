@@ -24,60 +24,25 @@ import {
   type SwampScope,
 } from "../expressions/swamp_namespaces.ts";
 
-/**
- * The ways template text can look like a swamp expression with its syntax
- * slightly wrong.
- */
 export type TemplateSyntaxForm =
-  /** `{{ ... }}` with no leading `$` */
   | "bare-double-brace"
-  /** `${ ... }` with a single brace */
   | "single-brace"
-  /** `{{ ... }}` in a `${{ ... }}` string, which cuts the expression short */
   | "inside-expression"
-  /** `${{` whose expression is missing its closing `}}` */
   | "unclosed-expression";
 
-/**
- * One match of template-like text in a definition.
- */
 export interface TemplateSyntaxFinding {
-  /** Path to the value (e.g. "globalArguments.message") */
   path: string;
-  /** The matched text (e.g. "{{host.name}}") */
   text: string;
-  /** Which form matched */
   form: TemplateSyntaxForm;
 }
 
-/**
- * Result of scanning a definition for template-like text.
- */
 export interface TemplateSyntaxScan {
-  /**
-   * Text swamp would claim as its own expression once the syntax is fixed:
-   * a dropped `$` or a missing brace.
-   */
   malformed: TemplateSyntaxFinding[];
-  /**
-   * Another service's template syntax (Datadog `{{host.name}}`, shell
-   * `${HOME}`), passed to the method unchanged.
-   */
   foreign: TemplateSyntaxFinding[];
 }
 
-/**
- * What the scan needs to know about the definition and its model type.
- */
 export interface TemplateSyntaxScanOptions {
-  /** Input names the definition declares in its `inputs` schema. */
   declaredInputs: ReadonlySet<string>;
-  /**
-   * Whether a path lies inside a field the model type declares as foreign
-   * template text. Such fields report only `inside-expression` and
-   * `unclosed-expression` findings, which are broken swamp expressions rather
-   * than foreign text.
-   */
   isDeclaredForeign?: (path: string) => boolean;
 }
 
@@ -88,13 +53,11 @@ const PATTERNS: ReadonlyArray<{ form: TemplateSyntaxForm; pattern: RegExp }> = [
     pattern: /(?<!\$)\{\{(?!\{)([^}]+)\}\}/g,
   },
   {
-    // ${...} with single braces
     form: "single-brace",
     pattern: /\$\{(?!\{)([^}]+)\}/g,
   },
 ];
 
-/** Where a `${{` opens a swamp expression. */
 const EXPRESSION_OPENER = /\$\{\{/g;
 
 /**
@@ -104,43 +67,9 @@ const EXPRESSION_OPENER = /\$\{\{/g;
 const MAX_CLOSING_ATTEMPTS = 16;
 
 /**
- * Scans definition data for template-like text and classifies each match.
- *
- * A match is malformed exactly when, with the syntax corrected to
- * `${{ ... }}`, swamp would claim it as its own expression (see
- * {@link isSwampExpression}). Everything else is another service's template
- * syntax. Every match in every string is reported, and the two forms are
- * matched independently, so one value can yield both kinds of finding.
- *
- * An expression ends where `scanExpressions` says: at the first `}}`, or at
- * the first one outside a CEL string literal when only that one parses. One
- * that parses as CEL is sound, even with `{{` or `}}` in a string, as in
- * `${{ literal('{{host.name}}') }}`. One that does not parse, and shows a
- * sign of running past its intended end (a `{{` after its opening, even in
- * `${{{`, or a lone `}` typed for `}}` after valid CEL), is judged by whether
- * it parses when it ends at a later `}}` instead:
- *
- * - If it does, the expression was cut short, and the braces there are
- *   malformed (`inside-expression`).
- * - If it does not, the expression is `unclosed-expression`, as in
- *   `${{ self.name } && docker ps --format '{{.Names}}'`. So is a `${{` with
- *   no `}}` after it.
- *
- * Both forms are reported even in a declared field, because they are broken
- * swamp expressions rather than another service's text. A `${ ... }` inside
- * an expression is ordinary CEL string content, as in `${{ "${HOME}" }}`, and
- * is not reported.
- *
- * Every swamp root counts as bound. A runtime pass binds `run`, `steps`,
- * `workflow` and `webhook` only inside a workflow, but one definition can run
- * both directly and as a workflow step, so validation takes the stricter
- * view. This is deliberate, not drift from the runtime scope.
- *
- * Scan the authored definition, never evaluated values, so text that an
- * evaluation produced is not flagged.
- *
- * @param data - Definition data to scan (e.g. `{ globalArguments, methods }`)
- * @param options - Declared inputs and declared foreign template fields
+ * a match is malformed exactly when, with syntax corrected to ${{ }}, swamp
+ * would claim it; the rest is foreign. Every match is reported. Scan the
+ * authored definition, never evaluated values.
  */
 export function scanTemplateSyntax(
   data: unknown,
@@ -273,12 +202,9 @@ function scanString(
 }
 
 /**
- * Judges an expression span that does not parse as CEL but shows a sign of
- * running past its intended end. Returns undefined for a span that parses,
- * or that shows no such sign (text swamp cannot attribute, such as prose).
- *
- * The later `}}` tried are those before the next expression starts, at most
- * {@link MAX_CLOSING_ATTEMPTS}, so the parses stay linear in the value.
+ * judges a span that does not parse as CEL but looks cut short; later }} are
+ * tried only before the next expression, at most MAX_CLOSING_ATTEMPTS, so
+ * parses stay linear in the value
  */
 function diagnoseSpan(
   value: string,

@@ -18,9 +18,8 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * CEL term matching only catalog rows this repository wrote. The catalog also
- * holds rows pulled from other namespaces (`datastore catalog pull`); serve
- * GC must never list, fetch or delete those.
+ * the catalog also holds rows pulled from other namespaces; serve GC must never
+ * list, fetch or delete those
  */
 export function ownNamespaceTerm(namespace: string): string {
   return `ns == ${JSON.stringify(namespace)}`;

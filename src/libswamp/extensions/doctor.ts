@@ -32,11 +32,8 @@ import { modelRegistry } from "../../domain/models/model.ts";
 import { getExtensionMemberCollisions } from "../../domain/extensions/model_kind_adapter.ts";
 
 /**
- * Public registry name for the doctor report. The infrastructure-layer
- * `ExtensionKind` enum carries extra values (`extension`) but only
- * five user-facing registries exist — `extension` is a sub-kind of
- * the model loader (it indicates a user extension extending an
- * existing model type) and folds into the `model` row in this report.
+ * extension is a sub-kind of the model loader and folds into the model row, so
+ * only five registries are user-facing
  */
 export type DoctorRegistryName =
   | "model"
@@ -45,7 +42,6 @@ export type DoctorRegistryName =
   | "report"
   | "webhook";
 
-/** Fixed run order — also the row order in the rendered report. */
 export const DOCTOR_REGISTRY_ORDER: ReadonlyArray<DoctorRegistryName> = [
   "model",
   "vault",
@@ -54,44 +50,28 @@ export const DOCTOR_REGISTRY_ORDER: ReadonlyArray<DoctorRegistryName> = [
   "webhook",
 ];
 
-/** Per-registry result emitted on `kind-completed`. */
 export interface DoctorRegistryResult {
   registry: DoctorRegistryName;
   status: "pass" | "fail";
 }
 
-/** Final overall status — `pass` when every registry passed. */
 export type DoctorOverallStatus = "pass" | "fail";
 
-/**
- * A single orphan finding: a file or directory present under an
- * extension's tracked roots but NOT in the current lockfile entry's
- * files[]. Surfaces in the report's `orphanFiles` warnings list.
- */
 export interface DoctorOrphanFile {
   extensionName: string;
-  /** Repo-relative path. */
   path: string;
 }
 
 export interface DoctorWarning {
   /**
-   * The source file the warning is about. For `ExtensionAttachFailed` it is
-   * the model type that could not be loaded, since no single file is at
-   * fault.
+   * for ExtensionAttachFailed it is the model type that could not be loaded,
+   * since no single file is at fault
    */
   sourcePath: string;
   category: string;
   message: string;
 }
 
-/**
- * A member name (method, check or resource spec) that more than one source
- * adds to one model type, as currently resolved (swamp-club#2562).
- * `winner` is the winning extension's source path, or null when a
- * base-model member wins; `losers` are the extensions whose member was not
- * registered.
- */
 export interface DoctorMemberCollision {
   type: string;
   memberKind: "method" | "check" | "resource";
@@ -101,79 +81,36 @@ export interface DoctorMemberCollision {
 }
 
 /**
- * Why the catalog rescan — and repairs, when requested — did not run.
- * Set when the managed config base is unresolved: a rescan against the
- * in-repo guess would tombstone every team extension's rows, and repairs
- * would write where the datastore never sees them (swamp-club#2483).
+ * set when the managed config base is unresolved: a rescan against the in-repo
+ * guess would tombstone every team extension's rows, and repairs would write
+ * where the datastore never sees them
  */
 export interface DoctorRescanSkipped {
   reason: string;
-  /** True when `--repair` was requested and did not run. */
   repairSkipped: boolean;
 }
 
-/** Final report shape — used by the renderer's JSON mode. */
 export interface DoctorExtensionsReport {
   overallStatus: DoctorOverallStatus;
-  /** Map of registry name → its result. All five keys always present. */
   registries: Record<DoctorRegistryName, DoctorRegistryResult>;
   /**
-   * Filesystem-orphan findings — paths present under tracked roots but
-   * absent from the current lockfile's files[] list. Reported as
-   * WARNINGS, not failures: `overallStatus` is unchanged by orphan
-   * presence so existing CI gates that key on `overallStatus === "fail"`
-   * keep working through the transition. A future release may promote
-   * orphans to failure once routine install/pull/update calls have
-   * drained pre-existing dirt from the ecosystem.
+   * reported as warnings, not failures: overallStatus is unchanged by orphans
+   * so existing CI gates keyed on it keep working
    */
   orphanFiles: DoctorOrphanFile[];
-  /**
-   * W6: Per-extension aggregate state with RowState distribution,
-   * catalog orphans, and bundle orphans. Always present when the
-   * catalog is readable; undefined only on early abort.
-   */
   aggregateState?: DoctorAggregateReport;
-  /**
-   * W6: Repair report — present only when `--repair` was requested.
-   * Contains the list of operations (dry-run or applied).
-   */
   repairReport?: RepairReport;
-  /**
-   * Present only when the catalog rescan was skipped. Absent means the
-   * rescan ran, and so did repairs if `--repair` was requested.
-   */
   rescanSkipped?: DoctorRescanSkipped;
-  /**
-   * State transitions from the most recent reconcile pass. Always
-   * present (empty array when no transitions occurred). Each entry
-   * captures a source's fromState → toState with reason.
-   */
   recentTransitions: readonly ReconcileTransition[];
-  /**
-   * Errors thrown by `ensureLoaded()` for each registry. Empty when every
-   * loader succeeds. Keyed by registry name; value is the error message.
-   */
   loaderErrors?: ReadonlyMap<DoctorRegistryName, string>;
-  /**
-   * Extension load warnings — diagnostic findings about suboptimal-but-working
-   * patterns (e.g. non-literal type fields that prevent static catalog
-   * extraction). Advisory only: `overallStatus` is unchanged by warning
-   * presence. Empty array when no warnings were emitted.
-   */
+  /** advisory only: overallStatus is unchanged by warnings */
   warnings: readonly DoctorWarning[];
-  /**
-   * Extension-member collisions and which source won each. Advisory
-   * only: `overallStatus` is unchanged. Empty array when there are none.
-   */
   memberCollisions: readonly DoctorMemberCollision[];
 }
 
 /**
- * Streaming events from the doctor extensions pipeline. The `error`
- * variant is required by libswamp's stream-protocol type system but
- * is not produced today — every per-registry failure is folded into
- * the report. Reserved for future failure modes that need to
- * short-circuit the stream mid-run.
+ * the error variant is required by the stream protocol but not produced today:
+ * every per-registry failure is folded into the report
  */
 export type DoctorExtensionsEvent =
   | { kind: "kind-started"; registry: DoctorRegistryName }
@@ -182,10 +119,8 @@ export type DoctorExtensionsEvent =
   | { kind: "error"; error: SwampError };
 
 /**
- * Per-registry callbacks supplied by the CLI. Each entry pairs the
- * loader-trigger with its reset-flag callback so the doctor service
- * can force a re-run regardless of whether the registry was already
- * warmed earlier in the same process.
+ * pairs each loader with its reset-flag callback so doctor can force a re-run
+ * even when the registry was already warmed in this process
  */
 export interface DoctorRegistryDeps {
   registry: DoctorRegistryName;
@@ -193,71 +128,34 @@ export interface DoctorRegistryDeps {
   resetLoadedFlag: () => void;
 }
 
-/** Dependencies for the doctor extensions operation. */
 export interface DoctorExtensionsDeps {
-  /** One entry per registry, in DOCTOR_REGISTRY_ORDER. */
   registries: ReadonlyArray<DoctorRegistryDeps>;
   /**
-   * Lockfile repository — captures upstream_extensions.json at
-   * construction so the orphan-detection phase can walk every
-   * per-extension root. Missing lockfile yields an empty cache (the
-   * orphan walk becomes a no-op).
+   * captures upstream_extensions.json at construction; a missing lockfile
+   * yields an empty cache, so the orphan walk is a no-op
    */
   lockfileRepository: LockfileRepository;
-  /** Repo root used to resolve repo-relative paths for filesystem walks. */
   repoDir: string;
   /**
-   * Tool-aware skills directories (e.g. `[".claude/skills", ".kiro/skills"]`).
-   * Repo-relative. Skill paths are tracked as a dir root or, when merged
-   * into a shared dir, file by file; the orphan walk skips both —
-   * extractTopLevelRoot needs these to recognise skill paths.
+   * skill paths are tracked as a dir root or, when merged into a shared dir,
+   * file by file; the orphan walk skips both, and extractTopLevelRoot needs
+   * these to recognise skill paths
    */
   skillsDirs: string[];
   abortSignal: AbortSignal;
-  /**
-   * W6: Callback that builds aggregate state from the catalog after
-   * loaders have run. Injected by the CLI so the service doesn't
-   * construct infrastructure objects directly.
-   */
   buildAggregateState?: () => Promise<DoctorAggregateReport>;
-  /**
-   * W6: Callback that runs repair operations. Injected by the CLI.
-   * Called only when repair is requested. Receives the aggregate
-   * report and the apply flag.
-   */
   runRepair?: (
     aggregateReport: DoctorAggregateReport,
   ) => Promise<RepairReport>;
-  /**
-   * Returns transitions from the most recent reconcile pass. Injected
-   * by the CLI so the generator doesn't depend on infrastructure
-   * objects. Returns an empty array when reconcile was skipped or
-   * failed.
-   */
   getRecentTransitions?: () => readonly ReconcileTransition[];
-  /**
-   * Returns extension load warnings emitted during this process run.
-   * Injected by the CLI — maps emitter events to DoctorWarning shape.
-   */
   getWarnings?: () => readonly DoctorWarning[];
   /**
-   * Resets the extension load warning state. Called at the start of
-   * each doctor invocation (alongside resetLoadedFlag) to prevent
-   * stale warnings from the CLI bootstrap leaking into doctor output.
+   * called at the start of each doctor run so stale warnings from the CLI
+   * bootstrap do not leak into the output
    */
   resetWarnings?: () => void;
-  /**
-   * Attaches every extension to its target type, so member collisions are
-   * resolved and recorded before the report is built. Runs after the
-   * registries load. Returns warnings for types that could not be loaded.
-   */
   attachExtensionMembers?: () => Promise<readonly DoctorWarning[]>;
-  /** Returns the currently resolved extension-member collisions. */
   getMemberCollisions?: () => readonly DoctorMemberCollision[];
-  /**
-   * Set by the CLI when it skipped the catalog rescan (and repairs).
-   * Passed through to the report so JSON callers see the skip too.
-   */
   rescanSkipped?: DoctorRescanSkipped;
 }
 
@@ -268,32 +166,17 @@ function overallStatus(
 }
 
 /**
- * Normalises a path to use forward-slash separators regardless of the
- * platform `relative()` and `walk()` produced. The tracked-set entries
- * in the lockfile and the helpers in `layout.ts` (PULLED_PREFIX,
- * extractTopLevelRoot) all assume forward slashes; orphan detection
- * needs the same normalisation on its walked paths so set membership
- * works on Windows where native paths use backslashes.
+ * the lockfile's tracked-set entries and the layout.ts helpers assume forward
+ * slashes, so walked paths are normalised the same way for set membership to
+ * work on Windows
  */
 function toForwardSlashes(p: string): string {
   return p.replaceAll("\\", "/");
 }
 
 /**
- * Walks every per-extension root referenced by a lockfile entry and
- * returns paths on disk that are NOT in the entry's `tracked` set.
- *
- * For each entry, derive the unique top-level roots from its
- * `files[]` list via `extractTopLevelRoot` (skips skills, legacy
- * paths, and unknown locations) and walk each root recursively. Any
- * file path under a walked root that isn't in `tracked` is an orphan.
- *
- * All path-set membership comparisons are done in forward-slash form
- * so the same lockfile entries match on both POSIX and Windows.
- *
- * Empty lockfile / missing entries / no recognisable roots → no walk,
- * no orphans. Walk errors (e.g. missing root dir) are tolerated and
- * yield no orphans for that root.
+ * walk errors, such as a missing root dir, are tolerated and yield no orphans
+ * for that root
  */
 async function detectOrphanFiles(
   upstreamMap: UpstreamExtensionsMap,
@@ -370,26 +253,8 @@ function registryHasFailures(
 }
 
 /**
- * Runs `ensureLoaded()` across all five user-facing extension
- * registries AND walks every per-extension root for orphan files.
- *
- * Two distinct concerns share this entry point:
- * 1. Loader validation — does each registry's loader run cleanly
- *    against the on-disk extensions? Failures fold into per-registry
- *    `failures` and DO flip `overallStatus` to `"fail"`.
- * 2. Filesystem orphan detection — are there files under each
- *    extension's tracked roots that aren't declared by the lockfile?
- *    Findings surface in `report.orphanFiles` as WARNINGS and do NOT
- *    flip `overallStatus`. CI gates on `overallStatus === "fail"`
- *    keep working through the transition.
- *
- * The first steps of the generator are a state reset + a
- * `resetLoadedFlag()` on every registry so the diagnostic forces a
- * full re-load even when the CLI bootstrap already warmed the
- * registries earlier in the process.
- *
- * Order of operations is the load-bearing invariant: callers must
- * NOT pre-reset state — the service owns that ordering.
+ * loader failures flip overallStatus to fail, orphan findings do not; callers
+ * must not pre-reset, as the service owns the reset and forces a full re-load
  */
 export async function* doctorExtensions(
   deps: DoctorExtensionsDeps,
@@ -486,11 +351,7 @@ export async function* doctorExtensions(
   };
 }
 
-/**
- * Maps extension load warnings to doctor warnings, keeping each warning's
- * own category. Warnings raised without one keep the historical
- * `TypeExtractionFailed` label. Shared by the CLI and serve doctor paths.
- */
+/** warnings raised without a category keep the TypeExtractionFailed label */
 export function toDoctorWarnings(
   events: ReadonlyArray<ExtensionLoadWarningEvent>,
 ): DoctorWarning[] {
@@ -501,12 +362,6 @@ export function toDoctorWarnings(
   }));
 }
 
-/**
- * Builds the doctor's extension-member dependencies: attach loads every
- * model type that an extension row targets (which attaches its extensions
- * and resolves collisions), and the collision getter reads the attach
- * record. Shared by the CLI and serve doctor paths.
- */
 export function extensionMemberDoctorDeps(
   catalog: Pick<ExtensionCatalogStore, "findByKind">,
 ): Pick<

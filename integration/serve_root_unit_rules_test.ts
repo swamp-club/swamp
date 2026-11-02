@@ -17,14 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Serve commits through root units of work (datastore rework Phase 2,
- * swamp-club#3034, swamp-club#3035). A serve request or run that pushes runs
- * in one `runInRootUnitOfWork` root whose flush is the push. These ratchets pin
- * where serve opens a root, and every push that is not yet a root's flush,
- * so a new push cannot bypass the unit of work unnoticed.
- */
-
 import { assertEquals } from "@std/assert";
 import { join } from "@std/path";
 import {
@@ -38,18 +30,12 @@ import {
 
 const SERVE_DIR = join(SRC_DIR, "serve");
 
-/** A `<callee>(...)` call: its span and its top-level argument spans. */
 interface Call {
   start: number;
   end: number;
   args: [number, number][];
 }
 
-/**
- * Every `<callee>(...)` call in `source`, from the callee name to its
- * matching close paren, with the span of each top-level argument. A
- * `function <callee>(` declaration is not a call.
- */
 function calls(source: string, callee: string): Call[] {
   const found: Call[] = [];
   const pattern = new RegExp(`(?<!function )\\b${callee}\\(`, "g");
@@ -76,20 +62,11 @@ function calls(source: string, callee: string): Call[] {
   return found;
 }
 
-/**
- * `source` with the text of every comment and of every string and template
- * literal replaced by spaces, keeping newlines and length so offsets and line
- * numbers still match. Code inside a template's `${...}` is kept. Brackets and
- * pushes inside a string or comment are then never mistaken for code. Regular
- * expression literals are not recognised; serve's flush arguments contain
- * none.
- */
 function maskNonCode(source: string): string {
   const out = source.split("");
   const blank = (from: number, to: number) => {
     for (let k = from; k < to; k++) if (out[k] !== "\n") out[k] = " ";
   };
-  // Each open template literal records the brace depth of its `${`.
   const templates: number[] = [];
   let braces = 0;
   let i = 0;
@@ -154,9 +131,7 @@ function maskNonCode(source: string): string {
 
 interface ServeSource {
   file: string;
-  /** The source with comments and string literal text masked out. */
   code: string;
-  /** The top-level declaration owning each line. */
   owners: string[];
 }
 
@@ -178,17 +153,11 @@ function ownerAt(source: ServeSource, offset: number): string {
   return `${source.file}: ${source.owners[line]}`;
 }
 
-/**
- * The functions that open a root unit of work, each with the index of its
- * options argument, whose `flush` is the root's push.
- */
 const ROOT_OPENERS: Readonly<Record<string, number>> = {
   runInRootUnitOfWork: 1,
-  // Stages per-path writes through a root, then pushes (swamp-club#3034).
   stageWritesThenPush: 2,
 };
 
-/** Every call in `source` that opens a root, with its options argument. */
 function rootCalls(
   source: string,
 ): { start: number; options?: [number, number] }[] {
@@ -200,7 +169,6 @@ function rootCalls(
   );
 }
 
-/** Whether `offset` sits in a root's options argument: the root's flush. */
 function inRootFlush(
   roots: { options?: [number, number] }[],
   offset: number,
@@ -210,7 +178,6 @@ function inRootFlush(
   );
 }
 
-/** Owners of pushes matching `pattern` that are not a root's flush. */
 function pushesOutsideRoots(
   sources: ServeSource[],
   pattern: RegExp,
@@ -227,7 +194,6 @@ function pushesOutsideRoots(
   return countedKeys(keys);
 }
 
-/** Owners of every call in serve that opens a root. */
 function rootEntryPoints(sources: ServeSource[]): string[] {
   return countedKeys(
     sources.flatMap((source) =>
@@ -236,16 +202,6 @@ function rootEntryPoints(sources: ServeSource[]): string[] {
   );
 }
 
-// ---------------------------------------------------------------------------
-// Pinned lists
-// ---------------------------------------------------------------------------
-
-/**
- * A call to a serve push path: `pushChangedToRemote`, or the `pushNamespace`
- * or `pushNamespaceCounted` push from
- * `src/infrastructure/persistence/push_paths.ts` (swamp-club#3055,
- * swamp-club#3192).
- */
 const PUSH_PATH_CALL =
   /(?<!function )\b(?:pushChangedToRemote|pushNamespace|pushNamespaceCounted)\(/g;
 
@@ -258,7 +214,6 @@ const PINNED_DIRECT_PUSH_CHANGED_TO_REMOTE_CALLERS: readonly string[] = [
   "src/serve/handlers/shared.ts: pushChangedToRemote",
 ];
 
-/** Serve functions that open a root unit of work. */
 const PINNED_SERVE_ROOT_ENTRY_POINTS: readonly string[] = [
   // Request handlers whose push runs after their work on every outcome.
   "src/serve/handlers/access_handlers.ts: handleAccessTokenMint",
@@ -276,8 +231,7 @@ const PINNED_SERVE_ROOT_ENTRY_POINTS: readonly string[] = [
   "src/serve/handlers/workflow_handlers.ts: handleWorkflowReject",
   "src/serve/nested_run_cascade.ts: cascadeEndedRunUnderGate",
   "src/serve/suspended_run_cancel.ts: cancelLocatedRunAndPush",
-  // Request handlers that push only once their success reply was sent
-  // (swamp-club#3035).
+  // request handlers that push only once their success reply was sent
   "src/serve/handlers/admin_handlers.ts: handleVaultMigrate",
   "src/serve/handlers/model_handlers.ts: handleModelCreate",
   "src/serve/handlers/model_handlers.ts: handleModelDelete",
@@ -287,70 +241,55 @@ const PINNED_SERVE_ROOT_ENTRY_POINTS: readonly string[] = [
   "src/serve/handlers/workflow_handlers.ts: handleWorkflowCreate",
   "src/serve/handlers/workflow_handlers.ts: handleWorkflowDelete",
   "src/serve/handlers/workflow_handlers.ts: handleWorkflowEdit",
-  // Model method runs and resumes, whose push runs under the shared gate
-  // (swamp-club#3035). A method run that took model locks still pushes
-  // through the locks' flush, outside the root. The detached resume
-  // launches its parent's auto-resume only after its root has ended, and
-  // every caller launches it outside an open root.
+  // method runs and resumes push under the shared gate; a run with model locks
+  // still pushes through the locks' flush outside the root; the detached resume
+  // launches the parent's auto-resume after its root ends
   "src/serve/handlers/model_handlers.ts: handleModelMethodRun (x2)",
   "src/serve/handlers/workflow_handlers.ts: handleWorkflowResume",
   "src/serve/resume_launcher.ts: startDetachedResume",
   // Workflow runs from the workflow.run handler, webhooks and the scheduler:
   // the post-run push. Each step's model lock still pushes on its own.
   "src/serve/deps.ts: executeWorkflowWithLocks",
-  // Hand marks re-staged just before their push, through
-  // stageWritesThenPush. Each root covers only the marks and the push, as a
-  // failed write pushed nothing before. The writes before them run in a
-  // root of their own with no push (swamp-club#3056), which ends before
-  // the push's root opens.
+  // hand marks re-staged just before their push via stageWritesThenPush; each
+  // root covers only the marks and the push, and the writes before them run in
+  // a root of their own with no push
   "src/serve/device_auth_handler.ts: mintServerTokenImpl (x2)",
   "src/serve/grant_write_tracking.ts: createGrantWriteCommit",
   "src/serve/grant_write_tracking.ts: publishGrantWrites",
   "src/serve/handlers/access_handlers.ts: handleAccessReload (x2)",
   "src/serve/stage_writes_then_push.ts: stageWritesThenPush",
-  // Serve's background garbage collection, outside any request: the push
-  // the batch or collection made in a finally is the root's flush
-  // (swamp-club#3056).
+  // serve's background garbage collection, outside any request: the push the
+  // batch or collection makes in a finally is the root's flush
   "src/serve/bookkeeping_gc.ts: reapBatch",
   "src/serve/server_token_gc_deps.ts: createServerTokenGcDeps",
-  // Serve shutdown's run interrupts: the push of the interrupted records is
-  // the root's flush, bounded by one deadline (swamp-club#3252).
+  // serve shutdown's run interrupts: the push of the interrupted records is the
+  // root's flush, bounded by one deadline
   "src/serve/shutdown_interrupt.ts: interruptShutdownRuns",
-  // Boot and continuous reconciliation: two roots in turn, never nested.
-  // The method-run outputs' root pushes nothing; the run records' root
-  // pushes what the pass interrupted as its flush, through the injected
-  // pushReaped, and that push carries the outputs too (swamp-club#3958).
+  // boot and continuous reconciliation run two roots in turn, never nested: the
+  // outputs root pushes nothing; the run records root flushes through
+  // pushReaped, which carries the outputs too
   "src/serve/boot_reconciliation.ts: reconcileRemoteInterruptedRuns (x2)",
-  // Writes that push nothing, in a root with no push, so they stage into it
-  // rather than through signalChange's hook fallback (swamp-club#3056): the
-  // boot sweep, run.doctor's fix, and worker data-plane writes and
-  // capability deletes, which the dispatching run's push carries.
+  // writes that push nothing, in a root with no push, so they stage into it
+  // rather than through signalChange's hook fallback; the dispatching run's
+  // push carries worker data-plane writes and capability deletes
   "src/serve/boot_reconciliation.ts: sweepStaleRecords",
   "src/serve/capability_service.ts: CapabilityService",
   "src/serve/data_plane.ts: DataPlane",
   "src/serve/handlers/admin_handlers.ts: handleRunDoctor",
-  // Step-lease transitions, written directly rather than as method runs
-  // (swamp-club#4038): staged into the dispatching run's root, whose push
-  // carries them, as the method run's unit did.
+  // step-lease transitions are written directly rather than as method runs, so
+  // they are staged into the dispatching run's root, whose push carries them
   "src/serve/step_lease_ledger.ts: StepLeaseLedger",
   // model.validate: model checks receive the hooked repositories.
   "src/serve/handlers/model_handlers.ts: handleModelValidate",
-  // The extension handlers' managed lockfile transaction: one root with no
-  // push per outermost run, whose checkpoint publishes the lockfile under
-  // the global lock (swamp-club#3192). The four extension handlers call it
-  // outside any root.
-  // Two roots since swamp-club#3279: the v2 publish's over the hook alone,
-  // and the v3 publish's over the repository context.
+  // extension handlers' lockfile transaction: one root with no push per
+  // outermost run, its checkpoint publishes the lockfile under the global lock,
+  // as two roots (v2 over the hook, v3 over the repo context)
   "src/serve/handlers/admin_handlers.ts: extensionLockfileTransaction (x2)",
-  // The token secret migration, one root per token under that token's name
-  // lock (swamp-club#2482). It runs at serve boot, and in the CLI token
-  // commands before or after their own root, never inside one.
+  // the token secret migration: one root per token under that token's name
+  // lock, at serve boot and in CLI token commands before or after their own
+  // root, never inside one
   "src/serve/token_secret_migration.ts: createTokenMigrationLockDeps",
 ];
-
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
 
 const sources = await serveSources();
 

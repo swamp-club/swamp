@@ -20,28 +20,15 @@
 import { errorPaths } from "../errors.ts";
 import { isPathLike, redactErrorMessage } from "./error_message_redaction.ts";
 
-/**
- * Status of a command invocation.
- */
 export type InvocationStatus = "success" | "error" | "user_error";
 
-/**
- * Represents the result of a CLI command execution.
- */
 export interface InvocationResult {
-  /** Whether the command succeeded or failed */
   readonly status: InvocationStatus;
-  /** Error class name if an error occurred */
   readonly errorType?: string;
-  /** First line of error message (sanitized) */
   readonly errorMessage?: string;
-  /** Exit code of the command */
   readonly exitCode: number;
 }
 
-/**
- * Data transfer object for InvocationResult.
- */
 export interface InvocationResultData {
   status: InvocationStatus;
   errorType?: string;
@@ -49,9 +36,6 @@ export interface InvocationResultData {
   exitCode: number;
 }
 
-/**
- * Creates a successful InvocationResult.
- */
 export function createSuccessResult(): InvocationResult {
   return {
     status: "success",
@@ -60,11 +44,8 @@ export function createSuccessResult(): InvocationResult {
 }
 
 /**
- * Creates an error InvocationResult from an Error.
- *
- * Paths the error marked with `markErrorPaths` (on it or its cause chain) are
- * removed exactly alongside `knownValues`, so a path the patterns cannot
- * delimit is still replaced whole (swamp-club#2830).
+ * paths the error marked with markErrorPaths are removed exactly alongside
+ * knownValues, so a path the patterns cannot delimit is still replaced whole
  */
 export function createErrorResult(
   error: Error,
@@ -87,9 +68,6 @@ export function createErrorResult(
   };
 }
 
-/**
- * Converts an InvocationResult to its data representation.
- */
 export function invocationResultToData(
   result: InvocationResult,
 ): InvocationResultData {
@@ -106,9 +84,6 @@ export function invocationResultToData(
   return data;
 }
 
-/**
- * Creates an InvocationResult from data.
- */
 export function invocationResultFromData(
   data: InvocationResultData,
 ): InvocationResult {

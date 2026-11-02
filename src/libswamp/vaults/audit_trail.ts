@@ -47,8 +47,8 @@ export interface VaultAuditTrailInput {
   until?: Date;
   limit?: number;
   /**
-   * Keeps only the entries this accepts. The limit and `truncated` apply to
-   * the accepted entries, so hidden entries never shorten a page.
+   * limit and `truncated` apply to the accepted entries, so hidden entries
+   * never shorten a page
    */
   include?: (entry: VaultAuditEntry) => boolean;
 }

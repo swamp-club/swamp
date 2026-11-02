@@ -23,10 +23,6 @@ import { dirname, join, relative } from "@std/path";
 import fc from "fast-check";
 import { createTarGz, extractTarGz } from "./tar_archive.ts";
 
-/**
- * A small file tree: relative path → contents. Directory and file names use
- * disjoint prefixes so a path is never both a file and a directory.
- */
 const arbTree = fc
   .array(
     fc.record({
@@ -46,7 +42,6 @@ const arbTree = fc
     return tree;
   });
 
-/** Path → contents and (on POSIX, where chmod applies) permission bits. */
 async function readTree(
   root: string,
 ): Promise<Map<string, { content: Uint8Array; mode: number | null }>> {

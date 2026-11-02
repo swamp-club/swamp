@@ -30,9 +30,8 @@ import { parseNamespacedModelName } from "./namespace.ts";
 import { getLogger } from "@logtape/logtape";
 
 /**
- * A data item with its origin model coordinates, used to track
- * where data lives on disk (which may differ from the current definition UUID
- * for orphan-recovered data).
+ * tracks where data lives on disk, which may differ from the current definition
+ * id for orphan-recovered data
  */
 interface LocatedData {
   data: Data;
@@ -40,9 +39,6 @@ interface LocatedData {
   modelId: string;
 }
 
-/**
- * Result of resolving a model by name.
- */
 export interface ResolvedModel {
   modelType: ModelType;
   modelId: string;
@@ -50,9 +46,8 @@ export interface ResolvedModel {
 }
 
 /**
- * The predicate that selects a model's data by its definition identity (type
- * and id). Unlike the `modelName` tag, which records the name at write time,
- * the identity survives a rename of the model instance (swamp-club#3011).
+ * unlike the modelName tag, which records the name at write time, the identity
+ * survives a rename of the model instance
  */
 export function modelIdentityPredicate(
   identity: { modelType: string; modelId: string },
@@ -67,9 +62,8 @@ export function modelIdentityPredicate(
 }
 
 /**
- * Concatenates record lists, keeping the first occurrence of each data item
- * version, so a record matched by both the name-tag and identity reads is
- * returned once.
+ * keeps the first occurrence of each data item version, so a record matched by
+ * both the name-tag and identity reads is returned once
  */
 export function mergeModelData(...lists: DataRecord[][]): DataRecord[] {
   const seen = new Set<string>();
@@ -90,22 +84,14 @@ export function mergeModelData(...lists: DataRecord[][]): DataRecord[] {
 }
 
 /**
- * Domain service for cross-model data access.
- *
- * Encapsulates the pattern of resolving a model by name and reading its data
- * with parsed content and vault reference resolution. This is a peer to
- * WorkflowDataService — WorkflowDataService handles workflow-run-scoped data
- * traversal (walking jobs/steps/artifacts), while DataAccessService handles
- * direct model-to-model reads by name.
- *
- * Both coordinate the same aggregates (Definition + Data) but serve different
- * access patterns.
+ * direct model-to-model reads by name; a peer to WorkflowDataService, which
+ * handles workflow-run-scoped traversal
  */
 export class DataAccessService {
   /**
-   * Definitions the catalog read resolved by name, including misses. A
-   * lookup without a cached path walks every definition file, so a name
-   * read repeatedly in one method execution is looked up once.
+   * definitions resolved by name, including misses: a lookup without a cached
+   * path walks every definition file, so a name read repeatedly is looked up
+   * once
    */
   private readonly identities = new Map<string, ResolvedModel | null>();
 
@@ -117,10 +103,6 @@ export class DataAccessService {
     private readonly dataQueryService?: DataQueryService,
   ) {}
 
-  /**
-   * Resolves a model by name, returning its type and ID.
-   * Returns null if the model doesn't exist.
-   */
   async resolveModel(modelName: string): Promise<ResolvedModel | null> {
     const result = await this.definitionRepo.findByNameGlobal(modelName);
     if (result) {
@@ -133,7 +115,6 @@ export class DataAccessService {
     return null;
   }
 
-  /** {@link resolveModel}, remembered for the life of this service. */
   private async resolveIdentity(
     modelName: string,
   ): Promise<ResolvedModel | null> {
@@ -143,26 +124,6 @@ export class DataAccessService {
     return this.identities.get(modelName) ?? null;
   }
 
-  /**
-   * Reads data from another model by name.
-   *
-   * Resolves the model name to its type and ID, finds all data items for that
-   * model, parses JSON content, and resolves vault references when a vault
-   * service is available.
-   *
-   * Includes orphan data recovery: if data exists under a previous model UUID
-   * (from a delete/recreate cycle), it is found via modelName tag matching or
-   * single-definition-of-type heuristic.
-   *
-   * @param modelName - The name of the model to read data from
-   * @param specName - Optional spec name filter (matches the "specName" tag)
-   * @param caller - The calling model's identity. Reading its own name uses
-   *   this identity instead of looking the definition up.
-   * @param workflowRunId - Optional workflow run ID to scope results. When
-   *   provided, only data whose ownerDefinition.workflowRunId matches is
-   *   returned. When absent, all data is returned (global read).
-   * @returns Array of DataRecord items. Empty array if model not found or has no data.
-   */
   async readModelData(
     modelName: string,
     specName?: string,
@@ -190,9 +151,8 @@ export class DataAccessService {
         return byName;
       }
 
-      // The name tag records the name at write time, so data written before
-      // the instance was renamed is also read by the definition's identity
-      // (swamp-club#3011).
+      // the name tag records the name at write time, so data written before a
+      // rename is also read by the definition's identity
       const identity = caller?.modelName === parsed.modelName
         ? caller
         : await this.resolveIdentity(parsed.modelName);
@@ -219,13 +179,11 @@ export class DataAccessService {
       );
     }
 
-    // Fallback: file-system-based access (no catalog available)
     const resolved = await this.resolveModel(parsed.modelName);
     if (!resolved) {
       return [];
     }
 
-    // Find data under the current definition ID
     const currentData = (
       await this.dataRepo.findAllForModel(
         resolved.modelType,
@@ -237,7 +195,6 @@ export class DataAccessService {
       modelId: resolved.modelId,
     }));
 
-    // Attempt orphan recovery: find data under previous UUIDs for this type
     const orphanData = await this.findOrphanData(
       resolved.modelType,
       resolved.modelId,
@@ -250,17 +207,14 @@ export class DataAccessService {
       return [];
     }
 
-    // Filter by specName if provided
     const filtered = specName
       ? allData.filter((d) => d.data.tags["specName"] === specName)
       : allData;
 
-    // Filter out renamed/deleted entries
     const active = filtered.filter(
       (d) => !d.data.isRenamed && !d.data.isDeleted,
     );
 
-    // Convert to DataRecords with parsed content
     const records: DataRecord[] = [];
     for (const located of active) {
       const record = await this.dataToRecord(
@@ -278,17 +232,9 @@ export class DataAccessService {
   }
 
   /**
-   * Finds orphan data: data stored under a previous UUID for the same model
-   * type and name. This handles the delete/recreate cycle where data persists
-   * under the old UUID.
-   *
-   * Returns LocatedData items with the original modelId so that content can
-   * be read from the correct disk path.
-   *
-   * Uses a two-tier matching strategy:
-   * 1. modelName tag match: data tagged with the model name under a different UUID
-   * 2. Single-definition heuristic: if only one definition exists for the type,
-   *    any data under that type belongs to it
+   * finds data stored under a previous UUID after a delete/recreate, by
+   * modelName tag or, when the type has a single definition, by type alone;
+   * keeps the original modelId so content reads from the right path
    */
   private async findOrphanData(
     modelType: ModelType,
@@ -297,7 +243,6 @@ export class DataAccessService {
   ): Promise<LocatedData[]> {
     const allGlobal = await this.dataRepo.findAllGlobal();
 
-    // Find data items of the same type but under a different model ID
     const orphanCandidates = allGlobal.filter(
       (item) =>
         item.modelType.normalized === modelType.normalized &&
@@ -308,7 +253,6 @@ export class DataAccessService {
       return [];
     }
 
-    // Group by modelId
     const byModelId = new Map<
       string,
       Array<{ data: Data; modelType: ModelType; modelId: string }>
@@ -320,13 +264,11 @@ export class DataAccessService {
       byModelId.get(item.modelId)!.push(item);
     }
 
-    // Hoist findAll outside the loop — result is the same for all iterations
     const allDefsOfType = await this.definitionRepo.findAll(modelType);
 
     const results: LocatedData[] = [];
 
     for (const [, items] of byModelId) {
-      // Tier 1: modelName tag match
       const hasNameTag = items.some(
         (item) => item.data.tags["modelName"] === modelName,
       );
@@ -357,9 +299,6 @@ export class DataAccessService {
     return results;
   }
 
-  /**
-   * Converts a Data entity to a DataRecord by reading and parsing its content.
-   */
   private async dataToRecord(
     data: Data,
     modelType: ModelType,

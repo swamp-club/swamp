@@ -26,7 +26,6 @@ import type { TypedChange } from "../../../domain/datastore_v3/commit_log_unit_o
 import { createLegacyUnitOfWork } from "../legacy_unit_of_work.ts";
 import { typedStagers, unitOfWorkBinding } from "../unit_of_work_binding.ts";
 
-/** Whether `path` exists as a file, directory or link. */
 export async function pathExists(path: string): Promise<boolean> {
   try {
     await Deno.lstat(path);
@@ -37,10 +36,6 @@ export async function pathExists(path: string): Promise<boolean> {
   }
 }
 
-/**
- * A legacy unit of work over a mark hook that records each mark, for tests
- * that check what a repository stages and marks inside a scope.
- */
 export function recordingUnitOfWork(): {
   markDirty: MarkDirtyHook;
   marks: Array<string | undefined>;
@@ -55,11 +50,6 @@ export function recordingUnitOfWork(): {
   return { markDirty, marks, uow };
 }
 
-/**
- * A v3 hook (one that requires a unit) and a unit bound to it that takes
- * typed changes, recording each staged batch and path change, for tests
- * that check what a repository stages on v3 without a commit store.
- */
 export function typedRecordingUnitOfWork(): {
   markDirty: MarkDirtyHook;
   uow: UnitOfWork;

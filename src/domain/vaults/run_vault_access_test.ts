@@ -36,7 +36,6 @@ import {
   withoutVaultAccess,
 } from "./run_vault_access.ts";
 
-/** A policy allowing exactly the listed vault/action pairs. */
 function policyAllowing(
   principal: string,
   allowed: Record<string, VaultAction[]>,
@@ -148,7 +147,6 @@ Deno.test("runWithVaultAccess: an inner scope cannot replace the outer policy", 
         RunVaultAccess.create({ policy: innerPolicy }),
         async () => {
           const access = currentVaultAccess()!;
-          // The inner policy allows payroll; the inherited outer one refuses.
           const error = await assertRejects(
             () => access.check("payroll", "read"),
             VaultAccessDeniedError,
@@ -278,7 +276,6 @@ Deno.test("runGeneratorWithVaultAccess: forwards return() inside the scope", asy
   assertEquals([...(finalScope as Set<string>)], ["a"]);
 });
 
-/** A policy refusing `vault`, undetermined when the key is not known. */
 function keyConditionedPolicy(
   vault: string,
 ): VaultPrincipalPolicy & { calls: unknown[][] } {
@@ -312,7 +309,6 @@ Deno.test("RunVaultAccess.check: with keyUnknown an outcome that depends on the 
   );
   assertEquals(denials, []);
   assertEquals(policy.calls[0], ["outputs", "write", undefined, true]);
-  // Once the key is known, the policy decides and refuses.
   await assertRejects(
     () => access.check("outputs", "write", "k"),
     VaultAccessDeniedError,

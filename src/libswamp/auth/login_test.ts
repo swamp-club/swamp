@@ -584,9 +584,8 @@ Deno.test("authLogin: slow_down increases polling interval", async () => {
   assertEquals(pollCount, 2);
 });
 
-// swamp-club gives login keys a 90-day expiry by matching this exact name
-// shape (LOGIN_KEY_NAME in its lib/auth-body-hook.ts). A key named any other
-// way silently never expires, so the format is pinned here.
+// swamp-club expires login keys only when their name matches this shape; any
+// other name never expires, so the format is pinned here
 const SERVER_LOGIN_KEY_NAME = /^cli-.{0,14}-\d{13}$/;
 
 for (

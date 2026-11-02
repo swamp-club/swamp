@@ -31,12 +31,10 @@ Deno.test("installUnhandledRejectionGuard: prevents process termination on unhan
     globalThis.addEventListener("unhandledrejection", spy);
 
     try {
-      // Create a detached rejecting promise — the guard should catch it
       const _detached = Promise.reject(
         new Error("simulated extension crash"),
       );
 
-      // Let the microtask queue drain so the rejection event fires
       await new Promise((r) => setTimeout(r, 10));
 
       assertEquals(events.length, 1);
@@ -80,7 +78,6 @@ Deno.test("installUnhandledRejectionGuard: dispose removes listeners", async () 
   const events: PromiseRejectionEvent[] = [];
   const catcher = (e: PromiseRejectionEvent) => {
     events.push(e);
-    // Prevent the test runner from crashing
     e.preventDefault();
   };
   globalThis.addEventListener("unhandledrejection", catcher);
@@ -90,11 +87,6 @@ Deno.test("installUnhandledRejectionGuard: dispose removes listeners", async () 
     await new Promise((r) => setTimeout(r, 10));
 
     assertEquals(events.length, 1);
-    // The guard was disposed, so it didn't call preventDefault() — our
-    // test catcher is the only handler. The event should NOT have been
-    // prevented before our catcher ran. We can't directly observe this
-    // because our catcher calls preventDefault(), but we verify the guard
-    // didn't interfere by confirming exactly 1 event was caught.
   } finally {
     globalThis.removeEventListener("unhandledrejection", catcher);
   }

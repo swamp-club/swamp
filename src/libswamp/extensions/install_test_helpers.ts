@@ -26,25 +26,15 @@ import type {
   PendingInstall,
 } from "./pull.ts";
 
-/** What phase 8 did with the stub's install. */
 export interface StubPendingCalls {
   commit: number;
   rollback: number;
 }
 
 /**
- * Wraps a stub install as an {@link InstallExtensionFn} test seam for
- * InstallExtensionService. The real installExtension runs the service's
- * phase 8 through `options.underLock`; a stub that skipped it would
- * leave phase 8 untested without any error.
- *
- * Phase 8 receives a fake {@link PendingInstall} that records which of
- * commit and rollback it called in `calls` (the first call only, as the
- * real handle ignores later ones) and answers rollback with `rollback`.
- * It moves nothing: what a real commit and rollback do on disk is
- * tested against the real installExtension. Unlike installExtension,
- * the stub does not commit an install phase 8 left pending, so a test
- * sees exactly what the service chose.
+ * a stub that skipped options.underLock would leave phase 8 untested without
+ * any error; the fake PendingInstall records only the first call, as the real
+ * handle ignores later ones, and moves nothing
  */
 export function stubInstallExtension(
   install: (

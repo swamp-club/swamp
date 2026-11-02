@@ -77,10 +77,9 @@ Deno.test("createStdioReader: reassembles frames split across chunks", async () 
   const received: string[] = [];
   const frame = makeFrame('{"id":"split-test"}');
 
-  // Split the frame at various points: mid-header, mid-payload
-  const chunk1 = frame.subarray(0, 2); // First 2 bytes of header
-  const chunk2 = frame.subarray(2, 6); // Last 2 bytes of header + first 2 of payload
-  const chunk3 = frame.subarray(6); // Rest of payload
+  const chunk1 = frame.subarray(0, 2);
+  const chunk2 = frame.subarray(2, 6);
+  const chunk3 = frame.subarray(6);
 
   const stream = new ReadableStream<Uint8Array>({
     start(controller) {

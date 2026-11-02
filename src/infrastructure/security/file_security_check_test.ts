@@ -98,8 +98,6 @@ Deno.test({
     await withTempDir(async (dir) => {
       const path = join(dir, "secure.txt");
       await Deno.writeTextFile(path, "secret");
-      // Strip inheritance and grant only the current user — mimics what a
-      // hardened vault file should look like on Windows.
       const username = Deno.env.get("USERNAME");
       if (username && username.length > 0) {
         const icacls = new Deno.Command("icacls", {
@@ -125,7 +123,6 @@ Deno.test({
     await withTempDir(async (dir) => {
       const path = join(dir, "broad.txt");
       await Deno.writeTextFile(path, "secret");
-      // Grant Everyone Read access to simulate a leaked ACL.
       const icacls = new Deno.Command("icacls", {
         args: [path, "/grant", "Everyone:(R)"],
         stdin: "null",
@@ -149,8 +146,6 @@ Deno.test({
   name: "checkFileNotBroadlyReadable: Windows path with newline fails closed",
   ignore: Deno.build.os !== "windows",
   fn: async () => {
-    // Defensive: paths containing CR/LF/NUL never reach the icacls
-    // command — we refuse them up front.
     const result = await checkFileNotBroadlyReadable("C:\\bogus\nfile.txt");
     assertEquals(result.ok, false);
     if (!result.ok) {
@@ -160,11 +155,8 @@ Deno.test({
   },
 });
 
-// --- icacls parser unit tests (run on every platform) ---
-//
-// The full Windows path is gated on `Deno.build.os === "windows"`, but the
-// pure-string icacls parser/matcher can be exercised on macOS and Linux —
-// covering it here means CI catches a parser regression on every PR.
+// the icacls parser and matcher are pure string code, so they run on every
+// platform and CI catches a parser regression off Windows
 
 Deno.test("parseIcaclsOutput: typical multi-line output", () => {
   const path = "C:\\path\\to\\file.txt";
@@ -209,7 +201,7 @@ Deno.test("parseIcaclsOutput: skips localised summary line without parens", () =
   const stdout = [
     "C:\\file DOMAIN\\user:(F)",
     "",
-    "Es wurden 1 Dateien erfolgreich verarbeitet", // German summary, no parens
+    "Es wurden 1 Dateien erfolgreich verarbeitet",
   ].join("\r\n");
 
   const aces = parseIcaclsOutput(stdout, path);
@@ -228,7 +220,6 @@ Deno.test("parseIcaclsOutput: tolerates LF-only line endings", () => {
 
 Deno.test("parseIcaclsOutput: handles case-mismatched path prefix", () => {
   const path = "C:\\Users\\foo\\file.txt";
-  // icacls sometimes normalises the casing on the leading path.
   const stdout = "c:\\users\\foo\\file.txt Everyone:(R)\r\n";
   const aces = parseIcaclsOutput(stdout, path);
   assertEquals(aces.length, 1);

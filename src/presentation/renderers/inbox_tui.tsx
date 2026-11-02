@@ -65,7 +65,6 @@ const UNREAD_MARKER = "●";
 const CURSOR = "▏";
 const COMMAND_NAME = "inbox";
 
-/** Rows the message view keeps for itself: the brand line and the help bar. */
 const MESSAGE_VIEW_CHROME_LINES = 2;
 
 /** The list's key hints. Esc clears a filter before it quits. */
@@ -83,29 +82,25 @@ export function inboxListKeys(
   ];
 }
 
-/** The message view's key hints. */
 export const INBOX_MESSAGE_KEYS: readonly string[] = [
   "↑/↓ scroll",
   "PgUp/PgDn page",
   "Esc back",
 ];
 
-/** The newest unread message's row, or 0 when the page has none unread. */
 export function newestUnreadIndex(messages: InboxMessageView[]): number {
   const index = messages.findIndex((m) => m.readAt === null);
   return index === -1 ? 0 : index;
 }
 
-/** The preview's width inside the pane, past its left margin. */
 function previewInnerWidth(width: number): number {
   return Math.max(10, width - 1);
 }
 
 /**
- * The message as text: heading, body, then its link and suggested command.
- * With `width`, every line is wrapped to it, breaking a word longer than the
- * width, so each entry is exactly one rendered row: nothing is cut off, and
- * a long link always shows whole rather than as a trusted-looking start.
+ * with width, lines wrap and over-long words break, so each entry is one
+ * rendered row and a long link always shows whole rather than as a
+ * trusted-looking start
  */
 export function inboxMessageLines(
   message: InboxMessageView,
@@ -139,10 +134,6 @@ function messages(n: number): string {
   return n === 1 ? "1 message" : `${n} messages`;
 }
 
-/**
- * The line printed after the inbox closes, from the counts Swamp Club
- * confirmed; undefined when nothing was read or marked.
- */
 export function inboxQuitLine(
   read: number,
   marked: number,
@@ -155,34 +146,25 @@ export function inboxQuitLine(
   return undefined;
 }
 
-/**
- * The stderr line after the inbox closes for marks that failed or were cut
- * off at quit; undefined when there were none.
- */
 export function inboxUnmarkedLine(unmarked: number): string | undefined {
   return unmarked > 0
     ? `${messages(unmarked)} could not be marked read.`
     : undefined;
 }
 
-/** Why opening a message or marking one read is sent. */
 export type InboxMarkReason = "read" | "marked";
 
-/** What the inbox asks of the world outside it. */
 export interface InboxTuiBackend {
-  /** Marks these ids read; resolves to what Swamp Club confirmed. */
   markRead(
     ids: readonly string[],
     reason: InboxMarkReason,
   ): Promise<InboxMarkOutcome>;
-  /** Loads the page older than `cursor`. */
   loadOlder(cursor: string): Promise<InboxBrowseView>;
 }
 
 export interface InboxTuiProps {
   initial: InboxBrowseView;
   backend: InboxTuiBackend;
-  /** Called once, when the user leaves the inbox. */
   onQuit: () => void;
 }
 
@@ -195,9 +177,8 @@ function errorReason(error: unknown): string {
 }
 
 /**
- * The inbox: a list to browse and a view to read one message, open until the
- * user leaves. Marking read happens in the background; the list shows it at
- * once, and puts a message's dot back if Swamp Club does not confirm it.
+ * marking read happens in the background; the list shows it at once and puts a
+ * message's dot back if Swamp Club does not confirm it
  */
 export function InboxTui(props: InboxTuiProps): React.ReactElement {
   const { initial, backend, onQuit } = props;
@@ -579,7 +560,6 @@ export function InboxTui(props: InboxTuiProps): React.ReactElement {
       />
     );
   }
-  // A small terminal: the prompt, the rows and the help bar, no borders.
   return (
     <Box flexDirection="column" width={width}>
       {promptContent}
@@ -591,17 +571,11 @@ export function InboxTui(props: InboxTuiProps): React.ReactElement {
   );
 }
 
-/** How the inbox reaches Swamp Club while it is open. */
 export interface InboxTuiRendererOptions {
   markSession: InboxMarkSession;
-  /** Loads the page older than `cursor`, giving up when `signal` aborts. */
   loadOlder: (cursor: string, signal: AbortSignal) => Promise<InboxBrowseView>;
 }
 
-/**
- * Runs the inbox over the first page, then, once it has closed, waits for
- * the marks still in flight and prints what was read and marked.
- */
 class InkInboxTuiRenderer implements Renderer<InboxBrowseEvent> {
   constructor(private readonly options: InboxTuiRendererOptions) {}
 
@@ -658,28 +632,17 @@ class InkInboxTuiRenderer implements Renderer<InboxBrowseEvent> {
   }
 }
 
-/** The inbox's backend, and how to settle it once the inbox has closed. */
 export interface InboxTuiConnection {
   backend: InboxTuiBackend;
-  /**
-   * Stops page loads, waits for the marks still in flight (the session
-   * bounds the wait and refreshes the cache), and returns the quit line and
-   * the entries older pages left out.
-   */
   close(): Promise<InboxTuiClosed>;
 }
 
-/** What the inbox comes to once closed. */
 export interface InboxTuiClosed {
-  /** The quit line; undefined when nothing was read or marked. */
   line?: string;
-  /** Messages whose mark failed or was cut off, and not confirmed later. */
   unmarked: number;
-  /** Entries Swamp Club sent on older pages that were left out. */
   dropped: number;
 }
 
-/** Connects the inbox to Swamp Club, counting what Swamp Club confirms. */
 export function connectInboxTui(
   options: InboxTuiRendererOptions,
 ): InboxTuiConnection {

@@ -17,14 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * The writer lease over its stores (swamp-club#3359): a filesystem
- * datastore's control plane on a real temp directory, and the in-memory
- * remote's sync-service and datastore-wide stores, standing in for S3, GCS
- * and extension datastores (swamp-club#3364). One case list runs against
- * each.
- */
-
 import { assert, assertEquals, assertRejects } from "@std/assert";
 import { createInMemoryRemote } from "@swamp-club/swamp-testing";
 import {
@@ -41,7 +33,6 @@ import { datastoreWriterLeaseStore } from "./datastore_writer_lease_store.ts";
 const TTL = 30_000;
 const START = Date.parse("2026-10-13T12:00:00.000Z");
 
-/** A clock the cases move by hand. */
 class Clock {
   now = START;
   advance(ms: number): void {
@@ -54,7 +45,6 @@ interface Writer {
   readonly pid: number;
 }
 
-/** Writers sharing one store and one clock, each its own process. */
 function writers(store: WriterLeaseStore, clock: Clock, host = "host-a") {
   const gone = new Set<number>();
   let pids = 100;
@@ -113,8 +103,6 @@ const STORES: [string, OpenStore][] = [
     return Promise.resolve({ store, close: () => Promise.resolve() });
   }],
   ["datastore-wide store", () => {
-    // The provider's writable datastore-wide control plane, as the lease
-    // binds it on a bucket (swamp-club#3364).
     const remote = createInMemoryRemote({ controlPlane: true });
     const store = datastoreWriterLeaseStore({
       datastoreWideLease: true,
@@ -124,7 +112,6 @@ const STORES: [string, OpenStore][] = [
   }],
 ];
 
-/** The body of a stray key: never one swamp wrote. */
 const STRAY = new TextEncoder().encode("{}");
 
 const CASES: [
@@ -198,12 +185,10 @@ const CASES: [
       const taker = await writer().lease.acquire({ maxWaitMs: 0 });
       assertEquals(taker.fence, zombie.fence + 1);
 
-      // The zombie wakes: its renewal writes nothing and finds itself fenced.
       assertEquals(await zombie.renew(), "fenced");
       assert(zombie.lost instanceof WriterFencedError);
       await assertRejects(() => zombie.assertCurrent(), WriterFencedError);
       assertEquals(await taker.renew(), "held");
-      // The zombie's release does not release the taker's fence.
       await zombie.release();
       await taker.assertCurrent();
       await taker.release();
@@ -234,7 +219,6 @@ const CASES: [
       assertEquals(held?.record?.nonce, hold.record.nonce);
       await hold.release();
       assertEquals((await lease.inspect())?.state, "released");
-      // A released fence is never reused.
       const next = await lease.acquire({ maxWaitMs: 0 });
       assertEquals(next.fence, 2);
       await next.release();
@@ -267,7 +251,6 @@ const CASES: [
       assertEquals(taker.fence, 2);
       await taker.release();
 
-      // An unreadable record whose holder has renewed keeps writers out.
       await store.putIfAbsent(
         "writer/fence-000000000003",
         new TextEncoder().encode("not json"),
@@ -313,7 +296,6 @@ const CASES: [
         Error,
         "disk full",
       );
-      // Released at once, not held until it expires.
       const { writer: next } = writers(store, clock, "host-b");
       const hold = await next().lease.acquire({ maxWaitMs: 0 });
       assertEquals(hold.fence, 2);
@@ -385,7 +367,6 @@ const CASES: [
       const hold = await writer().lease.acquire({ maxWaitMs: 0 });
       await store.put("writer/released-1", STRAY);
       assertEquals(await hold.renew(), "held");
-      // A stray renewal does not keep an expired holder in.
       clock.advance(TTL + WRITER_LEASE_CLOCK_SKEW_MS + 1);
       await store.put(
         "writer/heartbeat-1",
@@ -411,10 +392,8 @@ const CASES: [
       const next = await a.lease.advance(first);
       assert(next !== undefined);
       assertEquals(next.fence, first.fence + 1);
-      // The old hold is fenced; the new one holds.
       await assertRejects(() => first.assertCurrent(), WriterFencedError);
       await next.assertCurrent();
-      // No other writer got in: the lease is still held.
       await assertRejects(
         () => writer().lease.acquire({ maxWaitMs: 0 }),
         WriterLeaseBusyError,
@@ -428,11 +407,9 @@ const CASES: [
       const { writer, gone } = writers(store, clock);
       const a = writer();
       const first = await a.lease.acquire({ maxWaitMs: 0 });
-      // a's process is gone: b takes over at the next fence.
       gone.add(a.pid);
       const taker = await writer().lease.acquire({ maxWaitMs: 0 });
       assertEquals(await a.lease.advance(first), undefined);
-      // b still holds the lease, at its own fence.
       await taker.assertCurrent();
       assertEquals(taker.fence, first.fence + 1);
       await taker.release();

@@ -34,7 +34,6 @@ import {
   type DashboardSessionStore,
 } from "./dashboard_session_store.ts";
 
-/** Returns the canonical HTTP(S) origin, or null for malformed input. */
 export function normalizeDashboardOrigin(origin: string): string | null {
   try {
     const url = new URL(origin);
@@ -122,7 +121,6 @@ async function sessionCreatedResponse(
   });
 }
 
-/** Handles browser-only dashboard session creation, inspection, and logout. */
 export async function handleDashboardSession(
   req: Request,
   deps: DashboardSessionDeps,

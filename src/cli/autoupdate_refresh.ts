@@ -62,14 +62,9 @@ export type AutoupdateRefreshOutcome =
   | { outcome: "failed"; job: LaunchdJob; error: string };
 
 /**
- * Re-registers the macOS autoupdate job for `installedVersion` when one is
- * owed (see shouldRefreshScheduler). Only one swamp process refreshes at a
- * time, and it re-reads the preferences under the lock, so two commands
- * finishing together never boot out the job the other just started.
- * Records the version when the job was refreshed or needed nothing, and the
- * attempt time on failure or when the job's state cannot be read, so either
- * is retried daily rather than on every command. A running job is left
- * alone and retried by the next command. Never throws.
+ * only one swamp process refreshes at a time and it re-reads preferences under
+ * the lock, so two commands finishing together never boot out a job the other
+ * just started. A running job is left alone for the next command. Never throws.
  */
 export async function refreshAutoupdateSchedulerIfOwed(
   deps: AutoupdateRefreshDeps,
@@ -139,8 +134,8 @@ export async function refreshAutoupdateSchedulerIfOwed(
 
         if (result === "skipped") return { outcome: "skipped" };
         if (result === "unknown") {
-          // The state may stay unreadable (a launchctl format change), so
-          // wait a day like a failure instead of re-checking every command.
+          // the state may stay unreadable, so wait a day like a failure instead
+          // of re-checking every command.
           await deps.writePreferences({
             ...prefs,
             lastSchedulerRefreshAttempt: deps.now().toISOString(),

@@ -34,10 +34,6 @@ import {
 
 type Step = Response | Error | (() => Response | Error);
 
-/**
- * A fake clock, sleep and attempt script. Sleeping advances the clock, so
- * budgets are exercised without waiting.
- */
 function harness(
   steps: Step[],
   overrides: Partial<TransientRetryOptions> = {},
@@ -171,7 +167,6 @@ Deno.test("fetchWithTransientRetry: adds at most a quarter of the wait as jitter
 Deno.test("fetchWithTransientRetry: does not take a retry whose wait would end past the budget", async () => {
   const h = harness([timeoutError()], { budgetMs: 5000 });
   const error = await assertRejects(() => h.run(), TransientRequestError);
-  // 1s and 2s fit; the 4s wait would end at 7s.
   assertEquals(h.delays, [1000, 2000]);
   assertEquals(error.outcome.attempts, 3);
 });
@@ -180,7 +175,6 @@ Deno.test("fetchWithTransientRetry: clips the attempt timeout to the remaining b
   let advance = (_ms: number) => {};
   const h = harness([
     () => {
-      // The first attempt spends its whole 15s before timing out.
       advance(15_000);
       return timeoutError();
     },
@@ -188,7 +182,6 @@ Deno.test("fetchWithTransientRetry: clips the attempt timeout to the remaining b
   ], { budgetMs: 20_000, attemptTimeoutMs: 15_000 });
   advance = h.advance;
   await assertRejects(() => h.run(), TransientRequestError);
-  // Attempt 2 starts at 16s, with 4s of the budget left.
   assertEquals(h.notices[0].reason, { kind: "timeout", afterMs: 15_000 });
   assertEquals(h.notices[1].reason, { kind: "timeout", afterMs: 4_000 });
 });

@@ -17,11 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * The SQLite commit store (swamp-club#3236) on a real `commits.db` in a temp
- * directory.
- */
-
 import {
   assert,
   assertEquals,
@@ -77,7 +72,6 @@ async function withTempDir(
   }
 }
 
-/** Runs `fn` with a store on a fresh `commits.db`, closing it after. */
 async function withStore(
   fn: (store: SqliteCommitStore, path: string) => Promise<void>,
   options: SqliteCommitStoreOptions = {},
@@ -93,7 +87,6 @@ async function withStore(
   });
 }
 
-/** Commit `seq` of the fixture model: saves version `seq` of data `a`. */
 async function save(
   seq: number,
   overrides: Parameters<typeof modelCommit>[2] = {},
@@ -105,13 +98,11 @@ async function save(
   );
 }
 
-/** Another model's partition, which only lease ops can be written to here. */
 function otherPartition(): PartitionKey {
   return partitionOf({ kind: "model", type: MODEL_TYPE, id: OTHER_MODEL_ID });
 }
 const OTHER_MODEL_ID = "1e2d3c4b-5a69-4878-9a6b-5c4d3e2f1a0b";
 
-/** A lease-only commit in any partition. */
 function leaseCommit(
   partition: PartitionKey,
   seq: number,
@@ -125,7 +116,6 @@ function leaseCommit(
   });
 }
 
-/** Everything a store holds: every commit in cursor order, as JSON. */
 async function contents(store: SqliteCommitStore) {
   const changes = await store.changesSince(0, 1_000_000);
   return changes.map((change) => ({
@@ -134,7 +124,6 @@ async function contents(store: SqliteCommitStore) {
   }));
 }
 
-/** Rewrites a stored row's body behind the store's back. */
 function editRow(path: string, seq: number, body: string): void {
   const db = new DatabaseSync(path);
   try {
@@ -209,7 +198,6 @@ Deno.test("SqliteCommitStore: every refusal is the domain error and writes nothi
       assertEquals(await contents(store), before);
       assertEquals(await store.head("", modelPartition()), headBefore);
 
-      // The partition still takes its next commit.
       assertEquals(await store.append(await save(3)), {
         kind: "appended",
         seq: 3,
@@ -249,7 +237,6 @@ Deno.test("SqliteCommitStore: concurrent appends in one process serialize", asyn
       commits.map((commit) => ({ kind: "appended", seq: commit.seq })),
     );
 
-    // Two writers racing for the same seq: one lands, the other is refused.
     const racing = await Promise.allSettled([
       store.append(await save(21, { txnId: "racer-1" })),
       store.append(await save(21, { txnId: "racer-2" })),
@@ -302,7 +289,6 @@ Deno.test("SqliteCommitStore: the change cursor is complete and ordered from eve
       await store.append(commit);
       appended.push(commit);
     };
-    // Interleave two namespaces and two partitions.
     for (let seq = 1; seq <= 4; seq++) {
       await add(await save(seq));
       await add(leaseCommit(otherPartition(), seq));
@@ -321,7 +307,6 @@ Deno.test("SqliteCommitStore: the change cursor is complete and ordered from eve
       const rest = await store.changesSince(change.cursor, 1000);
       assertEquals(rest, all.slice(index));
     }
-    // Paging by limit visits every change once.
     const paged = [];
     let cursor = 0;
     while (true) {
@@ -433,7 +418,6 @@ Deno.test("SqliteCommitStore: opens with WAL, synchronous FULL and the default a
       const pragma = (name: string) =>
         Object.values(db.prepare(`PRAGMA ${name}`).get() as object)[0];
       assertEquals(pragma("journal_mode"), "wal");
-      // 2 is FULL.
       assertEquals(pragma("synchronous"), 2);
       assertEquals(pragma("wal_autocheckpoint"), 1000);
       assertEquals(pragma("user_version"), COMMIT_STORE_SCHEMA_VERSION);
@@ -615,8 +599,6 @@ Deno.test("SqliteCommitStore: notices a write from another connection", async ()
     const b = SqliteCommitStore.open(path);
     try {
       await a.append(await save(1));
-      // b rebuilds from the file, sees seq 1, and appends seq 2 behind a's
-      // back.
       await b.append(await save(2));
       // a's cached partition is at seq 1; the head check makes it rebuild
       // rather than refuse seq 3 as a gap.
@@ -699,7 +681,6 @@ Deno.test("SqliteCommitStore: snapshots a partition every interval and rebuilds 
 });
 
 Deno.test("SqliteCommitStore: a damaged row or snapshot is reported as corruption, not a refusal", async () => {
-  // An unparseable body.
   await withTempDir(async (dir) => {
     const path = join(dir, "commits.db");
     const store = SqliteCommitStore.open(path);
@@ -723,7 +704,6 @@ Deno.test("SqliteCommitStore: a damaged row or snapshot is reported as corruptio
     }
   });
 
-  // A body that parses but breaks a rule against the commits before it.
   await withTempDir(async (dir) => {
     const path = join(dir, "commits.db");
     const store = SqliteCommitStore.open(path);
@@ -747,7 +727,6 @@ Deno.test("SqliteCommitStore: a damaged row or snapshot is reported as corruptio
     }
   });
 
-  // A body whose txnId is not the row's.
   await withTempDir(async (dir) => {
     const path = join(dir, "commits.db");
     const store = SqliteCommitStore.open(path);
@@ -771,7 +750,6 @@ Deno.test("SqliteCommitStore: a damaged row or snapshot is reported as corruptio
     }
   });
 
-  // A head row behind its commits.
   await withTempDir(async (dir) => {
     const path = join(dir, "commits.db");
     const store = SqliteCommitStore.open(path);
@@ -792,7 +770,6 @@ Deno.test("SqliteCommitStore: a damaged row or snapshot is reported as corruptio
     }
   });
 
-  // A head row ahead of its commits.
   await withTempDir(async (dir) => {
     const path = join(dir, "commits.db");
     const store = SqliteCommitStore.open(path);
@@ -813,7 +790,6 @@ Deno.test("SqliteCommitStore: a damaged row or snapshot is reported as corruptio
     }
   });
 
-  // A snapshot row whose seq is not the seq its body holds.
   await withTempDir(async (dir) => {
     const path = join(dir, "commits.db");
     const store = SqliteCommitStore.open(path, { snapshotInterval: 2 });
@@ -834,7 +810,6 @@ Deno.test("SqliteCommitStore: a damaged row or snapshot is reported as corruptio
     }
   });
 
-  // A commit row deleted under a store that has the partition cached.
   await withTempDir(async (dir) => {
     const path = join(dir, "commits.db");
     const store = SqliteCommitStore.open(path);
@@ -853,7 +828,6 @@ Deno.test("SqliteCommitStore: a damaged row or snapshot is reported as corruptio
     }
   });
 
-  // A damaged snapshot.
   await withTempDir(async (dir) => {
     const path = join(dir, "commits.db");
     const store = SqliteCommitStore.open(path, { snapshotInterval: 2 });
@@ -939,14 +913,11 @@ Deno.test("SqliteCommitStore: stores each commit's digest-free JSON", async () =
   });
 });
 
-/** A 64-hex-character digest made of one repeated character. */
 function hash(char: string): string {
   return char.repeat(64);
 }
 
-/** Content stored as one chunk, keyed by its own digest. */
 const ONE_CHUNK = BlobRef.create({ sha256: hash("a"), size: 10 });
-/** Content stored as two chunks; its whole digest names no chunk. */
 const TWO_CHUNKS = BlobRef.create({
   sha256: hash("b"),
   size: 3,
@@ -954,7 +925,6 @@ const TWO_CHUNKS = BlobRef.create({
 });
 const EVERY_HASH = [..."abcdef"].map(hash);
 
-/** The `chunk_refs` rows, read behind the store's back. */
 function chunkRefRows(path: string): { namespace: string; sha256: string }[] {
   const db = new DatabaseSync(path);
   try {
@@ -1115,12 +1085,9 @@ Deno.test("SqliteCommitStore: migrating a schema-1 database skips a damaged comm
   });
 });
 
-// --- The store-wide writer fence (swamp-club#3359) ---
-
 Deno.test("SqliteCommitStore: a raised writer fence refuses lower-fenced and unfenced commits on every partition", async () => {
   await withStore(async (store) => {
     assertEquals(store.writerFence(), undefined);
-    // No fence yet: an unfenced commit lands, as on a Phase 3 datastore.
     assertEquals(
       (await store.append(await save(1, { fence: undefined }))).kind,
       "appended",
@@ -1137,7 +1104,6 @@ Deno.test("SqliteCommitStore: a raised writer fence refuses lower-fenced and unf
       async () => await store.append(await save(2, { fence: 1 })),
       WriterFencedError,
     );
-    // A partition the current writer never wrote is fenced too.
     await assertRejects(
       () =>
         store.append(
@@ -1150,7 +1116,6 @@ Deno.test("SqliteCommitStore: a raised writer fence refuses lower-fenced and unf
       WriterFencedError,
     );
 
-    // The refusals left the partition as it was: seq 2 is still free.
     assertEquals(
       (await store.append(await save(2, { fence: 2 }))).kind,
       "appended",
@@ -1168,7 +1133,6 @@ Deno.test("SqliteCommitStore: only a raise moves the writer fence, and a lower r
     await store.raiseWriterFence(3);
     assertEquals(store.writerFence(), 3);
     await assertRejects(() => store.raiseWriterFence(2), WriterFencedError);
-    // Raising to the same fence again is a no-op.
     await store.raiseWriterFence(3);
     assertEquals(store.writerFence(), 3);
   });

@@ -17,18 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Integration tests for managed config base resolution at startup
- * (swamp-club#2483).
- *
- * A managedConfig repo on an extension-backed datastore must resolve its
- * config base before any loader reads a lockfile. The datastore extension
- * here is a real on-disk fixture: the datastore loader scans it, bundles it,
- * registers it and resolves the base end to end, which a filesystem
- * datastore cannot exercise. Everything runs in-process on a temp dir; the
- * loader may spawn `deno` to bundle, as other loader tests do.
- */
-
 import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
 import { ensureDir, exists } from "@std/fs";
 import { dirname, join } from "@std/path";
@@ -129,7 +117,6 @@ interface Fixture {
   marker: RepoMarkerData;
 }
 
-/** Writes a pulled extension root with its manifest. */
 async function writeExtension(
   root: string,
   name: string,
@@ -160,10 +147,6 @@ async function writeLockfile(
   await Deno.writeTextFile(path, JSON.stringify(map));
 }
 
-/**
- * Runs `fn` against a temp managedConfig repo and restores every piece of
- * process-global state the startup sequence touches.
- */
 async function withManagedRepo(
   fn: (fixture: Fixture) => Promise<void>,
   opts: { datastoreRoot?: "managed" | "legacy" | "none" } = {},
@@ -277,7 +260,6 @@ Deno.test("configureStartupExtensions: finds a datastore extension left under th
 
 Deno.test("configureStartupExtensions: loaders read the resolved lockfile and the transitional local one", async () => {
   await withManagedRepo(async (fixture) => {
-    // Resolve once to learn the base, then write its lockfile.
     const first = await startup(fixture);
     const base = getManagedConfigBase(fixture.repoDir) ?? "";
     first.dispose();
@@ -377,7 +359,6 @@ Deno.test("configureStartupExtensions: the missing-files warning reads the resol
           join(".swamp", "pulled-extensions", "skills", "auto-cut-skill"),
       );
       assertEquals((local?.error ?? "").includes("--force"), false);
-      // Every truncated extension's paths are named, not just the first.
       assertStringIncludes(
         local?.error ?? "",
         `${scope}/auto-cut2: ${
@@ -408,8 +389,6 @@ Deno.test("configureStartupExtensions: the deferred missing-files check honours 
       },
     });
     const offered: DeferredWarning[] = [];
-    // Forget the base the first startup resolved, so the thin client below
-    // starts unresolved.
     resetManagedConfigRegistry();
 
     // A thin client skips startup resolution, so the missing-files check
@@ -436,7 +415,6 @@ Deno.test("configureStartupExtensions: the deferred missing-files check honours 
 
 Deno.test("configureStartupExtensions: a failed datastore resolution is remembered in a repo without managedConfig", async () => {
   await withManagedRepo(async (fixture) => {
-    // No managedConfig, and a datastore extension nobody can install.
     const marker: RepoMarkerData = {
       ...fixture.marker,
       datastore: { type: `${fixture.scope}/missing-datastore` },
@@ -508,7 +486,6 @@ Deno.test("configureStartupExtensions: a lockfile unreadable at startup leaves c
       },
     });
     try {
-      // The sync finishes rewriting the lockfile before the first load.
       await writeLockfile(lockfilePath, {
         [`${fixture.scope}/team-gone`]: {
           files: [

@@ -41,13 +41,6 @@ import { resolveDatastoreForRepo } from "../repo_context.ts";
 import { UserError } from "../../domain/errors.ts";
 import { resolveServeUrl, withRemoteOptions } from "../remote_run.ts";
 
-/**
- * Resolves the target AI tool for `doctor audit`. Priority: explicit
- * `--tool` flag (after validation), then `.swamp.yaml`'s `tool` field.
- * If neither is present, throws `NoToolConfiguredError`.
- *
- * Exported for testing.
- */
 export function resolveTargetTool(
   flagTool: string | undefined,
   markerTool: string | undefined,
@@ -65,19 +58,12 @@ export function resolveTargetTool(
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
 
-/** Default grace period before SIGKILL escalation. Exported for tests. */
 export const DEFAULT_SIGKILL_AFTER_MS = 3_000;
 
 /**
- * Spawns `cmd`, writes `stdin` to its stdin, and returns the captured
- * exit code and decoded output. While the child runs, an optional
- * `signal` aborts by sending SIGTERM to the child — without this, killing
- * the doctor parent reparents the child to init/launchd instead of
- * tearing it down. If the child ignores SIGTERM, escalates to SIGKILL
- * after `sigkillAfterMs` so a hung subprocess can't keep the doctor
- * alive forever.
- *
- * Exported for testing; production callers go through `makeSwampSpawnFn`.
+ * on abort sends SIGTERM, since killing the doctor would reparent the child;
+ * escalates to SIGKILL after sigkillAfterMs so a hung subprocess cannot keep
+ * doctor alive.
  */
 export async function runChildWithAbort(
   cmd: Deno.Command,
@@ -128,20 +114,13 @@ export async function runChildWithAbort(
 }
 
 /**
- * Builds a SpawnFn that invokes the currently-running swamp binary against
- * the supplied repo directory. Pins `--repo-dir` on every call so the
- * spawned `audit record` writes into the same repo being audited, not
- * whatever repo the CWD happens to point at.
- *
- * Honours the optional `signal` so a SIGINT against the doctor parent
- * tears down the in-flight child instead of reparenting it to init.
+ * pins --repo-dir so the spawned audit record writes into the audited repo, not
+ * the CWD's; honours signal so SIGINT tears down the child.
  */
 export function makeSwampSpawnFn(repoDir: string): SpawnFn {
   const execPath = Deno.execPath();
-  // When running from source (`deno run dev ...`), Deno.execPath() returns
-  // the deno binary and Deno.mainModule points at the swamp entrypoint. When
-  // running the compiled binary, Deno.execPath() is the compiled swamp and
-  // we invoke it directly.
+  // from source, Deno.execPath() is the deno binary and Deno.mainModule the
+  // swamp entrypoint; the compiled binary is invoked directly.
   const runningFromSource = /\/deno(\.exe)?$/.test(execPath);
   return (args, stdin, env = {}, signal) => {
     const argsWithRepo = [...args, "--repo-dir", repoDir];
@@ -159,14 +138,6 @@ export function makeSwampSpawnFn(repoDir: string): SpawnFn {
   };
 }
 
-/**
- * `swamp doctor audit` — runs preflight checks against the AI-tool audit
- * integration configured in `.swamp.yaml` (or the tool supplied via
- * `--tool`) and reports per-check pass/fail/skip with actionable hints.
- *
- * Exits non-zero on any check fail so CI can gate on audit integration
- * health.
- */
 export const doctorAuditCommand = withRemoteOptions(
   new Command()
     .description(
@@ -196,9 +167,8 @@ export const doctorAuditCommand = withRemoteOptions(
 
   const repoDir = resolveRepoDir(options.repoDir);
   const { marker } = await resolveDatastoreForRepo(repoDir);
-  // Pass the primary enrolled tool (or undefined when no tools are
-  // enrolled) so resolveTargetTool throws NoToolConfiguredError only
-  // when neither the flag nor the marker provides a tool.
+  // resolveTargetTool throws NoToolConfiguredError only when neither the flag
+  // nor the marker provides a tool.
   const resolvedTool = resolveTargetTool(
     options.tool as string | undefined,
     marker?.tools?.[0],
@@ -208,12 +178,9 @@ export const doctorAuditCommand = withRemoteOptions(
   const controller = new AbortController();
   const renderer = createAuditDoctorRenderer(cliCtx.outputMode);
 
-  // Wire SIGINT to the controller so a Ctrl+C tears down any in-flight
-  // smoke-test child instead of leaving it reparented to init. After the
-  // first signal we remove the listener so a second Ctrl+C falls through
-  // to Deno's default exit-130 handler — that gives the user a force-exit
-  // escape hatch if a child hangs and ignores SIGTERM. SIGTERM isn't
-  // listened for here because Deno doesn't support it on Windows.
+  // SIGINT tears down an in-flight smoke-test child; the listener is removed
+  // after the first signal so a second Ctrl+C force-exits. SIGTERM is not
+  // listened for: Deno does not support it on Windows.
   const onSigint = () => {
     try {
       Deno.removeSignalListener("SIGINT", onSigint);

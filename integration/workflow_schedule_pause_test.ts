@@ -17,10 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// Pausing a workflow's schedule end to end (swamp-club#3522): the serve
-// handlers and the libswamp operations write pauses to the control-plane
-// store, and the scheduler reads them there at each fire.
-
 import { assert, assertEquals } from "@std/assert";
 import { join } from "@std/path";
 import { stringify as stringifyYaml } from "@std/yaml";
@@ -74,12 +70,10 @@ function data<T>(frames: Frame[], type: string): T {
   return (frame.payload as { data: T }).data;
 }
 
-/** Serve's control-plane store for a filesystem datastore. */
 function storeOf(repo: ServeRepo): FileSystemControlPlaneStore {
   return new FileSystemControlPlaneStore(swampPath(repo.repoDir));
 }
 
-/** A serve context with the control-plane store serve keeps pauses in. */
 function ctxFor(repo: ServeRepo, grants?: Grant[]): ConnectionContext {
   return { ...createServeCtx(repo, grants), controlPlaneStore: storeOf(repo) };
 }
@@ -163,7 +157,6 @@ Deno.test("schedule pause: serve's scheduler skips a paused workflow, runs it on
       assertEquals(skipped.workflowId, wf.id);
       assertEquals(skipped.paused?.reason, "stalling serve");
 
-      // A manual run is not a cron fire: the pause does not stop it.
       const run = await sendRequest(
         ctx,
         request("workflow.run", { workflowIdOrName: "nightly-gc" }),

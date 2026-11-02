@@ -33,7 +33,6 @@ import type { ExtensionRepository } from "../../infrastructure/persistence/exten
 import { createDenoInfoModuleGraphReader } from "../../infrastructure/runtime/deno_info_module_graph_reader.ts";
 import { ProcessBundleProber } from "../../infrastructure/runtime/process_bundle_prober.ts";
 
-/** The source directories of an extension tree that a consumer indexes. */
 export const EXTENSION_KIND_DIRS = [
   "models",
   "vaults",
@@ -52,17 +51,13 @@ const ADAPTERS: Record<ExtensionKindDir, KindAdapter> = {
   webhooks: webhookKindAdapter,
 };
 
-/** One source file of an extension tree and what loading it registers. */
 export interface ExtensionTreeSource {
   kindDir: ExtensionKindDir;
   absolutePath: string;
-  /** Path inside the kind directory, with forward slashes. */
   fileName: string;
-  /** What the loader indexed, or null for a helper with no kind export. */
   indexed: BundleIndexResult | null;
 }
 
-/** A source file whose bundle or probe failed, so its type is unknown. */
 export interface ExtensionTreeFailure {
   kindDir: ExtensionKindDir;
   absolutePath: string;
@@ -70,49 +65,35 @@ export interface ExtensionTreeFailure {
   reason: string;
 }
 
-/** Every source a consumer of an extension tree would index. */
 export interface ExtensionTreeIndex {
   sources: ExtensionTreeSource[];
   failures: ExtensionTreeFailure[];
   /**
-   * The repository whose catalog the loaders recorded each source's modules
-   * in, and fingerprinted against. A catalog save reuses the index only when
-   * it is its own repository: any other index fingerprints differently.
+   * a catalog save reuses the index only when it is its own repository: any
+   * other index fingerprints differently
    */
   repository?: ExtensionRepository;
 }
 
-/** Indexes the extension tree rooted at `extRoot`. */
 export type ExtensionTreeIndexer = (
   extRoot: string,
 ) => Promise<ExtensionTreeIndex>;
 
 /**
- * An indexer that loads each source the way install and the loader do:
- * every `.ts` file under the kind directories (skipping `_`-prefixed
- * directories) is bundled and its top level imported in a probe host,
- * never its methods. Bundles are written where the loader keeps them under
- * `repoDir` and imported from file URLs, as the loader imports them: a
- * bundle imported from a `data:` URL breaks modules that resolve paths from
- * `import.meta.url`.
+ * bundles are written where the loader keeps them and imported from file URLs:
+ * a bundle imported from a data: URL breaks modules that resolve paths from
+ * import.meta.url
  */
 export function createExtensionTreeIndexer(options: {
   denoRuntime: DenoRuntime;
   repoDir: string;
-  /** How many sources load at once; defaults to {@link defaultConcurrency}. */
   concurrency?: number;
   /**
-   * Load a pulled tree's shipped bundles instead of rebundling its sources.
-   * Only for bundles this process built itself (push's own archive): an
-   * install must rebundle, as the loader does, or a shipped bundle that
-   * differs from its source would be judged instead of the source.
+   * only for bundles this process built itself; an install must rebundle, or a
+   * shipped bundle that differs from its source would be judged instead of the
+   * source
    */
   trustShippedBundles?: boolean;
-  /**
-   * The repository whose catalog records each source's modules, as the
-   * install service's loaders record them, so the index fingerprints sources
-   * exactly as they do.
-   */
   repository?: ExtensionRepository;
 }): ExtensionTreeIndexer {
   return async (extRoot) => {
@@ -125,10 +106,9 @@ export function createExtensionTreeIndexer(options: {
         files.push({ kindDir, dir, absolutePath });
       }
     }
-    // Several lanes bundle sources side by side, and share one probe
-    // host: a host costs a process start and the binary's memory, while
-    // probing a built bundle is quick (swamp-club#3494). Results keep the
-    // files' order whatever order they finish in.
+    // lanes share one probe host: a host costs a process start and the binary's
+    // memory, while probing a built bundle is quick; results keep the files'
+    // order
     const outcomes: Array<
       | { ok: true; source: ExtensionTreeSource }
       | { ok: false; failure: ExtensionTreeFailure }
@@ -207,8 +187,8 @@ export function createExtensionTreeIndexer(options: {
 }
 
 /**
- * Lanes for loading sources: one per spare core, at most four, so a large
- * extension loads several times faster without crowding the machine.
+ * one lane per spare core, at most four, so a large extension loads faster
+ * without crowding the machine
  */
 export function defaultConcurrency(): number {
   const cores = navigator.hardwareConcurrency ?? 1;
@@ -216,11 +196,9 @@ export function defaultConcurrency(): number {
 }
 
 /**
- * The types an indexed tree registers, for the collective check. Extension
- * sources (`export const extension`) add methods to another type rather than
- * registering one, so they are left out. `_test.ts` files are judged like
- * any other source: the loader walks them in pulled trees, so a behavior
- * named `docker_image_test.ts` still loads (design/primitives/extensions.md).
+ * extension sources add methods to another type rather than registering one, so
+ * they are left out; _test.ts files are judged like any other source since the
+ * loader walks them in pulled trees
  */
 export function runtimeContentTypes(
   index: ExtensionTreeIndex,
@@ -247,7 +225,6 @@ const INDEXED_KINDS: ReadonlySet<string> = new Set<BundleIndexResult["kind"]>([
   "webhook",
 ]);
 
-/** An index in the form a package cache entry stores it. */
 export function toStoredArchiveIndex(
   index: ExtensionTreeIndex,
 ): StoredArchiveIndex {
@@ -271,9 +248,8 @@ export function toStoredArchiveIndex(
 }
 
 /**
- * The index a package cache entry stored, or undefined when it names a kind
- * or directory this version does not know, so the archive is indexed again.
- * Paths and bundle details are not stored: only the types are judged.
+ * undefined when it names a kind or directory this version does not know, so
+ * the archive is indexed again; only the types are judged
  */
 export function fromStoredArchiveIndex(
   stored: StoredArchiveIndex,
@@ -309,10 +285,6 @@ export function fromStoredArchiveIndex(
   };
 }
 
-/**
- * Every `.ts` file under `dir`, recursively, skipping `_`-prefixed
- * directories (private helpers). Empty when `dir` does not exist.
- */
 export async function collectExtensionTsFiles(dir: string): Promise<string[]> {
   const out: string[] = [];
   try {

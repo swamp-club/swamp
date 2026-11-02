@@ -18,55 +18,34 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * The processes of a v3 writer's Litestream sidecar (swamp-club#3416): how
- * the supervisor is launched, and how another process is recognised before
- * it is signalled.
- *
- * A sidecar is never killed on its pid alone. A supervisor is killed only
- * when its arguments carry the supervisor marker and this database's
- * canonical path, and a Litestream only when its arguments name this
- * database's config: a pidfile can name an unrelated live pid. Arguments
- * come from `/proc/<pid>/cmdline` on Linux (through libc, so the compiled
- * binary needs no --allow-all and the Docker image needs no `ps`) and from
- * `ps` on macOS. A process whose arguments cannot be read is never
- * signalled.
- *
- * @module
+ * a pidfile can name an unrelated live pid, so signal only a process whose
+ * arguments carry the supervisor marker and this database, or name its config;
+ * unreadable arguments are never signalled
  */
 
 import { commandLineOf } from "../../runtime/process_ancestry.ts";
 
-/** The first argument that makes swamp run as a replication supervisor. */
 export const SUPERVISOR_MARKER = "__swamp_v3_replication_supervisor";
 
-/** Whether `args`, a process's arguments, start a replication supervisor. */
 export function isSupervisorInvocation(args: readonly string[]): boolean {
   return args[0] === SUPERVISOR_MARKER;
 }
 
-/** How to launch a supervisor process. */
 export interface SupervisorLaunch {
   readonly command: string;
   readonly args: readonly string[];
   readonly cwd: string;
-  /** The environment to give it; the current one when omitted. */
   readonly env?: Record<string, string>;
 }
 
-/** What the sidecar does to processes, replaceable in tests. */
 export interface LitestreamProcesses {
-  /** Starts a detached process that outlives this one; returns its pid. */
   launch(launch: SupervisorLaunch): number;
-  /** The process's arguments as one line, or undefined when unreadable. */
   commandLine(pid: number): Promise<string | undefined>;
   isAlive(pid: number): boolean;
-  /** Signals a process; one that is gone already is ignored. */
   signal(pid: number, signal: Deno.Signal): void;
-  /** Signals the process group `pgid` leads; a gone group is ignored. */
   signalGroup(pgid: number, signal: Deno.Signal): void;
 }
 
-/** Whether `commandLine` is the supervisor of the database at `commitsDb`. */
 export function isSupervisorFor(
   commandLine: string | undefined,
   commitsDb: string,
@@ -82,7 +61,6 @@ export function isSupervisorFor(
     );
 }
 
-/** Whether `commandLine` is a Litestream replicating with `configPath`. */
 export function isLitestreamFor(
   commandLine: string | undefined,
   configPath: string,
@@ -93,7 +71,6 @@ export function isLitestreamFor(
     commandLine.includes(` replicate -config ${configPath} -no-expand-env`);
 }
 
-/** The processes of this host. */
 export const hostLitestreamProcesses: LitestreamProcesses = {
   launch({ command, args, cwd, env }) {
     const child = new Deno.Command(command, {

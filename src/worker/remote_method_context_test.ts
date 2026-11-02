@@ -55,10 +55,6 @@ import { modelIdentityPredicate } from "../domain/data/data_access_service.ts";
 
 const MODEL_TYPE = ModelType.create("swamp/remote-ctx-test");
 
-/**
- * A version 5 dispatch: its secrets travel in the frame and `resolveSecret`.
- * The version 6 tests below override the version.
- */
 function dispatch(): DispatchParams {
   return {
     dispatchId: "d-1",
@@ -99,7 +95,6 @@ function harness(
   redactor?: SecretRedactor,
 ) {
   const calls: StubCall[] = [];
-  // The orchestrator side of the control socket, with stub verb handlers.
   const worker: RpcChannel = new RpcChannel({
     send: (data) =>
       void Promise.resolve().then(() => orchestrator.handleRaw(data)),
@@ -117,7 +112,6 @@ function harness(
       found: true,
       dataId: "11111111-2222-4333-8444-555555555555",
       version: 4,
-      // A lookup of the old name follows the rename to the current one.
       name: p.dataName === "old-name" ? "new-name" : p.dataName,
       contentType: "application/json",
       size: 17,
@@ -138,7 +132,6 @@ function harness(
     const { modelIdOrName } = params as { modelIdOrName: string };
     const definitions: Record<string, { id: string; name: string }> = {
       "other": { id: "o-1", name: "other" },
-      // An id resolves to the definition it names, whose name differs.
       "o-2": { id: "o-2", name: "renamed" },
     };
     const definition = definitions[modelIdOrName];
@@ -163,7 +156,6 @@ function harness(
 
   const lines: string[] = [];
   const contents: Array<{ writerId: string; bytes: number }> = [];
-  // Request bodies the worker sent to the data plane, in order.
   const writeBodies: Array<{ route: string; body: Record<string, unknown> }> =
     [];
   let writerCounter = 0;
@@ -243,7 +235,6 @@ function harness(
       calls.push({ method: "deleteResource", params: body });
       return Promise.resolve();
     },
-    // The protected load route: each reference's value is its key's.
     loadSecrets: (references: DispatchSecretLoadReference[]) => {
       calls.push({ method: "loadSecrets", params: references });
       return Promise.resolve(
@@ -328,9 +319,8 @@ Deno.test("remote context: readResource resolves vault references in sensitive f
     );
     const value = await h.context.readResource!("state-main");
     assertEquals(value, { username: "alice", refreshToken: "s3cret" });
-    // The read claims the record it is for, at the version getData
-    // resolved, so serve verifies it against that record
-    // (swamp-club#3529).
+    // the read claims its record at the version getData resolved, so serve
+    // verifies it against that record
     const resolveCall = h.calls.find((c) => c.method === "resolveSecret");
     assertEquals(resolveCall?.params, {
       vaultName: "my-vault",
@@ -340,7 +330,6 @@ Deno.test("remote context: readResource resolves vault references in sensitive f
   });
 });
 
-/** The bundle's view of `state-main`: `refreshToken` is schema-sensitive. */
 const STATE_SPECS: Record<string, ResourceOutputSpec> = {
   state: {
     description: "a resource with one schema-sensitive field",
@@ -494,8 +483,8 @@ Deno.test("remote context: vault get and put proxy as capability verbs", async (
       ).length,
       2,
     );
-    // A method's own read carries no resource claim; it is held to the
-    // step's allowlist (swamp-club#3529).
+    // a method's own read carries no resource claim; it is held to the step's
+    // allowlist
     assertEquals(
       h.calls.find((c) => c.method === "resolveSecret")?.params,
       { vaultName: "local", secretKey: "k" },
@@ -521,7 +510,6 @@ Deno.test("remote context: vault get registers the value it receives with the re
       h.context.redactor!.redact("value s3cret here"),
       "value *** here",
     );
-    // Output lines and console output leave the worker scrubbed.
     h.context.logger.info("logged s3cret");
     assertEquals(events.map((e) => e.line), ["logged ***"]);
     assertEquals(h.redact("console s3cret"), "console ***");
@@ -722,7 +710,6 @@ Deno.test("remote context: output leaves the worker with secrets scrubbed (swamp
     d.secretValues = ["super-secret-value"];
     const events: Record<string, unknown>[] = [];
     const h = harness(dir, undefined, undefined, d, (e) => events.push(e));
-    // A secret the method learns while it runs is covered too.
     h.context.redactor!.addSecret("learned-on-the-worker");
 
     h.context.logger.info("logged super-secret-value");
@@ -929,8 +916,6 @@ Deno.test("remote context: the worker resolves shipped args as the orchestrator 
       h.context,
     );
 
-    // A non-shell model gets the plaintext the orchestrator resolved; the
-    // shell model reads the unresolved run and delivers it through env vars.
     assertEquals(seenArgs?.run, d.execution.methodArgs.run);
     assertEquals(seenUnresolved?.run, d.unresolvedMethodArgs!.run);
   });
@@ -1009,7 +994,6 @@ Deno.test("dispatchRedactor: masks the shipped values and leaves text alone with
   assertEquals(dispatchRedactor([]).redact(text), text);
 });
 
-/** A version 6 dispatch: references only, loaded through the route. */
 function referenceDispatch(
   referenceBag?: DispatchParams["referenceBag"],
 ): DispatchParams {
@@ -1043,7 +1027,6 @@ Deno.test("remote context: a version 6 dispatch rebuilds its bag from references
       bag.withLoaded(new Map([[sentinel, "s3cret"]])).resolveRaw(sentinel),
       "s3cret",
     );
-    // A version 6 dispatch with no secret has an empty bag.
     const plain = harness(dir, undefined, undefined, referenceDispatch());
     assertEquals(plain.context.vaultSecrets?.resolvesAny, false);
     return Promise.resolve();
@@ -1063,7 +1046,6 @@ Deno.test("remote context: on a version 6 dispatch a readResource claim goes thr
       undefined,
       { "_swamp.sensitiveFields": JSON.stringify(["refreshToken"]) },
     );
-    // A method's own read by name takes the verb, as on version 5.
     assertEquals(await h.context.vaultService!.get("v", "api-key"), "s3cret");
     const value = await h.context.readResource!("state-main");
     assertEquals(value, {
@@ -1072,7 +1054,6 @@ Deno.test("remote context: on a version 6 dispatch a readResource claim goes thr
     });
     assertEquals(
       h.calls.filter((c) => c.method === "loadSecrets").map((c) => c.params),
-      // The read claims the record it is for (swamp-club#3529).
       [[{
         vaultName: "my-vault",
         key: "refresh-tok",

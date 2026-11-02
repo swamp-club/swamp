@@ -29,7 +29,6 @@ import { Step } from "./step.ts";
 import { StepTask } from "./step_task.ts";
 import type { CelExpressionEvaluator } from "../expressions/cel_runtime.ts";
 
-/** Evaluates every expression to the same marker, so what ran is visible. */
 class MarkerEvaluator implements CelExpressionEvaluator {
   evaluate(): unknown {
     throw new Error("run-start evaluation is async");
@@ -39,7 +38,6 @@ class MarkerEvaluator implements CelExpressionEvaluator {
   }
 }
 
-/** Targets drawn from a small pool so identical text recurs across steps. */
 const DATA_TARGETS = [
   "${{ data.latest('driver', 'next').?attributes.?name.orValue('a') }}",
   "${{ data.latest('driver', 'next').attributes.name }}",
@@ -60,7 +58,6 @@ Deno.test("WorkflowExpressionEvaluator: a deferred task target survives run-star
       async (specs, eagerText) => {
         const workflow = Workflow.create({
           name: "generated",
-          // Evaluated eagerly at run start with the same text as some targets.
           description: eagerText,
           jobs: [Job.create({
             name: "job1",

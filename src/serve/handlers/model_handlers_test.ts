@@ -79,8 +79,6 @@ import type { PolicySnapshotLoader } from "../../domain/access/policy_snapshot_l
 import type { Principal } from "../../domain/access/principal.ts";
 import type { SelectReadableOutputs } from "../../domain/models/repositories.ts";
 
-// --- handleModelEdit sync tests ---
-
 function createMockSocket(): WebSocket & { sent: string[] } {
   const sent: string[] = [];
   return {
@@ -257,8 +255,6 @@ Deno.test("handleModelEdit: works without syncService (local-only mode)", async 
   });
 });
 
-// --- handleModelEdit authorization (swamp-club#2426) ---
-
 const EDITOR: Principal = { kind: "user", id: "editor" };
 
 function grant(overrides: Partial<Grant>): Grant {
@@ -276,7 +272,6 @@ function grant(overrides: Partial<Grant>): Grant {
   };
 }
 
-/** An edit context that enforces `grants` for token principals. */
 function createPolicyEditCtx(
   repoDir: string,
   definitionRepo: YamlDefinitionRepository,
@@ -496,9 +491,6 @@ Deno.test("handleModelEdit: reports an unknown model as not found", async () => 
   });
 });
 
-// --- handleModelEdit retag needs tag (swamp-club#3085) ---
-
-/** Write on every model; tag only on team-a models; write does not imply tag. */
 function createTeamTagCtx(
   dir: string,
   repo: YamlDefinitionRepository,
@@ -718,8 +710,6 @@ Deno.test("handleModelEdit: a restricted model's retag stays an admin decision",
   });
 });
 
-// --- handleModelDelete not-found tests (swamp-club#2716) ---
-
 function createDeleteCtx(repoDir: string): ConnectionContext {
   const definitionRepo = new YamlDefinitionRepository(
     repoDir,
@@ -775,8 +765,6 @@ for (
     });
   });
 }
-
-// --- handleModelOutputSearch workflow linkage (swamp-club#2736) ---
 
 function linkedWorkflow(name: string): Workflow {
   return Workflow.create({
@@ -868,7 +856,6 @@ Deno.test("handleModelOutputSearch: drops the workflow linkage of a run whose wo
     assertEquals(response.type, "model.output.search");
     const results = response.payload.data.results;
     assertEquals(results.length, 2);
-    // Most recent first: the hidden workflow's run keeps only triggeredBy.
     assertEquals(results[0].triggeredBy, "workflow");
     assertEquals(results[0].workflowId, undefined);
     assertEquals(results[0].workflowName, undefined);
@@ -879,9 +866,7 @@ Deno.test("handleModelOutputSearch: drops the workflow linkage of a run whose wo
     assertEquals(results[1].workflowRunId, "run-readable");
     assertEquals(results[1].stepName, "step-a");
 
-    // History retains its original response even for workflow-owned outputs.
     const historySocket = createMockSocket();
-    // The legacy global scan enumerates registered types.
     modelRegistry.register({
       type: EDIT_TEST_TYPE,
       version: "2026.01.01.1",
@@ -916,8 +901,6 @@ Deno.test("handleModelOutputSearch: drops the workflow linkage of a run whose wo
   });
 });
 
-// --- output and method history search name resolution (swamp-club#3959) ---
-
 Deno.test("handleModelOutputSearch and handleModelMethodHistorySearch: name history holding many deleted definitions from bounded definition scans", async () => {
   await withTempDir(async (dir) => {
     const definitionRepo = new YamlDefinitionRepository(dir);
@@ -942,7 +925,6 @@ Deno.test("handleModelOutputSearch and handleModelMethodHistorySearch: name hist
           } as ModelOutput["provenance"],
         }),
       );
-    // The kept model's runs are older than every deleted definition's.
     await save(kept.id, new Date("2026-01-01T00:00:00Z"));
     await save(kept.id, new Date("2026-01-01T00:00:01Z"));
     const deleted = 30;
@@ -981,7 +963,6 @@ Deno.test("handleModelOutputSearch and handleModelMethodHistorySearch: name hist
         workflowRepo,
       } as unknown as ConnectionContext["repoContext"],
     };
-    // The global output scans walk registered types.
     modelRegistry.register({
       type: EDIT_TEST_TYPE,
       version: "2026.01.01.1",
@@ -1006,8 +987,8 @@ Deno.test("handleModelOutputSearch and handleModelMethodHistorySearch: name hist
         ["kept", "kept"],
       );
       assertEquals(findByIdCalls, 0);
-      // Without a definition index, one scan names the outputs and
-      // authorizes them (swamp-club#4141).
+      // without a definition index, one scan names the outputs and authorizes
+      // them
       assertEquals(scans, 1);
 
       scans = 0;
@@ -1107,10 +1088,9 @@ Deno.test("handleModelOutputSearch and handleModelMethodHistorySearch: with a de
       methods: {},
     });
     try {
-      // Output search decides each key before its scan reads
-      // (swamp-club#4142), and its authorization decides again only the key
-      // its results carry, on the same lookups; the history search decides
-      // each of its two keys once.
+      // output search decides each key before its scan reads, and its
+      // authorization decides again only the key its results carry, on the same
+      // lookups; the history search decides each of its two keys once
       const requests = [
         {
           run: (socket: WebSocket) =>
@@ -1152,8 +1132,6 @@ Deno.test("handleModelOutputSearch and handleModelMethodHistorySearch: with a de
             ["kept", "kept"],
           );
 
-          // Each definition owning an output is read once; one owning none
-          // is never read.
           assertEquals(
             Object.fromEntries(reads),
             {
@@ -1168,7 +1146,6 @@ Deno.test("handleModelOutputSearch and handleModelMethodHistorySearch: with a de
             );
           }
 
-          // The names phase reads them, and authorization reuses its lookups.
           const phase = (name: string) =>
             findSpan(spans, `swamp.diagnostic.${name}`).attributes;
           assertEquals(
@@ -1210,11 +1187,6 @@ Deno.test("handleModelOutputSearch and handleModelMethodHistorySearch: with a de
   });
 });
 
-/**
- * A repo of `owning` definitions with one output each and two owning none,
- * behind a settled definition index, whose definition reads after setup each
- * wait to be released (swamp-club#4150).
- */
 async function withHeldDefinitionReads(
   owning: number,
   fn: (fixture: {
@@ -1324,7 +1296,6 @@ Deno.test("handleModelOutputSearch: looks up the definitions naming its outputs 
           {},
         );
         await waitFor(() => reads.held.length === 8, "8 lookups in flight");
-        // Finishing out of order starts the rest.
         for (const hold of [...reads.held].reverse()) hold.resolve();
         for (let i = 8; i < owners.length; i++) {
           await waitFor(() => reads.held.length > i, `lookup ${i + 1}`);
@@ -1343,7 +1314,6 @@ Deno.test("handleModelOutputSearch: looks up the definitions naming its outputs 
           assertEquals(result.modelName, names.get(result.definitionId));
         }
 
-        // Each owning definition is read once; one owning none never is.
         assertEquals(
           Object.fromEntries(reads.byPath),
           Object.fromEntries(
@@ -1361,7 +1331,6 @@ Deno.test("handleModelOutputSearch: looks up the definitions naming its outputs 
           );
         }
 
-        // Authorization reuses every lookup the names phase made.
         const authorization =
           findSpan(spans, "swamp.diagnostic.authorization").attributes;
         assertEquals(authorization["swamp.diagnostic.files_read"], undefined);
@@ -1521,8 +1490,6 @@ Deno.test("handleModelEdit: an allowed rename onto another model's name leaves b
   });
 });
 
-// --- principal on the libswamp spans (swamp-club#3593) ---
-
 Deno.test("handleModelEdit: records the edited model and the requesting principal on the span", async () => {
   await withTempDir(async (dir) => {
     const repo = new YamlDefinitionRepository(dir, undefined, undefined, false);
@@ -1613,13 +1580,6 @@ Deno.test("handleModelDelete: records the deleted model and the requesting princ
   });
 });
 
-// --- output and run-history reads under a relocated datastore (swamp-club#3729) ---
-
-/**
- * A repo whose outputs resolve through `datastore`, with one run of model
- * `watched` saved the way a real run splits it: the record in the datastore
- * tier and its log under the repo's own outputs directory.
- */
 async function saveRunUnder(
   repoDir: string,
   datastore: { path: string; namespace?: string } | undefined,
@@ -1667,7 +1627,6 @@ async function saveRunUnder(
   return { ctx, output };
 }
 
-/** The output lookups enumerate registered types to find a run's model. */
 async function withEditTestTypeRegistered(fn: () => Promise<void>) {
   modelRegistry.register({
     type: EDIT_TEST_TYPE,
@@ -1827,8 +1786,6 @@ Deno.test("handleModelMethodHistoryLogs: reads a workflow step's log from its wo
   );
 });
 
-// --- bounded behavior history search (swamp-club#4056) ---
-
 Deno.test("handleModelOutputSearch: a limit counts only outputs the caller may read, and exports output_search phases", async () => {
   await withTempDir(async (dir) => {
     const definitionRepo = new YamlDefinitionRepository(dir);
@@ -1854,7 +1811,6 @@ Deno.test("handleModelOutputSearch: a limit counts only outputs the caller may r
       );
     await save(readable, "2026-01-01T00:00:00Z");
     await save(readable, "2026-01-02T00:00:00Z");
-    // The newest outputs belong to a model the principal may not read.
     await save(hidden, "2026-01-03T00:00:00Z");
     await save(hidden, "2026-01-04T00:00:00Z");
     await save(hidden, "2026-01-05T00:00:00Z");
@@ -1873,7 +1829,6 @@ Deno.test("handleModelOutputSearch: a limit counts only outputs the caller may r
         workflowRepo: new YamlWorkflowRepository(dir),
       } as unknown as ConnectionContext["repoContext"],
     };
-    // The global scan enumerates registered types.
     modelRegistry.register({
       type: EDIT_TEST_TYPE,
       version: "2026.01.01.1",
@@ -1905,14 +1860,12 @@ Deno.test("handleModelOutputSearch: a limit counts only outputs the caller may r
           phase("candidate_scan")["swamp.diagnostic.area"],
           "output_search",
         );
-        // The hidden model's outputs are left unread (swamp-club#4142).
         assertEquals(phase("candidate_scan")["swamp.diagnostic.candidates"], 2);
         assertEquals(phase("candidate_scan")["swamp.diagnostic.files_read"], 2);
         assertEquals(
           phase("candidate_scan")["swamp.diagnostic.skipped_by_authorization"],
           3,
         );
-        // Asked once about the files' keys, then about the records read.
         const [files, records] = diagnosticPhases(
           spans,
           "candidate_authorization",
@@ -1931,9 +1884,6 @@ Deno.test("handleModelOutputSearch: a limit counts only outputs the caller may r
   });
 });
 
-// --- handleModelUsageSummary (swamp-club#4144) ---
-
-/** A context over real repositories in `dir` with these grants. */
 function usageSummaryCtx(
   dir: string,
   definitionRepo: YamlDefinitionRepository,
@@ -2043,7 +1993,6 @@ Deno.test("handleModelUsageSummary: counts only what the principal may read, and
           phase("candidate_scan")["swamp.diagnostic.area"],
           "output_search",
         );
-        // The hidden model's files are left unread.
         assertEquals(phase("candidate_scan")["swamp.diagnostic.candidates"], 2);
         assertEquals(phase("authorization")["swamp.diagnostic.items"], 2);
         assertEquals(phase("authorization")["swamp.diagnostic.groups"], 1);
@@ -2100,7 +2049,6 @@ Deno.test("handleModelUsageSummary: a warm read answers from the output summarie
           await read(payload);
           const scan =
             findSpan(spans, "swamp.diagnostic.candidate_scan").attributes;
-          // A counter that stays at zero is not exported.
           assertEquals(scan["swamp.diagnostic.files_read"], undefined);
           assertEquals(scan["swamp.diagnostic.summary_rows_used"], 2);
         });
@@ -2488,7 +2436,6 @@ Deno.test("handleModelOutputSearch: names workflows through the repository's per
 
     const [response] = frames(socket);
     assertEquals(response.payload.data.results[0].workflowName, "nightly");
-    // Authorization takes a view of its own; neither lists the live repository.
     assertGreater(views, 0);
     assertEquals(rawListings, 0);
   });
@@ -2692,7 +2639,6 @@ Deno.test("handleModelOutputSearch: a search cancelled during its scan stops rea
         const [response] = frames(socket);
         assertEquals(response.type, "error");
         assertEquals(response.error.code, "cancelled");
-        // 20 records, at most 16 read at once: the rest were never started.
         assertEquals(outputReads, readsAtAbort);
         assert(outputReads < 20, `${outputReads} reads`);
         const scan = findSpan(spans, "swamp.diagnostic.candidate_scan")
@@ -2717,7 +2663,6 @@ Deno.test("handleModelOutputSearch: a restricted search leaves unread the output
     });
     const scoped = await saveEditModel(definitionRepo, "scoped-model");
     const hidden = await saveEditModel(definitionRepo, "hidden-model");
-    // An output whose definition is gone is judged on its id.
     const orphanId = crypto.randomUUID();
     const record = (definitionId: string, method: string, startedAt: string) =>
       ModelOutput.create({
@@ -2749,7 +2694,6 @@ Deno.test("handleModelOutputSearch: a restricted search leaves unread the output
       "redeem",
       "2026-01-07T00:00:00Z",
     );
-    // Names not in the output form carry no key, so they are read.
     const writeUnnamed = async (
       definitionId: string,
       startedAt: string,
@@ -2791,7 +2735,6 @@ Deno.test("handleModelOutputSearch: a restricted search leaves unread the output
         workflowRepo: new YamlWorkflowRepository(dir),
       } as unknown as ConnectionContext["repoContext"],
     });
-    // The repository as before: every output read, then filtered.
     const readsEverything = {
       findAllGlobalSince: (cutoff: Date, signal?: AbortSignal) =>
         outputRepo.findAllGlobalSince(cutoff, signal),
@@ -2826,7 +2769,6 @@ Deno.test("handleModelOutputSearch: a restricted search leaves unread the output
         assertEquals(await search(ctxWith(outputRepo)), expected);
         const phase = (name: string) =>
           findSpan(spans, `swamp.diagnostic.${name}`).attributes;
-        // Read: team-a, scoped execute, the orphan, and both unnamed files.
         assertEquals(phase("candidate_scan")["swamp.diagnostic.files_read"], 5);
         assertEquals(
           phase("candidate_scan")["swamp.diagnostic.skipped_by_authorization"],
@@ -2843,7 +2785,6 @@ Deno.test("handleModelOutputSearch: a restricted search leaves unread the output
         assertEquals(phase("authorization")["swamp.diagnostic.items"], 5);
         assertEquals(phase("authorization")["swamp.diagnostic.readable"], 4);
       });
-      // An admin reads every output, as before.
       const adminExpected = await search(ctxWith(readsEverything, admin));
       assertEquals(adminExpected.length, 9);
       assertEquals(await search(ctxWith(outputRepo, admin)), adminExpected);
@@ -2949,8 +2890,6 @@ Deno.test("handleModelOutputSearch: a grant revoked while the search reads leave
       new GrantBasedAccessDecisionService(
         new PolicySnapshot(grants, [], createConditionEvaluator()),
       );
-    // The loader hands out the current snapshot's service, as a reload
-    // replaces it.
     const loader = {
       decisionService: decisionService([grant({ actions: ["read"] })]),
     };
@@ -2971,7 +2910,6 @@ Deno.test("handleModelOutputSearch: a grant revoked while the search reads leave
               signal,
               async (keys) => (chose = await selectReadable!(keys)),
             );
-            // The grant is revoked once the files are chosen and read.
             loader.decisionService = decisionService([]);
             return found;
           },
@@ -3013,8 +2951,6 @@ Deno.test("handleModelUsageSummary: a grant revoked while the summary reads leav
       new GrantBasedAccessDecisionService(
         new PolicySnapshot(grants, [], createConditionEvaluator()),
       );
-    // The loader hands out the current snapshot's service, as a reload
-    // replaces it.
     const loader = {
       decisionService: decisionService([grant({ actions: ["read"] })]),
     };
@@ -3035,7 +2971,6 @@ Deno.test("handleModelUsageSummary: a grant revoked while the summary reads leav
               signal,
               async (keys) => (chose = await selectReadable!(keys)),
             );
-            // The grant is revoked once the files are chosen and read.
             loader.decisionService = decisionService([]);
             return found;
           },
@@ -3061,9 +2996,6 @@ Deno.test("handleModelUsageSummary: a grant revoked while the summary reads leav
   });
 });
 
-// --- A limited search reads newest first and stops (swamp-club#4143) ---
-
-/** Saves a run of `definition` started `minutes` into 2026, named as usual. */
 function saveMinutesIn(
   outputRepo: YamlOutputRepository,
   definition: Definition,
@@ -3095,7 +3027,6 @@ function limitedSearchOutput(
   });
 }
 
-/** `fn` with the global output scans able to walk the test type. */
 async function withTestTypeScanned<T>(fn: () => Promise<T>): Promise<T> {
   modelRegistry.register({
     type: EDIT_TEST_TYPE,
@@ -3109,7 +3040,6 @@ async function withTestTypeScanned<T>(fn: () => Promise<T>): Promise<T> {
   }
 }
 
-/** `base` reading from the given repositories. */
 function limitedSearchCtx(
   base: ConnectionContext,
   dir: string,
@@ -3137,7 +3067,6 @@ Deno.test("handleModelOutputSearch: a restricted search with a limit reads near 
       await saveMinutesIn(outputRepo, readable, minutes * 2);
       await saveMinutesIn(outputRepo, hidden, minutes * 2 + 1);
     }
-    // The newest of all, in a file whose name carries no key to refuse.
     const unnamed = limitedSearchOutput(hidden.id, 500);
     await Deno.writeTextFile(
       join(
@@ -3181,7 +3110,6 @@ Deno.test("handleModelOutputSearch: a restricted search with a limit reads near 
         );
         const scan = findSpan(spans, "swamp.diagnostic.candidate_scan")
           .attributes;
-        // The record with no key, then one batch of the 40 it may read.
         assertEquals(scan["swamp.diagnostic.files_read"], 16);
         assertEquals(scan["swamp.diagnostic.candidates"], 16);
         assertEquals(
@@ -3245,7 +3173,6 @@ Deno.test("handleModelOutputSearch: a model's limit counts only the methods the 
     const outputRepo = new YamlOutputRepository(dir);
     const model = await saveEditModel(definitionRepo, "scoped");
     await saveMinutesIn(outputRepo, model, 1);
-    // Newer, under a method the caller may not read.
     await saveMinutesIn(outputRepo, model, 2, "other");
     const ctx = limitedSearchCtx(
       createPolicyEditCtx(dir, definitionRepo, [
@@ -3319,7 +3246,6 @@ Deno.test("handleModelOutputSearch: a grant revoked after a limited search chose
                 read.unreadStartedBefore(instant),
               next: async (count: number) => {
                 const batch = await read.next(count);
-                // The grant is revoked once the files are chosen and read.
                 loader.decisionService = decisionService([]);
                 return batch;
               },
@@ -3352,7 +3278,6 @@ Deno.test("handleModelOutputSearch: a cancel landing in a later batch of a limit
   await withTempDir(async (dir) => {
     const definitionRepo = new YamlDefinitionRepository(dir);
     const outputRepo = new YamlOutputRepository(dir);
-    // A definition per output, so each batch has names still to look up.
     for (let minutes = 1; minutes <= 6; minutes++) {
       const model = await saveEditModel(definitionRepo, `model-${minutes}`);
       await saveMinutesIn(outputRepo, model, minutes);
@@ -3375,10 +3300,8 @@ Deno.test("handleModelOutputSearch: a cancel landing in a later batch of a limit
             },
             unreadStartedBefore: (instant: Date) =>
               read.unreadStartedBefore(instant),
-            // One output at a time, so the search takes several rounds.
             next: async () => {
               const batch = await read.next(1);
-              // The cancel arrives as the second output's name is looked up.
               if (++batches === 2) controller.abort();
               return batch;
             },
@@ -3449,8 +3372,6 @@ Deno.test("handleModelOutputSearch: 64 identical limited searches at once read e
         );
         assertEquals(new Set(answers).size, 1);
         assertEquals(JSON.parse(answers[0]).length, 16);
-        // One batch of 16, read by the search that started it and once more
-        // by those that arrived while it ran.
         assert(outputReads <= 32, `${outputReads} reads`);
       });
     } finally {
@@ -3459,8 +3380,6 @@ Deno.test("handleModelOutputSearch: 64 identical limited searches at once read e
     }
   });
 });
-
-// --- A limited search for a model reads newest first and stops (swamp-club#4174) ---
 
 Deno.test("handleModelOutputSearch: a model's limited search reads the same however many of its outputs are in the window, and returns the head of the full search", async () => {
   await withTempDir(async (dir) => {
@@ -3501,7 +3420,6 @@ Deno.test("handleModelOutputSearch: a model's limited search reads the same howe
     await withObservedSpans(async (spans) => {
       assertEquals((await search({ limit: 5 })).length, 5);
       const scan = scanOf(spans);
-      // A batch's reads, and the file of the definition the filter names.
       assertEquals(scan["swamp.diagnostic.candidates"], 16);
       assertEquals(scan["swamp.diagnostic.files_read"], 17);
       assertEquals(scan["swamp.diagnostic.left_unread"], 24);
@@ -3618,7 +3536,6 @@ Deno.test("handleModelOutputSearch: a grant revoked after a model's limited sear
                 read.unreadStartedBefore(instant),
               next: async (count: number) => {
                 const batch = await read.next(count);
-                // The grant is revoked once the files are chosen and read.
                 loader.decisionService = decisionService([]);
                 return batch;
               },
@@ -3678,7 +3595,6 @@ Deno.test("handleModelOutputSearch: a cancel landing in a later batch of a model
             },
             unreadStartedBefore: (instant: Date) =>
               read.unreadStartedBefore(instant),
-            // One output at a time, so the search takes several rounds.
             next: async () => {
               const batch = await read.next(1);
               if (++batches === 2) controller.abort();
@@ -3714,9 +3630,8 @@ Deno.test("handleModelOutputSearch: 64 identical limited searches of a model at 
     for (let minutes = 1; minutes <= 40; minutes++) {
       await saveMinutesIn(outputRepo, model, minutes);
     }
-    // Each search resolves the model through its own file reads first. Held
-    // here until all 64 have, they reach the shared scans together, whatever
-    // order those reads finish in.
+    // hold every search until all 64 have resolved the model, so they reach the
+    // shared scans together whatever order the reads finish in
     const searches = 64;
     let resolved = 0;
     const allResolved = Promise.withResolvers<void>();

@@ -51,11 +51,6 @@ import type { VaultSearchResponse } from "../../serve/protocol.ts";
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
 
-/**
- * Creates a fetchPreview closure that fetches full vault detail data.
- * This bridges the presentation layer to the libswamp vaultDescribe application
- * service, capturing the repoDir dependency.
- */
 function createVaultFetchPreview(
   repoDir: string,
 ): (item: VaultSearchItem) => Promise<VaultDescribeData> {
@@ -100,8 +95,7 @@ export async function vaultSearchAction(
         payload: { query },
       },
     );
-    // A remote search prints a plain list and never starts the picker
-    // (swamp-club#3917).
+    // a remote search prints a plain list and never starts the picker
     const renderer = createVaultSearchRenderer(effectiveMode, undefined, {
       interactive: false,
     });
@@ -140,7 +134,6 @@ export async function vaultSearchAction(
   const selected = renderer.selectedItem();
   if (selected) {
     ctx.logger.debug`Selected vault: ${selected.name}`;
-    // In JSON mode, still display the full vault describe output after auto-select
     if (effectiveMode === "json") {
       const describeRenderer = createVaultDescribeRenderer(effectiveMode);
       const describeDeps = createVaultDescribeDeps(repoDir);
@@ -149,8 +142,6 @@ export async function vaultSearchAction(
         describeRenderer.handlers(),
       );
     }
-    // In interactive mode, the scrollback from the picker already contains
-    // the vault detail, so no additional vaultDescribe call is needed.
   } else {
     ctx.logger.debug`Search cancelled`;
   }

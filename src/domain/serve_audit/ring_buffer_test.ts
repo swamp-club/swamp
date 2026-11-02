@@ -72,10 +72,10 @@ Deno.test("RingBuffer: readFrom at highSeq returns empty", () => {
 
 Deno.test("RingBuffer: wraps around when capacity exceeded", () => {
   const buf = new RingBuffer<string>(3);
-  buf.push("a"); // seq 1
-  buf.push("b"); // seq 2
-  buf.push("c"); // seq 3
-  buf.push("d"); // seq 4, overwrites "a"
+  buf.push("a");
+  buf.push("b");
+  buf.push("c");
+  buf.push("d");
 
   assertEquals(buf.length, 3);
   assertEquals(buf.highSeq, 4);
@@ -90,7 +90,7 @@ Deno.test("RingBuffer: readFrom with seq older than oldest clamps", () => {
   const buf = new RingBuffer<number>(2);
   buf.push(1);
   buf.push(2);
-  buf.push(3); // seq 3, oldest is now 2
+  buf.push(3);
 
   const result = buf.readFrom(0);
   assertEquals(result.items, [2, 3]);
@@ -99,15 +99,15 @@ Deno.test("RingBuffer: readFrom with seq older than oldest clamps", () => {
 
 Deno.test("RingBuffer: readFrom reports the sequence of the first item", () => {
   const buf = new RingBuffer<string>(3);
-  buf.push("a"); // seq 1
-  buf.push("b"); // seq 2
+  buf.push("a");
+  buf.push("b");
 
   assertEquals(buf.readFrom(0).startSeq, 1);
   assertEquals(buf.readFrom(1).startSeq, 2);
 
-  buf.push("c"); // seq 3
-  buf.push("d"); // seq 4, overwrites "a"
-  buf.push("e"); // seq 5, overwrites "b"
+  buf.push("c");
+  buf.push("d");
+  buf.push("e");
 
   const wrapped = buf.readFrom(0);
   assertEquals(wrapped.items, ["c", "d", "e"]);

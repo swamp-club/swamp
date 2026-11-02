@@ -152,7 +152,6 @@ Deno.test("doctorWorkflows: reports fail for invalid schema", async () => {
     >;
     assertEquals(checked.result.status, "fail");
     assertEquals(typeof checked.result.error, "string");
-    // One readable line naming each field, not the raw Zod issue dump.
     const error = String(checked.result.error);
     assertEquals(error.includes("\n"), false);
     assertEquals(error.startsWith("["), false);
@@ -287,8 +286,6 @@ Deno.test("doctorWorkflows: extracts name from parseable YAML even when construc
       { kind: "workflow-checked" }
     >;
     assertEquals(checked.result.status, "fail");
-    // Name extraction should still work even though schema validation fails
-    // (empty string name won't parse from YAML since it's falsy)
   } finally {
     await Deno.remove(tmpDir, { recursive: true }).catch(() => {});
   }
@@ -511,7 +508,6 @@ Deno.test("doctorWorkflows: warns about loadable repo-dir YAML the loader does n
 
     const report = await runDoctor({ workflowDirs: [tmpDir] });
 
-    // Not loaded, but neither passed nor was ignored before: warn, exit 0.
     assertEquals(report.overallStatus, "warn");
     assertEquals(
       [report.totalPassed, report.totalWarnings, report.totalFailed],
@@ -525,7 +521,6 @@ Deno.test("doctorWorkflows: warns about loadable repo-dir YAML the loader does n
     const deploy = report.workflows[0];
     assertPathEquals(deploy.file, join(tmpDir, "deploy.yaml"));
     assertEquals(deploy.error, undefined);
-    // The full path, since log mode labels the result only by its YAML name.
     assertStringIncludes(deploy.warning ?? "", join(tmpDir, "deploy.yaml"));
     assertStringIncludes(deploy.warning ?? "", "workflow-<name>.yaml");
     assertStringIncludes(
@@ -540,8 +535,6 @@ Deno.test("doctorWorkflows: warns about loadable repo-dir YAML the loader does n
 Deno.test("doctorWorkflows: a broken misnamed .yaml in a repo dir still fails, a broken .yml only warns", async () => {
   const tmpDir = await Deno.makeTempDir({ prefix: "swamp_doctor_wf_" });
   try {
-    // Before the loader's rule was applied, *.yaml here was always checked
-    // and *.yml never was; neither outcome may get worse.
     await Deno.writeTextFile(join(tmpDir, "broken.yaml"), UNKNOWN_TASK_YAML);
     await Deno.writeTextFile(join(tmpDir, "broken.yml"), UNKNOWN_TASK_YAML);
 
@@ -551,7 +544,6 @@ Deno.test("doctorWorkflows: a broken misnamed .yaml in a repo dir still fails, a
     const [yaml, yml] = report.workflows;
     assertPathEquals(yaml.file, join(tmpDir, "broken.yaml"));
     assertEquals(yaml.status, "fail");
-    // The note leads, on the first line, which log mode indents.
     const [firstLine] = (yaml.error ?? "").split("\n");
     assertStringIncludes(firstLine, "Not loaded:");
     assertStringIncludes(firstLine, "It also fails to load:");
@@ -572,8 +564,6 @@ Deno.test("doctorWorkflows: tells non-workflow YAML in a repo dir to move out ra
 
     const report = await runDoctor({ workflowDirs: [tmpDir] });
 
-    // settings.yaml failed before (no jobs) and still does; notes.yml was
-    // never checked, so it only warns.
     assertEquals(report.workflows.map((w) => w.status), ["warn", "fail"]);
     for (const result of report.workflows) {
       const message = result.error ?? result.warning ?? "";

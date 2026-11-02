@@ -59,10 +59,6 @@ function getVerbosity(options: GlobalOptions): Verbosity {
   return "normal";
 }
 
-/**
- * Checks if stdin is a TTY (terminal).
- * Returns false if stdin is not a terminal (e.g., piped input).
- */
 export function isStdinTty(): boolean {
   try {
     return Deno.stdin.isTerminal();
@@ -119,10 +115,6 @@ export function interactiveOutputMode(ctx: CommandContext): OutputMode {
   return "log";
 }
 
-/**
- * Determines the output mode from raw CLI arguments and the JSON output default.
- * Used for error handling before the CLI has fully parsed options.
- */
 export function getOutputModeFromArgs(
   args: string[],
   readJsonOutputEnv: () => string | undefined = () =>
@@ -131,10 +123,6 @@ export function getOutputModeFromArgs(
   return resolveOutputMode(args.includes("--json"), readJsonOutputEnv());
 }
 
-/**
- * Resolves the CLI's two output modes without reading process state, so callers
- * that run before command parsing and unit tests share identical behavior.
- */
 export function resolveOutputMode(
   jsonRequested: boolean,
   jsonOutputEnv: string | undefined,
@@ -151,18 +139,9 @@ function isTruthyOutputEnv(value: string | undefined): boolean {
 }
 
 /**
- * Resolves whether ANSI colour should be emitted, without reading process
- * state, so callers that run before command parsing and unit tests share
- * identical behavior.
- *
- * `NO_COLOR` counts as set by presence, not by value — an empty string disables
- * colour — which is both the informal standard and the check this replaced in
- * `runCli`'s global action.
- *
- * The terminal probe is a thunk so the two decided cases cost no syscall: with
- * the flag or the environment variable in play the answer is already known, and
- * the hook fast path (`audit record --from-hook`) pays nothing for a question
- * it does not need asked.
+ * NO_COLOR counts as set by presence, so an empty string disables colour. the
+ * terminal probe is a thunk so the cases decided by flag or env cost no
+ * syscall, which matters on the hook fast path
  */
 export function resolveColorEnabled(
   noColorRequested: boolean,
@@ -176,25 +155,9 @@ export function resolveColorEnabled(
 }
 
 /**
- * Applies the colour policy for this invocation and returns what it decided.
- *
- * Cliffy resolves `--version` and `--help` while parsing arguments and exits
- * before `globalAction` runs, so the decision has to be made — and applied —
- * before the command is even constructed, or `--no-color` cannot reach it
- * (swamp-club#2414). Colour lives in `@std/fmt`'s module state, which swamp and
- * Cliffy share, so flipping it here reaches Cliffy's own output too;
- * `integration/color_policy_rules_test.ts` guards that shared resolution.
- *
- * Only ever *disables*: `@std/fmt` applied `NO_COLOR` itself when it loaded, and
- * an unconditional `setEnabled(true)` would override a disable this code did not
- * make.
- *
- * The environment read, the terminal probe and the effect are all parameters
- * with production defaults, so tests drive the policy through a spy instead of
- * mutating process-global colour state. The environment read is a function
- * rather than a value: an explicit `undefined` would fall through to a value
- * default and read the process's own `NO_COLOR`, so a caller could never say
- * "unset" (swamp-club#2462).
+ * applied before the command is constructed, since Cliffy exits on --version
+ * and --help before globalAction runs; it only disables colour, as an
+ * unconditional enable would override a disable elsewhere
  */
 export function applyColorPolicy(
   noColorRequested: boolean,
@@ -213,20 +176,12 @@ export function applyColorPolicy(
   return enabled;
 }
 
-/** Boolean global short flags — the only letters that may precede `q` in a cluster. */
 const BOOLEAN_SHORT_FLAGS = new Set(["q", "v", "h"]);
 
 /**
- * Pre-parses --quiet / -q from raw CLI arguments. Used by code paths that
- * fire before Cliffy's globalAction has parsed options (e.g. extension
- * load warnings emitted from lazy loaders inside ensureLoaded()).
- *
- * Follows Cliffy's reading of the global flags: a short cluster such as `-qv`
- * or `-vq` is quiet, but in `-tq` the `q` is the value of `-t`, and nothing
- * after a bare `--` is an option (swamp-club#2257). It cannot see a
- * command's own boolean flags, so a cluster like `-yq` reads as not quiet
- * here though Cliffy parses it as quiet — the miss shows output, never hides
- * it. Code that runs after parsing reads Cliffy's `options.quiet` instead.
+ * pre-parses --quiet as Cliffy reads it: -qv is quiet, in -tq the q is -t's
+ * value, nothing after -- is an option. it cannot see a command's own boolean
+ * flags, so -yq reads as not quiet; the miss shows output, never hides it
  */
 export function isQuietFromArgs(args: string[]): boolean {
   for (const arg of args) {
@@ -243,10 +198,9 @@ export function isQuietFromArgs(args: string[]): boolean {
 }
 
 /**
- * Whether the notices printed after a command — update banners and
- * autoupdate warnings — may be shown. They are human-readable commentary
- * written straight to stderr, so neither JSON mode nor `-q` shows them
- * (swamp-club#2257).
+ * whether the notices printed after a command (update banners, autoupdate
+ * warnings) may be shown: they are human-readable commentary on stderr, so
+ * neither JSON mode nor -q shows them
  */
 export function postCommandNoticesAllowed(
   outputMode: OutputMode,
@@ -273,18 +227,9 @@ function isAtOrAbove(ancestor: string, descendant: string): boolean {
 }
 
 /**
- * Resolves the directory where ancestor traversal must stop.
- *
- * In a plain checkout this is the git root. In a *linked worktree* the git root
- * is the worktree itself, and the swamp repository marker usually lives in the
- * main working tree — so the boundary is widened to the main working tree,
- * derived from `git rev-parse --git-common-dir` (which points at the main
- * repository's `.git` directory even from inside a linked worktree).
- *
- * The widened boundary is only used when the main working tree is an ancestor
- * of the git root; otherwise (worktree checked out elsewhere on disk, bare
- * repositories, unusual `GIT_DIR` layouts) the git root is kept, preserving
- * existing behavior.
+ * the traversal boundary is the git root, widened to the main working tree from
+ * a linked worktree, where the repository marker usually lives; kept as the git
+ * root unless the main tree is its ancestor
  */
 function getGitRootSync(startDir: string): string | null {
   try {
@@ -331,16 +276,6 @@ function getGitRootSync(startDir: string): string | null {
   }
 }
 
-/**
- * Walks up the directory tree from `startDir` looking for a `.swamp.yaml`
- * marker file.
- *
- * Stops at the git repository root (when inside a git repo) — widened to the
- * main working tree when started from a linked worktree — or after
- * MAX_ANCESTOR_DEPTH levels (when not in a git repo).
- *
- * @returns The ancestor directory containing `.swamp.yaml`, or `null`.
- */
 export function findAncestorRepoDir(startDir: string): string | null {
   const gitRoot = getGitRootSync(startDir);
 
@@ -376,27 +311,13 @@ export function findAncestorRepoDir(startDir: string): string | null {
 }
 
 /**
- * A `--repo-dir` or `SWAMP_REPO_DIR` value as the directory storage opens:
- * symlinks resolved, since `node:sqlite` refuses a database path through a
- * symlink (swamp-club#3552). Windows keeps the path as given, matching
- * {@link repoDirAsGiven}, which does not restore a spelling there.
+ * symlinks are resolved because node:sqlite refuses a database path through a
+ * symlink; Windows keeps the path as given
  */
 function explicitRepoDir(path: string): string {
   return Deno.build.os === "windows" ? resolve(path) : canonicalize(path);
 }
 
-/**
- * Pre-parses --repo-dir from raw CLI arguments before Cliffy option parsing.
- *
- * Supports both `--repo-dir <value>` and `--repo-dir=<value>` forms.
- * Returns the absolute path with symlinks resolved (see
- * {@link explicitRepoDir}); a path that does not exist yet is only made
- * absolute. Paths swamp reports use {@link repoDirAsGiven} for the spelling
- * the user gave.
- *
- * Priority: --repo-dir flag > SWAMP_REPO_DIR env var > cwd (with ancestor
- * traversal).
- */
 export function getRepoDirFromArgs(args: string[]): string {
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
@@ -416,16 +337,9 @@ export function getRepoDirFromArgs(args: string[]): string {
 }
 
 /**
- * `path` spelled under `repoDir` when it names a place inside the repository
- * through another spelling of the repository's directory, such as a symlink
- * to it. A path already under `repoDir`, or outside the repository, comes
- * back made absolute and otherwise as given. As in `respellUnderRepoDir`,
- * only the shallowest ancestor naming the repository is swapped, so a
- * symlink inside it, even one back to its root, is never resolved away
- * (swamp-club#3421). Extension loading stops its
- * walks up from extension files at `repoDir` by string comparison, so the
- * extensions dir has to share its spelling once {@link getRepoDirFromArgs}
- * resolves the repo dir (swamp-club#3552).
+ * respells a path under repoDir when it reaches the repository through another
+ * spelling, swapping only the shallowest ancestor so a symlink inside is never
+ * resolved; extension loading compares strings
  */
 export function rebaseOntoRepoDir(path: string, repoDir: string): string {
   const target = resolve(path);
@@ -453,10 +367,6 @@ export function rebaseOntoRepoDir(path: string, repoDir: string): string {
     : join(repoDir, relative(repoRoot, target));
 }
 
-/**
- * Whether {@link getRepoDirFromArgs} takes the repo dir from the
- * `--repo-dir` flag or `SWAMP_REPO_DIR` rather than from the cwd.
- */
 export function hasExplicitRepoDir(args: string[]): boolean {
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
@@ -468,15 +378,8 @@ export function hasExplicitRepoDir(args: string[]): boolean {
 }
 
 /**
- * Resolves the repository directory for a command action, given the Cliffy
- * parsed `--repo-dir` option value. Symlinks are resolved as in
- * {@link getRepoDirFromArgs}.
- *
- * Priority: --repo-dir flag > SWAMP_REPO_DIR env var > cwd (with ancestor
- * traversal).
- *
- * Command option definitions must NOT set a Cliffy `default` for `--repo-dir`
- * — otherwise Cliffy always populates the value and the env var is ignored.
+ * commands must not set a Cliffy default for --repo-dir, or Cliffy always
+ * populates the value and SWAMP_REPO_DIR is ignored
  */
 export function resolveRepoDir(cliValue: string | undefined): string {
   if (cliValue !== undefined) {
@@ -491,13 +394,9 @@ export function resolveRepoDir(cliValue: string | undefined): string {
 }
 
 /**
- * The current directory as the user spelled it (swamp-club#3536). The
- * process cwd has its symlinks resolved, so a directory reached through a
- * link (macOS `/var` is `/private/var`) would print under a spelling the
- * user never typed. A POSIX shell keeps the spelling in `PWD`, which is
- * used, as `pwd -L` uses it, only when it is absolute, has no `.` or `..`
- * segment and names the same directory as the cwd; otherwise the cwd.
- * Windows always gets the cwd.
+ * the cwd as the user spelled it: the process cwd has symlinks resolved; PWD is
+ * used only when absolute, free of . and .. segments, and naming the same
+ * directory; Windows gets the cwd
  */
 export function logicalCwd(): string {
   if (Deno.build.os === "windows") return Deno.cwd();
@@ -508,7 +407,6 @@ export function logicalCwd(): string {
   );
 }
 
-/** {@link logicalCwd} over the given cwd, `PWD` and symlink resolver. */
 export function logicalCwdFrom(
   cwd: string,
   pwd: string | undefined,
@@ -524,13 +422,8 @@ export function logicalCwdFrom(
 }
 
 /**
- * The repository directory {@link resolveRepoDir} found, spelled the way
- * the user gave it: `--repo-dir` or `SWAMP_REPO_DIR` resolved against the
- * {@link logicalCwd}, or else the ancestor of the logical cwd that is the
- * repository. Any spelling that does not name the same directory gives
- * `repoDir` back. Paths swamp reports use this spelling; storage keeps
- * `repoDir`, because `node:sqlite` refuses a path through a symlink
- * (swamp-club#3552).
+ * the repo dir spelled as the user gave it, for paths swamp reports; storage
+ * keeps repoDir because node:sqlite refuses a path through a symlink
  */
 export function repoDirAsGiven(
   cliValue: string | undefined,
@@ -546,7 +439,6 @@ export function repoDirAsGiven(
   });
 }
 
-/** {@link repoDirAsGiven} over the given values and symlink resolver. */
 export function repoDirAsGivenFrom(options: {
   cliValue: string | undefined;
   envValue: string | undefined;
@@ -584,12 +476,6 @@ export function repoDirAsGivenFrom(options: {
   return repoDir;
 }
 
-/**
- * Resolves the traceparent for a command, given the Cliffy parsed
- * `--traceparent` option value.
- *
- * Priority: --traceparent flag > TRACEPARENT env var > undefined.
- */
 export function resolveTraceparent(
   cliValue: string | undefined,
   envGet: (key: string) => string | undefined = Deno.env.get.bind(Deno.env),
@@ -600,12 +486,6 @@ export function resolveTraceparent(
   return envGet("TRACEPARENT") || undefined;
 }
 
-/**
- * Resolves the tracestate for a command, given the Cliffy parsed
- * `--tracestate` option value.
- *
- * Priority: --tracestate flag > TRACESTATE env var > undefined.
- */
 export function resolveTracestate(
   cliValue: string | undefined,
   envGet: (key: string) => string | undefined = Deno.env.get.bind(Deno.env),
@@ -616,15 +496,6 @@ export function resolveTracestate(
   return envGet("TRACESTATE") || undefined;
 }
 
-/**
- * Pre-parses --extensions-dir from raw CLI arguments before Cliffy option
- * parsing.
- *
- * Supports both `--extensions-dir <value>` and `--extensions-dir=<value>` forms.
- * Returns the resolved absolute path, or undefined if not set.
- *
- * Priority: --extensions-dir flag > SWAMP_EXTENSIONS_DIR env var > undefined.
- */
 export function getExtensionsDirFromArgs(
   args: string[],
 ): string | undefined {
@@ -645,21 +516,9 @@ export function getExtensionsDirFromArgs(
 }
 
 /**
- * Pre-parses --club-api-key-file from raw CLI arguments before Cliffy option
- * parsing. Startup loads credentials (telemetry, identity and scopes, the
- * extension auto-resolver) before any command action runs, so the flag has
- * to be known by then for the whole process to use one collective key.
- *
- * Only `swamp serve`, `swamp serve check-config` and
- * `swamp serve daemon enable` declare the flag. For any other command path it
- * is ignored here, so a stray `--club-api-key-file <path>` never has the file
- * read and sent as a credential before Cliffy rejects it. Scanning stops at
- * the `--` terminator.
- *
- * Supports both `--club-api-key-file <value>` and
- * `--club-api-key-file=<value>` forms. Returns the resolved absolute path, or
- * undefined if the flag is absent. The env var fallbacks live in
- * `resolveApiKey`.
+ * startup loads credentials before any command runs, so the flag is pre-parsed.
+ * only serve commands declare it; elsewhere it is ignored so a stray flag never
+ * has its file read and sent as a credential before Cliffy rejects it
  */
 export function getClubApiKeyFileFromArgs(
   args: string[],
@@ -696,14 +555,6 @@ function declaresClubApiKeyFile(
   return args[args.indexOf("daemon") + 1] === "enable";
 }
 
-/**
- * Resolves the extensions directory for a command action, given the Cliffy
- * parsed `--extensions-dir` option value.
- *
- * Priority: --extensions-dir flag > SWAMP_EXTENSIONS_DIR env var > undefined.
- *
- * When undefined, callers should fall back to repoDir for extension scanning.
- */
 export function resolveExtensionsDir(
   cliValue: string | undefined,
 ): string | undefined {

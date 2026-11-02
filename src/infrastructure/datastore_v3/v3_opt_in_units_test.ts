@@ -110,7 +110,6 @@ Deno.test("createV3LockfileSync: the publish commits the lockfile at its root's 
       sink.landed[0].partition.toString(),
       "config--lockfile--upstream_extensions",
     );
-    // Outside its transaction's root there is nowhere to publish to.
     await assertRejects(
       () => sync.publish({ mustUpload: true, earlierChangeOnly: false }),
       Error,

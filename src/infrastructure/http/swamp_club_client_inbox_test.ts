@@ -42,10 +42,6 @@ interface RecordedRequest {
   readonly body: unknown;
 }
 
-/**
- * A client whose fetch answers from `handler` and records every request, and
- * whose sleep records every wait instead of waiting.
- */
 function stubClient(
   handler: (req: RecordedRequest) => Response | Promise<Response>,
 ) {
@@ -76,10 +72,6 @@ function stubClient(
 function signal(): AbortSignal {
   return new AbortController().signal;
 }
-
-// ---------------------------------------------------------------------------
-// inboxSummary
-// ---------------------------------------------------------------------------
 
 Deno.test("inboxSummary: returns the summary and its ETag", async () => {
   const { client, requests } = stubClient(() =>
@@ -224,7 +216,6 @@ Deno.test("inboxSummary: an etag no header may carry returns failed rather than 
   assertEquals(requests.length, 0);
 });
 
-/** A 200 whose body errors with `error` after its first bytes. */
 function brokenBody(error: Error, onStart?: () => void): Response {
   const stream = new ReadableStream({
     start(c) {
@@ -235,10 +226,6 @@ function brokenBody(error: Error, onStart?: () => void): Response {
   });
   return new Response(stream, { status: 200 });
 }
-
-// ---------------------------------------------------------------------------
-// listInboxMessages
-// ---------------------------------------------------------------------------
 
 Deno.test("listInboxMessages: returns the page and sends no query by default", async () => {
   const { client, requests } = stubClient(() =>
@@ -417,10 +404,6 @@ Deno.test("getInboxMessage: a dropped connection while reading says so, not malf
   );
 });
 
-// ---------------------------------------------------------------------------
-// getInboxMessage
-// ---------------------------------------------------------------------------
-
 Deno.test("getInboxMessage: returns the message and encodes the id", async () => {
   const { client, requests } = stubClient(() => Response.json(fixture.message));
   const message = await client.getInboxMessage(KEY, fixture.message.id);
@@ -461,10 +444,6 @@ Deno.test("getInboxMessage: a malformed message throws", async () => {
     "malformed answer for message x",
   );
 });
-
-// ---------------------------------------------------------------------------
-// markInboxRead
-// ---------------------------------------------------------------------------
 
 Deno.test("markInboxRead: sends { ids } and returns only the ids the server confirmed", async () => {
   const [a, b] = fixture.markRead.read as string[];
@@ -535,7 +514,6 @@ Deno.test("markInboxRead: reports each batch's confirmed ids in request order", 
   const ids = Array.from({ length: 150 }, (_, i) => `id-${i}`);
   const { client } = stubClient((req) => {
     const sent = (req.body as { ids: string[] }).ids;
-    // The server leaves one id out of each batch and confirms in reverse.
     return Response.json({ read: sent.slice(1).reverse() });
   });
   const reported: string[][] = [];
@@ -600,10 +578,6 @@ Deno.test("markInboxRead: a malformed answer throws", async () => {
   assert(!err.message.includes("ok"));
 });
 
-// ---------------------------------------------------------------------------
-// Against a real server: Deno's own fetch, not a stub
-// ---------------------------------------------------------------------------
-
 function startMockServer(
   handler: (req: Request) => Response | Promise<Response>,
 ): { url: string; shutdown: () => Promise<void> } {
@@ -621,10 +595,6 @@ function startMockServer(
   };
 }
 
-/**
- * A client on Deno's real fetch that aborts `controller` once the response
- * headers arrive, so the abort always lands while the body is being read.
- */
 function abortAfterHeaders(
   url: string,
   controller: AbortController,
@@ -670,7 +640,6 @@ Deno.test("inboxSummary (real server): a stalled body aborted by the signal retu
   try {
     const controller = new AbortController();
     const client = abortAfterHeaders(mock.url, controller);
-    // The body never finishes; the caller's signal is the only way out.
     assertEquals(
       await client.inboxSummary(KEY, null, controller.signal),
       { kind: "failed", reason: "timeout" },

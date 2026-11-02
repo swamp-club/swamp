@@ -56,11 +56,6 @@ import type { ModelTypeSearchResponse } from "../../serve/protocol.ts";
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
 
-/**
- * Creates a fetchPreview closure that fetches full type detail data.
- * This bridges the presentation layer to the libswamp typeDescribe application
- * service.
- */
 function createTypeFetchPreview(): (
   item: TypeSearchItem,
 ) => Promise<TypeDescribeData> {
@@ -105,8 +100,6 @@ export async function typeSearchAction(
       { server, token },
       { type: "model.type.search", payload: { query } },
     );
-    // A remote search prints a plain list and never starts the picker
-    // (swamp-club#3917).
     const renderer = createTypeSearchRenderer(effectiveMode, undefined, {
       interactive: false,
     });
@@ -154,18 +147,12 @@ export async function typeSearchAction(
   ctx.logger.debug("Type search command completed");
 }
 
-/**
- * The legacy spelling: `swamp model type search`. Its help examples once read
- * `swamp type search`, a spelling that never ran; they now name the command a
- * user actually types (swamp-club#3409).
- */
 export const MODEL_TYPE_SEARCH_SYNTAX: CommandSyntax = {
   invocation: "swamp model type search",
   surface: "model",
   preferred: "swamp behavior type search aws",
 };
 
-/** The preferred spelling: `swamp behavior type search`. */
 export const BEHAVIOR_TYPE_SEARCH_SYNTAX: CommandSyntax = {
   invocation: "swamp behavior type search",
   surface: "behavior",

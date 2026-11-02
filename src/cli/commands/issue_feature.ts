@@ -42,9 +42,6 @@ import {
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
 
-/**
- * Template for feature requests.
- */
 const FEATURE_TEMPLATE = `
 # Feature Request
 
@@ -69,22 +66,15 @@ const FEATURE_TEMPLATE = `
 
 `.trimStart();
 
-/**
- * Parses the feature request content from the editor.
- * Returns null if the content is empty or unchanged from the template.
- */
 function parseFeatureContent(
   content: string,
   template: string = FEATURE_TEMPLATE,
 ): { title: string; body: string } | null {
-  // Check if content is essentially empty or unchanged
   const trimmedContent = content.trim();
   if (!trimmedContent || trimmedContent === template.trim()) {
     return null;
   }
 
-  // Extract title from the "## Title" section
-  // Title must be a single line that doesn't start with # or <!--
   const titleMatch = content.match(
     /## Title\s*\n(?:<!--[^>]*-->\s*\n)?([^\n#<][^\n]*)/,
   );
@@ -94,7 +84,6 @@ function parseFeatureContent(
     return null;
   }
 
-  // Build body from remaining sections (everything after ## Problem Statement)
   const problemIndex = content.indexOf("## Problem Statement");
   if (problemIndex === -1) {
     return { title, body: "" };
@@ -102,7 +91,6 @@ function parseFeatureContent(
 
   const body = content.substring(problemIndex);
 
-  // Clean up the body by removing HTML comment lines
   const cleanedBody = body
     .split("\n")
     .filter((line) => !line.match(/^\s*<!--.*-->\s*$/))

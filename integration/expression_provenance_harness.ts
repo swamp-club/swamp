@@ -17,9 +17,8 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// Shared harness for the expression provenance tests (swamp-club#3205): a
-// throwaway repository with a model type that records the arguments its
-// method receives, run through the model-run and workflow-run paths.
+// a throwaway repository with a model type that records the arguments its
+// method receives, run through the model-run and workflow-run paths
 
 import { assertEquals, assertStringIncludes } from "@std/assert";
 import { join } from "@std/path";
@@ -56,7 +55,6 @@ export interface Harness {
   dir: string;
   type: ModelType;
   executions: Record<string, unknown>[];
-  /** The global arguments each execution saw, when all of them resolved. */
   globals: Record<string, unknown>[];
 }
 

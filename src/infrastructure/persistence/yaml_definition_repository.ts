@@ -105,53 +105,19 @@ import {
 
 const logger = getLogger(["definition-repo"]);
 
-/**
- * YAML-based implementation of DefinitionRepository.
- *
- * Stores definitions as YAML files in the directory structure:
- * {repoDir}/models/{normalized-type}/{name}.yaml   (new default for filename-safe names)
- * {repoDir}/models/{normalized-type}/{uuid}.yaml   (legacy, still discoverable)
- *
- * CEL expressions in attributes are preserved as-is (not evaluated on save).
- */
 export class YamlDefinitionRepository implements DefinitionRepository {
   private readonly baseDir: string;
   private readonly secondaryBaseDir: string | undefined;
-  /**
-   * Id → the file a definition was last read from or written to. Holds paths
-   * in the secondary auto-definitions directory too, so getPath, save and
-   * delete act on the real file whichever lookup found it.
-   */
   private readonly idToActualPath = new Map<DefinitionId, string>();
   /**
-   * Name → file path hints, so a repeated lookup for a definition whose file is
-   * not at its name-derived path (a legacy `{uuid}.yaml`, or a name that is not
-   * filename-safe) skips re-walking and re-parsing the repository every time.
-   *
-   * These store a PATH ONLY — never a parsed definition, never a negative
-   * result. The file is re-read and its declared name re-checked on every hit,
-   * so a stale hint is self-correcting and external edits, renames, additions
-   * and deletions stay visible. That is why `save()` and `delete()` need no
-   * invalidation bookkeeping.
-   *
-   * A hint also records whether its file lives in the primary definitions
-   * directory or the secondary auto-definitions one, and is only consulted in
-   * the stage of the search that owns that directory. Primary definitions must
-   * keep winning over same-named secondary ones, so a secondary hint can never
-   * short-circuit the primary walk that would find a newly added primary file.
-   *
-   * If a cache-reset hook is ever added to this class, it must clear these
-   * alongside `idToActualPath`.
+   * hints hold a path only, never a parsed definition or a miss; the file is
+   * re-read and its name re-checked on every hit, so stale hints self-correct
+   * and save and delete need no invalidation
    */
   private readonly nameToActualPath = new Map<
     string,
     { path: string; primary: boolean }
   >();
-  /**
-   * One name index per auto-definitions type directory a lookup by name has
-   * missed in, so a later miss reads only what changed there. Like the hints
-   * above it keeps paths and names only; a cache-reset hook must clear it.
-   */
   private readonly autoDefinitionNameIndexes = new Map<
     string,
     AutoDefinitionNameIndex
@@ -160,21 +126,14 @@ export class YamlDefinitionRepository implements DefinitionRepository {
     string,
     { path: string; pathSegments: string[]; primary: boolean }
   >();
-  /** Answers {@link findByNameGlobalFromIndex}: see {@link useNameIndex}. */
   private nameIndex: DefinitionNameIndex | undefined;
 
   constructor(
     private readonly repoDir: string,
     private readonly eventBus?: EventBus,
     baseDir?: string,
-    /** Pass `false` to disable secondary search. Omit to auto-compute from repoDir. */
     secondaryBaseDir?: string | false,
     private readonly markDirtyHook?: MarkDirtyHook,
-    /**
-     * Tells an auto-definition a v3 read model could not materialise from
-     * an absent one (swamp-club#3617), so a lookup by name that finds no
-     * definition fails loudly on it instead.
-     */
     readonly unreadableContent?: UnreadableContentLookup,
   ) {
     this.baseDir = baseDir ?? resolveEffectiveDefinitionsDir(repoDir);
@@ -188,8 +147,8 @@ export class YamlDefinitionRepository implements DefinitionRepository {
     type: ModelType,
     id: DefinitionId,
   ): Promise<Definition | null> {
-    // Fast path: try UUID-based filename (legacy). The file must declare this
-    // id: a definition *named* with this UUID lives at the same path.
+    // the file must declare this id: a definition named with this UUID lives at
+    // the same path
     const legacyPath = this.getLegacyPath(type, id);
     try {
       const content = await Deno.readTextFile(legacyPath);
@@ -207,30 +166,23 @@ export class YamlDefinitionRepository implements DefinitionRepository {
       }
     }
 
-    // Try name-based filename from cache. The cache is keyed by id alone, so
-    // only trust a path in this type's directory: otherwise a definition
-    // loaded once is returned for every type it is asked about, and a lookup
-    // by id across types reports the wrong type.
+    // the cache is keyed by id alone, so trust a path only in this type's
+    // directory or declaring this type; otherwise a definition loaded once is
+    // returned for every type
     const cachedPath = this.idToActualPath.get(id);
     if (cachedPath && cachedPath !== legacyPath) {
       const cached = await this.readDeclared(cachedPath);
       if (cached?.id === id) {
-        // It is this type's when it sits in this type's directory or declares
-        // this type, as a lookup by name reports it. Otherwise it belongs to
-        // another type, and ids are unique, so answer without scanning every
-        // file of this type.
         return this.isOfType(cachedPath, cached, type) ? cached : null;
       }
     }
 
-    // Slow path: scan all definition files for this type
     const definitions = await this.findAll(type);
     const found = definitions.find((d) => d.id === id);
     if (found) return found;
 
-    // Fall back to secondary dir. Record where the match lives so getPath,
-    // delete and save act on the auto-definition file, as
-    // searchDefinitionByName already does for findByNameGlobal.
+    // record where the match lives so getPath, delete and save act on the
+    // auto-definition file
     if (this.secondaryBaseDir) {
       const located = await this.locateByIdInDir(
         this.secondaryBaseDir,
@@ -238,10 +190,9 @@ export class YamlDefinitionRepository implements DefinitionRepository {
         id,
       );
       if (!located) {
-        // An auto-definition stored under its id (a legacy or not
-        // filename-safe name) the datastore could not materialise fails
-        // loudly (swamp-club#3617). One stored under its name cannot be
-        // told from its id, so the miss names them, as findByIdGlobal does.
+        // an auto-definition stored under its id that the datastore could not
+        // materialise fails loudly; one under its name cannot be told from its
+        // id, so the miss names them
         const typeDir = join(this.secondaryBaseDir, type.toDirectoryPath());
         await this.throwIfUnreadable(join(typeDir, `${id}.yaml`));
         await warnUnreadableLeftOut(this.unreadableContent, typeDir);
@@ -258,7 +209,6 @@ export class YamlDefinitionRepository implements DefinitionRepository {
     type: ModelType,
     id: DefinitionId,
   ): Promise<{ definition: Definition; path: string } | null> {
-    // Fast path: try UUID-based filename, which must declare this id
     const path = join(dir, type.toDirectoryPath(), `${id}.yaml`);
     try {
       const content = await Deno.readTextFile(path);
@@ -273,7 +223,6 @@ export class YamlDefinitionRepository implements DefinitionRepository {
       }
     }
 
-    // Slow path: scan all files in the type directory for a matching ID
     const typeDir = join(dir, type.toDirectoryPath());
     try {
       for await (const entry of Deno.readDir(typeDir)) {
@@ -401,7 +350,6 @@ export class YamlDefinitionRepository implements DefinitionRepository {
     name: string,
     probe: { method: LookupMethod },
   ): Promise<Definition | null> {
-    // Fast path: try name-based filename directly
     if (isFilenameSafeDefinitionName(name)) {
       const namePath = this.getNamePath(type, name);
       try {
@@ -423,10 +371,9 @@ export class YamlDefinitionRepository implements DefinitionRepository {
       }
     }
 
-    // Hinted path: deliberately OUTSIDE the isFilenameSafeDefinitionName guard
-    // above. The definitions that reach the slow path are exactly the ones that
-    // guard rejects, or whose name-derived file does not exist, so a hint check
-    // nested inside it would never fire for the cases that need it.
+    // deliberately outside the filename-safe guard: definitions reaching the
+    // slow path are exactly those the guard rejects or whose name-derived file
+    // does not exist
     const hintKey = nameHintKey(type, name);
     const hint = this.nameToActualPath.get(hintKey);
     if (hint?.primary) {
@@ -438,11 +385,9 @@ export class YamlDefinitionRepository implements DefinitionRepository {
       this.nameToActualPath.delete(hintKey);
     }
 
-    // Slow path: scan all definition files
     const definitions = await this.findAll(type);
     const found = definitions.find((def) => def.name === name);
     if (found) {
-      // findAll records every file it parsed, so the path is already known.
       const foundPath = this.idToActualPath.get(found.id as DefinitionId);
       if (foundPath) {
         this.nameToActualPath.set(hintKey, { path: foundPath, primary: true });
@@ -451,8 +396,8 @@ export class YamlDefinitionRepository implements DefinitionRepository {
       return found;
     }
     if (this.secondaryBaseDir) {
-      // Only now, with the primary directory exhausted, may a secondary hint
-      // answer: the primary definition of the same name always wins.
+      // only with the primary directory exhausted may a secondary hint answer:
+      // the primary definition of the same name always wins
       if (hint && !hint.primary) {
         const hinted = await this.readDefinitionIfNamed(hint.path, name);
         if (hinted) {
@@ -462,8 +407,6 @@ export class YamlDefinitionRepository implements DefinitionRepository {
         }
         this.nameToActualPath.delete(hintKey);
       }
-      // The name-derived file answers without parsing every definition of the
-      // type: serve's control-plane lookups land here for each new worker.
       if (isFilenameSafeDefinitionName(name)) {
         const namePath = this.getNamePath(type, name, this.secondaryBaseDir);
         const named = await this.readDefinitionIfNamed(namePath, name);
@@ -477,8 +420,6 @@ export class YamlDefinitionRepository implements DefinitionRepository {
           return named;
         }
       }
-      // Only a file at another path is left: the name index answers without
-      // reading every file of the type each time (swamp-club#3984).
       const secondaryMatch = await this.findInNameIndex(
         type,
         this.secondaryBaseDir,
@@ -505,11 +446,6 @@ export class YamlDefinitionRepository implements DefinitionRepository {
     return null;
   }
 
-  /**
-   * The name index's answer for `name`, as a `definition_scan` phase: the
-   * index's own `swamp.definition.name_index.validate` span nests under it
-   * when this lookup ran the check.
-   */
   private async findInNameIndex(
     type: ModelType,
     secondaryBaseDir: string,
@@ -550,29 +486,20 @@ export class YamlDefinitionRepository implements DefinitionRepository {
     return index;
   }
 
-  /**
-   * Throws when the datastore recorded the auto-definition missing at
-   * `path` as unreadable (swamp-club#3617), so a lookup fails loudly instead
-   * of finding no definition. A file that is simply absent returns.
-   */
   private async throwIfUnreadable(path: string): Promise<void> {
     const error = await this.unreadableContent?.(path);
     if (error !== undefined) throw error;
   }
 
   /**
-   * {@link throwIfUnreadable} for the file `name` names in each type
-   * directory of `base`: a lookup by name alone does not know the type its
-   * file was under. Asks every directory this checkout has under `base`, and
-   * every registered type's, since a type whose only definition could not be
-   * materialised has no directory here.
+   * asks every directory this checkout has under base and every registered
+   * type's, since a type whose only definition could not be materialised has no
+   * directory here
    */
   private async throwIfUnreadableByName(
     base: string,
     name: string,
   ): Promise<void> {
-    // One query over `base` when the lookup can list, which also finds a
-    // definition of a type that is neither registered nor has a directory.
     if (this.unreadableContent?.under !== undefined) {
       for (
         const entry of await unreadableRecordsUnder(
@@ -608,19 +535,9 @@ export class YamlDefinitionRepository implements DefinitionRepository {
   }
 
   /**
-   * Reads a hinted file and returns its definition only if the file still
-   * declares the expected name.
-   *
-   * Returns null on any failure — missing, unreadable, unparseable or renamed —
-   * so the caller falls back to its normal discovery walk and the outcome is
-   * exactly what it would have been without a hint. In particular a corrupt
-   * file must not throw from here, because discovery warns and skips it.
-   *
-   * A hinted path is re-checked for symlink escape before it is read. Discovery
-   * validates every symlink it follows, so without this a file replaced by an
-   * escaping symlink after discovery would be read unchecked. Falling back to
-   * discovery on failure means the same containment error still surfaces, it
-   * just comes from the walk instead of from here.
+   * returns null on any failure so the caller falls back to the discovery walk;
+   * a corrupt file must not throw here. A hinted path is re-checked for symlink
+   * escape before it is read.
    */
   private async readDefinitionIfNamed(
     path: string,
@@ -640,13 +557,9 @@ export class YamlDefinitionRepository implements DefinitionRepository {
   }
 
   /**
-   * Answers {@link findByNameGlobalFromIndex} through `index` from now on,
-   * instead of walking every definition on each lookup that no hint answers
-   * (swamp-club#4037). `swamp serve` attaches the definition index it keeps
-   * for its lifetime, once, as it starts; a CLI command attaches none, as
-   * building an index reads every definition where a walk for an existing
-   * name stops at the first match. {@link findByNameGlobal} never consults
-   * it. Throws when an index is already attached.
+   * serve attaches an index once; a CLI command attaches none, since building
+   * one reads every definition where a walk stops at the first match.
+   * findByNameGlobal never consults it.
    */
   useNameIndex(index: DefinitionNameIndex): void {
     if (this.nameIndex) {
@@ -656,12 +569,8 @@ export class YamlDefinitionRepository implements DefinitionRepository {
   }
 
   /**
-   * {@link findByNameGlobal}'s answer from the name index attached with
-   * {@link useNameIndex}, or by the walk when none is. The index sees a
-   * definition file rewritten in place to declare another name only once
-   * its directory changes, so only a caller that accepts that uses this:
-   * serve's direct-type workflow steps, whose lookup and re-check under the
-   * creation lock would otherwise each walk every definition for a new name.
+   * the index sees a file rewritten in place to declare another name only once
+   * its directory changes, so only a caller that accepts that uses this
    */
   async findByNameGlobalFromIndex(
     name: string,
@@ -675,10 +584,8 @@ export class YamlDefinitionRepository implements DefinitionRepository {
   async findByNameGlobal(
     name: string,
   ): Promise<{ definition: Definition; type: ModelType } | null> {
-    // This method has no name-derived fast path at all — without a hint every
-    // call re-walks and re-parses every definition in the repository until it
-    // hits a match. The running diagnostic phase, if any, counts which step
-    // answered; the walks count their reads (files_read, read_work_ms).
+    // no name-derived fast path: without a hint every call re-walks and
+    // re-parses every definition until it hits a match
     const tally = currentDiagnosticTally();
     const hint = this.globalNameToActualPath.get(name);
     const hinted = await this.readPrimaryHint(name);
@@ -693,8 +600,8 @@ export class YamlDefinitionRepository implements DefinitionRepository {
     );
     if (result) return result;
     if (this.secondaryBaseDir) {
-      // Checked only after the primary walk comes up empty, so a secondary hint
-      // cannot shadow a primary definition added since the hint was recorded.
+      // checked only after the primary walk comes up empty, so a secondary hint
+      // cannot shadow a primary definition added since the hint was recorded
       if (hint && !hint.primary) {
         const hinted = await this.readHintedWithType(hint, name);
         if (hinted) {
@@ -718,10 +625,6 @@ export class YamlDefinitionRepository implements DefinitionRepository {
     return null;
   }
 
-  /**
-   * The definition a recorded primary hint names, counted as a
-   * `name_hint_hits`, or null; a hint the file no longer answers is dropped.
-   */
   private async readPrimaryHint(
     name: string,
   ): Promise<{ definition: Definition; type: ModelType } | null> {
@@ -736,11 +639,6 @@ export class YamlDefinitionRepository implements DefinitionRepository {
     return null;
   }
 
-  /**
-   * {@link findByNameGlobal}'s answer from a name index, as a
-   * `definition_lookup` phase. A miss fails as the walk's does on an
-   * auto-definition the datastore could not materialise (swamp-club#3617).
-   */
   private async findByNameInIndex(
     index: DefinitionNameIndex,
     name: string,
@@ -756,8 +654,8 @@ export class YamlDefinitionRepository implements DefinitionRepository {
             match.definition.id as DefinitionId,
             match.path,
           );
-          // Only a primary hint is read while an index is attached: a
-          // definition added since may shadow an auto-definition.
+          // only a primary hint is read while an index is attached: a
+          // definition added since may shadow an auto-definition
           if (match.primary) {
             this.globalNameToActualPath.set(name, {
               path: match.path,
@@ -796,8 +694,6 @@ export class YamlDefinitionRepository implements DefinitionRepository {
     type: ModelType,
   ): Promise<boolean> {
     if (!this.secondaryBaseDir) return false;
-    // The name lookup is usually answered from the hint the lookup that
-    // loaded the definition recorded; only an auto-definition walks models/.
     const byName = await this.findByNamePrimary(definition.name);
     if (byName?.definition.id === definition.id) return false;
     if (byName === null) return true;
@@ -806,10 +702,6 @@ export class YamlDefinitionRepository implements DefinitionRepository {
     return !(await this.findAll(type)).some((d) => d.id === definition.id);
   }
 
-  /**
-   * Finds a definition by name in the primary definitions directory
-   * (`models/`) only, never in the secondary one.
-   */
   private async findByNamePrimary(
     name: string,
   ): Promise<{ definition: Definition; type: ModelType } | null> {
@@ -823,13 +715,9 @@ export class YamlDefinitionRepository implements DefinitionRepository {
   }
 
   /**
-   * Reads a hinted file and resolves its model type, or returns null.
-   *
-   * The type conversion is guarded because discovery warns and skips a file
-   * whose declared type is not a valid model type. Without the guard a hint
-   * recorded for such a file — or a file edited to an invalid type after the
-   * hint was recorded — would throw here instead of falling back to the walk
-   * that skips it.
+   * the type conversion is guarded because discovery skips a file with an
+   * invalid type; unguarded, a hint for such a file would throw instead of
+   * falling back to the walk
    */
   private async readHintedWithType(
     hint: { path: string; pathSegments: string[] },
@@ -849,9 +737,6 @@ export class YamlDefinitionRepository implements DefinitionRepository {
     }
   }
 
-  /**
-   * Recursively searches for a definition file by name in nested directory structures.
-   */
   private async searchDefinitionByName(
     currentDir: string,
     pathSegments: string[],
@@ -865,7 +750,6 @@ export class YamlDefinitionRepository implements DefinitionRepository {
         if (
           (entry.isFile || entry.isSymlink) && entry.name.endsWith(".yaml")
         ) {
-          // Found a YAML file, check if it matches the name
           try {
             if (entry.isSymlink) {
               await assertSafePath(fullPath, this.repoDir);
@@ -875,10 +759,9 @@ export class YamlDefinitionRepository implements DefinitionRepository {
             const definition = Definition.fromData(data);
 
             if (definition.name === name) {
-              // Prefer the type from the YAML, fall back to path-based type.
-              // Resolved before anything is recorded: an invalid type throws
+              // resolved before anything is recorded: an invalid type throws
               // into the catch below, which warns and skips the file, and a
-              // skipped file must not leave a hint behind.
+              // skipped file must not leave a hint
               const typeStr = definition.type ?? pathSegments.join("/");
               const modelType = ModelType.create(typeStr);
               this.idToActualPath.set(
@@ -907,7 +790,6 @@ export class YamlDefinitionRepository implements DefinitionRepository {
             logger.warn`Skipping broken definition file ${fullPath}: ${msg}`;
           }
         } else if (entry.isDirectory) {
-          // Recursively search subdirectories
           const result = await this.searchDefinitionByName(
             fullPath,
             [...pathSegments, entry.name],
@@ -929,9 +811,6 @@ export class YamlDefinitionRepository implements DefinitionRepository {
     return null;
   }
 
-  /**
-   * Finds all definitions across all model types in the repository.
-   */
   async findAllGlobal(): Promise<
     { definition: Definition; type: ModelType }[]
   > {
@@ -943,7 +822,6 @@ export class YamlDefinitionRepository implements DefinitionRepository {
   async findByIdGlobal(
     id: DefinitionId,
   ): Promise<{ definition: Definition; type: ModelType } | null> {
-    // Primary definitions first, as findByNameGlobal searches them first.
     for (const dir of [this.baseDir, this.secondaryBaseDir]) {
       if (!dir) continue;
       const results: { definition: Definition; type: ModelType }[] = [];
@@ -952,9 +830,9 @@ export class YamlDefinitionRepository implements DefinitionRepository {
       if (found) return found;
     }
     if (this.secondaryBaseDir && this.unreadableContent) {
-      // An auto-definition stored under its id that the datastore could not
-      // materialise fails loudly; one stored under its name cannot be told
-      // from its id, so the miss names them (swamp-club#3617).
+      // an auto-definition stored under its id that the datastore could not
+      // materialise fails loudly; one under its name cannot be told from its
+      // id, so the miss names them
       for (
         const entry of await unreadableRecordsUnder(
           this.unreadableContent,
@@ -985,9 +863,9 @@ export class YamlDefinitionRepository implements DefinitionRepository {
     const found: { definition: Definition; type: ModelType }[] = [];
     for (const dir of [this.baseDir, this.secondaryBaseDir]) {
       if (!dir) continue;
-      // Without recording paths: every definition declaring an id is read,
-      // and the last one read must not become where findById looks next —
-      // that would let an auto-definition shadow a primary one.
+      // without recording paths: the last definition read for an id must not
+      // become where findById looks next, or an auto-definition would shadow a
+      // primary one
       await this.collectAllDefinitions(dir, [], found, false);
     }
     if (this.secondaryBaseDir) {
@@ -999,10 +877,6 @@ export class YamlDefinitionRepository implements DefinitionRepository {
     return found;
   }
 
-  /**
-   * Recursively collects all definition files from nested directory structures.
-   * With `recordPaths`, remembers where each id was found for findById.
-   */
   private async collectAllDefinitions(
     currentDir: string,
     pathSegments: string[],
@@ -1016,7 +890,6 @@ export class YamlDefinitionRepository implements DefinitionRepository {
         if (
           (entry.isFile || entry.isSymlink) && entry.name.endsWith(".yaml")
         ) {
-          // Found a YAML file, add it to results
           const found = await this.readDefinitionEntry(
             fullPath,
             pathSegments,
@@ -1025,7 +898,6 @@ export class YamlDefinitionRepository implements DefinitionRepository {
           );
           if (found) results.push(found);
         } else if (entry.isDirectory) {
-          // Recursively search subdirectories
           await this.collectAllDefinitions(
             fullPath,
             [...pathSegments, entry.name],
@@ -1041,11 +913,6 @@ export class YamlDefinitionRepository implements DefinitionRepository {
     }
   }
 
-  /**
-   * The directories definitions are read from: the definitions directory,
-   * then the auto-definitions directory when there is one. The order is the
-   * one {@link findAllIncludingAutoGlobal} reads them in.
-   */
   definitionRoots(): string[] {
     return this.secondaryBaseDir
       ? [this.baseDir, this.secondaryBaseDir]
@@ -1053,10 +920,8 @@ export class YamlDefinitionRepository implements DefinitionRepository {
   }
 
   /**
-   * Reads one definition file as a scan of every definition reads it:
-   * `typeSegments` is the path of its directory below its root, the type a
-   * file that declares none belongs to. Null for an empty or broken file,
-   * which is warned about and skipped; an I/O error is raised.
+   * null for an empty or broken file, which is warned about and skipped; an I/O
+   * error is raised
    */
   readDefinitionFile(
     path: string,
@@ -1086,7 +951,6 @@ export class YamlDefinitionRepository implements DefinitionRepository {
           fullPath,
         );
       }
-      // Prefer the type from the YAML, fall back to path-based type
       const typeStr = definition.type ?? pathSegments.join("/");
       return { definition, type: ModelType.create(typeStr) };
     } catch (error) {
@@ -1121,16 +985,14 @@ export class YamlDefinitionRepository implements DefinitionRepository {
       async () => {
         const previousPath = this.idToActualPath.get(definition.id);
 
-        // Check if this is a new definition or an update
         const legacyPath = this.getLegacyPath(
           type,
           definition.id,
           writeBaseDir,
         );
-        // On v3 (swamp-club#3256), what each file held before this save replaces
-        // or removes it: its digest for an edit's precondition, and the name it
-        // declared, which tells a rename apart. Read before readMergeSource,
-        // which removes a corrupt target.
+        // on v3, what each file held before this save is read first: its digest
+        // for an edit's precondition and the name it declared, which tells a
+        // rename; before readMergeSource, which removes a corrupt target
         const priors = typedStagingActive(this.markDirtyHook)
           ? await readPriors([targetPath, previousPath, legacyPath])
           : new Map<string, PriorFile>();
@@ -1139,42 +1001,24 @@ export class YamlDefinitionRepository implements DefinitionRepository {
           !(await this.exists(legacyPath));
 
         const data = definition.toData();
-        // Ensure type metadata is always present in persisted YAML
         data.type = type.normalized;
         await modelRegistry.ensureTypeLoaded(type);
         let modelDef = modelRegistry.get(type);
-        // ensureTypeLoaded only imports types already registered as lazy. A command
-        // that never populated the registry (e.g. `model edit`, which resolves the
-        // type only from the YAML on disk) leaves an extension type unresolved here,
-        // which would silently bypass the sensitive-arg guard below. Fall back to a
-        // full extension load so the schema is available. ensureLoaded is memoized,
-        // so commands that already loaded the registry (create/run/serve) pay
-        // nothing, and this only does real work the first time an unloaded type is
-        // written.
+        // ensureTypeLoaded imports only lazy-registered types; a command that
+        // never populated the registry would silently bypass the sensitive-arg
+        // guard, so fall back to a full (memoized) extension load
         if (!modelDef) {
           await modelRegistry.ensureLoaded();
           await modelRegistry.ensureTypeLoaded(type);
           modelDef = modelRegistry.get(type);
         }
-        // typeVersion is deliberately NOT stamped here. It records the model type
-        // version a definition's globalArguments were authored or migrated for, so
-        // only creation and DefinitionUpgradeService may set it. Stamping it on
-        // every save marked a stale instance as current without migrating its
-        // arguments, which stranded it permanently: DefinitionUpgradeService
-        // short-circuits once typeVersion is at or above the model version, so no
-        // upgrade chain shipped later could ever run (swamp-club#900). An absent
-        // typeVersion is likewise left absent rather than backfilled: backfilling
-        // would claim the arguments were authored for a version nobody verified
-        // them against (swamp-club#2412).
+        // typeVersion is deliberately not stamped here: only creation and
+        // DefinitionUpgradeService set it, since stamping a stale instance as
+        // current would strand it, and an absent one stays absent
 
-        // Fail closed before writing: a global argument marked `{ sensitive: true }`
-        // must never be persisted as a literal value — it would sit in cleartext in
-        // the definition YAML, readable by anyone with repo/filesystem access. This
-        // is the single chokepoint every source-definition writer funnels through
-        // (model create/edit/run/workflow auto-definitions and the serve API), so
-        // enforcing it here covers them all. Literal values must instead be supplied
-        // as a `vault.get(...)` expression, which is resolved at runtime and stored
-        // unevaluated. Throwing before the write leaves no partial file behind.
+        // fail closed before writing: a literal sensitive global argument would
+        // sit in cleartext in the YAML. Every writer funnels through here;
+        // throwing leaves no partial file.
         const leakedArgs = findLiteralSensitiveGlobalArgs(
           modelDef?.globalArguments,
           data.globalArguments,
@@ -1186,20 +1030,14 @@ export class YamlDefinitionRepository implements DefinitionRepository {
           );
         }
 
-        // Remove undefined values since YAML can't stringify them
         const cleanData = JSON.parse(JSON.stringify(data)) as Record<
           string,
           unknown
         >;
 
-        // When the definition already has a file — at the target path, or at the
-        // path it is moving from (a legacy uuid-named file, or its previous name)
-        // — check whether the definition data has actually changed. If it hasn't,
-        // skip the write entirely, or carry the text over verbatim when the file
-        // is moving, to avoid destroying YAML comments and producing git noise.
-        // When the data HAS changed, use npm:yaml's Document API to merge the
-        // new values onto the existing AST so that comments on unchanged nodes
-        // are preserved (swamp-club#1842, swamp-club#3012, swamp-club#3502).
+        // if the data is unchanged skip the write, or carry the text over
+        // verbatim on a move; otherwise merge onto the existing AST so comments
+        // on unchanged nodes survive
         const source = isNew ? null : await this.readMergeSource(
           definition.id,
           targetPath,
@@ -1264,7 +1102,6 @@ export class YamlDefinitionRepository implements DefinitionRepository {
         this.idToActualPath.set(definition.id, targetPath);
         await this.stageSave(definition, targetPath, content, removed, priors);
 
-        // Emit event
         if (this.eventBus) {
           const event = isNew
             ? createDefinitionCreated(
@@ -1283,11 +1120,6 @@ export class YamlDefinitionRepository implements DefinitionRepository {
     );
   }
 
-  /**
-   * Stages a save on v3 (swamp-club#3256), outside the cleanup's catch
-   * blocks so a refusal surfaces. The batches, in commit order, are in
-   * {@link definitionSaveBatches}.
-   */
   private async stageSave(
     definition: Definition,
     targetPath: string,
@@ -1312,10 +1144,6 @@ export class YamlDefinitionRepository implements DefinitionRepository {
     }
   }
 
-  /**
-   * A definition file's tier and record key for v3: managed config, or an
-   * auto-definitions directory; undefined for a git-tracked definition.
-   */
   private stagingTierOf(path: string) {
     return stagingTierOf(this.repoDir, [
       this.baseDir,
@@ -1323,9 +1151,6 @@ export class YamlDefinitionRepository implements DefinitionRepository {
     ], path);
   }
 
-  /**
-   * Checks if a file exists.
-   */
   private async exists(path: string): Promise<boolean> {
     try {
       await Deno.stat(path);
@@ -1339,31 +1164,22 @@ export class YamlDefinitionRepository implements DefinitionRepository {
   }
 
   /**
-   * Deletes the definition with this id, from the definitions directory or
-   * the auto-definitions directory. Ids are not guaranteed unique — a copied
-   * file keeps its id — so with `name` only a file declaring both is removed,
-   * never another definition that shares the id.
+   * ids are not unique (a copied file keeps its id), so with name only a file
+   * declaring both is removed, never another definition sharing the id
    */
   async delete(
     type: ModelType,
     id: DefinitionId,
     name?: string,
   ): Promise<void> {
-    // Lookups, file removal, the deleted event and change staging are
-    // measured apart into the running diagnostic phase, if any.
     const tally = currentDiagnosticTally();
-    // Populate cache so we discover name-based and secondary files on a cold
-    // instance
     const definition = await tally.measure(
       "lookup",
       () => this.findById(type, id),
     );
     let definitionName = name ?? definition?.name;
 
-    // Try removing all possible file paths; declaresOther below skips any
-    // that holds a different definition.
     const pathsToTry = new Set([this.getLegacyPath(type, id)]);
-    // Never delete a same-id file that belongs to another type.
     const hintedPath = this.idToActualPath.get(id);
     const hinted = hintedPath ? await this.readDeclared(hintedPath) : null;
     const cachedPath = hintedPath &&
@@ -1376,7 +1192,6 @@ export class YamlDefinitionRepository implements DefinitionRepository {
     if (definitionName && isFilenameSafeDefinitionName(definitionName)) {
       pathsToTry.add(this.getNamePath(type, definitionName));
     }
-    // The definition may also (or only) live in the auto-definitions dir.
     if (this.secondaryBaseDir) {
       const secondaryBaseDir = this.secondaryBaseDir;
       const located = await tally.measure(
@@ -1409,9 +1224,9 @@ export class YamlDefinitionRepository implements DefinitionRepository {
           let deleted = false;
           const removed: string[] = [];
           for (const path of pathsToTry) {
-            // The id-named path is also where a definition named with this UUID
+            // the id-named path is also where a definition named with this UUID
             // lives, and a copied file can share the id; never remove another
-            // definition's file.
+            // definition's file
             if (await this.declaresOther(path, id, name)) continue;
             try {
               const otherCandidate = path !== resolvedPath &&
@@ -1425,7 +1240,6 @@ export class YamlDefinitionRepository implements DefinitionRepository {
               deleted = true;
               removed.push(path);
 
-              // Clean up empty parent directories
               await tally.measure(
                 "file_remove",
                 () => cleanupEmptyParentDirs(path, this.ownerBaseDir(path)),
@@ -1472,12 +1286,6 @@ export class YamlDefinitionRepository implements DefinitionRepository {
       ));
   }
 
-  /**
-   * Returns the definition with this id from the file the repository last
-   * saw it in, without scanning, when that file still declares the id. The
-   * type is the one the file declares, else the directory it is in, as a
-   * lookup by name reports it. Null when there is no such hint.
-   */
   async findByIdCached(
     id: DefinitionId,
   ): Promise<{ definition: Definition; type: ModelType } | null> {
@@ -1493,7 +1301,6 @@ export class YamlDefinitionRepository implements DefinitionRepository {
     }
   }
 
-  /** The type path of the definitions directory `path` sits in, if any. */
   private typeDirOf(path: string): string | undefined {
     for (const base of [this.baseDir, this.secondaryBaseDir]) {
       if (!base) continue;
@@ -1505,12 +1312,10 @@ export class YamlDefinitionRepository implements DefinitionRepository {
     return undefined;
   }
 
-  /** Whether `path` holds a readable definition declaring `id`. */
   private async declaresId(path: string, id: DefinitionId): Promise<boolean> {
     return (await this.readDeclared(path))?.id === id;
   }
 
-  /** Parses the definition in `path`, or null if it is missing or invalid. */
   private async readDeclared(path: string): Promise<Definition | null> {
     try {
       const data = parseYaml(await Deno.readTextFile(path)) as
@@ -1522,10 +1327,6 @@ export class YamlDefinitionRepository implements DefinitionRepository {
     }
   }
 
-  /**
-   * Whether `path` holds a readable definition that declares an id not `id`,
-   * or — when `name` is given — a name not `name`.
-   */
   private async declaresOther(
     path: string,
     id: DefinitionId,
@@ -1552,12 +1353,9 @@ export class YamlDefinitionRepository implements DefinitionRepository {
   }
 
   /**
-   * Reads the file a save should merge onto: the target file when it exists,
-   * otherwise the file the definition is moving from — its cached previous
-   * path, or its legacy uuid-named path. A file other than the target is used
-   * only when it declares `id`: the cached path is a hint that may be stale,
-   * and the uuid-named path is also where a definition *named* with that UUID
-   * lives. Null when there is nothing to merge onto.
+   * a file other than the target is used only when it declares id: the cached
+   * path may be stale, and the uuid path is also where a definition named with
+   * that UUID lives
    */
   private async readMergeSource(
     id: DefinitionId,
@@ -1571,8 +1369,8 @@ export class YamlDefinitionRepository implements DefinitionRepository {
       const raw = await Deno.readTextFile(targetPath);
       const parsed = parseYaml(raw) as Record<string, unknown> | null;
       if (parsed) return { path: targetPath, raw, parsed };
-      // Corrupt/empty file — remove it so the write replaces it with valid
-      // content. The definition may still have a file to merge from below.
+      // a corrupt or empty file is removed so the write replaces it with valid
+      // content; the definition may still have a file to merge from below
       try {
         await Deno.remove(targetPath);
       } catch (error) {
@@ -1589,21 +1387,17 @@ export class YamlDefinitionRepository implements DefinitionRepository {
         const parsed = parseYaml(raw) as Record<string, unknown> | null;
         if (parsed?.id === id) return { path, raw, parsed };
       } catch (error) {
-        // An I/O error must propagate: reading the file as absent would write
-        // a fresh one and then remove this one, dropping its comments unseen.
+        // an I/O error must propagate: reading the file as absent would write a
+        // fresh one and then remove this one, dropping its comments unseen
         if (isIoError(error)) throw error;
-        // Missing or unparseable — not something to merge onto.
       }
     }
     return null;
   }
 
   /**
-   * Removes the files a definition moved away from. A path that now holds a
-   * different definition is left alone, as delete() leaves it. The check is on
-   * id alone: a renamed definition's old file declares its old name, so the
-   * name cannot tell a rename apart from another definition. Returns the
-   * paths it removed, for their v3 tombstones (swamp-club#3256).
+   * the check is on id alone: a renamed definition's old file declares its old
+   * name, so name cannot tell a rename apart from another definition
    */
   private async cleanupOldPaths(
     id: DefinitionId,
@@ -1685,15 +1479,9 @@ export class YamlDefinitionRepository implements DefinitionRepository {
   }
 
   /**
-   * Picks the directory an existing definition is saved back into.
-   *
-   * A definition that lives only in the secondary auto-definitions directory
-   * stays there. Otherwise a save through this repository would write it to the
-   * primary directory, then remove the auto-definition as its previous path (or
-   * leave it behind as a stale copy when no lookup cached that path).
-   *
-   * Only the cached path and the two filenames save() writes are checked, so
-   * this never scans a directory.
+   * a definition only in the auto-definitions directory stays there; otherwise
+   * a save would write it to the primary directory and remove the
+   * auto-definition or leave a stale copy
    */
   private async resolveSaveBaseDir(
     type: ModelType,
@@ -1726,17 +1514,12 @@ export class YamlDefinitionRepository implements DefinitionRepository {
     return this.baseDir;
   }
 
-  /** The directory owning a definition file: primary, or secondary. */
   private ownerBaseDir(path: string): string {
     return this.secondaryBaseDir && isWithinDir(path, this.secondaryBaseDir)
       ? this.secondaryBaseDir
       : this.baseDir;
   }
 
-  /**
-   * Whether `definition`, read from `path`, is of `type`: in `type`'s
-   * directory, or declaring `type` wherever it is filed.
-   */
   private isOfType(
     path: string,
     definition: Definition,
@@ -1752,7 +1535,6 @@ export class YamlDefinitionRepository implements DefinitionRepository {
     return this.isPathOfType(path, type);
   }
 
-  /** Whether `path` is a definition file directly in `type`'s directory. */
   private isPathOfType(path: string, type: ModelType): boolean {
     const dir = dirname(path);
     if (dir === this.getTypeDir(type)) return true;
@@ -1761,11 +1543,6 @@ export class YamlDefinitionRepository implements DefinitionRepository {
   }
 }
 
-/**
- * Reads and parses one definition file, counting it into the running
- * diagnostic phase: `files_read` and `bytes_read` for a file read, and its
- * read and parse time as `read_work_ms` and `parse_work_ms`.
- */
 async function readDefinitionData(
   path: string,
 ): Promise<DefinitionData | null> {
@@ -1779,7 +1556,6 @@ async function readDefinitionData(
   ) as DefinitionData | null;
 }
 
-/** Which step of {@link YamlDefinitionRepository.findByName} answered. */
 type LookupMethod =
   | "name_file"
   | "primary_hint"
@@ -1790,18 +1566,13 @@ type LookupMethod =
   | "none";
 
 /**
- * Key for the per-type name hint map.
- *
- * JSON-encodes the two parts rather than joining them with a separator
- * character: it is unambiguous for any input without relying on assumptions
- * about which characters a type or definition name can contain, and it keeps
- * the source plain ASCII.
+ * JSON-encoded so it is unambiguous for any input, without assuming which
+ * characters a type or definition name can contain
  */
 function nameHintKey(type: ModelType, name: string): string {
   return JSON.stringify([type.toDirectoryPath(), name]);
 }
 
-/** True when `path` is inside `dir` (or is `dir`). */
 function isWithinDir(path: string, dir: string): boolean {
   const rel = relative(dir, path);
   return rel === "" ||
@@ -1822,13 +1593,9 @@ function canonicalJson(data: unknown): string {
 }
 
 /**
- * Line width for re-serializing a merged document. The serializer re-wraps
- * every scalar, changed or not, so the width follows what the file already
- * does: a file with a line past 80 columns is never folded, which keeps a long
- * single-line expression on its line, and any other file is folded at 80 as
- * swamp wrote it. Comment lines are not scalars and do not count. Nor do the
- * lines of a block scalar: a fresh write folds into block scalars, and a token
- * with nowhere to break still runs past 80 columns inside one.
+ * the serializer re-wraps every scalar, so a file with a line past 80 columns
+ * is never folded and any other is folded at 80; comment lines and block scalar
+ * lines do not count
  */
 function mergeLineWidth(raw: string, doc: YamlDocument): number {
   const blocks: [number, number][] = [];
@@ -1859,18 +1626,9 @@ function mergeLineWidth(raw: string, doc: YamlDocument): number {
 }
 
 /**
- * Renders `newData` merged onto the YAML text `raw`, whose own parse is
- * `oldData`. The result always reads back as `newData`.
- *
- * When only scalar values changed — a `typeVersion` bump, an edited argument —
- * they are rewritten in place in the source and every other byte is kept.
- * Otherwise the new values are merged onto the parsed document, which keeps
- * comments, aliases and quoting of every unchanged subtree but re-renders the
- * layout. Merging onto an anchored node also changes every alias of it, and
- * replacing one leaves its aliases with nothing to refer to, so when the merged
- * text reads back as anything else, or cannot be rendered, the merge is redone
- * with the aliases expanded, which keeps the comments but not the aliases. A
- * fresh rendering is the last resort.
+ * scalar-only changes are edited in place; otherwise merge onto the parsed
+ * document, and if aliases break the read-back redo it with aliases expanded; a
+ * fresh rendering is the last resort
  */
 function renderMerged(
   raw: string,
@@ -1900,17 +1658,6 @@ function renderMerged(
   return stringifyYaml(newData);
 }
 
-/**
- * Rewrites, in the source text itself, each scalar whose value differs between
- * `oldData` and `newData`, keeping every other byte. Undefined when the change
- * is not only to existing scalars (a key added or removed, a list resized, a
- * value behind an alias), or the file is not a single document.
- *
- * Without `restyle` each value is written as the CST chooses from the token's
- * own style. With it, each value is written in the style `scalarTypeFor` picks
- * and block scalars are indented under their key — for edits that otherwise
- * read back as something else (swamp-club#3541).
- */
 function editScalarsInPlace(
   raw: string,
   newData: Record<string, unknown>,
@@ -1943,18 +1690,12 @@ function editScalarsInPlace(
   return tokens.map((token) => CST.stringify(token)).join("");
 }
 
-/** A new value for a scalar token, and the style to write it in. */
 interface ScalarEdit {
   token: CST.Token;
   value: string;
   type?: Scalar.Type;
 }
 
-/**
- * Walks `node` alongside its old and new values, collecting a source edit for
- * each changed scalar. False when a change is anything other than a new
- * scalar value for an existing scalar node.
- */
 function collectScalarEdits(
   node: YamlNode | null,
   oldValue: unknown,
@@ -2000,14 +1741,6 @@ function collectScalarEdits(
   return true;
 }
 
-/**
- * The style to write `value` in, over a scalar currently written as `current`.
- * A string that spans lines is a block scalar, folded only if it already was.
- * Any other string keeps a quoted or block style, and a plain one is
- * double-quoted when written plain would read back as something else. Any
- * other value is written plain, since quoted it would read back as a string
- * (swamp-club#3541).
- */
 function scalarTypeFor(
   value: string | number | boolean | null,
   current: Scalar.Type | undefined,
@@ -2020,7 +1753,6 @@ function scalarTypeFor(
   return readsPlainAs(value) ? Scalar.PLAIN : Scalar.QUOTE_DOUBLE;
 }
 
-/** Whether `value`, written as a plain scalar, reads back as that string. */
 function readsPlainAs(value: string): boolean {
   try {
     return parseYaml(value) === value;
@@ -2037,7 +1769,6 @@ function isPrimitive(
   );
 }
 
-/** Whether `content` parses to the data whose canonical JSON is `expected`. */
 function readsBackAs(content: string, expected: string): boolean {
   try {
     return canonicalJson(JSON.parse(JSON.stringify(parseYaml(content)))) ===
@@ -2047,10 +1778,6 @@ function readsBackAs(content: string, expected: string): boolean {
   }
 }
 
-/**
- * Replaces every alias in `doc` with a copy of the node it refers to, and
- * removes every anchor, so no anchor is duplicated or left unreferenced.
- */
 function expandAliases(doc: YamlDocument): void {
   visit(doc, {
     Alias(_key, node) {
@@ -2077,7 +1804,6 @@ function mergeIntoDocument(
   }
   mergeMap(doc, root, newData, oldData);
 
-  // Remove keys from the document that are no longer in the new data
   for (let i = root.items.length - 1; i >= 0; i--) {
     const key = String(root.items[i].key);
     if (!(key in newData)) {
@@ -2086,12 +1812,6 @@ function mergeIntoDocument(
   }
 }
 
-/**
- * Merges `data` onto `map`, whose value as the file's own parse reads it is
- * `old`. A key whose value is unchanged keeps its node as written — comments
- * inside it, an alias, quoting — since that text already reads back as the
- * new value.
- */
 function mergeMap(
   doc: YamlDocument,
   map: YAMLMap,
@@ -2114,7 +1834,6 @@ function mergeMap(
       newValue !== null && typeof newValue === "object" &&
       !Array.isArray(newValue)
     ) {
-      // Both sides are objects — recurse to preserve nested comments
       mergeMap(
         doc,
         existing,
@@ -2122,7 +1841,6 @@ function mergeMap(
         oldMap?.[key],
       );
 
-      // Remove keys from the map that are no longer in the new data
       for (let i = existing.items.length - 1; i >= 0; i--) {
         const childKey = String(existing.items[i].key);
         if (!(childKey in (newValue as Record<string, unknown>))) {

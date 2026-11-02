@@ -17,9 +17,9 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// The behavior spelling of a step task is an exact synonym of the
-// model_method spelling (swamp-club#3334): it parses, and is written back,
-// identically, and a task mixing the two is always refused.
+// the behavior spelling of a step task is an exact synonym of the model_method
+// spelling: it parses and is written back identically, and a task mixing the
+// two is always refused
 
 import { assertEquals, assertThrows } from "@std/assert";
 import fc from "fast-check";
@@ -52,7 +52,6 @@ const arbArgs = fc.option(
   { nil: undefined },
 );
 
-/** A valid model_method task as entries, in an arbitrary key order. */
 const arbModelEntries: fc.Arbitrary<[string, unknown][]> = fc.oneof(
   fc.record({ ref: arbName, method: arbName, inputs: arbArgs }).map((
     { ref, method, inputs },
@@ -154,8 +153,8 @@ Deno.test("normalizeBehaviorTask property: a behavior task mixing model keys is 
           ...modelTask(entries),
           ...Object.fromEntries(strayBehavior.map((k) => [k, value])),
         };
-        // A model_method task keeps dropping undeclared keys, as it always
-        // has: a stray behavior key changes nothing.
+        // a model_method task drops undeclared keys, so a stray behavior key
+        // changes nothing
         assertEquals(
           StepTaskSchema.parse(model),
           StepTaskSchema.parse(modelTask(entries)),

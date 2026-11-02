@@ -248,10 +248,9 @@ export function serverCancelRejection(
 }
 
 /**
- * The serve to send a cancel to when `runId` is not this checkout's own, in a
- * checkout written through serve (swamp-club#4245). A member's local run holds
- * only a pid, which means nothing on another machine, so the checkout's own run
- * tracker says which runs it drives; anything else is stopped by serve.
+ * a member's local run holds only a pid, meaningless on another machine, so the
+ * checkout's run tracker says which runs it drives; anything else is stopped by
+ * serve
  */
 export function foreignRunServer(
   runId: string | undefined,

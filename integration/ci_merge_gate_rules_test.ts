@@ -17,16 +17,9 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// Architectural fitness test: the CI auto-merge gate fails closed.
-//
-// swamp-club#3048: the gate used to ask only whether anything had failed. A
-// runner outage that cancelled change detection left every review `skipped`,
-// and a review cancelled on its own is `cancelled` without cancelling the run,
-// so neither stopped the merge and a core-source PR could merge unreviewed.
-//
-// The gate now requires `success` from every prerequisite, and accepts a
-// skipped review only when change detection succeeded and said the review was
-// not required. These rules pin that shape so it cannot be quietly reverted.
+// the gate requires success from every prerequisite and accepts a skipped
+// review only when change detection succeeded and said it was not required, so
+// an outage cannot merge a PR unreviewed
 
 import { assertEquals, assertStringIncludes } from "@std/assert";
 import { dirname, fromFileUrl, join } from "@std/path";
@@ -54,7 +47,6 @@ async function loadJobs(): Promise<Record<string, Job>> {
   return doc.jobs;
 }
 
-/** Whitespace-free, so clause checks don't depend on line wrapping. */
 function squash(expression: string): string {
   return expression.replace(/\s+/g, "");
 }

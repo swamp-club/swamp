@@ -17,14 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Integration tests for grant-file usernames (swamp-club#3123): grant files
- * on a real repository, the real grant store, reconciler and policy
- * snapshot, and the pin store over an encrypted control-plane vault on
- * disk. A load runs what serve startup and a reload run: read the files,
- * resolve their usernames, reconcile, load the snapshot.
- */
-
 import { join } from "@std/path";
 import { assertEquals, assertStringIncludes } from "@std/assert";
 import { requireInitializedRepoUnlocked } from "../src/cli/repo_context.ts";
@@ -58,7 +50,6 @@ import {
 import { UsernameNotFoundError } from "../src/serve/oauth_client.ts";
 import { OAUTH_RESOLVED_ADMINS_KEY } from "../src/serve/oauth_registration.ts";
 
-// Import models barrel to trigger built-in registration.
 import "../src/domain/models/models.ts";
 import { initializeLogging } from "../src/infrastructure/logging/logger.ts";
 
@@ -67,7 +58,6 @@ await initializeLogging({});
 const PROVIDER = "https://club.example";
 const DEPLOY: AccessResource = { kind: "workflow", name: "deploy", fields: {} };
 
-/** The provider's directory: username to sub, editable mid-test. */
 type Directory = Record<string, string>;
 
 interface Harness {
@@ -78,12 +68,10 @@ interface Harness {
   loader: PolicySnapshotLoader;
   directory: Directory;
   asked: string[];
-  /** A serve instance's resolver; each call is a fresh process. */
   newResolver(
     options?: { lookup?: GrantUsernameLookup | null },
   ): GrantUsernameResolver;
   writeGrants(name: string, yaml: string): Promise<void>;
-  /** What startup or a reload does with the grant files. */
   load(resolver: GrantUsernameResolver): Promise<LoadResult>;
   decide(sub: string): Promise<string | undefined>;
 }
@@ -228,7 +216,6 @@ Deno.test("grant file usernames: a username grant matches the principal by its s
     const { errors } = await h.load(h.newResolver());
     assertEquals(errors, []);
     assertEquals(await h.decide("sub-alice"), "allow");
-    // A token-auth principal named alice is a different principal.
     assertEquals(await h.decide("alice"), undefined);
   });
 });
@@ -239,7 +226,6 @@ Deno.test("grant file usernames: renaming the entry to the account's new name ch
     await h.writeGrants("team.yaml", grantsFor("username:alice"));
     await h.load(h.newResolver());
 
-    // The account is renamed, and the file follows it.
     delete h.directory.alice;
     h.directory["alice-r"] = "sub-alice";
     await h.writeGrants("team.yaml", grantsFor("username:alice-r"));
@@ -257,7 +243,6 @@ Deno.test("grant file usernames: a pinned name is never looked up again, so a re
     await h.writeGrants("team.yaml", grantsFor("username:alice"));
     await h.load(h.newResolver());
 
-    // alice's account is deleted and someone else registers the name.
     h.directory.alice = "sub-new-owner";
     h.asked.length = 0;
     await h.writeGrants(
@@ -288,7 +273,6 @@ Deno.test("grant file usernames: a name that never resolved rejects its file and
     assertEquals(errors.length, 1);
     assertStringIncludes(errors[0].message, 'Subject "username:mallory"');
     assertEquals(reconcile.totalRevoked, 0);
-    // The deny the file held before is still in force.
     assertEquals(await h.decide("sub-ops"), "deny");
   });
 });
@@ -300,7 +284,6 @@ Deno.test("grant file usernames: a name first seen missing stays rejected after 
     const first = await h.load(h.newResolver());
     assertEquals(first.errors.length, 1);
 
-    // Someone registers the typo, then serve restarts.
     h.directory.alcie = "sub-attacker";
     h.asked.length = 0;
     const second = await h.load(h.newResolver());
@@ -355,7 +338,6 @@ Deno.test("grant file usernames: a provider outage keeps stored grants and recor
     assertEquals(await h.decide("sub-alice"), "allow");
     assertEquals(Object.keys((await h.pinStore.read()).missing), []);
 
-    // Back up: bob is looked up and pinned.
     h.directory.bob = "sub-bob";
     assertEquals((await h.load(h.newResolver())).errors, []);
     assertEquals(await h.decide("sub-bob"), "allow");
@@ -391,7 +373,6 @@ Deno.test("grant file usernames: grant pins and the admin resolutions live in se
       JSON.parse(await h.vault.get(OAUTH_RESOLVED_ADMINS_KEY)),
       { admin: "sub-admin" },
     );
-    // The admin path rewrites its whole key; grant pins are untouched.
     await h.vault.put(OAUTH_RESOLVED_ADMINS_KEY, JSON.stringify({}));
     assertEquals((await h.pinStore.read()).pinned.alice, "sub-alice");
   });
@@ -399,8 +380,6 @@ Deno.test("grant file usernames: grant pins and the admin resolutions live in se
 
 Deno.test("grant file usernames: a pin another instance wrote wins over a fresh lookup", async () => {
   await withHarness(async (h) => {
-    // Instance A pins alice; instance B, sharing the control plane, then
-    // sees a different answer from the provider for the same name.
     h.directory.alice = "sub-alice";
     await h.writeGrants("team.yaml", grantsFor("username:alice"));
     const instanceB = h.newResolver();

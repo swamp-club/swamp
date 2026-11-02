@@ -40,8 +40,8 @@ function alwaysFalse(): boolean {
 }
 
 /**
- * How a grant condition evaluated. `missing-field` means the condition needs
- * a resource field the resource does not carry (swamp-club#2675).
+ * missing-field means the condition needs a resource field the resource does
+ * not carry
  */
 export type ConditionOutcome = "match" | "no-match" | "missing-field" | "error";
 
@@ -49,7 +49,6 @@ export class PolicySnapshot {
   readonly #grantsBySubject: Map<string, Grant[]>;
   readonly #groupsByPrincipal: Map<string, string[]>;
   readonly #evaluateCondition: ConditionEvaluator;
-  /** Resource kinds some grant names, computed once per snapshot. */
   readonly #grantKinds: ReadonlySet<ResourceKind>;
 
   constructor(
@@ -96,10 +95,6 @@ export class PolicySnapshot {
     return result;
   }
 
-  /**
-   * Whether any grant in the snapshot, for any subject, names `kind`
-   * (swamp-club#2676). Computed once when the snapshot is built.
-   */
   hasGrantOfKind(kind: ResourceKind): boolean {
     return this.#grantKinds.has(kind);
   }
@@ -123,9 +118,9 @@ export class PolicySnapshot {
   }
 
   /**
-   * Like {@link evaluateCondition}, but tells a condition that evaluated
-   * false apart from one that could not be evaluated. A caller that would
-   * otherwise allow by default must not read an error as "no match".
+   * tells a condition that evaluated false apart from one that could not be
+   * evaluated, so a caller that would allow by default does not read an error
+   * as no match
    */
   evaluateConditionOutcome(
     condition: string,

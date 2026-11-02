@@ -48,45 +48,31 @@ import { errorPaths, markErrorPaths } from "../../domain/errors.ts";
 const logger = getLogger(["swamp", "extensions", "install-transaction"]);
 
 /**
- * Journal-less staging left behind longer than this is swept. A live
- * install writes its journal before any other staging exists, so only a
- * crash between creating its staging dir and writing the journal leaves
- * one; the age keeps a sweep from racing an install on a shared volume.
+ * journal-less staging older than this is swept: a live install writes its
+ * journal first, so only a crash before that leaves one; the age keeps a sweep
+ * from racing an install on a shared volume
  */
 export const STAGING_SWEEP_AGE_MS = 60 * 60 * 1000;
 
-/**
- * Filesystem operations the transaction uses. A seam so tests can fail
- * any step or record the order of calls; production uses
- * {@link defaultInstallFsOps}.
- */
 export interface InstallFsOps {
-  /** What is at `path`, without following a symlink. */
   lstat(path: string): Promise<ObservedPath>;
-  /** Modification time of `path` (not following a symlink), or null. */
   mtime(path: string): Promise<Date | null>;
   rename(from: string, to: string): Promise<void>;
-  /** Creates `path` and any missing parents. */
   mkdir(path: string): Promise<void>;
-  /** Removes `path` recursively; a missing path is not an error. */
   remove(path: string): Promise<void>;
-  /** Removes the dir `path` only when it is empty; otherwise a no-op. */
   removeIfEmpty(path: string): Promise<void>;
   writeJournal(path: string, text: string): Promise<void>;
   readText(path: string): Promise<string>;
   readFile(path: string): Promise<Uint8Array>;
   readDir(path: string): Promise<string[]>;
   /**
-   * Test seam: true when `error` models the process dying at the step
-   * that threw it. The transaction then neither undoes its renames nor
-   * settles, and drops its owner id, leaving the journal exactly as a
-   * crash would for {@link recoverInstallStaging}. Production ops leave
-   * it unset.
+   * test seam: true when error models the process dying at that step; the
+   * transaction then neither undoes its renames nor settles, leaving the
+   * journal as a crash would
    */
   isSimulatedCrash?(error: unknown): boolean;
 }
 
-/** The real filesystem. */
 export const defaultInstallFsOps: InstallFsOps = {
   async lstat(path) {
     try {
@@ -140,55 +126,38 @@ export const defaultInstallFsOps: InstallFsOps = {
 };
 
 /**
- * Owner ids of the installs this process is running. Recovery leaves
- * their journals alone: a dependency install runs its own recovery while
- * its parent's swap is still uncommitted. No pid checks: containers
- * reuse pids.
+ * recovery leaves these journals alone, since a dependency install runs its own
+ * recovery while its parent's swap is uncommitted; no pid checks because
+ * containers reuse pids
  */
 const activeOwners = new Set<string>();
 
-/** True while this process's install `ownerId` is uncommitted. */
 export function isActiveInstallOwner(ownerId: string): boolean {
   return activeOwners.has(ownerId);
 }
 
-/** One root an install asks to swap. */
 export interface InstallRootSpec {
   role: InstallRootRole;
   live: string;
-  /** Whether the new version has anything for this root. */
   hasNew: boolean;
 }
 
-/** Arguments to {@link ExtensionInstallTransaction.begin}. */
 export interface BeginInstallArgs {
-  /** The repo dir the install runs in; recorded in the journal. */
   repoDir: string;
   pulledRoot: string;
   extensionName: string;
-  /** The lockfile this install writes its entry to. */
   lockfilePath: string;
-  /** Checksum of the archive being installed. */
   newChecksum: string;
-  /** Checksum of the manifest.yaml this install writes. */
   newManifestDigest: string;
-  /** The extension root first, then every candidate bundle root. */
   roots: ReadonlyArray<InstallRootSpec>;
   nestedRoots: ReadonlyArray<NestedRoot>;
   ops?: InstallFsOps;
 }
 
 /**
- * One install's stage-and-swap. {@link begin} writes the journal, then
- * creates the staging dirs the caller fills; {@link swap} moves the live
- * roots aside and the new ones in; {@link commit} deletes the old roots,
- * or {@link rollback} puts them back. On any failure after begin, the
- * caller runs {@link settle}.
- *
- * Between the first phase-1 rename and the `swapped` journal write, a
- * root is briefly absent to readers that do not take the pulled-extensions
- * lock. Only renames, lstats and journal reads and writes happen there,
- * to keep that window short.
+ * between the first phase-1 rename and the swapped journal write a root is
+ * briefly absent to readers that skip the pulled-extensions lock, so only
+ * renames, lstats and journal I/O happen there
  */
 export class ExtensionInstallTransaction {
   readonly #ops: InstallFsOps;
@@ -200,15 +169,6 @@ export class ExtensionInstallTransaction {
     this.#ops = ops;
   }
 
-  /**
-   * Writes the journal, then creates every staging dir the install will
-   * fill (and every parent a rename needs). Nothing is created before
-   * the journal except the dir that holds it.
-   *
-   * Every bundle root is journaled, including one that neither exists
-   * nor gets files from the new version. Throws when a live root is not
-   * a plain directory.
-   */
   static async begin(
     args: BeginInstallArgs,
   ): Promise<ExtensionInstallTransaction> {
@@ -299,12 +259,10 @@ export class ExtensionInstallTransaction {
     return tx;
   }
 
-  /** A copy of the journal as last written. */
   get journal(): InstallJournal {
     return structuredClone(this.#journal);
   }
 
-  /** Where the new version of the root at `live` is staged. */
   newPathOf(live: string): string {
     const root = this.#journal.roots.find((r) => r.live === live);
     if (!root || !root.hasNew) {
@@ -313,17 +271,14 @@ export class ExtensionInstallTransaction {
     return root.new;
   }
 
-  /** Where the new manifest.yaml is staged until it is moved in last. */
   get stagedManifestPath(): string {
     return this.#journal.manifest.staged;
   }
 
   /**
-   * Phase 1 moves each live root to `old/<i>`; phase 2 moves each new
-   * root into place, the extension root after the bundles and
-   * manifest.yaml last; then the journal records `swapped`. Ownership is
-   * re-checked before each phase. On failure every completed rename is
-   * undone in reverse order and the error is rethrown.
+   * ownership is re-checked before each phase; the extension root moves after
+   * the bundles and manifest.yaml last; on failure completed renames are undone
+   * in reverse order
    */
   async swap(): Promise<void> {
     const done: Array<{ from: string; to: string }> = [];
@@ -389,10 +344,9 @@ export class ExtensionInstallTransaction {
   }
 
   /**
-   * Deletes the staging dirs, and with them the old roots. The journal
-   * goes first, so a crash mid-commit can never restore a half-deleted
-   * old root; what is left is swept once stale. Never throws: the install
-   * is complete.
+   * the journal goes first so a crash mid-commit never restores a half-deleted
+   * old root; leftovers are swept once stale. Never throws: the install is
+   * complete
    */
   async commit(): Promise<void> {
     if (this.#done) return;
@@ -408,22 +362,9 @@ export class ExtensionInstallTransaction {
   }
 
   /**
-   * Puts the previous version back after a completed {@link swap}: every
-   * root returns to where it was, by the renames crash recovery makes
-   * when the lockfile entry is not this install's, and then the staging
-   * is deleted, journal first. The caller restores the lockfile entry
-   * before calling this, so a crash part-way leaves a journal that
-   * recovery rolls back.
-   *
-   * A bundle cache dir that a loader outside the lock recreates between
-   * moving the new copy aside and moving the old one back is moved to
-   * its own path in staging, and the rename is retried once.
-   *
-   * Returns true when the previous version is back. Never throws: a disk
-   * state it cannot account for, or a rename that fails, leaves the
-   * journal for crash recovery and returns false. A call after
-   * {@link commit}, {@link settle} or an earlier rollback does nothing
-   * and returns false.
+   * the caller restores the lockfile entry first, so a crash part-way leaves a
+   * journal recovery rolls back; never throws: an unaccountable disk state or
+   * failed rename leaves the journal and returns false
    */
   async rollback(): Promise<boolean> {
     if (this.#done) return false;
@@ -456,11 +397,9 @@ export class ExtensionInstallTransaction {
   }
 
   /**
-   * Stops without moving anything: the journal stays for the crash
-   * recovery the next install or removal runs, and the owner id is
-   * released so that recovery may act on it. For a caller that cannot
-   * tell whether the install should roll forward or back; recovery
-   * decides from the lockfile entry on disk.
+   * stops without moving anything: the journal stays for the next recovery,
+   * which decides roll forward or back from the lockfile entry; the owner id is
+   * released so recovery may act
    */
   release(): void {
     if (this.#done) return;
@@ -471,11 +410,9 @@ export class ExtensionInstallTransaction {
   }
 
   /**
-   * Rollback's hook for a refused rename: when it was the old copy of a
-   * bundle root moving back and a loader has recreated the live dir,
-   * moves that dir to a free path under the root's staging dir, which
-   * the staging delete removes. Returns whether the rename may be
-   * retried.
+   * when an old bundle root cannot move back because a loader recreated the
+   * live dir, move that dir to a free path under its staging dir, which the
+   * staging delete removes
    */
   async #supersedeRecreatedBundle(
     rename: RecoveryRename,
@@ -505,13 +442,9 @@ export class ExtensionInstallTransaction {
   }
 
   /**
-   * Puts things right after a failure anywhere past {@link begin}: rolls
-   * forward when the journal reached `swapped` and the lockfile entry
-   * landed, otherwise back. Never throws, so the caller always rethrows
-   * the original error; a settle that fails, or a disk state it cannot
-   * account for, leaves the journal for crash recovery. The owner id is
-   * released after the attempt, so a later recovery in this process can
-   * pick the journal up.
+   * rolls forward when the journal reached swapped and the lockfile entry
+   * landed, otherwise back; never throws so the caller rethrows the original
+   * error; a failure leaves the journal for crash recovery
    */
   async settle(
     error: unknown,
@@ -556,7 +489,6 @@ export class ExtensionInstallTransaction {
     );
   }
 
-  /** Throws unless the journal on disk is still this install's. */
   async #assertOwner(): Promise<void> {
     const { ownerId } = this.#journal;
     let onDisk: unknown;
@@ -601,15 +533,11 @@ function extensionRootOf(journal: InstallJournal) {
   return ext;
 }
 
-/**
- * Where phase 2 moves a bundle cache dir a loader recreated mid-swap.
- * Outside the slots recovery reads; deleted with the staging.
- */
+/** outside the slots recovery reads; deleted with the staging */
 function supersededPath(root: InstallJournal["roots"][number]): string {
   return join(root.stagingDir, "superseded", String(root.index));
 }
 
-/** Renames `from` to `to` only when `from` is a `kind` and `to` is free. */
 async function checkedRename(
   ops: InstallFsOps,
   from: string,
@@ -638,12 +566,8 @@ async function digestIfFile(
 }
 
 /**
- * Deletes an install's staging once its renames are settled. The journal
- * goes first: from then on staging holds only superseded copies, and a
- * crash part-way through leaves journal-less staging that the stale sweep
- * removes, never a journal that recovery would act on again. Then the
- * bundle staging dirs, the journal's dir, and the `.swamp-staging` parent
- * once no other install's journal is in it.
+ * the journal goes first: a crash part-way then leaves journal-less staging for
+ * the stale sweep, never a journal recovery would act on again
  */
 async function deleteStaging(
   journal: InstallJournal,
@@ -659,7 +583,6 @@ async function deleteStaging(
   await ops.removeIfEmpty(dirname(journalDir));
 }
 
-/** Reads what {@link planRecovery} needs from disk. */
 export async function observeInstall(
   journal: InstallJournal,
   ops: InstallFsOps,
@@ -687,11 +610,8 @@ export async function observeInstall(
 }
 
 /**
- * The first dir a recovery rename passes through that is neither a plain
- * directory nor absent: each staging dir and its `old`, `new` and
- * `discard` dirs, and every dir between a root's container (the pulled
- * root, or its bundle kind dir) and its live path. A symlink there would
- * send a rename, or the recursive mkdir before one, outside the repo.
+ * a symlink in any dir a recovery rename passes through would send a rename, or
+ * the recursive mkdir before it, outside the repo
  */
 async function findUnsafeDir(
   journal: InstallJournal,
@@ -722,11 +642,6 @@ async function findUnsafeDir(
   return null;
 }
 
-/**
- * Observes, plans and carries out the recovery of one journal: the
- * renames of a roll-back, then the staging delete. A `leave` plan moves
- * nothing and keeps the journal.
- */
 async function settleJournal(
   journal: InstallJournal,
   lockfileEntryChecksum: string | null,
@@ -742,22 +657,11 @@ async function settleJournal(
   return plan;
 }
 
-/** Hooks {@link applyRecoveryRenames} offers a caller. */
 interface RecoveryRenameHooks {
-  /**
-   * Called when a rename throws. Returns true to retry it once, having
-   * made the target free; false rethrows the error unchanged.
-   */
   onTargetOccupied?(rename: RecoveryRename, error: unknown): Promise<boolean>;
 }
 
-/**
- * Carries out a recovery plan that moves or keeps roots: a roll-back's
- * renames in order, each into a created parent, then the staging delete.
- * Every error is rethrown unchanged unless a hook asks for one retry.
- * Shared by crash recovery, {@link ExtensionInstallTransaction.settle}
- * and {@link ExtensionInstallTransaction.rollback}.
- */
+/** every error is rethrown unchanged unless a hook asks for one retry */
 async function applyRecoveryRenames(
   journal: InstallJournal,
   plan: Exclude<RecoveryPlan, { direction: "leave" }>,
@@ -779,50 +683,34 @@ async function applyRecoveryRenames(
   await deleteStaging(journal, ops);
 }
 
-/** A journal recovery left in place. */
 export interface LeftJournal {
   journalPath: string;
   /**
-   * The extension it names, when the journal says: an install or removal
-   * of that extension (or of one nested in or above it) must not go
-   * ahead, or this journal could later act on its roots.
+   * an install or removal of that extension (or one nested in or above it) must
+   * not go ahead, or this journal could later act on its roots
    */
   extensionName: string | null;
   reason: string;
-  /**
-   * What recovery found at the extension root's live path and at the
-   * slot phase 1 moves its original to, so a refusal can say where the
-   * previous version is. Absent when the extension is not known or the
-   * paths could not be checked.
-   */
   extensionRoot?: ExtensionRootCopies;
 }
 
-/** Where an interrupted install's extension root copies are. */
 export interface ExtensionRootCopies {
   live: string;
   liveState: ObservedPath;
-  /** Where phase 1 moves the original: `old/0` in the journal's staging. */
   old: string;
   oldState: ObservedPath;
 }
 
-/** What one {@link recoverInstallStaging} pass did. */
 export interface StagingRecoveryReport {
   rolledForward: string[];
   rolledBack: string[];
-  /** Journals left in place (invalid, or a state recovery cannot fix). */
   left: LeftJournal[];
-  /** Journal-less staging dirs past the age threshold that were removed. */
   swept: string[];
 }
 
-/** Arguments to {@link recoverInstallStaging}. */
 export interface RecoverInstallStagingArgs {
   bounds: InstallJournalBounds;
-  /** Every bundle kind dir (`.swamp/<kind>-bundles`) to sweep. */
   bundleKindDirs: ReadonlyArray<string>;
-  /** The checksum of `name`'s entry in the lockfile at `lockfilePath`. */
   readLockfileChecksum: (
     lockfilePath: string,
     name: string,
@@ -832,19 +720,9 @@ export interface RecoverInstallStagingArgs {
 }
 
 /**
- * Puts right every install a crashed process left behind: each journal
- * under `<pulledRoot>/.swamp-staging/` whose owner is not an install
- * running in this process is validated, then rolled forward or back from
- * what is on disk. An invalid journal, one whose disk state recovery
- * cannot account for, or one whose recovery failed (a rename refused on
- * Windows, say) is left alone with a warning naming it, and reported so
- * the caller can refuse to change that extension. Journal-less staging is
- * removed only once older than {@link STAGING_SWEEP_AGE_MS}.
- *
- * A failure on one entry is logged and never stops the pass, so a
- * leftover that cannot be deleted does not block every install.
- *
- * The caller must hold the pulled-extensions lock.
+ * an entry that fails is logged and never stops the pass; journals recovery
+ * cannot fix are left and reported so callers refuse to change that extension.
+ * Caller must hold the pulled-extensions lock
  */
 export async function recoverInstallStaging(
   args: RecoverInstallStagingArgs,
@@ -988,11 +866,8 @@ export async function recoverInstallStaging(
 }
 
 /**
- * Looks at extension `name`'s live root and at the slot phase 1 moves its
- * original to. The slot comes from `journal` when it was validated, and
- * is otherwise derived from the layout (every install puts the extension
- * root in slot 0), never from an unchecked journal. Null when the name is
- * not a valid extension name or a path cannot be checked.
+ * the slot comes from the journal only when it was validated, else from the
+ * layout (the extension root is always slot 0), never from an unchecked journal
  */
 async function observeExtensionRootCopies(
   bounds: InstallJournalBounds,
@@ -1025,10 +900,8 @@ async function observeExtensionRootCopies(
 }
 
 /**
- * The journals in `report` that block changing extension `name`: those
- * naming `name`, an extension nested in it, or one it is nested in. Their
- * roots overlap `name`'s, so changing `name` first would let a later
- * recovery act on files it did not write.
+ * journals naming name or a nested or enclosing extension overlap its roots, so
+ * changing name first would let a later recovery act on files it did not write
  */
 export function blockingLeftJournals(
   report: StagingRecoveryReport,

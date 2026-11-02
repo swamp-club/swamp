@@ -272,7 +272,6 @@ export const dataDeleteCommand = withRemoteOptions(
             ? { kind: "all" }
             : { kind: "prefix", value: prefix! };
 
-          // Phase 1: Preview + Prompt (unless --force or --dry-run).
           if (
             cliCtx.outputMode === "log" && !options.yes && !options.force &&
             !dryRun
@@ -301,7 +300,6 @@ export const dataDeleteCommand = withRemoteOptions(
             }
           }
 
-          // Phase 2: Execute batch delete.
           const renderer = createDataBatchDeleteRenderer(cliCtx.outputMode);
           await consumeStream(
             dataBatchDelete(ctx, deps, {
@@ -314,7 +312,6 @@ export const dataDeleteCommand = withRemoteOptions(
         } else {
           const renderer = createDataDeleteRenderer(cliCtx.outputMode);
 
-          // Phase 1: Preview + Prompt (only in interactive log mode without --force).
           if (cliCtx.outputMode === "log" && !options.yes && !options.force) {
             let preview;
             try {
@@ -340,7 +337,6 @@ export const dataDeleteCommand = withRemoteOptions(
             }
           }
 
-          // Phase 2: Execute single delete.
           await consumeStream(
             dataDelete(ctx, deps, {
               modelIdOrName: modelIdOrName!,

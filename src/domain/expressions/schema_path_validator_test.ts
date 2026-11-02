@@ -24,8 +24,6 @@ import {
   validateSchemaPath,
 } from "./schema_path_validator.ts";
 
-// Test schema definitions
-
 const SimpleSchema = z.object({
   name: z.string(),
   count: z.number(),
@@ -61,8 +59,6 @@ const UnionSchema = z.object({
     z.object({ type: z.literal("b"), valueB: z.number() }),
   ]),
 });
-
-// validateSchemaPath tests - valid paths
 
 Deno.test("validateSchemaPath returns valid for empty path", () => {
   const result = validateSchemaPath(SimpleSchema, []);
@@ -111,7 +107,6 @@ Deno.test("validateSchemaPath returns valid for nullable property", () => {
 });
 
 Deno.test("validateSchemaPath returns valid for record access", () => {
-  // Records allow any string key
   const result = validateSchemaPath(RecordSchema, ["data", "anyKey"]);
   assertEquals(result.valid, true);
 });
@@ -120,8 +115,6 @@ Deno.test("validateSchemaPath returns valid for union member property", () => {
   const result = validateSchemaPath(UnionSchema, ["config", "valueA"]);
   assertEquals(result.valid, true);
 });
-
-// validateSchemaPath tests - invalid paths
 
 Deno.test("validateSchemaPath returns invalid for non-existent property", () => {
   const result = validateSchemaPath(SimpleSchema, ["nonExistent"]);
@@ -181,8 +174,6 @@ Deno.test("validateSchemaPath handles path at nested failure point", () => {
   assertEquals(result.valid, false);
   assertEquals(result.error?.includes("attributes"), true);
 });
-
-// formatAvailableKeys tests
 
 Deno.test("formatAvailableKeys formats empty array", () => {
   const result = formatAvailableKeys([]);

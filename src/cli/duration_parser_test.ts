@@ -26,7 +26,6 @@ import {
 import { UserError } from "../domain/errors.ts";
 
 Deno.test("parseTimeout: bare integer is interpreted as seconds", () => {
-  // Matches `swamp datastore sync --timeout` convention.
   assertEquals(parseTimeout("1"), 1000);
   assertEquals(parseTimeout("1800"), 1_800_000);
 });
@@ -82,7 +81,6 @@ Deno.test("parseTimerDuration: returns the parsed value below the ceiling", () =
 });
 
 Deno.test("parseTimerDuration: rejects values above the timer ceiling", () => {
-  // 25d is 2_160_000_000 ms, just above MAX_TIMER_DELAY_MS.
   assertEquals(25 * 24 * 60 * 60 * 1000 > MAX_TIMER_DELAY_MS, true);
   assertThrows(
     () => parseTimerDuration("25d", "--heartbeat-interval"),

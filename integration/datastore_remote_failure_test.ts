@@ -17,23 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// Pins what happens when the remote fails during sync, through each real
-// flush path (swamp-club#2859): the local write survives, the path stays
-// dirty, and the next successful flush publishes it so a peer repo reads
-// it. Phase 1's legacy unit-of-work adapter must keep exactly these
-// semantics, including the asymmetry between the flush paths:
-//
-// - `acquireModelLocks().flush` (single-phase and two-phase) THROWS
-//   "<type> push failed: <msg>" and still releases the model locks;
-// - the global coordinator `flushDatastoreSync` WARNS on
-//   ["datastore", "sync"] and resolves, so a command that did its work
-//   does not fail on cleanup (issue #157);
-// - `pushManagedConfigChanges` THROWS `ManagedConfigUnpublishedError`.
-//
-// Dirty state lives inside the sync service, so it is observed through
-// the fake's read-only `pendingPush(cacheDir)`: the files and deletes the
-// next push from A's cache would send, with no side effects.
-
 import "../src/domain/models/models.ts";
 import {
   assert,
@@ -91,7 +74,6 @@ const TWO_PHASE: RowRepoOptions = {
   remote: { capabilities: { twoPhaseSync: true } },
 };
 
-/** Runs `fn` against fresh repos A and B, with the developer's env unset. */
 function withRepos(
   options: RowRepoOptions,
   fn: (repos: RowRepos) => Promise<void>,
@@ -99,7 +81,6 @@ function withRepos(
   return withMockedEnv(UNSET_ENV, () => withRowRepos(options, fn));
 }
 
-/** Discards lock progress lines; `acquireModelLocks` writes to stderr otherwise. */
 const quiet = (_message: string): void => {};
 
 function typeName(repos: RowRepos): string {
@@ -110,7 +91,6 @@ function modelsOf(repos: RowRepos, model: Definition) {
   return [{ modelType: repos.modelType.normalized, modelId: model.id }];
 }
 
-/** Acquires A's per-model lock for `model`; the acquire pulls. */
 function lockOnA(
   repos: RowRepos,
   model: Definition,
@@ -125,7 +105,6 @@ function lockOnA(
   );
 }
 
-/** Saves a data item through `repoContext` (A's shared one by default). */
 function writeData(
   repos: RowRepos,
   model: Definition,
@@ -135,18 +114,15 @@ function writeData(
   return saveData({ ...repos.serveRepo, repoContext }, model, dataName);
 }
 
-/** The files a push from A's cache would upload now; empty when clean. */
 async function dirtyOnA(repos: RowRepos): Promise<string[]> {
   return (await repos.remote.pendingPush(cacheDir(repos.repoA))).uploads;
 }
 
-/** Remote keys belonging to `model`'s data, sorted. */
 function remoteKeysOf(repos: RowRepos, model: Definition): string[] {
   return [...repos.remote.files().keys()]
     .filter((key) => key.includes(model.id)).sort();
 }
 
-/** Every file under `dir`, keyed by forward-slash relative path. */
 async function snapshotTree(dir: string): Promise<Map<string, Uint8Array>> {
   const files = new Map<string, Uint8Array>();
   for await (const entry of walk(dir, { includeDirs: false })) {
@@ -158,11 +134,6 @@ async function snapshotTree(dir: string): Promise<Map<string, Uint8Array>> {
   return files;
 }
 
-/**
- * A's cache files belonging to `model`, sorted by path, with their bytes:
- * its data (keyed by model id) and, under managedConfig, its definition
- * (`<type dir>/<name>.yaml`).
- */
 async function localFilesOf(
   repos: RowRepos,
   model: Definition,
@@ -175,7 +146,6 @@ async function localFilesOf(
   return new Map(keys.map((rel) => [rel, tree.get(rel)!]));
 }
 
-/** Instance A's push-side ops (push, prepare, commit) since `from`. */
 function pushOpsSince(repos: RowRepos, from: number): string[] {
   return repos.remote.ops().slice(from)
     .filter((op: InMemoryRemoteOpRecord) =>
@@ -185,10 +155,6 @@ function pushOpsSince(repos: RowRepos, from: number): string[] {
     .map((op) => op.op);
 }
 
-/**
- * What repo B reads for `model`'s `dataName` after its own step-start pull:
- * the content of the latest version and every version number.
- */
 async function readOnB(
   repos: RowRepos,
   model: Definition,
@@ -230,12 +196,10 @@ async function readOnB(
   }
 }
 
-/** The content `saveData` writes for `dataName`. */
 function savedContent(dataName: string): string {
   return JSON.stringify({ value: dataName });
 }
 
-/** Captures warnings and errors logged under ["datastore"] during `fn`. */
 async function captureDatastoreLogs(
   fn: () => Promise<void>,
 ): Promise<LogRecord[]> {
@@ -258,8 +222,6 @@ async function captureDatastoreLogs(
 function renderRecord(record: LogRecord): string {
   return record.message.map((part) => String(part)).join("");
 }
-
-// --- acquireModelLocks().flush: push failure throws ---------------------
 
 for (
   const { label, options, failOp } of [
@@ -294,12 +256,10 @@ for (
       assertEquals(thrown.cause, injected);
       assertEquals(getRegisteredLockKeys(), [], "model locks released");
 
-      // Local write intact, still dirty, nothing published.
       assertEquals(await localFilesOf(repos, model), written);
       assertEquals(await dirtyOnA(repos), [...written.keys()]);
       assertEquals(remoteKeysOf(repos, model), []);
 
-      // One retry flush publishes it.
       const retryFrom = repos.remote.ops().length;
       const retry = await lockOnA(repos, model);
       await retry.flush();
@@ -320,13 +280,6 @@ for (
   });
 }
 
-/**
- * The push-failure-on-flush flow above, reduced to what A, the remote and B
- * observe, with the per-run datastore type, model type and model id
- * replaced. When `scoped`,
- * the write runs inside a legacy unit-of-work scope bound to A's own hook
- * (swamp-club#2971); the flush path is unchanged.
- */
 async function failedFlushOutcome(
   options: RowRepoOptions,
   failOp: "push" | "prepare",
@@ -408,20 +361,15 @@ Deno.test("acquireModelLocks: a two-phase commit failing on flush releases the l
     assertEquals(thrown.cause, injected);
     assertEquals(getRegisteredLockKeys(), [], "model locks released");
 
-    // Prepare uploaded the content, but nothing is published and the
-    // paths stay dirty for the retry.
     assertEquals(await localFilesOf(repos, model), written);
     assertEquals(await dirtyOnA(repos), [...written.keys()]);
     assertEquals(remoteKeysOf(repos, model), []);
 
     const retry = await lockOnA(repos, model);
     await retry.flush();
-    // The failed commit is not recorded: prepare (failed attempt), then
-    // the retry's prepare and its one commit.
     assertEquals(pushOpsSince(repos, from), ["prepare", "prepare", "commit"]);
     assertEquals(remoteKeysOf(repos, model), [...written.keys()]);
     assertEquals(await dirtyOnA(repos), []);
-    // Exactly one version, on the remote and on B.
     assertEquals(
       remoteKeysOf(repos, model).filter((key) => key.endsWith("/raw")).length,
       1,
@@ -433,12 +381,9 @@ Deno.test("acquireModelLocks: a two-phase commit failing on flush releases the l
   });
 });
 
-// --- flushDatastoreSync: push failure warns and is swallowed ------------
-
 Deno.test("flushDatastoreSync: a failed push warns and resolves, keeps the write dirty, and the next flush publishes it", async () => {
   await withRepos(SINGLE_PHASE, async (repos) => {
     const model = await saveModel(repos.serveRepo, "writer");
-    // A command's context: registers the global entry and pulls.
     const ctx = await requireInitializedRepo({
       repoDir: repos.repoA,
       outputMode: "json",
@@ -453,9 +398,8 @@ Deno.test("flushDatastoreSync: a failed push warns and resolves, keeps the write
       repos.remote.failNext("push", new Error("injected push failure"), {
         instance: "A",
       });
-      // The coordinator WARNS and does not throw, where the per-model flush
-      // throws: a transient push error must not fail a command that already
-      // did its work (issue #157). Phase 1 must keep this asymmetry.
+      // the coordinator warns and does not throw, unlike the per-model flush: a
+      // transient push error must not fail a command that already did its work
       logs = await captureDatastoreLogs(() => flushDatastoreSync());
     } finally {
       ctx.repoContext.catalogStore.close();
@@ -498,8 +442,6 @@ Deno.test("flushDatastoreSync: a failed push warns and resolves, keeps the write
   });
 });
 
-// --- pushManagedConfigChanges: push failure throws ----------------------
-
 Deno.test("pushManagedConfigChanges: a failed push throws ManagedConfigUnpublishedError, keeps the write dirty, and the next push publishes it", async () => {
   await withRepos({ managedConfig: true }, async (repos) => {
     const model = await saveModel(repos.serveRepo, "managed");
@@ -508,8 +450,8 @@ Deno.test("pushManagedConfigChanges: a failed push throws ManagedConfigUnpublish
 
     const injected = new Error("injected push failure");
     repos.remote.failNext("push", injected, { instance: "A" });
-    // swamp-club#2859 says managed config warns; since swamp-club#2752 it
-    // throws ManagedConfigUnpublishedError and keeps the local write.
+    // managed config throws ManagedConfigUnpublishedError and keeps the local
+    // write
     const thrown = await assertRejects(
       () =>
         pushManagedConfigChanges(
@@ -563,9 +505,6 @@ Deno.test("pushManagedConfigChanges: a failed push throws ManagedConfigUnpublish
   });
 });
 
-// --- Pull failure: the command fails and no local state changes ---------
-
-/** Publishes a data item from B, so A's next pull has something to fetch. */
 async function publishFromB(repos: RowRepos): Promise<Definition> {
   const b = await requireInitializedRepoUnlocked({
     repoDir: repos.repoB,
@@ -602,12 +541,11 @@ Deno.test("acquireModelLocks: a failed pull throws, changes nothing locally, and
       [],
     );
 
-    // The entry registered before the pull is unwound without any
-    // flushDatastoreSync: serve has no such teardown, so a lock left here
-    // would stay held until the process exits (swamp-club#2901).
+    // the entry registered before the pull is unwound without
+    // flushDatastoreSync; serve has no such teardown, so a leftover lock would
+    // stay held until the process exits
     assertEquals(getRegisteredLockKeys(), []);
 
-    // The lock really is free: the same model locks again straight away.
     const retried = await lockOnA(repos, model);
     assertEquals(getRegisteredLockKeys().length, 1);
     await retried.flush();
@@ -633,7 +571,6 @@ Deno.test("requireInitializedRepo: a failed pull throws, unwinds the global entr
       `${typeName(repos)} pull failed: injected pull failure`,
     );
     assertEquals(thrown.cause, injected);
-    // The coordinator unwinds its own entry.
     assertEquals(getRegisteredLockKeys(), []);
     assertEquals(await snapshotTree(repos.repoA), before);
     assertEquals(
@@ -643,15 +580,7 @@ Deno.test("requireInitializedRepo: a failed pull throws, unwinds the global entr
   });
 });
 
-// --- Offline for a sequence of writes ----------------------------------
-
-/**
- * One flush path: `begin` opens a unit of work (online), `write` and
- * `remove` change data through it, `flush` ends it. `failFlush` runs a
- * flush that fails with `message` and checks how the failure surfaced.
- */
 interface FlushPath {
-  /** The function under test, for the test name. */
   fn: "acquireModelLocks" | "flushDatastoreSync";
   variant: string;
   options: RowRepoOptions;
@@ -660,9 +589,7 @@ interface FlushPath {
     remove: (dataName: string) => Promise<void>;
     flush: () => Promise<void>;
   }>;
-  /** The push-side ops of one successful flush. */
   pushOps: string[];
-  /** The remote op an offline flush fails on. */
   offlineOp: string;
   failFlush: (
     repos: RowRepos,
@@ -729,7 +656,6 @@ const FLUSH_PATHS: FlushPath[] = [
             model.id,
             dataName,
           ),
-        // Ends the unit: flushes, then closes the context's catalog.
         flush: async () => {
           try {
             await flushDatastoreSync();
@@ -826,24 +752,6 @@ Deno.test("pushManagedConfigChanges: definitions saved while the remote is offli
   });
 });
 
-// --- A pull after a failed push: data loss up to 2026.09.24.1 ------------
-//
-// `@swamp/s3-datastore` and `@swamp/gcs-datastore` up to 2026.09.24.1 mark
-// the cache clean on an unscoped pull of a moved remote, dropping a pending
-// push (s3_cache_sync.ts:2742, 2759 in
-// datastore/s3/extensions/datastores/_lib/ at swamp-extensions 5368cb002;
-// GCS behaves the same). swamp-club#2888 (swamp-extensions 5e8630189,
-// released in 2026.10.01.1) fixed it: a pull never marks the cache clean, so
-// the next push sends the failed push's write. The fake models the old
-// behaviour as `LEGACY_EXTENSION_SEMANTICS`, and the fixed one by default
-// (swamp-club#2906). Each test below pins one version.
-
-/**
- * A's write fails to push, then B commits so the remote moves past what A
- * last pulled, then A acquires the lock again (an unscoped pull) and
- * flushes. Returns A's written files and where the op log stood before the
- * retry.
- */
 async function failedPushThenPeerCommit(
   repos: RowRepos,
   model: Definition,
@@ -865,7 +773,6 @@ async function failedPushThenPeerCommit(
   return { written, retryFrom };
 }
 
-/** The paths A's one push since `from` uploaded. */
 function retryPushPaths(repos: RowRepos, from: number): string[] | undefined {
   return repos.remote.ops().slice(from).find((op) =>
     op.instance === "A" && op.op === "push"
@@ -882,10 +789,6 @@ Deno.test("acquireModelLocks: with extensions up to 2026.09.24.1, a pull after a
       model,
     );
 
-    // KNOWN BUG in extensions <= 2026.09.24.1, fixed in 2026.10.01.1 by
-    // swamp-club#2888: the retry's lock acquire pulled the moved remote and
-    // marked A's cache clean. The write stays on disk but never reaches the
-    // remote.
     assertEquals(await localFilesOf(repos, model), written);
     assertEquals(await dirtyOnA(repos), []);
     assertEquals(pushOpsSince(repos, retryFrom), ["push"]);
@@ -903,8 +806,6 @@ Deno.test("acquireModelLocks: with extensions up to 2026.09.24.1, a pull after a
 });
 
 Deno.test("acquireModelLocks: with extensions from 2026.10.01.1 (swamp-club#2888), a pull after a peer's commit keeps A's pending write and the retry publishes it", async () => {
-  // The fake's default semantics model extensions 2026.10.06.1 through
-  // 2026.10.07.1, which keep this behaviour.
   await withRepos(SINGLE_PHASE, async (repos) => {
     const model = await saveModel(repos.serveRepo, "writer");
     const { written, retryFrom } = await failedPushThenPeerCommit(
@@ -912,7 +813,6 @@ Deno.test("acquireModelLocks: with extensions from 2026.10.01.1 (swamp-club#2888
       model,
     );
 
-    // The pull left A's cache dirty, so the retry push sent the write.
     assertEquals(await localFilesOf(repos, model), written);
     assertEquals(pushOpsSince(repos, retryFrom), ["push"]);
     assertEquals(retryPushPaths(repos, retryFrom), [...written.keys()]);
@@ -928,8 +828,6 @@ Deno.test("acquireModelLocks: with extensions from 2026.10.01.1 (swamp-club#2888
   });
 });
 
-// --- A push that fails after its uploads keeps its recorded deletes --------
-
 for (const path of FLUSH_PATHS.filter((p) => p.offlineOp === "push")) {
   Deno.test(`${path.fn}: a ${path.variant} push failing after its uploads publishes the write and the recorded delete on retry (swamp-club#2907, swamp-club#3860)`, async () => {
     await withRepos(path.options, async (repos) => {
@@ -940,7 +838,6 @@ for (const path of FLUSH_PATHS.filter((p) => p.offlineOp === "push")) {
       const goneKeys = remoteKeysOf(repos, model);
       assert(goneKeys.length > 0, "the first flush published 'gone'");
 
-      // One cycle: write "kept" and delete the published "gone".
       const unit = await path.begin(repos, model);
       await unit.write("kept");
       await unit.remove("gone");
@@ -961,18 +858,14 @@ for (const path of FLUSH_PATHS.filter((p) => p.offlineOp === "push")) {
       });
       await path.failFlush(repos, unit.flush, "injected push failure");
 
-      // The uploads landed as objects but nothing was committed: the remote
-      // still serves "gone" and not "kept". The push kept its marks: its own
-      // uploads no longer set the bulk flag, so the recorded delete survives
-      // (swamp-club#3860; before, a bulk retry deleted nothing,
-      // swamp-club#2907).
+      // the uploads landed but nothing was committed; the push keeps its marks,
+      // so the recorded delete survives for the retry
       assertEquals(remoteKeysOf(repos, model), goneKeys);
       const after = await repos.remote.pendingPush(cacheDir(repos.repoA));
       assertEquals(after.bulk, false);
       assertEquals(after.uploads, [...kept.keys()]);
       assertEquals(after.deletes, goneKeys, "the recorded delete survives");
 
-      // The retry publishes the write and deletes "gone" remotely.
       const retryFrom = repos.remote.ops().length;
       const retry = await path.begin(repos, model);
       await retry.flush();
@@ -983,7 +876,6 @@ for (const path of FLUSH_PATHS.filter((p) => p.offlineOp === "push")) {
         assertEquals(repos.remote.files().get(rel), bytes);
       }
 
-      // B reads the write, and no longer reads the item A deleted.
       assertEquals(await readOnB(repos, model, "kept"), {
         content: savedContent("kept"),
         versions: [1],
@@ -996,18 +888,6 @@ for (const path of FLUSH_PATHS.filter((p) => p.offlineOp === "push")) {
   });
 }
 
-// --- CLI token commands: a failed mid-command push ----------------------
-//
-// Access token mint and worker token create and revoke push mid-command,
-// before the read-back (swamp-club#3053 moves that push onto the root's
-// checkpoint). Recorded before the move: the injected error reaches the
-// caller unchanged, so the command exits as it did, and the root's
-// end-of-command lock push and release behave as before. A first mint or
-// create holds no model lock (its pull and release are the token's name
-// lock), so nothing pushes after the failure and the writes stay dirty.
-// Revoke holds the token's model lock, whose push publishes them.
-
-/** A's dirty paths with model ids and timestamps replaced. */
 async function dirtyShapeOnA(repos: RowRepos): Promise<string[]> {
   return (await dirtyOnA(repos)).map((path) =>
     path
@@ -1019,7 +899,6 @@ async function dirtyShapeOnA(repos: RowRepos): Promise<string[]> {
   );
 }
 
-/** The dirty shape a first mint of `kind/name` leaves behind. */
 function mintedTokenShape(kind: string, name: string): string[] {
   const data = `data/swamp/${kind}/<id>`;
   return [
@@ -1039,7 +918,6 @@ function mintedTokenShape(kind: string, name: string): string[] {
   ];
 }
 
-/** Fails A's next push, runs the command, and returns the error it threw. */
 function runWithFailedPush(
   repos: RowRepos,
   args: string[],
@@ -1052,7 +930,6 @@ function runWithFailedPush(
   });
 }
 
-/** The error a failed push throws: the remote's own, not a UserError. */
 function assertInjectedPushError(error: unknown): void {
   assertInstanceOf(error, Error);
   assert(!(error instanceof UserError), "not a UserError");
@@ -1133,9 +1010,6 @@ Deno.test("worker token revoke: a failed mid-command push throws the push error,
   });
 });
 
-// --- Coordinator-only commands: the teardown push (swamp-club#3055) -----
-
-/** Captures every warning or error logged under any category while `fn` runs. */
 async function captureWarnings(
   fn: () => Promise<void>,
 ): Promise<string[]> {
@@ -1158,7 +1032,6 @@ async function captureWarnings(
   );
 }
 
-/** Seeds A with a model and a workflow, and lands them on the remote. */
 async function seedWorkflow(repos: RowRepos): Promise<void> {
   const model = await saveModel(repos.serveRepo, "m1");
   await saveWorkflow(repos.serveRepo, "wf1", model);

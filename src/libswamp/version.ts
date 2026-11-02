@@ -20,9 +20,6 @@
 import type { LibSwampContext } from "./context.ts";
 import type { SwampError } from "./errors.ts";
 
-/**
- * Data structure for the version output.
- */
 export interface VersionData {
   version: string;
 }
@@ -31,20 +28,16 @@ export type VersionEvent =
   | { kind: "completed"; data: VersionData }
   | { kind: "error"; error: SwampError };
 
-/** Input for the version operation. */
 export interface VersionInput {
   version: string;
 }
 
-/** Dependencies for the version operation (none needed). */
 export type VersionDeps = Record<string, never>;
 
-/** Creates empty deps for the version operation. */
 export function createVersionDeps(): VersionDeps {
   return {} as VersionDeps;
 }
 
-/** Returns the current swamp version. */
 export async function* version(
   _ctx: LibSwampContext,
   _deps: VersionDeps,

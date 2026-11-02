@@ -17,13 +17,9 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/** One entry of a hand-built tar archive. */
 export interface RawTarEntry {
-  /** Header path, at most 100 bytes, written as given. */
   path: string;
-  /** The header's typeflag byte, e.g. `0`, `1`, `2`, `6` or `Z`. */
   typeflag: string;
-  /** The entry's body; its length is the header's size. */
   body?: string;
   linkname?: string;
 }

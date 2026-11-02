@@ -17,11 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * The v3 read model's state store (swamp-club#3239) on a real
- * `_read_model_v3.db` in a temp directory.
- */
-
 import { assertEquals, assertThrows } from "@std/assert";
 import { join } from "@std/path";
 import { DatabaseSync } from "node:sqlite";
@@ -108,7 +103,6 @@ Deno.test("ReadModelState: records a commit's index, versions, seq and cursor to
     assertEquals(state.chunksInUse(""), new Set([C, D]));
     assertEquals(state.chunksInUse("other"), new Set());
 
-    // A tombstone drops the record, and an empty live list drops the name.
     state.recordApplied(applied({
       seq: 2,
       cursor: 8,
@@ -126,7 +120,6 @@ Deno.test("ReadModelState: records a commit's index, versions, seq and cursor to
 Deno.test("ReadModelState: neither the cursor nor an applied seq moves back", async () => {
   await withState((state) => {
     state.recordApplied(applied({ seq: 2, cursor: 5 }));
-    // An older commit of the partition changes nothing but a later cursor.
     state.recordApplied(applied({
       seq: 1,
       cursor: 9,
@@ -137,7 +130,6 @@ Deno.test("ReadModelState: neither the cursor nor an applied seq moves back", as
     assertEquals(state.cursor(), 9);
     state.recordSkipped(3);
     assertEquals(state.cursor(), 9);
-    // A partition catch-up leaves the cursor alone.
     state.recordApplied(applied({ seq: 3 }));
     assertEquals([state.appliedSeq("", "p"), state.cursor()], [3, 9]);
   });
@@ -189,8 +181,6 @@ Deno.test("ReadModelState: records which put each file shows with its commit, an
       mark: 7,
       present: true,
     });
-    // Namespaces are separate, and a commit at or below the applied seq
-    // changes nothing.
     assertEquals(
       state.fileOwnership("team", "config/models/a.yaml"),
       undefined,
@@ -269,7 +259,6 @@ Deno.test("ReadModelState: reads the index only while it is complete", async () 
       ["data/a/2/raw"],
     );
     assertEquals(state.chunksInUseIfComplete(""), new Set([C, D]));
-    // A reset clears the complete mark with the index.
     state.reset(1);
     assertEquals(state.isComplete(), false);
     assertEquals(state.chunksInUseIfComplete(""), undefined);
@@ -429,7 +418,6 @@ Deno.test("ReadModelState: at-risk copies survive a reset and are tried least re
     });
     state.recordAtRiskCopy(copy(A, 50));
     state.recordAtRiskCopy(copy(B, 10));
-    // The same namespace and digest keeps the first row.
     state.recordAtRiskCopy({ ...copy(A, 0), recordKey: "data/other" });
     state.reset(1);
     assertEquals(state.atRiskDue(10, 100).map((c) => c.sha256), [B, A]);

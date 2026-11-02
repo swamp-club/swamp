@@ -18,13 +18,9 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * Integration test for the data get content contract (swamp-club#2503).
- *
- * A model writes a PNG and a UTF-8 text file through the real file writer
- * into a real FileSystemUnifiedDataRepository. dataGet, wired with
- * createDataGetDeps, must hand both back without losing a byte: the PNG as
- * base64 whose SHA-256 matches the stored checksum, the text as utf-8. The
- * same DataGetData is what serve's data.get and `data get --server` return.
+ * dataGet must hand back a PNG and a text file without losing a byte: the PNG
+ * as base64 whose SHA-256 matches the stored checksum, the text as utf-8;
+ * serve's data.get returns the same data
  */
 
 import { assertEquals } from "@std/assert";

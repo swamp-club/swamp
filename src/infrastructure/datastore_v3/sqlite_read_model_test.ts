@@ -66,11 +66,8 @@ interface Env {
   readonly store: SqliteCommitStore;
   readonly chunkStore: ChunkStore;
   open(overrides?: Partial<SqliteReadModelOptions>): SqliteReadModel;
-  /** Appends a fixture-model commit in `namespace`. */
   append(seq: number, namespace: string, ops: readonly Op[]): Promise<void>;
-  /** The path the fixture data version's content lands at. */
   contentPath(namespace: string, name: string, version: number): string;
-  /** The v3 catalog's rows: namespace, name, version, id and size. */
   catalogRows(): unknown[][];
 }
 
@@ -141,7 +138,6 @@ async function readOrAbsent(path: string): Promise<string | undefined> {
   }
 }
 
-/** Writes a checkout's own local-only file at `path`. */
 async function writeLocal(path: string, text: string): Promise<void> {
   await Deno.mkdir(dirname(path), { recursive: true });
   await Deno.writeTextFile(path, text);
@@ -156,7 +152,6 @@ async function liveKeys(
   );
 }
 
-/** A namespaced checkout `alpha` whose directories hold only `config`. */
 const ALPHA_CONFIG_ONLY = {
   namespace: "alpha",
   admits: datastoreKeyFilter(["config"], undefined),
@@ -204,7 +199,6 @@ for (const namespace of ["", "alpha"]) {
         await savePut("a", 1),
         versionOp("a", 1),
       ]);
-      // Another namespace's keys are materialised whatever the filter.
       await env.append(1, "beta", [await savePut("b", 1), versionOp("b", 1)]);
       const options = {
         checkout: ALPHA_CONFIG_ONLY,
@@ -258,7 +252,6 @@ Deno.test("SqliteReadModel: the reboot check skips a listed key the checkout's d
   await withEnv(async (env) => {
     await env.append(1, "", [await savePut("a", 1), versionOp("a", 1)]);
     const local = env.contentPath("", "a", 1);
-    // Projected unfiltered, unsynced, in boot 1.
     let readModel = env.open({ bootIdentity: () => Promise.resolve("boot-1") });
     try {
       await readModel.catchUp(signal());
@@ -309,8 +302,6 @@ Deno.test("SqliteReadModel: a compacted base's keys the checkout's directories l
 
 Deno.test("SqliteReadModel: another checkout's upsert and delete of a name never reach a local-only catalog row (swamp-club#3691)", async () => {
   await withEnv(async (env) => {
-    // The solo checkout keeps data local: its own row, as its repository
-    // writes it.
     const stateDir = readModelStateDir(env.repoDir);
     await Deno.mkdir(stateDir, { recursive: true });
     const local = { ...(metadata("a", 1) as Record<string, unknown>) };
@@ -363,7 +354,6 @@ Deno.test("SqliteReadModel.recover: a committed file whose name the filesystem l
     const readModel = env.open({ readDir: decomposedReadDir });
     try {
       await readModel.catchUp(signal());
-      // Every file is newer than `since`, as after the replay refreshed it.
       const removed = await readModel.recover("", {
         since: 0,
         admits: datastoreKeyFilter(undefined, undefined),
@@ -391,14 +381,12 @@ Deno.test("SqliteReadModel.recover: puts back a file whose commit the checkout c
       },
     });
     try {
-      // A unit's save that never committed, over the commit it sent.
       const path = env.contentPath("", "a", 1);
       await writeLocal(path, "dropped");
       await readModel.catchUp(signal());
       assertEquals(asked, [1]);
       assertEquals(await readOrAbsent(path), "dropped");
 
-      // A recovery puts back every file, whatever the checkout holds open.
       await readModel.recover("", {
         since: 0,
         admits: datastoreKeyFilter(undefined, undefined),
@@ -423,7 +411,6 @@ Deno.test("SqliteReadModel.recover: an unowned file listed decomposed is kept wh
       await readModel.catchUp(signal());
       const removed = await readModel.recover("", {
         since: 0,
-        // An exclude written composed, as a user types it.
         admits: (key) => !key.includes("café"),
         signal: signal(),
       });
@@ -539,7 +526,6 @@ for (const net of [true, false]) {
         ]);
         await env.append(2, "", [await savePut("b", 1), versionOp("b", 1)]);
         await env.append(3, "", [deleteVersion("a", 1)]);
-        // A checkout that already holds data replays in full.
         if (!net) {
           await writeLocal(
             join(v3CacheRoot(env.repoDir, ""), "data", "local"),
@@ -565,7 +551,6 @@ for (const net of [true, false]) {
               1,
             );
             if (net) {
-              // a@1, which commit 3 removes, is never fetched nor written.
               assertEquals(
                 span.attributes["swamp.datastore.v3.files_written"],
                 1,
@@ -639,7 +624,6 @@ for (const net of [true, false]) {
         ]);
         await env.append(2, "", [await savePut("b", 1), versionOp("b", 1)]);
         await env.store.compactHistory(2);
-        // The tail removes a@1, which the base shows present.
         await env.append(3, "", [deleteVersion("a", 1)]);
         await env.append(4, "", [await savePut("c", 1), versionOp("c", 1)]);
         const readModel = env.open({ netReplay: net });
@@ -652,7 +636,6 @@ for (const net of [true, false]) {
             );
             assertEquals(load.attributes["swamp.datastore.v3.base_writes"], 2);
             if (net) {
-              // a@1 is never fetched nor written, and its removal is skipped.
               assertEquals(
                 load.attributes["swamp.datastore.v3.base_writes_skipped"],
                 1,
@@ -715,15 +698,12 @@ Deno.test({
       const readModel = env.open();
       try {
         await readModel.catchUp(signal());
-        // The dead writer overwrote b; c was replaced by a link to a file
-        // holding its very bytes, which is not the committed file.
         await Deno.writeTextFile(env.contentPath("", "b", 1), "uncommitted");
         const c = env.contentPath("", "c", 1);
         const elsewhere = `${c}.elsewhere`;
         await Deno.writeTextFile(elsewhere, "c@1");
         await Deno.remove(c);
         await Deno.symlink(elsewhere, c, { type: "file" });
-        // d holds its bytes but is hard-linked from outside the checkout.
         const d = env.contentPath("", "d", 1);
         const linked = `${d}.linked`;
         await Deno.link(d, linked);
@@ -752,10 +732,6 @@ Deno.test({
   },
 });
 
-/**
- * Whether the filesystem holding `dir` reaches a file under an upper-case
- * or decomposed spelling of its name: an oracle independent of the probe.
- */
 async function foldsSpellings(dir: string): Promise<boolean> {
   await Deno.mkdir(dir, { recursive: true });
   const name = "oracle-é";
@@ -795,7 +771,6 @@ async function foldsNormalization(dir: string): Promise<boolean> {
   }
 }
 
-/** Catches `readModel` up, and returns its catch-up span's attributes. */
 async function catchUpAttributes(
   readModel: SqliteReadModel,
 ): Promise<Record<string, unknown>> {
@@ -810,7 +785,6 @@ async function catchUpAttributes(
 
 const ALIASED = "swamp.datastore.v3.aliased_skipped";
 
-/** A tombstone of the fixture's data version `name`@`version`. */
 function dataTombstone(name: string, version: number): Op {
   return tombstoneOp({
     intent: modelIntent({ kind: "data.delete", name, version }),
@@ -830,7 +804,6 @@ for (const spellingFolding of FORCED_MODES) {
   Deno.test(`SqliteReadModel: a tombstone of a key nothing owns leaves a file another spelling of the key reaches (${mode}, swamp-club#3939)`, async () => {
     await withEnv(async (env) => {
       await env.append(1, "", [await savePut("vpc", 1), versionOp("vpc", 1)]);
-      // Where the filesystem folds case `VPC/1/raw` resolves to `vpc/1/raw`.
       await env.append(2, "", [dataTombstone("VPC", 1)]);
       const readModel = env.open({ spellingFolding });
       try {
@@ -866,7 +839,6 @@ for (const spellingFolding of FORCED_MODES) {
             "forged",
           );
         }
-        // Both stay indexed, so history and chunk GC stay whole.
         const live = await liveKeys(readModel, "");
         assert(live.includes(dataKey("VPC", 1).toString()));
       } finally {
@@ -901,7 +873,6 @@ for (const spellingFolding of FORCED_MODES) {
     await withEnv(async (env) => {
       await env.append(1, "", [await savePut("VPC", 1), versionOp("VPC", 1)]);
       await env.append(2, "", [await savePut("vpc", 2), versionOp("vpc", 2)]);
-      // vpc@2 owns its file now, wherever its directory's spelling leads.
       await env.append(3, "", [await savePut("vpc", 2, "second")]);
       // In full, so vpc@2's first file is on disk when the second put lands.
       const readModel = env.open({ spellingFolding, netReplay: false });
@@ -932,7 +903,6 @@ for (const spellingFolding of FORCED_MODES) {
       } finally {
         await first.close();
       }
-      // The state is lost: vpc@2 replays unowned over its own file.
       const replay = env.open({
         spellingFolding,
         stateDir: join(dirname(env.repoDir), "recovered-state"),
@@ -1006,11 +976,8 @@ for (const spellingFolding of FORCED_MODES) {
 
   Deno.test(`SqliteReadModel: a key spelt as the disk spells a file another spelling owns neither overwrites nor removes it (${mode}, swamp-club#3939)`, async () => {
     await withEnv(async (env) => {
-      // VPC@1 makes the directory VPC/, and vpc@2 owns its file under it.
       await env.append(1, "", [await savePut("VPC", 1), versionOp("VPC", 1)]);
       await env.append(2, "", [await savePut("vpc", 2), versionOp("vpc", 2)]);
-      // Where the filesystem folds case, VPC/2/raw is vpc@2's file, spelt
-      // as this key spells it.
       await env.append(3, "", [await savePut("VPC", 2, "forged")]);
       await env.append(4, "", [dataTombstone("VPC", 2)]);
       const readModel = env.open({ spellingFolding, netReplay: false });
@@ -1021,7 +988,6 @@ for (const spellingFolding of FORCED_MODES) {
           "vpc@2",
         );
         const folds = await foldsSpellings(v3CacheRoot(env.repoDir, ""));
-        // The put, and then the tombstone, of a key that owns nothing.
         assertEquals(attributes[ALIASED], folds ? 2 : undefined);
       } finally {
         await readModel.close();
@@ -1042,7 +1008,6 @@ for (const spellingFolding of FORCED_MODES) {
       }
       const after = await readOrAbsent(env.contentPath("", "vpc", 1));
       assertEquals(after, "vpc@1");
-      // The state is lost: every key replays unowned over its file.
       const replay = env.open({
         spellingFolding,
         stateDir: join(dirname(env.repoDir), "recovered-state"),
@@ -1095,7 +1060,6 @@ if (Deno.build.os !== "windows") {
         await writeLocal(join(real, "1", "raw"), "old");
         await Deno.symlink(real, link, { type: "dir" });
         await env.append(2, "", [await savePut("vpc", 1, "new")]);
-        // A fresh state: the put of vpc@1 is unowned over the linked file.
         const readModel = env.open({ spellingFolding, netReplay: false });
         try {
           const attributes = await catchUpAttributes(readModel);
@@ -1144,8 +1108,6 @@ Deno.test("SqliteReadModel: a full replay over files spelt as their keys lists n
         await replay.close();
       }
       if (spellingFolding === "list") {
-        // Each directory from the root down to every file, listed once in
-        // the one page.
         const root = v3CacheRoot(env.repoDir, "");
         const dirs = new Set<string>();
         for (let i = 0; i < ITEMS; i++) {
@@ -1192,7 +1154,6 @@ Deno.test("SqliteReadModel: a recovery replay where names are listed decomposed 
   });
 });
 
-/** Runs `fn` with the read model's log captured, and returns the messages. */
 async function readModelWarnings(fn: () => Promise<void>): Promise<string[]> {
   const records: LogRecord[] = [];
   await configure({
@@ -1219,8 +1180,6 @@ for (const tombstone of [false, true]) {
   const change = tombstone ? "tombstone" : "put";
   Deno.test(`SqliteReadModel: in list mode a ${change} of a key no listed name matches is skipped, warned about and counted (swamp-club#3939)`, async () => {
     await withEnv(async (env) => {
-      // A file at the key's path that no listing shows: the directory lists
-      // no name `stray` matches under the folding rules.
       const stray = env.contentPath("", "stray", 1);
       await writeLocal(stray, "on disk");
       await env.append(1, "", [await savePut("other", 1)]);
@@ -1263,12 +1222,9 @@ for (const tombstone of [false, true]) {
 
 Deno.test("SqliteReadModel: in list mode a directory a write adds in a page is seen by a later change of another spelling in the same page (swamp-club#3939)", async () => {
   await withEnv(async (env) => {
-    // abc@1's put over a file already there lists the behavior's directory
-    // before vpc/ exists.
     await writeLocal(env.contentPath("", "abc", 1), "on disk");
     await env.append(1, "", [await savePut("abc", 1)]);
     await env.append(2, "", [await savePut("vpc", 2), versionOp("vpc", 2)]);
-    // Where the filesystem folds case `VPC/2/raw` reaches vpc@2's new file.
     await env.append(3, "", [await savePut("VPC", 2, "forged")]);
     const listed: string[] = [];
     const readModel = env.open({
@@ -1329,13 +1285,8 @@ for (const tombstone of [false, true]) {
   });
 }
 
-// Follower mode (swamp-club#3985): serve leaves out commits the caller may
-// not read, so the follower store's seqs have holes.
-
-/** The fixture model's seqs a follower saw, with holes. */
 const FOLLOWER_SEQS = [2, 5, 9];
 
-/** Appends a gapped commit per seq, each saving its own version of `a`. */
 async function appendGapped(env: Env): Promise<string[]> {
   for (const seq of FOLLOWER_SEQS) {
     await env.append(seq, "", [await savePut("a", seq), versionOp("a", seq)]);
@@ -1357,7 +1308,6 @@ Deno.test("SqliteReadModel follower: catchUp applies gapped commits (swamp-club#
           `a@${seq}`,
         );
       }
-      // A later gapped commit applies too.
       await env.append(14, "", [await savePut("a", 14), versionOp("a", 14)]);
       await readModel.catchUp(signal());
       assertEquals(await readOrAbsent(env.contentPath("", "a", 14)), "a@14");
@@ -1429,7 +1379,6 @@ Deno.test("SqliteReadModel: recordsChanged is told the keys each applied page wr
       await readModel.catchUp(signal());
       assertEquals(told, [["", [key]]]);
 
-      // Nothing new: nothing told.
       await readModel.catchUp(signal());
       assertEquals(told.length, 1);
 

@@ -17,8 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// `behavior:` is an exact synonym of `model:` in a grant selector
-// (swamp-club#3334).
+// behavior: is an exact synonym of model: in a grant selector
 
 import { assertEquals } from "@std/assert";
 import fc from "fast-check";
@@ -56,7 +55,6 @@ Deno.test("parseResourceSelector property: behavior:p parses exactly as model:p"
           `model:${pattern}`,
         );
       } else {
-        // The same refusal, naming the selector as written.
         assertEquals("error" in behavior, true);
       }
     }),

@@ -17,10 +17,9 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// Test-only helpers for minting verification proofs signed by a throwaway
-// Ed25519 key. The gate trusts the public keys cached alongside a proof, so
-// a proof minted here verifies through the normal code path — no switch in
-// the product is needed to test it.
+// the gate trusts the public keys cached alongside a proof, so a proof minted
+// with a throwaway key verifies through the normal code path with no product
+// switch
 
 import {
   base64urlEncode,
@@ -55,7 +54,6 @@ export interface MintedProof {
   readonly publicKeys: PublicKeyEntry[];
 }
 
-/** Mint a proof for `apiKey`, issued at `iat` and expiring at `exp`. */
 export async function mintTestProof(
   key: TestSigningKey,
   apiKey: string,
@@ -83,7 +81,6 @@ export async function mintTestProof(
   };
 }
 
-/** Encode a proof as a SWAMP_SIGNIN_TOKEN value (`<proof>.<signature>`). */
 export function toSigninToken(minted: MintedProof): string {
   return `${
     base64urlEncode(new TextEncoder().encode(minted.proof))

@@ -82,16 +82,13 @@ import { notFound, validationFailed } from "../errors.ts";
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
 
 export interface WorkflowSignalData {
-  /** The wait that took the signal, however the signal was addressed. */
   waitId: string;
-  /** The key the wait holds, when its step declared one. */
   key?: string;
   workflowId: string;
   workflowName: string;
   runId: string;
   jobName: string;
   stepName: string;
-  /** What swamp recorded about the signal. */
   signal: SignalReceipt;
   /**
    * True when this signal settled the run's last wait and no gate or nested
@@ -105,14 +102,11 @@ export interface WorkflowSignalData {
    * as false.
    */
   runRecordAvailable: boolean;
-  /** The command that resumes the run. */
   resumeCommand: string;
   /**
-   * True when a wait took the signal from where it was held
-   * (swamp-club#3212). A step that took it as it opened its wait succeeded
-   * inside its run, and no resume applies the signal. A wait that was open
-   * already was given it by another reader, and `awaitingResume` says whether
-   * its run can be resumed (swamp-club#3307).
+   * true when a wait took the signal from where it was held. A step that took it
+   * as it opened its wait succeeded inside its run and no resume applies it; for
+   * a wait open already, `awaitingResume` says whether its run can be resumed.
    */
   taken?: true;
   /**
@@ -123,20 +117,17 @@ export interface WorkflowSignalData {
   duplicate?: true;
 }
 
-/** What swamp recorded about a signal it holds for a wait not yet open. */
 export interface PendingSignalReceipt {
   id: string;
   receivedAt: string;
   submittedBy: string;
-  /** The idempotency key the sender gave, if any. */
   idempotencyKey?: string;
 }
 
 /**
- * A signal by key that arrived before its wait opened and is held as the
- * key's pending signal (swamp-club#3212). No wait or run took it yet, so
- * none is named. It is a hold, not a delivery: the step takes the signal
- * only if it opens its wait by `heldUntil`.
+ * a signal by key that arrived before its wait opened and is held as the key's
+ * pending signal. No wait or run took it yet, so none is named; the step takes
+ * it only if it opens its wait by `heldUntil`.
  */
 export interface WorkflowSignalPendingData {
   pending: true;
@@ -144,19 +135,13 @@ export interface WorkflowSignalPendingData {
   workflowId: string;
   workflowName: string;
   signal: PendingSignalReceipt;
-  /** When the signal stops being taken by a wait that opens, as an ISO timestamp. */
   heldUntil: string;
   /**
-   * The wait that last held the key, as on a `no_open_wait` refusal. A step
-   * with `acceptEarly` never refuses a retry by key, so this is how a sender
-   * who retries after a lost reply learns its first signal landed: the retry
-   * is then a second signal, held for the next run.
+   * the wait that last held the key, as on a no_open_wait refusal. A step with
+   * acceptEarly never refuses a retry by key, so this is how a sender retrying
+   * after a lost reply learns its first signal landed.
    */
   lastWait?: SignalLastWait;
-  /**
-   * True when the signal carried the idempotency key of the signal that is
-   * held: `signal` is that one's receipt, and nothing more was stored.
-   */
   duplicate?: true;
 }
 
@@ -167,14 +152,13 @@ export type WorkflowSignalEvent =
   | { kind: "error"; error: SwampError };
 
 /**
- * How a signal names its wait: by the wait's ID, or by a workflow and a key
- * one of its `wait_for_signal` steps declares (swamp-club#3210). A key is
- * resolved to the ID of the wait that holds it before anything is decided.
+ * how a signal names its wait: by the wait's id, or by a workflow and a key one
+ * of its wait_for_signal steps declares; a key is resolved to the id of the
+ * wait that holds it before anything is decided
  */
 export type WorkflowSignalAddress =
   | { waitId: string }
   | {
-    /** The workflow's name or ID. */
     workflow: string;
     key: string;
   };
@@ -182,48 +166,34 @@ export type WorkflowSignalAddress =
 export type WorkflowSignalInput = WorkflowSignalAddress & {
   /** The message. Untrusted: it is validated before anything is stored. */
   payload: unknown;
-  /** Who sent it. Defaults to the OS user, as a local approval's decider. */
   submittedBy?: string;
   /**
-   * Decides whether the caller may signal the wait, once it is known which
-   * workflow and run the wait belongs to. It is asked before anything is
-   * stored and before any answer that names the workflow, the run, the step
-   * or an earlier signal. When it refuses, or when the wait cannot be placed
-   * at all, the answer is the one an unknown wait ID gets. The local command
-   * passes none: it does no authorization.
+   * asked before anything is stored or any answer names the workflow, run, step
+   * or an earlier signal; a refusal or unplaceable wait gets the answer an
+   * unknown wait id gets; the local command passes none
    */
   authorize?: (wait: SignalWaitSubject) => Promise<boolean>;
-  /**
-   * The command a refusal suggests for listing the open waits. Defaults to
-   * the local one; a caller that answers for a server passes the form that
-   * reaches it.
-   */
   waitsCommand?: string;
   /**
-   * False when the caller cannot be answered that the signal is held: a
-   * signal by key that finds no open wait is then refused `no_open_wait`
-   * and nothing is stored, whatever the step declares (swamp-club#3212).
-   * Defaults to true.
+   * false when the caller cannot be told a signal is held: a signal by key that
+   * finds no open wait is then refused no_open_wait and nothing is stored,
+   * whatever the step declares. Defaults to true.
    */
   holdEarly?: boolean;
   /**
-   * What names this signal across its sender's retries, in the form
-   * `isIdempotencyKey` accepts. A signal whose key matches one already
-   * received from the same sender for the wait or its key is answered with
-   * that signal's receipt,
-   * marked `duplicate`, and is neither delivered nor held again.
+   * a signal whose key matches one already received from the same sender for
+   * the wait or its key is answered with that receipt, marked `duplicate`, and
+   * is neither delivered nor held again
    */
   idempotencyKey?: string;
 };
 
-/** The command that lists the open waits of the repository a signal ran in. */
 const LOCAL_WAITS_COMMAND = "swamp workflow waits";
 
 function waitsCommandOf(input: Pick<WorkflowSignalInput, "waitsCommand">) {
   return input.waitsCommand ?? LOCAL_WAITS_COMMAND;
 }
 
-/** What a wait belongs to, as far as the stored records say. */
 export interface SignalWaitSubject {
   waitId: string;
   workflowId: string;
@@ -234,38 +204,30 @@ export interface SignalWaitSubject {
   workflowName?: string;
   runId: string;
   /**
-   * The workflow recorded on the run, when this host finds the run record.
-   * The run is looked up under `workflowId`, so the two IDs always agree; the
-   * names differ when the registration's name was altered. A registration
-   * whose workflow ID was altered finds no run, and this is absent.
+   * the workflow recorded on the run, when this host has the record; the ids
+   * always agree, the names differ when the registration's name was altered
    */
   runWorkflow?: { workflowId: string; workflowName: string };
 }
 
 /**
- * The wait that last held a key, in the `lastWait` field of a `no_open_wait`
- * error's details: what a sender who retries after a lost reply needs to
- * tell "my signal landed" from "the run has not reached its wait". Present
- * while that wait's claim is still the key's highest record, and only for a
- * caller who may signal the wait.
+ * the wait that last held a key, in a no_open_wait error's details, for a
+ * retrying sender to tell "my signal landed" from "the run has not reached its
+ * wait"; only for a caller who may signal the wait
  */
 export interface SignalLastWait {
   waitId: string;
-  /** How that wait was settled. */
   settledAs: "accepted" | "timed_out" | "cancelled";
   settledAt: string;
-  /** The signal that settled it, when one did. */
   receipt?: SignalReceipt;
 }
 
-/** The `lastWait` a `no_open_wait` error carries, if it carries one. */
 export function signalLastWait(error: SwampError): SignalLastWait | undefined {
   const details = error.details;
   if (typeof details !== "object" || details === null) return undefined;
   return (details as { lastWait?: SignalLastWait }).lastWait;
 }
 
-/** Why a signal was not delivered, in the `refusal` field of the error's details. */
 export type SignalRefusalKind =
   | "unknown"
   | "no_open_wait"
@@ -289,7 +251,6 @@ const SIGNAL_REFUSAL_KINDS: ReadonlySet<string> = new Set<SignalRefusalKind>([
   "unsupported",
 ]);
 
-/** The refusal an error from {@link workflowSignal} carries, if it is one. */
 export function signalRefusalKind(
   error: SwampError,
 ): SignalRefusalKind | undefined {
@@ -310,20 +271,13 @@ export interface WorkflowSignalDeps {
     WorkflowRunRepository,
     "findById" | "findGlobalByStatus" | "findAllGlobal"
   >;
-  /**
-   * The workflow a name or an ID refers to, for a signal addressed by key.
-   * Read only.
-   */
   findWorkflow: (idOrName: string) => Promise<Workflow | null>;
-  /** Where wait records are kept, or why this datastore cannot hold them. */
   signalWaits: SignalWaitSupport;
-  /** The time the deadline is compared against. Defaults to the current time. */
   now?: () => Date;
   /**
-   * Whether a wait with no readable registration is looked for in the run
-   * records. Defaults to true. A caller that answers requests from outside
-   * turns it off, so one request cannot make it read every run; such a wait
-   * is then answered as unknown until `workflow waits` registers it.
+   * a caller answering outside requests turns it off so one request cannot make
+   * it read every run; such a wait is then answered as unknown until `workflow
+   * waits` registers it. Defaults to true.
    */
   scanRunRecords?: boolean;
 }
@@ -340,14 +294,12 @@ export function createWorkflowSignalDeps(
   };
 }
 
-/** Who a signal is recorded as sent by. */
 function senderOf(input: Pick<WorkflowSignalInput, "submittedBy">): string {
   // `||`, not `??`: a receipt needs a sender, and USER can be set but empty.
   return input.submittedBy || Deno.env.get("USER") ||
     Deno.env.get("USERNAME") || "unknown";
 }
 
-/** The step of `run` that holds the wait, in any status. */
 function findStepByWaitId(
   run: WorkflowRun,
   waitId: string,
@@ -363,11 +315,9 @@ function findStepByWaitId(
 }
 
 /**
- * Finds the run whose record holds a wait that has no registration: one
- * suspended before waits were registered (swamp-club#3068), or one whose
- * records were removed when it ended. Suspended runs are searched first, as
- * an open wait lives in one; every run is searched only when none holds it,
- * to tell a wait that settled from an id nothing ever issued.
+ * finds the run whose record holds a wait with no registration; suspended runs
+ * are searched first, every run only when none holds it, to tell a settled wait
+ * from an id nothing issued
  */
 async function locateInRunRecords(
   deps: WorkflowSignalDeps,
@@ -386,7 +336,6 @@ async function locateInRunRecords(
   return undefined;
 }
 
-/** The fields of a registration a message or a result names. */
 type WaitPlace = Pick<
   WaitRegistration,
   "workflowId" | "workflowName" | "runId" | "jobName" | "stepName"
@@ -504,7 +453,6 @@ function refusalFor(
   }
 }
 
-/** The run a wait belongs to, as this host has it. */
 async function runOf(
   deps: WorkflowSignalDeps,
   place: Pick<WaitPlace, "workflowId" | "runId">,
@@ -529,10 +477,6 @@ function stepHoldsUnreadableWait(
     step.signalWait === undefined;
 }
 
-/**
- * The step of the run record here that held this wait and no longer waits
- * on it, or undefined when the record is not here or the step still waits.
- */
 function stepLeftWait(
   run: WorkflowRun | null,
   registration: WaitRegistration,
@@ -544,13 +488,6 @@ function stepLeftWait(
   return step.isSignalWait ? undefined : step;
 }
 
-/**
- * The registration of a wait, or the answer for a wait that has none: its
- * stored outcome, what the run record says of it, or that nothing ever
- * issued the id. A wait a run suspended on before waits were registered is
- * registered here from its run record, and then takes a signal like any
- * other.
- */
 async function resolveRegistration(
   deps: WorkflowSignalDeps,
   store: SignalWaitStore,
@@ -694,36 +631,23 @@ async function resolveRegistration(
   };
 }
 
-/** The wait a signal is delivered to, once its address is resolved. */
 interface SignalTarget {
   waitId: string;
-  /**
-   * What a message calls the wait, after the word "wait": the ID as it was
-   * typed, or the workflow and key it was addressed by.
-   */
   typedId: string;
   /**
-   * The workflow and key a key address named. Whatever record places the
-   * wait must name that workflow, and that key where it names one: key
-   * records are plaintext in a store other writers can reach, and a claim
-   * altered to name a wait of another workflow must neither carry a signal
-   * there nor be answered with what is stored about that wait.
+   * the workflow and key a key address named; any record placing the wait must
+   * name them: key records are plaintext in a store other writers can reach,
+   * and an altered claim must neither carry a signal nor be answered from
    */
   heldUnder?: { workflowId: string; key: string };
   /**
-   * The receipt ID of the pending signal this caller stored for the key
-   * (swamp-club#3212). A wait settled by that signal took this caller's
-   * signal, whoever created the outcome, and is answered as delivered.
+   * the receipt id of the pending signal this caller stored for the key; a wait
+   * settled by that signal took this caller's signal, whoever created the
+   * outcome, and is answered as delivered
    */
   pendingReceiptId?: string;
 }
 
-/**
- * True when a record that places a wait agrees with the key address the
- * wait was resolved from, or when the wait was named by ID. `key` is left
- * out for a record that names no key: an outcome, or a step that has left
- * its wait.
- */
 function heldBy(
   placed: { workflowId: string; key?: string | null },
   heldUnder: SignalTarget["heldUnder"],
@@ -769,11 +693,9 @@ async function deliver(
         : {}),
     }))
   ) return { error: unknownWait(typedId) };
-  // A step never returns to a wait it left. So when the run record here
-  // shows the step past this wait, with no outcome stored, something that
-  // writes run records directly settled it (a build from before outcome
-  // records, which also cancels without closing the wait). The signal is
-  // answered from the record instead of being accepted and never applied.
+  // a step never returns to a wait it left: if the run record shows it past
+  // this wait with no outcome stored, answer from the record instead of
+  // accepting a signal that is never applied
   const left = stepLeftWait(run, registration);
   if (
     left && (await store.findOutcome(registration.waitId)).kind === "absent"
@@ -904,7 +826,6 @@ async function deliver(
   };
 }
 
-/** A key address in a message, as the workflow and key were typed. */
 function namedByKey(address: { workflow: string; key: string }): string {
   return `key "${printable(address.key)}" of workflow "${
     printable(address.workflow)
@@ -954,7 +875,6 @@ async function lastWaitUnder(
   };
 }
 
-/** What a `no_open_wait` message says of the wait that last held the key. */
 function lastWaitSentence(last: SignalLastWait): string {
   switch (last.settledAs) {
     case "accepted":
@@ -968,22 +888,14 @@ function lastWaitSentence(last: SignalLastWait): string {
   }
 }
 
-/** Refusals after which the wait a key resolved to may still be open. */
 const LEAVES_WAIT_OPEN: ReadonlySet<SignalRefusalKind> = new Set<
   SignalRefusalKind
 >(["invalid_payload", "unreadable"]);
 
 /**
- * Delivers a signal addressed by workflow and key (swamp-club#3210): the
- * key is resolved to the wait that holds it, and that wait takes the signal
- * as one named by ID does. Resolving writes nothing. A holder settled
- * between the two is answered from what is stored; the signal is never
- * moved on to another wait.
- *
- * No message names the wait ID. Telemetry removes from a message what was
- * typed, and the ID was not typed, while it is all a signal needs. It is in
- * the error's details for a caller of this function; the command prints the
- * message alone, and `workflow waits` lists the ID beside the key.
+ * no message names the wait id (telemetry strips what was typed, the id was
+ * not); it is in the error's details. A holder settled mid-resolve is answered
+ * from storage, never moved to another wait
  */
 async function deliverByKey(
   deps: WorkflowSignalDeps,
@@ -1035,9 +947,8 @@ async function deliverByKey(
   if (holder.kind === "unreadable") {
     return { error: unreadableRecord(typedId) };
   }
-  // A step that sets `acceptEarly` has a signal with no open wait held for
-  // its next one (swamp-club#3212).
-  // Only for a caller that can be told so.
+  // a step that sets `acceptEarly` has a signal with no open wait held for its
+  // next one, only for a caller that can be told so
   const declaredEarly = declaredEarlyWait(workflow, input.key);
   const early = input.holdEarly === false ? undefined : declaredEarly;
   if (holder.kind === "free" && early) {
@@ -1083,10 +994,6 @@ async function deliverByKey(
     : outcome;
 }
 
-/**
- * Delivers a signal addressed by key to the wait the key resolved to, and
- * words a refusal for a caller who never typed the wait's ID.
- */
 async function deliverToHolder(
   deps: WorkflowSignalDeps,
   store: SignalWaitStore,
@@ -1132,7 +1039,6 @@ function receiptOfPending(pending: PendingSignal): PendingSignalReceipt {
   };
 }
 
-/** The answer for a signal held as its key's pending signal. */
 function pendingAnswer(
   input: { key: string },
   workflow: Workflow,
@@ -1151,11 +1057,9 @@ function pendingAnswer(
 }
 
 /**
- * The answer for a signal a wait took with nobody left to deliver it to:
- * the step took it as it opened its wait, or it is the signal a retry
- * repeats. The wait's run may have gone on from there and ended by now, with
- * the registration gone, so the claim says where the signal landed. The
- * caller is authorized against that wait, as against any.
+ * the answer for a signal a wait took with nobody left to deliver it to; the
+ * wait's run may have ended and its registration be gone, so the claim says
+ * where the signal landed. The caller is authorized against that wait.
  */
 async function landedAnswer(
   deps: WorkflowSignalDeps,
@@ -1195,10 +1099,9 @@ async function landedAnswer(
       key: input.key,
       ...place,
       signal: receiptForCaller(receipt),
-      // A step that took the signal on opening its wait succeeded inside
-      // its run, and no resume applies it. A wait that was already open may
-      // have been given the signal by another reader, and its run is
-      // suspended still: the run says which (swamp-club#3307).
+      // a step that took the signal on opening its wait succeeded inside its
+      // run, and no resume applies it; a wait already open may have been given
+      // it by another reader, and the run says whether it is still suspended
       awaitingResume: run !== null &&
         (await decideContinuation(run, how.store)).kind === "resumable",
       runRecordAvailable: run !== null,
@@ -1209,14 +1112,9 @@ async function landedAnswer(
 }
 
 /**
- * Holds a signal by key that found no open wait as the key's pending signal
- * (swamp-club#3212), and answers for what the key holds once it is stored:
- * pending, or delivered when a wait opened in the meantime and took it.
- *
- * Nothing here names a wait to authorize the caller against, because none
- * exists yet: a caller that answers for a server authorizes the workflow
- * before it runs the use case. A wait found on the way is authorized by
- * `deliver`, as any wait is.
+ * holds a signal by key that found no open wait as the key's pending signal. No
+ * wait exists to authorize against: a caller answering for a server authorizes
+ * the workflow first; a wait found on the way is authorized by `deliver`.
  */
 async function arriveEarly(
   deps: WorkflowSignalDeps,
@@ -1322,10 +1220,9 @@ async function arriveEarly(
         earlySlots(claim.early).includes(record.slot) &&
         (await store.findRegistration(claim.waitId)).kind === "absent"
       ) {
-        // Unless the signal is older than that wait allows: every reader
-        // then leaves it where it is, so it is not answered as held
-        // (swamp-club#3307). The wait's workflow name and schema cannot be
-        // read before it is registered, and are not judged here.
+        // unless the signal is older than that wait allows: every reader then
+        // leaves it where it is, so it is not answered as held. The wait's
+        // workflow name and schema cannot be read before it is registered.
         if (isReceivedForWait(record, { ...claim, early: claim.early })) {
           return pendingAnswer(input, workflow, record);
         }
@@ -1371,12 +1268,9 @@ async function arriveEarly(
 }
 
 /**
- * Delivers a JSON message to the wait it names by creating the wait's
- * outcome record. The run record is not read for the decision and never
- * written: the step succeeds with the message as its output when the run
- * is next resumed, which is the only writer of a suspended run
- * (swamp-club#3093). So a signal is safe while the process that started the
- * run still saves it, and from any host on the datastore.
+ * creates the wait's outcome record and never writes the run record; the step
+ * succeeds with the message when the run is next resumed (the only writer of a
+ * suspended run), so any host may signal
  */
 export async function* workflowSignal(
   _ctx: LibSwampContext,

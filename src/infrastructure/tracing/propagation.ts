@@ -19,31 +19,14 @@
 
 import { context, propagation } from "@opentelemetry/api";
 
-/**
- * Carrier that implements the TextMapSetter/Getter interfaces for
- * a plain Record<string, string>.
- */
 type HeaderCarrier = Record<string, string>;
 
-/**
- * Extracts W3C Trace Context (`traceparent`/`tracestate`) from the current
- * active context and returns them as a plain object.
- *
- * Returns an empty object when tracing is not initialized (propagation API
- * returns no-op implementations).
- */
 export function injectTraceContext(): HeaderCarrier {
   const carrier: HeaderCarrier = {};
   propagation.inject(context.active(), carrier);
   return carrier;
 }
 
-/**
- * Reconstructs an OTel context from W3C Trace Context headers.
- *
- * This is useful for receiving trace context from an external caller
- * (e.g. a parent process that set TRACEPARENT).
- */
 export function extractTraceContext(
   headers: HeaderCarrier,
 ): ReturnType<typeof context.active> {

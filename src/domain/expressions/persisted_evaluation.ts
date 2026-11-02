@@ -55,11 +55,8 @@ import {
 } from "./provenance_map.ts";
 
 /**
- * A masked position in a cached definition, as the keys from the file root:
- * `["globalArguments", "apiKey"]`, `["methods", "run", "arguments", "token"]`.
- * A removed captured scope is `["deferredExpressions", index, "bindings"]`.
- * The cache records these beside `writtenReferences`, so a replay refuses
- * them even under a later schema that no longer marks the field.
+ * masked positions are recorded beside writtenReferences so a replay refuses
+ * them even under a later schema that does not mark the field
  */
 export type MaskedPath = readonly (string | number)[];
 
@@ -76,45 +73,31 @@ export const MaskedPathSchema = z.array(
     typeof path[1] === "number" && path[2] === "bindings")
 );
 
-/** An evaluated definition as it is written to the evaluated cache. */
 export interface PersistedEvaluatedDefinition {
   sensitiveFormat: number;
   definition: Definition;
   deferredExpressions: DeferredExpression[];
   writtenReferences: WrittenReference[];
-  /** Positions replaced by the mask, an empty argument record, or an empty scope. */
   maskedPaths: MaskedPath[];
-  /** The same positions spelled as arguments, `globalArguments.apiKey`. */
   maskedArguments: string[];
-  /** Data ranges in the persisted text, for guards before rehydration. */
   persistedProvenance: ProvenanceMap;
 }
 
-/**
- * The argument schemas of a model type, as a `ModelDefinition` declares
- * them: the global arguments schema and each method's arguments schema.
- */
 export interface ArgumentSchemas {
   globalArguments?: z.ZodTypeAny;
   methods: Record<string, { arguments?: z.ZodTypeAny }>;
 }
 
-/** What the evaluated cache holds in place of a literal sensitive argument. */
 export const SENSITIVE_ARGUMENT_MASK = "***";
 
-/** Code of the error a repository raises for a plaintext sensitive argument. */
 export const PLAINTEXT_SENSITIVE_EVALUATED_ARG_CODE =
   "plaintext_sensitive_evaluated_arg";
 
-/** One place a cached definition holds arguments the schemas describe. */
 interface ArgumentSite {
-  /** The keys from the file root to the arguments, as references spell paths. */
   prefix: readonly (string | number)[];
   schema: z.ZodTypeAny;
   args: Record<string, unknown>;
-  /** Method arguments override global fallback values at the top-level key. */
   methodKeys?: ReadonlySet<string>;
-  /** Raw global inputs have no known correspondence to sensitive outputs. */
   opaque?: boolean;
 }
 
@@ -162,7 +145,6 @@ function argumentSites(
   return sites;
 }
 
-/** Whether a written reference sits at or under the position `keys` names. */
 function underWrittenReference(
   prefix: readonly (string | number)[],
   writtenReferences: readonly WrittenReference[],
@@ -189,7 +171,6 @@ function hasObjectKeys(value: unknown): boolean {
   return isContainer(value) && Object.keys(value).length > 0;
 }
 
-/** Visits every leaf under `value`, with its keys and spelled path. */
 function visitLeaves(
   value: unknown,
   keys: readonly (string | number)[],
@@ -209,22 +190,16 @@ function visitLeaves(
   }
 }
 
-/** What a check for plaintext sensitive arguments may leave out. */
 export interface PlaintextCheckOptions {
   /** Data-origin text is a value even when it resembles an expression. */
   provenance?: ProvenanceMap;
   /** Unlike raw replay provenance, these ranges match written reference lengths. */
   persistedProvenance?: ProvenanceMap;
-  /**
-   * Count the mask as written, for a writer checking that nothing but the
-   * mask is about to be written.
-   */
   allowMask?: boolean;
   /**
-   * The method a replay runs: only the global arguments and this method's
-   * arguments are checked, since no other method's run. `replaced` names
-   * the arguments the caller sets after replay (a step's inputs, a method
-   * run's --input overrides), whose cached value never executes either.
+   * only global arguments and this method's arguments are checked, since no
+   * other method runs; replaced names arguments set after replay, whose cached
+   * value never executes
    */
   method?: { name: string; replaced?: Iterable<string> };
   /**
@@ -235,7 +210,6 @@ export interface PlaintextCheckOptions {
   recordedMasks?: readonly MaskedPath[];
 }
 
-/** A sensitive value in plaintext: its site, its keys there, its spelling. */
 interface PlaintextValue {
   site: ArgumentSite;
   keys: (string | number)[];
@@ -243,13 +217,9 @@ interface PlaintextValue {
 }
 
 /**
- * Every sensitive leaf of `data` that holds a value in plaintext: a literal
- * by the rule the save-time refusal uses, with no written reference at or
- * under it, and no expression still to be resolved at runtime in it. A
- * sensitive container is walked leaf by leaf. Pending expressions exempt
- * only authored text; a resolved input beside one is still sensitive data.
- * Method schemas also cover globals used as fallback arguments, and the
- * returned position names the global where that value actually lives.
+ * pending runtime expressions exempt only authored text; a resolved input
+ * beside one is still sensitive data. Method schemas also cover globals used as
+ * fallback arguments, reported at the global.
  */
 function plaintextValues(
   schemas: ArgumentSchemas,
@@ -274,9 +244,8 @@ function plaintextValues(
         provenancePath(path),
       )
     ) return true;
-    // At a position that is only potentially sensitive, a literal is the
-    // type's own text, already on disk in the source; only data is masked
-    // there (swamp-club#3681).
+    // at a potentially-sensitive position a literal is the type's own text,
+    // already on disk in the source, so only data is masked there
     if (conservative) return false;
     return isLiteralSecret(value) &&
       !(typeof value === "string" && holdsRuntimeExpression(value));
@@ -295,18 +264,14 @@ function plaintextValues(
       ? [{ keys: [], path: "", value: site.args, rawInput: true as const }]
       : findSensitiveValues(site.schema, site.args, true);
     for (const entry of entries) {
-      // A position that is only potentially sensitive — the raw inputs of a
-      // pipeline into a sensitive output, the globals a transforming schema
-      // may consume — holds the type's own text as well as data. Only data
-      // is masked there: an authored literal is already the definition's
-      // text on disk, and a reference names where the secret lives, so
-      // masking either would only cost the replay (swamp-club#3681).
+      // a potentially-sensitive position holds the type's own text as well as
+      // data; only data is masked, since masking an authored literal or a
+      // reference would only cost the replay
       const conservative = site.opaque || entry.rawInput === true;
       const wholeMap = options.provenance ?? persistedMap;
-      // A sensitive value inside an object whose keys came from data (a
-      // record of objects an input supplied) is reported at that object, as
-      // a leaf inside it is below: reported at its own position, the
-      // record's key would reach the file, the metadata and the refusal.
+      // a sensitive value inside an object whose keys came from data is
+      // reported at that object, since reporting at its own position would let
+      // the record's key reach the file, metadata and refusal
       const keyed = dataKeyedContainer(site, entry.keys, wholeMap);
       if (keyed) {
         if (!replaced?.has(entry.keys[0])) {
@@ -316,15 +281,9 @@ function plaintextValues(
       }
       const whole = { site, keys: entry.keys, path: entry.path };
       const wholePath = position(whole);
-      // Any data under a sensitive object, or an array holding one, masks
-      // it whole. Its keys may be data, and provenance does not record every
-      // data key on its own (a caller's key beside a described object's
-      // properties is recorded only as a data leaf under it), so a leaf mask
-      // could leave a data key in the file, the metadata and the refusal
-      // message. This fails closed: an authored object holding a
-      // data-origin vault reference is masked too and does not replay. A
-      // container at a conservative position is masked whole only when its
-      // own keys came from data.
+      // data under a sensitive object or array masks it whole, since provenance
+      // does not record every data key and a leaf mask could leave one in the
+      // file. Fails closed: such an object does not replay.
       if (
         hasObjectKeys(entry.value) &&
         (conservative
@@ -340,12 +299,9 @@ function plaintextValues(
         if (replaced?.has(keys[0])) return;
         if (options.allowMask && value === SENSITIVE_ARGUMENT_MASK) return;
         const entry = { site, keys, path };
-        // A leaf inside a container whose keys came from data (a record an
-        // input or a data read supplied, whole or with an expression the
-        // caller typed into it) is reported at that container whatever the
-        // leaf holds, a reference included: its keys are data, and a leaf
-        // mask, or none, would leave them in the file, the metadata and the
-        // refusal message (swamp-club#3681).
+        // a leaf inside a container whose keys came from data is reported at
+        // the container whatever it holds, a reference included, since a leaf
+        // mask or none would leave the keys in the file and refusal
         const container = dataKeyedContainer(
           site,
           keys,
@@ -408,13 +364,9 @@ function position({ site, keys }: PlaintextValue): MaskedPath {
 }
 
 /**
- * The shallowest object with keys between the site's root and `keys` whose
- * keys `map` marks data, if any: whole with its values, or on their own
- * beside an authored expression the caller typed into it (swamp-club#3681).
- * Array indexes reveal no input text, so an array is passed through. A fixed
- * object shape supplied whole from data counts too: without the schema the
- * walk cannot tell its keys from a record's, so it fails closed and masks
- * the object's other values with it.
+ * array indexes reveal no input text, so arrays pass through; a fixed object
+ * shape supplied whole from data counts too, since without the schema its keys
+ * cannot be told from a record's, so it fails closed
  */
 function dataKeyedContainer(
   site: ArgumentSite,
@@ -437,7 +389,6 @@ function dataKeyedContainer(
   return undefined;
 }
 
-/** The expression evaluator's spelling, including quoted object keys. */
 function provenancePath(path: MaskedPath): string {
   return path.reduce<string>(
     (parent, key) =>
@@ -446,7 +397,6 @@ function provenancePath(path: MaskedPath): string {
   );
 }
 
-/** Remove child paths that can themselves contain sensitive object keys. */
 export function maskProvenance(
   provenance: ProvenanceMap,
   maskedPaths: readonly MaskedPath[],
@@ -459,7 +409,6 @@ export function maskProvenance(
   ));
 }
 
-/** Spells a recorded position the way {@link spelled} spells a found one. */
 function spellPosition(path: MaskedPath): string {
   const structural = path[0] === "methods" ? 3 : 1;
   const rest = path.slice(structural).reduce<string>(
@@ -470,7 +419,6 @@ function spellPosition(path: MaskedPath): string {
   return path.slice(0, structural).join(".") + (rest ? `.${rest}` : "");
 }
 
-/** Whether a recorded position is one the check covers. */
 function recordedInScope(
   path: MaskedPath,
   options: PlaintextCheckOptions,
@@ -485,15 +433,8 @@ function recordedInScope(
 }
 
 /**
- * The sensitive arguments of a cached definition that hold a value in
- * plaintext: every position under `globalArguments` or a method's
- * `arguments` that `schemas` marks sensitive and that holds a literal by the
- * rule the save-time refusal uses, with no written reference at or under
- * it, plus every recorded masked position in scope. Spelled
- * `globalArguments.apiKey` and `methods.execute.arguments.token`. The mask
- * is itself a literal, so a masked cache is reported too, which is what
- * refuses its replay; see {@link PlaintextCheckOptions} for what a caller
- * may leave out or add.
+ * the mask is itself a literal, so a masked cache is reported too, which is
+ * what refuses its replay; recorded masked positions in scope are included
  */
 export function findPlaintextSensitiveArguments(
   schemas: ArgumentSchemas,
@@ -510,7 +451,6 @@ export function findPlaintextSensitiveArguments(
   return [...paths];
 }
 
-/** `the sensitive argument 'a'`, or `the sensitive arguments 'a', 'b'`. */
 function sensitiveArgumentsSubject(paths: readonly string[]): string {
   const list = paths.map((path) => `'${path}'`).join(", ");
   return paths.length > 1
@@ -531,17 +471,12 @@ export function plaintextSensitiveArgumentsMessage(
   }, so it was not written: a value a schema marks sensitive reaches the evaluated cache only as a vault reference or the mask. A swamp command that raises this has a bug in its writer; please report it with the command you ran.`;
 }
 
-/** Code of the error a replay raises for a cache with such an argument. */
 export const EVALUATED_CACHE_HOLDS_SENSITIVE_ARGUMENTS_CODE =
   "evaluated_cache_holds_sensitive_arguments";
 
 /**
- * The message for a cached evaluation that --last-evaluated refuses because
- * a sensitive argument holds a value that did not come from a vault: the
- * mask this swamp writes, or plaintext an older one wrote. A plain re-run
- * writes the mask again, so the message says what does make the run
- * replayable rather than sending the user round that loop. Names the
- * paths, never a value; `command` is what runs without the flag.
+ * a plain re-run writes the mask again, so the message says what makes the run
+ * replayable instead of looping the user; it names paths, never a value
  */
 export function evaluatedCacheHoldsSensitiveArgumentsMessage(
   name: string,
@@ -566,7 +501,6 @@ export function evaluatedCacheHoldsSensitiveArgumentsMessage(
   } that did not come from a vault, so --last-evaluated cannot replay it. Run the ${command} without --last-evaluated. To replay it later, store the value in a vault and reference it with \${{ vault.get(...) }}; ${replaces}.`;
 }
 
-/** Reads only stored values, never inherited properties. */
 function readAt(target: unknown, keys: MaskedPath): unknown {
   let value = target;
   for (const key of keys) {
@@ -576,7 +510,6 @@ function readAt(target: unknown, keys: MaskedPath): unknown {
   return value;
 }
 
-/** Replaces an existing own value; a missing or already masked parent ends it. */
 function setAt(
   target: unknown,
   keys: readonly (string | number)[],
@@ -606,7 +539,6 @@ function maskAt(target: unknown, path: MaskedPath): void {
   setAt(target, path, isArgumentRoot(path) ? {} : SENSITIVE_ARGUMENT_MASK);
 }
 
-/** Returns a masked copy and the sensitive positions it changed. */
 function maskSensitiveArguments(
   schemas: ArgumentSchemas,
   data: DefinitionData,
@@ -647,7 +579,6 @@ function maskSensitiveArguments(
   return { data: masked, values };
 }
 
-/** Whether a resolved data segment contains anything beyond vault references. */
 function hasUnreferencedData(
   value: unknown,
   values: RunSensitiveValues,
@@ -671,11 +602,9 @@ function samePath(left: MaskedPath, right: MaskedPath): boolean {
 }
 
 /**
- * `map` with the range of every written reference in `data` marked as data,
- * so a persisted-coordinate map is exact at each reference whatever rule
- * aligned the rest of its string: a reference the value search wrote has no
- * sentinel to align through, and two in one string would otherwise merge
- * into one span. A path that is whole data stays so.
+ * marks every written reference range as data so the persisted map is exact at
+ * each reference: a reference the value search wrote has no sentinel to align
+ * through, and two in one string would merge
  */
 export function withWrittenReferenceRanges(
   map: ProvenanceMap,
@@ -773,23 +702,8 @@ function hasCapturedPlaintext(
 }
 
 /**
- * Builds what to write to the evaluated cache from the copy that executes:
- * issued sentinels become their vault references, tag values carry placeholders,
- * and any literal still under a sensitive argument path of `schemas` (a
- * value from the run's inputs, or one stored in the source) becomes the
- * mask. Nothing sensitive is written in plaintext, whether it came from a
- * vault, a data read or the run's inputs (swamp-club#3681).
- *
- * Authored text joined to a reference or a pending runtime expression stays
- * written. Resolved input/data text beside it masks the whole sensitive leaf,
- * unless every resolved segment was replaced by a recorded vault reference.
- * A masked position no longer fits the provenance ranges recorded for it,
- * which is safe only because
- * replay refuses a cache with a masked argument (see
- * {@link findPlaintextSensitiveArguments}) before it aligns provenance. A
- * masked number or boolean becomes the mask string, so the cached value no
- * longer matches its schema type; only the replay check, which refuses it,
- * and the workflow report, which shows it, read the cache.
+ * nothing sensitive is written in plaintext: sentinels become vault references
+ * and any literal under a sensitive argument path becomes the mask
  */
 export function persistEvaluatedDefinition(
   executed: Definition,
@@ -798,7 +712,6 @@ export function persistEvaluatedDefinition(
   values: RunSensitiveValues,
   schemas: ArgumentSchemas,
   provenance: ProvenanceMap = ProvenanceMap.authored(),
-  /** Forwarded inputs; source reads identify the aliases of masked arguments. */
   forwardedInputs: readonly MaskedPath[] = [],
   previousMasks: readonly MaskedPath[] = [],
 ): PersistedEvaluatedDefinition {
@@ -843,17 +756,9 @@ export function persistEvaluatedDefinition(
     }
     return hasUnreferencedData(value, values);
   };
-  // Sensitive leaves whose resolved segments are entirely references keep
-  // only those reference ranges as data. Raw replay ranges use the original
-  // secret lengths and cannot safely be compared with persisted text. A
-  // written reference always stands for a value resolved during evaluation,
-  // never for an authored vault.get, which stays an expression; the guards
-  // read these ranges only to tell the text a reference covers from the
-  // text it does not.
-  // Sentinels stand in for the reference text they are written as, so the
-  // persisted map is exact wherever a sentinel became a reference; a value
-  // the search replaced falls to the differing-span rule, and every written
-  // reference is marked data either way.
+  // all-reference leaves keep only those ranges as data; raw replay ranges use
+  // original secret lengths, so they do not compare with persisted text. A
+  // written reference never stands for an authored vault.get.
   let persistedProvenance = withWrittenReferenceRanges(
     alignProvenance(
       provenance,
@@ -977,16 +882,9 @@ export function persistEvaluatedDefinition(
 }
 
 /**
- * The arguments of an evaluated definition as a run of `method` shows them
- * (the completed event, the method-summary report): every sensitive
- * position of `schemas` that holds data (`provenance`), a literal, or a
- * container whose keys came from data is the mask, by the same walk the
- * evaluated cache uses, so what the cache keeps off disk never reaches the
- * terminal or a report either (swamp-club#3681). A pipeline's raw inputs
- * count as its sensitive output, the global arguments it may consume
- * included. A value made only of runtime expressions stays, since its text
- * names where the secret lives. Only the global arguments and `method`'s
- * arguments are read, as the run shows only those; `data` is not mutated.
+ * masks by the same walk the evaluated cache uses, so what stays off disk never
+ * reaches the terminal or a report; a value made only of runtime expressions
+ * stays, since its text names where the secret lives
  */
 export function maskSensitiveArgumentsForDisplay(
   schemas: ArgumentSchemas,
@@ -1005,7 +903,6 @@ export function maskSensitiveArgumentsForDisplay(
   return masked.data;
 }
 
-/** The schemas a run of `method` shows: the global arguments and its own. */
 function shownSchemas(
   schemas: ArgumentSchemas,
   method: string,
@@ -1020,20 +917,9 @@ function shownSchemas(
 }
 
 /**
- * Restores a cached evaluated definition for replay.
- *
- * The cache's written
- * references become sentinels the step's bag issues, reading no vault: the
- * raw and executed copies are one sentinel copy, since a typed run holds no
- * value anywhere, and the delivery loads the current value under the
- * principal's current grants (typed-secrets 4.4, design Section 8.2). The
- * cache's `persistedProvenance`, in reference-text coordinates, is aligned
- * onto that copy exactly through the reference text each sentinel stands
- * for, and returned as `provenance` for both copies. A cache written before
- * swamp-club#3681 records provenance only in value coordinates, which no copy
- * in hand can realign, so a typed replay refuses it rather than risk a data
- * range landing on authored text; one with no provenance at all replays as
- * authored, as it always did.
+ * written references become sentinels reading no vault, so delivery loads the
+ * current value under current grants; a typed replay refuses value-coordinate
+ * provenance only, while none replays as authored
  */
 export function rehydrateEvaluatedDefinition(
   cached: {
@@ -1046,7 +932,6 @@ export function rehydrateEvaluatedDefinition(
      * refuses `"unreadable"` before replaying; here it counts as absent.
      */
     persistedProvenance?: ProvenanceMap | "unreadable";
-    /** Where data sits in the raw copy, as the cache stores it. */
     provenance?: ProvenanceMap | "unreadable";
   },
   bag: VaultSecretBag,
@@ -1054,7 +939,6 @@ export function rehydrateEvaluatedDefinition(
   definition: Definition;
   executedDefinition: Definition;
   deferredExpressions: DeferredExpression[];
-  /** Set in a typed run: the map of both copies, aligned onto them. */
   provenance?: ProvenanceMap;
 } {
   {
@@ -1068,7 +952,6 @@ export function rehydrateEvaluatedDefinition(
   }
 }
 
-/** The typed branch of {@link rehydrateEvaluatedDefinition}. */
 function rehydrateEvaluatedDefinitionReferences(
   cached: {
     sensitiveFormat?: number;
@@ -1115,11 +998,8 @@ function rehydrateEvaluatedDefinitionReferences(
 }
 
 /**
- * The map of a sentinel copy restored from a persisted copy (typed-secrets
- * 4.4): the persisted-coordinate map aligned exactly, through the reference
- * text each sentinel stands for. A cache that holds references and a map in
- * value coordinates only cannot be realigned and is refused with `refusal`;
- * one with no map replays as authored.
+ * a cache with references and a value-coordinate map only cannot be realigned
+ * and is refused with refusal; one with no map replays as authored
  */
 export function replayProvenance(
   cached: {
@@ -1164,11 +1044,9 @@ export function mayHoldPlaintextSensitiveValues(cache: {
 }
 
 /**
- * Whether a cache or run record was written in a sensitive-value format newer
- * than this swamp's ({@link SENSITIVE_FORMAT_VERSION}). Such a file may hold
- * a sensitive value in a form this swamp does not recognise, as version 2's
- * mask is to a version-1 reader, which would run it as the value
- * (swamp-club#3681); it is not replayed or resumed.
+ * a file in a newer sensitive format may hold a sensitive value in a form this
+ * swamp does not recognise (a newer mask would run as the value), so it is not
+ * replayed or resumed
  */
 export function isNewerSensitiveFormat(cache: {
   sensitiveFormat?: number;

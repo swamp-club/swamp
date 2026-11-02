@@ -25,39 +25,30 @@ import { UserError } from "../errors.ts";
 
 const logger = getLogger(["swamp", "extensions", "manifest"]);
 
-/** Scoped name pattern: @collective/name or @collective/name/subname/... */
 const SCOPED_NAME_PATTERN = /^@[a-z0-9_-]+\/[a-z0-9_-]+(\/[a-z0-9_-]+)*$/;
 
 export const MAX_LABELS = 20;
 
 /**
- * Largest manifest.yaml parsed, in bytes (1 MiB, as the refusal says). A pulled manifest is another
- * author's, so its size is bounded before the YAML parse (swamp-club#3862).
+ * a pulled manifest is another author's, so its size is bounded before the YAML
+ * parse
  */
 export const MAX_MANIFEST_BYTES = 1024 * 1024;
 
-/** Most entries one manifest list may hold; an extension has at most 150 files. */
 export const MAX_MANIFEST_LIST_ENTRIES = 1000;
 
-/** Most validation issues a refused manifest lists. */
 export const MAX_REPORTED_MANIFEST_ISSUES = 20;
 
-/**
- * A manifest list, refused before its entries are parsed when it holds more
- * than {@link MAX_MANIFEST_LIST_ENTRIES}.
- */
 function manifestList<T extends z.ZodType>(field: string, entry: T) {
   return z.array(entry).max(MAX_MANIFEST_LIST_ENTRIES, {
     message: `Too many ${field} (max ${MAX_MANIFEST_LIST_ENTRIES})`,
   });
 }
 
-/** Public selects registry defaults; private requires private publication. */
 export type PublishVisibility = "public" | "private";
 
 const PublishVisibilitySchema = z.enum(["public", "private"]).optional();
 
-/** Validates both sources and gives an explicit CLI choice precedence. */
 export function resolvePublishVisibility(
   manifestVisibility: unknown,
   cliVisibility?: unknown,
@@ -73,9 +64,8 @@ export function resolvePublishVisibility(
 }
 
 /**
- * Checks whether a relative path is safe for use in an extension manifest.
- * Rejects absolute paths and paths containing '..' components, which would
- * escape the base directory during archive creation.
+ * absolute paths and paths containing .. would escape the base directory during
+ * archive creation
  */
 export function isSafeRelativePath(p: string): boolean {
   if (p.startsWith("/")) return false;
@@ -89,29 +79,9 @@ const safePathString = z.string().refine(isSafeRelativePath, {
 });
 
 /**
- * Path resolution base. Selects the directory typed-key entries
- * (`models`, `vaults`, `datastores`, `reports`, `webhooks`, `include`)
- * and `additionalFiles` resolve against during push, and the directory
- * the archive layout mirrors via `relative(base, file)`.
- *
- * - `typedDir` (default): typed keys resolve relative to their
- *   configured directory (`modelsDir`, `vaultsDir`, etc. from the repo
- *   marker); `additionalFiles` resolves relative to the manifest's
- *   own directory. This is the historical behavior — every published
- *   manifest without an explicit `paths.base` keeps its semantics.
- * - `manifest`: every typed key plus `additionalFiles` resolves
- *   relative to the manifest's own directory. Use this for
- *   per-extension-subdir layouts where manifest, source, README, and
- *   LICENSE all live alongside each other.
- *
- * Workflows honour `paths.base: manifest` — when set, the manifest's
- * own directory is searched first, falling back to the repo-root
- * `workflows/` and `extensions/workflows/` directories.
- *
- * Skills honour `paths.base: manifest` — when set, the manifest's own
- * directory is searched first (e.g. `<manifestDir>/.claude/skills/`),
- * before project-local and global skill directories. All enrolled
- * tools are searched, not just the primary tool.
+ * typedDir (default) resolves typed keys against configured dirs and
+ * additionalFiles against the manifest dir; manifest resolves all against the
+ * manifest dir, searched first for workflows and skills
  */
 const PathsBaseSchema = z.enum(["typedDir", "manifest"]);
 
@@ -153,8 +123,7 @@ const ExtensionManifestSchemaV1 = z.object({
   paths: PathsConfigSchema.optional(),
   workflows: manifestList("workflows", safePathString).optional(),
   models: manifestList("models", safePathString).optional(),
-  // The behavior spelling of `models` (swamp-club#3338); merged into
-  // `models` on parse.
+  // the behavior spelling of models; merged into models on parse
   behaviors: manifestList("behaviors", safePathString).optional(),
   vaults: manifestList("vaults", safePathString).optional(),
   drivers: manifestList("drivers", safePathString).optional(),
@@ -193,22 +162,19 @@ const ExtensionManifestSchemaV1 = z.object({
   },
 );
 
-/** Parsed and validated extension manifest. */
 export interface ExtensionManifest {
   manifestVersion: 1;
   name: string;
   version: string;
   description: string | undefined;
-  /** Declared SPDX license expression, as written (trimmed). */
   license?: string;
   visibility?: PublishVisibility;
   repository: string | undefined;
   paths: { base: PathsBase };
   workflows: string[];
   /**
-   * The model entry points, from `models:` or from its behavior spelling
-   * `behaviors:` (swamp-club#3338). A pushed manifest always lists them
-   * under `models:`.
+   * from models: or its behavior spelling behaviors:; a pushed manifest always
+   * lists them under models:
    */
   models: string[];
   /**
@@ -230,11 +196,6 @@ export interface ExtensionManifest {
   dependencies: string[];
 }
 
-/**
- * Parses a YAML string into a validated ExtensionManifest.
- *
- * @throws UserError for missing/unsupported manifest version or validation failures
- */
 export function parseExtensionManifest(content: string): ExtensionManifest {
   // A string's length never exceeds its UTF-8 size, so the first test refuses
   // an oversized manifest without encoding it.
@@ -254,7 +215,6 @@ export function parseExtensionManifest(content: string): ExtensionManifest {
 
   const obj = raw as Record<string, unknown>;
 
-  // Check manifestVersion first with specific error messages
   if (!("manifestVersion" in obj) || obj.manifestVersion === undefined) {
     throw new UserError(
       "Extension manifest is missing 'manifestVersion'. Add 'manifestVersion: 1' to your manifest.",
@@ -287,9 +247,8 @@ export function parseExtensionManifest(content: string): ExtensionManifest {
     );
   }
 
-  // A manifest that sets `models:` reads exactly as it always has. Before
-  // `behaviors:` existed, a stray `behaviors:` key beside it was dropped, so
-  // it still is: the behavior spelling is read only when `models:` is absent.
+  // the behavior spelling is read only when models: is absent; a stray
+  // behaviors: key beside models: stays dropped
   const behaviors = result.data.models === undefined
     ? result.data.behaviors
     : undefined;

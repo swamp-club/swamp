@@ -38,7 +38,6 @@ function lineage(
     replicaRoot,
     lineageFence,
     lastFence,
-    // Abandoned lineages here were all under ROOT.
     previousLineages: previousLineages.map((fence) => ({
       replicaRoot: ROOT,
       fence,
@@ -136,7 +135,6 @@ Deno.test("decideLineage: a lower fence restarts with lastFence following it", (
     kind: "restart",
     lineage: lineage(5, 5, [90]),
   });
-  // So the next fence continues rather than restarting every time.
   assertEquals(
     decideLineage(lineage(5, 5, [90]), ReplicaRoot.of(ROOT), 6).kind,
     "continue",
@@ -153,7 +151,6 @@ Deno.test("decideLineage: a restart onto a path this copy used before is a confl
     decideLineage(previous, ReplicaRoot.of(ROOT), 7).kind,
     "conflict",
   );
-  // Another root has no such history.
   assertEquals(
     decideLineage(previous, ReplicaRoot.of("/other"), 3).kind,
     "restart",

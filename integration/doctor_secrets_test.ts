@@ -17,14 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Integration test for `doctor secrets`: exercises the real service against a
- * real on-disk repository and the real model registry. It plants a cleartext
- * sensitive global argument on disk the way a legacy or datastore-synced
- * definition would carry one (bypassing the at-rest guard, which only fires on
- * `save()`), then asserts the scan flags it without ever echoing the secret.
- */
-
 import { assertEquals, assertStringIncludes } from "@std/assert";
 import { dirname, join, relative } from "@std/path";
 import { ensureDir, walk } from "@std/fs";
@@ -61,7 +53,6 @@ async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
 async function findYamlForId(dir: string, id: string): Promise<string> {
   for await (const entry of walk(dir, { exts: [".yaml"] })) {
     if (entry.isFile) {
-      // Check both filename and YAML content for the ID
       if (entry.name === `${id}.yaml`) {
         return entry.path;
       }
@@ -99,8 +90,6 @@ Deno.test("doctor secrets: flags a planted cleartext sensitive arg on disk", asy
 
     const repo = new YamlDefinitionRepository(repoDir);
 
-    // A clean definition (vault.get expression) is allowed through save() and
-    // establishes the on-disk type directory layout.
     const clean = Definition.create({
       name: "clean-creds",
       type: modelType.normalized,
@@ -108,9 +97,9 @@ Deno.test("doctor secrets: flags a planted cleartext sensitive arg on disk", asy
     });
     await repo.save(modelType, clean);
 
-    // Plant a definition holding a cleartext literal by writing the YAML
-    // directly — the at-rest guard fires on save(), so a legacy or
-    // datastore-synced file is exactly how such a value reaches disk.
+    // plant the cleartext by writing YAML directly: the at-rest guard fires
+    // only on save(), and a legacy or datastore-synced file reaches disk this
+    // way
     const typeDir = dirname(
       await findYamlForId(join(repoDir, "models"), clean.id),
     );
@@ -148,7 +137,6 @@ Deno.test("doctor secrets: flags a planted cleartext sensitive arg on disk", asy
       "vault.get",
     );
 
-    // The secret must never appear anywhere in the scan output.
     assertEquals(JSON.stringify(data).includes(CLEARTEXT), false);
   });
 });
@@ -174,8 +162,6 @@ Deno.test("doctor secrets: also scans auto-definitions, not just models/", async
 
     const repo = new YamlDefinitionRepository(repoDir);
 
-    // Save a clean definition under models/ to discover the type's on-disk
-    // directory layout (mirrored under the auto-definitions tree).
     const clean = Definition.create({
       name: "clean-creds",
       type: modelType.normalized,
@@ -187,9 +173,8 @@ Deno.test("doctor secrets: also scans auto-definitions, not just models/", async
       dirname(await findYamlForId(join(repoDir, "models"), clean.id)),
     );
 
-    // Plant a cleartext leak in .swamp/auto-definitions — the tree that holds
-    // model/workflow-run auto-created definitions, which findAllGlobal() alone
-    // does not walk.
+    // plant the leak in .swamp/auto-definitions, a tree findAllGlobal() alone
+    // does not walk
     const autoTypeDir = join(
       repoDir,
       ".swamp",
@@ -220,7 +205,6 @@ Deno.test("doctor secrets: also scans auto-definitions, not just models/", async
     }
     const { data } = completed;
 
-    // Both the clean models/ def and the leaky auto-definition were scanned.
     assertEquals(data.scanned, 2);
     assertEquals(data.findings.length, 1);
     assertEquals(data.findings[0].definitionName, "auto-leaky-creds");
@@ -258,8 +242,8 @@ Deno.test("doctor secrets: flags a cleartext sensitive field inside an array ele
     });
     await repo.save(modelType, clean);
 
-    // Planted directly, as a definition written before the guard reached
-    // array elements would be.
+    // planted directly, as a definition written before the guard reached array
+    // elements would be
     const typeDir = dirname(
       await findYamlForId(join(repoDir, "models"), clean.id),
     );

@@ -17,13 +17,9 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// Partial extension catalog saves and sources mounted from outside the repo
-// (swamp-club#2563). `extension pull` and `extension rm` save only the
-// extension they change, and each save pruned every catalog row whose source
-// is outside the repo root, so a source mounted through .swamp-sources.yaml
-// lost its rows until something re-indexed it. These tests wire the real
-// loader, install and remove services, repository and catalog together on a
-// temp filesystem, building each repository the way the CLI does.
+// partial extension saves must not prune catalog rows of sources mounted
+// outside the repo root; wires the real loader, install and remove services,
+// repository and catalog together
 
 import { assertEquals } from "@std/assert";
 import { ensureDir } from "@std/fs";
@@ -96,17 +92,14 @@ async function buildArchive(name: string, type: string): Promise<Uint8Array> {
 interface Fixture {
   repoDir: string;
   catalog: ExtensionCatalogStore;
-  /** The mounted source file, outside the repo root. */
   mountedSource: string;
   mountedType: string;
   pulledName: string;
   pulledType: string;
-  /** A repository built as the CLI builds one, or without mount dirs. */
   repository(
     lockfileRepository: LockfileRepository,
     withMounts?: boolean,
   ): Promise<ExtensionRepository>;
-  /** Indexes the repo's local and mounted model dirs with the loader. */
   index(withMounts?: boolean): Promise<void>;
   install(withMounts?: boolean): Promise<void>;
   remove(): Promise<void>;
@@ -249,10 +242,9 @@ Deno.test("integration: extension pull succeeds when a local model overrides a m
     await writeModel(local, f.mountedType);
     await f.index();
     assertEquals(f.typeOf(local), f.mountedType);
-    // Older binaries left both rows typed, which I-Repo-1 rejects unless
-    // the save settles it.
-    // setTypeNormalized takes the stored (canonical) path, as the loader
-    // passes it.
+    // both rows typed is rejected by I-Repo-1 unless the save settles it;
+    // setTypeNormalized takes the stored canonical path, as the loader passes
+    // it
     f.catalog.setTypeNormalized(
       canonicalizePath(f.mountedSource),
       f.mountedType,
@@ -317,7 +309,6 @@ Deno.test("integration: a local model added after a mounted one takes its type o
     assertEquals(f.typeOf(local), f.mountedType);
     assertEquals(f.typeOf(f.mountedSource), "");
 
-    // Removing the override hands the type back to the mounted source.
     await Deno.remove(local);
     await f.index();
     assertEquals(f.typeOf(f.mountedSource), f.mountedType);
@@ -326,8 +317,6 @@ Deno.test("integration: a local model added after a mounted one takes its type o
 
 Deno.test("integration: the heal gives a local override back the type an older binary left on a mounted row", async () => {
   await withFixture(async (f) => {
-    // An older binary ranked a mounted source as local and broke the tie by
-    // path, so the override was indexed typeless behind the mounted row.
     await f.index(false);
     const local = join(f.repoDir, "extensions", "models", "local_probe.ts");
     await writeModel(local, f.mountedType);
@@ -335,8 +324,6 @@ Deno.test("integration: the heal gives a local override back the type an older b
     assertEquals(f.typeOf(local), "");
     assertEquals(f.typeOf(f.mountedSource), f.mountedType);
 
-    // Upgrading leaves the new heal marker unset. Deleting a row that claims
-    // a type clears it the same way.
     const dummy = join(f.repoDir, "extensions", "models", "dummy.ts");
     f.catalog.upsertWithIdentity({
       source_path: dummy,

@@ -58,15 +58,6 @@ export interface NamespaceListDeps {
   >;
 }
 
-/**
- * The namespace list dependencies for the datastore `config` names, shared
- * by the CLI and serve. An extension datastore lists through its provider,
- * a v2 filesystem datastore from its namespace manifests, and a v3 one from
- * the namespaces its commits name (swamp-club#3301), plus the current
- * namespace before its first commit, from a copy made current first while
- * it replicates. Entries without a manifest carry an
- * empty `repoId` and `registeredAt`.
- */
 export async function createNamespaceListDeps(
   config: DatastoreConfig,
   repoDir: string,
@@ -100,11 +91,10 @@ export async function createNamespaceListDeps(
     return {
       getCurrentNamespace: () => config.namespace,
       listNamespaces: async () => {
-        // A bucket datastore's commits are in its local root's copy
-        // (swamp-club#3534).
+        // a bucket datastore's commits are in its local root's copy
         const v3 = await v3DatastoreConfigOf(repoDir, config);
-        // While replicating, the checkout's copy is brought up to date
-        // first, as every other read does (swamp-club#3491).
+        // while replicating, the checkout's copy is brought up to date first,
+        // as every other read does
         await ensureV3CopyCurrent(repoDir, v3, "read");
         const namespaces = listV3Namespaces(v3.path, repoDir);
         if (config.namespace && !namespaces.includes(config.namespace)) {
@@ -116,7 +106,6 @@ export async function createNamespaceListDeps(
     };
   }
 
-  // A v2 filesystem datastore: every extension datastore returned above.
   const path = isCustomDatastoreConfig(config)
     ? config.datastorePath
     : config.path;

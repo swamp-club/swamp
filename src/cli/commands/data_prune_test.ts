@@ -20,7 +20,6 @@
 import { assertEquals, assertStringIncludes } from "@std/assert";
 import { initializeLogging } from "../../infrastructure/logging/logger.ts";
 
-// Initialize logging for tests
 await initializeLogging({});
 
 Deno.test("dataPruneCommand - has correct name", async () => {

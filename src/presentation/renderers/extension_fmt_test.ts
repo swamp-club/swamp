@@ -25,10 +25,6 @@ import { createExtensionFmtRenderer } from "./extension_fmt.ts";
 
 await initializeLogging({});
 
-/**
- * Captures what LogTape's console sink and the JSON renderer write:
- * console.log, console.info, console.warn and console.error.
- */
 function capture(run: () => void | Promise<void>): Promise<string[]> {
   const logs: string[] = [];
   const original = {
@@ -80,7 +76,6 @@ const checkFailed: ExtensionFmtEvent = {
   },
 };
 
-/** No LogTape string-concatenation lines, and no line that is a quoted value. */
 function assertPlain(logs: string[]): void {
   for (const line of logs) {
     assertEquals(line.trimEnd().endsWith('" +'), false, line);

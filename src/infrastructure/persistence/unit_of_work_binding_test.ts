@@ -30,7 +30,6 @@ function hook(): MarkDirtyHook {
   return () => Promise.resolve();
 }
 
-/** A unit of work no adapter built. */
 function bareUnit(): UnitOfWork {
   return {
     stage: () => Promise.resolve(),

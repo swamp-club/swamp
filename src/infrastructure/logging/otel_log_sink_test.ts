@@ -38,7 +38,6 @@ import { SecretRedactor } from "../../domain/secrets/mod.ts";
 import { runFileSink } from "./run_file_sink.ts";
 import { createOtelLogRecordSink } from "./otel_log_sink.ts";
 
-/** Builds a LogTape LogRecord for the sink under test. */
 function makeRecord(
   level: LogRecord["level"],
   message: readonly unknown[],
@@ -69,7 +68,6 @@ Deno.test("otel_log_sink: maps every LogTape level to the right SeverityNumber",
   const { exporter, provider } = newCapture();
   const sink = createOtelLogRecordSink(provider);
 
-  // severityText follows the OTel short names — note "warning" -> "WARN".
   const cases: Array<[LogRecord["level"], SeverityNumber, string]> = [
     ["trace", SeverityNumber.TRACE, "TRACE"],
     ["debug", SeverityNumber.DEBUG, "DEBUG"],
@@ -127,7 +125,6 @@ Deno.test("otel_log_sink: correlates with the active span (through real withSpan
   const sink = createOtelLogRecordSink(provider);
 
   try {
-    // Outside any span — no correlation.
     sink(makeRecord("info", ["outside"]));
 
     let wantTrace = "";
@@ -147,7 +144,6 @@ Deno.test("otel_log_sink: correlates with the active span (through real withSpan
     assertEquals(wantSpan.length, 16);
     assertEquals(inside?.spanContext?.traceId, wantTrace);
     assertEquals(inside?.spanContext?.spanId, wantSpan);
-    // The outside-span record carries no valid span context.
     assertEquals(
       outside?.spanContext?.traceId,
       undefined,
@@ -217,7 +213,6 @@ Deno.test("otel_log_sink: imports nothing from the tracing module (no import cyc
   const source = await Deno.readTextFile(
     fromFileUrl(new URL("./otel_log_sink.ts", import.meta.url)),
   );
-  // Only import lines matter; the module must not reach into ../tracing.
   const importsTracing = source
     .split("\n")
     .some((line) =>

@@ -36,9 +36,6 @@ import type { OutputMode } from "../output/output.ts";
 import { UserError } from "../../domain/errors.ts";
 import { renderInteractivePicker } from "./components/search_picker.tsx";
 
-/**
- * Filters vaults by a query string (case-insensitive match on name, type, or id).
- */
 function filterVaults(
   vaults: VaultSearchItem[],
   query: string,
@@ -53,9 +50,6 @@ function filterVaults(
   );
 }
 
-/**
- * Callback type for fetching vault detail data for the preview pane.
- */
 export type VaultPreviewFetcher = (
   item: VaultSearchItem,
 ) => Promise<VaultDescribeData>;
@@ -154,11 +148,6 @@ export function createVaultSearchRenderer(
   }
 }
 
-// ---------------------------------------------------------------------------
-// Rendering callbacks for the SearchPicker
-// ---------------------------------------------------------------------------
-
-/** Single-line result for the results list. */
 function renderVaultResultLine(item: VaultSearchItem): React.ReactElement {
   return (
     <Text>
@@ -167,7 +156,6 @@ function renderVaultResultLine(item: VaultSearchItem): React.ReactElement {
   );
 }
 
-/** Renders preview content for a vault. */
 function renderVaultPreview(
   item: VaultSearchItem,
   detail: VaultDescribeData | undefined,
@@ -176,7 +164,6 @@ function renderVaultPreview(
 ): React.ReactElement {
   const innerWidth = Math.max(10, width - 1);
   if (!detail) {
-    // Immediate content from the search item
     return (
       <Box flexDirection="column" marginLeft={1} width={innerWidth}>
         <Text bold wrap="truncate-end">{item.name}</Text>
@@ -186,7 +173,6 @@ function renderVaultPreview(
     );
   }
 
-  // Full detail from fetchPreview
   const configJson = JSON.stringify(detail.config, null, 2);
   const lines: React.ReactElement[] = [
     <Text key="name" bold wrap="truncate-end">{detail.name}</Text>,
@@ -207,7 +193,6 @@ function renderVaultPreview(
   );
 }
 
-/** Produces plain-text scrollback output for a selected vault. */
 function renderVaultScrollback(
   item: VaultSearchItem,
   detail: VaultDescribeData | undefined,

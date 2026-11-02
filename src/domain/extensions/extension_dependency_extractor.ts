@@ -27,11 +27,7 @@ import { importedSpecifiers } from "@swamp-club/extension-scoring/source";
 import type { BareImportResolver } from "./bare_import_resolution.ts";
 import { isBareSpecifier } from "./dependency_resolution/specifier.ts";
 
-/**
- * The `npm:` and `jsr:` dependencies a module imports: those it writes
- * out, and, given a resolver, the bare imports it resolves to one from
- * `sourceFile`. A dependency written both ways keeps the written form.
- */
+/** a dependency written both ways keeps the written form */
 export function extractSpecifiersFromSource(
   source: string,
   sourceFile: string,
@@ -77,11 +73,6 @@ export function extractSpecifiersFromSource(
   return results;
 }
 
-/**
- * The dependencies of `sourceFiles`, which are the code modules the module
- * graph reports (TypeScript or JavaScript in any extension), so every file
- * push rewrites bare imports in is audited too (swamp-club#3637).
- */
 export async function extractDependencySpecifiers(
   sourceFiles: string[],
   resolver?: BareImportResolver,

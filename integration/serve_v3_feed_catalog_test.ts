@@ -17,16 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * The pollers' work on a v3 serve follower, done by the commits it sees
- * (swamp-club#4120), against a real v3 commit log: the swamp-club#2863
- * cases (a peer's write and a grant change become visible to serve) with
- * no poller running. A peer's data commit rebuilds the follower's catalog;
- * a commit to a grant reloads its access policy, so a revoked grant stops
- * allowing access on the follower. Before, a follower loaded its policy
- * once, at boot.
- */
-
 import { assertEquals } from "@std/assert";
 import { waitFor } from "@swamp-club/swamp-testing";
 import { leaseOp } from "../src/domain/datastore_v3/op.ts";
@@ -68,7 +58,6 @@ Deno.test({
       });
       effects.start();
       try {
-        // A peer's data write, through serve's datastore API.
         const content = new TextEncoder().encode("peer output");
         const landed = await post(
           partitionPath(server),
@@ -90,7 +79,6 @@ Deno.test({
         await effects.settled();
         assertEquals(calls.policy, 0);
 
-        // A grant change: any commit to a grant's partition.
         await store.append(modelCommit(
           1,
           [leaseOp({ holder: "serve", fence: store.writerFence() ?? 1 })],

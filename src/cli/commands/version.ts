@@ -34,10 +34,9 @@ import {
   withRemoteOptions,
 } from "../remote_run.ts";
 
-// This gets replaced by the compile script during release builds
+// replaced by the compile script during release builds
 export const VERSION = "20260206.200442.0-sha.";
 
-// Git sha baked at compile time; falls back to runtime detection
 export const GIT_SHA = "948fb52d";
 
 export function getVersionData(): VersionData {

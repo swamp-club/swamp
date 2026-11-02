@@ -17,15 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// swamp-club#2895: cancelling or superseding a suspended run settles its
-// unfinished jobs and steps in the stored record, as a live abort does. Runs
-// are driven to suspension by the real execution service on a temp repo whose
-// datastore lives outside `.swamp/`, so the evaluated snapshot a cancel
-// settles against is read from where the run wrote it.
-//
-// swamp-club#2905: rejecting a gate settles the run the same way before it is
-// marked failed, and a resume from the rejected gate runs the settled work.
-
 import { assertEquals } from "@std/assert";
 import { z } from "zod";
 import type { DatastoreConfig } from "../src/domain/datastore/datastore_config.ts";
@@ -68,7 +59,6 @@ import { unclaimedRuns } from "../src/domain/workflows/run_claim.ts";
 
 await initializeLogging({});
 
-/** Cancel deps for runs with no tracker rows or method-run records. */
 const untracked = {
   runTracker: {
     findAllRunning: () => [],
@@ -86,7 +76,6 @@ interface Fixture {
   dir: string;
   config: DatastoreConfig;
   repo: RepositoryContext;
-  /** Reads snapshots from the datastore path the run wrote them to. */
   findEvaluatedWorkflow: EvaluatedWorkflowLookup;
   executions: string[];
 }
@@ -158,7 +147,6 @@ function work(name: string, after?: string): Step {
   });
 }
 
-/** The issue's workflow: two gated parallel jobs and an always-teardown. */
 function issueWorkflow(): Workflow {
   return Workflow.create({
     name: `e2e-wf-${crypto.randomUUID()}`,
@@ -259,14 +247,11 @@ Deno.test("workflow cancel settles a suspended run's jobs and steps in its recor
       const [job, step] = ref.split("/");
       assertEquals(stored.getJob(job)!.getStep(step)!.settledByAbort, true);
     }
-    // This process owns the run, so nothing was killed; nothing ran.
     assertEquals(killed, []);
     assertEquals(fixture.executions, []);
   });
 });
 
-// swamp-club#2920: the run outlives its workflow file. Cancel finds it in the
-// run store and settles it against the snapshot the run saved.
 Deno.test("workflow cancel finds and settles a suspended run whose workflow file was deleted", async () => {
   await withFixture(async (fixture) => {
     const workflow = issueWorkflow();
@@ -316,7 +301,6 @@ Deno.test("workflow cancel finds and settles a suspended run whose workflow file
     assertEquals(cancelled?.status, "cancelled");
     assertEquals(stored.status, "cancelled");
     assertEquals(stored.tags["cancel_reason"], "Cancelled by user");
-    // The snapshot's dependsOn still decides which steps are skipped.
     assertEquals(statuses(stored), {
       "a-side": "failed",
       "a-side/gate2": "failed",
@@ -413,7 +397,6 @@ Deno.test("workflow cancel settles an evaluated job name through the run's snaps
   });
 });
 
-/** Rejects `stepName` of the run and returns the last event's kind. */
 async function reject(
   fixture: Fixture,
   workflow: Workflow,
@@ -462,7 +445,6 @@ async function approve(
   return events.at(-1)?.kind;
 }
 
-/** Resumes the run and returns it as the resume left it. */
 async function resume(
   fixture: Fixture,
   workflow: Workflow,
@@ -533,7 +515,6 @@ Deno.test("resuming from a rejected gate asks every gate again and runs the sett
     const suspended = await suspend(fixture, workflow);
     await reject(fixture, workflow, suspended, "gate2");
 
-    // Asked again: the rejected gate and the gate the reject settled wait.
     const asked = await resume(fixture, workflow, suspended, "gate2");
     assertEquals(asked.status, "suspended");
     assertEquals(statuses(asked), {
@@ -586,8 +567,6 @@ Deno.test("workflow reject settles an evaluated job name through the run's snaps
 
     await reject(fixture, workflow, suspended, "gate2");
 
-    // With the snapshot, report's failed condition on deploy-prod holds, so
-    // report is settled as startable work, not skipped.
     const stored = await reload(fixture, workflow, suspended);
     assertEquals(statuses(stored), {
       "a-side": "failed",

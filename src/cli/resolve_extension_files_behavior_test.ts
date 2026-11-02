@@ -17,10 +17,9 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// The behaviors: manifest key (swamp-club#3338): its entries resolve from
-// extensions/behaviors/ while the models directory is the default, from the
-// configured models directory otherwise, and next to the manifest under
-// paths.base: manifest.
+// behaviors: manifest entries resolve from extensions/behaviors/ while the
+// models directory is the default, from the configured models directory
+// otherwise, and next to the manifest under paths.base: manifest
 
 import { assertEquals, assertRejects } from "@std/assert";
 import { join } from "@std/path";

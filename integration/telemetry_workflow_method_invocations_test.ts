@@ -17,16 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * End-to-end verification that running a workflow persists per-step
- * telemetry entries linked to the parent CLI invocation.
- *
- * Covers the bridge in src/libswamp/workflows/telemetry_bridge.ts:
- * one parent entry plus one child entry per workflow YAML step that
- * resolves to a model method. The shell model is the natural fixture
- * because it ships in-tree and exit codes drive success vs failure.
- */
-
 import { assert, assertEquals } from "@std/assert";
 import { join } from "@std/path";
 import { ensureDir } from "@std/fs";
@@ -118,10 +108,8 @@ async function createShellModel(
   runCommand: string,
 ): Promise<void> {
   const modelData = {
-    // No typeVersion: this fixture is hand-written YAML, exactly like a
-    // checked-in definition under models/. It carried `typeVersion: 1` — the
-    // pre-CalVer format — which is now reported as malformed rather than
-    // silently discarded (swamp-club#2412).
+    // no typeVersion: this fixture is hand-written YAML, like a checked-in
+    // definition under models/
     type: "command/shell",
     id: crypto.randomUUID(),
     name,
@@ -161,11 +149,9 @@ interface PersistedEntry {
 Deno.test({
   name:
     "workflow run persists per-step child telemetry entries with workflowContext",
-  // Uses the POSIX `echo` / `exit` shell built-ins via the command/shell
-  // model, which exit with code -65536 on Windows. The bridge logic
-  // itself is platform-independent and covered by
-  // src/libswamp/workflows/telemetry_bridge_test.ts which runs on all
-  // platforms.
+  // uses POSIX echo/exit built-ins via command/shell, which exit with code
+  // -65536 on Windows; the bridge logic is platform-independent and covered by
+  // telemetry_bridge_test.ts
   ignore: Deno.build.os === "windows",
   fn: async () => {
     await withTempDir(async (repoDir) => {
@@ -183,7 +169,6 @@ Deno.test({
         ...extra,
       });
 
-      // 1. Initialize a single-tool repo
       const init = await runCli(
         ["--json", "repo", "init", "--tool", "claude"],
         repoDir,
@@ -192,14 +177,9 @@ Deno.test({
       assertEquals(init.code, 0, `repo init failed: ${init.stderr}`);
       await pinTelemetryEndpoint(repoDir);
 
-      // 2. Create two shell models: one that succeeds, one that exits 1
       await createShellModel(repoDir, "echo-ok", "echo hello");
       await createShellModel(repoDir, "echo-fail", "exit 1");
 
-      // 3. Create a workflow with three steps:
-      //    (a) success step
-      //    (b) post-method-executing failure (allowFailure so workflow continues)
-      //    (c) forEach with two iterations
       const workflowData = {
         id: crypto.randomUUID(),
         name: "telemetry-test-wf",
@@ -266,7 +246,6 @@ Deno.test({
         stringifyYaml(workflowData as Record<string, unknown>),
       );
 
-      // 4. Run the workflow
       const env = childEnvWith();
       const run = await runCli(
         [
@@ -292,7 +271,6 @@ Deno.test({
         `workflow run failed: stdout=${run.stdout} stderr=${run.stderr}`,
       );
 
-      // 5. Read persisted telemetry
       const persisted = await readPersistedEntries(
         configDir,
       ) as unknown as PersistedEntry[];
@@ -311,12 +289,10 @@ Deno.test({
       );
       const parentId = parents[0].id;
 
-      // Find child entries linked to this parent
       const children = persisted.filter((entry) =>
         entry.parentInvocationId === parentId
       );
 
-      // Expect: 1 ok-step + 1 fail-step + 2 forEach iterations = 4 children
       assertEquals(
         children.length,
         4,
@@ -325,12 +301,10 @@ Deno.test({
         }`,
       );
 
-      // All children should look like a direct `model method run` invocation
       for (const child of children) {
         assertEquals(child.invocation.command, "model");
         assertEquals(child.invocation.subcommand, "method");
         assertEquals(child.invocation.args[0], "run");
-        // Model names are not sensitive and are sent (swamp-club#2817).
         assert(
           ["echo-ok", "echo-fail"].includes(child.invocation.args[1]),
           `unexpected model name ${child.invocation.args[1]}`,
@@ -344,7 +318,6 @@ Deno.test({
         assertEquals(child.workflowContext!.jobName, "main");
       }
 
-      // Identify each child by stepName
       const okChild = children.find((c) =>
         c.workflowContext!.stepName === "ok-step"
       );
@@ -372,7 +345,6 @@ Deno.test({
       assertEquals(failChild!.result.status, "error");
       assertEquals(parents[0].result.status, "success");
 
-      // forEach iterations have distinct stepNames
       const stepNames = children.map((c) => c.workflowContext!.stepName);
       assert(
         fanoutA!.workflowContext!.stepName !==
@@ -382,13 +354,11 @@ Deno.test({
         }`,
       );
 
-      // Children carry runId pointing to the same workflow run
       const runIds = new Set(
         children.map((c) => c.workflowContext!.runId),
       );
       assertEquals(runIds.size, 1, "all children share one workflow run id");
 
-      // Children carry modelType for the shell model
       for (const child of children) {
         assertEquals(child.workflowContext!.modelType, "command/shell");
       }

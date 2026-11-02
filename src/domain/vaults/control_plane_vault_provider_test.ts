@@ -160,8 +160,6 @@ Deno.test("ControlPlaneVaultProvider: works without putIfAbsent", async () => {
   assertEquals(await provider.get("key"), "value");
 });
 
-// ── External key (serve.yaml token-secrets) ─────────────────────────
-
 const KEY_PATH = "token-secrets/encryption-key";
 const VALUES_PREFIX = "token-secrets/values/";
 const REF = { vault: "prod-secrets", key: "swamp-token-key" };
@@ -267,7 +265,6 @@ Deno.test("ControlPlaneVaultProvider: migrates every secret from a co-located ke
     classifyTokenKeyRecord(await store.get(KEY_PATH)).kind,
     "marker",
   );
-  // The stored ciphertext no longer opens with the old co-located key.
   const legacyKey = await importAesKey(legacyKeyBytes);
   for (const name of ["server-token-a", "enrollment-token-b"]) {
     const blob = await readBlob(store, name);

@@ -77,7 +77,6 @@ Deno.test("ProcessTraceEnv: restores the process's inbound values after", async 
 
   await traceEnv.run(A, () => {
     assertEquals(vars.get("TRACEPARENT"), A.traceparent);
-    // A header the execution does not carry keeps its inbound value.
     assertEquals(vars.get("TRACESTATE"), "inbound=1");
     return Promise.resolve();
   });
@@ -112,7 +111,6 @@ Deno.test("ProcessTraceEnv: overlapping executions revert the env to its baselin
   const runA = traceEnv.run(A, async () => {
     seen.aAlone = vars.get("TRACEPARENT");
     await bStarted.promise;
-    // B overlaps A: neither may see the other's span, so the env drops back.
     seen.aOverlapped = vars.get("TRACEPARENT");
   });
   const runB = traceEnv.run(B, async () => {
@@ -135,7 +133,6 @@ Deno.test("ProcessTraceEnv: overlapping executions revert the env to its baselin
   });
   assertEquals(vars.has("TRACEPARENT"), false);
 
-  // Once idle, the next lone execution publishes again.
   await traceEnv.run(B, () => {
     assertEquals(vars.get("TRACEPARENT"), B.traceparent);
     return Promise.resolve();
@@ -169,7 +166,6 @@ Deno.test("ProcessTraceEnv: a nested execution publishes its headers and hands t
     await traceEnv.run(B, async () => {
       await Promise.resolve();
       seen.child = vars.get("TRACEPARENT");
-      // The child carries no tracestate, so it gets the baseline's.
       seen.childState = vars.get("TRACESTATE");
       await traceEnv.run(C, () => {
         seen.grandchild = vars.get("TRACEPARENT");
@@ -223,8 +219,6 @@ Deno.test("ProcessTraceEnv: parallel nested executions revert the env to its bas
 
   await traceEnv.run(A, async () => {
     await Promise.all([child(B), child(C)]);
-    // Siblings overlapped, so the parent does not get the env back until
-    // everything finishes.
     seen.push(vars.get("TRACEPARENT"));
   });
 
@@ -269,7 +263,6 @@ Deno.test("ProcessTraceEnv: an unawaited nested execution keeps its span after i
   const seen: Record<string, string | undefined> = {};
 
   await traceEnv.run(G, async () => {
-    // P starts C and returns without awaiting it, so C outlives P.
     await traceEnv.run(P, () => {
       child = traceEnv.run(C, async () => {
         await release.promise;
@@ -311,7 +304,6 @@ Deno.test("ProcessTraceEnv: unwinds when the callback throws", async () => {
   );
   assertEquals(vars.has("TRACEPARENT"), false);
 
-  // Bookkeeping stayed balanced, so a later lone execution still publishes.
   await traceEnv.run(B, () => {
     assertEquals(vars.get("TRACEPARENT"), B.traceparent);
     return Promise.resolve();
@@ -342,7 +334,6 @@ Deno.test("ProcessTraceEnv: a failed write still unwinds", async () => {
   assertEquals(ran, false);
   assertEquals(vars.has("TRACEPARENT"), false);
 
-  // Bookkeeping stayed balanced, so a later lone execution still publishes.
   await traceEnv.run(B, () => {
     assertEquals(vars.get("TRACEPARENT"), B.traceparent);
     return Promise.resolve();

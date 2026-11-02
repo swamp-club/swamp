@@ -17,10 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Deep merges two objects. Override values take precedence.
- * Only merges plain objects recursively; arrays and primitives are replaced.
- */
 export function deepMerge(
   base: Record<string, unknown>,
   overrides: Record<string, unknown>,

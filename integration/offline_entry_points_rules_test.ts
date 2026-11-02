@@ -18,20 +18,9 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * Every command that opens a checkout to write is judged by the offline
- * rules (swamp-club#4195) at one of three places, pinned here so a new
- * writing command is classified on purpose:
- *
- * - `entry`: a method run or a workflow step, judged before it starts by
- *   `assertOfflineRunAllowed` (directly, or through `workflowStepLockHook`);
- *   one that changes things needs its behavior's lease.
- * - `config-edit`: a user's edit or removal of a definition, refused
- *   offline by `runAsUserConfigEdit`.
- * - `sink`: everything else. Offline, its commits queue only where the
- *   serve sink's backstop (`checkOfflineCommit`) allows: a run's record or
- *   an auto-definition, a behavior under a live lease or registered by an
- *   entry; a definition, the lockfile or any other behavior is refused.
- *   `serve.ts` is serve itself, which never has serve as its upstream.
+ * every command that opens a checkout to write is judged by the offline rules
+ * at an entry, a config-edit or a sink, pinned here so a new writing command is
+ * classified on purpose
  */
 
 import { assert } from "@std/assert";

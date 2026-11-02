@@ -33,16 +33,13 @@ import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
 
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
-/** Data for a check-only run. */
 export interface ExtensionFmtCheckData {
   mode: "check";
   passed: boolean;
   issues: QualityIssue[];
-  /** Lockfiles out of date with their project; fmt left each unchanged. */
   staleLockfiles: StaleLockfile[];
 }
 
-/** Data for an auto-fix run. */
 export interface ExtensionFmtFixData {
   mode: "fix";
   fileCount: number;
@@ -50,7 +47,6 @@ export interface ExtensionFmtFixData {
   lintOutput: string;
   remainingIssues: QualityIssue[];
   passed: boolean;
-  /** Lockfiles out of date with their project; fmt left each unchanged. */
   staleLockfiles: StaleLockfile[];
 }
 
@@ -61,23 +57,21 @@ export type ExtensionFmtEvent =
   | { kind: "completed"; data: ExtensionFmtData }
   | { kind: "error"; error: SwampError };
 
-/** Input for the extension fmt generator. */
 export interface ExtensionFmtInput {
   tsFiles: string[];
   check: boolean;
   /**
-   * The project `deno.json`, found as push finds it, so fmt formats and
-   * lints under the same rules push checks with.
+   * found as push finds it, so fmt formats and lints under the same rules push
+   * checks with
    */
   denoConfigPath?: string;
   /**
-   * Lockfiles the module graph read found out of date. fmt never rewrites
-   * them, so the entry points they refused were formatted alone.
+   * fmt never rewrites them, so the entry points they refused were formatted
+   * alone
    */
   staleLockfiles?: StaleLockfile[];
 }
 
-/** Dependencies for the extension fmt operation. */
 export interface ExtensionFmtDeps {
   checkQuality: (
     files: string[],
@@ -87,7 +81,6 @@ export interface ExtensionFmtDeps {
   runLint: (files: string[], denoConfigPath?: string) => Promise<string>;
 }
 
-/** Wires real infrastructure into ExtensionFmtDeps. */
 export async function createExtensionFmtDeps(): Promise<ExtensionFmtDeps> {
   const denoRuntime = new EmbeddedDenoRuntime();
   const denoPath = await denoRuntime.ensureDeno();
@@ -133,7 +126,6 @@ export async function createExtensionFmtDeps(): Promise<ExtensionFmtDeps> {
   };
 }
 
-/** Formats and lints extension TypeScript files. */
 export async function* extensionFmt(
   ctx: LibSwampContext,
   deps: ExtensionFmtDeps,
@@ -167,7 +159,6 @@ export async function* extensionFmt(
         return;
       }
 
-      // Auto-fix mode
       const fmtOutput = await deps.runFmt(input.tsFiles, input.denoConfigPath);
       const lintOutput = await deps.runLint(
         input.tsFiles,

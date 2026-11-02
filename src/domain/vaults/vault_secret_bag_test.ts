@@ -33,26 +33,14 @@ import { secretOccurrencesOf } from "./secret_occurrences.ts";
 import { VaultSecretBag } from "./vault_secret_bag.ts";
 import { sentinelIdentityOf } from "../expressions/provenance_map.ts";
 
-/** The reference every secret of these tests stands for. */
 const REF = { vaultName: "v", key: "k" };
 
-/** Recorded sensitive values, each from {@link REF}. */
 const entries = (...values: string[]) =>
   values.map((value) => ({ value, source: REF }));
 
-/**
- * Issues a vault.get() reference from `bag` whose key is the value a load
- * reads for it (see {@link loaded}).
- */
 const issue = (bag: VaultSecretBag, value: string) =>
   bag.addSecret({ vaultName: "v", key: value }, "test.location");
 
-/**
- * `bag`'s delivery view, loaded as from a vault that holds each key as its
- * own value, so a test reads which value a sentinel delivers. Every vault
- * reference of the run is loaded, as a load of arguments carrying them all
- * would.
- */
 function loaded(bag: VaultSecretBag): VaultSecretBag {
   const values = new Map<string, string>();
   for (const entry of bag.registry.all()) {
@@ -309,7 +297,6 @@ Deno.test("VaultSecretBag", async (t) => {
     () => {
       const bag = new VaultSecretBag(new SecretBagRegistry());
       const sentinel = issue(bag, "val");
-      // \" does not open a quoted section
       const cmd = 'echo \\"' + sentinel;
       const result = loaded(bag).resolveForShell(cmd);
       assertEquals(
@@ -372,7 +359,6 @@ Deno.test("VaultSecretBag", async (t) => {
       const sentinel = issue(bag, "present");
       const cmd = `Write-Output ${sentinel}`;
       const result = loaded(bag).resolveForPowerShell(cmd);
-      // The unused secret never gets a __SWAMP_VAULT_N slot.
       assertEquals(result.command, 'Write-Output "$env:__SWAMP_VAULT_0"');
       assertEquals(result.env, { __SWAMP_VAULT_0: "present" });
     },
@@ -470,7 +456,6 @@ Deno.test("VaultSecretBag.sentinelizeText: JSON-escaped forms restore the escape
   const json = JSON.stringify({ p: secret }, null, 2);
   const text = bag.sentinelizeText(json, entries(secret));
   assertEquals(text.includes("pa\\"), false);
-  // Restoring yields valid JSON carrying the original secret.
   assertEquals(JSON.parse(loaded(bag).resolveRaw(text)).p, secret);
 });
 
@@ -543,11 +528,8 @@ Deno.test("VaultSecretBag.resolveForShell: places vault.get references per occur
   const s = issue(bag, "two  words *");
   const ref = "${__SWAMP_VAULT_0}";
   const cases: [string, string][] = [
-    // Single-quoted first: the double-quoted use still expands as one word.
     [`b='${s}'; set -- "${s}"`, `b='"${ref}"'; set -- "${ref}"`],
-    // Double-quoted first: the single-quoted use is quoted for its own spot.
     [`a="${s}"; b='${s}'`, `a="${ref}"; b='"${ref}"'`],
-    // Unquoted first: the double-quoted use is not left unquoted.
     [`echo ${s} "${s}"`, `echo "${ref}" "${ref}"`],
     [
       `echo "${s}" ${s} '${s}' "x${s}y"`,
@@ -740,8 +722,8 @@ Deno.test("VaultSecretBag.resolveForShell: a vault.get use inside single quotes 
 });
 
 Deno.test("VaultSecretBag.resolveForShell: a single quote attached mid-word does not shield a double quote on the same here-document line", () => {
-  // Known limit (swamp-club#3106): -F'"' starts no single-quoted span, so its
-  // double quote opens a string for the rest of that line only.
+  // known limit: -F'"' starts no single-quoted span, so its double quote opens
+  // a string for the rest of that line only
   const bag = new VaultSecretBag(new SecretBagRegistry());
   const s = issue(bag, "v");
   assertEquals(
@@ -964,7 +946,6 @@ Deno.test("VaultSecretBag.referencesFor: one reference per vault and key, and an
   assertEquals(bag.referencesFor([first, second]), [
     { vaultName: "v", key: "k" },
   ]);
-  // A worker's rebuilt bag holds values without references.
   const rebuilt = VaultSecretBag.fromEntries([
     { sentinel: first, value: "x", dataOrigin: false },
   ]);
@@ -1071,7 +1052,6 @@ Deno.test("VaultSecretBag: an unloaded vault reference fails delivery instead of
     assertEquals(error.message.includes("'k'"), true, name);
     assertEquals(error.message.includes("methods.run.arguments.cmd"), true);
   }
-  // Nothing of it is delivered or shipped while it is unloaded.
   assertEquals(bag.toEntries(), []);
   assertEquals(bag.rawValues, []);
 });
@@ -1091,7 +1071,6 @@ Deno.test("VaultSecretBag.withLoaded: the view delivers the loaded value, and th
   ]);
   assertEquals(view.isEmpty, false);
   assertThrows(() => bag.resolveRaw(sentinel), Error, "was not loaded");
-  // A second attempt's view loads its own value.
   assertEquals(
     bag.withLoaded(new Map([[sentinel, "rotated"]])).resolveRaw(sentinel),
     "rotated",
@@ -1134,7 +1113,6 @@ Deno.test("VaultSecretBag: a bag draws its prefix when it first issues", () => {
   const bag = new VaultSecretBag(registry);
   const sentinel = bag.addSecret(REF, "loc");
   assertEquals(registry.drewPrefixOf(sentinel), true);
-  // A delivery view issues nothing, so it draws no prefix of its own.
   bag.withLoaded(new Map());
   assertEquals(registry.drewPrefixOf(sentinel), true);
 });
@@ -1149,8 +1127,6 @@ Deno.test("VaultSecretBag.addDataSecret: two references with one value share the
     key: "a",
   });
 });
-
-// --- typed-secrets 3.3: value-less data-origin references ---
 
 const DATA_LOCATION =
   "data.latest of model 'db' record r1 version 2 (data.latest), field 'password'";
@@ -1202,8 +1178,8 @@ Deno.test("VaultSecretBag: a loaded data-origin reference delivers as a data val
     singleQuoted: [],
     envNames: new Map([[sentinel, "__SWAMP_VAULT_0"]]),
   });
-  // A quoted here-document is placed as a data entry's value is placed
-  // today, and says so (typed-secrets 3.4 turns it into a refusal).
+  // a quoted here-document is placed as a data entry's value is placed, and
+  // says so
   const heredoc = view.resolveForShell(`cat <<'EOF'\n${sentinel}\nEOF`);
   assertEquals(heredoc.dataInCommandLine, true);
   assertEquals(heredoc.command.includes("loaded-value"), true);
@@ -1218,7 +1194,6 @@ Deno.test("VaultSecretBag: a loaded data-origin reference delivers as a data val
     VaultSecretBag.fromEntries(view.toEntries()).resolveRaw(sentinel),
     "loaded-value",
   );
-  // The bag itself still holds nothing.
   assertEquals(bag.rawValues, []);
   assertEquals(bag.toEntries(), []);
 });
@@ -1278,7 +1253,6 @@ Deno.test("planShellPlacement: plans every occurrence from references alone, wit
       occurrence.sentinel,
     );
   }
-  // The bag is unloaded: a fill throws where the plan needed nothing.
   assertThrows(() => bag.resolveForShell(command));
 });
 
@@ -1289,7 +1263,6 @@ Deno.test("planShellPlacement and resolveForShell: generated names skip the auth
     "__SWAMP_VAULT_0",
     "__swamp_vault_1",
   ]);
-  // POSIX names are case-sensitive: the lower-case key is no collision.
   assertEquals(resolved.command, 'echo "${__SWAMP_VAULT_1}"');
   assertEquals(resolved.env, { __SWAMP_VAULT_1: "v" });
   assertEquals(resolved.envNames, new Map([[s, "__SWAMP_VAULT_1"]]));
@@ -1312,7 +1285,6 @@ Deno.test("planPowerShellPlacement and resolveForPowerShell: names skip authored
     "__SWAMP_VAULT_3",
   ]);
   assertEquals(plan.refused.map((o) => o.where), ["PowerShell single quotes"]);
-  // The legacy fill pastes what the plan refused, and says so.
   const resolved = loaded(bag).resolveForPowerShell(command, authored);
   assertEquals(
     resolved.command,
@@ -1321,8 +1293,6 @@ Deno.test("planPowerShellPlacement and resolveForPowerShell: names skip authored
   assertEquals(resolved.dataInCommandLine, true);
   assertEquals(resolved.env, { __SWAMP_VAULT_3: "v" });
 });
-
-// --- typed-secrets 4.4: written references keep their encoding ---
 
 Deno.test("VaultSecretBag.addWrittenReference: issues a reference-only entry in the written entry's shape, by encoding and origin", () => {
   const bag = new VaultSecretBag(new SecretBagRegistry());
@@ -1347,7 +1317,6 @@ Deno.test("VaultSecretBag.addWrittenReference: issues a reference-only entry in 
     dataOrigin: false,
     location: "run-1 inputs.port",
   });
-  // Neither holds a value: a load at delivery reads it.
   assertEquals(bag.toEntries(), []);
 });
 
@@ -1428,7 +1397,6 @@ Deno.test("VaultSecretBag: a number or boolean written reference delivers its te
     port: "eight",
     on: "yes",
   });
-  // The entries keep their encodings for persistence and identity.
   assertEquals(bag.registry.issuedEntryOf(port)?.encoding, "number");
   assertEquals(bag.registry.issuedEntryOf(flag)?.encoding, "boolean");
 });
@@ -1464,12 +1432,10 @@ Deno.test("VaultSecretBag: a JSON-value data reference delivers its number or bo
       on: true,
       // An object or list stays its text: the redactor matches text.
       nested: { env: '{"API_KEY":"env-web"}', hosts: ['["a","b"]'] },
-      // Not marked, so its text, as before.
       plain: "8080",
       text: 'port=8080 env={"API_KEY":"env-web"}',
     },
   );
-  // Text deliveries are unchanged.
   assertEquals(view.resolveRaw(port), "8080");
   assertEquals(
     Object.values(view.resolveForShell(`echo ${env}`).env),
@@ -1517,16 +1483,13 @@ Deno.test("VaultSecretBag: a JSON-value entry keeps its mark through shipping, r
     { sentinel: port, value: "8080", dataOrigin: true, jsonValue: true },
   ]);
 
-  // A worker rebuilds the bag and delivers the value.
   const rebuilt = VaultSecretBag.fromEntries(shipped);
   assertEquals(rebuilt.resolveDeep({ port }), { port: 8080 });
-  // The same text without the mark gets its own sentinel there.
   const text = rebuilt.addDataSecret("8080", REF);
   assertEquals(text === port, false);
   assertEquals(rebuilt.resolveDeep({ text }), { text: "8080" });
   assertEquals(rebuilt.addDataSecret("8080", REF, "raw", true), port);
 
-  // Rehoming keeps the mark on a reference-only entry.
   const target = new VaultSecretBag(registry);
   const rehomed = bag.rehomeSentinels(port, target) as string;
   assertEquals(isJsonValueEntry(registry.entryOf(rehomed)!), true);
@@ -1535,7 +1498,6 @@ Deno.test("VaultSecretBag: a JSON-value entry keeps its mark through shipping, r
     [8080],
   );
 
-  // A written reference keeps it for a data-origin entry only.
   const written = bag.addWrittenReference(REF, "raw", true, "run-1 port", true);
   assertEquals(isJsonValueEntry(registry.entryOf(written)!), true);
   const vault = bag.addWrittenReference(REF, "raw", false, "run-1 x", true);
@@ -1547,7 +1509,6 @@ Deno.test("VaultSecretBag: a JSON-value entry written inside JSON text delivers 
   const env = bag.addWrittenReference(REF, "json", true, "run-1 body", true);
   const view = bag.withLoaded(new Map([[env, '{"A":"b"}']]));
   assertEquals(view.resolveDeep({ env }), { env: '{\\"A\\":\\"b\\"}' });
-  // Shipped without the mark: the value is already the escaped text.
   assertEquals(view.toEntries(), [
     { sentinel: env, value: '{\\"A\\":\\"b\\"}', dataOrigin: true },
   ]);

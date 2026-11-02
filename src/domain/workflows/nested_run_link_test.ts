@@ -40,7 +40,6 @@ class Runs {
   add(...runs: WorkflowRun[]): void {
     for (const run of runs) this.byId.set(run.id.toLowerCase(), run);
   }
-  /** Run ids whose record fails to read, as a garbled file does. */
   readonly unreadable = new Set<string>();
   findById(
     _workflowId: WorkflowId,
@@ -92,7 +91,6 @@ const parentWorkflow = Workflow.create({
   ],
 });
 
-/** A parent suspended on a child suspended at its gate, linked both ways. */
 function linkedPair(childWorkflow = gatedChildWorkflow()): {
   parent: WorkflowRun;
   child: WorkflowRun;
@@ -153,7 +151,6 @@ Deno.test("NestedRunLink.resolveChild: a missing child is reported, not followed
 
 Deno.test("NestedRunLink.resolveChild: refuses a child that links back to another step or run", async () => {
   const { parent, child, deps } = linkedPair();
-  // The same child, but its back-link names another run.
   const back = child.parentRun;
   assert(back?.kind === "valid");
   const forged = WorkflowRun.fromData({
@@ -166,10 +163,6 @@ Deno.test("NestedRunLink.resolveChild: refuses a child that links back to anothe
   assertEquals(resolved.kind, "broken");
 });
 
-/**
- * A parent suspended on a child that an older binary saved: the child's
- * parentRun dropped, every other field kept, then `childFields` applied.
- */
 function droppedBackLinkPair(
   childFields: Partial<WorkflowRunData> = {},
 ): {
@@ -388,7 +381,6 @@ Deno.test("assertNestedWaitsSettled: refuses with every child named, and a gener
   await assertNestedWaitsSettled(deps, parent);
 });
 
-/** A parent suspended on a child that waits for a signal opened at `now`. */
 function signalWaitPair(now: Date, timeoutSeconds: number, key?: string) {
   const childWorkflow = Workflow.create({
     name: "child",

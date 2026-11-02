@@ -18,64 +18,32 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * Maps each root CLI command to the file that defines it.
- *
- * The import graph knows files; UAT and people know command names. The name
- * is not in the file name — `first-rule` is defined in `invite_link.ts` — it
- * is whatever `registerCommands` registered the command object under. So this
- * asks the real command tree for the registered names and finds, for each
- * command object, the file under `src/cli/commands/` that exports it.
- *
- * `build_attestation.ts` runs this as a subprocess rather than importing it.
- * Evaluating the CLI's modules needs permissions the generator has no other
- * use for, and the generator decides what the attestation says: it should not
- * share a process with the code it is describing.
- *
- * Usage:
- *   deno run --unstable-bundle --allow-read --allow-env --allow-sys \
- *     --allow-ffi scripts/command_index.ts <command-file>...
- *
- * Each argument is a repo-relative command file. Only the files named are
- * imported, and the caller names the ones in the CLI's module graph, so
- * nothing is evaluated here that running the CLI does not evaluate. That
- * matters: `worker_exec_dispatch_entry.ts` sits in the same
- * directory, is a separate entry point, and reads stdin as soon as it loads.
- *
- * The index goes to stdout as JSON and nothing else does.
- *
- * The permission list is not a sandbox. `--allow-ffi` lets the CLI's modules
- * load native code, which can do anything the user can. What this runs is the
- * repository's own code at the commit being attested, the same code
- * verify-build has already run.
+ * run as a subprocess, not imported: it evaluates CLI modules needing
+ * permissions (including --allow-ffi, no sandbox) the generator should not
+ * share a process with. only the named files are imported
  */
 
 import { dirname, fromFileUrl, join, toFileUrl } from "@std/path";
 import { COMMAND_DIR, type CommandIndex } from "./affected_commands.ts";
 
 /**
- * Root commands no file exports, and the file that defines each.
- *
- * `help` is built by a factory that takes the tree it documents, so there is
- * no object to export. Listed by hand so that the next root to go unexported
- * is an error to look at rather than a command silently left out.
+ * help comes from a factory, so there is no object to export; listed by hand so
+ * the next unexported root is an error, not a silent omission
  */
 export const UNEXPORTED_ROOTS: CommandIndex = {
   help: "src/cli/commands/help.ts",
 };
 
-/** A command as the tree registers it. */
 export interface RegisteredCommand {
   name: string;
   command: unknown;
 }
 
-/** The subset of a Cliffy command this reads. */
 interface CommandNode {
   getName(): string;
   getCommands(hidden?: boolean): CommandNode[];
 }
 
-/** The tree's top-level commands, hidden ones included. */
 export function rootCommands(tree: CommandNode): RegisteredCommand[] {
   return tree.getCommands(true).map((command) => ({
     name: command.getName(),
@@ -84,15 +52,9 @@ export function rootCommands(tree: CommandNode): RegisteredCommand[] {
 }
 
 /**
- * Pairs each registered command with the file that exports its object.
- *
- * Matching is by identity, not by name: two names registered for one object
- * (`init` and `repo` are both defined in `repo_init.ts`) each resolve, and a
- * command renamed at registration still finds its file.
- *
- * Throws when a command resolves to no file or to more than one. Either would
- * otherwise leave a command out of the index, or attribute it by guesswork,
- * and the list built from this is read as complete.
+ * matches by object identity, so two names for one object each resolve; throws
+ * when a command resolves to no file or several, since the list is read as
+ * complete
  */
 export function buildCommandIndex(
   roots: readonly RegisteredCommand[],
@@ -125,11 +87,8 @@ export function buildCommandIndex(
 }
 
 /**
- * Builds the index for the real command tree.
- *
- * `files` are repo-relative paths of the command files to look in. Anything
- * that is not directly a file under `src/cli/commands/` is refused before it
- * is imported — the list arrives on a command line.
+ * refuses anything that is not directly a file under src/cli/commands/ before
+ * importing, since the list arrives on a command line
  */
 export async function loadCommandIndex(
   repoRoot: string,

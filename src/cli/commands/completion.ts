@@ -21,44 +21,8 @@ import { CompletionsCommand } from "@cliffy/command/completions";
 import { powerShellCompletionsCommand } from "./completion_powershell.ts";
 
 /**
- * Shell completion command using Cliffy's built-in CompletionsCommand, plus a
- * swamp-owned PowerShell generator (Cliffy has none).
- *
- * Usage:
- *   swamp completions bash    # Generate bash completion script
- *   swamp completions zsh     # Generate zsh completion script
- *   swamp completions fish    # Generate fish completion script
- *   swamp completions powershell  # Generate PowerShell completion script
- *
- * Installation:
- *
- *   # Bash - add to ~/.bashrc:
- *   eval "$(swamp completions bash)"
- *
- *   # Zsh with oh-my-zsh - save to completions directory:
- *   mkdir -p ~/.oh-my-zsh/completions
- *   swamp completions zsh > ~/.oh-my-zsh/completions/_swamp
- *   rm -f ~/.zcompdump* && exec zsh
- *
- *   # Zsh without oh-my-zsh - add to ~/.zshrc:
- *   eval "$(swamp completions zsh)"
- *
- *   # Fish - save to completions directory:
- *   swamp completions fish > ~/.config/fish/completions/swamp.fish
- *
- *   # PowerShell (Windows PowerShell 5.1 and PowerShell 7) - add to the
- *   # file the PROFILE variable names:
- *   swamp completions powershell | Out-String | Invoke-Expression
- *
- * Note: Model and workflow name completions are directory-dependent.
- * They return names from the current working directory's swamp repository.
- *
- * Note: command aliases complete only in zsh and PowerShell. Cliffy 1.0.1's
- * zsh generator reads each command's aliases, but its bash and fish
- * generators do not, so `swamp behaviour …` (the British alias of `swamp
- * behavior`) and alias words such as `list` complete in zsh and PowerShell
- * only. Typing them works in every
- * shell; behavior_cli_surface_test.ts pins this.
+ * command aliases complete only in zsh and PowerShell: Cliffy's bash and fish
+ * generators ignore them. Typing an alias works in every shell.
  */
 export const completionCommand = new CompletionsCommand()
   .example("Generate zsh completions", "swamp completions zsh")

@@ -18,20 +18,9 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * The unscoped-write guard for test harnesses (swamp-club#3056).
- *
- * `signalChange` reports each hooked write that took route 2, the hook
- * fallback for a write made outside every unit bound to its hook. Inside
- * {@link withUnscopedWriteGuard}, a report whose caller is production code
- * (`src/`) fails the test, unless the caller is pinned in
- * {@link PINNED_UNSCOPED_WRITERS}. Writes made from test code itself
- * (fixtures and integration helpers) are ignored.
- *
- * The guard throws at the write, and also checks again when `fn` ends, so a
- * write whose error production code catches and only logs still fails the
- * test.
- *
- * @module
+ * fails the test when production code makes a hooked write outside every unit
+ * (route 2) unless the caller is pinned; it checks again when fn ends, so a
+ * caught and logged error still fails
  */
 
 import {
@@ -41,28 +30,18 @@ import {
   useUnscopedChangeReporterForTesting,
 } from "../src/infrastructure/persistence/unit_of_work_scope.ts";
 
-/** A production caller allowed to write on route 2, with the reason why. */
 export interface PinnedUnscopedWriter {
-  /** `src/<path>.ts: <function>`, as {@link unscopedWriterKey} renders it. */
   readonly writer: string;
   readonly reason: string;
 }
 
 /**
- * Production callers that still write on route 2 because they cannot take a
- * root unit of work without a behaviour change. They still log the
- * production warning. Empty: every route-2 caller found runs in a root. It
- * lives here, not in `datastore_write_seams_rules_test.ts`, because the
- * guard reads it at runtime and a test file must not be imported; that rule
- * file checks it.
+ * production callers that write on route 2 because they cannot take a root unit
+ * without a behaviour change; empty now. It lives here because the guard reads
+ * it at runtime and a test file must not be imported
  */
 export const PINNED_UNSCOPED_WRITERS: readonly PinnedUnscopedWriter[] = [];
 
-/**
- * The pin key for a caller (`src/serve/bookkeeping_gc.ts: reapBatch`), or
- * undefined when the caller is not production code (outside `src/`, or a
- * test file under it).
- */
 export function unscopedWriterKey(
   caller: UnscopedCaller | undefined,
 ): string | undefined {

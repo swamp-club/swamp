@@ -17,19 +17,9 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// Architectural fitness test: only swamp writes `_swamp.*` tags.
-//
-// Readers trust tags under the `_swamp.` prefix as swamp's own:
-// `_swamp.sensitiveFields` chooses which fields of a record resolve vault
-// references. swamp-club#3635 made the data writers and the method execution
-// service refuse a user-supplied key under the prefix, so the vaulting step is
-// the only way one reaches a record. A new file that spells a reserved key as
-// a string literal is a new writer of a trusted tag, and must be reviewed as
-// one.
-//
-// The rule looks for string literals that begin with the prefix, on lines
-// that are not comments, so prose that mentions a tag in a doc comment is not
-// caught.
+// only swamp writes _swamp.* tags, which readers trust; a new file spelling a
+// reserved key as a string literal is a new writer and must be reviewed;
+// comment lines are skipped
 
 import { assertEquals } from "@std/assert";
 import { relative } from "@std/path";
@@ -41,11 +31,8 @@ import {
   toPosixPath,
 } from "./arch_fitness_helpers.ts";
 
-/** Files allowed to spell a reserved tag key, and why each one is there. */
 const PINNED_RESERVED_TAG_WRITERS = [
-  // RESERVED_TAG_PREFIX, the rule itself.
   "src/domain/data/data.ts",
-  // SENSITIVE_FIELDS_TAG, set only after vaulting.
   "src/domain/models/data_writer.ts",
 ];
 

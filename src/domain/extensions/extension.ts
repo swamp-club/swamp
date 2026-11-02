@@ -32,70 +32,17 @@ import type { SourceFingerprint } from "./source_fingerprint.ts";
 import type { SourceLocation } from "./source_location.ts";
 
 /**
- * Origin of an extension's content. Drives the cross-aggregate
- * `local > source-mounted > pulled` precedence rule used by
- * I-Repo-1 conflict resolution at the lifecycle layer (W2). Within a
- * single Extension all Sources share the same origin (the Extension
- * IS the origin boundary) — so intra-aggregate I2 violations cannot
- * resolve via precedence; W1b throws on construction.
+ * across aggregates origin precedence is local > source-mounted > pulled;
+ * within one Extension all Sources share an origin
  */
 export type ExtensionOrigin = "pulled" | "source-mounted" | "local";
 
-/**
- * Calendar-version tag, e.g. `2026.05.02.1`. Locals always use
- * `0.0.0`; pulled extensions get their version from the upstream
- * registry / lockfile.
- */
 export type CalVer = string;
 
 /**
- * The Extension aggregate root. Keyed `(name, version)` — the same
- * extension installed at two different versions is two distinct
- * aggregates (load-bearing for the upgrade-as-atomic-transition
- * pattern: `saveAll([vN.tombstoneAll(), vN+1])`).
- *
- * Local-extension special case (per design doc lines 264-289):
- *   - When `extensions/manifest.yaml` declares both `name` and
- *     `version`, the local aggregate uses those values. This makes
- *     the identity path-independent — the same repo mounted at
- *     different paths (host vs container) produces the same identity.
- *   - When no manifest is present, the aggregate falls back to the
- *     synthetic `@local/<basename(repoRoot)>` at version `"0.0.0"`.
- *     Basename collision across unrelated repos with the same name
- *     (e.g. `~/work/myproject` and `~/personal/myproject`) is
- *     INTENDED for the no-manifest case: per-repo catalog isolation
- *     makes the collision harmless.
- *   - Origin is `"local"`.
- *   - `extensionRoot` is the **repo root**, not a per-kind directory.
- *     Callers that walk extensionRoot must tolerate this distinction —
- *     for pulled/source-mounted it's the per-extension subtree, for
- *     locals it's the whole repo.
- *
- * **Immutability.** Every transition method returns a NEW Extension
- * instance. The aggregate itself is treated as a value by callers; the
- * repository compares the post-transition aggregate against the
- * persisted state and computes the diff to apply.
- *
- * **Invariants enforced on construction and every transition:**
- *   - I1: every Source.id.extensionRoot === Extension.extensionRoot
- *     (canonical-form equality).
- *   - I2: within this Extension, no two Sources share `(kind, typeNormalized)`
- *     in any non-Tombstoned state. Enforced by a deterministic-winner +
- *     tombstone-loser transform: the Source with the lexicographically
- *     smaller `canonicalPath` wins; the loser is tombstoned with reason
- *     `"renamed"`. Cross-aggregate uniqueness is separately enforced by
- *     the repository's I-Repo-1 invariant. `extension`-kind Sources are
- *     exempt: their `typeNormalized` is the target type they add methods
- *     to, not a type they define, so several may share it.
- *
- * I3 (ValidationFailed retains fingerprint+bundle) and I4 (Tombstoned
- * excluded from registration but retained in-memory) are structural —
- * they're properties of the RowState union itself, enforced by the type
- * shape, not by aggregate code.
- *
- * I5 (sources map matches the disk walk) is a reconcile-level invariant
- * owned by W3's `ReconcileFromDisk` service; the aggregate accepts
- * whatever the caller hands it.
+ * keyed (name, version); transitions return new instances. Locals take the
+ * manifest name and version, else @local/<basename> at 0.0.0; basename
+ * collisions are harmless since catalogs are per repo
  */
 export interface Extension {
   readonly name: string;
@@ -106,13 +53,6 @@ export interface Extension {
   readonly sources: ReadonlyMap<SourceLocation, Source>;
 }
 
-/**
- * Thrown by the repository's I-Repo-1 invariant when two Sources in
- * DIFFERENT Extensions share `(kind, typeNormalized)`. Within a single
- * Extension, the aggregate resolves duplicates via deterministic-winner
- * transform (see {@link enforceI2}); `IntraExtensionDuplicateType` is
- * retained for cross-aggregate violations surfaced by the repository.
- */
 export class IntraExtensionDuplicateType extends Error {
   readonly extensionName: string;
   readonly extensionVersion: CalVer;
@@ -142,11 +82,6 @@ export class IntraExtensionDuplicateType extends Error {
   }
 }
 
-/**
- * Thrown when an Extension is constructed with a Source whose
- * `id.extensionRoot` does not equal the Extension's `extensionRoot`
- * (I1 violation). Both are compared in their already-canonicalized form.
- */
 export class SourceExtensionRootMismatch extends Error {
   readonly extensionName: string;
   readonly expected: string;
@@ -169,17 +104,8 @@ export class SourceExtensionRootMismatch extends Error {
 }
 
 /**
- * Constructs an Extension. Enforces I1 (extensionRoot match) and I2
- * (intra-aggregate (kind, typeNormalized) uniqueness in non-Tombstoned
- * states) against the input sources. Throws on violation.
- *
- * `args.extensionRoot` is canonicalized at the boundary so the I1
- * comparison against `Source.id.extensionRoot` (which is itself
- * canonicalized via {@link makeSourceLocation}) is symmetric on every
- * platform. Without this normalization, Windows fixtures that pass a
- * native path (`C:\Users\...\foo` with backslashes + uppercase) would
- * compare unequal to the Source's canonicalized form
- * (`c:/users/.../foo`) and I1 would fire spuriously.
+ * extensionRoot is canonicalized so the I1 comparison is symmetric; native
+ * Windows paths would otherwise compare unequal to the canonical Source form
  */
 export function makeExtension(args: {
   name: string;
@@ -214,15 +140,8 @@ export function makeExtension(args: {
 }
 
 /**
- * Returns a NEW Extension whose every Source has been moved to the
- * `Tombstoned` state. Load-bearing for the upgrade-as-atomic-transition
- * pattern: `saveAll([vN.tombstoneAll(), vN+1])` removes v1's rows and
- * inserts v2's in one transaction, with I-Repo-1 evaluated against the
- * post-state where only v2 holds the type identifiers.
- *
- * Tombstone reason is `"extension-removed"` — every Source is being
- * retired together as part of an aggregate-level transition. (Per-Source
- * deletes use `recordSourceMissing` which sets `"source-deleted"`.)
+ * saveAll([vN.tombstoneAll(), vN+1]) swaps versions in one transaction, with
+ * I-Repo-1 checked against the post-state
  */
 export function tombstoneAll(extension: Extension): Extension {
   const next = new Map<SourceLocation, Source>();
@@ -238,22 +157,6 @@ export function tombstoneAll(extension: Extension): Extension {
   };
 }
 
-/**
- * Records that a Source was observed on disk during reconcile with the
- * given fingerprint. If the Source is new to the aggregate, it's added
- * in `Bundled`-pending state (transient — caller must follow up with
- * `recordBundled` or `recordValidationFailed`/etc to settle it). If the
- * Source already exists with the same fingerprint, it's untouched. If
- * the fingerprint differs, the Source advances to a state that signals
- * "needs re-bundle" — for W1b that's modelled as `Bundled` (transient)
- * with the new fingerprint and the old bundle, leaving `recordBundled`
- * to update the bundle when the rebundle completes.
- *
- * Returns a NEW Extension. Throws if the new Source's `extensionRoot`
- * doesn't match this Extension's (I1).
- *
- * @throws SourceExtensionRootMismatch if I1 is violated.
- */
 export function observeFreshSource(
   extension: Extension,
   args: {
@@ -306,10 +209,6 @@ export function observeFreshSource(
   return { ...extension, sources: resolved };
 }
 
-/**
- * Records a successful bundle build + schema validation. Settles the
- * Source in `Indexed` state. Returns a NEW Extension.
- */
 export function recordBundled(
   extension: Extension,
   args: {
@@ -326,14 +225,8 @@ export function recordBundled(
 }
 
 /**
- * Records that a bundle build failed AND no cached bundle exists on
- * disk. Returns a NEW Extension.
- *
- * When {@link fingerprint} is provided, the Source's fingerprint is
- * updated atomically with the state transition. This prevents
- * {@link findStaleFiles} from re-marking the file as stale on the
- * next pass — the stored fingerprint matches the on-disk content,
- * terminating the rebundle loop.
+ * the fingerprint is updated with the transition so findStaleFiles does not
+ * re-mark the file stale, which ends the rebundle loop
  */
 export function recordBundleBuildFailed(
   extension: Extension,
@@ -360,15 +253,6 @@ export function recordBundleBuildFailed(
   return updateSourceState(extension, args.location, state);
 }
 
-/**
- * Records that the bundle imported cleanly but Zod schema validation
- * rejected the export. Per I3, the fingerprint and bundle are retained.
- * Returns a NEW Extension.
- *
- * When {@link fingerprint} is provided, the Source's fingerprint is
- * updated atomically with the state transition (same pattern as
- * {@link recordBundleBuildFailed}).
- */
 export function recordValidationFailed(
   extension: Extension,
   args: {
@@ -396,10 +280,6 @@ export function recordValidationFailed(
   return updateSourceState(extension, args.location, state);
 }
 
-/**
- * Records that the entry point itself failed to fingerprint
- * (filesystem error, perms denied). Returns a NEW Extension.
- */
 export function recordEntryPointUnreadable(
   extension: Extension,
   args: { location: SourceLocation; lastError: string },
@@ -412,15 +292,8 @@ export function recordEntryPointUnreadable(
 }
 
 /**
- * "Smart" missing-source transition — the source `.ts` is gone from
- * disk:
- *   - If a bundle is still on disk → `OrphanedBundleOnly` (the bundle
- *     can still serve type resolution requests in degraded mode).
- *   - Otherwise → `Tombstoned` with reason `"source-deleted"`.
- *
- * The decision needs the bundle path because the Source's existing state
- * may not include one (e.g. EntryPointUnreadable carries no bundle).
- * Returns a NEW Extension.
+ * a bundle still on disk gives OrphanedBundleOnly, which serves type resolution
+ * in degraded mode; otherwise the source is tombstoned as source-deleted
  */
 export function markSourceMissing(
   extension: Extension,
@@ -432,11 +305,6 @@ export function markSourceMissing(
   return updateSourceState(extension, args.location, newState);
 }
 
-/**
- * Unconditional tombstone — the Source is being retired regardless of
- * any bundle on disk. Use when the surrounding extension is being
- * removed. Returns a NEW Extension.
- */
 export function recordSourceMissing(
   extension: Extension,
   args: { location: SourceLocation; reason?: TombstoneReason },
@@ -448,15 +316,6 @@ export function recordSourceMissing(
   );
 }
 
-/**
- * Local-extension synthetic-aggregate constructor. Returns a fresh
- * Extension with the canonical local shape:
- *   - name: `@local/<basename(repoRoot)>`
- *   - version: `"0.0.0"`
- *   - origin: `"local"`
- *   - extensionRoot: the canonical repo root (the caller passes it pre-
- *     canonicalized; see {@link makeSourceLocation}).
- */
 export function makeLocalExtension(args: {
   repoRoot: string;
   basename: string;
@@ -470,8 +329,6 @@ export function makeLocalExtension(args: {
     sources: args.sources ?? [],
   });
 }
-
-// ----- internal helpers -----
 
 function updateSourceState(
   extension: Extension,
@@ -526,24 +383,9 @@ function updateSourceStateAndFingerprint(
 }
 
 /**
- * Enforces I2 (intra-extension `(kind, typeNormalized)` uniqueness in
- * non-Tombstoned states) via deterministic-winner + tombstone-loser
- * transform.
- *
- * When two non-Tombstoned Sources share `(kind, type)`, the one with
- * the lexicographically smaller `canonicalPath` wins; the loser is
- * tombstoned with reason `"renamed"`. Within a single Extension all
- * Sources share the same origin, so origin-precedence reduces to
- * path ordering — deterministic across platforms because
- * `canonicalPath` is already NFC-normalised and case-folded.
- *
- * `extension`-kind Sources are skipped: their type is the base type they
- * extend, and one package may ship several extension files for the same
- * base type (swamp-club#2557). This matches the repository's I-Repo-1
- * check and the catalog's `resolveOriginConflicts`, which skip them too.
- *
- * Returns a NEW map with losers tombstoned. Callers replace their
- * sources map with the result.
+ * smaller canonicalPath wins, loser is tombstoned as renamed; extension-kind
+ * sources are skipped since several files may extend one base type, as in the
+ * repository check
  */
 function enforceI2(
   sources: ReadonlyMap<SourceLocation, Source>,
@@ -583,13 +425,8 @@ function enforceI2(
 }
 
 /**
- * Returns the typeName carried by a RowState, if any. States that don't
- * carry a type (BundleBuildFailed, EntryPointUnreadable,
- * OrphanedBundleOnly, Tombstoned, ValidationFailed) return null.
- *
- * ValidationFailed intentionally returns null: the type was rejected by
- * the schema, so it does not occupy the (kind, type) namespace and
- * cannot conflict with another Source under I2 / I-Repo-1.
+ * ValidationFailed returns null: its type was rejected, so it does not occupy
+ * the (kind, type) namespace
  */
 function extractType(state: RowState): TypeName | null {
   switch (state.tag) {

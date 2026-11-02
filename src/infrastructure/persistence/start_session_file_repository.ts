@@ -62,11 +62,8 @@ async function removeIfPresent(
 }
 
 /**
- * Refuses when any of `paths` is a symbolic link. An imported workspace is
- * someone else's folder: a link planted at `.swamp/start` or `tasks` would
- * otherwise make Swamp write or move files outside it.
- *
- * @throws {UserError} code `unsafe_path`
+ * an imported workspace is someone else's folder: a link planted at
+ * .swamp/start or tasks would make Swamp write or move files outside it
  */
 export async function refuseSymlinks(paths: readonly string[]): Promise<void> {
   for (const path of paths) {
@@ -89,7 +86,6 @@ export async function refuseSymlinks(paths: readonly string[]): Promise<void> {
   }
 }
 
-/** The folders `swamp start` writes under, checked by {@link refuseSymlinks}. */
 export function startWritePaths(workspacePath: string): string[] {
   return [
     join(workspacePath, ".swamp"),
@@ -99,17 +95,14 @@ export function startWritePaths(workspacePath: string): string[] {
   ];
 }
 
-/** The folder under a workspace that holds every `swamp start` file. */
 export function startDir(workspacePath: string): string {
   return join(workspacePath, ".swamp", "start");
 }
 
-/** The folder of task records, one `<id>.json` per task. */
 function recordsDir(workspacePath: string): string {
   return join(startDir(workspacePath), "tasks");
 }
 
-/** A task brief's absolute path, from its workspace-relative one. */
 export function briefPath(workspacePath: string, briefFile: string): string {
   if (!isBriefFile(briefFile)) {
     throw markErrorPaths(
@@ -123,9 +116,8 @@ export function briefPath(workspacePath: string, briefFile: string): string {
 const SCHEMA_VERSION = 1;
 
 /**
- * What a task id may look like. It names a file under
- * `.swamp/start/tasks/`, so nothing read from disk that could leave that
- * folder (`..`, a separator) is accepted.
+ * a task id names a file under .swamp/start/tasks/, so nothing that could leave
+ * that folder (.., a separator) is accepted
  */
 const TASK_ID_PATTERN = /^[A-Za-z0-9-]{1,64}$/;
 
@@ -170,21 +162,16 @@ const RecordFileSchema = z.object({
   task: TaskDataSchema,
 });
 
-/** The one-session `state.json` (and `history/<id>/state.json`) of old. */
 const LegacyStateSchema = z.object({
   schemaVersion: z.literal(1),
   session: TaskDataSchema.omit({ briefFile: true }),
 });
 
-/** The file beside a filed legacy session that named its brief. */
 const LegacyBriefSchema = z.object({
   file: z.string(),
 });
 
-/**
- * Renames a file that can't be read to `<name>.unreadable-<time>`, so
- * nothing overwrites it. Returns the new path.
- */
+/** renames an unreadable file aside so nothing overwrites it */
 async function setAside(path: string): Promise<string> {
   const stamp = new Date().toISOString().replace(/[:.]/g, "-");
   const aside = `${path}.unreadable-${stamp}`;
@@ -192,7 +179,6 @@ async function setAside(path: string): Promise<string> {
   return aside;
 }
 
-/** An old `state.json`'s session, or null when missing or unreadable. */
 async function readLegacyState(
   path: string,
 ): Promise<Omit<StartSessionData, "workspacePath"> | null> {
@@ -215,7 +201,6 @@ async function readLegacyState(
   }
 }
 
-/** True when `path` is a regular file holding a brief swamp wrote. */
 async function isOurFile(path: string): Promise<boolean> {
   let info: Deno.FileInfo;
   try {
@@ -228,16 +213,11 @@ async function isOurFile(path: string): Promise<boolean> {
   return isSwampBrief(await Deno.readTextFile(path));
 }
 
-/** True when the file at `path` is a swamp brief written for `task`. */
 async function isBriefFor(path: string, task: string): Promise<boolean> {
   if (!await isOurFile(path)) return false;
   return briefTaskText(await Deno.readTextFile(path))?.trim() === task.trim();
 }
 
-/**
- * The brief under `tasks/` written for `task` that no other task has
- * claimed, as a workspace-relative path, or undefined.
- */
 async function findBriefFor(
   workspacePath: string,
   task: string,
@@ -255,15 +235,10 @@ async function findBriefFor(
   return undefined;
 }
 
-/** A task text's title, for a brief's file name. */
 function titleOf(task: string): string {
   return StartTask.create(task).title();
 }
 
-/**
- * The brief an old filed session recorded in its `brief.json`, when that is
- * a well-formed brief path still holding a brief swamp wrote.
- */
 async function legacyFiledBrief(
   workspacePath: string,
   dir: string,
@@ -286,10 +261,6 @@ async function legacyFiledBrief(
   }
 }
 
-/**
- * Stores each task in `<workspace>/.swamp/start/tasks/<id>.json`, mode 0600;
- * its brief is `<workspace>/<briefFile>`, written at launch.
- */
 export class StartSessionFileRepository implements StartSessionRepository {
   async list(workspacePath: string): Promise<StartSession[]> {
     const tasks = new Map<string, StartSession>();
@@ -308,8 +279,8 @@ export class StartSessionFileRepository implements StartSessionRepository {
     } catch (error) {
       if (!(error instanceof Deno.errors.NotFound)) throw error;
     }
-    // A workspace not opened since tasks got their own records still lists
-    // its tasks, read from the old files without changing them.
+    // an unmigrated workspace still lists its tasks, read from the old files
+    // without changing them
     for (const legacy of await this.readLegacy(workspacePath)) {
       if (!tasks.has(legacy.session.id)) {
         tasks.set(legacy.session.id, legacy.session);
@@ -383,7 +354,6 @@ export class StartSessionFileRepository implements StartSessionRepository {
     }
     await refuseSymlinks([...startWritePaths(workspacePath), history]);
 
-    // The old current task: its brief was TASK.md at the workspace root.
     if (await exists(current)) {
       const data = await readLegacyState(current);
       if (data === null) {
@@ -395,9 +365,8 @@ export class StartSessionFileRepository implements StartSessionRepository {
         ) {
           let briefFile: string | undefined;
           const legacyBrief = join(workspacePath, LEGACY_BRIEF_PATH);
-          // TASK.md is this task's brief only when it was written for this
-          // task: reopening an older task used to leave another task's
-          // TASK.md in place. A TASK.md that matches no task stays put.
+          // TASK.md is this task's brief only when written for this task; a
+          // TASK.md that matches no task stays put
           if (await isBriefFor(legacyBrief, data.task)) {
             briefFile = await this.reserveBriefFile(
               workspacePath,
@@ -426,7 +395,6 @@ export class StartSessionFileRepository implements StartSessionRepository {
       }
     }
 
-    // Tasks filed by "Start a new task", their briefs already in tasks/.
     try {
       for await (const entry of Deno.readDir(history)) {
         if (!entry.isDirectory || !TASK_ID_PATTERN.test(entry.name)) continue;
@@ -487,7 +455,6 @@ export class StartSessionFileRepository implements StartSessionRepository {
     );
   }
 
-  /** The old files' tasks, read only, for a workspace not yet migrated. */
   private async readLegacy(
     workspacePath: string,
   ): Promise<{ session: StartSession }[]> {
@@ -526,9 +493,8 @@ export class StartSessionFileRepository implements StartSessionRepository {
   }
 
   /**
-   * Reads one task record. A missing, damaged or other-version record, or
-   * one naming another id, reads as none; the task's workspace path is the
-   * folder it was read from, whatever the file says.
+   * a missing, damaged, other-version or other-id record reads as none; the
+   * workspace path is the folder it was read from, whatever the file says
    */
   private async readRecord(
     workspacePath: string,

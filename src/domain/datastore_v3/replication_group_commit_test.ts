@@ -21,7 +21,6 @@ import { assertEquals, assertRejects } from "@std/assert";
 import { ReplicationGroupCommit } from "./replication_group_commit.ts";
 import { V3ReplicationError } from "./litestream_replication.ts";
 
-/** A sync the test settles by hand, recording each call. */
 function manualSyncs() {
   const calls: PromiseWithResolvers<number | undefined>[] = [];
   return {
@@ -34,12 +33,10 @@ function manualSyncs() {
   };
 }
 
-/** Lets settled promises run their handlers. */
 async function flush(): Promise<void> {
   for (let i = 0; i < 5; i++) await Promise.resolve();
 }
 
-/** Tracks a promise's outcome without awaiting it. */
 function outcome(promise: Promise<void>) {
   const state: { settled?: "resolved" | "rejected"; error?: unknown } = {};
   promise.then(

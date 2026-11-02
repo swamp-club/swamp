@@ -20,18 +20,10 @@
 import type { z } from "zod";
 
 /**
- * User-facing deprecation guard for the removed execution-driver fields.
- *
- * Execution drivers (`driver`/`driverConfig` on workflows, jobs, steps, and
- * definitions, plus `defaultDriver`/`defaultDriverConfig` in `.swamp.yaml`)
- * were replaced by remote execution (see design/enablers/remote-execution.md). Old
- * YAML carrying those fields must fail loudly with an actionable message
- * instead of being silently ignored.
+ * old YAML carrying the removed driver fields must fail loudly with an
+ * actionable message instead of being silently ignored
  */
 
-/**
- * Builds the actionable error message for a removed driver field.
- */
 export function removedDriverFieldMessage(field: string): string {
   return `The '${field}' field has been removed — execution drivers are ` +
     `replaced by remote execution (see design/enablers/remote-execution.md). ` +
@@ -40,10 +32,8 @@ export function removedDriverFieldMessage(field: string): string {
 }
 
 /**
- * Zod preprocess hook that rejects objects still carrying the removed
- * `driver`/`driverConfig` fields. Wrap an object schema with
- * `z.preprocess(rejectRemovedDriverFields, schema)` so old YAML fails with
- * an actionable error before unknown-key stripping silently drops it.
+ * wrap an object schema in z.preprocess(rejectRemovedDriverFields, schema) so
+ * old YAML fails before unknown-key stripping silently drops the field
  */
 export function rejectRemovedDriverFields(data: unknown): unknown {
   const [field] = removedDriverFieldsIn(data);
@@ -54,9 +44,8 @@ export function rejectRemovedDriverFields(data: unknown): unknown {
 }
 
 /**
- * Zod preprocess hook that reports each removed `driver`/`driverConfig`
- * field as a schema issue, so a workflow document that carries one fails
- * like any other schema error instead of throwing (swamp-club#3832).
+ * reports each removed driver field as a schema issue, so a workflow document
+ * carrying one fails like any other schema error instead of throwing
  */
 export function addRemovedDriverFieldIssues(
   data: unknown,

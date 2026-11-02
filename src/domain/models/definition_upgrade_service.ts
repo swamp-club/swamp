@@ -22,52 +22,21 @@ import { Definition } from "../definitions/definition.ts";
 import { UserError } from "../errors.ts";
 import type { ModelDefinition } from "./model.ts";
 
-/** Error code raised when a definition records an unparseable `typeVersion`. */
 export const MALFORMED_TYPE_VERSION_CODE = "malformed_type_version";
 
-/**
- * Result of an upgrade attempt.
- */
 export interface UpgradeResult {
-  /** Whether the definition was upgraded */
   upgraded: boolean;
-  /** The (possibly upgraded) definition */
   definition: Definition;
-  /** The original typeVersion (undefined when the definition records none) */
   fromVersion: string | undefined;
-  /** The target version (always the model's current version) */
   toVersion: string;
 }
 
 /**
- * Domain service that applies version upgrades to definitions.
- *
- * When a definition's `typeVersion` is behind the model's current `version`,
- * the upgrade chain runs all applicable upgrades in order, transforming
- * attributes at each step.
- *
- * A definition that records no `typeVersion` is left alone. Absence is not a
- * version — it says nobody stated which version the arguments were authored
- * for, and it cannot distinguish arguments that need the whole chain from
- * arguments already in the current shape. Running the chain over the latter
- * transforms them a second time and corrupts them, so the safe reading is to
- * skip. Callers surface the skip instead: a method run warns when the type
- * declares an upgrade chain, and the remedy is to record the version the
- * arguments were actually authored for (swamp-club#2412).
- *
- * A `typeVersion` that is present but unparseable is a different failure and
- * raises `UserError`. Someone stated an intent and got the format wrong;
- * silently ignoring what they wrote is the same defect as silently corrupting.
+ * a definition with no typeVersion is skipped, since absence cannot tell
+ * arguments needing the chain from ones already current and rerunning it
+ * corrupts them; an unparseable one raises UserError
  */
 export class DefinitionUpgradeService {
-  /**
-   * Upgrades a definition to the model's current version by applying
-   * all applicable upgrade functions in order.
-   *
-   * @param definition - The definition to potentially upgrade
-   * @param modelDef - The model definition with the upgrade chain
-   * @returns The upgrade result
-   */
   upgrade(definition: Definition, modelDef: ModelDefinition): UpgradeResult {
     const fromVersion = definition.typeVersion;
     const toVersion = modelDef.version;
@@ -84,23 +53,19 @@ export class DefinitionUpgradeService {
       );
     }
 
-    // No upgrades defined — nothing to do
     if (!modelDef.upgrades || modelDef.upgrades.length === 0) {
       return { upgraded: false, definition, fromVersion, toVersion };
     }
 
-    // No recorded version — never guess. See the class comment.
     if (fromVersion === undefined) {
       return { upgraded: false, definition, fromVersion, toVersion };
     }
 
-    // If typeVersion is >= model version, no upgrade needed
     const fromCv = CalVer.create(fromVersion);
     if (CalVer.compare(fromCv, CalVer.create(toVersion)) >= 0) {
       return { upgraded: false, definition, fromVersion, toVersion };
     }
 
-    // Filter upgrades to those with toVersion > definition.typeVersion
     const applicableUpgrades = modelDef.upgrades.filter((upgrade) =>
       CalVer.compare(CalVer.create(upgrade.toVersion), fromCv) > 0
     );
@@ -109,13 +74,11 @@ export class DefinitionUpgradeService {
       return { upgraded: false, definition, fromVersion, toVersion };
     }
 
-    // Apply upgrades in order
     let currentArgs = definition.globalArguments;
     for (const upgrade of applicableUpgrades) {
       currentArgs = upgrade.upgradeAttributes(currentArgs);
     }
 
-    // Create a new definition with the upgraded global arguments
     const upgradedDefinition = Definition.withUpgradedGlobalArguments(
       definition,
       currentArgs,

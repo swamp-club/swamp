@@ -18,39 +18,20 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * The catalog of push-time rules: every rule id a safety or review finding
- * can carry, with the one fact that decides whether an author may declare
- * the finding acceptable.
- *
- * This is the single source of truth for that decision. An error-level rule
- * has no acceptance form, by construction: {@link isAcceptableRule} returns
- * false for it and nothing else in the codebase decides otherwise. The
- * adversarial-review family is warning-level but is evidence, not a lint,
- * and is not acceptable here either (it is handled by the attestation
- * design, swamp-club#3065). `bare-specifiers` is warning-level but not
- * acceptable: an accepted finding would still publish an extension the
- * registry cannot score. A rule id that is not in the catalog is unknown
- * and is never acceptable.
- *
- * The detectors keep their own severities (`ReviewRule.severity`,
- * `ContentRule.severity`); `extension_rule_catalog_test.ts` cross-checks
- * them against this table so the two cannot drift.
+ * single source of truth for acceptability: error-level rules, the
+ * adversarial-review family and bare-specifiers (the registry cannot score it)
+ * are never acceptable, nor are unknown ids
  */
 
-/** Whether findings from a rule block the push (`error`) or prompt (`warning`). */
 export type RuleSeverityClass = "error" | "warning";
 
 /**
- * What a finding of this rule is about: one line in one file (`site`), a
- * whole file (`file`), or the extension as a package (`extension`). The
- * scope decides where an acceptance lives: a site or file finding takes a
- * comment in that file, an extension finding takes a sidecar entry.
+ * decides where an acceptance lives: a site or file finding takes a comment in
+ * that file, an extension finding a sidecar entry
  */
 export type RuleScope = "site" | "file" | "extension";
 
-/** One catalog entry. */
 export interface RuleCatalogEntry {
-  /** Stable identifier carried on every finding, e.g. `deno-command`. */
   readonly id: string;
   readonly severity: RuleSeverityClass;
   readonly scope: RuleScope;
@@ -59,16 +40,10 @@ export interface RuleCatalogEntry {
    * a reason. Always false for error-level rules.
    */
   readonly acceptable: boolean;
-  /**
-   * Short advice on fixing the finding properly, printed in the push and
-   * quality summaries. Present on every warning-level rule.
-   */
   readonly remediation?: string;
 }
 
-/** The catalog. Append new rules here; a rule id used by a detector must be listed. */
 export const RULE_CATALOG: readonly RuleCatalogEntry[] = [
-  // ── Safety warnings (extension_safety_analyzer.ts) ──────────────────
   {
     id: "long-line",
     severity: "warning",
@@ -101,7 +76,6 @@ export const RULE_CATALOG: readonly RuleCatalogEntry[] = [
     remediation:
       "Use RFC 5737 documentation ranges (192.0.2.x, 198.51.100.x, 203.0.113.x) or example.com in examples.",
   },
-  // ── Safety errors ───────────────────────────────────────────────────
   {
     id: "file-count",
     severity: "error",
@@ -125,7 +99,6 @@ export const RULE_CATALOG: readonly RuleCatalogEntry[] = [
     acceptable: false,
   },
   { id: "dynamic-code", severity: "error", scope: "site", acceptable: false },
-  // ── Review rules (extension_review_rules.ts) ────────────────────────
   {
     id: "schema-strictness",
     severity: "warning",
@@ -150,9 +123,8 @@ export const RULE_CATALOG: readonly RuleCatalogEntry[] = [
     remediation:
       "Add a sibling <name>_test.ts covering the success and failure paths.",
   },
-  // ── Extension-scoped (appended by push) ─────────────────────────────
-  // Not acceptable: the registry cannot score the extension however the
-  // author justifies it, and the fix is mechanical.
+  // not acceptable: the registry cannot score the extension however the author
+  // justifies it, and the fix is mechanical
   {
     id: "bare-specifiers",
     severity: "warning",
@@ -161,8 +133,8 @@ export const RULE_CATALOG: readonly RuleCatalogEntry[] = [
     remediation:
       "Map each bare name in the deno.json imports to an explicit npm:, jsr:, node: or URL specifier (such as npm:zod@4), or, in a package.json project, declare it as an npm registry dependency and install it in node_modules; push writes the specifier in its place in the shipped source. Or write the specifier in the source yourself, so the registry scorer can resolve imports. Swamp's lint never applies no-import-prefix, so deno.json needs no exclude for it.",
   },
-  // Not acceptable: pull refuses a config, lock or package file in an
-  // archive, so push always leaves it out (swamp-club#3970).
+  // not acceptable: pull refuses a config, lock or package file in an archive,
+  // so push always leaves it out
   {
     id: "archive-project-file",
     severity: "warning",
@@ -171,7 +143,7 @@ export const RULE_CATALOG: readonly RuleCatalogEntry[] = [
     remediation:
       "Remove the file from additionalFiles, include or the kind directory. The archive's source ships every npm: and jsr: import pinned to the exact version its bundle holds, so consumers need no deno.json, lock or package.json.",
   },
-  // Not acceptable: Deno never reads the member's lock (swamp-club#3971).
+  // not acceptable: Deno never reads the member's lock
   {
     id: "workspace-member-lock",
     severity: "warning",
@@ -180,7 +152,7 @@ export const RULE_CATALOG: readonly RuleCatalogEntry[] = [
     remediation:
       "Delete the member's lock and its lock setting. Deno reads only the workspace root's lock for every member, and push bundles against that one.",
   },
-  // Not acceptable: the lock rule is mechanical (swamp-club#3970).
+  // not acceptable: the lock rule is mechanical
   {
     id: "package-lock-mismatch",
     severity: "warning",
@@ -189,9 +161,8 @@ export const RULE_CATALOG: readonly RuleCatalogEntry[] = [
     remediation:
       "Run npm install so node_modules matches package-lock.json, then push again. Until it does, a range package.json declares costs the loose-specifier point unless a deno.lock fixes it.",
   },
-  // ── File-scoped (appended by push) ──────────────────────────────────
-  // Not acceptable: the registry cannot list the model however the author
-  // justifies it, and the fix is mechanical (swamp-club#2486).
+  // not acceptable: the registry cannot list the model however the author
+  // justifies it, and the fix is mechanical
   {
     id: "uncatalogued-model",
     severity: "warning",
@@ -200,9 +171,8 @@ export const RULE_CATALOG: readonly RuleCatalogEntry[] = [
     remediation:
       'Write type and version as string literals directly in an unannotated export const model = { ... } object, repeating both after a spread of a shared factory\'s result (e.g. { ...definition, type: "@acme/thing", version: "2026.09.25.1" }). Check the shape with satisfies after the object instead of a type annotation.',
   },
-  // Not acceptable: a source whose type push could neither read nor load
-  // has an unchecked collective, and one that does not load on push will
-  // not load for consumers either (swamp-club#3456).
+  // not acceptable: a source push could neither read nor load has an unchecked
+  // collective, and one that does not load on push will not load for consumers
   {
     id: "unverified-collective",
     severity: "warning",
@@ -211,9 +181,8 @@ export const RULE_CATALOG: readonly RuleCatalogEntry[] = [
     remediation:
       "Make the source load on its own: fix the import or top-level error the warning names, so push can read the type it registers. Or write its type as a string literal in the export object.",
   },
-  // Acceptable: the behavior spelling is the new product term, and an
-  // author who only targets current releases may acknowledge that older
-  // clients and workers cannot load the extension (swamp-club#3338).
+  // acceptable: an author targeting only current releases may acknowledge that
+  // older clients and workers cannot load the extension
   {
     id: "behavior-spelling",
     severity: "warning",
@@ -222,10 +191,8 @@ export const RULE_CATALOG: readonly RuleCatalogEntry[] = [
     remediation:
       "Keep the behavior spelling if every client and worker that installs this extension runs this swamp release or later; otherwise use the model spelling (export const model, extensions/models/, manifest models:). Accept the finding in quality.yaml to stop this prompt.",
   },
-  // ── Site-scoped (appended by push) ──────────────────────────────────
-  // Acceptable: docs may show the wrong form on purpose to warn against it
-  // (swamp-club#3757). A finding costs the secret-safe-docs rubric point
-  // until it is fixed or accepted.
+  // acceptable: docs may show the wrong form on purpose to warn against it; a
+  // finding costs the secret-safe-docs rubric point until fixed or accepted
   {
     id: "secret-unsafe-docs",
     severity: "warning",
@@ -234,7 +201,6 @@ export const RULE_CATALOG: readonly RuleCatalogEntry[] = [
     remediation:
       "Show secrets going through a vault: store them with swamp vault put <vault> <key>, which prompts for the value, and pass them as ${{ vault.get(<vault>, <key>) }}. If the line shows the wrong form on purpose, accept it with an HTML comment on the line above, or, inside a code block, with a quality.yaml entry naming the file and line (that entry needs this swamp release or later).",
   },
-  // ── Adversarial-review evidence: warnings, never acceptable here ────
   {
     id: "adversarial-review-report",
     severity: "warning",
@@ -251,7 +217,6 @@ export const RULE_CATALOG: readonly RuleCatalogEntry[] = [
     remediation:
       "Resolve the dimension the review flagged, or record why it stands in the report note.",
   },
-  // ── Acceptance meta rules ───────────────────────────────────────────
   {
     id: "stale-acceptance",
     severity: "warning",
@@ -266,7 +231,6 @@ export const RULE_CATALOG: readonly RuleCatalogEntry[] = [
     scope: "site",
     acceptable: false,
   },
-  // ── Quality-check ids (extension_quality_checker.ts), errors ────────
   { id: "fmt", severity: "error", scope: "file", acceptable: false },
   { id: "lint", severity: "error", scope: "file", acceptable: false },
   { id: "dynamic-import", severity: "error", scope: "site", acceptable: false },
@@ -282,28 +246,20 @@ const BY_ID: ReadonlyMap<string, RuleCatalogEntry> = new Map(
   RULE_CATALOG.map((entry) => [entry.id, entry]),
 );
 
-/** Looks up a rule by id; undefined for an unknown id. */
 export function findRule(ruleId: string): RuleCatalogEntry | undefined {
   return BY_ID.get(ruleId);
 }
 
-/** True when the rule is in the catalog. */
 export function isKnownRule(ruleId: string): boolean {
   return BY_ID.has(ruleId);
 }
 
-/**
- * True when an author may declare a finding of this rule acceptable. False
- * for every error-level rule, for the adversarial-review family, for the
- * acceptance meta rules, and for any id not in the catalog.
- */
 export function isAcceptableRule(ruleId: string): boolean {
   const entry = BY_ID.get(ruleId);
   return entry !== undefined && entry.severity === "warning" &&
     entry.acceptable;
 }
 
-/** The remediation text for a rule, or undefined when it has none. */
 export function remediationFor(ruleId: string): string | undefined {
   return BY_ID.get(ruleId)?.remediation;
 }

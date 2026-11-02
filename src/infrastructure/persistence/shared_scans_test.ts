@@ -32,7 +32,6 @@ import {
 } from "../tracing/span_test_helpers.ts";
 import { SharedScans } from "./shared_scans.ts";
 
-/** One call of a {@link gatedScans} scan, settled when the test says. */
 interface GatedCall {
   window: number;
   signal: AbortSignal;
@@ -40,10 +39,6 @@ interface GatedCall {
   reject(error: unknown): void;
 }
 
-/**
- * A scan whose calls each wait for the test to settle them, so every
- * ordering is decided by the test rather than by timing.
- */
 function gatedScans(): {
   calls: GatedCall[];
   work: (window: number, signal: AbortSignal) => Promise<string>;
@@ -59,7 +54,6 @@ function gatedScans(): {
   };
 }
 
-/** Lets the flights the calls just made schedule start. */
 async function flightsStarted(): Promise<void> {
   await Promise.resolve();
 }
@@ -90,7 +84,6 @@ Deno.test("SharedScans.run: a caller arriving while a scan runs gets the next sc
   // landed after that scan listed what it reads.
   const later = [scans.run("key", 5, work), scans.run("key", 5, work)];
   await flightsStarted();
-  // At most one running and one pending: the later callers wait.
   assertEquals(calls.length, 1);
 
   calls[0].resolve("before");
@@ -284,7 +277,6 @@ Deno.test("SharedScans.run: the scan runs outside every caller's async context",
   };
   const running = context.run("first", () => scans.run("key", 1, work));
   await flightsStarted();
-  // Created while the first scan runs, and started from its settling.
   const creator = context.run("second", () => scans.run("key", 1, work));
   const joiner = context.run("third", () => scans.run("key", 1, work));
   gate.resolve();
@@ -292,10 +284,6 @@ Deno.test("SharedScans.run: the scan runs outside every caller's async context",
   assertEquals(seen, [undefined, undefined, undefined, undefined]);
 });
 
-/**
- * Runs `fn` with `calls` phases of the output_search area open at once,
- * each handed its index, and returns each phase's exported attributes.
- */
 async function inPhases(
   calls: number,
   fn: (index: number) => Promise<unknown>,
@@ -324,7 +312,6 @@ async function inPhases(
   return attributes;
 }
 
-/** A scan that counts `reads` reads into the current phase once released. */
 function countingWork(gate: Promise<void>, reads: number) {
   return async () => {
     currentDiagnosticTally().add("files_read", reads);

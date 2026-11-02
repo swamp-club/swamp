@@ -67,7 +67,6 @@ Deno.test("enumeratePulledExtensionDirs: returns only dirs that exist on disk", 
       "@fake/a": { version: "1.0.0" },
       "@fake/b": { version: "1.0.0" },
     });
-    // Create only @fake/a's models dir
     await ensureDir(
       join(tmpDir, ".swamp/pulled-extensions/@fake/a/models"),
     );
@@ -159,7 +158,6 @@ Deno.test("enumeratePulledExtensionDirs: version bump → paths unchanged (name-
       "models",
     );
 
-    // Bump version in lockfile
     await seedLockfile(tmpDir, {
       "@fake/a": { version: "2.0.0" },
     });
@@ -212,15 +210,9 @@ Deno.test("enumeratePulledExtensionDirs: adding extension changes result", async
   }
 });
 
-// ── enumeratePulledDatastoreExtensionsOnDisk (swamp-club#2483) ───────────────
-
 const MANAGED = [".swamp", "config", "pulled-extensions"];
 const LEGACY = [".swamp", "pulled-extensions"];
 
-/**
- * Writes a pulled extension root: its manifest (named `manifestName`,
- * defaulting to `name`) and, when `withDatastore`, one datastore source.
- */
 async function seedExtension(
   repoDir: string,
   rootSegments: string[],
@@ -338,7 +330,6 @@ Deno.test("enumeratePulledDatastoreExtensionsOnDisk: finds nested names and skip
   await withTempRepo(async (repo) => {
     await seedExtension(repo, MANAGED, "@acme/store");
     await seedExtension(repo, MANAGED, "@acme/store/extra");
-    // An unrelated manifest inside a scaffold dir must not count as a root.
     await seedExtension(repo, MANAGED, "@acme/store/files");
     const found = await enumeratePulledDatastoreExtensionsOnDisk(repo, true);
     assertEquals(found.map((f) => f.name).sort(), [
@@ -437,7 +428,6 @@ Deno.test({
       assertEquals(complete.dirs, [join(managed, "datastores")]);
       assertEquals(complete.removed, [legacySource]);
 
-      // A managed copy the scan cannot read must not have its rows purged.
       const unreadable = join(managed, "datastores");
       await Deno.chmod(unreadable, 0o000);
       try {
@@ -451,12 +441,6 @@ Deno.test({
   },
 });
 
-// ---- install staging (swamp-club#2723) ----
-
-/**
- * Plants what an install in flight leaves under the pulled root: a
- * journal dir whose staged new root ships models and datastores.
- */
 async function plantStaging(repoDir: string): Promise<void> {
   const staged = join(
     repoDir,

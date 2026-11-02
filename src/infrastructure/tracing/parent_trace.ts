@@ -19,11 +19,6 @@
 
 import { type Context, context, propagation } from "@opentelemetry/api";
 
-/**
- * Runs `fn` within the given parent trace context, or directly if no
- * parent context is provided. Keeps @opentelemetry/api imports
- * encapsulated in the tracing module.
- */
 export function runWithParentTrace<T>(
   parentCtx: Context | undefined,
   fn: () => T,
@@ -35,12 +30,8 @@ export function runWithParentTrace<T>(
 }
 
 /**
- * Wraps an async generator to run each iteration within the trace context
- * extracted from the given W3C headers. When no traceparent is provided,
- * yields from the generator unchanged.
- *
- * When the consumer stops early, `return()` is forwarded to the inner
- * iterator (inside the extracted context) so its `finally` blocks still run.
+ * on early stop, return() is forwarded to the inner iterator inside the
+ * extracted context so its finally blocks still run
  */
 export async function* withGeneratorTraceContext<T>(
   traceparent: string | undefined,
@@ -62,7 +53,6 @@ export async function* withGeneratorTraceContext<T>(
       try {
         result = await context.with(parentCtx, () => iterator.next());
       } catch (error) {
-        // The inner iterator threw, so it has already finished.
         done = true;
         throw error;
       }

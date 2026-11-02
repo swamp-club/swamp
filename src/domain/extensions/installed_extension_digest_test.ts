@@ -92,7 +92,6 @@ Deno.test("computeInstalledExtensionDigest: empty entry set produces stable dige
   const a = await computeInstalledExtensionDigest([]);
   const b = await computeInstalledExtensionDigest([]);
   assertEquals(a, b);
-  // SHA-256 of empty input is well-known.
   assertEquals(
     a,
     "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
@@ -100,10 +99,8 @@ Deno.test("computeInstalledExtensionDigest: empty entry set produces stable dige
 });
 
 Deno.test("computeInstalledExtensionDigest: paths with newlines are unambiguous", async () => {
-  // NUL separator between relPath and contentSha prevents any parsing of
-  // "<path>\n<sha>" vs "<path>" + "\n" + "<sha>" ambiguity if a path ever
-  // contained a newline. Two entries that would collide under a naive
-  // join must produce different digests.
+  // a NUL separator between relPath and contentSha keeps a path containing a
+  // newline from colliding with a naively joined entry
   const a = await computeInstalledExtensionDigest([
     { relPath: "a\nb", contentSha: "c".repeat(64) },
   ]);

@@ -17,63 +17,44 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Where a vault is named by the repository's definitions, workflows and
- * datastore config, so `swamp vault remove` can refuse to remove a vault
- * something still uses (swamp-club#3597).
- *
- * @module
- */
-
 import type { Definition } from "../definitions/definition.ts";
 import type { Workflow } from "../workflows/workflow.ts";
 import { scanExpressions } from "./expression_scanner.ts";
 import { vaultCallsForAnalysis } from "./vault_reference_extractor.ts";
 
-/** What names the vault. */
 export type VaultReferenceSourceKind = "definition" | "workflow" | "datastore";
 
-/** How the source names the vault. */
 export type VaultReferenceVia =
   | "vault.get"
   | "resource override"
   | "data output override"
   | "vaults list";
 
-/** One place that names the vault. */
 export interface VaultReferenceSite {
   kind: VaultReferenceSourceKind;
-  /** The definition or workflow name; `datastore` for the datastore config. */
   name: string;
   via: VaultReferenceVia;
 }
 
-/** A source whose `vault.get` names its vault only when evaluated. */
 export interface PossibleVaultReference {
   kind: VaultReferenceSourceKind;
   name: string;
 }
 
-/** Everything that names the vault, and everything that may. */
 export interface VaultReferences {
   references: VaultReferenceSite[];
   possibleReferences: PossibleVaultReference[];
 }
 
-/** The sources a vault may be named in. */
 export interface VaultReferenceSources {
   definitions: readonly Definition[];
   workflows: readonly Workflow[];
-  /** The repo marker's datastore config, whose strings may call `vault.get`. */
   datastoreConfig?: unknown;
 }
 
 /**
- * Finds every place that names `vaultName`: a `vault.get` call whose vault
- * argument is the name, a definition's resource override `vaultName`, a
- * workflow step's data output override `vaultName`, or a workflow's `vaults`
- * allow-list. A `vault.get` whose vault argument is evaluated (`inputs.v`)
- * cannot be resolved here, so its source is a possible reference instead.
+ * a vault.get whose vault argument is evaluated (inputs.v) cannot be resolved
+ * here, so its source is a possible reference instead
  */
 export function findVaultReferences(
   vaultName: string,
@@ -132,10 +113,6 @@ export function findVaultReferences(
   return { references, possibleReferences };
 }
 
-/**
- * Whether any `vault.get` call in `data` names `vaultName` as its vault, and
- * whether any names its vault only when evaluated.
- */
 function scanVaultGetCalls(
   vaultName: string,
   data: unknown,

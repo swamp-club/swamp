@@ -17,12 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// The OAuth server-token mint against a real repository on disk, wired to a
-// sync service through the same markDirty hook serve uses. Pins which dirty
-// signals the mint sends and in what order relative to its push
-// (swamp-club#2408), and that a login request traces as one tree with the
-// datastore push inside it (swamp-club#2417).
-
 import { assert, assertEquals, assertExists } from "@std/assert";
 import { ensureDir } from "@std/fs";
 import { isAbsolute, join } from "@std/path";
@@ -108,7 +102,6 @@ async function writeTokenSecretsVault(dir: string): Promise<void> {
 type MarkEvent = { kind: "mark"; relPath?: string };
 type SyncEvent = MarkEvent | { kind: "push"; options: DatastoreSyncOptions };
 
-// Records marks and pushes in one log, so a test can check their order.
 function createRecordingSyncService(): {
   service: DatastoreSyncService;
   events: SyncEvent[];
@@ -152,8 +145,8 @@ Deno.test("createDeviceAuthDeps: mintServerToken sends only per-path markDirty b
         "infra",
       );
 
-      // The mint's writes stage into a root unit, not through
-      // signalChange's fallback (swamp-club#3056).
+      // the mint's writes stage into a root unit, not through signalChange's
+      // fallback
       const token = await withUnscopedWriteGuard(() =>
         deps.mintServerToken(
           "user:user-1",
@@ -286,8 +279,6 @@ Deno.test("createDeviceAuthDeps: mintServerToken re-marks the token paths after 
   });
 });
 
-// Opens its own active span in pushChanged, the way the gcs-datastore
-// extension does, so the test can check what that span is parented to.
 function createSpanningSyncService(): DatastoreSyncService {
   return {
     pullChanged(_options?: DatastoreSyncOptions): Promise<number | void> {
@@ -328,8 +319,6 @@ Deno.test("serve login: POST /auth/device/token traces as one tree with the data
           "infra",
           createSyncGate(),
         ),
-        // Only the upstream provider is stubbed; the mint, the gate and the
-        // access-token store are the real ones.
         pollForToken: () =>
           Promise.resolve({ accessToken: "access-token", tokenType: "Bearer" }),
         getUserInfo: () =>

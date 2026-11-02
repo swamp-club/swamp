@@ -17,18 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Truncation to a high-water mark (swamp-club#3482) undoes appends: a store
- * that appended a prefix, took its mark, appended a suffix and was
- * truncated to the mark is observably the store that appended the prefix
- * only, and stays so when both append more. The one exception is the data
- * versions the suffix recorded (swamp-club#3532): a partition that recorded
- * any keeps them in a snapshot at its new head, which is the prefix's state
- * with those versions retained. Commits span three partitions in two
- * namespaces, share chunks, record data versions, raise fences through
- * lease ops, and may be partly compacted before the mark.
- */
-
 import { assert, assertEquals } from "@std/assert";
 import { join } from "@std/path";
 import { DatabaseSync } from "node:sqlite";
@@ -58,7 +46,6 @@ function hash(char: string): string {
   return char.repeat(64);
 }
 
-/** Blobs whose chunks overlap, so a chunk is named by several commits. */
 const BLOBS = [
   BlobRef.create({ sha256: hash("a"), size: 10 }),
   BlobRef.create({
@@ -81,7 +68,6 @@ function otherPartition(): PartitionKey {
   });
 }
 
-/** The partitions commits go to: data in two namespaces, leases in one. */
 const SPACES = [
   { namespace: "", partition: modelPartition, lease: false },
   { namespace: "", partition: otherPartition, lease: true },
@@ -93,15 +79,10 @@ const arbStep = fc.record({
   name: fc.constantFrom("x", "y", "z"),
   blob: fc.integer({ min: 0, max: BLOBS.length - 1 }),
   fenceBump: fc.integer({ min: 0, max: 2 }),
-  /** Records a data version instead of only writing a blob. */
   versioned: fc.boolean(),
 });
 type Step = typeof arbStep extends fc.Arbitrary<infer T> ? T : never;
 
-/**
- * Builds each step's commit, numbering seqs per partition and data versions
- * per partition and name, from `versionBase` up, so no version repeats.
- */
 class Builder {
   readonly #seqs = new Map<number, number>();
   readonly #fences = new Map<number, number>();
@@ -153,7 +134,6 @@ async function appendAll(
   }
 }
 
-/** The snapshot rows of the partitions not in `except`, raw. */
 function snapshotRows(path: string, except: ReadonlySet<string> = new Set()) {
   const db = new DatabaseSync(path, { readOnly: true });
   try {
@@ -166,10 +146,6 @@ function snapshotRows(path: string, except: ReadonlySet<string> = new Set()) {
   }
 }
 
-/**
- * The partitions the commits recorded data versions in, as
- * `namespace/partition`, with those versions by name.
- */
 function recordedVersions(
   commits: readonly Commit[],
 ): Map<string, Map<string, number[]>> {
@@ -187,11 +163,6 @@ function recordedVersions(
   return recorded;
 }
 
-/**
- * Checks each retaining partition's snapshot row: the state of its prefix
- * commits with the dropped versions retained, then any `later` commits up
- * to the row's seq.
- */
 function assertRetainedSnapshots(
   path: string,
   prefix: readonly Commit[],
@@ -233,7 +204,6 @@ function assertRetainedSnapshots(
   }
 }
 
-/** What a store shows: heads, feed, partitions, snapshots and chunk references. */
 async function observe(
   store: SqliteCommitStore,
   path: string,
@@ -255,8 +225,6 @@ async function observe(
   } finally {
     db.close();
   }
-  // The snapshots of partitions that retain dropped versions are checked by
-  // assertRetainedSnapshots.
   const snapshots = snapshotRows(path, except);
   const { compactedThrough } = await store.history();
   const feed = (await store.changesSince(compactedThrough, 1_000_000)).map((
@@ -319,7 +287,6 @@ Deno.test("SqliteCommitStore.truncateAfter: undoes the appends past the mark exa
             await appendAll(truncated, suffix);
 
             if (truncated.checkMark(mark) === "compacted-past") {
-              // A compacted partition's only snapshot went past the mark.
               assert(through !== undefined);
               const before = await observe(truncated, truncatedPath);
               try {
@@ -347,8 +314,6 @@ Deno.test("SqliteCommitStore.truncateAfter: undoes the appends past the mark exa
             );
             assertRetainedSnapshots(truncatedPath, prefix, dropped);
 
-            // Both take the same steps again, from rebuilt or cached
-            // partitions, with versions the dropped commits never used.
             const again = new Builder("again", 1000);
             for (const step of prefixSteps) await again.build(step);
             const more: Commit[] = [];
@@ -372,11 +337,7 @@ Deno.test("SqliteCommitStore.truncateAfter: undoes the appends past the mark exa
       ),
       {
         numRuns: 150,
-        // One run per outcome below, so the coverage check never rests on
-        // the random runs alone (swamp-club#4029).
         examples: [
-          // The lease partition is compacted through the mark and its only
-          // snapshot, at seq 3, lands past it: refused.
           [
             [{ space: 1, name: "z", blob: 0, fenceBump: 1, versioned: false }],
             [
@@ -386,8 +347,6 @@ Deno.test("SqliteCommitStore.truncateAfter: undoes the appends past the mark exa
             3,
             1,
           ],
-          // Nothing compacted and the suffix records a version: truncated,
-          // retaining it.
           [
             [{ space: 2, name: "x", blob: 1, fenceBump: 0, versioned: false }],
             [{ space: 2, name: "y", blob: 1, fenceBump: 0, versioned: true }],
@@ -397,7 +356,6 @@ Deno.test("SqliteCommitStore.truncateAfter: undoes the appends past the mark exa
         ],
       },
     );
-    // The examples reached each outcome.
     assert(truncatedRuns > 0, "no run truncated");
     assert(refusedRuns > 0, "no run was refused");
     assert(retainingRuns > 0, "no run dropped a version");

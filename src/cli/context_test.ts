@@ -49,14 +49,12 @@ import {
 } from "../infrastructure/persistence/path_test_helpers.ts";
 import { SWAMP_MARKER_FILE } from "../infrastructure/persistence/paths.ts";
 
-// Initialize logging once before tests run
 await initializeLogging({});
 
 /**
- * Asserts a repo dir was derived from the cwd: either the cwd itself, or an
- * ancestor of it holding the `.swamp.yaml` marker. Tests cannot assert
- * `Deno.cwd()` exactly, because the suite may itself run from a subdirectory
- * or a linked git worktree of a swamp repository.
+ * the suite may run from a subdirectory or linked worktree, so a cwd-derived
+ * repo dir is the cwd or an ancestor holding the .swamp.yaml marker, never
+ * exactly cwd
  */
 function assertCwdDerivedRepoDir(result: string): void {
   assertEquals(isAbsolute(result), true);
@@ -68,11 +66,8 @@ function assertCwdDerivedRepoDir(result: string): void {
   );
 }
 
-// Environment readers for the functions that take one. They are functions, not
-// values, so "unset" is expressible: an explicit `undefined` passed to a value
-// default falls through to the process environment, and these tests then fail
-// wherever the variable is set — as NO_COLOR is in the scheduled flaky-test job
-// (swamp-club#2462).
+// readers are functions, not values, so unset is expressible: an explicit
+// undefined passed to a value default falls through to the process environment
 const unset = () => undefined;
 const envSet = (value: string) => () => value;
 
@@ -122,7 +117,6 @@ Deno.test("createContext returns a logger object", () => {
 Deno.test("createContext uses custom logger name when provided", () => {
   const options: GlobalOptions = {};
   const context = createContext(options, ["custom", "logger"]);
-  // Logger is created - we can verify it exists and has expected methods
   assertEquals(typeof context.logger.debug, "function");
   assertEquals(typeof context.logger.error, "function");
 });
@@ -167,10 +161,6 @@ Deno.test("createContext lets --json override a false output environment", () =>
     "json",
   );
 });
-
-// ============================================================================
-// getRepoDirFromArgs Tests
-// ============================================================================
 
 Deno.test("getRepoDirFromArgs returns cwd when no --repo-dir flag", () => {
   withMockedEnv({ SWAMP_REPO_DIR: undefined }, () => {
@@ -260,17 +250,12 @@ Deno.test("getRepoDirFromArgs resolves SWAMP_REPO_DIR to absolute path", () => {
   });
 });
 
-// ============================================================================
-// resolveRepoDir Tests
-// ============================================================================
-
 Deno.test("resolveRepoDir returns cli value when provided", () => {
   withMockedEnv({ SWAMP_REPO_DIR: "/tmp/env-repo" }, () => {
     assertPathEquals(
       resolveRepoDir("/tmp/flag-repo"),
       resolve("/tmp/flag-repo"),
     );
-    // explicit "." from flag resolves to absolute cwd
     assertPathEquals(resolveRepoDir("."), resolve("."));
   });
 });
@@ -294,9 +279,8 @@ Deno.test("resolveRepoDir treats empty SWAMP_REPO_DIR as unset", () => {
 });
 
 /**
- * Runs `fn` with a temp dir holding a directory `real` and a symlink `link`
- * to it. `node:sqlite` refuses a database path through `link`, so every
- * explicit repo dir must come back as `real` (swamp-club#3552).
+ * node:sqlite refuses a database path through a symlink, so every explicit repo
+ * dir must come back as the real directory
  */
 async function withSymlinkedRepoDir(
   fn: (paths: { dir: string; link: string; real: string }) => void,
@@ -438,10 +422,6 @@ Deno.test({
     }),
 });
 
-// ============================================================================
-// findAncestorRepoDir Tests
-// ============================================================================
-
 async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
   const dir = await Deno.makeTempDir({ prefix: "swamp-context-" });
   try {
@@ -497,10 +477,8 @@ Deno.test("findAncestorRepoDir: returns null when no marker in any ancestor", as
 
 Deno.test("findAncestorRepoDir: stops at git root and does not traverse above it", async () => {
   await withTempDir(async (dir) => {
-    // Create a .swamp.yaml ABOVE the git root — should not be found
     await Deno.writeTextFile(join(dir, SWAMP_MARKER_FILE), "swampVersion: 1");
 
-    // Create a git repo in a subdirectory
     const gitRepo = join(dir, "git-project");
     await Deno.mkdir(gitRepo);
     const gitInit = new Deno.Command("git", {
@@ -511,7 +489,6 @@ Deno.test("findAncestorRepoDir: stops at git root and does not traverse above it
     });
     const result = await gitInit.output();
     if (!result.success) {
-      // git not available — skip this test
       return;
     }
 
@@ -546,7 +523,6 @@ Deno.test("findAncestorRepoDir: finds marker inside git root", async () => {
   });
 });
 
-/** Runs a git command, returning false when git is unavailable or fails. */
 async function git(cwd: string, ...args: string[]): Promise<boolean> {
   try {
     const result = await new Deno.Command("git", {
@@ -571,7 +547,6 @@ Deno.test("findAncestorRepoDir: finds marker in the main working tree from a lin
     if (!await git(main, "commit", "--allow-empty", "-m", "init")) return;
     await Deno.writeTextFile(join(main, SWAMP_MARKER_FILE), "swampVersion: 1");
 
-    // A linked worktree nested inside the main working tree.
     const worktree = join(main, "worktrees", "feature");
     if (!await git(main, "worktree", "add", worktree, "-b", "feature")) return;
     const nested = join(worktree, "src", "cli");
@@ -586,7 +561,6 @@ Deno.test("findAncestorRepoDir: finds marker in the main working tree from a lin
 
 Deno.test("findAncestorRepoDir: returns null from a linked worktree when the main working tree has no marker", async () => {
   await withTempDir(async (dir) => {
-    // Marker sits ABOVE the main working tree — it must not be found.
     await Deno.writeTextFile(join(dir, SWAMP_MARKER_FILE), "swampVersion: 1");
     const main = join(dir, "main");
     await Deno.mkdir(main);
@@ -603,10 +577,6 @@ Deno.test("findAncestorRepoDir: returns null from a linked worktree when the mai
     assertEquals(findAncestorRepoDir(nested), null);
   });
 });
-
-// ============================================================================
-// getClubApiKeyFileFromArgs Tests
-// ============================================================================
 
 const SERVE = { command: "serve" };
 
@@ -736,10 +706,6 @@ Deno.test("getClubApiKeyFileFromArgs: ignores a trailing flag with no value", ()
   );
 });
 
-// ============================================================================
-// getExtensionsDirFromArgs Tests
-// ============================================================================
-
 Deno.test("getExtensionsDirFromArgs: returns undefined when no flag or env var", () => {
   withMockedEnv({ SWAMP_EXTENSIONS_DIR: undefined }, () => {
     assertEquals(getExtensionsDirFromArgs([]), undefined);
@@ -790,10 +756,6 @@ Deno.test("getExtensionsDirFromArgs: ignores empty env var", () => {
   });
 });
 
-// ============================================================================
-// resolveExtensionsDir Tests
-// ============================================================================
-
 Deno.test("resolveExtensionsDir: returns resolved cli value when provided", () => {
   assertPathEquals(
     resolveExtensionsDir("/tmp/flag-ext")!,
@@ -813,10 +775,6 @@ Deno.test("resolveExtensionsDir: returns undefined when neither set", () => {
   });
 });
 
-// ============================================================================
-// forceLog Tests
-// ============================================================================
-
 Deno.test("createContext: forceLog defaults to false", () => {
   const ctx = createContext({});
   assertEquals(ctx.forceLog, false);
@@ -833,10 +791,6 @@ Deno.test("createContext: log and json can both be set", () => {
   assertEquals(ctx.outputMode, "json");
   assertEquals(ctx.forceLog, true);
 });
-
-// ============================================================================
-// resolveTraceparent Tests
-// ============================================================================
 
 function envOf(
   vars: Record<string, string>,
@@ -875,10 +829,6 @@ Deno.test("resolveTraceparent: returns undefined for empty TRACEPARENT env var",
   );
 });
 
-// ============================================================================
-// resolveTracestate Tests
-// ============================================================================
-
 Deno.test("resolveTracestate: returns cli value when provided", () => {
   assertEquals(
     resolveTracestate(
@@ -900,14 +850,10 @@ Deno.test("resolveTracestate: returns undefined when neither cli nor env set", (
   assertEquals(resolveTracestate(undefined, envOf({})), undefined);
 });
 
-// --- colour policy ------------------------------------------------------------
-//
-// These tests never touch the process-global colour flag or read the process's
-// NO_COLOR. `applyColorPolicy` takes its environment read, its terminal probe
-// and its effect as parameters, so the assertions are about which call was
-// made — which is also the only way to pin the "only ever disables" contract.
+// applyColorPolicy takes its env read, terminal probe and effect as parameters,
+// so tests assert which call was made without touching the process-global
+// colour flag or NO_COLOR
 
-/** Records what `applyColorPolicy` did to the colour switch. */
 function colourSpy(): { calls: boolean[]; setEnabled: (v: boolean) => void } {
   const calls: boolean[] = [];
   return { calls, setEnabled: (v: boolean) => calls.push(v) };
@@ -929,8 +875,7 @@ Deno.test("resolveColorEnabled: NO_COLOR disables colour on a terminal", () => {
 });
 
 Deno.test("resolveColorEnabled: NO_COLOR counts as set when empty", () => {
-  // Presence, not truthiness — the informal standard, and what the check in
-  // runCli's global action did before this moved.
+  // presence, not truthiness, per the informal NO_COLOR standard
   assertEquals(resolveColorEnabled(false, "", onATerminal), false);
 });
 
@@ -943,7 +888,6 @@ Deno.test("resolveColorEnabled: flag and env and pipe together still disable col
 });
 
 Deno.test("resolveColorEnabled: skips the terminal probe once the answer is known", () => {
-  // The hook fast path pays nothing for a question it does not need asked.
   let probed = 0;
   const probe = () => {
     probed++;
@@ -1019,11 +963,9 @@ Deno.test("applyColorPolicy: reads --no-color from the same parse runCli uses", 
 });
 
 Deno.test("applyColorPolicy: an option value written with = is not the flag", () => {
-  // `--predicate=--no-color` carries its value in the same token, so the parse
-  // never sees a global option. The space-separated form is a different matter:
-  // `--predicate --no-color` is indistinguishable from the flag here, and
-  // Cliffy rejects it upstream for the same reason, so it is not defended
-  // against at this layer.
+  // --predicate=--no-color carries its value in one token, so the parse sees no
+  // global option; the space-separated form is rejected by Cliffy upstream, so
+  // it is not defended here
   const spy = colourSpy();
   const args = ["data", "query", "--predicate=--no-color"];
   const requested = extractCommandInfo(args).globalOptions.includes(
@@ -1042,8 +984,6 @@ Deno.test("hasExplicitRepoDir: true for --repo-dir in either form or SWAMP_REPO_
     assertEquals(hasExplicitRepoDir(["model", "run"]), false);
     assertEquals(hasExplicitRepoDir(["model", "--repo-dir", "/tmp/r"]), true);
     assertEquals(hasExplicitRepoDir(["model", "--repo-dir=/tmp/r"]), true);
-    // A trailing flag with no value is not a repo dir (matches
-    // getRepoDirFromArgs, which falls back to the cwd).
     assertEquals(hasExplicitRepoDir(["model", "--repo-dir"]), false);
   });
   withMockedEnv({ SWAMP_REPO_DIR: "/tmp/r" }, () => {
@@ -1067,7 +1007,6 @@ Deno.test("isQuietFromArgs: reads -q the way Cliffy parses it", () => {
     [["issue", "bug", "-qt", "x"], true],
     // -t takes a value, so Cliffy reads the q in -tq as that value.
     [["issue", "bug", "-tq"], false],
-    // Everything after a bare -- is a literal argument, not an option.
     [["run", "--", "-q"], false],
     [["run", "--", "--quiet"], false],
     // Cliffy rejects a value on --quiet, so this form never runs a command.
@@ -1085,10 +1024,6 @@ Deno.test("postCommandNoticesAllowed: only log mode without -q shows notices", (
   assertEquals(postCommandNoticesAllowed("json", true), false);
 });
 
-/**
- * A symlink resolver over a fixed layout: `link` is a symlink to `real`, so
- * every path under either spelling resolves under `real`.
- */
 function linkedLayout(): {
   real: string;
   link: string;
@@ -1126,7 +1061,6 @@ Deno.test("logicalCwdFrom: a missing, stale, relative or dot-segment PWD gives t
   const { real, link, realPath } = linkedLayout();
   const cwd = join(real, "repo");
   assertEquals(logicalCwdFrom(cwd, undefined, realPath), cwd);
-  // Left over from a parent that changed directory without updating it.
   assertEquals(logicalCwdFrom(cwd, join(link, "other"), realPath), cwd);
   assertEquals(logicalCwdFrom(cwd, "link/repo", realPath), cwd);
   // `pwd -L` never trusts a PWD with dot segments, even one naming the cwd.
@@ -1134,7 +1068,6 @@ Deno.test("logicalCwdFrom: a missing, stale, relative or dot-segment PWD gives t
     logicalCwdFrom(cwd, `${link}${SEPARATOR}repo${SEPARATOR}.`, realPath),
     cwd,
   );
-  // A PWD that no longer resolves.
   assertEquals(logicalCwdFrom(cwd, resolve("/gone/repo"), realPath), cwd);
 });
 
@@ -1151,7 +1084,6 @@ Deno.test("repoDirAsGivenFrom: the repo found from a symlinked cwd keeps the cwd
     }),
     join(link, "repo"),
   );
-  // Started from the real spelling, nothing changes.
   assertEquals(
     repoDirAsGivenFrom({
       cliValue: undefined,

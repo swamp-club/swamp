@@ -47,7 +47,6 @@ const context: RegistrationContext = {
   repoDir: null,
 };
 
-/** Mirrors the error the S3 and GCS datastore extensions throw on timeout. */
 class ExtensionLockTimeoutError extends Error {
   override readonly name = "LockTimeoutError";
   readonly code = "LOCK_TIMEOUT" as const;
@@ -60,10 +59,6 @@ class ExtensionLockTimeoutError extends Error {
   }
 }
 
-/**
- * Class-based provider: its members live on the prototype and read `this`,
- * so the adapter's wrapper must not copy it with a spread.
- */
 class FakeClassProvider implements DatastoreProvider {
   readonly lockKeys: string[] = [];
 

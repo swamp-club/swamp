@@ -33,16 +33,6 @@ import { UserError } from "../../domain/errors.ts";
 import { writeOutput } from "../../infrastructure/logging/logger.ts";
 import type { OutputMode } from "../output/output.ts";
 
-/**
- * Renderer for `swamp doctor extensions`. Receives exactly five
- * `kind-completed` events (one per registry) and renders each row
- * verbatim — the model/extension fold has already happened in the
- * service. The renderer never imports the infrastructure-layer
- * `ExtensionKind` enum.
- *
- * Exposes `overallStatus` so the CLI can exit non-zero on a failing
- * report.
- */
 export interface DoctorExtensionsRenderer {
   handlers(): EventHandlers<DoctorExtensionsEvent>;
   readonly overallStatus: DoctorOverallStatus;
@@ -118,7 +108,6 @@ function renderAggregateStateLog(
       }`,
     );
 
-    // State distribution — only show non-zero counts.
     const parts: string[] = [];
     for (const tag of ROW_STATE_TAGS) {
       const count = agg.stateDistribution[tag];
@@ -246,21 +235,18 @@ class LogDoctorExtensionsRenderer implements DoctorExtensionsRenderer {
   handlers(): EventHandlers<DoctorExtensionsEvent> {
     return {
       "kind-started": () => {
-        // No-op. ensureLoaded() runs fast enough that an in-progress
-        // line is visual noise — users see the ✓/✗ on kind-completed.
+        // no-op: ensureLoaded runs fast enough that an in-progress line is
+        // noise
       },
       "kind-completed": (e) => {
-        // Don't render status icon during scan — the per-registry result
-        // always reports "pass" at this point because loader errors are
-        // only folded into the final results. Instead, just show the
-        // registry name; the completed handler re-renders each row with
-        // its correct icon from e.report.registries.
+        // the per-registry result always reports pass during the scan because
+        // loader errors are folded in only at the end, so show just the name;
+        // the completed handler re-renders rows with the right icon.
         writeOutput(`  ${dim("•")} ${e.result.registry}`);
       },
       completed: (e) => {
         this.overallStatus = e.report.overallStatus;
 
-        // Re-render each registry row with its correct status icon.
         writeOutput("");
         for (const name of DOCTOR_REGISTRY_ORDER) {
           const reg = e.report.registries[name];
@@ -306,8 +292,6 @@ class LogDoctorExtensionsRenderer implements DoctorExtensionsRenderer {
               )
             }`,
           );
-          // Group by extensionName so the user sees which extension
-          // each orphan belongs to.
           const byExt = new Map<string, string[]>();
           for (const orphan of e.report.orphanFiles) {
             const list = byExt.get(orphan.extensionName) ?? [];
@@ -384,7 +368,6 @@ class LogDoctorExtensionsRenderer implements DoctorExtensionsRenderer {
           );
         }
 
-        // W6: Aggregate state rendering.
         if (e.report.aggregateState) {
           renderAggregateStateLog(e.report.aggregateState, this.verbose);
         }
@@ -403,7 +386,6 @@ class LogDoctorExtensionsRenderer implements DoctorExtensionsRenderer {
           }
         }
 
-        // W6: Repair report rendering.
         if (e.report.repairReport) {
           renderRepairLog(e.report.repairReport);
         }
@@ -443,16 +425,15 @@ class JsonDoctorExtensionsRenderer implements DoctorExtensionsRenderer {
       },
       completed: (e) => {
         this.overallStatus = e.report.overallStatus;
-        // Re-build the registries object in DOCTOR_REGISTRY_ORDER so the
-        // JSON output has stable key ordering. All five keys are always
-        // present even on pass — that's a stability promise to consumers.
+        // rebuilt in DOCTOR_REGISTRY_ORDER for stable key ordering; all five
+        // keys are always present, a stability promise to consumers
         const registries: Record<DoctorRegistryName, DoctorRegistryResult> =
           {} as Record<DoctorRegistryName, DoctorRegistryResult>;
         for (const name of DOCTOR_REGISTRY_ORDER) {
           registries[name] = e.report.registries[name];
         }
-        // Build the output object with existing fields first (backward
-        // compatible), then W6 additive fields.
+        // existing fields first, so the output stays backward compatible, then
+        // the additive fields
         const output: Record<string, unknown> = {
           overallStatus: e.report.overallStatus,
           registries,

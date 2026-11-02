@@ -18,25 +18,9 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * Parity between `data get` and its documented `data query` equivalent
- * (swamp-club#2962), ahead of retiring `data get` for `data query`.
- *
- * `data get` reads the filesystem repository; `data query` reads the
- * `_catalog.db` catalog and loads bodies per row. For every item of one
- * fixture, `dataGet` and `DataQueryService.query('modelName == … && name ==
- * …')` must agree on presence, version and content, and `version >= 0` must
- * list the versions the repository holds. The fixture is checked on three
- * datastores:
- *
- * - the default filesystem datastore;
- * - a custom datastore that downloads everything on pull (in-memory remote,
- *   writer and reader repos), opened as repo_context opens it;
- * - a lazy-hydration datastore, wired by hand because the in-memory remote
- *   models neither `hydrateFile` nor `lazyHydration`: the reader holds only
- *   metadata, and a hook copies `raw` from the writer when first read.
- *
- * Each is checked again after a catalog invalidate and after the catalog
- * database is deleted and rebuilt.
+ * dataGet and DataQueryService.query must agree on presence, version and
+ * content for every fixture item, and version >= 0 must list the versions the
+ * repository holds, on each datastore kind
  */
 
 import "../src/domain/models/models.ts";
@@ -82,9 +66,8 @@ const modelType = ModelType.create("test/query-get-parity");
 const encoder = new TextEncoder();
 
 /**
- * Every live data name the fixture writes. The retired "old-name" is left
- * out: data get follows its rename to "new-name" and data query does not, on
- * every datastore (swamp-club#2972).
+ * the retired old-name is left out: data get follows its rename to new-name and
+ * data query does not, on every datastore
  */
 const ITEM_NAMES = ["single", "multi", "note", "blob", "new-name"];
 
@@ -112,10 +95,6 @@ function item(name: string, contentType: string): Data {
   });
 }
 
-/**
- * Writes the fixture: a single-version JSON item, a three-version JSON item,
- * a text item, a binary item, and an item renamed after it was written.
- */
 async function writeFixture(
   repo: UnifiedDataRepository,
   modelId: string,
@@ -156,7 +135,6 @@ async function writeFixture(
   await repo.rename(modelType, modelId, "old-name", "new-name");
 }
 
-/** What one reader sees, through both commands' code paths. */
 interface ReaderView {
   repoDir: string;
   modelId: string;
@@ -168,7 +146,6 @@ interface ReaderView {
 interface Seen {
   present: boolean;
   version?: number;
-  /** JSON bodies parsed, text bodies as text; undefined for binary. */
   content?: unknown;
 }
 
@@ -240,7 +217,6 @@ async function assertParity(view: ReaderView, label: string): Promise<void> {
   }
 }
 
-/** The single-version item every setup writes again to check a later pull. */
 async function writeNewVersion(
   repo: UnifiedDataRepository,
   modelId: string,
@@ -263,7 +239,6 @@ async function initRepo(repoDir: string, typeName?: string): Promise<void> {
   if (typeName) await configureTestDatastore(repoDir, typeName);
 }
 
-/** Saves the same model definition (same id) into a repo. */
 async function saveDefinition(
   repoDir: string,
   definition: Definition,
@@ -275,10 +250,6 @@ async function saveDefinition(
 
 type Unlocked = Awaited<ReturnType<typeof requireInitializedRepoUnlocked>>;
 
-/**
- * Takes the model lock (pulling), invalidates as the CLI does, runs fn, then
- * flushes.
- */
 async function withModelLock<T>(
   repoDir: string,
   modelId: string,
@@ -305,10 +276,6 @@ async function withModelLock<T>(
   }
 }
 
-/**
- * Opens a repo without pulling, as the read-only `data get` and `data query`
- * do.
- */
 async function withReader(
   repoDir: string,
   modelId: string,
@@ -423,10 +390,6 @@ Deno.test("data query/get parity: custom datastore, full hydration", async () =>
   }
 });
 
-/**
- * Copies the writer's data tree into the reader without `raw` files, as a
- * lazy pull does: metadata, `latest` markers and the version directories.
- */
 async function lazyPull(writerData: string, readerData: string): Promise<void> {
   for await (const entry of walk(writerData, { includeDirs: false })) {
     const rel = relative(writerData, entry.path);

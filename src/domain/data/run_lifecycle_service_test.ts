@@ -115,7 +115,6 @@ function createMockSnapshotRepo(
   return mock;
 }
 
-/** Finished runs with no recorded completion time. */
 function finishedRuns(...ids: string[]): Map<string, number | undefined> {
   return new Map(ids.map((id) => [id, undefined]));
 }
@@ -195,7 +194,7 @@ Deno.test("gcAll: computes cutoff correctly from retention days", async () => {
   const expectedWfCutoff = before - 7 * 86_400_000;
   const expectedOutCutoff = before - 14 * 86_400_000;
 
-  // Allow 100ms tolerance for test execution time
+  // allow a small tolerance for test execution time
   assertEquals(Math.abs(wfCutoff - expectedWfCutoff) < 100, true);
   assertEquals(Math.abs(outCutoff - expectedOutCutoff) < 100, true);
   assertEquals(wfCutoff > outCutoff, true);
@@ -614,7 +613,6 @@ Deno.test("gcRunSnapshots: with a snapshot retention removes old snapshots of fi
 });
 
 Deno.test("gcRunSnapshots: a run that finished recently keeps its old snapshot until the snapshot retention passes its finish", async () => {
-  // Started (and snapshotted) 40 days ago, suspended, finished 2 days ago.
   const snapshotRepo = createMockSnapshotRepo([snapshot("late-finisher", 40)]);
   const service = new DefaultRunLifecycleService(
     createMockWorkflowRunRepo(),

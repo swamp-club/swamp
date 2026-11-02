@@ -348,11 +348,6 @@ interface VersionLookup {
   version: number;
 }
 
-/**
- * Deps over one report data item stored at versions 1..3, where the
- * latest-only finders return v3 and findDataByVersion serves any stored
- * version. Records every version lookup and content read.
- */
 function makeVersionedDeps(): {
   deps: ReportGetDeps;
   lookups: VersionLookup[];

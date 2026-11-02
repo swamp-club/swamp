@@ -18,21 +18,9 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * Serve's content checks for forwarded commits (swamp-club#3922).
- *
- * A forwarded commit is authorised op by op on its intents
- * (`commit_authorization.ts`); this module checks what a put's content
- * carries, as serve's WebSocket handlers check the same write. It reads the
- * put's bytes (proof of possession first, so a refusal never tells a caller
- * about content it may not read), parses them as the repositories do, reads
- * the record the put replaces from serve's read model, and applies the
- * handlers' own checks through the caller's {@link RequestAuthority}.
- *
- * Every record it reads to judge a put is remembered with its digest:
- * {@link ForwardedContentAuthority.unchanged} checks, under the forwarded
- * lock, that none moved before the commit is appended.
- *
- * @module
+ * proof of possession is checked before reading, so a refusal never tells a
+ * caller about content it may not read; records read are remembered with their
+ * digest so unchanged() detects moves under the lock
  */
 
 import { parse as parseYaml } from "@std/yaml";
@@ -102,70 +90,48 @@ import { authorizeWorkflowEdit } from "./handlers/workflow_step_authorization.ts
 import { checkRunRecord, checkRunSnapshot } from "./forwarded_run_content.ts";
 import { checkDataPut } from "./forwarded_data_content.ts";
 
-/** The most bytes of one put serve reads to check it. */
 export const MAX_CHECKED_CONTENT_BYTES = 16 * 1024 * 1024;
 
-/** What the content checks of one forwarded commit need. */
 export interface ForwardedContentDeps {
   readonly ctx: ConnectionContext;
   readonly v3: V3Datastore;
-  /** The commit's partition. */
   readonly partition: PartitionKey;
   readonly caller: AccessCaller;
   readonly requestId: string;
   readonly resolver: AggregateResourceResolver;
-  /** Whether the caller may name a chunk: it carried it, or may reference it. */
   readonly possesses: (sha256: string) => Promise<boolean>;
   readonly signal: AbortSignal;
   readonly now?: () => Date;
 }
 
-/** A record a put is judged against. */
 export type PriorRecord =
   | { readonly kind: "absent" }
   | { readonly kind: "present"; readonly bytes: Uint8Array }
   | { readonly kind: "unreadable" };
 
-/**
- * What the per-kind checks share: reading content and prior records, and
- * deciding for the caller.
- */
 export interface ContentCheckContext {
   readonly deps: ForwardedContentDeps;
   readonly authority: RequestAuthority;
-  /** The put's bytes, or a refusal when they cannot be read. */
   bytesOf(op: PutOp): Promise<Uint8Array | ContentRefusal>;
-  /** The live record of `key` in `partition`, remembered for the guard. */
   prior(partition: PartitionKey, key: string): Promise<PriorRecord>;
-  /**
-   * The digest of the live record of `key` in `partition`, null when
-   * absent, remembered for the guard: for comparing content without reading it.
-   */
   digest(partition: PartitionKey, key: string): Promise<string | null>;
-  /** Whether a partition whose key starts with `prefix` holds records. */
   holdsRecordsUnder(prefix: string): Promise<boolean>;
   /**
-   * Registers a check {@link ForwardedContentAuthority.unchanged} runs
-   * again under the forwarded lock: one that reads more than records (an
-   * id claimed by no definition), which the record guard cannot cover.
+   * runs again under the forwarded lock, for a check that reads more than
+   * records (an id claimed by no definition), which the record guard cannot
+   * cover
    */
   recheckUnderLock(check: () => Promise<boolean>): void;
   now(): Date;
 }
 
-/**
- * The {@link ContentAuthority} serve checks a forwarded commit with. One
- * instance per authorisation pass: it remembers the records it read.
- */
 export class ForwardedContentAuthority implements ContentAuthority {
   readonly #deps: ForwardedContentDeps;
   readonly #authority: RequestAuthority;
-  /** Every record read, by partition and key: its digest, or null when absent. */
   readonly #read = new Map<
     string,
     { partition: PartitionKey; key: string; sha256: string | null }
   >();
-  /** Checks to run again under the forwarded lock. */
   readonly #rechecks: (() => Promise<boolean>)[] = [];
 
   constructor(deps: ForwardedContentDeps) {
@@ -205,9 +171,8 @@ export class ForwardedContentAuthority implements ContentAuthority {
   }
 
   /**
-   * Whether every record this authority read still holds what it read:
-   * checked under the forwarded lock, so a commit judged against a record
-   * that has since changed is retried instead of appended.
+   * checked under the forwarded lock, so a commit judged against a record that
+   * has since changed is retried instead of appended
    */
   async unchanged(): Promise<boolean> {
     for (const { partition, key, sha256 } of this.#read.values()) {
@@ -244,7 +209,7 @@ export class ForwardedContentAuthority implements ContentAuthority {
           return { kind: "absent" };
         }
         read.set(memo, { partition, key, sha256: record.sha256 });
-        // A record past the cap is judged unreadable, never read whole.
+        // a record past the cap is judged unreadable, never read whole
         if ((record.blob?.size ?? 0) > MAX_CHECKED_CONTENT_BYTES) {
           return { kind: "unreadable" };
         }
@@ -283,8 +248,8 @@ export class ForwardedContentAuthority implements ContentAuthority {
 }
 
 /**
- * A put's bytes: inline, or its blob's chunks once the caller is shown to
- * possess each, so content is never read for a caller who may not have it.
+ * the blob's chunks are read only once the caller is shown to possess each, so
+ * content is never read for a caller who may not have it
  */
 async function readPutBytes(
   deps: ForwardedContentDeps,
@@ -322,7 +287,6 @@ async function readPutBytes(
   }
 }
 
-/** Parses YAML content to a plain object, or undefined when it is not one. */
 export function parseRecord(
   bytes: Uint8Array,
 ): Record<string, unknown> | undefined {
@@ -337,7 +301,7 @@ export function parseRecord(
   }
 }
 
-/** A refusal naming the op's key and why; never content. */
+/** a refusal names the op's key and why, never content */
 export function refused(op: PutOp, why: string): ContentRefusal {
   return { message: `${op.intent.kind} of ${op.key}: ${why}` };
 }
@@ -360,11 +324,6 @@ function normalizedType(type: string): string | undefined {
   }
 }
 
-/**
- * The prior record a definition put replaces: the record at its key; for a
- * move, the record its commit tombstones under the same intent; for a
- * rename, the old name's record of the same file or of the old name's file.
- */
 async function definitionPrior(
   context: ContentCheckContext,
   op: PutOp,
@@ -396,11 +355,10 @@ async function definitionPrior(
   );
   if (oldKey === undefined) return { kind: "unreadable" };
   const old = await context.prior(from, oldKey);
-  // A rename moves a definition that exists: none to move refuses.
+  // a rename moves a definition that exists: none to move refuses
   return old.kind === "absent" ? { kind: "unreadable" } : old;
 }
 
-/** The key a name-keyed definition file had under its old name. */
 function renamedKey(
   key: string,
   name: string,
@@ -415,7 +373,6 @@ function renamedKey(
   return undefined;
 }
 
-/** A behavior, workflow or vault definition put: create, edit or rename. */
 async function checkDefinitionPut(
   context: ContentCheckContext,
   op: PutOp,
@@ -450,7 +407,6 @@ async function checkDefinitionPut(
   return refused(op, "it is not a known definition kind");
 }
 
-/** The model resource an edit of a behavior is decided on. */
 function behaviorResource(definition: Definition): AccessResource {
   const type = definition.type ?? "";
   return {
@@ -483,11 +439,6 @@ function declaredDefinition(definition: Definition): DeclaredIdentity {
   };
 }
 
-/**
- * Whether a behavior id may be claimed by a create: no definition of any
- * type holds it, and no record is stored under it, unless the holder is
- * the auto-definition being promoted (same id, type and name).
- */
 async function behaviorIdRefusal(
   context: ContentCheckContext,
   declared: DeclaredIdentity,
@@ -518,11 +469,6 @@ async function behaviorIdRefusal(
   return undefined;
 }
 
-/**
- * Whether a name is taken by another live definition: of any type for a
- * behavior, as `model create` and a rename refuse, except the
- * auto-definition being promoted.
- */
 async function behaviorNameRefusal(
   context: ContentCheckContext,
   declared: DeclaredIdentity,
@@ -560,13 +506,13 @@ async function checkBehaviorDefinition(
   if (before === undefined) {
     const id = await behaviorIdRefusal(context, declared);
     if (id !== undefined) return refused(op, id);
-    // Two creates claiming one id race: the second to land is checked again.
+    // two creates claiming one id race: the second to land is checked again
     context.recheckUnderLock(async () =>
       await behaviorIdRefusal(context, declared) === undefined
     );
   }
-  // Not guarded under the lock: two creates of one name share the name's
-  // config partition, whose head orders them.
+  // not guarded under the lock: two creates of one name share the name's config
+  // partition, whose head orders them
   if (before === undefined || before.name !== after.name) {
     const name = await behaviorNameRefusal(context, declared);
     if (name !== undefined) return refused(op, name);
@@ -574,13 +520,6 @@ async function checkBehaviorDefinition(
   return await behaviorEditRefusal(context, op, after, before);
 }
 
-/**
- * The checks `model edit` applies to an edit of an ordinary behavior, or
- * `model create` to a new one: write on it as the edit leaves it, `tag` for
- * a retag or rename, the expressions it adds, and no literal sensitive
- * global argument. A control-plane or restricted type needs admin, which
- * the commit's base access already decided.
- */
 async function behaviorEditRefusal(
   context: ContentCheckContext,
   op: PutOp,
@@ -643,10 +582,7 @@ async function behaviorEditRefusal(
   return undefined;
 }
 
-/**
- * The sensitive global arguments of `type` that `globals` holds as literal
- * values, which the definition repository refuses to persist.
- */
+/** literal values the definition repository refuses to persist */
 async function literalSensitiveGlobals(
   type: string,
   globals: Record<string, unknown> | undefined,
@@ -726,8 +662,8 @@ async function checkWorkflowDefinition(
       return refused(op, `not authorized to tag workflow:${tagged.name}`);
     }
   }
-  // A new workflow is an edit from one with no steps: every step and
-  // expression it holds is added.
+  // a new workflow is an edit from one with no steps: every step and expression
+  // it holds is added
   const base = before ?? Workflow.create({ id: after.id, name: after.name });
   const steps = await authorizeWorkflowEdit(
     authority,
@@ -769,8 +705,8 @@ async function checkVaultDefinition(
   if (identity !== undefined) return refused(op, identity);
   const renamed = intent.kind === "definition.rename-to";
   const named = before === undefined || renamed;
-  // A vault's storage is found by its name: it must be a single segment,
-  // never a reserved one, as `vault create` and a rename require.
+  // a vault's storage is found by its name: a single segment, never a reserved
+  // one, as `vault create` and a rename require
   if (named && !isValidVaultName(after.name)) {
     return refused(op, "its name is not a valid vault name");
   }
@@ -797,7 +733,7 @@ async function checkVaultDefinition(
         true,
       );
     } catch {
-      // A name whose holder cannot be read cannot be judged free.
+      // a name whose holder cannot be read cannot be judged free
       return refused(op, "the vaults holding its name cannot be read");
     }
     if (holder !== null && holder.id !== after.id) {
@@ -805,8 +741,8 @@ async function checkVaultDefinition(
     }
   }
   if (isLocalEncryptionType(after.type)) {
-    // Its key and secrets live on serve, under its name: only vault.edit
-    // moves them, so a forwarded rename would strand them.
+    // a local_encryption vault's key and secrets live on serve under its name
+    // and only vault.edit moves them, so a forwarded rename would strand them
     if (renamed) {
       return refused(op, "a local_encryption vault is renamed with vault edit");
     }
@@ -831,10 +767,6 @@ async function checkVaultDefinition(
   return undefined;
 }
 
-/**
- * The definition direct execution would write for `definition`'s identity:
- * its type, id, name, versions and nothing else but global arguments.
- */
 function directlyCreated(definition: Definition): Definition {
   return Definition.create({
     type: definition.type,
@@ -846,17 +778,14 @@ function directlyCreated(definition: Definition): Definition {
   });
 }
 
-/** A definition as JSON with its global arguments left out. */
 function withoutGlobals(definition: Definition): string {
   return canonicalJson({ ...definition.toData(), globalArguments: {} });
 }
 
 /**
- * An auto-definition, as direct execution writes one: content that has
- * the shape it creates, or that changes only a stored one's global
- * arguments, needs run as direct execution does, with adoption's guards.
- * Anything else is an edit of the behavior (an auto-definition edited with
- * `model edit` is saved back in place) and needs what an edit needs.
+ * content shaped like direct execution's, or changing only a stored one's
+ * global arguments, runs as direct execution does with adoption's guards;
+ * anything else is an edit and needs what an edit needs
  */
 async function checkAutoDefinition(
   context: ContentCheckContext,
@@ -893,9 +822,9 @@ async function checkAutoDefinition(
   const type = declared.type;
   if (type === undefined) return refused(op, "its type is not a behavior type");
   const { ctx } = context.deps;
-  // An adoption copy of a named definition carries its id: direct execution
-  // on a named definition with changed globals saves it here. The holder is
-  // named when its name's config partition holds a record.
+  // an adoption copy of a named definition carries its id, since direct
+  // execution with changed globals saves it here; the holder is named when its
+  // name's config partition holds a record
   const holder = await findDefinitionByIdGlobal(
     ctx.repoContext.definitionRepo,
     after.id,
@@ -982,9 +911,8 @@ async function checkAutoDefinition(
 }
 
 /**
- * An evaluated definition: bound to the behavior its intent names. Serve
- * never runs a forwarded one (it is not serve's own evaluation), so the
- * binding is all it needs beyond run on the behavior.
+ * serve never runs a forwarded evaluated definition, so the binding to its
+ * behavior is all it needs beyond run on the behavior
  */
 async function checkEvaluatedDefinition(
   context: ContentCheckContext,
@@ -1010,8 +938,8 @@ async function checkEvaluatedDefinition(
     declaredDefinition(definition),
   );
   if (identity !== undefined) return refused(op, identity);
-  // A lookup by name scans every evaluation of the type: one may only
-  // declare its own behavior's name.
+  // a lookup by name scans every evaluation of the type: one may only declare
+  // its own behavior's name
   const intent = op.intent;
   const stored = "model" in intent
     ? await context.deps.resolver.model(intent.model)
@@ -1021,10 +949,6 @@ async function checkEvaluatedDefinition(
     : undefined;
 }
 
-/**
- * An evaluated workflow: bound to the workflow its intent names, by name
- * and, for a file named by an id, by that workflow's id.
- */
 async function checkEvaluatedWorkflow(
   context: ContentCheckContext,
   op: PutOp,

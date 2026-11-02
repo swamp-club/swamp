@@ -83,13 +83,8 @@ import {
   runWithVaultAccess,
 } from "../vaults/run_vault_access.ts";
 
-/** The reference every secret of these tests stands for. */
 const REF = { vaultName: "v", key: "k" };
 
-/**
- * A loader over a mock vault `v` holding `secrets`, as the evaluator's
- * loader reads them at delivery, with the keys each read asked for.
- */
 function mockLoader(
   secrets: Record<string, string>,
 ): { loader: SecretLoader; reads: string[] } {
@@ -107,10 +102,6 @@ function mockLoader(
   };
 }
 
-/**
- * Test model that mimics the echo model's write method.
- * Used for testing method execution without depending on deleted models.
- */
 const TEST_ECHO_MODEL_TYPE = ModelType.create("test/echo");
 const testEchoModel: ModelDefinition = {
   type: TEST_ECHO_MODEL_TYPE,
@@ -140,17 +131,11 @@ const testEchoModel: ModelDefinition = {
   },
 };
 
-/**
- * Stored result from mock data writer.
- */
 interface MockWriterResult {
   handle: DataHandle;
   content: Uint8Array;
 }
 
-/**
- * Creates mock writeResource and createFileWriter functions that store written content in memory.
- */
 function createMockWriters(): {
   writeResource: (
     specName: string,
@@ -259,9 +244,6 @@ function createMockWriters(): {
   return { writeResource, createFileWriter, getResults };
 }
 
-/**
- * Creates a mock UnifiedDataRepository for testing.
- */
 function createMockDataRepo(): UnifiedDataRepository {
   return {
     namespace: SOLO_NAMESPACE,
@@ -328,9 +310,6 @@ function createMockDataRepo(): UnifiedDataRepository {
   };
 }
 
-/**
- * Creates a mock DefinitionRepository for testing.
- */
 function createMockDefinitionRepo(): DefinitionRepository {
   return {
     findById: () => Promise.resolve(null),
@@ -345,9 +324,6 @@ function createMockDefinitionRepo(): DefinitionRepository {
   };
 }
 
-/**
- * Creates a test MethodContext with mocked repositories.
- */
 function createTestContext(
   overrides?: Partial<MethodContext>,
 ): { context: MethodContext; getResults: () => MockWriterResult[] } {
@@ -389,10 +365,8 @@ Deno.test("execute with valid definition returns method result", async () => {
     context,
   );
 
-  // Echo model now returns data handles
   assertEquals(result.dataHandles?.length, 1);
 
-  // Content is in the mock writer results
   const writerResults = getResults();
   assertEquals(writerResults.length, 1);
   const content = JSON.parse(
@@ -407,7 +381,7 @@ Deno.test("execute with missing required attribute throws error", async () => {
   const definition = Definition.create({
     name: "test-definition",
     globalArguments: {},
-    methods: { write: { arguments: {} } }, // Missing required 'message'
+    methods: { write: { arguments: {} } },
   });
 
   const { context } = createTestContext();
@@ -423,7 +397,7 @@ Deno.test("execute with invalid attribute type throws error", async () => {
   const definition = Definition.create({
     name: "test-definition",
     globalArguments: { message: 123 },
-    methods: { write: { arguments: { message: 123 } } }, // Should be string
+    methods: { write: { arguments: { message: 123 } } },
   });
 
   const { context } = createTestContext();
@@ -439,7 +413,7 @@ Deno.test("execute with empty message throws error", async () => {
   const definition = Definition.create({
     name: "test-definition",
     globalArguments: { message: "" },
-    methods: { write: { arguments: { message: "" } } }, // Empty message fails min(1) validation
+    methods: { write: { arguments: { message: "" } } },
   });
 
   const { context } = createTestContext();
@@ -452,8 +426,6 @@ Deno.test("execute with empty message throws error", async () => {
 
 Deno.test("execute error message includes Zod details", async () => {
   const service = new DefaultMethodExecutionService();
-  // Pass an empty argument set — missing required 'message' field, no unknown keys.
-  // This exercises the Zod validation error path (not the unknown-key path).
   const definition = Definition.create({
     name: "test-definition",
     globalArguments: {},
@@ -470,7 +442,6 @@ Deno.test("execute error message includes Zod details", async () => {
       message.startsWith("Method arguments validation failed:"),
       true,
     );
-    // Should mention the missing 'message' field
     assertEquals(message.includes("message"), true);
   }
 });
@@ -524,11 +495,6 @@ Deno.test("readResource is available on context during method execution", async 
   assertEquals(contextHadReadResource, true);
 });
 
-// ---------- Workflow Tests ----------
-
-/**
- * Helper to write data via context.writeResource and return a DataHandle.
- */
 async function writeTestData(
   context: MethodContext,
   specName: string,
@@ -537,10 +503,6 @@ async function writeTestData(
   return await context.writeResource!(specName, specName, attributes);
 }
 
-/**
- * Creates a test model with configurable behavior for workflow testing.
- * Mock methods use context.writeResource to write data and return dataHandles.
- */
 function createTestModel(options: {
   executeImpl?: (
     args: Record<string, unknown>,
@@ -608,10 +570,9 @@ Deno.test(
   },
 );
 
-// swamp-club#2422: serve registers the reserved _token-secrets vault in every
-// VaultService. It cannot hold user data, so the fail-fast must not count it:
-// otherwise the method runs its side effects and only then fails to store the
-// sensitive output.
+// serve registers the reserved _token-secrets vault everywhere; it cannot hold
+// user data, so fail-fast must not count it, or side effects run before the
+// sensitive output fails to store
 Deno.test("executeWorkflow - fails fast for sensitive output when only a reserved vault is registered", async () => {
   const service = new DefaultMethodExecutionService();
   let ran = false;
@@ -665,7 +626,6 @@ Deno.test("executeWorkflow - fails fast for sensitive output when only a reserve
   assertEquals(ran, false);
 });
 
-/** A model whose `create` writes a sensitive field kept in `fieldVault`. */
 function sensitiveOutputModel(
   fieldVault: string | undefined,
   onRun: () => void,
@@ -709,7 +669,6 @@ function vaultsWith(...names: string[]): VaultService {
   return vaultService;
 }
 
-/** A policy allowing only the listed vault/action pairs. */
 function scopeAllowing(
   allowed: string[],
 ): RunVaultAccess {
@@ -848,7 +807,6 @@ Deno.test("executeWorkflow: runs when the scope may read and write every sensiti
   assertEquals(ran, true);
 });
 
-/** A model whose `create` writes `secret`, kept under `vaultKey` if set. */
 function keyedOutputModel(
   vaultKey: string | undefined,
   onRun: () => void,
@@ -862,7 +820,6 @@ function keyedOutputModel(
   return model;
 }
 
-/** A policy refusing writes to keys starting `deny-`; key-dependent. */
 function keyConditionedScope(
   decided: unknown[][],
 ): RunVaultAccess {
@@ -998,11 +955,8 @@ Deno.test("executeWorkflow - throws error for unknown method", async () => {
   );
 });
 
-// ---------- Reserved tag refusal (swamp-club#3635) ----------
-
 const RESERVED_TAG = { "_swamp.sensitiveFields": JSON.stringify(["value"]) };
 
-/** A model whose one method counts its runs, with optional spec tags. */
 function reservedTagModel(specTags: {
   resource?: Record<string, string>;
   file?: Record<string, string>;
@@ -1042,7 +996,6 @@ function reservedTagModel(specTags: {
   return { model, runs: () => runs };
 }
 
-/** Where a reserved tag enters a run, and how the refusal names it. */
 function reservedTagRunSources(tag: Record<string, string>): Array<{
   label: string;
   definitionTags?: Record<string, string>;
@@ -1089,7 +1042,6 @@ function reservedTagRunSources(tag: Record<string, string>): Array<{
   ];
 }
 
-// swamp-club#3684: specName is reserved like a _swamp. key.
 for (
   const [key, value] of [
     ["_swamp.sensitiveFields", RESERVED_TAG["_swamp.sensitiveFields"]],
@@ -1154,7 +1106,6 @@ Deno.test("execute passes logger in context to method", async () => {
         arguments: schema,
         execute: (_args, context) => {
           capturedLogger = context.logger;
-          // Verify logger methods are callable (no-op in test env)
           context.logger.trace`trace message`;
           context.logger.debug`debug message`;
           context.logger.info`info message`;
@@ -1178,8 +1129,6 @@ Deno.test("execute passes logger in context to method", async () => {
   assertEquals(capturedLogger !== undefined, true);
   assertEquals(typeof (capturedLogger as { info: unknown }).info, "function");
 });
-
-// ---------- globalArguments Fallback Tests ----------
 
 Deno.test("execute: globalArguments provide fallback when method arguments are empty", async () => {
   const service = new DefaultMethodExecutionService();
@@ -1213,8 +1162,6 @@ Deno.test("execute: globalArguments provide fallback when method arguments are e
     },
   };
 
-  // globalArguments has "message" but methods.write.arguments is empty —
-  // simulates `swamp model create command/shell my-model --global-arg 'run=echo hello'`
   const definition = Definition.create({
     name: "test-definition",
     globalArguments: { message: "from-global" },
@@ -1251,8 +1198,6 @@ Deno.test("execute: per-method arguments override globalArguments", async () => 
     },
   };
 
-  // Both globalArguments and method arguments have "message" —
-  // per-method should win
   const definition = Definition.create({
     name: "test-definition",
     globalArguments: { message: "from-global" },
@@ -1264,8 +1209,6 @@ Deno.test("execute: per-method arguments override globalArguments", async () => 
 
   assertEquals(receivedMessage, "from-method");
 });
-
-// ---------- Zod Type Coercion Tests ----------
 
 Deno.test("execute coerces string boolean and number args before validation", async () => {
   const service = new DefaultMethodExecutionService();
@@ -1285,7 +1228,6 @@ Deno.test("execute coerces string boolean and number args before validation", as
         description: "Test method with boolean and number args",
         arguments: schema,
         execute: (args: Record<string, unknown>) => {
-          // Verify the args were coerced to the correct types
           assertEquals(args.deleteOrphans, true);
           assertEquals(args.maxCount, 5);
           assertEquals(args.name, "test");
@@ -1295,7 +1237,6 @@ Deno.test("execute coerces string boolean and number args before validation", as
     },
   };
 
-  // Simulate CLI passing all values as strings
   const definition = Definition.create({
     name: "test-definition",
     globalArguments: {},
@@ -1314,7 +1255,6 @@ Deno.test("execute coerces string boolean and number args before validation", as
     modelType: model.type,
     methodName: "run",
   });
-  // Should not throw — coercion converts "true" → true and "5" → 5
   await service.execute(definition, model.methods.run, context);
 });
 
@@ -1344,14 +1284,12 @@ Deno.test("executeWorkflow coerces string globalArguments before validation", as
     },
   };
 
-  // Global args come in as strings from CLI
   const definition = Definition.create({
     name: "test-definition",
     globalArguments: { enabled: "true", port: "8080" },
   });
 
   const { context } = createTestContext({ modelType: model.type });
-  // Should not throw — coercion converts strings to correct types
   const result = await service.executeWorkflow(
     definition,
     model,
@@ -1359,12 +1297,9 @@ Deno.test("executeWorkflow coerces string globalArguments before validation", as
     context,
   );
   assertEquals(result !== undefined, true);
-  // Verify the method received coerced types, not strings
   assertEquals(receivedGlobalArgs.enabled, true);
   assertEquals(receivedGlobalArgs.port, 8080);
 });
-
-// ---------- globalArguments Validation Tests ----------
 
 Deno.test("executeWorkflow - rejects invalid globalArguments after resolution", async () => {
   const service = new DefaultMethodExecutionService();
@@ -1387,7 +1322,6 @@ Deno.test("executeWorkflow - rejects invalid globalArguments after resolution", 
     },
   };
 
-  // Port is a string instead of a number — should fail validation
   const definition = Definition.create({
     name: "test-definition",
     globalArguments: { host: "localhost", port: "not-a-number" },
@@ -1434,7 +1368,6 @@ Deno.test("executeWorkflow - passes with valid globalArguments", async () => {
     "run",
     context,
   );
-  // Should succeed without error
   assertEquals(result !== undefined, true);
 });
 
@@ -1444,7 +1377,6 @@ Deno.test("executeWorkflow - skips validation when model has no globalArguments 
   const model: ModelDefinition = {
     type: ModelType.create("test/no-global-args"),
     version: "1",
-    // No globalArguments schema
     methods: {
       run: {
         description: "Test method",
@@ -1466,16 +1398,9 @@ Deno.test("executeWorkflow - skips validation when model has no globalArguments 
     "run",
     context,
   );
-  // Should succeed without error
   assertEquals(result !== undefined, true);
 });
 
-// ---------- Resource Deletion Tracking Tests ----------
-
-/**
- * Creates a mock DataRepo that returns specific data for findAllForModel
- * and iterateForModel.
- */
 function createMockDataRepoWithData(
   existingData: Data[],
   contentByName?: Record<string, Uint8Array>,
@@ -1571,14 +1496,12 @@ Deno.test("executeWorkflow - delete method writes deletion markers with last kno
     contextWithRepo,
   );
 
-  // Should have saved a deletion marker
   assertEquals(mockRepo.savedData.length, 1);
   const saved = mockRepo.savedData[0];
   assertEquals(saved.data.lifecycle, "deleted");
-  assertEquals(saved.data.version, 4); // existingData.version + 1
+  assertEquals(saved.data.version, 4);
   assertEquals(saved.data.contentType, "application/json");
 
-  // Marker content should include last known state merged with deletion metadata
   const content = JSON.parse(new TextDecoder().decode(saved.content));
   assertEquals(content.id, "vol-abc123");
   assertEquals(content.name, "my-volume");
@@ -1586,7 +1509,6 @@ Deno.test("executeWorkflow - delete method writes deletion markers with last kno
   assertEquals(typeof content.deletedAt, "string");
   assertEquals(content.deletedByMethod, "delete");
 
-  // Result should include deletion marker as a data handle
   assertEquals(result.dataHandles?.length, 1);
   assertEquals(result.dataHandles?.[0].name, "my-resource");
   assertEquals(result.dataHandles?.[0].kind, "resource");
@@ -1608,7 +1530,6 @@ Deno.test("executeWorkflow - delete marker gracefully handles missing active con
     version: 3,
   });
 
-  // No content provided — getContent returns null
   const mockRepo = createMockDataRepoWithData([existingData]);
 
   const model: ModelDefinition = {
@@ -1649,14 +1570,12 @@ Deno.test("executeWorkflow - delete marker gracefully handles missing active con
     contextWithRepo,
   );
 
-  // Should still write a deletion marker with just the metadata
   assertEquals(mockRepo.savedData.length, 1);
   const content = JSON.parse(
     new TextDecoder().decode(mockRepo.savedData[0].content),
   );
   assertEquals(typeof content.deletedAt, "string");
   assertEquals(content.deletedByMethod, "delete");
-  // No last known state attributes since content was null
   assertEquals(Object.keys(content).length, 2);
 });
 
@@ -1800,8 +1719,8 @@ Deno.test("executeWorkflow - update after delete throws UserError", async () => 
 Deno.test("executeWorkflow - create after delete succeeds (clears deletion state)", async () => {
   const service = new DefaultMethodExecutionService();
 
-  // The create method writes a new resource via writeResource, which defaults to lifecycle: "active"
-  // The fast-fail only applies to read/update, not create — so create should succeed
+  // the deleted-resource fast-fail applies to read and update, not create, so
+  // create succeeds
   const model: ModelDefinition = {
     type: ModelType.create("test/create-after-delete"),
     version: "1",
@@ -1835,7 +1754,6 @@ Deno.test("executeWorkflow - create after delete succeeds (clears deletion state
   });
 
   const { context } = createTestContext({ modelType: model.type });
-  // Should succeed — create is not blocked by deleted resources
   const result = await service.executeWorkflow(
     definition,
     model,
@@ -1849,7 +1767,6 @@ Deno.test("executeWorkflow - create after delete succeeds (clears deletion state
 Deno.test("executeWorkflow - delete skips already-deleted resources", async () => {
   const service = new DefaultMethodExecutionService();
 
-  // Resource already has lifecycle: deleted
   const alreadyDeleted = Data.create({
     name: "my-resource",
     contentType: "application/json",
@@ -1903,14 +1820,12 @@ Deno.test("executeWorkflow - delete skips already-deleted resources", async () =
     contextWithRepo,
   );
 
-  // Should NOT have written any new deletion markers
   assertEquals(mockRepo.savedData.length, 0);
 });
 
 Deno.test("executeWorkflow - explicit kind overrides name inference for deletion check", async () => {
   const service = new DefaultMethodExecutionService();
 
-  // Method named "remove" but kind: "action" — should NOT trigger deletion markers
   const existingData = Data.create({
     name: "my-resource",
     contentType: "application/json",
@@ -1964,14 +1879,12 @@ Deno.test("executeWorkflow - explicit kind overrides name inference for deletion
     contextWithRepo,
   );
 
-  // kind: "action" should NOT trigger deletion markers
   assertEquals(mockRepo.savedData.length, 0);
 });
 
 Deno.test("executeWorkflow - read succeeds when old data is deleted but current resource data is active", async () => {
   const service = new DefaultMethodExecutionService();
 
-  // Old historical data entry (no specName tag) that was deleted — should NOT block
   const oldDeletedData = Data.create({
     name: "old-vpc-id-123",
     contentType: "application/json",
@@ -1985,7 +1898,6 @@ Deno.test("executeWorkflow - read succeeds when old data is deleted but current 
     lifecycle: "deleted",
   });
 
-  // Current active resource data with specName tag
   const activeData = Data.create({
     name: "my-resource",
     contentType: "application/json",
@@ -2038,7 +1950,6 @@ Deno.test("executeWorkflow - read succeeds when old data is deleted but current 
     dataRepository: mockRepo,
   };
 
-  // Should succeed — old deleted data without specName should not block read
   const result = await service.executeWorkflow(
     definition,
     model,
@@ -2051,7 +1962,6 @@ Deno.test("executeWorkflow - read succeeds when old data is deleted but current 
 Deno.test("executeWorkflow - deletion markers only written for declared resource data, not untagged data", async () => {
   const service = new DefaultMethodExecutionService();
 
-  // Declared resource data with specName tag — should get a deletion marker
   const resourceData = Data.create({
     name: "my-resource",
     contentType: "application/json",
@@ -2065,7 +1975,6 @@ Deno.test("executeWorkflow - deletion markers only written for declared resource
     version: 3,
   });
 
-  // Untagged data (no specName) — should NOT get a deletion marker
   const untaggedData = Data.create({
     name: "some-old-data",
     contentType: "application/json",
@@ -2122,7 +2031,6 @@ Deno.test("executeWorkflow - deletion markers only written for declared resource
     contextWithRepo,
   );
 
-  // Only the declared resource data should get a deletion marker
   assertEquals(mockRepo.savedData.length, 1);
   assertEquals(mockRepo.savedData[0].data.name, "my-resource");
   assertEquals(mockRepo.savedData[0].data.lifecycle, "deleted");
@@ -2131,7 +2039,6 @@ Deno.test("executeWorkflow - deletion markers only written for declared resource
 Deno.test("executeWorkflow - read blocked when all declared resource data is deleted", async () => {
   const service = new DefaultMethodExecutionService();
 
-  // All declared resource data is deleted
   const deletedResource = Data.create({
     name: "my-resource",
     contentType: "application/json",
@@ -2190,7 +2097,6 @@ Deno.test("executeWorkflow - read blocked when all declared resource data is del
     dataRepository: mockRepo,
   };
 
-  // Should throw — all declared resource data is deleted
   await assertRejects(
     () => service.executeWorkflow(definition, model, "get", contextWithRepo),
     UserError,
@@ -2198,7 +2104,6 @@ Deno.test("executeWorkflow - read blocked when all declared resource data is del
   );
 });
 
-/** Declared resource data named `name`, deleted when `deleted` is set. */
 function resourceData(name: string, deleted = false): Data {
   return Data.create({
     name,
@@ -2214,10 +2119,6 @@ function resourceData(name: string, deleted = false): Data {
   });
 }
 
-/**
- * A repository serving `data` lazily that counts the items the
- * deleted-resource check pulls, and refuses the whole-model read.
- */
 function createCountingDataRepo(data: Data[]) {
   const pulled = { count: 0 };
   const repo: UnifiedDataRepository = {
@@ -2324,8 +2225,6 @@ Deno.test("executeWorkflow - update after every resource is deleted names the fi
   );
 });
 
-// ---------- Unresolved Expression Tests ----------
-
 Deno.test("execute - Proxy throws for an unresolved swamp expression in globalArgs", async () => {
   const service = new DefaultMethodExecutionService();
 
@@ -2337,7 +2236,6 @@ Deno.test("execute - Proxy throws for an unresolved swamp expression in globalAr
         description: "Test method",
         arguments: z.object({}),
         execute: (_args: Record<string, unknown>, context) => {
-          // Access the unresolved field — should throw
           const _val = context.globalArgs.ssh_keys;
           return Promise.resolve({});
         },
@@ -2363,7 +2261,6 @@ Deno.test("execute - Proxy throws for an unresolved swamp expression in globalAr
   );
 });
 
-/** A run that could not read the `ticket` field's vault (swamp-club#3806). */
 function unreadTicket(): { unread: RunSensitiveValues; reference: string } {
   const key = crypto.randomUUID();
   const reference = `\${{ vault.get('infra', '${key}') }}`;
@@ -2378,7 +2275,6 @@ function unreadTicket(): { unread: RunSensitiveValues; reference: string } {
   return { unread, reference };
 }
 
-/** A model whose `run` method reads `globalArgs.ticket` when `read` is set. */
 function ticketModel(calls: unknown[]): ModelDefinition {
   return {
     type: ModelType.create("test/unread-ticket"),
@@ -2524,11 +2420,8 @@ Deno.test("execute - another templating system's ${{ }} text in globalArgs reach
 
 Deno.test("execute - Proxy still throws for text it cannot tell apart from swamp's", async () => {
   const cases = {
-    // GitHub Actions text in a namespace swamp also owns.
     version: "${{ inputs.version }}",
-    // A swamp expression with a }} inside its string literal.
     label: '${{ "a}}" + inputs.x }}',
-    // A swamp input read with a computed key.
     region: "${{ inputs[env.STAGE] }}",
   };
   for (const [field, value] of Object.entries(cases)) {
@@ -2640,8 +2533,6 @@ Deno.test("executeWorkflow - skips validation for globalArgs with unresolved mod
   assertEquals(result !== undefined, true);
   assertEquals(receivedName, "my-server");
 });
-
-// ---------- Pre-flight Check Tests ----------
 
 function createCheckModel(
   checks: Record<
@@ -2918,7 +2809,6 @@ Deno.test("executeWorkflow - appliesTo filters check by method name", async () =
     globalArguments: {},
   });
 
-  // Should not run for delete
   const { context: deleteCtx } = createTestContext({ modelType: model.type });
   const result = await service.executeWorkflow(
     definition,
@@ -2928,7 +2818,6 @@ Deno.test("executeWorkflow - appliesTo filters check by method name", async () =
   );
   assertEquals(result !== undefined, true);
 
-  // Should run and fail for create
   const { context: createCtx } = createTestContext({ modelType: model.type });
   await assertRejects(
     () => service.executeWorkflow(definition, model, "create", createCtx),
@@ -2987,8 +2876,6 @@ Deno.test("executeWorkflow - check throws exception, treated as failure", async 
     "Unexpected API error",
   );
 });
-
-// ---------- Definition-Level Check Selection Tests ----------
 
 Deno.test("executeWorkflow - required check is immune to skipAllChecks", async () => {
   const service = new DefaultMethodExecutionService();
@@ -3083,7 +2970,6 @@ Deno.test("executeWorkflow - definition-level skip wins over require", async () 
     checks: { require: ["conflicted-check"], skip: ["conflicted-check"] },
   });
   const { context } = createTestContext({ modelType: model.type });
-  // Skip wins, so check should not run, method should succeed
   const result = await service.executeWorkflow(
     definition,
     model,
@@ -3110,7 +2996,6 @@ Deno.test("executeWorkflow - required check still respects appliesTo", async () 
     checks: { require: ["create-only-required"] },
   });
 
-  // Should not run for delete even though required
   const { context: deleteCtx } = createTestContext({ modelType: model.type });
   const result = await service.executeWorkflow(
     definition,
@@ -3120,7 +3005,6 @@ Deno.test("executeWorkflow - required check still respects appliesTo", async () 
   );
   assertEquals(result !== undefined, true);
 
-  // Should run and fail for create
   const { context: createCtx } = createTestContext({ modelType: model.type });
   await assertRejects(
     () => service.executeWorkflow(definition, model, "create", createCtx),
@@ -3155,7 +3039,6 @@ Deno.test(
   async () => {
     const service = new DefaultMethodExecutionService();
 
-    // Model at version 2 with an upgrade from version 1
     const model: ModelDefinition = {
       type: ModelType.create("test/vault-upgrade"),
       version: "2026.04.12.2",
@@ -3193,9 +3076,8 @@ Deno.test(
 
     const vaultExpression = '${{ vault.get("myvault", "my-api-key") }}';
 
-    // Simulate post-runtime-resolution: the in-memory definition has sentinel
-    // tokens in place of vault expressions (as happens in run.ts after
-    // resolveRuntimeExpressionsInDefinition).
+    // after runtime resolution the in-memory definition holds sentinel tokens
+    // in place of vault expressions
     const secretBag = new VaultSecretBag(new SecretBagRegistry());
     const sentinel = secretBag.addSecret(
       { vaultName: "v", key: "my-api-key" },
@@ -3209,7 +3091,6 @@ Deno.test(
       globalArguments: { apiKey: sentinel },
     });
 
-    // The "on-disk" definition has the original vault expression.
     const originalDefinition = Definition.create({
       id: definition.id,
       name: "test-vault-def",
@@ -3218,7 +3099,6 @@ Deno.test(
       globalArguments: { apiKey: vaultExpression },
     });
 
-    // Track what gets saved to the definition repository.
     let savedDefinition: Definition | null = null;
     const mockDefRepo: DefinitionRepository = {
       ...createMockDefinitionRepo(),
@@ -3249,8 +3129,6 @@ Deno.test(
     assertEquals(saved.typeVersion, "2026.04.12.2");
   },
 );
-
-// ---------- Unknown method input key rejection ----------
 
 Deno.test("execute - accepts known method input key", async () => {
   const service = new DefaultMethodExecutionService();
@@ -3379,8 +3257,6 @@ Deno.test("executeWorkflow - still rejects invalid types on provided globalArgs"
     "Global arguments validation failed",
   );
 });
-
-// ---------- Nested Unresolved Expression Tests ----------
 
 Deno.test("execute - Proxy throws for nested unresolved expression in globalArgs object", async () => {
   const service = new DefaultMethodExecutionService();
@@ -3558,8 +3434,8 @@ Deno.test("executeWorkflow - validates globalArgs holding another templating sys
     },
   };
 
-  // The foreign text no longer counts as unresolved, so the whole set is
-  // schema-checked and the bad count is caught.
+  // foreign text does not count as unresolved, so the whole set is
+  // schema-checked and the bad count is caught
   const definition = Definition.create({
     name: "test-definition",
     globalArguments: { message: "deploy ${{ github.sha }}", count: "many" },
@@ -3792,7 +3668,6 @@ Deno.test("executeWorkflow - remote placement skips pre-flight checks (swamp-clu
   }
 });
 
-/** The lock holder each remote dispatch made inside `fn` carried. */
 async function dispatchedLockHolders(
   inheritedTokens: string | undefined,
   fn: (run: () => Promise<unknown>) => Promise<void>,
@@ -3929,7 +3804,6 @@ Deno.test("executeWorkflow - placed steps rebuild full handles from durable reco
     methods: { start: { arguments: {} } },
   });
 
-  // The record the data plane persisted while the worker ran the method.
   const written = Data.create({
     name: "data-out",
     contentType: "application/json",
@@ -3980,18 +3854,15 @@ Deno.test("executeWorkflow - placed steps rebuild full handles from durable reco
       context,
     );
 
-    // Telemetry attribution: the result names the worker that ran it.
     assertEquals(result.executor, "gpu-box-1");
 
     const handle = result.dataHandles![0];
-    // Full metadata is rebuilt from the durable record — the wire-thin
-    // dispatch output carries identities only.
+    // full metadata is rebuilt from the durable record; the wire-thin dispatch
+    // output carries identities only
     assertEquals(handle.metadata.ownerDefinition.ownerType, "model-method");
     assertEquals(handle.metadata.contentType, "application/json");
     assertEquals(handle.size, 17);
 
-    // The exact consumer that crashed during manual testing: mapping the
-    // handle into a DataRecord reads metadata.ownerDefinition.* fields.
     const record = await fromResourceHandle(
       handle,
       model.type,
@@ -4042,8 +3913,6 @@ Deno.test("executeWorkflow - placed step with a vanished output record fails lou
     setRemoteStepDispatcher(null);
   }
 });
-
-// ---------- Invocation Provenance Tests ----------
 
 function createMockOutputRepo(): {
   repo: MethodContext["outputRepository"];
@@ -4281,8 +4150,6 @@ Deno.test(
   },
 );
 
-// ---------- Remote-Only Mode Exemption Tests (swamp-club#2307) ----------
-
 Deno.test("executeWorkflow: internal model executes in-process in remote-only mode", async () => {
   const service = new DefaultMethodExecutionService();
 
@@ -4363,14 +4230,9 @@ Deno.test("executeWorkflow: non-internal model without placement throws in remot
   }
 });
 
-// ---------------------------------------------------------------------------
-// Stranded-instance warning (swamp-club#900)
-// ---------------------------------------------------------------------------
-
 /**
- * A logger stand-in that records calls at `level` (`warn` by default) and
- * swallows everything else. LogTape loggers are tagged-template callables, so
- * each level is returned as a function that reassembles the template.
+ * LogTape loggers are tagged-template callables, so each level is returned as a
+ * function that reassembles the template
  */
 function captureWarnings(
   sink: string[],
@@ -4405,7 +4267,6 @@ function captureWarnings(
 
 Deno.test("executeWorkflow - warns once when an instance is stranded", async () => {
   const service = new DefaultMethodExecutionService();
-  // Installed model is ahead, and ships no upgrade entry covering the gap.
   const model: ModelDefinition = {
     ...createTestModel({}),
     version: "2026.06.01.1",
@@ -4456,9 +4317,8 @@ Deno.test("executeWorkflow - does not warn for an unstamped definition when the 
     ...createTestModel({}),
     version: "2026.06.01.1",
   };
-  // No typeVersion recorded, and no chain that could have migrated it. There
-  // is nothing to say, and saying it would fire on every run of every
-  // hand-written definition (swamp-club#2412).
+  // no typeVersion and no chain that could have migrated it: nothing to say,
+  // and a warning would fire on every run of every hand-written definition
   const definition = Definition.create({
     name: "unstamped-definition",
     globalArguments: { value: "test" },
@@ -4491,11 +4351,9 @@ Deno.test("executeWorkflow - warns once for an unstamped definition when the typ
       },
     ],
   };
-  // The chain is declined rather than applied: the arguments are already in
-  // the shape the current version expects, and applying it would rename
-  // `value` away (swamp-club#2412). The warning is what makes the skip
-  // visible, and it is actionable — record the version and the ambiguity is
-  // gone.
+  // the chain is declined: the arguments are already in the current shape and
+  // applying it would rename `value` away; the warning makes the skip visible
+  // and recording the version clears it
   const definition = Definition.create({
     name: "unstamped-definition",
     globalArguments: { value: "test" },
@@ -4513,7 +4371,6 @@ Deno.test("executeWorkflow - warns once for an unstamped definition when the typ
   assertStringIncludes(warnings[0], "unstamped-definition");
   assertStringIncludes(warnings[0], "records no typeVersion");
   assertStringIncludes(warnings[0], "2026.06.01.1");
-  // The arguments themselves are untouched.
   assertEquals(definition.globalArguments.value, "test");
   assertEquals(definition.globalArguments.content, undefined);
 });
@@ -4589,8 +4446,6 @@ Deno.test("recoveredDataHandles: drops entries that are not shaped like a data h
 
   assertEquals(recoveredDataHandles(error), [valid]);
 });
-
-// ---------- Global argument defaults next to unresolved expressions (swamp-club#2766) ----------
 
 function createGlobalArgsCaptureModel(
   globalArguments: z.ZodTypeAny,
@@ -4929,7 +4784,6 @@ Deno.test("executeWorkflow - an uncoded UserError a method throws comes back as 
   assertEquals(error instanceof UserError, false);
 });
 
-/** A remote request, with the frame a version 5 worker would receive. */
 type CapturedRemoteRequest = RemoteStepRequest & {
   legacy?: LegacyStepDelivery;
 };
@@ -4991,7 +4845,6 @@ Deno.test("executeWorkflow - placed step ships its secret bag and unresolved arg
     value: `token ${sentinel}`,
   }, loader);
 
-  // A version 6 worker is sent the sentinel and the reference behind it.
   assertEquals(request.methodArgs.value, `token ${sentinel}`);
   assertEquals(request.referenceBag, [{
     sentinel,
@@ -5011,8 +4864,8 @@ Deno.test("executeWorkflow - placed step ships its secret bag and unresolved arg
     dataOrigin: false,
   }]);
   assertEquals(legacy.secretValues?.includes("s3cret-value"), true);
-  // The reference behind the shipped entry, for serve's allowlist and its
-  // load route (swamp-club#3529).
+  // the reference behind the shipped entry, for serve's allowlist and its load
+  // route
   assertEquals(request.secretReferences, [{ vaultName: "v", key: "token" }]);
 });
 
@@ -5078,10 +4931,6 @@ Deno.test("executeWorkflow: a placed step retains references found only in globa
   assertEquals(request.secretReferences, [{ vaultName: "v", key: "token" }]);
 });
 
-/**
- * Runs one remote dispatch whose worker streams `streamed`, and returns what
- * reached the run logger and the caller's onEvent.
- */
 async function remoteOutputFor(
   streamed: unknown[],
   options?: { withOnEvent?: boolean },
@@ -5150,7 +4999,6 @@ Deno.test("executeWorkflow - remote output is written to the run logger at its l
     ["warning", "careful"],
     ["error", "broken"],
   ]);
-  // Each event still reaches the caller, once.
   assertEquals(forwarded.length, 3);
 });
 
@@ -5189,7 +5037,6 @@ Deno.test("executeWorkflow - remote output is escaped and split so one event can
 
   assertEquals(logged, [
     ["info", '{{"a":1}}'],
-    // A blank line inside the text is kept; the trailing newline adds none.
     ["info", ""],
     ["info", "2026-01-01T00:00:00.000Z [INF] forged"],
   ]);
@@ -5228,10 +5075,9 @@ Deno.test("executeWorkflow - a malformed remote event is not logged (swamp-club#
   assertEquals(logged, []);
 });
 
-// ---------- Bare-token vault.get global arguments (swamp-club#3360) ----------
-// A definition reaches these guards with a vault.get still in place when the
-// runtime pass did not resolve it. The bare-token form must be guarded exactly
-// like the quoted one.
+// a definition reaches these guards with a vault.get still in place when the
+// runtime pass did not resolve it; the bare-token form must be guarded exactly
+// like the quoted one
 
 const VAULT_GET_FORMS = [
   "${{ vault.get(t, KEY) }}",
@@ -5379,11 +5225,6 @@ Deno.test("executeWorkflow: check unresolvedMethodArgs filters a bare-token vaul
   }
 });
 
-// ---------------------------------------------------------------------------
-// Upgrade write-back logging (swamp-club#3502)
-// ---------------------------------------------------------------------------
-
-/** Runs an upgrading method against a repository whose path moves on save. */
 async function runUpgradeWithPaths(
   pathBefore: string,
   pathAfter: string,
@@ -5504,7 +5345,6 @@ Deno.test("executeWorkflow - a placed step ships the run's entries its arguments
 
   // A reference the step's arguments do not carry is never loaded.
   assertEquals(reads, []);
-  // A version 6 worker loads the data entry by its reference.
   assertEquals(request.referenceBag?.map((entry) => entry.reference), [REF]);
   const legacy = request.legacy!;
   assertEquals(legacy.methodArgs.value, "token early-s3cret");
@@ -5518,16 +5358,12 @@ Deno.test("executeWorkflow - a placed step ships the run's entries its arguments
   assertEquals(legacy.secretValues?.includes("unrelated-s3cret"), false);
 });
 
-// ---------- Loading vault references at delivery (typed-secrets 2.3) ----------
-
-/** What a delivery reached: the check's context and the method's inputs. */
 interface Delivered {
   check?: MethodContext;
   args?: Record<string, unknown>;
   globalArgs?: Record<string, unknown>;
 }
 
-/** A model whose pre-flight check and `create` method record what they get. */
 function createDeliveryModel(delivered: Delivered): ModelDefinition {
   const schema = z.object({
     token: z.string().optional(),
@@ -5560,7 +5396,6 @@ function createDeliveryModel(delivered: Delivered): ModelDefinition {
   };
 }
 
-/** A definition whose global and method arguments carry `sentinel`. */
 const deliveryDefinition = (sentinel: string) =>
   Definition.create({
     name: "delivery-def",
@@ -5592,17 +5427,14 @@ Deno.test("executeWorkflow - loads a vault reference once per attempt, before pr
     { argumentProvenance: ProvenanceMap.authored(), secretLoader: loader },
   );
 
-  // One read for a reference carried by two arguments.
   assertEquals(reads, ["token"]);
   assertEquals(delivered.globalArgs?.token, "s3cret-value");
   assertEquals(delivered.args?.note, "uses s3cret-value");
-  // The check sees the method arguments with sentinels, and the loaded bag.
   assertEquals(delivered.check?.unresolvedMethodArgs?.note, `uses ${sentinel}`);
   assertEquals(
     delivered.check?.vaultSecrets?.resolveRaw(sentinel),
     "s3cret-value",
   );
-  // The step's own bag still holds no value.
   assertEquals(
     (() => {
       try {
@@ -5614,8 +5446,6 @@ Deno.test("executeWorkflow - loads a vault reference once per attempt, before pr
     true,
   );
 
-  // A retry is a new attempt, from a freshly evaluated definition: it loads
-  // again.
   await service.executeWorkflow(
     deliveryDefinition(sentinel),
     model,
@@ -5691,12 +5521,6 @@ Deno.test("executeWorkflow - a vault reference with no loader fails closed inste
   assertEquals(delivered.args, undefined);
 });
 
-// ---------- typed-secrets 3.4: destination refusals before the load ----------
-
-/**
- * A type whose `workingDir` refuses secrets, with a recording check, method
- * and destination hook, and no globalArguments schema.
- */
 function destinationModel(
   hook?: (args: SecretDestinationArgs) => void,
 ): {
@@ -5745,7 +5569,6 @@ function destinationModel(
   return { model, seen };
 }
 
-/** A typed run that issued one vault.get() reference to key `token`. */
 function typedToken(): { bag: VaultSecretBag; sentinel: string } {
   const bag = new VaultSecretBag(new SecretBagRegistry());
   return {
@@ -5841,7 +5664,6 @@ Deno.test("executeWorkflow: the method hook receives the merged arguments before
   const [occurrence] = seen.hook[0].secrets.occurrencesIn(`echo ${sentinel}`);
   assertEquals(occurrence.reference, { vaultName: "v", key: "token" });
   assertEquals("value" in occurrence, false);
-  // The load came after the hook, once, and the method got the value.
   assertEquals(reads, ["token"]);
   assertEquals(seen.method, [{ command: "echo s3cret-value" }]);
   assertEquals(seen.check, 1);
@@ -5864,7 +5686,6 @@ Deno.test("executeWorkflow: the method hook receives the merged arguments before
   assertEquals(remoteError instanceof SecretDestinationRefusedError, false);
   assertEquals(remote.seen.hook, []);
 
-  // A hook refusal propagates as it is, before any load.
   const refusing = destinationModel(() => {
     throw new SecretDestinationRefusedError(
       "the shell command inside a here-document with a quoted delimiter",
@@ -5912,7 +5733,6 @@ Deno.test("executeWorkflow: a failed method's output record holds its error with
   // not take a redactor, so the value is registered here.
   redactor.addSecret("s3cret-value");
   const registry = new SecretBagRegistry();
-  // The run's sensitive values attach the redactor to the typed registry.
   new RunSensitiveValues(redactor, registry);
   const bag = new VaultSecretBag(registry);
   const sentinel = bag.addSecret(
@@ -6007,7 +5827,6 @@ Deno.test("executeWorkflow: the checks and the method receive the global argumen
       { vaultName: "v", key: "token" },
       "globalArguments.command",
     );
-    // `command` is authored under globalArguments, not the method.
     const definition = Definition.create({
       name: "d",
       globalArguments: { command: `echo ${sentinel}`, port: "8080" },
@@ -6023,16 +5842,12 @@ Deno.test("executeWorkflow: the checks and the method receive the global argumen
       argumentProvenance: ProvenanceMap.authored(),
       secretLoader: loader,
     });
-    // The merge is built before the boundary writes values into the global
-    // arguments, including a shell run under globalArguments (swamp-club#3627).
     const expected = `echo ${sentinel}`;
     for (const merge of [seen.method, seen.check]) {
       assertEquals(merge?.command, expected);
-      // A non-secret global carries its parsed defaults and coerced numbers.
       assertEquals(merge?.retries, 3);
       assertEquals(merge?.port, 8080);
     }
-    // The method's validated arguments hold the value either way.
     assertEquals(seen.args?.command, "echo s3cret-value");
   }
 });
@@ -6075,7 +5890,6 @@ Deno.test("executeWorkflow: delivering one Definition instance twice keeps the c
       { vaultName: "v", key: "token" },
       "globalArguments.command",
     );
-    // `command` is authored under globalArguments, not the method.
     const definition = Definition.create({
       name: "d",
       globalArguments: { command: `echo ${sentinel}` },
@@ -6093,15 +5907,11 @@ Deno.test("executeWorkflow: delivering one Definition instance twice keeps the c
         argumentProvenance: ProvenanceMap.authored(),
         secretLoader: loader,
       });
-      // The values go into a copy, so the object the caller holds keeps its
-      // sentinel after the attempt (swamp-club#3627)...
       assertEquals(
         definition.globalArguments.command,
         `echo ${sentinel}`,
         where,
       );
-      // ...and a second delivery loads again and fills from the sentinel,
-      // while the validated arguments hold the value as before.
       assertEquals(reads, Array(attempt).fill("token"), where);
       for (const merge of [seen.method, seen.check]) {
         assertEquals(merge?.command, `echo ${sentinel}`, where);
@@ -6142,8 +5952,6 @@ Deno.test("executeWorkflow: in a typed run an env authored as a JSON string with
   );
   assertEquals(error.destination, "an environment variable name");
   assertEquals(reads, []);
-  // Reached without the boundary, the shell applies the same policy over the
-  // unresolved arguments, coerced as validation coerces them.
   const loaded = bag.withLoaded(new Map([[sentinel, "s3cret-value"]]));
   const { context: direct } = createTestContext({
     modelType: shellModel.type,
@@ -6167,7 +5975,6 @@ Deno.test("executeWorkflow: in a typed run an env authored as a JSON string with
 
 Deno.test("executeWorkflow: the merge keeps a sentinel leaf authored inside a global while its siblings are parsed, and leaves out a global whose value reads as an expression", async () => {
   const service = new DefaultMethodExecutionService();
-  /** The merge the method received, one per mode. */
   const seen: Record<string, unknown>[] = [];
   const model: ModelDefinition = {
     type: ModelType.create("test/leaf-overlay"),
@@ -6203,8 +6010,6 @@ Deno.test("executeWorkflow: the merge keeps a sentinel leaf authored inside a gl
       },
       methods: { create: { arguments: {} } },
     });
-    // The second value resolves to text that reads as an expression, which
-    // every merge leaves out.
     const { loader } = mockLoader({
       token: "s3cret-value",
       shaped: "${{ vault.get('v', 'k') }}",
@@ -6227,8 +6032,6 @@ Deno.test("executeWorkflow: the merge keeps a sentinel leaf authored inside a gl
     assertEquals(Object.hasOwn(merge ?? {}, "shaped"), false);
   }
 });
-
-// ---------- deliverStepSecrets: the shared refuse-then-load step ----------
 
 function deliveryFixture() {
   const registry = new SecretBagRegistry();
@@ -6286,10 +6089,7 @@ Deno.test("deliverStepSecrets: builds the sentinel merge, loads once for the att
   assertEquals(delivery.secrets?.occurrencesIn(sentinel).length, 1);
   assertEquals(loads, ["v/k"]);
   assertEquals(delivery.vaultSecrets?.resolveRaw(sentinel), "hunter2-value");
-  // The step's own bag still holds only the reference, so resolving through
-  // it fails as an unloaded delivery does.
   assertThrows(() => bag.resolveRaw(sentinel), Error, "not loaded");
-  // A second attempt loads again.
   await deliverStepSecrets({
     definition,
     modelDef,
@@ -6329,7 +6129,6 @@ Deno.test("deliverStepSecrets: refuses a secret at a refusing destination before
 Deno.test("deliverStepSecrets: with no method named only the global arguments are checked, and a step with no secret delivers its own bag untouched", async () => {
   const { bag, sentinel, loads, loader, model } = deliveryFixture();
   const modelDef = model(true);
-  // A secret in a refusing global argument is refused even with no method.
   await assertRejects(
     () =>
       deliverStepSecrets({
@@ -6347,7 +6146,6 @@ Deno.test("deliverStepSecrets: with no method named only the global arguments ar
     SecretDestinationRefusedError,
   );
   assertEquals(loads, []);
-  // A secret elsewhere loads with no method-level policy to apply.
   const delivered = await deliverStepSecrets({
     definition: Definition.create({
       name: "d",
@@ -6362,7 +6160,6 @@ Deno.test("deliverStepSecrets: with no method named only the global arguments ar
   });
   assertEquals(loads, ["v/k"]);
   assertEquals(delivered.vaultSecrets?.resolveRaw(sentinel), "hunter2-value");
-  // No secret in the arguments: nothing is built or loaded.
   const plain = await deliverStepSecrets({
     definition: Definition.create({
       name: "d",
@@ -6478,7 +6275,6 @@ Deno.test("executeWorkflow: the arguments are parsed once, so a schema transform
   assertEquals(transforms, 1);
   assertEquals(received, [{ message: "hello#1" }]);
 
-  // A replay, which keeps no record, parses the same once.
   await service.executeWorkflow(definition, counting, "write", context);
   assertEquals(transforms, 2);
   assertEquals(received, [{ message: "hello#1" }, { message: "hello#2" }]);
@@ -6508,7 +6304,6 @@ Deno.test("executeWorkflow: a placed step calls onArgumentsValidated once its ar
   };
   setRemoteStepDispatcher({
     executeRemote: async (request) => {
-      // As serve dispatches to a version 5 worker.
       await request.legacyDelivery?.();
       order.push("dispatched");
       return {
@@ -6748,8 +6543,6 @@ Deno.test("execute: a key a schema transform derives from an argument is registe
       ),
     Error,
   );
-  // The method's own error is the run's to redact: the redactor now holds
-  // the made key and not the spelled one.
   assertEquals(redactor.redact(error.message), "keys ***,Authorization");
 });
 
@@ -7135,7 +6928,6 @@ Deno.test("execute: what a transform enclosing a sensitive field delivers is reg
       `${method} value`,
     );
     assertEquals(redactor.redact(error.message), `${method} value ***`, method);
-    // The label the input holds at a plain position is not a secret.
     assertEquals(redactor.redact("label prod"), "label prod", method);
   }
 });
@@ -7183,7 +6975,6 @@ Deno.test("execute: the literal keys a transform enclosing a sensitive field wri
     redactor.redact(error.message),
     'headers {"Authorization":"***"} for eu-west-1',
   );
-  // The identifiers the transform's code wrote stay readable everywhere else.
   assertEquals(
     redactor.redact("request headers: Authorization required"),
     "request headers: Authorization required",
@@ -7309,10 +7100,7 @@ Deno.test("executeWorkflow: a placed step ships what a transform enclosing a sen
   const { secretValues } = await captured[0].legacyDelivery!();
   assertEquals(secretValues?.includes("HUNTER2-LONG"), true);
   assertEquals(secretValues?.includes("hunter2-long"), true);
-  // The plain region the transform passed through is not a worker secret,
-  // as it is not a local one (swamp-club#3754).
   assertEquals(secretValues?.includes("eu-west-1"), false);
-  // Serve's own redactor masks the authored literal for a version 6 worker.
   assertEquals(captured[0].redactorSeeds, ["hunter2-long"]);
 });
 
@@ -7384,8 +7172,6 @@ Deno.test("execute: a refused parse registers the sensitive value with the run's
   );
 
   for (const redactor of [methodRedactor, globalRedactor]) {
-    // What the transform made of the value is the run's secret; the plain
-    // values beside it stay readable in every later step's logs and data.
     assertEquals(redactor.redact("made HUNTER2-LONG"), "made ***");
     assertEquals(
       redactor.redact("deployed to prod in eu-west-1"),
@@ -7414,8 +7200,6 @@ Deno.test("executeWorkflow - a remote-placed step with no worker dispatcher name
   assertStringIncludes(error.message, "no worker dispatcher is active");
   assertStringIncludes(error.message, "pass --server <url>");
 });
-
-// ── Serve's untrusted argument policy (swamp-club#3862) ─────────────────
 
 async function withUntrustedArguments(fn: () => Promise<void>): Promise<void> {
   const restore = setProcessArgumentParsePolicy("untrusted");
@@ -7465,8 +7249,6 @@ Deno.test("execute: under the untrusted policy a method argument refusal names o
   });
 });
 
-// A refusing check that echoes its input at a sensitive position, in each
-// shape a schema can deliver: a record, an array, a scalar.
 function refusingShapes(): Record<string, z.ZodTypeAny> {
   const refusing = z.string().meta({ sensitive: true }).refine(() => false, {
     error: (issue) => `credential rejected: ${String(issue.input)}`,
@@ -7552,9 +7334,6 @@ Deno.test("executeWorkflow: under the untrusted policy a sensitive global argume
   });
 });
 
-// ---------- Protocol version 6 delivery (typed-secrets 5.2) ----------
-
-/** A model whose method records its arguments and the shell's merge. */
 function dispatchedModel(): {
   model: ModelDefinition;
   seen: {
@@ -7598,7 +7377,6 @@ function dispatchedModel(): {
 Deno.test("executeDispatched: a version 6 runner loads through its own loader, validates the globals, places a global secret through the merge and runs no refusal serve already ran (typed-secrets 5.2)", async () => {
   const service = new DefaultMethodExecutionService();
   const { model, seen } = dispatchedModel();
-  // The worker rebuilds the bag from the shipped references.
   const serveBag = new VaultSecretBag(new SecretBagRegistry());
   const endpoint = serveBag.addSecret(
     { vaultName: "v", key: "endpoint" },
@@ -7651,14 +7429,10 @@ Deno.test("executeDispatched: a version 6 runner loads through its own loader, v
     endpoint: "https://api.example.com",
     command: "deploy s3cret-token",
   }]);
-  // A secret authored under globalArguments reaches the shell's merge as its
-  // sentinel, so it is placed through the environment (swamp-club#3627).
   assertEquals(seen.unresolved[0]?.command, `deploy ${token}`);
   assertEquals(validated, 1);
-  // Serve refused before dispatch; the runner does not ask again.
   assertEquals(seen.hook, 0);
 
-  // A global the schema refuses fails on the worker, before the method.
   const { context: refused } = createTestContext({
     modelType: model.type,
     methodName: "create",
@@ -7706,11 +7480,9 @@ Deno.test("executeWorkflow: a remotely placed step loads nothing before dispatch
     releaseAffinity: () => {},
   });
   const { loader, reads } = mockLoader({ token: "s3cret-value" });
-  // One definition, evaluated on two runs.
   const base = Definition.create({ name: "remote-hash", globalArguments: {} });
   try {
     for (let run = 0; run < 2; run++) {
-      // Each run issues its own sentinel for the same reference.
       const bag = new VaultSecretBag(new SecretBagRegistry());
       const sentinel = bag.addSecret(
         { vaultName: "v", key: "token" },
@@ -7747,7 +7519,6 @@ Deno.test("executeWorkflow: a remote attempt calls onArgumentsValidated once, wh
   let calls = 0;
   setRemoteStepDispatcher({
     executeRemote: async (request) => {
-      // A version 5 worker's frame, then two version 6 workers after it.
       await request.legacyDelivery?.();
       await request.onArgumentsValidated?.();
       await request.onArgumentsValidated?.();
@@ -7799,7 +7570,6 @@ Deno.test("executeWorkflow: a remotely placed step whose arguments hold no secre
   let scheduled = 0;
   let validated = 0;
   setRemoteStepDispatcher({
-    // As serve schedules for a version 6 worker: no legacy delivery.
     executeRemote: () => {
       scheduled++;
       return Promise.resolve({
@@ -7860,7 +7630,6 @@ Deno.test("executeWorkflow: a remotely placed step whose arguments hold no secre
     assertEquals(scheduled, 0);
     assertEquals(validated, 0);
 
-    // A valid step is validated before it is scheduled, as before.
     await service.executeWorkflow(
       Definition.create({
         name: "valid",
@@ -7974,8 +7743,6 @@ Deno.test("executeWorkflow: a remotely placed step holding a secret has its othe
     );
     assertEquals(scheduled, 0);
 
-    // The fields holding sentinels pass to the worker unchecked, and the
-    // hook waits for the parse that reads their values.
     await run({ region: "us" }, (token) => ({ token, count: 1 }));
     assertEquals(scheduled, 1);
     assertEquals(validatedBeforeScheduling, 0);
@@ -8046,7 +7813,6 @@ Deno.test("executeWorkflow: a hook that fails on a version 6 worker's report, wh
   const model = createTestModel({});
   setRemoteStepDispatcher({
     executeRemote: async (request) => {
-      // As serve calls it on a version 6 worker's arguments_validated event.
       await request.onArgumentsValidated?.();
       return { outputs: [], logs: [], durationMs: 1, workerName: "w1" };
     },
@@ -8063,7 +7829,6 @@ Deno.test("executeWorkflow: a hook that fails on a version 6 worker's report, wh
     placement: { labels: { tier: "remote" } },
     vaultSecrets: bag,
   });
-  // The test logger, with its warnings captured.
   const logger: MethodContext["logger"] = Object.assign(
     Object.create(context.logger),
     {
@@ -8095,7 +7860,6 @@ Deno.test("executeWorkflow: a hook that fails on a version 6 worker's report, wh
   ]);
 });
 
-/** A shell definition whose `run` holds `data` at the end, under `where`. */
 function shellWithData(where: "global" | "method", data: string) {
   const run = `echo ${data}`;
   const definition = Definition.create({
@@ -8131,7 +7895,6 @@ Deno.test("dataSplicePlacer: data in run is placed where it was authored, for th
     const posix = place(args, "linux");
     const placed = where === "global" ? posix.globalArgs : posix.methodArgs;
     assertEquals(placed.run, 'echo "${__SWAMP_IN_0}"', where);
-    // env goes beside run's merge winner: method arguments.
     assertEquals(posix.methodArgs.env, { __SWAMP_IN_0: "x; id" }, where);
     const windows = place(args, "windows");
     assertEquals(

@@ -18,19 +18,9 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * The v3 data catalog (swamp-club#3239): `_catalog_v3.db`, kept apart from
- * `_catalog.db` so no v2 code changes. It is opened with the existing
- * {@link CatalogStore}, unchanged, so it has the schema and query API data
- * query already uses; switching data query to it is the opt-in's job.
- *
- * Rows are built from a version's metadata field for field as the v2
- * repository builds them (`catalogUpsert` in `unified_data_repository.ts`),
- * with the model type and id taken from the commit's partition key and the
- * namespace from the commit.
- * `integration/datastore_v3_read_model_v2_oracle_test.ts` compares them with
- * the rows v2 writes.
- *
- * @module
+ * kept apart from _catalog.db so no v2 code changes; rows are built field for
+ * field as v2's catalogUpsert builds them, and an integration oracle test
+ * compares them with the rows v2 writes
  */
 
 import type { CatalogAction } from "../../domain/datastore_v3/catalog_projection.ts";
@@ -48,73 +38,55 @@ import {
   type CatalogWriter,
 } from "../persistence/catalog_store.ts";
 
-/** The catalog the read model writes. {@link V3Catalog} is the real one. */
 export interface ReadModelCatalog {
-  /**
-   * The catalog's generation. It changes when the catalog is rebuilt empty
-   * (a schema change) or invalidated.
-   */
   generation(): number;
   /**
-   * True once the read model has taken the catalog over at its generation.
-   * A catalog file created afresh (deleted, or rebuilt) is not, though its
-   * generation can equal the one the state recorded.
+   * true once the read model has taken the catalog over at its generation; a
+   * catalog file created afresh is not, though its generation can equal the one
+   * the state recorded
    */
   isPopulated(): boolean;
-  /** Records that the read model owns the catalog at `generation`. */
   markPopulated(generation: number): void;
   /**
-   * Deletes the rows of the data whose record keys `admits` admits, which
-   * commits carry and a replay rebuilds, and advances the generation,
-   * keeping the populated mark and the rows of data the datastore keeps
-   * local; resolves with the new generation (swamp-club#3299).
+   * deletes the rows of data whose keys admits admits (commits carry them, a
+   * replay rebuilds them) and advances the generation, keeping the populated
+   * mark and the rows of data the datastore keeps local
    */
   clear(admits: (key: string) => boolean): number;
-  /**
-   * Applies one commit's catalog actions, in order, on a model partition.
-   * Inside a batch they are held until {@link commitBatch}.
-   */
   apply(
     namespace: string,
     partition: PartitionKey,
     actions: readonly CatalogAction[],
   ): void;
   /**
-   * Opens a batch (swamp-club#3803): the actions of every {@link apply} until
-   * {@link commitBatch} land in one transaction, which the read model commits
-   * with a page's state, once the page's files are written.
+   * the actions of every apply until commitBatch land in one transaction, which
+   * the read model commits with a page's state once the page's files are
+   * written
    */
   beginBatch(): void;
-  /** Applies the batch's actions, in order, in one transaction. */
   commitBatch(): void;
-  /** Drops the batch's actions; does nothing when none is open. */
   rollbackBatch(): void;
   close(): void;
 }
 
-/** One commit's catalog actions, held in a batch. */
 interface HeldActions {
   readonly namespace: string;
   readonly partition: PartitionKey;
   readonly actions: readonly CatalogAction[];
 }
 
-/** The v3 catalog over {@link CatalogStore}. */
 export class V3Catalog implements ReadModelCatalog {
   readonly #store: CatalogStore;
-  /** The open batch's actions; undefined when no batch is open. */
   #held: HeldActions[] | undefined;
 
   constructor(store: CatalogStore) {
     this.#store = store;
   }
 
-  /** Opens `_catalog_v3.db` at `path`, creating it when absent. */
   static open(path: string): V3Catalog {
     return new V3Catalog(new CatalogStore(path));
   }
 
-  /** The underlying store, for reading rows back. */
   get store(): CatalogStore {
     return this.#store;
   }
@@ -181,10 +153,6 @@ export class V3Catalog implements ReadModelCatalog {
   }
 }
 
-/**
- * Applies one commit's catalog actions through `writer`: the store, a
- * transaction per action, or a batch's writer.
- */
 function applyActions(
   writer: CatalogWriter,
   namespace: string,
@@ -234,13 +202,9 @@ function applyActions(
 }
 
 /**
- * The read model's catalog with the actions on data it never projects
- * dropped (swamp-club#3691): `skips(namespace, recordKey)` names them, by
- * the record key each action's row maps to ({@link catalogRowRecordKey}; a
- * name-wide action maps to the name's latest marker). Every kind of action
- * is judged, so another checkout's commit can neither add, change nor
- * remove a row this checkout keeps for itself. One wrapper covers both the
- * commits the read model applies and the compacted base it loads.
+ * drops actions on data the checkout never projects, judged for every kind, so
+ * another checkout's commit can neither add, change nor remove a row this
+ * checkout keeps for itself
  */
 export class ProjectedCatalog implements ReadModelCatalog {
   readonly #inner: ReadModelCatalog;
@@ -312,7 +276,6 @@ export class ProjectedCatalog implements ReadModelCatalog {
   }
 }
 
-/** The catalog row, or rows of a name, a catalog action changes. */
 function catalogActionRowKey(
   namespace: string,
   typeNormalized: string,
@@ -336,7 +299,6 @@ function catalogActionRowKey(
   }
 }
 
-/** A version's catalog row, as the v2 repository's `catalogUpsert` builds it. */
 export function catalogRow(
   namespace: string,
   typeNormalized: string,
@@ -374,10 +336,6 @@ export function catalogRow(
   };
 }
 
-/**
- * The record key a catalog row's data lives under: its version's metadata,
- * or for a rename row (no version), the name's latest marker.
- */
 export function catalogRowRecordKey(row: CatalogRowKey): string {
   const name = `data/${row.type_normalized}/${row.model_id}/${row.data_name}`;
   return row.version === undefined

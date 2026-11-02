@@ -21,7 +21,6 @@ import { assertEquals } from "@std/assert";
 import fc from "fast-check";
 import { findDenoCommandUse } from "./deno_command_detector.ts";
 
-/** Statements with no Deno.Command use, covering regex, division and templates. */
 const arbCleanStatement = fc.constantFrom(
   "const a = 1;",
   "let b = a / 2 / c;",
@@ -40,7 +39,6 @@ const arbClean = fc.array(arbCleanStatement.map((s) => `{ ${s} }`), {
   maxLength: 8,
 });
 
-/** Text that would use Deno.Command if it were read as code. */
 const arbHostileText = fc.oneof(
   fc.string(),
   fc.constantFrom(
@@ -62,7 +60,6 @@ function escapeForString(text: string, quote: string): string {
     .replaceAll("\u2029", "\\u2029");
 }
 
-/** Wraps text so that it is inert: a comment or a properly escaped literal. */
 const arbInert = fc
   .tuple(
     arbHostileText,

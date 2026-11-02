@@ -41,8 +41,6 @@ import { useUnitOfWorkFactoryForTesting } from "../infrastructure/persistence/re
 import { createSyncGate } from "./sync_gate.ts";
 import { waitFor } from "@swamp-club/swamp-testing";
 
-// CLI-adjacent code needs logging initialized and the models barrel imported
-// before it can run.
 import "../domain/models/models.ts";
 
 await initializeLogging({});
@@ -248,12 +246,12 @@ Deno.test("executeWorkflowWithLocks: runs in one root unit whose flush is the po
 });
 
 Deno.test("executeWorkflowWithLocks: the post-run push waits while a pull holds the sync gate", async () => {
-  // swamp-club#2405: a poller pull that overlaps a run's push prunes the
-  // entries that push commits. The push must queue behind the pull.
+  // a poller pull that overlaps a run's push prunes the entries that push
+  // commits, so the push must queue behind the pull
   const syncService = stubSyncService();
   const ctx = stubRepoContextWithRepos();
   const gate = createSyncGate();
-  await gate.acquire(); // a poller pull in flight
+  await gate.acquire();
 
   const run = executeWorkflowWithLocks(
     "/tmp/repo",
@@ -360,8 +358,8 @@ Deno.test("createStepLockHook: names the lock it took by the nonce in its lock f
       assertEquals(nonces.length, 1);
       assertMatch(nonces[0], /^[A-Za-z0-9-]+$/);
       assertEquals(lock.heldLockIds, nonces);
-      // The step's scope is given the locks themselves, so a hop's end can
-      // re-key them (swamp-club#3111).
+      // the step's scope is given the locks themselves, so a hop's end can
+      // re-key them
       assertEquals(lock.lentLocks?.lockIds(), nonces);
     } finally {
       await lock.flush();
@@ -375,9 +373,8 @@ Deno.test("createStepLockHook: names the lock it took by the nonce in its lock f
   }
 });
 
-// A CLI workflow run builds its step lock hook here too, and gives each
-// step's lock messages a writer labelled with the step's model
-// (swamp-club#3860).
+// a CLI workflow run builds its step lock hook here too, and gives each step's
+// lock messages a writer labelled with the step's model
 Deno.test("createStepLockHook: asks progressWriter for each step's writer by its model id", async () => {
   const repoDir = await Deno.makeTempDir({ prefix: "swamp-step-lock-hook-" });
   try {

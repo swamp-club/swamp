@@ -102,8 +102,8 @@ export const auditLogCommand = withRemoteOptions(
     options,
   );
 
-  // Sent in the stored spelling, so a server that predates the behavior
-  // spelling of an action (swamp-club#3334) still matches it.
+  // sent in the stored spelling, so a server that predates the behavior
+  // spelling still matches it.
   const action = canonicalOptional(
     options.action as string | undefined,
     canonicalAuditAction,

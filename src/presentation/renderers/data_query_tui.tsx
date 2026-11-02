@@ -42,9 +42,6 @@ import {
 import { determineCursorContext } from "../../domain/data/cel_cursor_context.ts";
 import { renderQueryResultsTerminal } from "./data_query.ts";
 
-/**
- * Dependencies for the interactive query TUI.
- */
 export interface InteractiveQueryDeps {
   queryDeps: DataQueryDeps;
   distinctFn: (column: string) => string[];
@@ -57,7 +54,6 @@ interface InputState {
   cursorPos: number;
 }
 
-/** Width of the input label prefix: "  " + label.padEnd(7) = 9 chars. */
 const INPUT_LABEL_WIDTH = 9;
 
 function buildCliCommand(
@@ -87,7 +83,6 @@ function DataQueryTUI(
   const lastRenderedOutput = useRef<string | undefined>(undefined);
   const { width, height } = useTerminalSize();
 
-  // Input state
   const [predicate, setPredicate] = useState<InputState>({
     text: "",
     cursorPos: 0,
@@ -106,7 +101,6 @@ function DataQueryTUI(
     "predicate",
   );
 
-  // UI state
   const [autocompleteIndex, setAutocompleteIndex] = useState(0);
   const [resultsScrollOffset, setResultsScrollOffset] = useState(0);
   const [horizontalScrollOffset, setHorizontalScrollOffset] = useState(0);
@@ -120,7 +114,6 @@ function DataQueryTUI(
     return Number.isFinite(n) && n > 0 ? n : undefined;
   })();
 
-  // Query execution
   const queryState = useDebouncedQuery(
     predicate.text,
     select.text || undefined,
@@ -129,7 +122,6 @@ function DataQueryTUI(
     parsedLimit,
   );
 
-  // Autocomplete
   const autocompleteProvider = useMemo(
     () =>
       new AutocompleteProvider(
@@ -166,11 +158,9 @@ function DataQueryTUI(
     ? Math.min(completions.length, 8)
     : 0;
 
-  // Count error lines (full multi-line error)
   const errorText = queryState.error;
   const errorLines = errorText ? errorText.split("\n").length : 0;
 
-  // Layout — accounts for variable autocomplete + error heights
   const layout = computeQueryTuiLayout(
     width,
     height,
@@ -178,7 +168,6 @@ function DataQueryTUI(
     errorLines,
   );
 
-  // Render results using the same markdown pipeline as the non-interactive CLI
   const queryData: DataQueryData | undefined = queryState.total > 0 ||
       queryState.results.length > 0
     ? {
@@ -191,10 +180,9 @@ function DataQueryTUI(
     }
     : undefined;
 
-  // Directly build Cliffy-rendered terminal text for the default table and
-  // only fall back to the markdown pipeline for projected output. Routing
-  // the default table through `marked` scaled at ~3ms per row and
-  // stalled (or OOM'd) the event loop on 10K+ result sets.
+  // build Cliffy terminal text directly for the default table; only projected
+  // output uses the markdown pipeline, since marked stalls the event loop on
+  // very large result sets.
   const renderedTerminal = useMemo(
     () => queryData ? renderQueryResultsTerminal(queryData) : undefined,
     [
@@ -205,12 +193,10 @@ function DataQueryTUI(
     ],
   );
 
-  // Keep track of last rendered output for scrollback on exit
   if (renderedTerminal) {
     lastRenderedOutput.current = renderedTerminal;
   }
 
-  // Split rendered output into lines for scrollable display
   const outputLines = useMemo(
     () => renderedTerminal ? renderedTerminal.split("\n") : [],
     [renderedTerminal],
@@ -246,7 +232,6 @@ function DataQueryTUI(
         replaceStart = input.cursorPos - ctx.prefix.length;
       } else if (ctx.kind === "value") {
         replaceStart = input.cursorPos - ctx.prefix.length;
-        // If there's an opening quote before the prefix, include it
         if (
           replaceStart > 0 &&
           (input.text[replaceStart - 1] === '"' ||
@@ -255,7 +240,6 @@ function DataQueryTUI(
           replaceStart--;
         }
       } else if (ctx.kind === "operator") {
-        // Insert after space
         insertText = item.text;
       }
 
@@ -269,9 +253,7 @@ function DataQueryTUI(
     [cursorContext, activeInput, setActiveInput],
   );
 
-  // Key handling
   useInput((input, key) => {
-    // Esc
     if (key.escape) {
       const cmd = buildCliCommand(
         predicate.text,
@@ -286,7 +268,6 @@ function DataQueryTUI(
       return;
     }
 
-    // Ctrl-C
     if (key.ctrl && input === "c") {
       const cmd = buildCliCommand(
         predicate.text,
@@ -329,7 +310,6 @@ function DataQueryTUI(
       return;
     }
 
-    // Ctrl-u/Ctrl-d: scroll results vertically half-page (matches SearchPicker)
     if (key.ctrl && input === "u") {
       const halfPage = Math.max(1, Math.floor(layout.resultsHeight / 2));
       setResultsScrollOffset((prev) => Math.max(0, prev - halfPage));
@@ -342,7 +322,6 @@ function DataQueryTUI(
       return;
     }
 
-    // Ctrl-left/Ctrl-right: pan results horizontally
     if (key.ctrl && key.leftArrow) {
       setHorizontalScrollOffset((prev) => Math.max(0, prev - 20));
       return;
@@ -352,7 +331,6 @@ function DataQueryTUI(
       return;
     }
 
-    // Enter
     if (key.return) {
       if (autocompleteOpen) {
         const item = completions[autocompleteIndex];
@@ -361,7 +339,6 @@ function DataQueryTUI(
       return;
     }
 
-    // Left/Right
     if (key.leftArrow) {
       const current = activeInput;
       if (current.cursorPos > 0) {
@@ -377,7 +354,6 @@ function DataQueryTUI(
       return;
     }
 
-    // Backspace/Delete
     if (key.backspace || key.delete) {
       const current = activeInput;
       const result = deleteBeforeCursor(current.text, current.cursorPos);
@@ -388,9 +364,7 @@ function DataQueryTUI(
       return;
     }
 
-    // Printable characters
     if (input && !key.ctrl && !key.meta) {
-      // Limit field only accepts digits
       if (focusedInput === "limit" && !/^\d+$/.test(input)) return;
       const current = activeInput;
       const result = insertAtCursor(current.text, current.cursorPos, input);
@@ -401,7 +375,6 @@ function DataQueryTUI(
     }
   });
 
-  // Status text for the predicate input
   const statusText = queryState.isLoading
     ? "..."
     : queryState.total > 0
@@ -414,7 +387,6 @@ function DataQueryTUI(
     ? "(0 results)"
     : "";
 
-  // Compute autocomplete offset (label width + cursor position)
   const autocompleteOffsetLeft = INPUT_LABEL_WIDTH + predicate.cursorPos;
 
   return (
@@ -517,11 +489,6 @@ function DataQueryTUI(
   );
 }
 
-/**
- * Launches the interactive data query TUI.
- * Manages alt-screen buffer lifecycle following the same pattern as
- * renderInteractivePicker.
- */
 export async function renderInteractiveQuery(
   deps: InteractiveQueryDeps,
 ): Promise<void> {
@@ -555,7 +522,6 @@ export async function renderInteractiveQuery(
     Deno.stdout.writeSync(new TextEncoder().encode("\x1b[?1049l"));
   }
 
-  // Print the final rendered output to the terminal scrollback
   if (pendingScrollback) {
     console.log(pendingScrollback);
   }

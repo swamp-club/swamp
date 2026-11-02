@@ -56,7 +56,6 @@ import {
 import { tombstoneOp } from "../../domain/datastore_v3/op.ts";
 import { RecordKey } from "../../domain/datastore_v3/record_key.ts";
 
-/** A mark hook that records its arguments and can reject the next call. */
 function recordingHook(): {
   hook: MarkDirtyHook;
   calls: (string | undefined)[];
@@ -178,7 +177,6 @@ Deno.test("runInUnitOfWork: returns fn's value and rejects with fn's error", asy
   assertStrictEquals(currentUnitOfWork(), undefined);
 });
 
-/** Runs `fn` with a reporter that records every route-2 report. */
 async function withReports(
   fn: (reports: UnscopedChange[]) => Promise<void>,
 ): Promise<void> {
@@ -391,7 +389,6 @@ Deno.test("useUnscopedChangeReporterForTesting: refuses a second reporter until 
 
 const ROOT = "file:///Users/dev/src/swamp/";
 
-/** A V8 stack trace whose frames are `[name, url, line]`. */
 function stackOf(frames: [string | undefined, string, number][]): string {
   return [
     "Error",
@@ -514,7 +511,6 @@ Deno.test("unscopedCallerFrom: with no source frame outside persistence, names t
     "Error",
     `    at signalChange (${ROOT}src/infrastructure/persistence/unit_of_work_scope.ts:114:21)`,
     "    at async ext:cli/40_test.js:300:5",
-    // Persistence frames from another layout are never the caller.
     "    at async save (file:///opt/swamp/src/infrastructure/persistence/yaml_definition_repository.ts:747:5)",
     "    at async saveIt (file:///home/me/.swamp/extensions/x/mod.ts:12:3)",
     "    at async later (file:///home/me/.swamp/extensions/x/mod.ts:40:3)",
@@ -542,7 +538,6 @@ Deno.test("unscopedCallerFrom: undefined when every source frame is in the persi
   assertEquals(unscopedCallerFrom(stack, ROOT), undefined);
 });
 
-/** One typed change, as a repository's builder returns it. */
 function typedChange(): TypedChange {
   return {
     partition: modelPartition(),
@@ -553,12 +548,10 @@ function typedChange(): TypedChange {
   };
 }
 
-/** A builder that fails the test if it ever runs. */
 const throwingBuild = (): never => {
   throw new Error("the typed builder ran");
 };
 
-/** A unit bound to `hook` that takes typed changes, recording both kinds. */
 function typedUnit(hook: MarkDirtyHook) {
   const staged: StagedChange[] = [];
   const batches: (readonly TypedChange[])[] = [];
@@ -584,9 +577,7 @@ const keepsDataLocal = (key: string) => !key.startsWith("data/");
 Deno.test("unitAdmitsKey: answers with the filter of the unit a hooked write stages into (swamp-club#4019)", async () => {
   const { hook } = recordingHook();
   unitOfWorkBinding.requireUnit(hook);
-  // Outside every unit: nothing would commit the key.
   assertEquals(unitAdmitsKey(hook, "data/a/latest"), false);
-  // A unit with no filter admits every key.
   const open = typedUnit(hook);
   await runInUnitOfWork(open.uow, () => {
     assertEquals(unitAdmitsKey(hook, "data/a/latest"), true);
@@ -602,7 +593,6 @@ Deno.test("unitAdmitsKey: answers with the filter of the unit a hooked write sta
   await runInUnitOfWork(filtered.uow, async () => {
     assertEquals(unitAdmitsKey(hook, "data/a/latest"), false);
     assertEquals(unitAdmitsKey(hook, "models/a.yaml"), true);
-    // An unbound unit does not hide the v3 unit around it.
     const inner = createLegacyUnitOfWork(recordingHook().hook, {
       flush: undefined,
     });
@@ -612,7 +602,6 @@ Deno.test("unitAdmitsKey: answers with the filter of the unit a hooked write sta
       return Promise.resolve();
     });
   });
-  // A unit bound to another hook is not the one the write stages into.
   const other = typedUnit(recordingHook().hook);
   unitAdmissions.register(other.uow, () => true);
   await runInUnitOfWork(other.uow, () => {
@@ -638,7 +627,6 @@ Deno.test("unitAdmitsKey: a hookless write after its unit ended answers with the
     () => childOpen ? child.uow : parent.uow,
   );
   await runInUnitOfWork(child.uow, () => {
-    // The open child has no filter of its own.
     assertEquals(unitAdmitsKey(undefined, "data/a/latest"), true);
     childOpen = false;
     assertEquals(unitAdmitsKey(undefined, "data/a/latest"), false);
@@ -653,7 +641,6 @@ Deno.test("stageTyped: a builder never runs on v2: no hook, route 2, or a legacy
     await stageTyped(hook, throwingBuild);
     const uow = createLegacyUnitOfWork(hook, { flush: undefined });
     await runInUnitOfWork(uow, () => stageTyped(hook, throwingBuild));
-    // A unit that takes typed changes but is bound to a v2 hook: v2 still.
     const typed = typedUnit(hook);
     await runInUnitOfWork(typed.uow, () => stageTyped(hook, throwingBuild));
     assertEquals(typed.batches, []);
@@ -684,7 +671,6 @@ Deno.test("stageTyped: on a v3 hook, runs the builder only in a bound unit that 
   const change = typedChange();
   await runInUnitOfWork(typed.uow, async () => {
     await stageTyped(hook, () => [change, change]);
-    // An empty batch stages nothing.
     await stageTyped(hook, () => []);
   });
   assertEquals(typed.batches, [[change, change]]);
@@ -700,15 +686,12 @@ Deno.test("stageTyped: on a v3 hook with no bound typed unit, throws before the 
     assertEquals(error.change, undefined);
     assertEquals(error.message.includes("typed change"), true);
   };
-  // Outside every unit.
   await refused(() => stageTyped(hook, throwingBuild));
-  // In a typed unit bound to another hook.
   const other = typedUnit(recordingHook().hook);
   await runInUnitOfWork(
     other.uow,
     () => refused(() => stageTyped(hook, throwingBuild)),
   );
-  // In a unit bound to the hook that takes no typed changes.
   const plain: UnitOfWork = {
     stage: () => Promise.resolve(),
     commit: () => Promise.resolve(),
@@ -734,7 +717,6 @@ Deno.test("signalChange: a typed declaration in a typed unit checks the write bu
   });
   assertEquals(typed.staged, [REMOVE]);
   assertEquals(calls, []);
-  // Outside the unit the declaration does not lift the refusal.
   await assertRejects(
     () => signalChange(hook, WRITE, { typed: true }),
     UnscopedWriteRefusedError,
@@ -813,8 +795,6 @@ Deno.test("withChangeSignalled: on v2, signals each change before the write and 
     assertEquals(seenByWrite, [[WRITE.path, REMOVE.path]]);
     assertEquals(calls, [WRITE.path, REMOVE.path, WRITE.path, REMOVE.path]);
 
-    // A single change, through a legacy unit bound to the hook: staged
-    // twice, and the unit forwards each to the hook.
     const uow = createLegacyUnitOfWork(hook, { flush: undefined });
     calls.length = 0;
     await runInUnitOfWork(
@@ -840,7 +820,6 @@ Deno.test("withChangeSignalled: a write that throws is signalled after too, and 
     assertStrictEquals(thrown, writeError);
     assertEquals(calls, [WRITE.path, WRITE.path]);
 
-    // A refused signal before stops the write from running.
     failNext(new Error("refused"));
     let ran = false;
     await assertRejects(
@@ -860,7 +839,6 @@ Deno.test("withChangeSignalled: a failed signal after a write that landed is log
   await withReports(async () => {
     const { hook, calls, failNext } = recordingHook();
     const result = await withChangeSignalled(hook, WRITE, {}, () => {
-      // The write lands; then the signal after fails.
       failNext(new Error("mark failed"));
       return Promise.resolve("written");
     });
@@ -874,19 +852,16 @@ Deno.test("withChangeSignalled: no signal after on a v3 hook, or with no hook", 
   unitOfWorkBinding.requireUnit(hook);
   const typed = typedUnit(hook);
   await runInUnitOfWork(typed.uow, async () => {
-    // Typed: checked before the write, nothing staged or marked.
     await withChangeSignalled(
       hook,
       WRITE,
       { typed: true },
       () => Promise.resolve(),
     );
-    // Untyped: offered to the unit once, before the write.
     await withChangeSignalled(hook, REMOVE, {}, () => Promise.resolve());
   });
   assertEquals(typed.staged, [REMOVE]);
   assertEquals(calls, []);
-  // Outside the unit the v3 hook still refuses before the write runs.
   let ran = false;
   await assertRejects(
     () =>
@@ -898,7 +873,6 @@ Deno.test("withChangeSignalled: no signal after on a v3 hook, or with no hook", 
   );
   assertEquals(ran, false);
 
-  // A hookless write inside a unit stages nothing, before or after.
   const adopter = typedUnit(recordingHook().hook);
   await runInUnitOfWork(
     adopter.uow,

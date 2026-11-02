@@ -170,10 +170,6 @@ Deno.test("pushManagedConfigChanges: a push error throws ManagedConfigUnpublishe
   assertStringIncludes((error as Error).message, "S3 unreachable");
 });
 
-/**
- * A repo context whose mark hook forwards a bare mark to `service`, as
- * `buildMarkDirtyHook` does, and records the order of marks and pushes.
- */
 function rootRepoContext(service: DatastoreSyncService, events: string[]) {
   const recorded = {
     ...service,
@@ -770,11 +766,6 @@ async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
   }
 }
 
-/**
- * A sync service whose config pull lands a pulled extension — lockfile
- * entry plus one workflow — in a cache that was empty until then, as on a
- * fresh serve instance backed by a remote datastore.
- */
 function createPullingSyncService(configBase: string): {
   service: Pick<DatastoreSyncService, "pullChanged">;
   pullCalls: Array<{ subdirs?: readonly string[]; namespace?: string }>;

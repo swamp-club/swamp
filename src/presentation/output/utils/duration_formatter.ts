@@ -17,18 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Formats a duration in milliseconds into a human-readable string.
- *
- * @param ms - Duration in milliseconds
- * @returns Formatted duration string
- *
- * Examples:
- * - 500 -> "500ms"
- * - 1200 -> "1.2s"
- * - 65000 -> "1m 5s"
- * - 3665000 -> "1h 1m 5s"
- */
 export function formatDuration(ms: number): string {
   if (ms < 0) {
     return "0ms";
@@ -68,12 +56,9 @@ export function formatDuration(ms: number): string {
     return parts.join(" ");
   }
 
-  // Less than 60 seconds but >= 1 second
   if (ms % 1000 === 0) {
-    // Exact seconds
     return `${seconds}s`;
   } else {
-    // Show decimal seconds for sub-second precision
     const decimalSeconds = (ms / 1000).toFixed(1);
     return `${decimalSeconds}s`;
   }

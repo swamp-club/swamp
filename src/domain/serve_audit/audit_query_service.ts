@@ -114,9 +114,8 @@ async function loadEvents(
 }
 
 /**
- * The filters with the action and resource in the stored spelling, so a
- * behavior-spelled filter selects the same events as the model spelling
- * (swamp-club#3334).
+ * action and resource in the stored spelling, so a behavior-spelled filter
+ * selects the same events as the model spelling
  */
 function canonicalFilters<F extends AuditQueryFilters>(filters: F): F {
   return {
@@ -279,11 +278,9 @@ export class AuditQueryService {
     };
   }
 
-  // Structural HMAC verification: checks that each event's hmacKeyVersion
-  // references a known key and that all hashed fields (resourceName, detail,
-  // methodName, decision.resourceName) match the expected 64-char hex format.
-  // Full cryptographic re-verification is not possible because the original
-  // plaintext is not stored alongside the hash.
+  // structural check only: each hmacKeyVersion must be a known key and hashed
+  // fields well-formed 64-char hex; full re-verification is impossible as the
+  // plaintext is not stored
   verifyHmac(
     events: readonly ChainedAuditEvent[],
   ): { valid: boolean; checked: number; failed: number } {

@@ -21,22 +21,14 @@
 import React from "react";
 import { Text } from "ink";
 
-/**
- * A domain-specific action key binding shown in the help bar.
- */
 export interface ActionDef {
-  /** Single character key (e.g., "i"). */
   key: string;
-  /** Display label (e.g., "Install"). */
   label: string;
-  /** Action identifier returned to the caller on activation. */
   action: string;
 }
 
 export interface HelpBarProps {
-  /** Whether the preview pane is visible (controls whether scroll hint is shown). */
   hasPreview: boolean;
-  /** Optional domain-specific action keys. */
   actions?: ActionDef[];
   /**
    * The whole set of hints, in place of the navigate, scroll, action, select
@@ -45,10 +37,6 @@ export interface HelpBarProps {
   keys?: string[];
 }
 
-/**
- * Keybinding hint bar for the SearchPicker. Shows navigation, preview scroll,
- * action keys, and select/cancel hints. Reusable for any interactive Ink component.
- */
 export function HelpBar(props: HelpBarProps): React.ReactElement {
   const { hasPreview, actions, keys } = props;
   if (keys !== undefined) {

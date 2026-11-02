@@ -108,7 +108,6 @@ Deno.test("WorkerBundleCache: fetches, persists, imports, and memoizes a bundle"
     const second = await cache.load("fp-abc");
     assertEquals(second.modelDef, first.modelDef);
     assertEquals(bundleFetches, ["fp-abc"]);
-    // The fetched source landed on disk under the fingerprint.
     const onDisk = await Deno.readTextFile(join(dir, "fp-abc", "bundle.js"));
     assertEquals(onDisk, FAKE_BUNDLE);
   });

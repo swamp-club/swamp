@@ -17,12 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Wires a real minted server token through the HTTP auth guards the health
- * endpoints use: any valid token reads health, narrowed to what it may read,
- * while admin routes still need admin on access:* (swamp-club#2504).
- */
-
 import { assertEquals, assertExists } from "@std/assert";
 import { collect } from "../src/libswamp/testing.ts";
 import { createLibSwampContext } from "../src/libswamp/context.ts";
@@ -56,7 +50,6 @@ import "../src/domain/models/models.ts";
 
 await initializeLogging({});
 
-/** A policy with no grants: nothing is allowed, admin included. */
 function denyAll(): PolicySnapshotLoader {
   const service: AccessDecisionService = {
     decide: () => null,

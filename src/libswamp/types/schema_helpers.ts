@@ -27,9 +27,6 @@ import {
   type ResourceOutputSpec,
 } from "../../domain/models/model.ts";
 
-/**
- * Data structure for a data output spec in the describe output.
- */
 export interface DataOutputSpecDescribeData {
   specName: string;
   kind: "resource" | "file";
@@ -42,23 +39,15 @@ export interface DataOutputSpecDescribeData {
   tags?: Record<string, string>;
 }
 
-/**
- * Data structure for a method's description.
- */
 export interface MethodDescribeData {
   name: string;
   description: string;
   arguments: object;
-  /** The method's resolved kind; absent when `kindSource` is `"none"`. */
   kind?: MethodKind;
-  /** Whether `kind` was declared on the method, inferred from its name, or neither. */
   kindSource: MethodKindSource;
   outputLifetime?: string;
 }
 
-/**
- * Internal interface for accessing Zod v4's internal definition structure.
- */
 interface ZodDef {
   type: string;
   innerType?: z.ZodTypeAny;
@@ -72,24 +61,15 @@ interface ZodDef {
   defaultValue?: unknown;
 }
 
-/**
- * Gets the definition type from a Zod schema (Zod v4 compatible).
- */
 function getSchemaType(schema: z.ZodTypeAny): string {
   const def = (schema as unknown as { _def: ZodDef })._def;
   return def?.type ?? "";
 }
 
-/**
- * Gets the definition from a Zod schema.
- */
 function getSchemaDef(schema: z.ZodTypeAny): ZodDef {
   return (schema as unknown as { _def: ZodDef })._def;
 }
 
-/**
- * Unwraps optional, nullable, default, and effects wrapper types.
- */
 function unwrapSchema(schema: z.ZodTypeAny): z.ZodTypeAny {
   const schemaType = getSchemaType(schema);
   const def = getSchemaDef(schema);
@@ -105,9 +85,8 @@ function unwrapSchema(schema: z.ZodTypeAny): z.ZodTypeAny {
 }
 
 /**
- * Manually converts a Zod schema to JSON Schema format.
- * This is a fallback for when Zod's built-in toJSONSchema() crashes
- * on types like z.record(z.unknown()), z.uuid(), or z.iso.datetime().
+ * fallback for when Zod's toJSONSchema() crashes on types like
+ * z.record(z.unknown()), z.uuid() or z.iso.datetime()
  */
 function manualZodToJsonSchema(schema: z.ZodTypeAny): object {
   const unwrapped = unwrapSchema(schema);
@@ -119,7 +98,6 @@ function manualZodToJsonSchema(schema: z.ZodTypeAny): object {
       return {};
     case "string": {
       const result: Record<string, unknown> = { type: "string" };
-      // Check for format metadata (uuid, datetime, etc.)
       const zodInternals = unwrapped as unknown as {
         _zod?: { format?: string };
       };
@@ -171,19 +149,14 @@ function manualZodToJsonSchema(schema: z.ZodTypeAny): object {
       return { type: typeof def.value, const: def.value };
     }
     default:
-      // Safe fallback for any unrecognized type
       return {};
   }
 }
 
 /**
- * Converts a Zod schema to JSON Schema format.
- * Falls back to a manual converter if Zod's built-in toJSONSchema() fails
- * on known v4 edge cases (z.record, z.uuid, z.iso.datetime).
- * Returns a diagnostic object when the schema appears to be from Zod v3.
- * `io: "input"` describes what the schema accepts rather than what it
- * produces: for a schema with a transform, the properties and required
- * keys a caller supplies (swamp-club#3681). The default is its output.
+ * falls back to a manual converter when Zod's toJSONSchema() fails on known v4
+ * edge cases; io "input" describes what a schema with a transform accepts, the
+ * default is its output
  */
 export function zodToJsonSchema(
   schema: z.ZodTypeAny,
@@ -217,10 +190,8 @@ function detectZodV3Schema(
 }
 
 /**
- * Removes fields that have a `default` value from the JSON Schema `required`
- * array. Zod's `z.toJSONSchema()` lists defaulted fields as required (valid
- * per the JSON Schema spec), but swamp treats a schema default as satisfying
- * the requirement at runtime.
+ * Zod lists defaulted fields as required, but swamp treats a schema default as
+ * satisfying the requirement at runtime
  */
 function stripDefaultsFromRequired(
   jsonSchema: object,
@@ -247,9 +218,6 @@ function stripDefaultsFromRequired(
   return result;
 }
 
-/**
- * Converts a MethodDefinition to MethodDescribeData for presentation.
- */
 export function toMethodDescribeData(
   name: string,
   method: MethodDefinition,
@@ -265,9 +233,6 @@ export function toMethodDescribeData(
   };
 }
 
-/**
- * Builds type-level DataOutputSpecDescribeData from resource and file output specs.
- */
 export function buildDataOutputSpecs(
   resources?: Record<string, ResourceOutputSpec>,
   files?: Record<string, FileOutputSpec>,

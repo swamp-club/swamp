@@ -349,7 +349,6 @@ Deno.test("removeStaleRunIndexes: removes the checkout's run indexes, and a remo
     assertEquals(await readRunIndex(join(runs, "wf-a")), null);
   });
   await withTempDir(async (repo) => {
-    // A file where the runs directory should be: listing it fails.
     await Deno.mkdir(join(repo, ".swamp"), { recursive: true });
     await Deno.writeTextFile(join(repo, ".swamp", "workflow-runs"), "x");
     await removeStaleRunIndexes(repo);
@@ -373,7 +372,6 @@ Deno.test("dropRunIndexEntries: drops the entries of the run records named, keep
 
     await dropRunIndexEntries(repo, [
       "workflow-runs/wf-a/workflow-run-run-1.yaml",
-      // Not run records: a log, another directory, a nested path.
       "workflow-runs/wf-b/workflow-run-run-1.log",
       "data/wf-b/workflow-run-run-1.yaml",
       "workflow-runs/wf-b/x/workflow-run-run-1.yaml",

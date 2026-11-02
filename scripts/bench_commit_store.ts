@@ -17,16 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * How long the commit store takes to rebuild a large partition, the cost a
- * short-lived CLI process pays on its first append to it (swamp-club#3236):
- * from its latest snapshot plus the commits after it, against a replay of
- * every commit, and what writing a snapshot costs. Run with:
- *
- * ```
- * deno bench -A scripts/bench_commit_store.ts
- * ```
- */
 
 import { join } from "@std/path";
 import type { Commit } from "../src/domain/datastore_v3/commit.ts";
@@ -45,11 +35,6 @@ import { SqliteCommitStore } from "../src/infrastructure/datastore_v3/sqlite_com
 const COMMITS = 10_999;
 const NAMES = 50;
 
-/**
- * Commit `seq` of a model partition: each saves a new version of one of 50
- * data names (an inline put of about 200 bytes and its data-version op), and
- * every tenth also deletes that name's previous version.
- */
 async function benchCommit(seq: number): Promise<Commit> {
   const name = `name-${seq % NAMES}`;
   const version = Math.floor(seq / NAMES) + 1;
@@ -79,7 +64,6 @@ const inMemory = Partition.empty(modelPartition());
   for (const store of stores) await store.close();
 }
 
-/** A retry of commit 1 rebuilds the partition and writes nothing. */
 async function rebuild(b: Deno.BenchContext, path: string): Promise<void> {
   const store = SqliteCommitStore.open(path);
   b.start();

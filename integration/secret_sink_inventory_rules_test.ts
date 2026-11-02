@@ -17,30 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// Fitness ratchet on the typed-secrets sink inventory (swamp-club#3511).
-//
-// integration/secret_sink_inventory.json lists every place swamp writes or
-// emits a value derived from an expression, every boundary where plaintext
-// is allowed, and every protected secret path. Later phase gates of
-// design/enablers/typed-secrets.md are measured against that list, so it must
-// not go stale. These rules keep it honest:
-//
-// 1. Every destination Section 7.1 names (each table row, and each
-//    backticked name in its inventory paragraph) is covered by an entry.
-//    The names are read from the design doc, so editing the doc forces an
-//    inventory update.
-// 2. Every anchor still exists, so a moved or renamed seam fails as GONE.
-// 3. Every site found by the primitive scans below is an anchor or a pinned
-//    NOT_A_SINK entry with a reason. Keys name the repo-relative file and
-//    the top-level declaration that holds the site, never a line number.
-// 4. Every workflow event kind and every remote protocol verb is an anchor.
-// 5. Every gate names a section and a phase heading the design doc has.
-// 6. Every boundary and protected entry names a test that exists.
-//
-// File-write primitives are scanned only in the layers that persist
-// expression-derived values (persistence, datastore v3, serve audit, serve,
-// worker). Widening that scope is a deliberate edit to WRITE_SCAN_DIRS.
-
 import { assert, assertEquals, assertGreater } from "@std/assert";
 import { join } from "@std/path";
 import { z } from "zod";
@@ -100,11 +76,6 @@ const POLICY =
   "if it can write or emit a value derived from an expression, or pin it in " +
   "NOT_A_SINK in this test with the reason it cannot.";
 
-// ---------------------------------------------------------------------------
-// Rule 1: Section 7.1 destinations are covered
-// ---------------------------------------------------------------------------
-
-/** The destinations Section 7.1 names: table rows and backticked names. */
 function section71Destinations(doc: string): string[] {
   const start = doc.indexOf("### 7.1 Destination contract");
   assert(start >= 0, "design doc has no Section 7.1 heading");
@@ -126,7 +97,6 @@ function section71Destinations(doc: string): string[] {
 
 Deno.test("secret sink inventory: every Section 7.1 destination is covered", () => {
   const destinations = section71Destinations(DESIGN_DOC);
-  // Proves the extractor still finds the table and the paragraph.
   assertGreater(destinations.length, 20);
   const covered = new Set(INVENTORY.entries.flatMap((e) => e.covers));
   const missing = destinations.filter((d) => !covered.has(d));
@@ -149,18 +119,9 @@ Deno.test("secret sink inventory: entry ids are unique", () => {
   assertEquals(ids.length, new Set(ids).size);
 });
 
-// ---------------------------------------------------------------------------
-// Event kinds and protocol verbs (anchors for rules 2 and 4)
-// ---------------------------------------------------------------------------
-
 const EVENTS_FILE = "src/domain/workflows/execution_events.ts";
 const PROTOCOL_FILE = "src/domain/remote/protocol.ts";
 
-/**
- * The statement that begins at `start`, up to its closing `;`, with comments
- * removed. Brackets and string literals are tracked, so a `;` or `}` inside
- * a nested object type, a string or a comment never ends it early.
- */
 function statementAt(code: string, start: string): string {
   const from = code.indexOf(start);
   assert(from >= 0, `missing ${start}`);
@@ -194,7 +155,6 @@ function statementAt(code: string, start: string): string {
 const EVENTS_CODE = await Deno.readTextFile(join(ROOT, EVENTS_FILE));
 const PROTOCOL_CODE = await Deno.readTextFile(join(ROOT, PROTOCOL_FILE));
 
-/** `<file>: <kind>` for every member of the WorkflowExecutionEvent union. */
 const EVENT_KINDS = new Set(
   [
     ...statementAt(EVENTS_CODE, "export type WorkflowExecutionEvent =")
@@ -202,7 +162,6 @@ const EVENT_KINDS = new Set(
   ].map((m) => `${EVENTS_FILE}: ${m[1]}`),
 );
 
-/** `<file>: <verb>` for every RemoteMethod and WorkerMethod value. */
 const PROTOCOL_VERBS = new Set(
   ["export const RemoteMethod =", "export const WorkerMethod ="].flatMap((
     start,
@@ -215,11 +174,6 @@ const PROTOCOL_VERBS = new Set(
   ),
 );
 
-// ---------------------------------------------------------------------------
-// Rule 2: anchors exist
-// ---------------------------------------------------------------------------
-
-/** Whether `name` is a top-level declaration in `code`. */
 function declares(code: string, name: string): boolean {
   return code.split("\n").some((line) =>
     line.match(TOP_LEVEL_DECLARATION)?.[1] === name
@@ -229,7 +183,6 @@ function declares(code: string, name: string): boolean {
 Deno.test("secret sink inventory: every anchor exists", async () => {
   const gone: string[] = [];
   for (const anchor of ANCHORS) {
-    // An event kind or protocol verb exists while the scan still finds it.
     if (EVENT_KINDS.has(anchor) || PROTOCOL_VERBS.has(anchor)) continue;
     const [file, name] = anchor.split(": ");
     let code: string;
@@ -249,11 +202,6 @@ Deno.test("secret sink inventory: every anchor exists", async () => {
   );
 });
 
-// ---------------------------------------------------------------------------
-// Rule 3: primitive scans
-// ---------------------------------------------------------------------------
-
-/** Production files that are test or benchmark support. */
 function isTestSupport(rel: string): boolean {
   return rel.includes("/test_helpers/") ||
     rel.startsWith("src/infrastructure/testing/") ||
@@ -273,7 +221,6 @@ interface PrimitiveScan {
   family: string;
   pattern: RegExp;
   dirs?: readonly string[];
-  /** The scan must find more sites than this, proving the pattern matches. */
   floor: number;
 }
 
@@ -316,11 +263,8 @@ const CONFIG_WRITE = "Writes configuration, credentials, identity, locks, " +
 const AUTHORED_SOURCE = "Persists authored source, where secrets appear only " +
   "as references.";
 
-/** Scanned sites that are not sinks, with the reason. */
 const NOT_A_SINK: Record<string, Record<string, string>> = {
   "sqlite": {
-    // swamp-club#3985: a serve-mode checkout's feed cursor and serve's
-    // partition heads, which are integers and partition keys only.
     "src/infrastructure/datastore_v3/serve_upstream_state.ts: openStateDatabase":
       "Holds only serve's feed cursor and partition heads: integers and partition keys, never a value derived from an expression.",
     "src/infrastructure/datastore_v3/litestream/litestream_restorer.ts: checkDatabase":
@@ -329,29 +273,20 @@ const NOT_A_SINK: Record<string, Record<string, string>> = {
       READ_ONLY_DB,
     "src/infrastructure/datastore_v3/litestream/v3_copy.ts: droppedCommits":
       READ_ONLY_DB,
-    // swamp-club#3935: the writer's copy, before it restarts a lineage.
     "src/infrastructure/datastore_v3/litestream/v3_copy.ts: quickCheck":
       READ_ONLY_DB,
     "src/infrastructure/datastore_v3/litestream/v3_copy.ts: txnAt":
       READ_ONLY_DB,
     "src/infrastructure/datastore_v3/v3_datastore.ts: listV3Namespaces":
       READ_ONLY_DB,
-    // swamp-club#4063: a writer reads the claim before it takes the lease,
-    // and a refused one counts the commits its outbox still holds, read-only.
     "src/infrastructure/datastore_v3/sqlite_commit_store.ts: peekDatastoreOwner":
       READ_ONLY_DB,
     "src/infrastructure/datastore_v3/sqlite_commit_outbox.ts: countPendingOutboxEntries":
       READ_ONLY_DB,
-    // swamp-club#3617: reads a commits.db's schema version and history to
-    // restore a lost format marker or resume a setup; changes no schema.
     "src/infrastructure/datastore_v3/v3_datastore.ts: readCommitLogFacts":
       READ_ONLY_DB,
-    // swamp-club#3617: `doctor datastores` reads a checkout's read model
-    // state for unreadable records, at-risk copies and live blobs.
     "src/infrastructure/datastore_v3/v3_content_inspection.ts: inspectV3Content":
       READ_ONLY_DB,
-    // swamp-club#3691: `doctor datastores` reads the directories a v3
-    // checkout's projection was built with.
     "src/infrastructure/datastore_v3/v3_datastore.ts: v3CheckoutFilterRefusal":
       READ_ONLY_DB,
     "src/infrastructure/persistence/extension_catalog_store.ts: ExtensionCatalogStore":
@@ -484,11 +419,8 @@ const NOT_A_SINK: Record<string, Record<string, string>> = {
     "src/serve/sync_gate.ts: runGated": VALUE_FREE_STATUS,
   },
   "file-write": {
-    // swamp-club#3934: a deferred publish names data versions only.
     "src/infrastructure/persistence/pending_publish_store.ts: recordPendingPublish":
       "Writes behavior types and ids, data names, version numbers and data ids, never a data value or a value derived from an expression.",
-    // swamp-club#4121: a checkout's record of the explicit model leases it
-    // holds at serve.
     "src/infrastructure/datastore_v3/explicit_model_leases.ts: writeExplicitLeases":
       "Holds only lease ids, lock keys, fences, holds, expiry times and data names' version numbers: never a value derived from an expression.",
     "src/infrastructure/datastore_v3/litestream/litestream_binary_provider.ts: defaultLitestreamExtractor":
@@ -505,21 +437,16 @@ const NOT_A_SINK: Record<string, Record<string, string>> = {
       CONFIG_WRITE,
     "src/infrastructure/datastore_v3/litestream/replication_files.ts: writePresence":
       CONFIG_WRITE,
-    // swamp-club#3935: a lineage, a TXID, a time and SQLite's integrity
-    // findings, which name pages and indexes, never stored values.
     "src/infrastructure/datastore_v3/litestream/replication_files.ts: writeReplicaVerification":
       CONFIG_WRITE,
-    // swamp-club#3935: the lineage Litestream's local state belongs to.
     "src/infrastructure/datastore_v3/litestream/replication_files.ts: writeLitestreamStateOwner":
       CONFIG_WRITE,
     "src/infrastructure/datastore_v3/v3_config_adoption.ts: commitConfigAdoption":
       CONFIG_WRITE,
     "src/infrastructure/datastore_v3/v3_repo_context.ts: recordWriterCheckout":
       CONFIG_WRITE,
-    // swamp-club#3617: puts back a format marker another process wrote.
     "src/infrastructure/datastore_v3/v3_datastore.ts: removeBlankMarker":
       CONFIG_WRITE,
-    // swamp-club#3939: an empty probe file, removed straight after.
     "src/infrastructure/datastore_v3/spelling_folding.ts: probeSpellingFolding":
       "Writes an empty probe file of a fixed name; no value reaches it.",
     "src/infrastructure/persistence/auth_repository.ts: AuthRepository":
@@ -583,7 +510,6 @@ const NOT_A_SINK: Record<string, Record<string, string>> = {
   },
 };
 
-/** `<file>: <top-level owner>` for every site each scan matches. */
 async function scanPrimitives(): Promise<Map<string, Set<string>>> {
   const sites = new Map<string, Set<string>>(
     PRIMITIVE_SCANS.map((s) => [s.family, new Set<string>()]),
@@ -621,12 +547,7 @@ for (const scan of PRIMITIVE_SCANS) {
   });
 }
 
-// ---------------------------------------------------------------------------
-// Rule 4: event kinds and protocol verbs
-// ---------------------------------------------------------------------------
-
 Deno.test("secret sink inventory: every workflow event kind is inventoried", () => {
-  // Proves the union is still parsed whole.
   assertGreater(EVENT_KINDS.size, 15);
   assertPinnedSet(
     [...EVENT_KINDS].filter((k) => !ANCHORS.has(k)).sort(),
@@ -648,10 +569,6 @@ Deno.test("secret sink inventory: every remote protocol verb is inventoried", ()
   );
 });
 
-// ---------------------------------------------------------------------------
-// Rules 5 and 6: gates and boundary tests
-// ---------------------------------------------------------------------------
-
 Deno.test("secret sink inventory: every gate names a design section and phase", () => {
   const headings = DESIGN_DOC.split("\n").filter((l) => /^#{2,3} /.test(l));
   const missing: string[] = [];
@@ -672,7 +589,6 @@ Deno.test("secret sink inventory: every boundary and protected entry names a liv
   const problems: string[] = [];
   for (const entry of INVENTORY.entries) {
     if (entry.kind === "prohibited") {
-      // Prohibited sinks are read by the swamp-uat canary suite.
       if (entry.test) {
         problems.push(`${entry.id}: prohibited entry names a test`);
       }

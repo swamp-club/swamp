@@ -17,16 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Integration tests for the Definition entity lifecycle.
- *
- * Tests the full flow:
- * 1. Create definitions with static global arguments
- * 2. Create definitions with JsonSchema inputs
- * 3. Create definitions with CEL expressions referencing other models
- * 4. Run methods, verify Data created with correct metadata
- */
-
 import { RunSensitiveValues } from "../src/domain/secrets/mod.ts";
 import { assertEquals, assertExists } from "@std/assert";
 import { join } from "@std/path";
@@ -49,8 +39,8 @@ async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
     await fn(dir);
   } finally {
     if (Deno.build.os === "windows") {
-      // Best-effort: EBUSY can fire when V8 hasn't GC'd native
-      // sqlite handles yet. Temp dir is ephemeral, OS reclaims.
+      // EBUSY can fire on windows before V8 frees native sqlite handles; the
+      // temp dir is ephemeral
       await Deno.remove(dir, { recursive: true }).catch(() => {});
     } else {
       await Deno.remove(dir, { recursive: true });
@@ -63,9 +53,6 @@ async function setupRepoDir(dir: string): Promise<void> {
   await ensureDir(join(dir, ".swamp", "data"));
 }
 
-/**
- * Initializes a test repository with marker file for CLI commands.
- */
 async function initializeTestRepo(repoDir: string): Promise<void> {
   const subdirs = [
     "models",
@@ -112,10 +99,6 @@ async function runCliCommand(
   });
 }
 
-// ============================================================================
-// Static Attributes
-// ============================================================================
-
 Deno.test("Definition Lifecycle: create with static attributes", async () => {
   await withTempDir(async (repoDir) => {
     await setupRepoDir(repoDir);
@@ -139,7 +122,6 @@ Deno.test("Definition Lifecycle: create with static attributes", async () => {
 
     await definitionRepo.save(modelType, definition);
 
-    // Load it back and verify
     const loaded = await definitionRepo.findById(modelType, definition.id);
     assertExists(loaded);
     assertEquals(loaded.name, "static-attrs-model");
@@ -162,7 +144,6 @@ Deno.test("Definition Lifecycle: create and retrieve by name", async () => {
     const definitionRepo = new YamlDefinitionRepository(repoDir);
     const modelType = ModelType.create("test/model");
 
-    // Create multiple definitions
     const def1 = Definition.create({
       name: "first-definition",
       globalArguments: { key: "value1" },
@@ -180,7 +161,6 @@ Deno.test("Definition Lifecycle: create and retrieve by name", async () => {
     await definitionRepo.save(modelType, def2);
     await definitionRepo.save(modelType, def3);
 
-    // Find by name
     const found = await definitionRepo.findByName(
       modelType,
       "second-definition",
@@ -199,21 +179,17 @@ Deno.test("Definition Lifecycle: global name uniqueness enforced", async () => {
     const type1 = ModelType.create("namespace/type1");
     const type2 = ModelType.create("namespace/type2");
 
-    // Create definition in first type
     const def1 = Definition.create({
       name: "unique-name",
       globalArguments: { x: 1 },
     });
     await definitionRepo.save(type1, def1);
 
-    // Find globally
     const found = await definitionRepo.findByNameGlobal("unique-name");
     assertExists(found);
     assertEquals(found.definition.name, "unique-name");
     assertEquals(found.type.normalized, "namespace/type1");
 
-    // Create another definition with same name in different type should fail
-    // when we try to find it globally (uniqueness is enforced at query time)
     const def2 = Definition.create({
       name: "other-name",
       globalArguments: { y: 2 },
@@ -225,10 +201,6 @@ Deno.test("Definition Lifecycle: global name uniqueness enforced", async () => {
     assertEquals(found2.type.normalized, "namespace/type2");
   });
 });
-
-// ============================================================================
-// JsonSchema Inputs
-// ============================================================================
 
 Deno.test("Definition Lifecycle: create with JsonSchema inputs", async () => {
   await withTempDir(async (repoDir) => {
@@ -268,7 +240,6 @@ Deno.test("Definition Lifecycle: create with JsonSchema inputs", async () => {
 
     await definitionRepo.save(modelType, definition);
 
-    // Load and verify
     const loaded = await definitionRepo.findById(modelType, definition.id);
     assertExists(loaded);
     assertExists(loaded.inputs);
@@ -399,17 +370,12 @@ Deno.test("Definition Lifecycle: nested JsonSchema inputs", async () => {
   });
 });
 
-// ============================================================================
-// CEL Expressions Referencing Other Models
-// ============================================================================
-
 Deno.test("Definition Lifecycle: CEL expression references other model input", async () => {
   await withTempDir(async (repoDir) => {
     await setupRepoDir(repoDir);
     const definitionRepo = new YamlDefinitionRepository(repoDir);
     const modelType = ModelType.create("test/model");
 
-    // Create source model
     const sourceModel = Definition.create({
       name: "source_model",
       globalArguments: {
@@ -419,7 +385,6 @@ Deno.test("Definition Lifecycle: CEL expression references other model input", a
     });
     await definitionRepo.save(modelType, sourceModel);
 
-    // Create dependent model that references source
     const dependentModel = Definition.create({
       name: "dependent_model",
       globalArguments: {
@@ -541,16 +506,10 @@ Deno.test("Definition Lifecycle: CEL expression with arithmetic", async () => {
   });
 });
 
-// ============================================================================
-// Run Method and Data Creation
-// ============================================================================
-
 Deno.test("CLI: model method run creates Data with correct metadata", async () => {
   await withTempDir(async (repoDir) => {
-    // Initialize the test repo with marker file
     await initializeTestRepo(repoDir);
 
-    // Create a model definition using repository
     const definitionRepo = new YamlDefinitionRepository(repoDir);
     const modelType = ModelType.create("command/shell");
 
@@ -560,7 +519,6 @@ Deno.test("CLI: model method run creates Data with correct metadata", async () =
     });
     await definitionRepo.save(modelType, definition);
 
-    // Run the execute method via CLI
     const result = await runCliCommand(
       [
         "model",
@@ -586,7 +544,6 @@ Deno.test("CLI: model method run creates Data with correct metadata", async () =
     assertEquals(output.modelName, "data-test-model");
     assertEquals(output.modelType, "command/shell");
 
-    // Verify result artifact was created (shell model produces result with exitCode, command, etc.)
     assertExists(output.dataArtifacts[0]);
     assertExists(output.dataArtifacts[0].id);
     assertExists(output.dataArtifacts[0].path);
@@ -599,10 +556,8 @@ Deno.test("CLI: model method run creates Data with correct metadata", async () =
 
 Deno.test("CLI: model method run creates versioned Data on subsequent calls", async () => {
   await withTempDir(async (repoDir) => {
-    // Initialize the test repo with marker file
     await initializeTestRepo(repoDir);
 
-    // Create a model definition using repository
     const definitionRepo = new YamlDefinitionRepository(repoDir);
     const modelType = ModelType.create("command/shell");
 
@@ -612,7 +567,6 @@ Deno.test("CLI: model method run creates versioned Data on subsequent calls", as
     });
     await definitionRepo.save(modelType, definition);
 
-    // Run the execute method multiple times
     const paths: string[] = [];
     for (let i = 0; i < 3; i++) {
       const result = await runCliCommand(
@@ -639,9 +593,7 @@ Deno.test("CLI: model method run creates versioned Data on subsequent calls", as
       paths.push(output.dataArtifacts[0].path);
     }
 
-    // Verify each run produces unique data
     assertEquals(paths.length, 3);
-    // Verify all paths are unique (each run creates new data)
     const uniquePaths = new Set(paths);
     assertEquals(
       uniquePaths.size,
@@ -657,7 +609,6 @@ Deno.test("Definition Lifecycle: evaluate all definitions in topological order",
     const definitionRepo = new YamlDefinitionRepository(repoDir);
     const modelType = ModelType.create("test/model");
 
-    // Create a chain of dependent models
     const baseModel = Definition.create({
       name: "base_model",
       globalArguments: {
@@ -688,7 +639,6 @@ Deno.test("Definition Lifecycle: evaluate all definitions in topological order",
       repoDir,
     );
 
-    // Evaluate middle model (depends on base)
     const middleResult = await evalService.evaluateDefinition(
       middleModel,
       modelType,
@@ -696,14 +646,10 @@ Deno.test("Definition Lifecycle: evaluate all definitions in topological order",
     );
     assertEquals(middleResult.definition.globalArguments.derived, 20);
 
-    // Note: top_model references middle_model.input.attributes which is the original
-    // definition attributes, not the evaluated ones. This is by design.
+    // top_model references middle_model.input.attributes, the original
+    // definition attributes rather than the evaluated ones, by design
   });
 });
-
-// ============================================================================
-// Edge Cases and Validation
-// ============================================================================
 
 Deno.test("Definition Lifecycle: definition without expressions has hadExpressions=false", async () => {
   await withTempDir(async (repoDir) => {
@@ -750,7 +696,6 @@ Deno.test("Definition Lifecycle: handles inputs with conditional expression", as
       name: "conditional-inputs-model",
       globalArguments: {
         required_val: "${{ inputs.required }}",
-        // Use a simple conditional expression
         computed_val: '${{ inputs.required == "provided" ? "yes" : "no" }}',
       },
       inputs: {
@@ -789,7 +734,6 @@ Deno.test("Definition Lifecycle: environment variable expressions", async () => 
     const definitionRepo = new YamlDefinitionRepository(repoDir);
     const modelType = ModelType.create("test/model");
 
-    // Set an env variable for testing
     await withMockedEnv({ TEST_ENV_VAR: "env-value-123" }, async () => {
       const definition = Definition.create({
         name: "env-var-model",
@@ -805,7 +749,6 @@ Deno.test("Definition Lifecycle: environment variable expressions", async () => 
         repoDir,
       );
 
-      // evaluateDefinition defers env expressions to runtime (leaves raw)
       const result = await evalService.evaluateDefinition(
         definition,
         modelType,
@@ -817,7 +760,6 @@ Deno.test("Definition Lifecycle: environment variable expressions", async () => 
         "${{ env.TEST_ENV_VAR }}",
       );
 
-      // Resolve runtime expressions (env + vault) — this is the runtime phase
       const runtimeResult = await evalService
         .resolveRuntimeExpressionsInDefinition(
           result.definition,
@@ -836,7 +778,6 @@ Deno.test("Definition Lifecycle: environment variable expressions", async () => 
 
 Deno.test("Model creation with attributes via repository", async () => {
   await withTempDir(async (repoDir) => {
-    // Model creation with attributes must be done via repository
     const definitionRepo = new YamlDefinitionRepository(repoDir);
     const modelType = ModelType.create("command/shell");
 
@@ -849,7 +790,6 @@ Deno.test("Model creation with attributes via repository", async () => {
     });
     await definitionRepo.save(modelType, definition);
 
-    // Verify the model was saved
     const loaded = await definitionRepo.findById(modelType, definition.id);
     assertExists(loaded);
     assertEquals(loaded.name, "repo-attrs-model");

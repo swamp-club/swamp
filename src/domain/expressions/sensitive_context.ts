@@ -31,7 +31,6 @@ interface CarriesSensitiveValues {
   [SENSITIVE_VALUES]?: RunSensitiveValues;
 }
 
-/** Attaches the run's sensitive-value record to an expression context. */
 export function attachSensitiveValues<T extends object>(
   context: T,
   values: RunSensitiveValues,
@@ -40,7 +39,6 @@ export function attachSensitiveValues<T extends object>(
   return context;
 }
 
-/** The run's sensitive-value record carried by a context, if any. */
 export function sensitiveValuesOf(
   context: object | undefined,
 ): RunSensitiveValues | undefined {

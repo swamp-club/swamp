@@ -89,7 +89,6 @@ function createTestDefinition(name: string): Definition {
 
 const testType = ModelType.create("test/example");
 
-/** Serialize definition data to YAML, stripping undefined values like save() does. */
 function toCleanYaml(data: Record<string, unknown>): string {
   return stringifyYaml(JSON.parse(JSON.stringify(data)));
 }
@@ -238,7 +237,6 @@ Deno.test("YamlDefinitionRepository.findAll skips broken YAML files", async () =
 
     await repo.save(testType, goodDef);
 
-    // Write a broken YAML file in the same type directory
     const typeDir = join(dir, "models", testType.toDirectoryPath());
     await Deno.writeTextFile(
       join(typeDir, "broken.yaml"),
@@ -247,7 +245,6 @@ Deno.test("YamlDefinitionRepository.findAll skips broken YAML files", async () =
 
     const results = await repo.findAll(testType);
 
-    // Should return the good definition and skip the broken one
     assertEquals(results.length, 1);
     assertEquals(results[0].name, "good-def");
   });
@@ -260,7 +257,6 @@ Deno.test("YamlDefinitionRepository.findAllGlobal skips broken YAML files", asyn
 
     await repo.save(testType, goodDef);
 
-    // Write a broken YAML file in the same type directory
     const typeDir = join(dir, "models", testType.toDirectoryPath());
     await Deno.writeTextFile(
       join(typeDir, "broken.yaml"),
@@ -269,7 +265,6 @@ Deno.test("YamlDefinitionRepository.findAllGlobal skips broken YAML files", asyn
 
     const results = await repo.findAllGlobal();
 
-    // Should return the good definition and skip the broken one
     assertEquals(results.length, 1);
     assertEquals(results[0].definition.name, "good-def");
   });
@@ -282,14 +277,12 @@ Deno.test("YamlDefinitionRepository.findByNameGlobal skips broken YAML files", a
 
     await repo.save(testType, goodDef);
 
-    // Write a broken YAML file in the same type directory
     const typeDir = join(dir, "models", testType.toDirectoryPath());
     await Deno.writeTextFile(
       join(typeDir, "broken.yaml"),
       "not valid yaml content {{{",
     );
 
-    // Should still find the good definition despite the broken file
     const result = await repo.findByNameGlobal("good-def");
     assertNotEquals(result, null);
     assertEquals(result!.definition.name, "good-def");
@@ -303,7 +296,6 @@ Deno.test("YamlDefinitionRepository.findAllGlobal skips schema-invalid YAML file
 
     await repo.save(testType, goodDef);
 
-    // Write a valid YAML file that fails schema validation (missing required fields)
     const typeDir = join(dir, "models", testType.toDirectoryPath());
     const invalidData = { description: "no name or id field" };
     await Deno.writeTextFile(
@@ -313,7 +305,6 @@ Deno.test("YamlDefinitionRepository.findAllGlobal skips schema-invalid YAML file
 
     const results = await repo.findAllGlobal();
 
-    // Should return only the good definition
     assertEquals(results.length, 1);
     assertEquals(results[0].definition.name, "good-def");
   });
@@ -346,11 +337,8 @@ Deno.test("YamlDefinitionRepository.findAll discovers symlinked YAML files targe
     const repo = new YamlDefinitionRepository(dir);
     const definition = createTestDefinition("real-def");
 
-    // Save a real definition first
     await repo.save(testType, definition);
 
-    // Simulate legacy layout: real file lives in .swamp/definitions/ (inside repo,
-    // outside models/), symlinked into models/
     const secondDef = createTestDefinition("legacy-def");
     const legacyDir = join(
       dir,
@@ -382,8 +370,6 @@ Deno.test("YamlDefinitionRepository.findAllGlobal discovers symlinked YAML files
     const definition = createTestDefinition("real-def");
     await repo.save(testType, definition);
 
-    // Simulate extension layout: real file in extensions/models/ (inside repo,
-    // outside models/), symlinked into models/
     const symDef = createTestDefinition("ext-def");
     const extDir = join(
       dir,
@@ -413,7 +399,6 @@ Deno.test("YamlDefinitionRepository.findByNameGlobal discovers symlinked YAML fi
   await withTempDir(async (dir) => {
     const repo = new YamlDefinitionRepository(dir);
 
-    // Simulate extension layout: real file in extensions/models/, symlinked into models/
     const symDef = createTestDefinition("ext-find");
     const extDir = join(
       dir,
@@ -443,14 +428,12 @@ Deno.test("YamlDefinitionRepository.findAllGlobal uses YAML type field over path
   await withTempDir(async (dir) => {
     const repo = new YamlDefinitionRepository(dir);
 
-    // Create a definition with a type that differs from the directory path
     const def = Definition.create({
       name: "typed-def",
       type: "@smith/kibana-dev",
       globalArguments: { key: "value" },
     });
 
-    // Save it under a directory that doesn't match the YAML type
     const typeDir = join(dir, "models", "kibana");
     await ensureDir(typeDir);
     const data = def.toData();
@@ -470,7 +453,6 @@ Deno.test("YamlDefinitionRepository.findByNameGlobal uses YAML type field over p
   await withTempDir(async (dir) => {
     const repo = new YamlDefinitionRepository(dir);
 
-    // Create a definition with a type that differs from the directory path
     const def = Definition.create({
       name: "typed-find",
       type: "@smith/kibana-dev",
@@ -496,7 +478,6 @@ Deno.test("YamlDefinitionRepository.findAllGlobal falls back to path-based type 
   await withTempDir(async (dir) => {
     const repo = new YamlDefinitionRepository(dir);
 
-    // Create a definition without a type field in the YAML
     const def = Definition.create({
       name: "no-type-def",
       globalArguments: { key: "value" },
@@ -521,17 +502,15 @@ Deno.test("YamlDefinitionRepository.findAllGlobal resolves symlinked extension w
   await withTempDir(async (dir) => {
     const repo = new YamlDefinitionRepository(dir);
 
-    // Simulate the real issue #683 scenario: user has @smith/kibana-dev extension
-    // installed. The definition YAML lives in extensions/models/ and is symlinked
-    // into models/. The YAML type field says "@smith/kibana-dev" but the directory
-    // path is just "kibana-dev".
+    // an extension definition lives in extensions/models/ and is symlinked into
+    // models/; its YAML type is @smith/kibana-dev but the directory path is
+    // just kibana-dev
     const def = Definition.create({
       name: "my-kibana",
       type: "@smith/kibana-dev",
       globalArguments: { host: "localhost" },
     });
 
-    // Extension file lives in extensions/models/
     const extDir = join(dir, "extensions", "models", "kibana-dev");
     await ensureDir(extDir);
     const realFile = join(extDir, `${def.id}.yaml`);
@@ -539,7 +518,6 @@ Deno.test("YamlDefinitionRepository.findAllGlobal resolves symlinked extension w
     data.type = "@smith/kibana-dev";
     await Deno.writeTextFile(realFile, toCleanYaml(data));
 
-    // Symlink into models/ under directory that doesn't match full scoped type
     const typeDir = join(dir, "models", "kibana-dev");
     await ensureDir(typeDir);
     await Deno.symlink(realFile, join(typeDir, `${def.id}.yaml`), {
@@ -548,7 +526,6 @@ Deno.test("YamlDefinitionRepository.findAllGlobal resolves symlinked extension w
 
     const results = await repo.findAllGlobal();
     assertEquals(results.length, 1);
-    // Must use the YAML type "@smith/kibana-dev", not the path "kibana-dev"
     assertEquals(results[0].type.normalized, "@smith/kibana-dev");
     assertEquals(results[0].definition.name, "my-kibana");
   });
@@ -560,7 +537,6 @@ Deno.test("YamlDefinitionRepository.findAll rejects symlink pointing outside rep
     const definition = createTestDefinition("good-def");
     await repo.save(testType, definition);
 
-    // Create a symlink pointing completely outside the repo boundary
     const outsideDir = await Deno.makeTempDir();
     try {
       const outsideFile = join(outsideDir, "evil.yaml");
@@ -579,7 +555,6 @@ Deno.test("YamlDefinitionRepository.findAll rejects symlink pointing outside rep
         type: "file",
       });
 
-      // Should only return the good definition, skipping the evil symlink
       const results = await repo.findAll(testType);
       assertEquals(results.length, 1);
       assertEquals(results[0].name, "good-def");
@@ -588,8 +563,6 @@ Deno.test("YamlDefinitionRepository.findAll rejects symlink pointing outside rep
     }
   });
 });
-
-// Secondary search path tests
 
 Deno.test("YamlDefinitionRepository.findByNameGlobal finds definition in secondary dir", async () => {
   await withTempDir(async (dir) => {
@@ -602,7 +575,6 @@ Deno.test("YamlDefinitionRepository.findByNameGlobal finds definition in seconda
       secondaryDir,
     );
 
-    // Save to secondary dir directly
     const secondaryRepo = new YamlDefinitionRepository(
       dir,
       undefined,
@@ -612,7 +584,6 @@ Deno.test("YamlDefinitionRepository.findByNameGlobal finds definition in seconda
     const def = createTestDefinition("auto-created-def");
     await secondaryRepo.save(testType, def);
 
-    // Primary repo should find it via secondary search
     const found = await repo.findByNameGlobal("auto-created-def");
     assertNotEquals(found, null);
     assertEquals(found!.definition.name, "auto-created-def");
@@ -630,7 +601,6 @@ Deno.test("YamlDefinitionRepository.findByNameGlobal prefers primary over second
       secondaryDir,
     );
 
-    // Save different definitions with the same name to both dirs
     const primaryRepo = new YamlDefinitionRepository(
       dir,
       undefined,
@@ -656,7 +626,6 @@ Deno.test("YamlDefinitionRepository.findByNameGlobal prefers primary over second
     await primaryRepo.save(testType, primaryDef);
     await secondaryRepo.save(testType, secondaryDef);
 
-    // Should find the primary one
     const found = await repo.findByNameGlobal("shared-name");
     assertNotEquals(found, null);
     assertEquals(found!.definition.id, primaryDef.id);
@@ -690,7 +659,6 @@ Deno.test("YamlDefinitionRepository.findAllGlobal excludes secondary dir", async
     await primaryRepo.save(testType, createTestDefinition("primary-def"));
     await secondaryRepo.save(testType, createTestDefinition("auto-def"));
 
-    // findAllGlobal should only return primary
     const all = await repo.findAllGlobal();
     assertEquals(all.length, 1);
     assertEquals(all[0].definition.name, "primary-def");
@@ -717,19 +685,15 @@ Deno.test("YamlDefinitionRepository.findById falls back to secondary dir", async
     const def = createTestDefinition("by-id-def");
     await secondaryRepo.save(testType, def);
 
-    // Should find by ID in secondary
     const found = await repo.findById(testType, def.id);
     assertNotEquals(found, null);
     assertEquals(found!.name, "by-id-def");
   });
 });
 
-// --- Sensitive global-argument chokepoint guard ---
-//
-// save() is the single seam every source-definition writer funnels through, so
-// the guard that refuses a literal value for a `{ sensitive: true }` global
-// argument is enforced here. It resolves the schema from the model registry, so
-// these tests register a real type via defineModel.
+// save() is the single seam every definition writer funnels through, so the
+// guard refusing a literal for a sensitive global argument lives here; it reads
+// the schema from the model registry
 
 const SENSITIVE_SAVE_TYPE = ModelType.create("test/sensitive-save");
 defineModel({
@@ -885,8 +849,6 @@ Deno.test("YamlDefinitionRepository.save passes through an unregistered type (sc
   });
 });
 
-// --- Name-based filename tests ---
-
 Deno.test("YamlDefinitionRepository.save writes name-based filename for kebab-case names", async () => {
   await withTempDir(async (dir) => {
     const repo = new YamlDefinitionRepository(dir);
@@ -894,7 +856,6 @@ Deno.test("YamlDefinitionRepository.save writes name-based filename for kebab-ca
 
     await repo.save(testType, definition);
 
-    // File should be at {name}.yaml, not {uuid}.yaml
     const namePath = join(
       dir,
       "models",
@@ -904,7 +865,6 @@ Deno.test("YamlDefinitionRepository.save writes name-based filename for kebab-ca
     const stat = await Deno.stat(namePath);
     assertEquals(stat.isFile, true);
 
-    // UUID path should not exist
     const uuidPath = join(
       dir,
       "models",
@@ -925,7 +885,6 @@ Deno.test("YamlDefinitionRepository.save migrates UUID file to name-based on edi
     const repo = new YamlDefinitionRepository(dir);
     const definition = createTestDefinition("migrate-me");
 
-    // Manually write a UUID-named file (simulating legacy)
     const typeDir = join(dir, "models", testType.toDirectoryPath());
     await ensureDir(typeDir);
     const uuidPath = join(typeDir, `${definition.id}.yaml`);
@@ -933,17 +892,14 @@ Deno.test("YamlDefinitionRepository.save migrates UUID file to name-based on edi
     data.type = testType.normalized;
     await Deno.writeTextFile(uuidPath, toCleanYaml(data));
 
-    // Now save via repo — should migrate to name-based
     const loaded = await repo.findById(testType, definition.id);
     assertNotEquals(loaded, null);
     await repo.save(testType, loaded!);
 
-    // Name-based file should exist
     const namePath = join(typeDir, "migrate-me.yaml");
     const stat = await Deno.stat(namePath);
     assertEquals(stat.isFile, true);
 
-    // UUID file should be gone
     try {
       await Deno.stat(uuidPath);
       assertEquals(true, false, "UUID file should have been removed");
@@ -970,7 +926,6 @@ Deno.test("YamlDefinitionRepository.getPath returns UUID path for legacy files",
     const repo = new YamlDefinitionRepository(dir);
     const definition = createTestDefinition("legacy-file");
 
-    // Manually write a UUID-named file (no save through repo)
     const typeDir = join(dir, "models", testType.toDirectoryPath());
     await ensureDir(typeDir);
     const uuidPath = join(typeDir, `${definition.id}.yaml`);
@@ -978,7 +933,6 @@ Deno.test("YamlDefinitionRepository.getPath returns UUID path for legacy files",
     data.type = testType.normalized;
     await Deno.writeTextFile(uuidPath, toCleanYaml(data));
 
-    // findById populates cache with actual path
     await repo.findById(testType, definition.id);
     const path = repo.getPath(testType, definition.id);
     assertStringIncludes(path, `${definition.id}.yaml`);
@@ -1002,15 +956,12 @@ Deno.test("YamlDefinitionRepository.findByName falls through when file name dive
   await withTempDir(async (dir) => {
     const repo = new YamlDefinitionRepository(dir);
 
-    // Create two definitions
     const def1 = createTestDefinition("original");
     const def2 = createTestDefinition("renamed");
 
     await repo.save(testType, def1);
     await repo.save(testType, def2);
 
-    // Manually swap the content of renamed.yaml to have name "original"
-    // (simulating someone editing the YAML name without renaming the file)
     const typeDir = join(dir, "models", testType.toDirectoryPath());
     const renamedPath = join(typeDir, "renamed.yaml");
     const data = def2.toData();
@@ -1018,8 +969,6 @@ Deno.test("YamlDefinitionRepository.findByName falls through when file name dive
     data.type = testType.normalized;
     await Deno.writeTextFile(renamedPath, toCleanYaml(data));
 
-    // findByName("renamed") should fall through to slow path since
-    // the file content says "original", not "renamed"
     const found = await repo.findByName(testType, "renamed");
     assertEquals(found, null);
   });
@@ -1032,16 +981,12 @@ Deno.test("YamlDefinitionRepository.delete handles name-based files", async () =
 
     await repo.save(testType, definition);
 
-    // Verify it exists
     assertNotEquals(await repo.findById(testType, definition.id), null);
 
-    // Delete it
     await repo.delete(testType, definition.id);
 
-    // Should be gone
     assertEquals(await repo.findById(testType, definition.id), null);
 
-    // File should not exist
     const namePath = join(
       dir,
       "models",
@@ -1059,21 +1004,16 @@ Deno.test("YamlDefinitionRepository.delete handles name-based files", async () =
 
 Deno.test("YamlDefinitionRepository.delete handles cold cache with name-based files", async () => {
   await withTempDir(async (dir) => {
-    // Save definition with one repo instance
     const repo1 = new YamlDefinitionRepository(dir);
     const definition = createTestDefinition("cold-delete");
     await repo1.save(testType, definition);
 
-    // Delete with a fresh repo instance (cold cache)
     const repo2 = new YamlDefinitionRepository(dir);
     await repo2.delete(testType, definition.id);
 
-    // Should be gone
     assertEquals(await repo2.findById(testType, definition.id), null);
   });
 });
-
-// --- I/O error propagation tests ---
 
 Deno.test("YamlDefinitionRepository.findAll throws UserError on EMFILE", async () => {
   await withTempDir(async (dir) => {
@@ -1150,8 +1090,6 @@ Deno.test("YamlDefinitionRepository.findAllGlobal throws UserError on EACCES", a
   });
 });
 
-// --- Skip-write and comment-preservation tests ---
-
 Deno.test("YamlDefinitionRepository.save: skips write when data is unchanged", async () => {
   await withTempDir(async (dir) => {
     const repo = new YamlDefinitionRepository(dir);
@@ -1162,23 +1100,19 @@ Deno.test("YamlDefinitionRepository.save: skips write when data is unchanged", a
     const typeDir = join(dir, "models", testType.toDirectoryPath());
     const filePath = join(typeDir, "unchanged-def.yaml");
 
-    // Advance mtime so we can detect a rewrite
     await Deno.utime(filePath, new Date(), new Date(0));
     const statAfterUtime = await Deno.stat(filePath);
     assertEquals(statAfterUtime.mtime?.getTime(), 0);
 
-    // Save again with the same data
     await repo.save(testType, definition);
 
     const statAfterSave = await Deno.stat(filePath);
-    // mtime should still be 0 — file was not rewritten
     assertEquals(
       statAfterSave.mtime?.getTime(),
       0,
       "File was rewritten despite unchanged data",
     );
 
-    // Content should still be readable and correct
     const loaded = await repo.findById(testType, definition.id);
     assertEquals(loaded!.name, "unchanged-def");
   });
@@ -1194,10 +1128,8 @@ Deno.test("YamlDefinitionRepository.save: writes when data has changed", async (
     const typeDir = join(dir, "models", testType.toDirectoryPath());
     const filePath = join(typeDir, "changed-def.yaml");
 
-    // Set mtime to epoch so we can detect a rewrite
     await Deno.utime(filePath, new Date(), new Date(0));
 
-    // Mutate the definition and save again
     definition.setGlobalArgument("newKey", "newValue");
     await repo.save(testType, definition);
 
@@ -1223,7 +1155,6 @@ Deno.test("YamlDefinitionRepository.save: preserves YAML comments when data chan
     const typeDir = join(dir, "models", testType.toDirectoryPath());
     const filePath = join(typeDir, "commented-def.yaml");
 
-    // Manually add comments to the saved file
     const original = await Deno.readTextFile(filePath);
     const withComments = "# This is an important header comment\n" + original
       .replace(
@@ -1232,7 +1163,6 @@ Deno.test("YamlDefinitionRepository.save: preserves YAML comments when data chan
       );
     await Deno.writeTextFile(filePath, withComments);
 
-    // Change a tag (not globalArguments) and save
     definition.setTag("env", "prod");
     await repo.save(testType, definition);
 
@@ -1259,7 +1189,6 @@ Deno.test("YamlDefinitionRepository.save: preserves comments inside globalArgume
     const typeDir = join(dir, "models", testType.toDirectoryPath());
     const filePath = join(typeDir, "deep-comments.yaml");
 
-    // Add a comment inside globalArguments explaining a sizing decision
     const original = await Deno.readTextFile(filePath);
     const withComment = original.replace(
       "rootVolume: 64",
@@ -1267,7 +1196,6 @@ Deno.test("YamlDefinitionRepository.save: preserves comments inside globalArgume
     );
     await Deno.writeTextFile(filePath, withComment);
 
-    // Change instanceType but NOT rootVolume
     definition.setGlobalArgument("instanceType", "m5.xlarge");
     await repo.save(testType, definition);
 
@@ -1295,8 +1223,6 @@ Deno.test("YamlDefinitionRepository.save: new definitions always write", async (
     assertStringIncludes(content, "brand-new");
   });
 });
-
-// --- Regression: YAML 1.1/1.2 schema mismatch (issue #2120) ---
 
 Deno.test("YamlDefinitionRepository.save: preserves quotes on timestamp strings in sequences and retains comments", async () => {
   await withTempDir(async (dir) => {
@@ -1330,25 +1256,21 @@ Deno.test("YamlDefinitionRepository.save: preserves quotes on timestamp strings 
     const typeDir = join(dir, "models", testType.toDirectoryPath());
     const filePath = join(typeDir, "timestamp-enums.yaml");
 
-    // Add a comment so we verify comment preservation alongside quoting
     const original = await Deno.readTextFile(filePath);
     const withComment = "# Regression test — do not remove\n" + original;
     await Deno.writeTextFile(filePath, withComment);
 
-    // Mutate a different field to force a changed save through the merge path
     definition.setTag("env", "prod");
     await repo.save(testType, definition);
 
     const saved = await Deno.readTextFile(filePath);
 
-    // Comment must survive
     assertStringIncludes(
       saved,
       "# Regression test — do not remove",
       "Comment was lost during merge",
     );
 
-    // Timestamp strings must remain quoted in raw output
     assertStringIncludes(saved, "env: prod");
     const rfc3339Unquoted = /- 2026-09-03T01:02:03Z\s/;
     const dateOnlyUnquoted = /- 2026-09-03\s/;
@@ -1363,7 +1285,6 @@ Deno.test("YamlDefinitionRepository.save: preserves quotes on timestamp strings 
       "Date-only timestamp lost its quotes in raw YAML output",
     );
 
-    // @std/yaml reload must return strings, not Date objects
     const reloaded = parseYaml(saved) as Record<string, unknown>;
     const globalArgs = reloaded.globalArguments as Record<string, unknown>;
     const stages = globalArgs.stages as Array<Record<string, unknown>>;
@@ -1389,12 +1310,8 @@ Deno.test("YamlDefinitionRepository.save: preserves quotes on timestamp strings 
   });
 });
 
-// --- Name → path hint tests ---
-//
-// These pin the efficiency claim by COUNTING filesystem reads, never by timing
-// (AGENTS.md forbids wall-clock assertions). The counter wraps and delegates to
-// the real Deno.readTextFile and is restored in a finally block, installed only
-// across the call being measured.
+// these pin the efficiency claim by counting filesystem reads, never by timing;
+// the counter wraps Deno.readTextFile and is restored in a finally
 async function countingReads<T>(fn: () => Promise<T>): Promise<[T, number]> {
   const original = Deno.readTextFile;
   let count = 0;
@@ -1409,7 +1326,6 @@ async function countingReads<T>(fn: () => Promise<T>): Promise<[T, number]> {
   }
 }
 
-/** Writes a definition under a legacy `{uuid}.yaml` filename. */
 async function writeLegacyNamedFile(
   baseDir: string,
   definition: Definition,
@@ -1428,7 +1344,6 @@ Deno.test("YamlDefinitionRepository.findByName reuses a hint for legacy-filename
     const repo = new YamlDefinitionRepository(dir);
     const target = createTestDefinition("hinted-def");
     await writeLegacyNamedFile(join(dir, "models"), target);
-    // Noise the discovery walk has to parse before reaching the target.
     for (let i = 0; i < 5; i++) {
       await writeLegacyNamedFile(
         join(dir, "models"),
@@ -1477,7 +1392,6 @@ Deno.test("YamlDefinitionRepository.findByName hints names that are not filename
       repo.findByName(testType, scoped)
     );
     assertEquals(second?.id, target.id);
-    // No ENOENT probe here — the fast path is skipped for this name entirely.
     assertEquals(secondReads, 1);
   });
 });
@@ -1511,7 +1425,6 @@ Deno.test("YamlDefinitionRepository.findByName hints definitions in the secondar
   });
 });
 
-/** Writes a definition under its name-derived filename, as save() does. */
 async function writeNameDerivedFile(
   baseDir: string,
   definition: Definition,
@@ -1632,7 +1545,6 @@ Deno.test("YamlDefinitionRepository.findByNameGlobal reuses a hint across calls"
       repo.findByNameGlobal("global-hinted")
     );
     assertEquals(second?.definition.id, target.id);
-    // Type resolution must survive the hint path, not just the identity.
     assertEquals(second?.type.normalized, testType.normalized);
     assertEquals(secondReads, 1);
   });
@@ -1644,7 +1556,6 @@ Deno.test("YamlDefinitionRepository hints do not hide an external rename", async
     const target = createTestDefinition("before-rename");
     const path = await writeLegacyNamedFile(join(dir, "models"), target);
 
-    // Warm the hint for both lookups.
     assertEquals(
       (await repo.findByName(testType, "before-rename"))?.id,
       target.id,
@@ -1654,13 +1565,11 @@ Deno.test("YamlDefinitionRepository hints do not hide an external rename", async
       target.id,
     );
 
-    // Someone edits the name field in place, outside the repository.
     const data = target.toData();
     data.name = "after-rename";
     data.type = testType.normalized;
     await Deno.writeTextFile(path, toCleanYaml(data));
 
-    // The stale hint must not serve the old name, and the new name must resolve.
     assertEquals(await repo.findByName(testType, "before-rename"), null);
     assertEquals(await repo.findByNameGlobal("before-rename"), null);
     assertEquals(
@@ -1702,7 +1611,6 @@ Deno.test("YamlDefinitionRepository hints do not hide an externally added defini
     const first = createTestDefinition("resident");
     await writeLegacyNamedFile(join(dir, "models"), first);
 
-    // Warm hints, and confirm a miss is never cached as a negative result.
     assertEquals((await repo.findByName(testType, "resident"))?.id, first.id);
     assertEquals(await repo.findByName(testType, "newcomer"), null);
     assertEquals(await repo.findByNameGlobal("newcomer"), null);
@@ -1725,7 +1633,6 @@ Deno.test("YamlDefinitionRepository hint rejects a path swapped for an escaping 
       const target = createTestDefinition("swap-target");
       const path = await writeLegacyNamedFile(join(dir, "models"), target);
 
-      // Warm the hint while the path is a plain file.
       assertEquals(
         (await repo.findByName(testType, "swap-target"))?.id,
         target.id,
@@ -1755,7 +1662,6 @@ Deno.test("YamlDefinitionRepository hints never let a secondary definition shado
     const auto = createTestDefinition("shared-name");
     await writeLegacyNamedFile(join(dir, ".swamp", "auto-definitions"), auto);
 
-    // Warm both hints against the only definition that exists so far.
     assertEquals((await repo.findByName(testType, "shared-name"))?.id, auto.id);
     assertEquals(
       (await repo.findByNameGlobal("shared-name"))?.definition.id,
@@ -1801,7 +1707,6 @@ Deno.test("YamlDefinitionRepository.findByNameGlobal skips definitions with an i
     assertEquals(await repo.findByNameGlobal("ghost"), null);
     assertEquals(await repo.findByNameGlobal("ghost"), null);
 
-    // Same when a file is edited to an invalid type after its hint is warm.
     const spirit = createTestDefinition("spirit");
     await writeWithType(spirit, testType.normalized);
     assertEquals(
@@ -1813,15 +1718,9 @@ Deno.test("YamlDefinitionRepository.findByNameGlobal skips definitions with an i
   });
 });
 
-// ---------------------------------------------------------------------------
-// typeVersion ownership (swamp-club#900)
-//
-// `save` used to overwrite typeVersion with the registered model's version on
-// every write. That marked a stale instance as current without migrating its
-// global arguments, and because DefinitionUpgradeService short-circuits once
-// typeVersion is at or above the model version, no upgrade chain shipped later
-// could ever run — the instance was stranded permanently.
-// ---------------------------------------------------------------------------
+// save must not overwrite typeVersion with the registered model's version: that
+// marks a stale instance current without migrating it and strands it from later
+// upgrade chains
 
 const STALE_SAVE_TYPE = ModelType.create("test/stale-save");
 
@@ -1838,7 +1737,6 @@ Deno.test("YamlDefinitionRepository.save does not advance a definition's typeVer
     const definition = Definition.create({
       name: "stale-instance",
       type: STALE_SAVE_TYPE.normalized,
-      // Created against an older version; its arguments were never migrated.
       typeVersion: "2026.01.01.1",
       globalArguments: { project: "demo" },
     });
@@ -1870,7 +1768,6 @@ Deno.test("YamlDefinitionRepository.save leaves an absent typeVersion absent", a
       unknown
     >;
     assertEquals(data.typeVersion, undefined);
-    // Type metadata is still written — that part was always the intent.
     assertEquals(data.type, STALE_SAVE_TYPE.normalized);
   });
 });
@@ -1919,7 +1816,6 @@ Deno.test("YamlDefinitionRepository.isAutoDefinition tells models/ from auto-def
     const auto = createTestDefinition("auto");
     const primaryBoth = createTestDefinition("both");
     const autoBoth = createTestDefinition("both");
-    // Two models/ definitions sharing a name under different types.
     const firstTwin = createTestDefinition("twin");
     const secondTwin = createTestDefinition("twin");
     await primaryRepo.save(testType, authored);
@@ -1932,7 +1828,6 @@ Deno.test("YamlDefinitionRepository.isAutoDefinition tells models/ from auto-def
     assertEquals(await repo.isAutoDefinition(authored, testType), false);
     assertEquals(await repo.isAutoDefinition(auto, testType), true);
     assertEquals(await repo.isAutoDefinition(primaryBoth, testType), false);
-    // Reached by UUID beside a same-named models/ definition.
     assertEquals(await repo.isAutoDefinition(autoBoth, testType), true);
     assertEquals(await repo.isAutoDefinition(firstTwin, testType), false);
     assertEquals(await repo.isAutoDefinition(secondTwin, otherType), false);
@@ -1954,11 +1849,6 @@ Deno.test("YamlDefinitionRepository.isAutoDefinition is false with no auto-defin
   });
 });
 
-/**
- * A repo with a definitions dir and an auto-definitions dir, plus the
- * single-directory repos that write into each (as the token mint and
- * `swamp model create` do).
- */
 function autoDefinitionFixture(dir: string) {
   const primaryDir = join(dir, "models");
   const secondaryDir = join(dir, ".swamp", "auto-definitions");
@@ -1972,7 +1862,6 @@ function autoDefinitionFixture(dir: string) {
       primaryDir,
       false,
     ),
-    /** A fresh shared repo: secondary search on, nothing cached. */
     sharedRepo: (
       eventBus?: EventBus,
       markDirty?: (path?: string) => Promise<void>,
@@ -2060,7 +1949,6 @@ Deno.test("YamlDefinitionRepository.delete: removes an auto-definition after fin
 Deno.test("YamlDefinitionRepository.delete: removes an auto-definition stored under its id", async () => {
   await withTempDir(async (dir) => {
     const fx = autoDefinitionFixture(dir);
-    // Names that are not filename-safe are stored as {id}.yaml.
     const def = Definition.fromData({
       ...createTestDefinition("placeholder").toData(),
       name: "Not Filename Safe",
@@ -2132,7 +2020,6 @@ Deno.test("YamlDefinitionRepository.delete: never removes a name-path file decla
     const target = createTestDefinition("renamed-away");
     await fx.primaryRepo.save(testType, target);
     const targetFile = fx.primaryRepo.getPath(testType, target.id);
-    // Another definition now occupies the name path the target was saved at.
     const other = createTestDefinition("renamed-away");
     await Deno.writeTextFile(
       targetFile,
@@ -2322,7 +2209,6 @@ Deno.test("YamlDefinitionRepository.findAllByIdGlobal returns every definition d
     );
     const shared = Definition.create({ name: "prod-db", globalArguments: {} });
     await repo.save(testType, shared);
-    // A copied file keeps the id.
     const path = repo.getPath(testType, shared.id);
     await Deno.writeTextFile(
       join(dirname(path), "safe-model.yaml"),
@@ -2331,8 +2217,6 @@ Deno.test("YamlDefinitionRepository.findAllByIdGlobal returns every definition d
         "name: safe-model",
       ),
     );
-    // An auto-definition, and a definition of a type nobody registered, with
-    // the same id.
     const secondaryRepo = new YamlDefinitionRepository(
       dir,
       undefined,
@@ -2427,7 +2311,6 @@ Deno.test("YamlDefinitionRepository.delete: stages a remove of the deleted file"
 
     await runInUnitOfWork(uow, () => repo.delete(testType, definition.id));
 
-    // Signalled before the write and again after it (swamp-club#2421).
     assertEquals(uow.staged(), [{ kind: "remove", path }, {
       kind: "remove",
       path,
@@ -2457,7 +2340,6 @@ Deno.test("YamlDefinitionRepository.delete: stages a write when the file holds a
 
     await runInUnitOfWork(uow, () => repo.delete(testType, ghost.id));
 
-    // Signalled before the write and again after it (swamp-club#2421).
     assertEquals(uow.staged(), [{ kind: "write", path }, {
       kind: "write",
       path,
@@ -2467,16 +2349,9 @@ Deno.test("YamlDefinitionRepository.delete: stages a write when the file holds a
   });
 });
 
-// --- Comment preservation when the definition file moves (swamp-club#3012) ---
-//
-// A definition's file moves when a legacy uuid-named file migrates to its
-// name-based path, and when the definition is renamed. Both used to rewrite
-// the file from scratch, dropping every comment and re-wrapping long scalars.
-
 const LONG_EXPRESSION =
   '${{ data.latest("some-other-model-with-a-long-name", "some-resource-name").attributes.someField }}';
 
-/** A hand-written definition file: comments, and one line past 80 columns. */
 function commentedDefinitionYaml(
   id: string,
   name: string,
@@ -2499,7 +2374,6 @@ function commentedDefinitionYaml(
   ].join("\n");
 }
 
-/** The definition `yaml` declares, with `overrides` applied. */
 function definitionFromYaml(
   yaml: string,
   overrides: Record<string, unknown> = {},
@@ -2588,7 +2462,6 @@ Deno.test("YamlDefinitionRepository.save: a stale cached path holding another de
     const definition = createTestDefinition("hinted");
     await repo.save(testType, definition);
 
-    // Another definition takes over the file behind the repository's back.
     const typeDir = join(dir, "models", testType.toDirectoryPath());
     const hintedPath = join(typeDir, "hinted.yaml");
     const other = commentedDefinitionYaml(crypto.randomUUID(), "hinted");
@@ -2998,11 +2871,6 @@ Deno.test("YamlDefinitionRepository.findByName prefers a primary definition over
   });
 });
 
-// ---------------------------------------------------------------------------
-// Upgrade write-back keeps the file's text (swamp-club#3502)
-// ---------------------------------------------------------------------------
-
-/** A hand-written definition with comments in lists, an anchor and quoting. */
 function richDefinitionYaml(id: string, name: string): string {
   return [
     "# Hand-written header comment",
@@ -3033,7 +2901,6 @@ function richDefinitionYaml(id: string, name: string): string {
   ].join("\n");
 }
 
-/** The data `yaml` declares, as independent JSON values (aliases unshared). */
 function jsonDataFromYaml(yaml: string): Record<string, unknown> {
   return JSON.parse(JSON.stringify(parseYaml(yaml)));
 }
@@ -3158,7 +3025,6 @@ Deno.test("YamlDefinitionRepository.save: a changed string that would read as an
   });
 });
 
-/** A commented file whose scalars use each style an in-place edit meets. */
 function scalarStylesYaml(id: string): string {
   return [
     "# hand-written comment",
@@ -3490,7 +3356,6 @@ Deno.test("YamlDefinitionRepository: definitionRoots and readDefinitionFile read
   });
 });
 
-/** The one `definition_lookup` phase `lookup` exports in the enrollment area. */
 async function observeLookup<T>(
   lookup: () => Promise<T>,
   check: (
@@ -3570,7 +3435,6 @@ Deno.test("YamlDefinitionRepository.findByName: a primary scan is a definition_s
         const lookup = findSpan(spans, "swamp.diagnostic.definition_lookup");
         const scan = findSpan(spans, "swamp.diagnostic.definition_scan");
         assert(isChildOf(scan, lookup));
-        // Inherited from the caller's label, by the nested scan too.
         assertEquals(
           scan.attributes["swamp.diagnostic.lookup_attempt"],
           "initial",
@@ -3663,7 +3527,6 @@ Deno.test("YamlDefinitionRepository.findByName: an auto-definition at its name-d
           hit: true,
           source: "auto",
         });
-        // The primary root is scanned first; the index is not consulted.
         assertEquals(
           diagnosticPhases(spans, "definition_scan").map((s) =>
             s.attributes["swamp.diagnostic.scan_root"]
@@ -3672,7 +3535,6 @@ Deno.test("YamlDefinitionRepository.findByName: an auto-definition at its name-d
         );
       },
     );
-    // Answered from the hint the first lookup recorded.
     await observeLookup(
       () => repo.findByName(testType, "auto-named"),
       (spans) => assertEquals(lookupAttributes(spans).method, "secondary_hint"),
@@ -3785,10 +3647,6 @@ Deno.test("YamlDefinitionRepository.findByNameGlobal: counts its walk and its re
   });
 });
 
-/**
- * A repository over `dir` with a definition index over itself attached, as
- * `swamp serve` wires it, with a count of the index's lookups.
- */
 function indexedRepository(
   dir: string,
   unreadable?: ConstructorParameters<typeof YamlDefinitionRepository>[5],

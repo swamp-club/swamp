@@ -154,9 +154,6 @@ async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
   }
 }
 
-/**
- * Mock step executor for testing.
- */
 class MockStepExecutor implements StepExecutor {
   executedSteps: string[] = [];
   shouldFail: Set<string> = new Set();
@@ -174,9 +171,6 @@ class MockStepExecutor implements StepExecutor {
   }
 }
 
-/**
- * In-memory workflow repository for testing.
- */
 class InMemoryWorkflowRepository implements WorkflowRepository {
   private workflows = new Map<string, Workflow>();
 
@@ -216,9 +210,6 @@ class InMemoryWorkflowRepository implements WorkflowRepository {
   }
 }
 
-/**
- * In-memory workflow run repository for testing.
- */
 class InMemoryWorkflowRunRepository implements WorkflowRunRepository {
   private runs = new Map<string, WorkflowRun[]>();
 
@@ -555,7 +546,6 @@ Deno.test("executes workflow with step dependencies", async () => {
     const run = await service.execute(workflow.name);
 
     assertEquals(run.status, "succeeded");
-    // Setup must run before compile
     const setupIdx = executor.executedSteps.indexOf("build/setup");
     const compileIdx = executor.executedSteps.indexOf("build/compile");
     assertEquals(setupIdx < compileIdx, true);
@@ -657,7 +647,6 @@ Deno.test("step_failed and the run record carry the code a model-method UserErro
       assert(event.kind === "step_failed");
       assertEquals(event.error, "deploy refused");
       assertEquals(event.errorCode, code);
-      // An uncoded failure leaves the key off the event.
       assertEquals(Object.hasOwn(event, "errorCode"), code !== undefined);
 
       const saved = await runRepo.findLatestByWorkflowId(workflow.id);
@@ -674,7 +663,7 @@ Deno.test("skips job when trigger condition not met", async () => {
     const workflowRepo = new InMemoryWorkflowRepository();
     const runRepo = new InMemoryWorkflowRunRepository();
     const executor = new MockStepExecutor();
-    executor.shouldFail.add("compile"); // Build fails
+    executor.shouldFail.add("compile");
 
     const workflow = Workflow.create({
       name: "conditional",
@@ -728,7 +717,7 @@ Deno.test("runs job on failure condition", async () => {
     const workflowRepo = new InMemoryWorkflowRepository();
     const runRepo = new InMemoryWorkflowRunRepository();
     const executor = new MockStepExecutor();
-    executor.shouldFail.add("compile"); // Build fails
+    executor.shouldFail.add("compile");
 
     const workflow = Workflow.create({
       name: "on-failure",
@@ -861,9 +850,6 @@ Deno.test("run() yields lifecycle events during execution", async () => {
   });
 });
 
-/**
- * Mock step executor that tracks concurrent execution for parallel testing.
- */
 class ConcurrencyTrackingExecutor implements StepExecutor {
   executedSteps: string[] = [];
   concurrentExecutions: number[] = [];
@@ -876,19 +862,16 @@ class ConcurrencyTrackingExecutor implements StepExecutor {
   }
 
   async execute(step: Step, ctx: StepExecutionContext): Promise<unknown> {
-    // Track that we started
     this.currentConcurrency++;
     this.concurrentExecutions.push(this.currentConcurrency);
     if (this.currentConcurrency > this.maxConcurrency) {
       this.maxConcurrency = this.currentConcurrency;
     }
 
-    // Simulate some async work
     await new Promise((resolve) => setTimeout(resolve, this.delay));
 
     this.executedSteps.push(`${ctx.jobName}/${ctx.stepName}`);
 
-    // Track that we finished
     this.currentConcurrency--;
 
     return { executed: true, step: step.name };
@@ -905,7 +888,6 @@ Deno.test("executes independent jobs in parallel", async () => {
     const runRepo = new InMemoryWorkflowRunRepository();
     const executor = new ConcurrencyTrackingExecutor(50);
 
-    // Create workflow with 3 independent jobs (no dependencies)
     const workflow = Workflow.create({
       name: "parallel-jobs",
       jobs: [
@@ -969,10 +951,6 @@ Deno.test("executes dependent jobs sequentially across levels", async () => {
     const runRepo = new InMemoryWorkflowRunRepository();
     const executor = new ConcurrencyTrackingExecutor(30);
 
-    // Create workflow with diamond dependency pattern:
-    // job-a and job-b have no deps (level 1, parallel)
-    // job-c depends on job-a (level 2)
-    // job-d depends on both job-a and job-b (level 3)
     const workflow = Workflow.create({
       name: "diamond-deps",
       jobs: [
@@ -1050,23 +1028,19 @@ Deno.test("executes dependent jobs sequentially across levels", async () => {
     assertEquals(run.status, "succeeded");
     assertEquals(executor.executedSteps.length, 4);
 
-    // Verify job-a and job-b both start before either completes (parallel in level 1)
     const aStartIdx = events.indexOf("start:job-a");
     const bStartIdx = events.indexOf("start:job-b");
     const aCompleteIdx = events.indexOf("complete:job-a");
     const bCompleteIdx = events.indexOf("complete:job-b");
 
-    // Both should start before both complete (proves parallel execution)
     assertEquals(aStartIdx < aCompleteIdx, true);
     assertEquals(bStartIdx < bCompleteIdx, true);
     assertEquals(aStartIdx < bCompleteIdx, true);
     assertEquals(bStartIdx < aCompleteIdx, true);
 
-    // job-c should start only after job-a completes
     const cStartIdx = events.indexOf("start:job-c");
     assertEquals(cStartIdx > aCompleteIdx, true);
 
-    // job-d should start only after both job-a and job-b complete
     const dStartIdx = events.indexOf("start:job-d");
     assertEquals(dStartIdx > aCompleteIdx, true);
     assertEquals(dStartIdx > bCompleteIdx, true);
@@ -1079,7 +1053,6 @@ Deno.test("executes independent steps within a job in parallel", async () => {
     const runRepo = new InMemoryWorkflowRunRepository();
     const executor = new ConcurrencyTrackingExecutor(50);
 
-    // Create workflow with one job that has 3 independent steps
     const workflow = Workflow.create({
       name: "parallel-steps",
       jobs: [
@@ -1127,11 +1100,6 @@ Deno.test("executes independent steps within a job in parallel", async () => {
   });
 });
 
-/**
- * Mock step executor that captures the expression context each step receives,
- * mutates it (simulating executeModelMethod), and yields to the event loop
- * so parallel steps interleave.
- */
 class ContextCapturingExecutor implements StepExecutor {
   executedSteps: string[] = [];
   capturedContexts = new Map<string, {
@@ -1143,7 +1111,6 @@ class ContextCapturingExecutor implements StepExecutor {
     const stepName = ctx.stepName;
     const exprCtx = ctx.expressionContext;
 
-    // Simulate executeModelMethod: mutate self and inputs
     if (exprCtx) {
       exprCtx.self = {
         id: `id-${stepName}`,
@@ -1154,7 +1121,6 @@ class ContextCapturingExecutor implements StepExecutor {
       };
     }
 
-    // Yield to the event loop so other parallel steps can interleave
     await new Promise((resolve) => setTimeout(resolve, 50));
 
     if (exprCtx) {
@@ -1225,11 +1191,9 @@ Deno.test("parallel steps get isolated expression contexts", async () => {
     const ctxA = executor.capturedContexts.get("step-a");
     const ctxB = executor.capturedContexts.get("step-b");
 
-    // Each step should see its OWN self.name, not a sibling's
     assertEquals(ctxA?.selfName, "model-for-step-a");
     assertEquals(ctxB?.selfName, "model-for-step-b");
 
-    // Step A's private inputs should NOT leak into step B and vice versa
     assertEquals(ctxA?.inputs?.["private-step-a"], "secret-step-a");
     assertEquals(ctxA?.inputs?.["private-step-b"], undefined);
     assertEquals(ctxB?.inputs?.["private-step-b"], "secret-step-b");
@@ -1237,13 +1201,8 @@ Deno.test("parallel steps get isolated expression contexts", async () => {
   });
 });
 
-/**
- * Mock step executor that simulates model method execution with data artifacts.
- * Used to test that data context is refreshed between workflow steps.
- */
 class ModelMethodMockExecutor implements StepExecutor {
   executedSteps: string[] = [];
-  /** Maps step name to the model output it should return */
   stepOutputs: Map<string, {
     model: string;
     resources?: Record<string, {
@@ -1263,13 +1222,11 @@ class ModelMethodMockExecutor implements StepExecutor {
       contentType: string;
     }>;
   }> = new Map();
-  /** Captures the expression context at each step for verification */
   capturedContexts: Map<string, Record<string, unknown>> = new Map();
 
   execute(step: Step, ctx: StepExecutionContext): Promise<unknown> {
     this.executedSteps.push(`${ctx.jobName}/${ctx.stepName}`);
 
-    // Capture the expression context for this step
     if (ctx.expressionContext) {
       this.capturedContexts.set(
         ctx.stepName,
@@ -1277,7 +1234,6 @@ class ModelMethodMockExecutor implements StepExecutor {
       );
     }
 
-    // Return configured output for this step, or a default
     const output = this.stepOutputs.get(step.name);
     if (output) {
       return Promise.resolve({
@@ -1297,7 +1253,6 @@ Deno.test("updates data context between workflow steps", async () => {
     const runRepo = new InMemoryWorkflowRunRepository();
     const executor = new ModelMethodMockExecutor();
 
-    // Configure step1 to produce resource data that step2 should be able to see
     executor.stepOutputs.set("step1", {
       model: "auth-model",
       resources: {
@@ -1312,7 +1267,6 @@ Deno.test("updates data context between workflow steps", async () => {
       },
     });
 
-    // step2 depends on step1, should see the data written by step1
     executor.stepOutputs.set("step2", {
       model: "list-model",
       resources: {
@@ -1369,7 +1323,6 @@ Deno.test("updates data context between workflow steps", async () => {
     assertEquals(run.status, "succeeded");
     assertEquals(executor.executedSteps, ["job1/step1", "job1/step2"]);
 
-    // Verify step2 saw the resource context updated from step1
     const step2Context = executor.capturedContexts.get("step2");
     const authModelData = step2Context?.["auth-model"] as {
       resource?: Record<
@@ -1378,8 +1331,6 @@ Deno.test("updates data context between workflow steps", async () => {
       >;
     };
 
-    // The resource data should be available in the context when step2 runs
-    // Resources are keyed by specName
     assertEquals(authModelData?.resource?.["auth"]?.id, "auth-data-123");
     assertEquals(
       authModelData?.resource?.["auth"]?.attributes?.token,
@@ -1398,7 +1349,6 @@ Deno.test("updates both resource and file context when step produces both", asyn
     const runRepo = new InMemoryWorkflowRunRepository();
     const executor = new ModelMethodMockExecutor();
 
-    // Configure step1 to produce both resource and file
     executor.stepOutputs.set("step1", {
       model: "sync-model",
       resources: {
@@ -1471,7 +1421,6 @@ Deno.test("updates both resource and file context when step produces both", asyn
 
     assertEquals(run.status, "succeeded");
 
-    // Verify step2 saw both resource and file context from step1
     const step2Context = executor.capturedContexts.get("step2");
     const syncModelData = step2Context?.["sync-model"] as {
       resource?: Record<
@@ -1484,14 +1433,12 @@ Deno.test("updates both resource and file context when step produces both", asyn
       >;
     };
 
-    // Resource should be in context (keyed by specName)
     assertEquals(syncModelData?.resource?.["sync-status"]?.id, "resource-123");
     assertEquals(
       syncModelData?.resource?.["sync-status"]?.attributes?.status,
       "synced",
     );
 
-    // File should also be in context (keyed by specName)
     assertEquals(syncModelData?.file?.["sync-log"]?.id, "file-456");
     assertEquals(syncModelData?.file?.["sync-log"]?.path, "/tmp/sync.log");
     assertEquals(syncModelData?.file?.["sync-log"]?.size, 1024);
@@ -1500,9 +1447,8 @@ Deno.test("updates both resource and file context when step produces both", asyn
 });
 
 Deno.test("executes linear chain where multiple steps reference same model", async () => {
-  // Regression: the old implicit dependency system would create false cycles
-  // when multiple steps referenced the same model (last-writer-wins in modelToStep map).
-  // With explicit-only deps, this linear chain should execute correctly.
+  // with explicit-only deps, a linear chain where several steps reference the
+  // same model must execute without false cycles
   await withTempDir(async (tempDir) => {
     const workflowRepo = new InMemoryWorkflowRepository();
     const runRepo = new InMemoryWorkflowRunRepository();
@@ -1606,7 +1552,6 @@ Deno.test("run() event stream includes all expected event types", async () => {
       eventTypes.push(event.kind);
     }
 
-    // Must include these event types in order
     assertEquals(eventTypes[0], "started");
     assertEquals(eventTypes[eventTypes.length - 1], "completed");
     assertEquals(eventTypes.includes("job_started"), true);
@@ -1616,14 +1561,11 @@ Deno.test("run() event stream includes all expected event types", async () => {
   });
 });
 
-// --- Workflow nesting and cycle detection tests ---
-
 Deno.test("workflow step fails when nesting depth exceeded", async () => {
   await withTempDir(async (tempDir) => {
     const workflowRepo = new InMemoryWorkflowRepository();
     const runRepo = new InMemoryWorkflowRunRepository();
 
-    // Parent workflow with a step that calls a child workflow
     const workflow = Workflow.create({
       name: "parent-workflow",
       jobs: [
@@ -1674,7 +1616,6 @@ Deno.test("workflow step fails on direct cycle detection", async () => {
     const workflowRepo = new InMemoryWorkflowRepository();
     const runRepo = new InMemoryWorkflowRunRepository();
 
-    // Workflow that tries to call itself
     const workflow = Workflow.create({
       name: "self-calling",
       jobs: [
@@ -1826,7 +1767,6 @@ Deno.test("workflow step applies child workflow's input defaults", async () => {
     const runRepo = new InMemoryWorkflowRunRepository();
     const executor = new MockStepExecutor();
 
-    // Child workflow declares "verbose" with a default of false
     const childWorkflow = Workflow.create({
       name: "child-workflow",
       inputs: {
@@ -1853,7 +1793,6 @@ Deno.test("workflow step applies child workflow's input defaults", async () => {
     });
     await workflowRepo.save(childWorkflow);
 
-    // Parent invokes the child WITHOUT passing "verbose"
     const parentWorkflow = Workflow.create({
       name: "parent-workflow",
       jobs: [
@@ -2151,7 +2090,6 @@ Deno.test("workflow step applies child defaults when parent passes no inputs", a
     const runRepo = new InMemoryWorkflowRunRepository();
     const executor = new MockStepExecutor();
 
-    // Child workflow where ALL inputs have defaults (none required)
     const childWorkflow = Workflow.create({
       name: "child-workflow",
       inputs: {
@@ -2176,7 +2114,6 @@ Deno.test("workflow step applies child defaults when parent passes no inputs", a
     });
     await workflowRepo.save(childWorkflow);
 
-    // Parent invokes the child with NO inputs field at all
     const parentWorkflow = Workflow.create({
       name: "parent-workflow",
       jobs: [
@@ -2228,7 +2165,6 @@ Deno.test("evaluateWorkflow skips task.inputs with step-output dependencies", as
     const runRepo = new InMemoryWorkflowRunRepository();
     const executor = new ModelMethodMockExecutor();
 
-    // Configure step1 to produce resource data
     executor.stepOutputs.set("create-vpc", {
       model: "vpc-model",
       resources: {
@@ -2247,7 +2183,6 @@ Deno.test("evaluateWorkflow skips task.inputs with step-output dependencies", as
       model: "subnet-model",
     });
 
-    // Create workflow where step2's task.inputs references step1's resource output
     const workflow = Workflow.create({
       name: "resource-in-task-inputs",
       jobs: [
@@ -2304,7 +2239,6 @@ Deno.test("step executor receives correct workflow context", async () => {
     const workflowRepo = new InMemoryWorkflowRepository();
     const runRepo = new InMemoryWorkflowRunRepository();
 
-    // Create a mock executor that captures context
     class ContextCapturingExecutor implements StepExecutor {
       capturedContexts: StepExecutionContext[] = [];
       execute(_step: Step, ctx: StepExecutionContext): Promise<unknown> {
@@ -2342,7 +2276,6 @@ Deno.test("step executor receives correct workflow context", async () => {
 
     await service.execute(workflow.name);
 
-    // Verify the context was propagated to the step executor
     assertEquals(executor.capturedContexts.length, 1);
     assertEquals(executor.capturedContexts[0].workflowName, "parent-workflow");
     assertEquals(executor.capturedContexts[0].jobName, "job1");
@@ -2350,14 +2283,11 @@ Deno.test("step executor receives correct workflow context", async () => {
   });
 });
 
-// Regression test for issue #499: task.inputs matching definition input keys
-// must be forwarded to the step executor, not filtered out.
 Deno.test("task.inputs matching definition input keys are forwarded to step executor", async () => {
   await withTempDir(async (tempDir) => {
     const workflowRepo = new InMemoryWorkflowRepository();
     const runRepo = new InMemoryWorkflowRunRepository();
 
-    // Executor that captures both the step and its context
     class InputCapturingExecutor implements StepExecutor {
       capturedSteps: Array<{ step: Step; ctx: StepExecutionContext }> = [];
       execute(step: Step, ctx: StepExecutionContext): Promise<unknown> {
@@ -2367,10 +2297,6 @@ Deno.test("task.inputs matching definition input keys are forwarded to step exec
     }
     const executor = new InputCapturingExecutor();
 
-    // Create a workflow where step task.inputs include keys that would
-    // typically match definition-level inputs.properties (e.g., "region",
-    // "instance_type"). Before the fix, these were filtered out by
-    // DefaultStepExecutor and never forwarded as method arguments.
     const workflow = Workflow.create({
       name: "input-forwarding-test",
       jobs: [
@@ -2406,7 +2332,6 @@ Deno.test("task.inputs matching definition input keys are forwarded to step exec
     assertEquals(run.status, "succeeded");
     assertEquals(executor.capturedSteps.length, 1);
 
-    // Verify the step executor receives the task with all inputs intact
     const captured = executor.capturedSteps[0];
     const taskData = captured.step.task.data;
     assertEquals(taskData.type, "model_method");
@@ -2426,14 +2351,11 @@ Deno.test("task.inputs matching definition input keys are forwarded to step exec
   });
 });
 
-// Regression test for issue #537 Bug A: workflow expressions must be evaluated
-// before reaching the step executor.
 Deno.test("workflow expressions are evaluated before step execution (Bug A)", async () => {
   await withTempDir(async (tempDir) => {
     const workflowRepo = new InMemoryWorkflowRepository();
     const runRepo = new InMemoryWorkflowRunRepository();
 
-    // Executor that captures the step task data to verify expression resolution
     class TaskCapturingExecutor implements StepExecutor {
       capturedSteps: Array<{ step: Step; ctx: StepExecutionContext }> = [];
       execute(step: Step, ctx: StepExecutionContext): Promise<unknown> {
@@ -2443,9 +2365,6 @@ Deno.test("workflow expressions are evaluated before step execution (Bug A)", as
     }
     const executor = new TaskCapturingExecutor();
 
-    // Create a workflow with an expression in the model name.
-    // The expression ${{ inputs.deviceModel }} should be resolved
-    // to the actual value before execution.
     const workflow = Workflow.create({
       name: "expression-eval-test",
       jobs: [
@@ -2482,8 +2401,6 @@ Deno.test("workflow expressions are evaluated before step execution (Bug A)", as
     assertEquals(run.status, "succeeded");
     assertEquals(executor.capturedSteps.length, 1);
 
-    // The step executor should receive the resolved model name,
-    // not the raw expression string.
     const captured = executor.capturedSteps[0];
     const taskData = captured.step.task.data;
     assertEquals(taskData.type, "model_method");
@@ -2494,14 +2411,11 @@ Deno.test("workflow expressions are evaluated before step execution (Bug A)", as
   });
 });
 
-// Regression test for issue #537 Bug B: --last-evaluated must still forward
-// task.inputs and provide an expression context.
 Deno.test("lastEvaluated mode carries task.inputs and expressionContext (Bug B)", async () => {
   await withTempDir(async (tempDir) => {
     const workflowRepo = new InMemoryWorkflowRepository();
     const runRepo = new InMemoryWorkflowRunRepository();
 
-    // Executor that captures context for verification
     class ContextCapturingExecutor implements StepExecutor {
       capturedSteps: Array<{ step: Step; ctx: StepExecutionContext }> = [];
       execute(step: Step, ctx: StepExecutionContext): Promise<unknown> {
@@ -2511,8 +2425,6 @@ Deno.test("lastEvaluated mode carries task.inputs and expressionContext (Bug B)"
     }
     const executor = new ContextCapturingExecutor();
 
-    // Create a workflow with task.inputs (values already resolved since
-    // this simulates a pre-evaluated workflow)
     const workflow = Workflow.create({
       name: "last-evaluated-inputs-test",
       jobs: [
@@ -2532,7 +2444,6 @@ Deno.test("lastEvaluated mode carries task.inputs and expressionContext (Bug B)"
     });
     await workflowRepo.save(workflow);
 
-    // Pre-save the evaluated workflow so --last-evaluated can find it
     const { YamlEvaluatedWorkflowRepository } = await import(
       "../../infrastructure/persistence/yaml_evaluated_workflow_repository.ts"
     );
@@ -2560,7 +2471,6 @@ Deno.test("lastEvaluated mode carries task.inputs and expressionContext (Bug B)"
 
     const captured = executor.capturedSteps[0];
 
-    // The expression context should be provided even with --last-evaluated
     assertEquals(captured.ctx.expressionContext !== undefined, true);
     assertEquals(
       typeof captured.ctx.expressionContext?.model,
@@ -2571,7 +2481,6 @@ Deno.test("lastEvaluated mode carries task.inputs and expressionContext (Bug B)"
       "object",
     );
 
-    // task.inputs should be present on the step
     const taskData = captured.step.task.data;
     assertEquals(taskData.type, "model_method");
     if (taskData.type === "model_method") {
@@ -2582,8 +2491,6 @@ Deno.test("lastEvaluated mode carries task.inputs and expressionContext (Bug B)"
     }
   });
 });
-
-// allowFailure tests
 
 Deno.test("step with allowFailure true fails but job still succeeds", async () => {
   await withTempDir(async (tempDir) => {
@@ -2859,8 +2766,6 @@ Deno.test("mix of allowFailure and regular failing steps causes job failure", as
   });
 });
 
-// allowFailure tests for workflow-type task steps (issue #1061)
-
 Deno.test("workflow-task step with allowFailure true: child fails, step marked allowedFailure, job succeeds", async () => {
   await withTempDir(async (tempDir) => {
     const workflowRepo = new InMemoryWorkflowRepository();
@@ -3058,7 +2963,6 @@ Deno.test("workflow-task step without allowFailure: child fails, job fails", asy
   });
 });
 
-// Issue #947: Check skip options and swampSha propagation through StepExecutionContext
 Deno.test("check skip options and swampSha are threaded to step context", async () => {
   await withTempDir(async (tempDir) => {
     const workflowRepo = new InMemoryWorkflowRepository();
@@ -3119,12 +3023,6 @@ Deno.test("check skip options and swampSha are threaded to step context", async 
   });
 });
 
-// --- report execution without CLI report flags (swamp-club#640) ---
-//
-// Callers that don't thread reportFilterOptions (workflow resume, embedded
-// runs) must still execute reports — before #640 the absent options object
-// silently skipped all workflow-scope and step-scope reports.
-
 Deno.test("run() executes workflow-scope required reports when reportFilterOptions is not supplied", async () => {
   await withTempDir(async (tempDir) => {
     const workflowRepo = new InMemoryWorkflowRepository();
@@ -3169,7 +3067,6 @@ Deno.test("run() executes workflow-scope required reports when reportFilterOptio
     );
 
     const completedReports: string[] = [];
-    // No reportFilterOptions passed — reports must still run.
     for await (const event of service.run(workflow.name, {})) {
       if (event.kind === "report_completed") {
         completedReports.push(event.reportName);
@@ -3229,11 +3126,7 @@ Deno.test("run() defaults reportFilterOptions in step context when not supplied"
   });
 });
 
-// --- forEach step name expansion regression tests (Issue #976 / PR #973) ---
-
 Deno.test("expandForEachSteps: multi-expression step name produces unique names for items sharing a field", async () => {
-  // Regression: before PR #973, only the first ${{ }} was resolved which caused
-  // duplicate step names when items shared the first field but differed in the second.
   await withTempDir(async (tempDir) => {
     const workflowRepo = new InMemoryWorkflowRepository();
     const runRepo = new InMemoryWorkflowRunRepository();
@@ -3281,21 +3174,16 @@ Deno.test("expandForEachSteps: multi-expression step name produces unique names 
 
     assertEquals(run.status, "succeeded");
 
-    // All three expanded step names must be unique and fully resolved
     const stepNames = executor.executedSteps.map((s) => s.split("/")[1]);
     assertEquals(stepNames.length, 3);
     assertEquals(stepNames.includes("Trek-Pilot"), true);
     assertEquals(stepNames.includes("Trek-Finale"), true);
     assertEquals(stepNames.includes("Wars-Pilot"), true);
 
-    // Verify uniqueness — the set size equals the array length
     assertEquals(new Set(stepNames).size, stepNames.length);
   });
 });
 
-// --- forEach iterations run in list order (swamp-club#3318) ---
-
-/** Runs one forEach step over `items` one at a time; returns its step order. */
 async function forEachRunOrder(
   stepName: string,
   items: unknown[],
@@ -3356,9 +3244,6 @@ Deno.test("execute: named forEach iterations run in list order, not name order",
   );
 });
 
-// --- suspended event of a forEach-expanded approval gate (swamp-club#3217) ---
-
-/** A workflow whose one step is an approval gate, expanded per env or not. */
 function approvalGateWorkflow(
   name: string,
   expanded: boolean,
@@ -3469,7 +3354,6 @@ Deno.test("resume: a forEach-expanded approval gate reached after resume suspend
     );
     assertEquals(first?.stepId, "confirm");
 
-    // Approve the first gate, so the resumed run reaches the expanded one.
     const toApprove = await runRepo.findById(workflow.id, first!.run.id);
     toApprove!.getJob("first")!.getStep("confirm")!.succeed();
     await runRepo.save(workflow.id, toApprove!);
@@ -3506,8 +3390,6 @@ Deno.test("suspend: an approval gate without forEach suspends with its prompt", 
     assertEquals(suspended?.prompt, "Deploy?");
   });
 });
-
-// --- timeout of a forEach-expanded approval gate (swamp-club#3218) ---
 
 for (const expanded of [true, false]) {
   const kind = expanded ? "a forEach-expanded approval gate" : "a plain gate";
@@ -3724,7 +3606,6 @@ Deno.test("expandForEachSteps: step name without expressions appends item value"
 
     assertEquals(run.status, "succeeded");
 
-    // Without expression templates, the step name is appended with the item value
     const stepNames = executor.executedSteps.map((s) => s.split("/")[1]);
     assertEquals(stepNames.length, 2);
     assertEquals(stepNames.includes("step-alpha"), true);
@@ -3782,23 +3663,16 @@ Deno.test("expandForEachSteps: object iteration with multi-expression step name"
     assertEquals(stepNames.includes("api-3000"), true);
     assertEquals(stepNames.includes("db-5432"), true);
 
-    // Verify uniqueness
     assertEquals(new Set(stepNames).size, stepNames.length);
   });
 });
 
-// Regression test for issue #975: forEach expression evaluation failure should
-// append index to prevent duplicate step names.
 Deno.test("expandForEachSteps: appends index when array item expression evaluation fails", async () => {
   await withTempDir(async (tempDir) => {
     const workflowRepo = new InMemoryWorkflowRepository();
     const runRepo = new InMemoryWorkflowRunRepository();
     const executor = new MockStepExecutor();
 
-    // Create workflow where forEach iterates an array, and the step name
-    // references a property that doesn't exist on the items.
-    // Both items will fail expression evaluation, but the index suffix
-    // should prevent duplicate names.
     const workflow = Workflow.create({
       name: "foreach-eval-fail-array",
       jobs: [
@@ -3834,7 +3708,6 @@ Deno.test("expandForEachSteps: appends index when array item expression evaluati
     });
 
     assertEquals(run.status, "succeeded");
-    // Each expanded step should have a unique name with index suffix
     assertEquals(executor.executedSteps.length, 2);
     assertEquals(
       executor.executedSteps.includes(
@@ -3851,16 +3724,12 @@ Deno.test("expandForEachSteps: appends index when array item expression evaluati
   });
 });
 
-// Regression test for issue #975: forEach expression evaluation failure over
-// object iteration should append key to prevent duplicate step names.
 Deno.test("expandForEachSteps: appends key when object item expression evaluation fails", async () => {
   await withTempDir(async (tempDir) => {
     const workflowRepo = new InMemoryWorkflowRepository();
     const runRepo = new InMemoryWorkflowRunRepository();
     const executor = new MockStepExecutor();
 
-    // Create workflow where forEach iterates an object, and the step name
-    // references a property that doesn't exist on the items.
     const workflow = Workflow.create({
       name: "foreach-eval-fail-object",
       jobs: [
@@ -3896,7 +3765,6 @@ Deno.test("expandForEachSteps: appends key when object item expression evaluatio
     });
 
     assertEquals(run.status, "succeeded");
-    // Each expanded step should have a unique name with key suffix
     assertEquals(executor.executedSteps.length, 2);
     assertEquals(
       executor.executedSteps.includes(
@@ -3913,8 +3781,6 @@ Deno.test("expandForEachSteps: appends key when object item expression evaluatio
   });
 });
 
-// Verify that forEach with successful expression evaluation still works without
-// appending index/key suffix.
 Deno.test("expandForEachSteps: does not append index when expression evaluates successfully", async () => {
   await withTempDir(async (tempDir) => {
     const workflowRepo = new InMemoryWorkflowRepository();
@@ -3957,7 +3823,6 @@ Deno.test("expandForEachSteps: does not append index when expression evaluates s
 
     assertEquals(run.status, "succeeded");
     assertEquals(executor.executedSteps.length, 2);
-    // Names should be resolved without index suffix
     assertEquals(
       executor.executedSteps.includes("job1/process-foo"),
       true,
@@ -3969,10 +3834,6 @@ Deno.test("expandForEachSteps: does not append index when expression evaluates s
   });
 });
 
-// Regression test for lab issue #35: workflow-path MethodContext must carry
-// dataQueryService (and therefore a derived queryData) so extension methods
-// invoked as workflow steps can call context.queryData. Guards the factory
-// call site in DefaultStepExecutor.executeModelMethod.
 Deno.test("DefaultStepExecutor wires dataQueryService into MethodContext", async () => {
   const { z } = await import("zod");
   const { ModelType } = await import("../models/model_type.ts");
@@ -4049,8 +3910,6 @@ Deno.test("DefaultStepExecutor wires dataQueryService into MethodContext", async
   });
 });
 
-// swamp-club#2397 / #2455: a step runs a model whose own definition holds the
-// expressions. Records the arguments each method actually receives.
 async function runDefinitionStep(
   definitionProps: Parameters<typeof Definition.create>[0],
   methodName: string,
@@ -4291,8 +4150,6 @@ Deno.test({
       'Behavior validation failed for "dd-monitor"',
     );
     assertStringIncludes((error as Error).message, "{{self.name}}");
-    // The multi-line error sits under its check name, every line indented
-    // (swamp-club#2493).
     assertStringIncludes(
       (error as Error).message,
       "  Expression paths:\n    - {{self.name}}\n" +
@@ -4458,8 +4315,6 @@ Deno.test({
   },
 });
 
-// --- forEach.in async helper resolution (Issue #88) ---
-
 Deno.test({
   name: "expandForEachSteps: awaits async data helpers like data.findBySpec",
   // CatalogStore opens WAL files internally; these are still held by the
@@ -4503,11 +4358,9 @@ Deno.test({
           catalogStore,
         );
 
-        // data.findBySpec returns a Promise; expandForEachSteps awaits it
-        // via CelEvaluator.evaluateAsync. With no seeded data the result
-        // is an empty array, the forEach expands to zero steps, and the
-        // job completes without producing the old "unresolved Promise"
-        // error that this test previously asserted.
+        // data.findBySpec returns a Promise that expandForEachSteps awaits;
+        // with no seeded data the forEach expands to zero steps and the job
+        // completes
         await service.execute(workflow.name);
       } finally {
         catalogStore.close();
@@ -4516,24 +4369,6 @@ Deno.test({
   },
 });
 
-// =============================================================================
-// CONTRACT TESTS — pin behavioural invariants of WorkflowExecutionService
-// across the planned execution_service.ts refactor.
-//
-// These tests are framed as "CONTRACT:" rather than "tests of behaviour" so
-// future contributors know they exist to detect *behavioural drift* across
-// refactor commits, not to characterise a single feature. Failure means a
-// later commit changed an observable property the system depended on.
-//
-// Pairs with the integration-level harness at /tmp/swamp-verification/, which
-// pins contracts that require real filesystem repos (vault redaction, report
-// failure isolation, --last-evaluated parity).
-// =============================================================================
-
-/**
- * Decorates a WorkflowRunRepository to record every `save` call. Used to
- * pin the order of run-state persistence relative to workflow lifecycle.
- */
 class TrackingRunRepository implements WorkflowRunRepository {
   private readonly inner = new InMemoryWorkflowRunRepository();
   readonly saves: Array<{ runId: string; status: string }> = [];
@@ -4627,8 +4462,6 @@ Deno.test("CONTRACT: success run emits events in exact order", async () => {
       "step_started",
       "step_completed",
       "job_completed",
-      // Workflow-scope reports run even without reportFilterOptions
-      // (swamp-club#640) — builtin workflow reports emit here.
       "report_started",
       "report_completed",
       "completed",
@@ -4669,8 +4502,6 @@ Deno.test("CONTRACT: step failure emits events in exact order", async () => {
       "step_started",
       "step_failed",
       "job_completed",
-      // Workflow-scope reports run even without reportFilterOptions
-      // (swamp-club#640) — builtin workflow reports emit here.
       "report_started",
       "report_completed",
       "completed",
@@ -4687,7 +4518,6 @@ Deno.test("CONTRACT: run is persisted at start, after each level, and at complet
     const runRepo = new TrackingRunRepository();
     const executor = new MockStepExecutor();
 
-    // Two-level workflow: level 1 = "build", level 2 = "test" (depends on build).
     const workflow = Workflow.create({
       name: "two-level-pin",
       jobs: [
@@ -4728,15 +4558,9 @@ Deno.test("CONTRACT: run is persisted at start, after each level, and at complet
 
     await service.execute(workflow.name);
 
-    // Persistence contract for two-level workflow: 8 saves —
-    //   1. After run.start() (status: running, before any level)
-    //   2. After step "compile" starts (so a killed owner leaves it running)
-    //   3. After step "compile" completes (per-step checkpoint)
-    //   4. After level 1 completes (level backstop)
-    //   5. After step "unit" starts
-    //   6. After step "unit" completes (per-step checkpoint)
-    //   7. After level 2 completes (level backstop)
-    //   8. After run.complete() (status: succeeded)
+    // 8 saves: run start, each step start and completion, each level end, and
+    // run completion; saving at step start means a killed owner leaves it
+    // running
     assertEquals(
       runRepo.saves.length,
       8,
@@ -4746,7 +4570,6 @@ Deno.test("CONTRACT: run is persisted at start, after each level, and at complet
     );
     assertEquals(runRepo.saves[0].status, "running");
     assertEquals(runRepo.saves[runRepo.saves.length - 1].status, "succeeded");
-    // All saves reference the same run id.
     const ids = new Set(runRepo.saves.map((s) => s.runId));
     assertEquals(ids.size, 1);
   });
@@ -4802,8 +4625,6 @@ Deno.test("CONTRACT: dataArtifacts attached to thrown error are preserved on the
     assertEquals(stepRun?.dataArtifacts[0].dataId, partialArtifacts[0].dataId);
   });
 });
-
-// --- forEach self.* in modelIdOrName resolution (Issue #294) ---
 
 Deno.test({
   name:
@@ -4905,10 +4726,6 @@ Deno.test({
     });
   },
 });
-
-// ---------------------------------------------------------------------------
-// run.* namespace in CEL expressions
-// ---------------------------------------------------------------------------
 
 Deno.test("run.id expression in step inputs resolves to the workflow run UUID", async () => {
   await withTempDir(async (tempDir) => {
@@ -5146,14 +4963,11 @@ Deno.test(
   },
 );
 
-// Issue #467: resume --input merges override inputs over the inputs captured
-// when the run suspended.
 Deno.test("resume merges override inputs over the suspended run's inputs", async () => {
   await withTempDir(async (tempDir) => {
     const workflowRepo = new InMemoryWorkflowRepository();
     const runRepo = new InMemoryWorkflowRunRepository();
 
-    // Captures the expression context seen by the post-gate step.
     class ContextCapturingExecutor implements StepExecutor {
       captured: Array<{ step: Step; ctx: StepExecutionContext }> = [];
       execute(step: Step, ctx: StepExecutionContext): Promise<unknown> {
@@ -5163,8 +4977,6 @@ Deno.test("resume merges override inputs over the suspended run's inputs", async
     }
     const executor = new ContextCapturingExecutor();
 
-    // Gate suspends the run; the deploy step after it consumes inputs.* once
-    // resumed.
     const workflow = Workflow.create({
       name: "deploy-with-gate",
       jobs: [
@@ -5178,9 +4990,9 @@ Deno.test("resume merges override inputs over the suspended run's inputs", async
             Step.create({
               name: "harden",
               task: StepTask.model("harden-model", "run", {
-                // The whole workflow is evaluated at run start, so a late
-                // input is read in a form that tolerates its absence; the
-                // resume supplies it and the merge applies (swamp-club#3583).
+                // the whole workflow is evaluated at run start, so a late input
+                // is read in a form that tolerates its absence; the resume
+                // supplies it and the merge applies
                 region: "${{ inputs.region }}",
                 authKey: "${{ inputs.?authKey.orValue('') }}",
               }),
@@ -5204,26 +5016,20 @@ Deno.test("resume merges override inputs over the suspended run's inputs", async
       catalogStore,
     );
 
-    // The original run starts without authKey, whose value is only minted
-    // during the gate.
     const suspended = await service.execute(workflow.name, {
       inputs: { region: "us-east", env: "prod" },
     });
 
     assertEquals(suspended.status, "suspended");
-    // Effective inputs are captured at suspend so they survive to resume.
     assertEquals(suspended.inputs, { region: "us-east", env: "prod" });
     assertEquals(suspended.resumeInputs, []);
-    // The gate has not reached the executor.
     assertEquals(executor.captured.length, 0);
 
-    // Approve: mark the gate step succeeded so resume can proceed.
     const toApprove = await runRepo.findById(workflow.id, suspended.id);
     const waiting = toApprove!.findWaitingApprovalStep()!;
     toApprove!.getJob(waiting.jobName)!.getStep(waiting.stepName)!.succeed();
     await runRepo.save(workflow.id, toApprove!);
 
-    // Resume with the freshly minted auth key; region is passed unchanged.
     let resumedRun: WorkflowRun | undefined;
     for await (
       const event of service.resume(workflow.name, suspended.id, {
@@ -5235,8 +5041,6 @@ Deno.test("resume merges override inputs over the suspended run's inputs", async
 
     assertEquals(resumedRun?.status, "succeeded");
 
-    // The harden step ran and saw the merged inputs: the added `authKey`
-    // beside the original `region` and `env`.
     assertEquals(executor.captured.length, 1);
     assertEquals(executor.captured[0].step.name, "harden");
     assertEquals(executor.captured[0].ctx.expressionContext?.inputs, {
@@ -5245,8 +5049,6 @@ Deno.test("resume merges override inputs over the suspended run's inputs", async
       authKey: "tskey-abc123",
     });
 
-    // The added input propagates into the resolved task inputs forwarded to
-    // the step.
     const hardenTask = executor.captured[0].step.task.data;
     if (hardenTask.type === "model_method") {
       const inputs = hardenTask.inputs as Record<string, unknown> | undefined;
@@ -5264,10 +5066,6 @@ Deno.test("resume merges override inputs over the suspended run's inputs", async
   });
 });
 
-// swamp-club#3583: a resume --input cannot change a value the run has,
-// whatever any step read. The issue's workflow: a gate that refuses
-// "protected", an approval that shows the target, and the destructive step
-// after it.
 function gatedDestroyWorkflow(): Workflow {
   return Workflow.create({
     name: "gated-destroy",
@@ -5304,7 +5102,6 @@ function gatedDestroyWorkflow(): Workflow {
   });
 }
 
-/** Records each step the executor runs with its resolved task inputs. */
 class TaskInputsRecorder implements StepExecutor {
   ran: Array<{ step: string; inputs: Record<string, unknown> | undefined }> =
     [];
@@ -5320,7 +5117,6 @@ class TaskInputsRecorder implements StepExecutor {
   }
 }
 
-/** Saves a command/shell definition for the steps that name it. */
 async function saveShellDefinition(
   tempDir: string,
   name: string,
@@ -5350,7 +5146,6 @@ async function approveWaitingGate(
   if (approved) {
     gate.succeed();
   } else {
-    // As workflow reject does: the run ends failed at its rejected gate.
     gate.fail("Approval rejected");
     completeAndSettle(run!, workflow);
   }
@@ -5411,7 +5206,6 @@ Deno.test("resume: --input cannot change an input the gate and approval already 
       'input "target" already has a value, and a value a run has cannot change',
     );
     assertEquals(error.message.includes("protected"), false);
-    // Nothing ran and nothing was saved.
     assertEquals(executor.ran.map((r) => r.step), ["gate"]);
     assertEquals(
       JSON.stringify(
@@ -5420,8 +5214,6 @@ Deno.test("resume: --input cannot change an input the gate and approval already 
       before,
     );
 
-    // No claim was left behind: the run still resumes, with the value its
-    // gate and approval saw.
     const finished = await resumeToEnd(service, workflow, suspended.id);
     assertEquals(finished?.status, "succeeded");
     assertEquals(executor.ran.at(-1), {
@@ -5479,7 +5271,6 @@ Deno.test("resume: --from the rejected approval cannot change an input the gate 
     assertEquals(fromGate.code, "resume_input_immutable");
     assertEquals(executor.ran.map((r) => r.step), ["gate"]);
 
-    // Retrying from the gate with the value the run has runs it again.
     const regated = await resumeToEnd(service, workflow, suspended.id, {
       inputs: { target: "scratch" },
       fromStep: "gate",
@@ -5537,7 +5328,6 @@ Deno.test("resume: an accepted --input is recorded as the run's inputs (swamp-cl
     });
     await approveWaitingGate(runRepo, workflow, suspended.id, true);
 
-    // authKey is new to the run; target is passed unchanged.
     const finished = await resumeToEnd(service, workflow, suspended.id, {
       inputs: { authKey: "minted-key-name", target: "scratch" },
     });
@@ -5556,11 +5346,9 @@ Deno.test("resume: a late input checked and approved after it arrives is pinned 
     const workflowRepo = new InMemoryWorkflowRepository();
     const runRepo = new InMemoryWorkflowRunRepository();
     const executor = new TaskInputsRecorder();
-    // The pattern the design documents (design/enablers/input-pinning.md,
-    // Late inputs): the run starts without target; the first resume
-    // supplies it; a step checks it; a second gate shows it; the second
-    // resume cannot change it. Every read tolerates the absence at start,
-    // since the whole workflow is evaluated then.
+    // late inputs: first resume supplies target, a step checks it, a second
+    // gate shows it, the second resume cannot change it; every read tolerates
+    // absence because the whole workflow is evaluated at start
     const workflow = Workflow.create({
       name: "late-target",
       jobs: [
@@ -5619,7 +5407,6 @@ Deno.test("resume: a late input checked and approved after it arrives is pinned 
     assertEquals(executor.ran, []);
     await approveWaitingGate(runRepo, workflow, started.id, true);
 
-    // The first resume adds the input; the check runs on it.
     const checked = await resumeToEnd(service, workflow, started.id, {
       inputs: { target: "scratch" },
     });
@@ -5630,7 +5417,6 @@ Deno.test("resume: a late input checked and approved after it arrives is pinned 
     ]);
     await approveWaitingGate(runRepo, workflow, started.id, true);
 
-    // The second resume cannot change what the check and the approver saw.
     const error = await assertRejects(
       () =>
         resumeToEnd(service, workflow, started.id, {
@@ -5655,10 +5441,9 @@ Deno.test("resume: a key the run did not have is added even when a finished step
     const workflowRepo = new InMemoryWorkflowRepository();
     const runRepo = new InMemoryWorkflowRunRepository();
     const executor = new TaskInputsRecorder();
-    // The limit the design accepts (design/enablers/input-pinning.md, Late
-    // inputs): the check saw force absent, and the resume still adds it.
-    // What the check read is not inferred. A check that must bind a late
-    // input runs after the input arrives.
+    // known limit: the check saw force absent and the resume still adds it;
+    // what a check read is not inferred, so a check that must bind a late input
+    // runs after it arrives
     const workflow = Workflow.create({
       name: "absent-key",
       jobs: [
@@ -5722,12 +5507,6 @@ Deno.test("resume: a key the run did not have is added even when a finished step
   });
 });
 
-/**
- * Saves the evaluated cache `workflow run --last-evaluated` replays: the
- * gated workflow with `target` resolved to "scratch", as `workflow evaluate
- * --input target=scratch` writes it. `recorded` is false for a cache written
- * before its evaluation inputs were recorded.
- */
 async function saveEvaluatedGatedDestroy(
   tempDir: string,
   workflow: Workflow,
@@ -5744,7 +5523,6 @@ async function saveEvaluatedGatedDestroy(
   await new YamlEvaluatedWorkflowRepository(tempDir).save(
     evaluated,
     undefined,
-    // The source's expressions, as the cache records them.
     new Set(extractExpressions(workflow.toData()).map((e) => e.raw)),
     undefined,
     [],
@@ -5779,7 +5557,6 @@ Deno.test("resume: a --last-evaluated run resumes with the inputs its cache was 
       return run;
     };
 
-    // No --input: the run's recorded inputs resolve the authored workflow.
     const plain = await approvedLastEvaluatedRun();
     assertEquals(
       (await resumeToEnd(service, workflow, plain.id))?.status,
@@ -5787,7 +5564,6 @@ Deno.test("resume: a --last-evaluated run resumes with the inputs its cache was 
     );
     assertEquals(executor.ran.at(-1)?.inputs?.run, "echo DESTROYED scratch");
 
-    // The value the gate saw, re-supplied: unchanged, so accepted.
     const same = await approvedLastEvaluatedRun();
     assertEquals(
       (await resumeToEnd(service, workflow, same.id, {
@@ -5796,7 +5572,6 @@ Deno.test("resume: a --last-evaluated run resumes with the inputs its cache was 
       "succeeded",
     );
 
-    // Another value is still refused.
     const other = await approvedLastEvaluatedRun();
     const error = await assertRejects(
       () =>
@@ -5852,8 +5627,6 @@ Deno.test("resume: a step still to run sees one value through inputs and run.inp
   await withTempDir(async (tempDir) => {
     const workflowRepo = new InMemoryWorkflowRepository();
     const runRepo = new InMemoryWorkflowRunRepository();
-    // What each step's context holds under `inputs` and `run.inputs`, which
-    // the step's expressions resolve against.
     const seen: Array<{ step: string; inputs: unknown; runInputs: unknown }> =
       [];
     const executor: StepExecutor = {
@@ -5868,10 +5641,9 @@ Deno.test("resume: a step still to run sees one value through inputs and run.inp
         return Promise.resolve({ executed: true });
       },
     };
-    // The check reads run.inputs, the destroy reads inputs; target is a late
-    // input, so both read it in a form that tolerates its absence at start.
-    // Were run.inputs the stored set during the resume, the check would see
-    // no target while the destroy acted on the supplied one.
+    // the check reads run.inputs, the destroy reads inputs; were run.inputs the
+    // stored set during resume, the check would see no target while the destroy
+    // acted on the supplied one
     const workflow = Workflow.create({
       name: "run-inputs-check",
       jobs: [
@@ -5918,7 +5690,6 @@ Deno.test("resume: a step still to run sees one value through inputs and run.inp
     const suspended = await service.execute(workflow.name, { inputs: {} });
     await approveWaitingGate(runRepo, workflow, suspended.id, true);
 
-    // The run had no target, so the resume adds it for every step to run.
     const finished = await resumeToEnd(service, workflow, suspended.id, {
       inputs: { target: "protected" },
     });
@@ -5948,10 +5719,9 @@ Deno.test("run: --last-evaluated refuses an --input its cache was not evaluated 
         new CatalogStore(join(tempDir, "_catalog.db")),
       );
 
-      // The cached gate checks scratch; recording protected would hand a
-      // resume a value no step saw. Refused before any run exists, naming
-      // the key and never the value. A cache that recorded no inputs cannot
-      // be compared at all.
+      // the cached gate checks scratch; recording protected would hand a resume
+      // a value no step saw, so it is refused before any run exists, naming the
+      // key and never the value
       const error = await assertRejects(
         () =>
           service.execute(workflow.name, {
@@ -5970,8 +5740,6 @@ Deno.test("run: --last-evaluated refuses an --input its cache was not evaluated 
       assertEquals(await runRepo.findAllByWorkflowId(workflow.id), []);
 
       if (recorded) {
-        // The value the cache was evaluated with is accepted, and so is
-        // leaving it to the cache.
         for (const inputs of [{ target: "scratch" }, undefined]) {
           const run = await service.execute(workflow.name, {
             lastEvaluated: true,
@@ -5988,14 +5756,9 @@ Deno.test("run: --last-evaluated refuses an --input its cache was not evaluated 
   }
 });
 
-// Regression for #1118: the per-run workflow log file is opened by
-// runFileSink.register() and must be released even when a streaming consumer
-// abandons the event generator early (e.g. a WebSocket client that disconnects
-// mid-run, breaking the `for await` loop). The cleanup lives in a `finally`, so
-// generator.return() unwinds it. Asserting on runFileSink.activeCount rather
-// than raw OS file descriptors keeps the test portable across platforms; a
-// before/after delta (not an absolute count) tolerates handles registered by
-// other tests sharing the process-wide singleton.
+// the log sink is released even when a consumer abandons the generator early;
+// asserting a before/after delta of activeCount tolerates handles from other
+// tests sharing the singleton
 Deno.test("run() releases the log file sink when the consumer abandons the stream early", async () => {
   await withTempDir(async (tempDir) => {
     const workflowRepo = new InMemoryWorkflowRepository();
@@ -6021,7 +5784,7 @@ Deno.test("run() releases the log file sink when the consumer abandons the strea
       if (event.kind === "started") {
         // register() runs before the "started" event, so the log sink is open.
         sinkOpenAtStarted = runFileSink.activeCount === baseline + 1;
-        break; // abandon the generator mid-run (mirrors a client disconnect)
+        break;
       }
     }
 
@@ -6031,9 +5794,9 @@ Deno.test("run() releases the log file sink when the consumer abandons the strea
   });
 });
 
-// Regression for #1118: resume() has the same log-sink lifecycle as run(). Its
-// try/finally must open before the "started" yield so that a consumer which
-// disconnects right after "started" still releases the sink.
+// resume() has the same log-sink lifecycle as run(): its try/finally must open
+// before the started yield so a consumer that disconnects right after started
+// still releases the sink
 Deno.test("resume() releases the log file sink when the consumer abandons the stream early", async () => {
   await withTempDir(async (tempDir) => {
     const workflowRepo = new InMemoryWorkflowRepository();
@@ -6045,7 +5808,6 @@ Deno.test("resume() releases the log file sink when the consumer abandons the st
       }
     }
 
-    // A manual-approval gate suspends the run so it can be resumed.
     const workflow = Workflow.create({
       name: "gated-workflow",
       jobs: [
@@ -6082,7 +5844,6 @@ Deno.test("resume() releases the log file sink when the consumer abandons the st
     const suspended = await service.execute(workflow.name);
     assertEquals(suspended.status, "suspended");
 
-    // Approve the gate so resume() proceeds past it.
     const toApprove = await runRepo.findById(workflow.id, suspended.id);
     const waiting = toApprove!.findWaitingApprovalStep()!;
     toApprove!.getJob(waiting.jobName)!.getStep(waiting.stepName)!.succeed();
@@ -6093,7 +5854,7 @@ Deno.test("resume() releases the log file sink when the consumer abandons the st
     for await (const event of service.resume(workflow.name, suspended.id)) {
       if (event.kind === "started") {
         sinkOpenAtStarted = runFileSink.activeCount === baseline + 1;
-        break; // abandon the generator right after "started"
+        break;
       }
     }
 
@@ -6110,11 +5871,9 @@ Deno.test("manual_approval suspension does not mark job span as ERROR", async ()
   const { ExportResultCode } = await import("@opentelemetry/core");
   const otelApi = await import("@opentelemetry/api");
 
-  // A synchronous in-memory span exporter. OTel's own InMemorySpanExporter
-  // defers its result callback via setTimeout(0) and never clears it
-  // (forceFlush/shutdown are no-ops), so one timer per exported span leaks and
-  // Deno's resource sanitizer fails the test. This exporter resolves the
-  // callback inline, so no timer is queued. See swamp-club#1121.
+  // OTel's InMemorySpanExporter defers its callback via setTimeout(0) and never
+  // clears it, leaking a timer per span that fails Deno's sanitizer; this
+  // exporter resolves the callback inline
   class SyncInMemorySpanExporter implements SpanExporter {
     readonly finishedSpans: ReadableSpan[] = [];
     export(
@@ -6195,17 +5954,10 @@ Deno.test("manual_approval suspension does not mark job span as ERROR", async ()
   }
 });
 
-// span parentage tests (swamp-club#2589)
-
 function spanIdOf(span: ReadableSpan): string {
   return span.spanContext().spanId;
 }
 
-/**
- * Starts a `test.method` span per step, standing in for swamp.model.method,
- * which the real executor starts inside the step. Optionally holds every step
- * until `release()` is called.
- */
 class MethodSpanStepExecutor implements StepExecutor {
   private readonly gate = Promise.withResolvers<void>();
   constructor(private readonly gated = false) {}
@@ -6247,7 +5999,6 @@ async function newTracedService(
   return { service, runRepo };
 }
 
-/** Asserts each step span sits under its job's span, and each method under its step. */
 function assertStepsAndMethodsNest(
   recorder: SpanRecorder,
   jobSpan: ReadableSpan,
@@ -6270,7 +6021,6 @@ function assertStepsAndMethodsNest(
 Deno.test("run(): job, step and method spans nest under the run span", async () => {
   await withRecordedSpans(async (recorder) => {
     await withTempDir(async (tempDir) => {
-      // build runs two steps concurrently; deploy starts after build.
       const workflow = Workflow.create({
         name: "nested-spans",
         jobs: [
@@ -6490,10 +6240,9 @@ Deno.test("run(): a nested workflow's run span nests under the calling step span
   });
 });
 
-// Early exit with tracing on. A consumer break returns only run() — the job
-// merge then waits for its jobs to finish — so these check the run wrapper
-// still reaches run()'s finally. The abort test below is the path that
-// returns the job and step wrappers themselves.
+// a consumer break returns only run(), and the job merge waits for its jobs;
+// these check the run wrapper still reaches run()'s finally, while the abort
+// test returns the job and step wrappers
 
 Deno.test("run(): abandoning the stream mid-step with tracing on releases the log sink and ends every span", async () => {
   await withRecordedSpans(async (recorder) => {
@@ -6588,8 +6337,6 @@ Deno.test("resume(): abandoning the stream mid-step with tracing on releases the
 Deno.test("run(): an abort mid-step with tracing on ends the in-flight step and job spans", async () => {
   await withRecordedSpans(async (recorder) => {
     await withTempDir(async (tempDir) => {
-      // build-a is in flight when the abort fires; build-b and build-c are
-      // queued behind step concurrency and never start.
       const workflow = Workflow.create({
         name: "abort-spans",
         jobs: [
@@ -6618,7 +6365,6 @@ Deno.test("run(): an abort mid-step with tracing on ends the in-flight step and 
         { targets: ["a", "b", "c"] },
       );
 
-      // Same outcome as the untraced abort cleanup test.
       assertEquals(run.status, "cancelled");
       assertCancelledBeforeStart(run, "main", ["build-b", "build-c"]);
       assertEquals(
@@ -6655,8 +6401,6 @@ Deno.test("run(): an abort mid-step with tracing on ends the in-flight step and 
     });
   });
 });
-
-// guard tests
 
 Deno.test("guard: step without guard executes normally", async () => {
   await withTempDir(async (tempDir) => {
@@ -7272,9 +7016,9 @@ Deno.test("assert: model.method() in expr fails when method returns falsy", asyn
   });
 });
 
-// swamp-club#3708: a guard or assert calling model.method with ints in its
-// inputs runs the method on the real executor. Before the fix the ints arrived
-// as bigints and saving the evaluated definition failed to serialize them.
+// a guard or assert calling model.method with ints runs the method on the real
+// executor; ints must arrive as numbers, not bigints, or saving the evaluated
+// definition fails to serialize
 async function runModelMethodWithIntInputs(
   step: (expression: string) => Step,
 ): Promise<{ run: WorkflowRun; received: Record<string, unknown>[] }> {
@@ -7371,18 +7115,12 @@ Deno.test("assert: model.method() with int inputs runs the method and passes", a
   assertEquals(received, [{ n: 1, l: [1] }]);
 });
 
-// ---------------------------------------------------------------------------
-// Drain-before-suspend: parallel sibling steps complete before suspension
-// ---------------------------------------------------------------------------
-
 Deno.test("suspend: parallel sibling steps complete before suspension is persisted", async () => {
   await withTempDir(async (tempDir) => {
     const workflowRepo = new InMemoryWorkflowRepository();
     const runRepo = new InMemoryWorkflowRunRepository();
     const executor = new ConcurrencyTrackingExecutor(50);
 
-    // deploy → (gate + cleanup) where gate is manual_approval and cleanup
-    // is a model_method. Both depend on deploy (same level, parallel).
     const workflow = Workflow.create({
       name: "drain-suspend",
       jobs: [
@@ -7438,12 +7176,10 @@ Deno.test("suspend: parallel sibling steps complete before suspension is persist
 
     assertEquals(suspended.status, "suspended");
 
-    // The cleanup job's step must be succeeded — not stuck at running.
     const cleanupJob = suspended.getJob("cleanup")!;
     assertEquals(cleanupJob.status, "succeeded");
     assertEquals(cleanupJob.getStep("gc")!.status, "succeeded");
 
-    // The gate job stays running with the approval step waiting.
     const gateJob = suspended.getJob("gate")!;
     assertEquals(gateJob.status, "running");
     assertEquals(
@@ -7451,10 +7187,8 @@ Deno.test("suspend: parallel sibling steps complete before suspension is persist
       "waiting_approval",
     );
 
-    // The deploy job completed normally.
     assertEquals(suspended.getJob("deploy")!.status, "succeeded");
 
-    // The executor ran the deploy step and the cleanup step (not the gate).
     assert(executor.executedSteps.includes("deploy/build"));
     assert(executor.executedSteps.includes("cleanup/gc"));
   });
@@ -7533,12 +7267,10 @@ Deno.test("suspend: resumed run skips completed sibling steps", async () => {
     const suspended = await service.execute(workflow.name);
     assertEquals(suspended.status, "suspended");
 
-    // Approve the gate step.
     const toApprove = await runRepo.findById(workflow.id, suspended.id);
     toApprove!.getJob("gate")!.getStep("approval")!.succeed();
     await runRepo.save(workflow.id, toApprove!);
 
-    // Clear executor tracking and resume.
     executor.executedSteps = [];
 
     let resumedRun: WorkflowRun | undefined;
@@ -7555,10 +7287,9 @@ Deno.test("suspend: resumed run skips completed sibling steps", async () => {
 });
 
 /**
- * Highest number of jobs open at once, read from the order of job_started and
- * job_completed events. A job's generator yields job_started before any I/O,
- * and a concurrency-limited merge only pulls a job once it holds a permit, so
- * this count is the job-level parallelism the merge allowed.
+ * job_started yields before any I/O and a concurrency-limited merge pulls a job
+ * only once it holds a permit, so the open count is the job-level parallelism
+ * the merge allowed
  */
 function maxOpenJobs(events: WorkflowExecutionEvent[]): number {
   let open = 0;
@@ -7593,11 +7324,6 @@ function fanOutJobs(dependsOnGate: boolean): Job[] {
   );
 }
 
-/**
- * Runs a workflow whose manual-approval gate is followed by three parallel
- * jobs until it suspends, approves the gate, and resumes it. Returns the
- * resume's events, the resumed run, and the steps the resume executed.
- */
 async function resumeGatedFanOut(
   tempDir: string,
   concurrency?: number,
@@ -7794,7 +7520,6 @@ Deno.test("suspend: sibling step failure is recorded during drain", async () => 
     const suspended = await service.execute(workflow.name);
     assertEquals(suspended.status, "suspended");
 
-    // The cleanup job's step failed — properly recorded, not stuck running.
     const cleanupJob = suspended.getJob("cleanup")!;
     assertEquals(cleanupJob.status, "failed");
     assertEquals(cleanupJob.getStep("gc")!.status, "failed");
@@ -7921,7 +7646,6 @@ Deno.test("step output stored on WorkflowRun has stripped content and attributes
     const run = await service.execute(workflow.name);
     assertEquals(run.status, "succeeded");
 
-    // Expression context should still have full content for downstream steps
     const step2Context = executor.capturedContexts.get("step2");
     const dataModel = step2Context?.["data-model"] as {
       resource?: Record<
@@ -7934,7 +7658,6 @@ Deno.test("step output stored on WorkflowRun has stripped content and attributes
       "x".repeat(10000),
     );
 
-    // Step run output should have stripped content and attributes
     const step1Run = run.getJob("job1")!.getStep("step1")!;
     const step1Output = step1Run.toData().output as {
       resources?: Record<
@@ -7960,13 +7683,11 @@ Deno.test("step output stored on WorkflowRun has stripped content and attributes
       null,
     );
 
-    // Metadata should still be present
     const record = step1Output?.resources?.["result"]?.["default"];
     assertEquals(record?.id, "data-123");
     assertEquals(record?.name, "result");
     assertEquals(record?.version, 1);
 
-    // DataHandle attributes should also be stripped
     const step1Handles = (step1Run.toData().output as {
       dataHandles?: Array<{ attributes: unknown; name: string }>;
     })?.dataHandles;
@@ -7976,10 +7697,6 @@ Deno.test("step output stored on WorkflowRun has stripped content and attributes
     assertEquals(step1Handles[0].attributes, null);
   });
 });
-
-// ---------------------------------------------------------------------------
-// computeStepsToReset
-// ---------------------------------------------------------------------------
 
 function makeWorkflowWithForEach(
   templateName: string,
@@ -8074,7 +7791,6 @@ Deno.test("computeStepsToReset: falls back to prefix when forEachTemplate absent
 Deno.test("computeStepsToReset: throws when --from resolves to zero steps", () => {
   const tmpl = "deploy-${{ self.env }}";
   const workflow = makeWorkflowWithForEach(tmpl);
-  // Simulate a run where the forEach step was never reached
   const run = WorkflowRun.fromData({
     id: crypto.randomUUID(),
     workflowId: workflow.id,
@@ -8106,8 +7822,6 @@ Deno.test("computeStepsToReset: throws for unknown step name", () => {
     'Step "nonexistent" not found',
   );
 });
-
-// --- Post-failure cleanup: always/completed step conditions (swamp-club#1785) ---
 
 Deno.test(
   "step with always condition runs after dependency failure (swamp-club#1785)",
@@ -8306,7 +8020,6 @@ Deno.test({
       executor.execute = async (step: Step, ctx: StepExecutionContext) => {
         if (step.name === "slow") {
           controller.abort();
-          // Check if signal was aborted
           if (ctx.signal?.aborted) {
             throw new DOMException("The operation was aborted.", "AbortError");
           }
@@ -8515,11 +8228,6 @@ Deno.test({
   },
 });
 
-/**
- * A model whose `run` method reads its `cursor` resource, saved with the
- * cursor's content file removed, and a lookup that reports that file as an
- * unreadable v3 record (swamp-club#3617).
- */
 async function unreadableCursorFixture(
   tempDir: string,
   catalogStore: CatalogStore,
@@ -8739,11 +8447,6 @@ Deno.test({
 
 const STEP_OUTPUT_MODEL_TYPE = "test/step-outputs";
 
-/**
- * A model_method step output in the shape the real step executor returns:
- * resource records keyed by spec then instance, each still carrying the
- * attributes loaded when the step ran.
- */
 function modelMethodStepOutput(
   model: string,
   method: string,
@@ -8781,7 +8484,6 @@ function modelMethodStepOutput(
   };
 }
 
-/** Writes a resource's content where the service's data repository reads it. */
 async function writeStepResource(
   tempDir: string,
   catalogStore: CatalogStore,
@@ -8871,8 +8573,8 @@ Deno.test("steps context: downstream step sees upstream step outputs", async () 
     assertExists(createStep.outputs);
     assertEquals(createStep.outputs!.audienceId, "aud_123");
     assertEquals(createStep.outputs!.status, "Building");
-    // The context also carries the record the outputs came from, so a
-    // typed evaluator can view them through the adapter (typed-secrets 4.2).
+    // the context also carries the record the outputs came from, so a typed
+    // evaluator can view them through the adapter
     assertEquals(stepOutputSourcesOf(createStep), [{
       path: [],
       records: [{
@@ -9001,7 +8703,6 @@ Deno.test("steps context: pre-populated from completed jobs on resume", async ()
 
     await workflowRepo.save(workflow);
     const catalogStore = new CatalogStore(join(tempDir, "_catalog.db"));
-    // The resumed run reads compile's outputs back from the datastore.
     await writeStepResource(
       tempDir,
       catalogStore,
@@ -9033,8 +8734,8 @@ Deno.test("steps context: pre-populated from completed jobs on resume", async ()
     toApprove!.getJob(waiting.jobName)!.getStep(waiting.stepName)!.succeed();
     await runRepo.save(workflow.id, toApprove!);
 
-    // A resume takes the record it runs with, as run does; tests hand it a
-    // typed registry this way (typed-secrets 4.2).
+    // a resume takes the record it runs with, as run does; tests hand it a
+    // typed registry this way
     const injected = new RunSensitiveValues();
     let resumedRun: WorkflowRun | undefined;
     for await (
@@ -9230,7 +8931,6 @@ Deno.test("steps context: the run record keeps no step output values", async () 
     const run = await service.execute(parent.name);
     assertEquals(run.status, "succeeded");
 
-    // The parent step records how to find the child run, not its outputs.
     const parentOutput = run.getJob("main")!.getStep("child")!.output as Record<
       string,
       unknown
@@ -9315,18 +9015,9 @@ Deno.test("run context: includes initiatedBy and inputs", async () => {
   });
 });
 
-// --- Report assembly resolves definitions within the step's own model type ---
-//
-// `model_resolved` carries the resolved definition's own name AND type, so
-// report assembly can scope its lookup to that type instead of walking every
-// definition in the repository once per step.
-//
-// The discriminator here is deterministic rather than walk-order dependent:
-// findByNameGlobal always searches the primary models dir before the secondary
-// auto-definitions dir, so a same-named definition in each means the global
-// walk necessarily returns the PRIMARY one. A type-scoped lookup for the
-// secondary definition's type necessarily returns the SECONDARY one. This is
-// also the real shape of the auto-created-model case.
+// findByNameGlobal searches the primary dir before the secondary one, so a
+// global walk returns the primary of two same-named definitions; a type-scoped
+// lookup returns the secondary
 Deno.test("report assembly resolves step definitions within the step's own model type", async () => {
   const { ModelType } = await import("../models/model_type.ts");
   const { Definition } = await import("../definitions/definition.ts");
@@ -9361,8 +9052,6 @@ Deno.test("report assembly resolves step definitions within the step's own model
     });
     await secondaryRepo.save(secondaryType, secondaryDef);
 
-    // The global walk returns the primary definition — this is what report
-    // assembly used to get, regardless of which type the step actually ran.
     const globalLookup = await primaryRepo.findByNameGlobal(sharedName);
     assertEquals(globalLookup?.definition.id, primaryDef.id);
 
@@ -9381,7 +9070,6 @@ Deno.test("report assembly resolves step definitions within the step's own model
     );
     const run = await service.execute(workflow.name);
 
-    // Capture what report assembly hands to the report runner.
     let captured: { modelId: string; globalArgs: Record<string, unknown> }[] =
       [];
     (service as unknown as {
@@ -9438,15 +9126,13 @@ Deno.test("report assembly resolves step definitions within the step's own model
     // that definition — not from the same-named primary one the global walk
     // would have returned.
     assertEquals(captured[0].globalArgs, { origin: "secondary" });
-    // And the modelId still comes from step execution time, never the lookup.
     assertEquals(captured[0].modelId, secondaryDef.id);
   });
 });
 
-// A source definition's YAML `type` field wins over the directory it sits in,
-// so a hand-placed definition can live outside its type-derived directory. A
-// step that fails before its evaluated definition is saved falls back to the
-// source repository, where only the global search can find such a file.
+// a source definition's YAML type wins over its directory; a step failing
+// before its evaluated definition is saved falls back to the source repository,
+// where only the global search finds such a file
 Deno.test("report assembly finds a step definition stored outside its type directory", async () => {
   const { ModelType } = await import("../models/model_type.ts");
   const { Definition } = await import("../definitions/definition.ts");
@@ -9542,11 +9228,6 @@ Deno.test("report assembly finds a step definition stored outside its type direc
   });
 });
 
-// ============================================================================
-// Run context selection (swamp-club#2123)
-// ============================================================================
-
-/** Captures the expression context each step was given. */
 class RunContextCapturingExecutor implements StepExecutor {
   contexts: (Record<string, unknown> | undefined)[] = [];
 
@@ -9785,12 +9466,9 @@ Deno.test("resume builds a full context when a step definition reads the model n
     assert(modelNamespaceKeys(executor.contexts[0]).includes("source"));
   });
 });
-// Resume-time inputs are audited by key only; a resumed parent that calls a
-// child with a runtime expression must not snapshot their values into the
-// child's persisted deferred bindings.
-// The forEach reads the resume-time input as inputs.items, or as run.inputs.items,
-// which holds the merged inputs during a resume (swamp-club#3583). The input
-// is absent until the resume, so the read tolerates that.
+// resume-time inputs are audited by key only; their values must not be
+// snapshotted into the child's deferred bindings; the forEach reads them as
+// inputs.items or run.inputs.items, absent until resume
 for (
   const itemsRef of [
     "inputs.?items.orValue([])",
@@ -9832,7 +9510,6 @@ for (
                 name: "gate",
                 task: StepTask.manualApproval("Mint the token first"),
               }),
-              // Iterates a resume-time input, so self.item carries its value.
               Step.create({
                 name: "call-child",
                 forEach: { item: "item", in: `\${{ ${itemsRef} }}` },
@@ -9887,8 +9564,8 @@ for (
       // the forEach item iterated out of one are not.
       assertEquals(record.bindings.inputs, { region: "us-east" });
       assertEquals("item" in (record.bindings.self ?? {}), false);
-      // run.inputs holds the merged set during the resume (swamp-club#3583);
-      // its resume-only keys are left out too.
+      // run.inputs holds the merged set during the resume; its resume-only keys
+      // are left out too
       assertEquals(
         (record.bindings.run as
           | { inputs?: Record<string, unknown> }
@@ -9901,28 +9578,19 @@ for (
   });
 }
 
-/**
- * Records every tracker call so a test can assert the status the workflow
- * reported. Only the methods the execution service reaches are implemented.
- */
 class RecordingRunTracker implements RunTrackerRepository {
   readonly completions: { runId: string; status: ActiveRunStatus }[] = [];
 
-  /** The reason passed with each completion, in the same order. */
   readonly completionReasons: (string | undefined)[] = [];
 
   readonly registrations: ActiveRun[] = [];
 
-  /** What reactivate reports; false models a missing or finished row. */
   reactivateResult = true;
 
-  /** The row findById returns. */
   existingRow: ActiveRun | null = null;
 
-  /** Thrown by register when set, as a busy or locked database would. */
   registerError: Error | undefined;
 
-  /** Thrown by reactivate when set. */
   reactivateError: Error | undefined;
 
   register(run: ActiveRun): void {
@@ -10146,17 +9814,6 @@ Deno.test("trackerStatusForRun: maps every aggregate status to the tracker vocab
   }
 });
 
-// ---------------------------------------------------------------------------
-// Task target deferral (swamp-club#2304)
-//
-// A guarded step never runs, but its task target used to be evaluated at run
-// start anyway. A target resolving to an empty string then failed StepTask
-// validation while the evaluated workflow was rebuilt, killing the whole run
-// before any step executed — and recording no run at all, so there was nothing
-// to inspect afterwards.
-// ---------------------------------------------------------------------------
-
-/** Builds a two-job workflow whose second step is optionally guarded. */
 function targetWorkflow(opts: {
   name: string;
   target: string;
@@ -10191,9 +9848,6 @@ function targetWorkflow(opts: {
 }
 
 Deno.test("task target: a guarded step with a valid dynamic target still executes when its guard is false", async () => {
-  // The ordinary case, and the one the widening actually risks: every guarded
-  // step in the repo's own verification workflow names a run-id-based model.
-  // This must pass before and after the change.
   await withTempDir(async (tempDir) => {
     const workflowRepo = new InMemoryWorkflowRepository();
     const runRepo = new InMemoryWorkflowRunRepository();
@@ -10229,8 +9883,8 @@ Deno.test("task target: a guarded step with a valid dynamic target still execute
 });
 
 Deno.test("task target: a guarded step whose target resolves to empty skips instead of killing the run", async () => {
-  // The reported defect. The target is a plain inputs reference with no
-  // step-output dependency, so only the guard condition defers it.
+  // the target is a plain inputs reference with no step-output dependency, so
+  // only the guard condition defers it
   await withTempDir(async (tempDir) => {
     const workflowRepo = new InMemoryWorkflowRepository();
     const runRepo = new InMemoryWorkflowRunRepository();
@@ -10313,9 +9967,9 @@ Deno.test("task target: an unguarded step with an empty target still fails at ru
 });
 
 Deno.test("task target: a guarded forEach step resolves its deferred target per expansion", async () => {
-  // The only place in this change where one deferred expression yields several
-  // values: the target is a single raw string shared by every expansion and
-  // resolved against each expansion's own self context.
+  // one deferred expression yields several values here: the target is a single
+  // raw string shared by every expansion, resolved against each expansion's own
+  // self context
   await withTempDir(async (tempDir) => {
     const workflowRepo = new InMemoryWorkflowRepository();
     const runRepo = new InMemoryWorkflowRunRepository();
@@ -10359,7 +10013,6 @@ Deno.test("task target: a guarded forEach step resolves its deferred target per 
       })
     ) { /* drain */ }
 
-    // Each expansion executed against its own target, not a shared one.
     assertEquals(executor.executedSteps.sort(), [
       "fan-out/run-alpha",
       "fan-out/run-beta",
@@ -10415,10 +10068,6 @@ Deno.test("task target: a deferred target survives --last-evaluated and resolves
 });
 
 Deno.test("task target: a deferred target resolves after suspend and resume", async () => {
-  // Resume re-establishes expression provenance from persisted state rather
-  // than re-deriving it at run start, and a deferred target is exactly the kind
-  // of raw expression that path has to carry. Every other route by which a
-  // target survives as a raw expression is covered; this is the last.
   await withTempDir(async (tempDir) => {
     const workflowRepo = new InMemoryWorkflowRepository();
     const runRepo = new InMemoryWorkflowRunRepository();
@@ -10483,16 +10132,6 @@ Deno.test("task target: a deferred target resolves after suspend and resume", as
   });
 });
 
-// ---------------------------------------------------------------------------
-// Nested workflow targets and the steps namespace (swamp-club#2351)
-//
-// A nested workflow step's workflowIdOrName is a task target too: deferred
-// past run start when it reads step output or its step carries a guard, and
-// resolved in runWorkflowStep after the guard has decided. A steps.* reference
-// used to fail the whole run at start with "Unknown variable: steps".
-// ---------------------------------------------------------------------------
-
-/** A one-step child workflow whose single step names the child. */
 function childWorkflow(name: string): Workflow {
   return Workflow.create({
     name,
@@ -10507,7 +10146,6 @@ function childWorkflow(name: string): Workflow {
   });
 }
 
-/** Runs `workflow` (and the saved children) and returns the recorded run. */
 async function runWithChildren(
   tempDir: string,
   workflow: Workflow,
@@ -10638,14 +10276,8 @@ Deno.test("steps namespace: steps.* in task.inputs and a workflow target resolve
   });
 });
 
-// ---------------------------------------------------------------------------
-// Retry: resume a failed run without --from (swamp-club#2409)
-// ---------------------------------------------------------------------------
-
-/** Counts calls per `job/step` and fails the steps named in `failing`. */
 class CountingStepExecutor implements StepExecutor {
   readonly calls = new Map<string, number>();
-  /** Step names, or `job/step` keys, whose execution fails. */
   readonly failing = new Set<string>();
 
   execute(_step: Step, ctx: StepExecutionContext): Promise<unknown> {
@@ -10663,11 +10295,9 @@ class CountingStepExecutor implements StepExecutor {
   }
 }
 
-/** Counts saves, and can fail every save after the first `allowSaves`. */
 class SpyWorkflowRunRepository extends InMemoryWorkflowRunRepository {
   saves = 0;
   allowSaves = Infinity;
-  /** The record as each save persisted it, in order. */
   readonly saved: WorkflowRunData[] = [];
 
   override save(workflowId: WorkflowId, run: WorkflowRun): Promise<void> {
@@ -10700,10 +10330,6 @@ function modelStep(
   });
 }
 
-/**
- * build: compile → test, plus a cleanup that runs once compile completes;
- * deploy depends on build; docs is independent.
- */
 function createRetryWorkflow(): Workflow {
   return Workflow.create({
     name: "retry-wf",
@@ -10799,10 +10425,8 @@ Deno.test("resume: retries the failed steps of a failed run without fromStep", a
     assertEquals(retried?.startedAt?.toISOString(), startedAt);
     assertEquals(executor.count("build/compile"), 2);
     assertEquals(executor.count("build/test"), 1);
-    // A successful cleanup that depends on the failed step runs again.
     assertEquals(executor.count("build/cleanup"), 2);
     assertEquals(executor.count("deploy/push"), 1);
-    // Independent successful work is not repeated and keeps its result.
     assertEquals(executor.count("docs/publish"), 1);
     const stored = await runRepo.findById(workflow.id, failed.id);
     assertEquals(stored?.status, "succeeded");
@@ -10889,7 +10513,6 @@ Deno.test("resume: a guard still decides whether a reset step runs on retry", as
                 step: "compile",
                 condition: TriggerCondition.completed(),
               }],
-              // quiet is a late input the retry adds (swamp-club#3583).
               guard: "${{ inputs.?quiet.orValue(false) == true }}",
             }),
           ],
@@ -10915,19 +10538,13 @@ Deno.test("resume: a guard still decides whether a reset step runs on retry", as
     assertEquals(executor.count("main/announce"), 1);
     const announce = retried!.getJob("main")!.getStep("announce")!;
     assertEquals(announce.status, "skipped");
-    // The guard skip does not restore the earlier attempt's output.
     assertEquals(announce.output, undefined);
   });
 });
 
-// ---------------------------------------------------------------------------
-// forEach iterations evaluate their template's dependsOn (swamp-club#2537)
-// ---------------------------------------------------------------------------
-
 const EACH_TARGET = { item: "target", in: "${{ inputs.targets }}" };
 const TARGETS = { targets: ["a", "b"] };
 
-/** deploy, then a plain and a forEach rollback that run only if it failed. */
 function rollbackWorkflow(guard?: string): Workflow {
   const onFailure = [{ step: "deploy", condition: TriggerCondition.failed() }];
   return Workflow.create({
@@ -11080,7 +10697,6 @@ Deno.test("forEach dependsOn: a skipped iteration's event names its template and
         skipped.push(event);
       }
     }
-    // Iterations of one level run concurrently, so order by index.
     skipped.sort((a, b) => (a.forEachIndex ?? 0) - (b.forEachIndex ?? 0));
 
     assertEquals(skipped, [
@@ -11151,7 +10767,6 @@ Deno.test("resume: refuses an ineligible failed run without saving or running an
     const { runRepo, executor, service } = await setupRetry(tempDir, workflow);
     executor.failing.add("compile");
     const failed = await service.execute(workflow.name);
-    // An earlier retry that threw mid-execution leaves pending reset steps.
     failed.getJob("build")!.getStep("test")!.resetToPending();
     const before = JSON.stringify(failed.toData());
     const saves = runRepo.saves;
@@ -11204,7 +10819,6 @@ Deno.test("resume: takes the run over under its claim and holds none while steps
 
     assertEquals(retried?.status, "succeeded");
     assertEquals(claimed, [failed.id]);
-    // The take-over save lands inside the claim; no step ran under it.
     assertEquals(savesWhenReleased, savesBefore + 1);
     assertEquals(statusWhenReleased, "running");
     assertEquals(callsWhenReleased, callsBefore);
@@ -11224,7 +10838,6 @@ Deno.test("resume: refuses a run cancelled before the claim was taken, without s
     let savesAfterCancel = -1;
     service.runClaims = {
       withClaim: async (_runId, fn) => {
-        // Another command's cancel was saved after resume first read the run.
         await runRepo.save(
           workflow.id,
           WorkflowRun.fromData({ ...failed.toData(), status: "cancelled" }),
@@ -11324,10 +10937,6 @@ Deno.test("resume: hands the tracker row to the resuming process", async () => {
   });
 });
 
-/**
- * Replaces the stored failed run with one another process left behind: a
- * different pid, and a serve instance id when given.
- */
 async function seedForeignOwner(
   runRepo: WorkflowRunRepository,
   workflow: Workflow,
@@ -11354,13 +10963,11 @@ Deno.test("resume: the first save names the resuming process as owner", async ()
     const first = runRepo.saved[saves];
     assertEquals(first.status, "running");
     assertEquals(first.pid, Deno.pid);
-    // A local resume of a run serve started clears serve's instance id.
     assertEquals(first.instanceId, undefined);
     assertEquals(first.ownerBeforeResume, {
       pid: Deno.pid + 1,
       instanceId: "serve-a",
     });
-    // Once the resume ends, the run names its owner again.
     const stored = (await runRepo.findById(workflow.id, failed.id))!.toData();
     assertEquals(stored.status, "succeeded");
     assertEquals(stored.pid, Deno.pid + 1);
@@ -11649,9 +11256,8 @@ Deno.test("resume: a failed resume of a suspended run hands a registered row bac
 });
 
 /**
- * Runs `fn` while recording the 30-second intervals it starts and clears, so a
- * test can see whether the resume heartbeat is running. Test files run in
- * their own workers and tests in a file run in turn, so the wrap is local.
+ * wrapping setInterval is safe because test files run in their own workers and
+ * tests within a file run in turn
  */
 async function withHeartbeatWatch(
   fn: (running: () => number) => Promise<void>,
@@ -11728,16 +11334,9 @@ Deno.test("resume: a resume that fails before execution stops the heartbeat", as
   });
 });
 
-/**
- * One step whose input adds `inputs.n` and the late input `bad`, so a string
- * `bad` supplied at resume fails evaluation while the resume prepares. `n` is
- * a value the run has, which a resume cannot change (swamp-club#3583).
- */
 function createArithmeticWorkflow(withGate: boolean): Workflow {
   const steps = [
     modelStep("compute", {
-      // `bad` is a late input a resume may add; a non-number fails the
-      // evaluation while the resume prepares (swamp-club#3583).
       inputs: { value: "${{ inputs.n + inputs.?bad.orValue(0) }}" },
       dependsOn: withGate
         ? [{ step: "gate", condition: TriggerCondition.succeeded() }]
@@ -11822,8 +11421,6 @@ Deno.test("resume: a failed preparation does not restore over a run cancelled me
     service.runClaims = {
       withClaim: async (runId, fn) => {
         claimed.push(runId);
-        // The second claim is the restore's. A cancel settled the run while
-        // the resume prepared.
         if (claimed.length === 2) {
           await runRepo.save(
             workflow.id,
@@ -11858,10 +11455,8 @@ Deno.test("resume: a failing restore still rethrows the original error", async (
     const { runRepo, executor, service } = await setupRetry(tempDir, workflow);
     executor.failing.add("compute");
     const failed = await service.execute(workflow.name, { inputs: { n: 1 } });
-    // Allow resume's early save, then fail the restore.
     runRepo.allowSaves = runRepo.saves + 1;
 
-    // The evaluation error, not the restore's datastore error.
     await assertRejects(
       () =>
         drainResume(service, workflow.name, failed.id, {
@@ -11873,7 +11468,6 @@ Deno.test("resume: a failing restore still rethrows the original error", async (
   });
 });
 
-/** A one-step workflow whose step input resolves `inputs.greeting`. */
 function greetingWorkflow(message: string, id?: string): Workflow {
   return Workflow.create({
     id,
@@ -11897,8 +11491,8 @@ function greetingWorkflow(message: string, id?: string): Workflow {
 }
 
 /**
- * Rewinds a completed one-step run to mid-step and interrupts it, the state
- * a crash leaves behind. `interrupt` returns early on a succeeded run.
+ * rewinds a completed run to mid-step because interrupt returns early on a
+ * succeeded run
  */
 function interruptMidStep(run: WorkflowRun): WorkflowRun {
   const data = run.toData();
@@ -11940,8 +11534,6 @@ Deno.test("WorkflowExecutionService.run: definition fingerprint lets recovery ma
     assertEquals(run.status, "succeeded");
     const definitionFingerprint = await computeWorkflowFingerprint(workflow);
     assertEquals(run.runPlan?.definitionFingerprint, definitionFingerprint);
-    // Evaluation resolved the inputs expression, so the evaluated
-    // fingerprint differs from the definition's.
     assertNotEquals(run.runPlan?.fingerprint, definitionFingerprint);
 
     const interrupted = interruptMidStep(run);
@@ -11958,10 +11550,6 @@ Deno.test("WorkflowExecutionService.run: definition fingerprint lets recovery ma
   });
 });
 
-// swamp-club#2381: workflow execution resolves its datastore-tier subdirs
-// through the datastore path resolver, as the model-method path does.
-
-/** Files under `root`, relative and sorted; empty when `root` is missing. */
 async function listFiles(root: string): Promise<string[]> {
   const files: string[] = [];
   try {
@@ -11974,7 +11562,6 @@ async function listFiles(root: string): Promise<string[]> {
   return files.sort();
 }
 
-/** A filesystem datastore rooted outside the repo's `.swamp/`. */
 function externalDatastore(
   repoDir: string,
   datastoreDir: string,
@@ -12188,7 +11775,6 @@ Deno.test("WorkflowExecutionService: saves and replays evaluated workflows throu
   });
 });
 
-/** Registers a per-run model type whose `run` method records its arguments. */
 async function registerRecordingModel(
   received: unknown[],
 ): Promise<ModelType> {
@@ -12302,7 +11888,6 @@ Deno.test("DefaultStepExecutor: finds a definition that exists only in the datas
   const modelType = await registerRecordingModel(received);
   await withTempDir(async (tempDir) => {
     const resolver = externalDatastore(tempDir, join(tempDir, "external-ds"));
-    // Saved the way direct type execution saves an auto-definition.
     await new YamlDefinitionRepository(
       tempDir,
       undefined,
@@ -12347,10 +11932,6 @@ Deno.test("DefaultStepExecutor: keeps outputs and evaluated definitions repo-loc
   });
 });
 
-// ---------------------------------------------------------------------------
-// Resume against a changed workflow (swamp-club#2433)
-// ---------------------------------------------------------------------------
-
 type ResumeOptions = Parameters<WorkflowExecutionService["resume"]>[2];
 
 interface JobShape {
@@ -12360,7 +11941,6 @@ interface JobShape {
   condition?: TriggerCondition;
 }
 
-/** A workflow named "changed-wf" with the given id, or a fresh one. */
 function shapedWorkflow(jobs: JobShape[], id?: WorkflowId): Workflow {
   return Workflow.create({
     id,
@@ -12404,11 +11984,6 @@ function dependentStep(name: string, dependsOn: string[]): Step {
   });
 }
 
-/**
- * Fails a run of `before` at `failing`, saves `after` in its place, and
- * asserts that resuming refuses with `message` without saving the run or
- * calling a step.
- */
 async function assertResumeRefused(
   tempDir: string,
   before: Workflow,
@@ -12449,7 +12024,6 @@ async function assertResumeRefused(
   );
 }
 
-/** build: compile → test; release (depends on build): publish. */
 function buildRelease(): Workflow {
   return shapedWorkflow([
     {
@@ -12504,7 +12078,6 @@ Deno.test("resume: --from refuses a step moved next to a dependent, instead of c
   });
 });
 
-/** main: a → b → c. */
 function chain(): Workflow {
   return shapedWorkflow([{
     name: "main",
@@ -12625,7 +12198,6 @@ Deno.test("resume: --from re-runs only the kept step when a shared step name is 
     assertEquals(executor.count("b/x"), 2);
     assertEquals(executor.count("a/x"), 1);
     assertEquals(executor.count("a/y"), 1);
-    // a's stored x stays failed: the workflow no longer has it to re-run.
     assertEquals(resumed?.getJob("a")?.getStep("x")?.status, "failed");
     assertEquals(resumed?.getJob("b")?.getStep("x")?.status, "succeeded");
     assertEquals(resumed?.status, "failed");
@@ -12634,9 +12206,6 @@ Deno.test("resume: --from re-runs only the kept step when a shared step name is 
 
 Deno.test("resume: refuses, and restores the run, when an expression-named job evaluates to another stored name than its pairing", async () => {
   await withTempDir(async (tempDir) => {
-    // Stored as site-west and site-east. The edit keeps the jobs in place:
-    // the retry resets site-east through the second job, and the first job
-    // now evaluates to site-north, which the run does not have.
     const before = shapedWorkflow([
       { name: "site-${{ 'west' }}", steps: [modelStep("restart")] },
       { name: "site-${{ 'east' }}", steps: [modelStep("restart")] },
@@ -12675,7 +12244,6 @@ Deno.test("resume: refuses, and restores the run, when an expression-named job e
   });
 });
 
-/** swamp-club#3815: jobs a and b each have a step "s"; b depends on a. */
 function sharedStepNameWorkflow(): Workflow {
   return shapedWorkflow([
     { name: "a", steps: [modelStep("s")] },
@@ -12801,10 +12369,6 @@ Deno.test("resume: --from refuses a plain step moved away from a forEach step it
   });
 });
 
-/**
- * Fails a run of `before` at `failing`, saves `after` in its place, then
- * resumes it with nothing failing.
- */
 async function resumeChanged(
   tempDir: string,
   before: Workflow,
@@ -12930,7 +12494,6 @@ Deno.test("resume: --from still works on a run started from an evaluated forEach
         eachStep(template, "${{ inputs.envs }}", { dependsOn: ["prep"] }),
       ],
     }]);
-    // What 'workflow evaluate' saves: concrete iterations, no forEach.
     const evaluated = shapedWorkflow([{
       name: "main",
       steps: [modelStep("prep"), dependentStep("deploy-prod", ["prep"])],
@@ -12939,8 +12502,6 @@ Deno.test("resume: --from still works on a run started from an evaluated forEach
     const { YamlEvaluatedWorkflowRepository } = await import(
       "../../infrastructure/persistence/yaml_evaluated_workflow_repository.ts"
     );
-    // Recording the inputs it was evaluated with, as 'workflow evaluate'
-    // does, so the run may name them (swamp-club#3583).
     await new YamlEvaluatedWorkflowRepository(tempDir).save(
       evaluated,
       undefined,
@@ -12972,7 +12533,6 @@ Deno.test("resume: --from still works on a run started from an evaluated forEach
   });
 });
 
-/** main: deploy iterations over a literal collection; deploy-b fails first. */
 function deployOver(collection: string): JobShape[] {
   return [{
     name: "main",
@@ -13045,8 +12605,6 @@ Deno.test("resume: a stranded iteration fails even when its forEach step allows 
 
 Deno.test("resume: a retry with an --input that narrows a forEach collection fails the dropped iteration", async () => {
   await withTempDir(async (tempDir) => {
-    // envs is a late input the retry adds; the first run iterates its
-    // fallback (swamp-club#3583).
     const { resumed, executor } = await resumeChanged(
       tempDir,
       shapedWorkflow(deployOver("${{ inputs.?envs.orValue(['a', 'b']) }}")),
@@ -13094,7 +12652,6 @@ Deno.test("resume: a retry of a run with a stranded step is refused, and --from 
       `Step "deploy-\${{ self.env }}" in job "main" did not run: the workflow or a forEach collection changed. Start a new run.`,
     );
 
-    // Restoring the collection and re-entering at the template runs it.
     const restored = shapedWorkflow(
       deployOver('${{ ["a", "b"] }}'),
       resumed.workflowId as WorkflowId,
@@ -13128,7 +12685,6 @@ Deno.test("resume: a --from that suspends again still fails an iteration its res
     );
     const suspended = await service.execute(before.name);
     assertEquals(suspended.status, "suspended");
-    // Reject the gate, as 'workflow reject' does.
     const gate = suspended.getJob("main")!.getStep("gate")!;
     gate.recordApprovalDecision({
       approved: false,
@@ -13191,14 +12747,6 @@ Deno.test("resume: --from still works in a job whose name is written with an inp
   });
 });
 
-// ---------------------------------------------------------------------------
-// Resume a suspended run against a changed workflow (swamp-club#2498)
-// ---------------------------------------------------------------------------
-
-/**
- * main: prep → gate → deploy → notify; post (depends on main): announce. The
- * shape of the swamp-club#2498 reproduction.
- */
 function gatedJobs(post: Step[] = [modelStep("announce")]): JobShape[] {
   return [
     {
@@ -13221,10 +12769,6 @@ function gatedJobs(post: Step[] = [modelStep("announce")]): JobShape[] {
   ];
 }
 
-/**
- * Runs `before` until it suspends at the gate in job main, approves the gate,
- * and saves `after` in the workflow's place.
- */
 async function suspendThenEdit(
   tempDir: string,
   before: Workflow,
@@ -13249,10 +12793,6 @@ async function suspendThenEdit(
   return { runRepo, executor, service, run: suspended };
 }
 
-/**
- * Suspends a run of {@link gatedJobs}, saves `after`, and asserts that
- * resuming refuses with `message` without saving the run or calling a step.
- */
 async function assertSuspendedResumeRefused(
   tempDir: string,
   after: JobShape[],
@@ -13355,7 +12895,6 @@ Deno.test("resume: a suspended run still resumes after a pending step is removed
     assertEquals(resumed?.status, "succeeded");
     assertEquals(executor.count("main/deploy"), 1);
     assertEquals(executor.count("post/announce"), 1);
-    // The removed step's record stays pending, as before.
     assertEquals(
       resumed!.getJob("main")!.getStep("notify")!.status,
       "pending",
@@ -13390,7 +12929,6 @@ Deno.test("resume: a forEach narrowed through --input on a suspended resume stil
       name: "main",
       steps: [
         Step.create({ name: "gate", task: StepTask.manualApproval("Go?") }),
-        // envs is a late input the resume adds (swamp-club#3583).
         eachStep(
           "deploy-${{ self.env }}",
           "${{ inputs.?envs.orValue(['a', 'b']) }}",
@@ -13411,7 +12949,6 @@ Deno.test("resume: a forEach narrowed through --input on a suspended resume stil
     assertEquals(resumed?.status, "succeeded");
     assertEquals(executor.count("main/deploy-a"), 1);
     assertEquals(executor.count("main/deploy-b"), 0);
-    // The iteration the smaller collection drops stays pending, as before.
     assertEquals(
       resumed!.getJob("main")!.getStep("deploy-b")!.status,
       "pending",
@@ -13421,10 +12958,9 @@ Deno.test("resume: a forEach narrowed through --input on a suspended resume stil
 
 Deno.test("resume: refuses a recovered run with no run plan whose workflow changed shape, and leaves it suspended", async () => {
   await withTempDir(async (tempDir) => {
-    // A run started with --last-evaluated records no run plan, so recovery's
-    // fingerprint check cannot refuse a changed definition. The resume that
-    // 'workflow recover' prints refuses instead, once the run is suspended
-    // and can be cancelled.
+    // a run started with --last-evaluated records no run plan, so recovery's
+    // fingerprint check cannot refuse a changed definition; the printed resume
+    // refuses instead
     const before = shapedWorkflow(gatedJobs());
     const { workflowRepo, runRepo, executor, service } = await setupRetry(
       tempDir,
@@ -13466,7 +13002,6 @@ Deno.test("resume: refuses a recovered run with no run plan whose workflow chang
       (await assessRecoveryForRun(edited, interrupted)).fingerprintMismatch,
       false,
     );
-    // What 'swamp workflow recover' does before printing the resume command.
     interrupted.resetUnknownStepsForRecovery();
     await runRepo.save(before.id, interrupted);
 
@@ -13558,14 +13093,6 @@ Deno.test("templateScanGlobalArguments: ignores inherited keys of the authored r
   );
 });
 
-/**
- * Runs a direct-execution step whose resolver builds a definition holding the
- * evaluated `{{env.name}}` under `key`, with `authoredStep` set as given. The
- * step supplies it as `globalArgs`, or as `inputs` the resolver routes to
- * global arguments. With `stored`, the step supplies nothing and the resolver
- * reuses a definition already holding the text, saved in `models/` or in the
- * auto-definitions directory.
- */
 async function runDirectStep(
   authoredStep: Step | undefined,
   { key = "message", via = "globalArgs", stored }: {
@@ -13642,7 +13169,6 @@ async function runDirectStep(
               name: definitionName,
               type: modelType.normalized,
               typeVersion: modelDef.version,
-              // Without globalArgs, every input routes to a global argument.
               globalArguments: globalArgs ?? inputs,
             }),
             modelType,
@@ -13653,7 +13179,6 @@ async function runDirectStep(
 
     const catalogStore = new CatalogStore(join(tempDir, "_catalog.db"));
     try {
-      // The step as the executor sees it, after the workflow evaluator ran.
       const evaluated = stored ? undefined : { [key]: "{{env.name}}" };
       const step = Step.create({
         name: "step",
@@ -13775,8 +13300,6 @@ Deno.test({
   sanitizeResources: false,
   sanitizeOps: false,
   fn: async () => {
-    // The step ran with globalArgs, but its source now writes inputs, as
-    // after an edit since a --last-evaluated cache was written.
     const error = await assertRejects(() =>
       runDirectStep(
         Step.create({
@@ -13824,11 +13347,6 @@ Deno.test({
   },
 });
 
-// ---------------------------------------------------------------------------
-// Resume override inputs are coerced and checked (swamp-club#2502)
-// ---------------------------------------------------------------------------
-
-/** Records the evaluated task inputs of each step it runs. */
 class InputCapturingExecutor extends CountingStepExecutor {
   readonly taskInputs = new Map<string, unknown>();
 
@@ -13841,7 +13359,6 @@ class InputCapturingExecutor extends CountingStepExecutor {
   }
 }
 
-/** A workflow named "typed-wf" with one job, main, and the given inputs. */
 function typedWorkflow(inputs: InputsSchema, steps: Step[]): Workflow {
   return Workflow.create({
     name: "typed-wf",
@@ -13858,7 +13375,6 @@ const ENVS_SCHEMA: InputsSchema = {
   required: ["envs"],
 };
 
-/** Fails a run of `workflow` at the steps in `failing`, then clears them. */
 async function failTyped(
   tempDir: string,
   workflow: Workflow,
@@ -13907,8 +13423,6 @@ Deno.test("resume: number, integer and boolean key=value overrides reach steps t
           flag: { type: "boolean" },
         },
       },
-      // Late inputs the retry adds, read in forms that tolerate their
-      // absence at the original run (swamp-club#3583).
       [modelStep("report", {
         inputs: {
           double: "${{ inputs.?n.orValue(0) * 2 }}",
@@ -13989,7 +13503,6 @@ Deno.test("resume: a suspended run's key=value override is coerced too", async (
       [
         Step.create({ name: "gate", task: StepTask.manualApproval("Scale?") }),
         modelStep("scale", {
-          // A late input the resume adds (swamp-club#3583).
           inputs: { replicas: "${{ inputs.?replicas.orValue(0) + 1 }}" },
           dependsOn: [{
             step: "gate",
@@ -14093,8 +13606,6 @@ Deno.test("resume: a partial nested override is checked merged over the stored o
     );
     const saves = runRepo.saves;
 
-    // The merged value is still checked: a nested field of the wrong type
-    // is refused.
     const error = await assertRejects(
       () =>
         drainResume(service, workflow.name, failed.id, {
@@ -14105,9 +13616,6 @@ Deno.test("resume: a partial nested override is checked merged over the stored o
     assertStringIncludes(error.message, "creds.region must be a string");
     assertEquals(runRepo.saves, saves);
 
-    // Only key is supplied, as `--input creds.key=old` gives; region comes
-    // from the stored inputs, so the object's required list is met. Merged,
-    // the object is the one the run has, so the value stays (swamp-club#3583).
     const resumed = await drainResume(service, workflow.name, failed.id, {
       inputs: { creds: { key: "old" } },
     });
@@ -14120,18 +13628,6 @@ Deno.test("resume: a partial nested override is checked merged over the stored o
   });
 });
 
-// ---------------------------------------------------------------------------
-// An abort settles the work its level never started (swamp-club#2543)
-// ---------------------------------------------------------------------------
-
-/**
- * Aborts the run from inside the step named `abortAt`, as a `--timeout` or
- * cancel firing while that step runs. The step then fails with an AbortError,
- * or succeeds as a method that ignores the signal would. It aborts once: a
- * later resume runs the step normally. Every guard call (`__guard_<step>`)
- * that succeeds returns `guardValue` (null, so falsy, by default). The abort
- * carries `abortReason`, or the default AbortError when it is undefined.
- */
 class AbortingStepExecutor extends CountingStepExecutor {
   readonly controller = new AbortController();
 
@@ -14159,7 +13655,6 @@ class AbortingStepExecutor extends CountingStepExecutor {
   }
 }
 
-/** An {@link AbortingStepExecutor} that keeps the signal each step ran under. */
 class SignalRecordingAbortingExecutor extends AbortingStepExecutor {
   readonly signals = new Map<string, AbortSignal>();
 
@@ -14206,7 +13701,6 @@ async function runUntilAborted(
   return { run, kinds: events.map((e) => e.kind) };
 }
 
-/** Suspends `workflow` at the gate in job main and approves the gate. */
 async function suspendAndApprove(
   service: WorkflowExecutionService,
   runRepo: InMemoryWorkflowRunRepository,
@@ -14240,7 +13734,6 @@ function assertCancelledBeforeStart(
   }
 }
 
-/** A guarded step whose guard never decided stays pending: undecided. */
 function assertUndecided(
   run: WorkflowRun,
   jobName: string,
@@ -14440,8 +13933,6 @@ Deno.test("abort cleanup: a queued step whose dependsOn is unmet is skipped, not
 
     assertEquals(run.status, "cancelled");
     assertDependencySkipped(run, ["rollback", "alert"]);
-    // rollback was queued behind deploy, so the level settled it: runStep,
-    // which yields step_skipped, never reached it.
     assertEquals(
       events.some((e) => e.kind === "step_skipped" && e.stepId === "rollback"),
       false,
@@ -14761,8 +14252,6 @@ Deno.test("abort cleanup: a guarded step recorded running on resume still starts
       }),
     );
 
-    // Not left running: the step starts as it did before the abort check,
-    // and the mock method ignores the signal.
     assertEquals(run.getJob("main")!.getStep("work")!.status, "succeeded");
     assertEquals(executor.count("main/work"), 1);
   });
@@ -14782,7 +14271,6 @@ Deno.test("abort cleanup: a forEach iteration first added on resume is settled w
             }),
             modelStep("build", {
               ...onStep("gate", TriggerCondition.succeeded()),
-              // targets is a late input the resume adds (swamp-club#3583).
               forEach: {
                 item: "target",
                 in: "${{ inputs.?targets.orValue(['a', 'b']) }}",
@@ -14915,7 +14403,6 @@ Deno.test("abort cleanup: a guard still answering when the abort ends a multi-st
       assertEquals(executor.count("main/__guard_create-bucket"), 1);
       assertUndecided(run, "main", ["create-bucket"]);
       assertEquals(executor.count("main/delete-bucket"), 0);
-      // create-db was interrupted, so the job failed as before this change.
       assertEquals(run.getJob("main")!.status, "failed");
     } finally {
       guardAnswer.resolve({ exists: true });
@@ -15154,7 +14641,6 @@ Deno.test("abort cleanup: a job left with only an undecided step ends unknown, s
         }),
       ],
     });
-    // The guard answers "already exists" as the abort lands.
     const executor = new AbortingStepExecutor("__guard_create", "succeed", {
       exists: true,
     });
@@ -15180,7 +14666,6 @@ Deno.test("abort cleanup: a job left with only an undecided step ends unknown, s
     assertEquals(executor.count("deploy/push"), 0);
     assertEquals(run.getJob("teardown")!.status, "skipped");
     assertEquals(executor.count("teardown/destroy"), 0);
-    // Later levels still run in cleanup mode.
     assertEquals(executor.count("notify/send"), 1);
   });
 });
@@ -15231,19 +14716,6 @@ Deno.test("abort cleanup: a job queued behind workflow concurrency whose depends
   });
 });
 
-// ---------------------------------------------------------------------------
-// Work in flight at the abort finishes, whatever shares its level
-// (swamp-club#2549)
-// ---------------------------------------------------------------------------
-
-/**
- * Holds the steps named in `held` until every one of them has started, then
- * aborts the run, as a `--timeout` or cancel firing while they are all in
- * flight. Each held step then rejects with an AbortError once its own signal
- * aborts, as a killed subprocess does, or, given `release`, only once that
- * settles: a method still stopping when its level moves on. It aborts once:
- * steps reached after the abort run normally.
- */
 class InFlightAbortExecutor extends CountingStepExecutor {
   readonly controller = new AbortController();
   #arrived = 0;
@@ -15255,7 +14727,6 @@ class InFlightAbortExecutor extends CountingStepExecutor {
     super();
   }
 
-  /** Counts a held step as started; the last one fires the abort. */
   protected arrive(): void {
     this.#arrived++;
     if (this.#arrived === this.held.length) this.controller.abort();
@@ -15449,8 +14920,6 @@ Deno.test("abort cleanup: a guard still answering in a job that shares its level
         SHORT_STEP_STOP_GRACE_MS,
       );
 
-      // The run waited for the guard's method only until the step stop grace
-      // ran out, and recorded its cancellation with the guard still in flight.
       assertEquals(guardAnswered, false);
       assertEquals(run.status, "cancelled");
       assertUndecided(run, "j1", ["create-bucket"]);
@@ -15531,16 +15000,6 @@ Deno.test("resume: jobs sharing a level run their own cleanup when the abort fir
   });
 });
 
-// ---------------------------------------------------------------------------
-// A resume runs the work an abort settled (swamp-club#2543)
-// ---------------------------------------------------------------------------
-
-/**
- * What swamp serve leaves on disk for an aborted run, and what
- * 'swamp workflow recover --acknowledge-unknown' then does: the stored record
- * (changed by `edit` first, as a crash mid-cleanup would have left it) is
- * interrupted with `reason`, and its unknown records are reset.
- */
 async function interruptAndRecover(
   runRepo: InMemoryWorkflowRunRepository,
   workflowId: WorkflowId,
@@ -15691,18 +15150,12 @@ Deno.test("resume: queued forEach iterations run after serve shutdown and recove
     assertEquals(executor.count("main/build-b"), 1);
     assertEquals(executor.count("main/build-c"), 1);
     assertEquals(executor.count("main/rollback"), 1);
-    // build-a was stopped while it ran, so the interrupt left it unknown and
-    // the recovery ran it again (swamp-club#3369).
     assertEquals(main.getStep("build-a")!.status, "succeeded");
     assertEquals(executor.count("main/build-a"), 2);
     assertEquals(resumed.status, "succeeded");
   });
 });
 
-/**
- * Stores an interrupted run of `workflow` whose job `jobName` was running the
- * step run `step` when the process died.
- */
 async function storeInterruptedAt(
   runRepo: InMemoryWorkflowRunRepository,
   workflow: Workflow,
@@ -15723,7 +15176,6 @@ async function storeInterruptedAt(
   return run;
 }
 
-// swamp-club#3221
 Deno.test("recover: refuses an unguarded unknown step whose name a guarded step of another job shares", async () => {
   await withTempDir(async (tempDir) => {
     const workflow = Workflow.create({
@@ -15832,8 +15284,6 @@ Deno.test("resume: a step queued when a crash hit cleanup runs after server_cras
     assertCancelledBeforeStart(run, "main", ["b"]);
     assertEquals(executor.count("main/notify"), 1);
 
-    // The process died while notify ran: the settled record was saved, the
-    // run was never cancelled, and the reaper interrupts it.
     await interruptAndRecover(
       runRepo,
       workflow.id,
@@ -15861,15 +15311,12 @@ Deno.test("resume: a step queued when a crash hit cleanup runs after server_cras
     assertEquals(resumed.getJob("main")!.getStep("b")!.status, "succeeded");
     assertEquals(executor.count("main/b"), 1);
     assertEquals(executor.count("main/notify"), 2);
-    // `a` was stopped while it ran, so the interrupt left it unknown and the
-    // recovery ran it again (swamp-club#3369).
     assertEquals(resumed.getJob("main")!.getStep("a")!.status, "succeeded");
     assertEquals(executor.count("main/a"), 2);
     assertEquals(resumed.status, "succeeded");
   });
 });
 
-/** main: `a` and `b` queued behind it; a gate cleanup reaches after `a`. */
 function gatedCleanupWorkflow(name: string): Workflow {
   return Workflow.create({
     name,
@@ -15991,7 +15438,6 @@ Deno.test("resume: --from reruns the work the abort settled beside the entry ste
       executor.controller.signal,
     );
     assertEquals(run.status, "suspended");
-    // What 'swamp workflow reject' does: the run fails with b still settled.
     const main = run.getJob("main")!;
     const gate = main.getStep("gate")!;
     gate.recordApprovalDecision({
@@ -16008,7 +15454,6 @@ Deno.test("resume: --from reruns the work the abort settled beside the entry ste
     await drainResume(service, workflow.name, run.id, { fromStep: "a" });
 
     const stored = (await runRepo.findById(workflow.id, run.id))!;
-    // a and b ran; the gate after a asks again.
     assertEquals(stored.status, "suspended");
     assertEquals(stored.getJob("main")!.getStep("a")!.status, "succeeded");
     assertEquals(stored.getJob("main")!.getStep("b")!.status, "succeeded");
@@ -16054,7 +15499,6 @@ Deno.test("resume: --from reruns settled work without rerunning a same-named ste
     assertEquals(run.status, "suspended");
     assertCancelledBeforeStart(run, "main", ["notify"]);
     assertEquals(executor.count("pre/notify"), 1);
-    // What 'swamp workflow reject' does.
     const main = run.getJob("main")!;
     const gate = main.getStep("gate")!;
     gate.recordApprovalDecision({
@@ -16072,17 +15516,11 @@ Deno.test("resume: --from reruns settled work without rerunning a same-named ste
     const stored = (await runRepo.findById(workflow.id, run.id))!;
     assertEquals(stored.getJob("main")!.getStep("notify")!.status, "succeeded");
     assertEquals(executor.count("main/notify"), 1);
-    // pre's notify succeeded before the abort, so it does not run again.
     assertEquals(stored.getJob("pre")!.status, "succeeded");
     assertEquals(executor.count("pre/notify"), 1);
   });
 });
 
-/**
- * main: `a` and `b` queued behind it. After main, cleanup skips `teardown`
- * (which needs main to succeed) without starting it, and `approve`'s gate
- * suspends the run. Without `teardown` when `withTeardown` is false.
- */
 function removedTeardownWorkflow(
   withTeardown: boolean,
   id?: WorkflowId,
@@ -16134,7 +15572,6 @@ Deno.test("resume: --from refuses a failed run whose removed job holds work the 
     const teardown = run.getJob("teardown")!;
     assertEquals(teardown.status, "skipped");
     assertEquals(teardown.getStep("t")!.settledByAbort, true);
-    // What 'swamp workflow reject' does.
     const approve = run.getJob("approve")!;
     const gate = approve.getStep("gate")!;
     gate.recordApprovalDecision({
@@ -16197,8 +15634,6 @@ Deno.test("resume: a job the abort ended unknown runs its undecided step once cl
         }),
       ],
     });
-    // The abort lands while create's guard is evaluated; on resume the guard
-    // answers "does not exist yet".
     const executor = new AbortingStepExecutor("__guard_create", "succeed");
     const { runRepo, service } = await setupRetry(
       tempDir,
@@ -16236,7 +15671,6 @@ Deno.test("resume: a job the abort ended unknown runs its undecided step once cl
   });
 });
 
-/** Approves the gate in job main of a run suspended by its cleanup. */
 async function approveCleanupGate(
   runRepo: InMemoryWorkflowRunRepository,
   workflow: Workflow,
@@ -16358,7 +15792,6 @@ Deno.test("resume: a dependent cleanup skipped on a cancelled step runs once the
     assertEquals(resumed.getJob("main")!.getStep("b")!.status, "succeeded");
     assertEquals(resumed.getJob("main")!.getStep("ship")!.status, "succeeded");
     assertEquals(executor.count("main/ship"), 1);
-    // a was cancelled while it ran, so the run fails and can be retried.
     assertEquals(resumed.status, "failed");
     assertEquals(resumed.failedSteps().map((s) => s.stepName), ["a"]);
   });
@@ -16481,16 +15914,6 @@ Deno.test("resume: a step that failed before its suspended run resumed fails the
   }
 });
 
-// ---------------------------------------------------------------------------
-// Job-level cleanup mode on resume after an abort (swamp-club#2550)
-// ---------------------------------------------------------------------------
-
-/**
- * Rejects a step that starts with its signal already aborted, as a killed
- * subprocess does. {@link arm} returns a fresh signal that aborts, rejecting
- * the step, when the named step runs, so one executor can drive an abort in
- * a run and another in its resume.
- */
 class SignalHonoringExecutor extends CountingStepExecutor {
   private abortAt?: string;
   private controller = new AbortController();
@@ -16518,10 +15941,8 @@ class SignalHonoringExecutor extends CountingStepExecutor {
 }
 
 /**
- * main: gate → post, so main is still running while the run is suspended;
- * `work` (after main succeeded): w, which the executor aborts; then `extra`
- * jobs, and each cleanup job always-gated on work. Jobs in a level start in
- * name order, so an extra job named after `work` queues behind it.
+ * jobs in a level start in name order, so an extra job named after work queues
+ * behind it
  */
 function resumeCleanupWorkflow(
   name: string,
@@ -16754,7 +16175,6 @@ Deno.test("resume cleanup: a queued job whose name is written with an input expr
 
 Deno.test("resume cleanup: a resume aborted before it starts settles the approved gate's job it never started, then runs cleanup", async () => {
   await withTempDir(async (tempDir) => {
-    // side shares main's level, and the aborted merge starts neither.
     const workflow = resumeCleanupWorkflow("resume-cleanup-preaborted-wf", {
       extra: [Job.create({ name: "side", steps: [modelStep("s")] })],
     });
@@ -16775,8 +16195,6 @@ Deno.test("resume cleanup: a resume aborted before it starts settles the approve
       AbortSignal.abort(),
     );
 
-    // main's approved work never ran: post is cancelled as if the abort had
-    // reached it, and main fails, so later levels run in cleanup mode.
     assertEquals(run.status, "cancelled");
     assertEquals(run.getJob("main")!.status, "failed");
     assertCancelledBeforeStart(run, "main", ["post"]);
@@ -16788,11 +16206,6 @@ Deno.test("resume cleanup: a resume aborted before it starts settles the approve
   });
 });
 
-/**
- * main: gate → post, suspended at the gate; side shares main's level unless
- * `alone` is set, and a resume aborted before it starts starts neither;
- * `extra` jobs follow.
- */
 function inheritedJobWorkflow(
   name: string,
   opts: { post?: Step; extra?: Job[]; alone?: boolean } = {},
@@ -16937,8 +16350,6 @@ Deno.test("resume cleanup: a job a resume never started whose remaining steps ar
       AbortSignal.abort(),
     );
 
-    // Nothing failed, so the abort lands between levels as in a first run:
-    // the level after it starts only its cleanup jobs.
     assertEquals(run.status, "cancelled");
     assertEquals(run.getJob("main")!.status, "succeeded");
     const post = run.getJob("main")!.getStep("post")!;
@@ -17056,8 +16467,6 @@ Deno.test("resume cleanup: a --from resume aborted before it starts settles a jo
     assertEquals(run.getJob("main")!.status, "failed");
     assertCancelledBeforeStart(run, "main", ["post"]);
     assertEquals(executor.count("main/post"), 0);
-    // s ran once, before the suspension; the aborted level starts it again
-    // no more than main, and the cancel settles the job it reset.
     assertEquals(run.getJob("side")!.status, "failed");
     assertCancelledBeforeStart(run, "side", ["s"]);
     assertEquals(executor.count("side/s"), 1);
@@ -17088,7 +16497,6 @@ Deno.test("resume cleanup: the approved work of a job a resume never started run
     );
     const suspended = await suspendAndApprove(service, runRepo, workflow);
 
-    // Cleanup reaches teardown's own gate, so the run suspends again.
     const cleanup = await resumeUntilAborted(
       service,
       workflow,
@@ -17123,7 +16531,6 @@ Deno.test("resume cleanup: the approved work of a job a resume never started run
   });
 });
 
-/** Aborts once `abortAfter` has run, which still succeeds. */
 class AbortAfterSuccessExecutor extends CountingStepExecutor {
   private readonly controller = new AbortController();
 
@@ -17239,7 +16646,6 @@ Deno.test("resume cleanup: the approved work of a job alone in its level a resum
     );
     const suspended = await suspendAndApprove(service, runRepo, workflow);
 
-    // Cleanup reaches teardown's own gate, so the run suspends again.
     const cleanup = await resumeUntilAborted(
       service,
       workflow,
@@ -17427,7 +16833,6 @@ Deno.test("resume cleanup: a job suspended in cleanup mode runs its approved wor
   });
 });
 
-/** Aborts `controller` on the first save of a run for which `when` holds. */
 class AbortOnSaveRepository extends SpyWorkflowRunRepository {
   readonly controller = new AbortController();
 
@@ -17502,13 +16907,6 @@ Deno.test("resume cleanup: a job that failed before the suspension enters cleanu
   });
 });
 
-// --- Failed-step reports and recovered data (swamp-club#2602) ---
-
-/**
- * Registers a per-run model type whose `run` method writes a `state`
- * resource and then throws, the way a model that persists output before
- * failing (e.g. `command/shell` on a non-zero exit) behaves.
- */
 async function registerWriteThenThrowModel(): Promise<ModelType> {
   const { z } = await import("zod");
   const { modelRegistry } = await import("../models/model.ts");
@@ -17570,10 +16968,6 @@ function failureRetrievalCommands(
   return failures?.[0]?.retrievalCommands;
 }
 
-/**
- * Asserts the failure lists one retrieval command: a data query for the
- * failed step's `state`, named by its run, job and step.
- */
 function assertDataQueryForState(commands: string[] | undefined): void {
   assertEquals(commands?.length, 1);
   const [command] = commands!;
@@ -17645,7 +17039,6 @@ Deno.test("run(): a failed model-method step records its report artifacts and bo
       assertStringIncludes(methodSummary.markdown, "state");
       assertEquals(methodSummary.markdown.includes("No data output."), false);
 
-      // The workflow summary points at the same data for the failed step.
       assertDataQueryForState(failureRetrievalCommands(events));
       const [workflowSummary] = completedReport(
         events,
@@ -17748,7 +17141,6 @@ Deno.test("run(): a step's method summary carries its workflow provenance on suc
         assertEquals(typeof provenance.definitionHash, "string", step);
       }
 
-      // The step's method run in history records who started it too.
       const [output] = await methodRunOutputs(tempDir, okType);
       assertEquals(output.provenance.initiatedBy, "user:alice");
     } finally {
@@ -18103,7 +17495,6 @@ Deno.test("run(): a failed step that threw a primitive still reports its own err
 
       const { run, events } = await runToCompletion(service, workflow.name);
 
-      // The method-summary report still ran and persisted on the failure path.
       assertEquals(completedReport(events, "@swamp/method-summary").length, 1);
       const stepRun = run.getJob("job1")?.getStep("step1");
       assertEquals(stepRun?.status, "failed");
@@ -18116,12 +17507,6 @@ Deno.test("run(): a failed step that threw a primitive still reports its own err
   });
 });
 
-/**
- * Cancels the run when the step named `blockAt` starts, as a user cancelling
- * mid-step would, and records whether that step's own signal saw the abort.
- * A step whose signal saw it rejects as an aborted method does; one whose
- * signal did not returns at once, so the test fails rather than hangs.
- */
 class CancelMidStepExecutor extends MockStepExecutor {
   readonly controller = new AbortController();
   readonly sawAbort: boolean[] = [];
@@ -18214,7 +17599,6 @@ Deno.test("run(): cancelling mid nested workflow aborts the child's step and can
     assertEquals(run.status, "cancelled");
     assertEquals(run.getJob("main")!.getStep("call-child")!.status, "failed");
 
-    // The child saved itself cancelled before run() returned.
     const childRuns = await runRepo.findAllByWorkflowId(child.id);
     assertEquals(childRuns.length, 1);
     const childRun = childRuns[0];
@@ -18224,7 +17608,6 @@ Deno.test("run(): cancelling mid nested workflow aborts the child's step and can
       { runId: run.id, status: "cancelled" },
     ]);
 
-    // Only the parent's own terminal event reaches the parent stream.
     const cancelled = events.filter((e) => e.kind === "cancelled");
     assertEquals(cancelled.length, 1);
     assertEquals(
@@ -18332,7 +17715,6 @@ Deno.test("run(): a nested workflow that completes after the abort does not flip
     assertEquals(run.status, "cancelled");
     const [childRun] = await runRepo.findAllByWorkflowId(child.id);
     assertEquals(childRun.status, "succeeded");
-    // Whichever settled first, the saved job and its step agree.
     const job = run.getJob("main")!;
     const step = job.getStep("call-child")!;
     assert(
@@ -18418,7 +17800,6 @@ Deno.test("run(): a nested workflow's started event names the run whose step cal
 
 Deno.test("run(): step events name the run that owns the step, including forwarded nested ones (swamp-club#2802)", async () => {
   await withTempDir(async (tempDir) => {
-    // The child's job and step names repeat the parent's, as they may.
     const child = Workflow.create({
       name: "owning-run-child",
       jobs: [
@@ -18597,7 +17978,6 @@ Deno.test({
         },
       };
       modelRegistry.register(modelDef);
-      // Routes and coerces like the real resolver: "8080" becomes 8080.
       const resolver: DirectTypeResolver = (
         _typeArg,
         definitionName,
@@ -18709,7 +18089,6 @@ Deno.test({
           methods: { run: { arguments: { value: "${{ inputs.mine }}" } } },
         }),
       );
-      // The run has read two secrets; this step splices only one of them.
       const values = new RunSensitiveValues();
       values.addSecret("mine-s3cret", { vaultName: "prod", key: "mine" });
       values.addSecret("other-s3cret", { vaultName: "prod", key: "other" });
@@ -18745,21 +18124,12 @@ Deno.test({
   },
 });
 
-// swamp-club#2825: a model_method step takes its per-model lock before it
-// writes anything, so a lock timeout leaves no output or run-tracker row
-// stuck at running.
-
-/** What a lock hook can observe of the step's writes when it is called. */
 interface StepWriteProbe {
   tracker: RecordingRunTracker;
   outputCount(): Promise<number>;
   evaluatedCount(): Promise<number>;
 }
 
-/**
- * Runs one model_method step under the lock hook built by makeHook and
- * reports what the step left behind.
- */
 async function runStepUnderLockHook(
   makeHook: (probe: StepWriteProbe) => StepLockHook,
   methodName: string,
@@ -18866,7 +18236,6 @@ async function runStepUnderLockHook(
   return result;
 }
 
-/** A lock hook whose flush counts its calls. */
 function countingLockHook(
   onAcquire: () => Promise<void>,
 ): { hook: StepLockHook; flushes: () => number } {
@@ -18951,7 +18320,6 @@ Deno.test("DefaultStepExecutor: parallel steps each hand their children only the
   const { processLockHolderMarker, SWAMP_LOCK_HOLDER_TOKENS } = await import(
     "../datastore/lock_holder_marker.ts"
   );
-  // Both methods run before either captures, so the two steps overlap.
   let started = 0;
   let releaseBoth: () => void = () => {};
   const bothStarted = new Promise<void>((resolve) => releaseBoth = resolve);
@@ -19067,7 +18435,6 @@ Deno.test("DefaultStepExecutor: a step whose hook does not name its locks leaves
   assertEquals(childEnv, {});
 });
 
-/** Keeps a copy of every saved run, as a killed owner leaves it on disk. */
 class SnapshottingWorkflowRunRepository extends InMemoryWorkflowRunRepository {
   saved: WorkflowRunData[] = [];
 
@@ -19076,7 +18443,6 @@ class SnapshottingWorkflowRunRepository extends InMemoryWorkflowRunRepository {
     return super.save(workflowId, run);
   }
 
-  /** The `job/step` status pairs in the last saved copy. */
   lastSavedStatus(jobName: string, stepName: string): string[] {
     const last = this.saved[this.saved.length - 1];
     const job = last?.jobs.find((j) => j.jobName === jobName);
@@ -19085,7 +18451,6 @@ class SnapshottingWorkflowRunRepository extends InMemoryWorkflowRunRepository {
   }
 }
 
-/** A step executor that holds `step` until released. */
 function blockingExecutor(stepName: string): {
   executor: StepExecutor;
   release: () => void;
@@ -19196,8 +18561,6 @@ Deno.test("resume: saves the run while a started step is still running", async (
     assertEquals(await resumed, "succeeded");
   });
 });
-
-// --- Nested workflow suspension (swamp-club#2736) ---------------------------
 
 function nestedGateWorkflows(
   childTail: Step[] = [
@@ -19317,7 +18680,6 @@ Deno.test("run(): a nested workflow suspended on approval suspends the parent wi
     assertEquals(childRun.status, "suspended");
     assertEquals(parentRun.status, "suspended");
 
-    // Exactly one terminal event, the parent's own, naming the nested run.
     const terminal = events.filter((e) =>
       e.kind === "suspended" || e.kind === "completed" ||
       e.kind === "cancelled"
@@ -19334,13 +18696,11 @@ Deno.test("run(): a nested workflow suspended on approval suspends the parent wi
     });
     assertEquals(events.some((e) => e.kind === "step_failed"), false);
 
-    // The child's gate is requested under the child's workflow and run.
     const requested = events.find((e) => e.kind === "approval_requested");
     assert(requested?.kind === "approval_requested");
     assertEquals(requested.workflowName, child.name);
     assertEquals(requested.runId, childRun.id);
 
-    // The parent step waits on the child, which links back to it.
     const step = parentRun.getJob("main")!.getStep("call-child")!;
     assertEquals(step.status, "waiting_approval");
     assertEquals(step.isNestedWait, true);
@@ -19440,7 +18800,6 @@ Deno.test("resume(): once the nested run is approved and resumed, the parent ado
       childRun.id,
     );
     assertEquals(executor.executedSteps.includes("main/finish"), true);
-    // The parent read the child; it never started another one.
     assertEquals((await runRepo.findAllByWorkflowId(child.id)).length, 1);
     assertEquals(events.filter((e) => e.kind === "completed").length, 1);
   });
@@ -19481,10 +18840,9 @@ Deno.test("resume(): a re-entered nested step does not evaluate its guard again 
             Step.create({
               name: "call-child",
               task: StepTask.workflow("gated-child"),
-              // Truthy only once the nested run has finished: re-evaluated on
-              // re-entry, it would skip the step and strand the child. It
-              // reads env, not an input: a value the run has cannot change at
-              // resume (swamp-club#3583).
+              // truthy only once the nested run has finished, since
+              // re-evaluating on re-entry would skip the step and strand the
+              // child; reads env because a run's inputs cannot change at resume
               guard: '${{ env.SWAMP_TEST_NESTED_SKIP == "1" }}',
             }),
           ],
@@ -19602,7 +18960,6 @@ Deno.test("resume(): a nested run resumed on its own keeps its ancestors, so a c
     );
     assert(failed?.kind === "step_failed");
     assertStringIncludes(failed.error, "Workflow cycle detected");
-    // No second parent run was started.
     assertEquals((await runRepo.findAllByWorkflowId(parent.id)).length, 1);
   });
 });
@@ -19635,9 +18992,6 @@ Deno.test("cancel: a parent cancelled while it waits detaches the nested run and
   });
 });
 
-// --- step start is persisted ---
-
-/** Keeps a copy of each saved step status, as a file-backed repo would. */
 class SnapshotRunRepository extends InMemoryWorkflowRunRepository {
   readonly snapshots: Map<string, string>[] = [];
 
@@ -19659,10 +19013,6 @@ class SnapshotRunRepository extends InMemoryWorkflowRunRepository {
   }
 }
 
-/**
- * Holds each step until a save shows it running, so the step only finishes
- * once its start is on disk.
- */
 class AwaitStartSavedExecutor implements StepExecutor {
   readonly seenRunning: string[] = [];
 
@@ -19678,7 +19028,6 @@ class AwaitStartSavedExecutor implements StepExecutor {
   }
 }
 
-/** Two parallel jobs and a forEach step, optionally behind an approval gate. */
 function startPersistenceWorkflow(gated: boolean): Workflow {
   const dependsOn = gated
     ? [{ job: "gate", condition: TriggerCondition.succeeded() }]
@@ -19724,8 +19073,6 @@ function assertStartsSaved(
   run: WorkflowRun | undefined,
 ): void {
   assertEquals(run?.status, "succeeded");
-  // The plain step and both forEach iterations each waited for their own
-  // start to be saved.
   assertEquals(executor.seenRunning.length, 3);
   assertEquals(
     executor.seenRunning.filter((s) => s.startsWith("b/")).length,
@@ -19786,7 +19133,6 @@ Deno.test("resume: saves each step as running when it starts", async () => {
   });
 });
 
-/** Rejects the first save made once `signal` has aborted, then saves again. */
 class RejectOnceAfterAbortRunRepository extends SpyWorkflowRunRepository {
   signal?: AbortSignal;
   rejected = false;
@@ -19823,7 +19169,6 @@ Deno.test("run: a cancel after a mid-walk failure settles the run against its ev
 
     const { run, kinds } = await runUntilAborted(service, workflow, signal);
 
-    // The rejected save ends the walk early; the catch path cancels the run.
     assertEquals(runRepo.rejected, true);
     assertEquals(kinds.at(-1), "cancelled");
     assertEquals(run.status, "cancelled");
@@ -19837,11 +19182,6 @@ Deno.test("run: a cancel after a mid-walk failure settles the run against its ev
   });
 });
 
-/**
- * Runs one model_method step whose method body is `execute`, under the run
- * signal `controller` holds and, when given, as a step of `workflowRun`, and
- * reports the step's output and tracker rows.
- */
 async function runModelStep(
   controller: { signal: AbortSignal },
   execute: () => Promise<Record<string, never>>,
@@ -20031,16 +19371,6 @@ Deno.test("DefaultStepExecutor: a step of a local run registers its method row w
   assertEquals(tracker.registrations.map((r) => r.instanceId), [undefined]);
 });
 
-// ---------------------------------------------------------------------------
-// A cancelled run waits for the model methods it left in flight
-// (swamp-club#2918)
-// ---------------------------------------------------------------------------
-
-/**
- * Counts the step executions still in flight, each until its promise has
- * settled: for DefaultStepExecutor, after it saved the method-run output and
- * completed the tracker row.
- */
 class InFlightCountingExecutor extends CountingStepExecutor {
   inFlight = 0;
 
@@ -20061,13 +19391,6 @@ class InFlightCountingExecutor extends CountingStepExecutor {
   }
 }
 
-/**
- * Opens `gate` once the save that follows a failed job `main` has completed:
- * the abort has settled the level, and the run goes on to record its
- * cancellation. On entry to each save of the cancelled run it records how
- * many step executions were still in flight; it never throws, so the run
- * takes the path under test.
- */
 class GatedRunRepository extends SpyWorkflowRunRepository {
   readonly gate = Promise.withResolvers<void>();
   readonly inFlightAtCancelledSave: number[] = [];
@@ -20087,11 +19410,6 @@ class GatedRunRepository extends SpyWorkflowRunRepository {
   }
 }
 
-/**
- * Registers a model type, under a per-run name, whose `execute` method is
- * `execute`, and saves one definition of it per name in `definitionNames`.
- * Returns the type, whose method-run outputs the test reads back.
- */
 async function registerMethodModel(
   tempDir: string,
   definitionNames: string[],
@@ -20146,12 +19464,6 @@ function methodStep(name: string, definition: string): Step {
   });
 }
 
-/**
- * Holds every call, until `gate` opens, of the two methods a test runs, and
- * aborts `controller` once both have started: a cancel firing while two
- * parallel methods run. Each then fails as an interrupted process does, once
- * the level has moved on without it.
- */
 function stoppedAfterGate(
   controller: AbortController,
   gate: Promise<void>,
@@ -20217,7 +19529,6 @@ Deno.test("run(): a cancelled run waits for its parallel model methods to save t
         [{ runId: output.id, status: "cancelled" }],
       );
     }
-    // The level settled the steps; the methods' late failures leave them so.
     for (const name of ["p1", "p2"]) {
       const step = run.getJob("main")!.getStep(name)!;
       assertEquals(step.status, "failed", name);
@@ -20328,12 +19639,6 @@ Deno.test("run(): a cancelled run waits for a guard's model.method() call in fli
   });
 });
 
-/**
- * Holds the steps named in `outcomes` until `gate` opens, aborting the run
- * once all of them have started, then settles each with its outcome: a
- * method that answers after the level has moved on without it. It emits no
- * events, so the abandoned step goes on to its own completion code.
- */
 class LateAnswerExecutor extends CountingStepExecutor {
   readonly controller = new AbortController();
   #started = 0;
@@ -20356,7 +19661,6 @@ class LateAnswerExecutor extends CountingStepExecutor {
       this.controller.abort();
     }
     await this.gate;
-    // Each held method reports one data artifact it wrote before answering.
     const dataArtifacts = [lateArtifact(ctx.stepName)];
     if (outcome === "fail") {
       throw Object.assign(new Error(`${ctx.stepName} stopped`), {
@@ -20369,7 +19673,6 @@ class LateAnswerExecutor extends CountingStepExecutor {
   }
 }
 
-/** The data artifact {@link LateAnswerExecutor} reports for `stepName`. */
 function lateArtifact(stepName: string) {
   return {
     dataId: `data-${stepName}`,
@@ -20421,7 +19724,6 @@ Deno.test("abort cleanup: a method answering after the abort settled its step le
         const step = run.getJob("main")!.getStep(name)!;
         assertEquals(step.status, "failed", name);
         assertEquals(step.error, CANCELLED_STEP_ERROR, name);
-        // The data the method wrote is still recorded on the step.
         assertEquals(step.dataArtifacts, [lateArtifact(name)], name);
       }
       assertEquals(executor.count("main/stops"), 1);
@@ -20484,8 +19786,6 @@ Deno.test("abort cleanup: an assert whose model.method() answers after the abort
   });
 });
 
-// --- forEach self._index (swamp-club#2348) ---
-
 function indexedForEachWorkflow(name: string, guard?: string): Workflow {
   return Workflow.create({
     name,
@@ -20531,7 +19831,6 @@ Deno.test("forEach: self._index is the iteration index in the step context and g
         return Promise.resolve({ executed: true });
       },
     };
-    // A truthy guard marks the step done, so iteration 1 never executes.
     const workflow = indexedForEachWorkflow(
       "indexed-foreach",
       "${{ self._index == 1 }}",
@@ -20734,7 +20033,6 @@ Deno.test("guard: a forEach item holding a control character does not fail a mod
       catalogStore,
     );
 
-    // The item value, not the author, puts a newline into the expanded name.
     const run = await service.execute(workflow.name, {
       inputs: { hosts: ["a\nb"] },
     });
@@ -20805,7 +20103,6 @@ Deno.test("wait_for_signal: sibling steps of the level finish before the run sus
 
     const suspended = events.at(-1);
     assertEquals(suspended?.kind, "suspended");
-    // The wait was registered where a signal looks for it.
     assertEquals(
       (await waits.store.listRegistrations()).map((r) => r.stepName),
       ["review"],
@@ -20833,7 +20130,6 @@ Deno.test("wait_for_signal: sibling steps of the level finish before the run sus
         deadline: wait.deadline.toISOString(),
       });
     }
-    // The deadline is the configured timeout after the step started waiting.
     assertEquals(
       wait.deadline.getTime() - job.getStep("review")!.startedAt!.getTime() >=
         600_000,
@@ -20888,7 +20184,6 @@ Deno.test("wait_for_signal: a timeout above the maximum of the wait support fail
       failed.error,
       "is 301 seconds, more than the 300 seconds this server allows",
     );
-    // The step at the maximum opened its wait; the one above it opened none.
     assertEquals(
       (await waits.store.listRegistrations()).map((r) => r.stepName),
       ["within"],
@@ -20960,7 +20255,6 @@ Deno.test("wait_for_signal: of two steps that declare one key, one opens its wai
   });
 });
 
-/** A workflow with one keyed wait_for_signal step, allowed to fail. */
 function keyedWaitWorkflow(name: string): Workflow {
   return Workflow.create({
     name,
@@ -21083,20 +20377,17 @@ Deno.test("wait_for_signal: a holder whose registration is missing, names anothe
     assertEquals(await failuresOf(), []);
     const [holder] = await store.listRegistrations();
 
-    // A registration that names another run than the claim.
     await store.removeRegistration(holder.waitId);
     await store.register({ ...holder, runId: crypto.randomUUID() });
     const [otherRun] = await failuresOf();
     assertEquals(otherRun.error, WAIT_KEY_HELD_STEP_ERROR);
     assertEquals("waitKeyHolder" in otherRun, false);
 
-    // No registration at all.
     await store.removeRegistration(holder.waitId);
     const [missing] = await failuresOf();
     assertEquals(missing.error, WAIT_KEY_HELD_STEP_ERROR);
     assertEquals("waitKeyHolder" in missing, false);
 
-    // A store that fails reading it.
     await store.register(holder);
     const findRegistration = store.findRegistration.bind(store);
     let reads = 0;
@@ -21252,7 +20543,6 @@ Deno.test("wait_for_signal: a registration that fails after the key was claimed 
       return made;
     };
 
-    // The step fails with the store's error, as any step that throws does.
     const events: WorkflowExecutionEvent[] = [];
     for await (const event of service().run(workflow.name)) events.push(event);
     const failed = events.find((e) => e.kind === "step_failed");
@@ -21265,7 +20555,6 @@ Deno.test("wait_for_signal: a registration that fails after the key was claimed 
     assert(outcome.kind === "found");
     assertEquals(outcome.record.kind, "cancelled");
 
-    // The next run claims the key as a new generation and opens its wait.
     store.failing = false;
     for await (const _event of service().run(workflow.name)) { /* drain */ }
     const registrations = await store.listRegistrations();
@@ -21296,7 +20585,6 @@ Deno.test("wait_for_signal: a claim that was created and could not be read back 
       ],
     });
     await workflowRepo.save(workflow);
-    // The create lands; the read that follows it fails, once.
     class LosesTheReadBack extends InMemorySignalWaitStore {
       failing = true;
       override async createKeyRecord(record: WaitKeyRecord) {
@@ -21325,7 +20613,6 @@ Deno.test("wait_for_signal: a claim that was created and could not be read back 
     const failed = events.find((e) => e.kind === "step_failed");
     assert(failed?.kind === "step_failed");
     assertStringIncludes(failed.error, "read timed out");
-    // The claim is there, no wait was registered for it, and it is closed.
     const claims = await store.listKeyRecords();
     assertEquals(claims.length, 1);
     assert(claims[0].kind === "claim");
@@ -21334,8 +20621,6 @@ Deno.test("wait_for_signal: a claim that was created and could not be read back 
     assert(outcome.kind === "found");
     assertEquals(outcome.record.kind, "cancelled");
 
-    // Another run takes the key straight away, with no grace period to wait
-    // out.
     for await (const _event of service().run(workflow.name)) { /* drain */ }
     const registrations = await store.listRegistrations();
     assertEquals(registrations.length, 1);
@@ -21348,7 +20633,6 @@ Deno.test("wait_for_signal: a claim that was created and could not be read back 
   });
 });
 
-/** Records the vaults list each step runs under, and reads vault `erp`. */
 class VaultScopeRecordingExecutor implements StepExecutor {
   seen = new Map<string, string[] | undefined>();
   constructor(private readonly vaultService?: VaultService) {}
@@ -21464,12 +20748,10 @@ Deno.test("run(): a vault outside the workflow's vaults list is refused to a loc
     const step = run.getJob("main")!.getStep("read-erp")!;
     assertStringIncludes(step.error ?? "", "vault 'erp'");
     assertStringIncludes(step.error ?? "", "workflow 'vaults-refused'");
-    // Outside the run the vault reads as before.
     assertEquals(await vaultService.get("erp", "k"), "secret");
   });
 });
 
-/** A workflow repository whose first name lookup throws or finds nothing. */
 class FirstLookupFailsWorkflowRepository extends InMemoryWorkflowRepository {
   lookups = 0;
   constructor(private readonly firstLookup: "throws" | "null") {
@@ -21533,7 +20815,6 @@ for (const firstLookup of ["throws", "null"] as const) {
   });
 }
 
-/** A gate, then step `after` (which reads vault `erp` when so named). */
 function gatedVaultsWorkflow(
   vaults: string[] | undefined,
   after = "after",
@@ -21562,10 +20843,6 @@ function gatedVaultsWorkflow(
   });
 }
 
-/**
- * Suspends `workflow` at its gate, saves it edited to `resumeVaults`,
- * approves the gate and resumes the run.
- */
 async function resumeWithEditedVaults(
   tempDir: string,
   workflow: Workflow,
@@ -21674,7 +20951,6 @@ Deno.test("run(): each run records the vaults list in force, a nested run its in
   });
 });
 
-/** A workflow repository that starts a span for every name lookup. */
 class SpannedLookupWorkflowRepository extends InMemoryWorkflowRepository {
   lookups = 0;
   override findByName(name: string): Promise<Workflow | null> {
@@ -21729,10 +21005,6 @@ Deno.test("run(): the one workflow lookup nests under the run's span", async () 
   });
 });
 
-/**
- * A run suspended on one approved gate, with the service that suspended it
- * holding continuation claims as `holder`.
- */
 async function approvedGateRun(
   tempDir: string,
   claimStore: InMemoryContinuationClaimStore,
@@ -21887,7 +21159,6 @@ Deno.test("resume: a refusal before the claim leaves no claim behind", async () 
       claimStore,
       serveHolder("a"),
     );
-    // The gate is undecided again, so the resume is refused.
     const run = await runRepo.findById(workflow.id, runId);
     run!.getJob("gate")!.getStep("approval")!.waitForApproval();
     await runRepo.save(workflow.id, run!);
@@ -22012,7 +21283,6 @@ Deno.test("resume: a resume restored before anything ran gives its continuation 
     toApprove!.getJob("main")!.getStep("gate")!.succeed();
     await runRepo.save(workflow.id, toApprove!);
 
-    // The input cannot be evaluated, so the resume fails while it prepares.
     await assertRejects(
       () =>
         drainResume(service, workflow.name, suspended.id, {
@@ -22028,7 +21298,6 @@ Deno.test("resume: a resume restored before anything ran gives its continuation 
     );
     assertEquals(claimStore.claims, []);
 
-    // The suspension was not consumed: a resume with a usable input takes it.
     const run = await drainResume(service, workflow.name, suspended.id, {
       inputs: { bad: 1 },
     });
@@ -22134,8 +21403,8 @@ Deno.test("resume: a resume that does not require a current record never compare
   });
 });
 
-// swamp-club#3179: the synchronous available-expression pass reads the model
-// map, so the context's prepare runs first and can make that content local.
+// the synchronous available-expression pass reads the model map, so the
+// context's prepare runs first and can make that content local
 Deno.test({
   name:
     "DefaultStepExecutor: prepares a step's expressions before resolving them synchronously (swamp-club#3179)",
@@ -22306,11 +21575,9 @@ for (const autoGc of [true, false]) {
   });
 }
 
-// swamp-club#3146: the step's lock flush is told what the step wrote, so it
-// can publish it, and a step that failed keeps its own error when that
-// publish fails.
+// the step's lock flush is told what the step wrote so it can publish it; a
+// failed step keeps its own error when that publish fails
 
-/** A lock hook whose flush records what it was given and may fail. */
 function recordingLockHook(
   flushError?: Error,
 ): { hook: StepLockHook; written: (readonly WrittenVersion[] | undefined)[] } {
@@ -22470,13 +21737,10 @@ Deno.test("run: a first save that fails yields no started event (swamp-club#1090
   });
 });
 
-// ---------- Reserved tags refused before any step runs (swamp-club#3635) ----------
-
 const RESERVED_RUN_TAG = {
   "_swamp.sensitiveFields": JSON.stringify(["stdout"]),
 };
 
-/** Job a runs probe; job b, after it, names `bModel` and may override tags. */
 function reservedTagWorkflow(opts: {
   id?: string;
   name?: string;
@@ -22523,9 +21787,7 @@ async function runReservedTagWorkflow(
   options: {
     runtimeTags?: Record<string, string>;
     definitionTags?: Record<string, string>;
-    /** Cached as the workflow's last evaluation, and run with it. */
     lastEvaluated?: Workflow;
-    /** Other workflows the repository holds, such as nested ones. */
     others?: Workflow[];
   } = {},
 ): Promise<{ error: unknown; executedSteps: string[] }> {
@@ -23125,7 +22387,6 @@ Deno.test("execute: --last-evaluated refuses an evaluated workflow cache written
       [],
       { inputs: {} },
     );
-    // Marked as a newer swamp would mark it.
     let rewritten = 0;
     for await (
       const entry of walk(join(tempDir, ".swamp", "workflows-evaluated"), {
@@ -23186,7 +22447,6 @@ Deno.test("resume: refuses a run record written in a newer sensitive-value forma
     const suspended = await suspendedEventOf(service.run(workflow.name));
     assertEquals(suspended?.stepId, "approve-prod");
 
-    // Marked as a newer swamp would mark it.
     const stored = await runRepo.findById(workflow.id, suspended!.run.id);
     await runRepo.save(
       workflow.id,
@@ -23213,7 +22473,6 @@ Deno.test("resume: refuses a run record written in a newer sensitive-value forma
   });
 });
 
-/** A fence a test closes by hand, from inside a step. */
 class ManualRunWriteFence implements RunWriteFence {
   readonly closed = new Set<string>();
   isClosed(runId: string): boolean {
@@ -23285,7 +22544,6 @@ Deno.test("WorkflowExecutionService: an aborted run whose fence another owner cl
   });
 });
 
-/** A fence that counts the saves it is tracking, so a test sees what runs inside one. */
 class CountingRunWriteFence implements RunWriteFence {
   tracked = 0;
   inFlight = 0;
@@ -23405,9 +22663,7 @@ Deno.test("WorkflowExecutionService: a nested child run inherits the run write f
 
     assert(childRunId !== undefined);
     const childSaves = runRepo.saved.filter((r) => r.id === childRunId);
-    // The child's record stops where the fence closed: running.
     assertEquals(childSaves.at(-1)?.status, "running");
-    // The parent, whose fence stays open, saves to the end.
     assertEquals(
       runRepo.saved.filter((r) => r.id === run.id).at(-1)?.status,
       "succeeded",
@@ -23415,11 +22671,6 @@ Deno.test("WorkflowExecutionService: a nested child run inherits the run write f
   });
 });
 
-// ---------------------------------------------------------------------------
-// A level reached after the abort with nothing failed (swamp-club#4149)
-// ---------------------------------------------------------------------------
-
-/** Runs job main of `steps`, where `a` aborts the run and then succeeds. */
 async function runThroughAbort(
   tempDir: string,
   name: string,
@@ -23445,7 +22696,6 @@ async function runThroughAbort(
   return { run, executor, runRepo, service, workflow };
 }
 
-/** Drains `stream`, aborting when the job starts: before its first level. */
 function abortAtJobStart(
   stream: AsyncIterable<WorkflowExecutionEvent>,
   controller: AbortController,
@@ -23671,7 +22921,6 @@ Deno.test("abort cleanup: a forEach iteration first added on resume is settled w
             }),
             modelStep("build", {
               ...onStep("gate", TriggerCondition.succeeded()),
-              // targets is a late input the resume adds (swamp-club#3583).
               forEach: {
                 item: "target",
                 in: "${{ inputs.?targets.orValue(['a', 'b']) }}",
@@ -23779,7 +23028,6 @@ Deno.test("abort cleanup: a step recorded running on resume is failed as stopped
       executor.controller,
     );
 
-    // Nothing starts a running record after the abort: it fails as abandoned.
     assertRanAsCleanup(executor, ["cleanup"]);
     assertEquals(executor.count("main/work"), 0);
     const work = run.getJob("main")!.getStep("work")!;
@@ -23808,7 +23056,6 @@ Deno.test("abort cleanup: a nested wait on resume re-enters when its level is re
 
     assertEquals(run.status, "cancelled");
     const job = run.getJob("main")!;
-    // It read the child's outcome rather than being settled as unstarted.
     assertEquals(job.getStep("call-child")!.status, "succeeded");
     assertEquals(job.getStep("call-child")!.settledByAbort, false);
     assertCancelledBeforeStart(run, "main", ["finish"]);
@@ -24149,11 +23396,6 @@ Deno.test("abort cleanup: a failed-gated gate on a settled step does not suspend
   });
 });
 
-// ---------------------------------------------------------------------------
-// A job level reached after the abort with nothing failed (swamp-club#4175)
-// ---------------------------------------------------------------------------
-
-/** Runs `jobs` after job j1, whose step `a` aborts the run and then succeeds. */
 async function runJobsThroughAbort(
   tempDir: string,
   name: string,
@@ -24470,14 +23712,10 @@ Deno.test("job abort cleanup: a settled job does not replace the outcome of a sa
   });
 });
 
-// --- The repository context's sync policy reaches every repository built here (swamp-club#4032) ---
-
-/** A recognisable sync policy, compared by identity. */
 function recordingWriteSync(): FileSystemUnifiedDataRepository["writeSync"] {
   return { syncDirectory: () => Promise.resolve() };
 }
 
-/** The repository behind a step executor's deps. */
 function depsWriteSync(
   deps: { unifiedDataRepo: unknown },
 ): FileSystemUnifiedDataRepository["writeSync"] {

@@ -22,7 +22,6 @@ import type { AnyCommand } from "./cli_schema.ts";
 
 const noop = () => {};
 
-/** A small tree shaped like the real one, covering each rule. */
 export function buildEmptyOptionTree(): AnyCommand {
   const bug = new Command()
     .option("-t, --title <title:string>", "title")

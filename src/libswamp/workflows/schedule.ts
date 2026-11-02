@@ -18,10 +18,9 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * Pausing and resuming a workflow's schedule (swamp-club#3522). A pause is a
- * record in the datastore's control plane, keyed by the workflow's id; the
- * workflow definition and serve.yaml are never edited. Serve skips the cron
- * fires of a paused workflow; manual and webhook runs are unaffected.
+ * a pause is a control-plane record keyed by workflow id; the workflow
+ * definition and serve.yaml are never edited. Serve skips cron fires of a
+ * paused workflow; manual and webhook runs are unaffected.
  */
 
 import {
@@ -55,10 +54,8 @@ import type { SwampError } from "../errors.ts";
 import { notFound, validationFailed } from "../errors.ts";
 import { parseDuration } from "../data/search.ts";
 
-/** Where a workflow's schedule comes from. */
 export type ScheduleSource = "definition" | "override";
 
-/** A schedule as the running scheduler holds it. */
 export interface LiveSchedule {
   readonly workflowId: string;
   readonly workflowName: string;
@@ -66,17 +63,10 @@ export interface LiveSchedule {
   readonly nextRun: Date | null;
 }
 
-/** Dependencies of the schedule operations. */
 export interface WorkflowScheduleDeps {
   workflowRepo: Pick<WorkflowRepository, "findById" | "findByName" | "findAll">;
-  /** The serve.yaml trigger override schedules, by workflow name. */
   overrideSchedules: () => Promise<ReadonlyMap<string, string>>;
   pauses: SchedulePauseRepository;
-  /**
-   * The schedules the running scheduler holds, when there is one (serve).
-   * Without it, schedules are worked out from the workflow definitions and
-   * the overrides.
-   */
   liveSchedules?: () => ReadonlyArray<LiveSchedule>;
   now: () => Date;
 }
@@ -101,7 +91,6 @@ export function createWorkflowScheduleDeps(options: {
   };
 }
 
-/** The schedules of a set of trigger overrides, by workflow name. */
 export function overrideSchedulesOf(
   overrides: Iterable<[string, { readonly schedule?: string }]>,
 ): Map<string, string> {
@@ -112,7 +101,6 @@ export function overrideSchedulesOf(
   return schedules;
 }
 
-/** Names the workflow: by name or id, or by a resolved id with `byId`. */
 export interface WorkflowScheduleTarget {
   workflowIdOrName: string;
   /**
@@ -120,15 +108,12 @@ export interface WorkflowScheduleTarget {
    * and authorized, and look it up by id only.
    */
   byId?: boolean;
-  /** With `byId`, the name the caller authorized. */
   expectedName?: string;
 }
 
 export interface WorkflowSchedulePauseInput extends WorkflowScheduleTarget {
   reason?: string;
-  /** An ISO-8601 time, or a duration from now such as 30m, 2h, 1d. */
   until?: string;
-  /** Who is pausing: the principal recorded on the pause. */
   pausedBy: string;
 }
 
@@ -140,7 +125,6 @@ export interface WorkflowSchedulePauseData {
   pausedBy: string;
   pausedAt: string;
   until?: string;
-  /** Whether a pause in force was replaced. */
   replaced: boolean;
 }
 
@@ -154,7 +138,6 @@ export type WorkflowScheduleResumeInput = WorkflowScheduleTarget;
 export interface WorkflowScheduleResumeData {
   workflowId: string;
   workflowName: string;
-  /** False when the schedule was not paused: the resume changed nothing. */
   wasPaused: boolean;
 }
 
@@ -163,24 +146,17 @@ export type WorkflowScheduleResumeEvent =
   | { kind: "completed"; data: WorkflowScheduleResumeData }
   | { kind: "error"; error: SwampError };
 
-/** One scheduled workflow, or one pause left for a workflow that is gone. */
 export interface ScheduleListEntry {
   workflowId: string;
   workflowName: string;
-  /** Null for an orphaned pause. */
   schedule: string | null;
   source: ScheduleSource | null;
-  /** ISO-8601; null when unknown or never. */
   nextRun: string | null;
   paused: boolean;
   reason?: string;
   pausedBy?: string;
   pausedAt?: string;
   until?: string;
-  /**
-   * A pause whose workflow no longer exists or is no longer scheduled. It
-   * affects nothing; resume removes it.
-   */
   orphaned: boolean;
 }
 
@@ -193,10 +169,6 @@ export type WorkflowScheduleListEvent =
   | { kind: "completed"; data: WorkflowScheduleListData }
   | { kind: "error"; error: SwampError };
 
-/**
- * Parses `--until`: a duration from `now` (30m, 2h, 1d, 1w, 1mo, 1y) or an
- * ISO-8601 time. Returns the ISO time, or an error message.
- */
 export function parsePauseUntil(
   value: string,
   now: Date,
@@ -231,15 +203,10 @@ export function parsePauseUntil(
   return untilAt(at, value);
 }
 
-/** A full ISO-8601 date and time; the zone is checked on its own. */
 const ISO_DATE_TIME =
   /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:\d{2})?$/i;
 const ISO_ZONE = /(Z|[+-]\d{2}:\d{2})$/i;
 
-/**
- * `ms` as the stored `until`, or an error when it is no valid time or is
- * past what a stored time can hold (year 9999).
- */
 function untilAt(
   ms: number,
   value: string,
@@ -285,7 +252,6 @@ function findTarget(
     : findWorkflowByIdOrName(deps.workflowRepo, target.workflowIdOrName);
 }
 
-/** Pauses a workflow's schedule until it is resumed or `until` passes. */
 export async function* workflowSchedulePause(
   ctx: LibSwampContext,
   deps: WorkflowScheduleDeps,
@@ -383,11 +349,6 @@ export async function* workflowSchedulePause(
   );
 }
 
-/**
- * Resumes a paused schedule. Resuming a schedule that is not paused
- * succeeds and changes nothing. A pause left for a workflow that no longer
- * exists is removed by its workflow id.
- */
 export async function* workflowScheduleResume(
   ctx: LibSwampContext,
   deps: WorkflowScheduleDeps,
@@ -439,10 +400,6 @@ export async function* workflowScheduleResume(
   );
 }
 
-/**
- * Lists every scheduled workflow with its pause state, and every pause left
- * for a workflow that is gone or no longer scheduled.
- */
 export async function* workflowScheduleList(
   _ctx: LibSwampContext,
   deps: WorkflowScheduleDeps,
@@ -507,7 +464,6 @@ export async function* workflowScheduleList(
   );
 }
 
-/** The pause fields of a list entry; a lapsed pause reads as not paused. */
 function pauseFields(
   pause: SchedulePause | undefined,
   now: Date,
@@ -525,7 +481,6 @@ function pauseFields(
   };
 }
 
-/** The schedules serve would register, from the definitions and overrides. */
 async function definedSchedules(
   deps: WorkflowScheduleDeps,
   overrides: ReadonlyMap<string, string>,

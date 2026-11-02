@@ -107,7 +107,6 @@ export const workflowGetCommand = withRemoteOptions(
     workflowGet(ctx, deps, workflowIdOrName),
     {
       ...handlers,
-      // An edit of it now starts from this version (swamp-club#4097).
       completed: (e) => {
         markConfigLoaded(repoContext, "workflow", e.data.name);
         return handlers.completed(e);

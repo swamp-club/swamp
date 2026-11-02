@@ -50,7 +50,6 @@ function sha(bytes: Uint8Array): string {
   return createHash("sha256").update(bytes).digest("hex");
 }
 
-/** A stream yielding `bytes` split at `cuts` (offsets, any order). */
 function streamOf(
   bytes: Uint8Array,
   cuts: readonly number[] = [],
@@ -92,8 +91,6 @@ function concat(...parts: Uint8Array[]): Uint8Array {
 
 const LIMITS = { maxChunkBytes: 1024 };
 const BIG = 1 << 30;
-
-// ── ingestChunk ─────────────────────────────────────────────────────────
 
 Deno.test("ingestChunk: returns bytes whose hash matches the declaration", async () => {
   const data = new TextEncoder().encode("hello chunk");
@@ -273,7 +270,6 @@ Deno.test("ingestChunk: a stream cap below the chunk is refused as stream_too_la
 Deno.test("ingestChunk: an aborted signal rejects with its reason", async () => {
   const controller = new AbortController();
   const reason = new Error("client went away");
-  // A stream that never produces: the read waits until the abort.
   const stream = new ReadableStream<Uint8Array>({ pull() {} });
   const reader = new FramedReader(stream, { maxBytes: BIG });
   const pending = ingestChunk(
@@ -286,8 +282,6 @@ Deno.test("ingestChunk: an aborted signal rejects with its reason", async () => 
   const error = await assertRejects(() => pending);
   assertStrictEquals(error, reason);
 });
-
-// ── FramedReader ────────────────────────────────────────────────────────
 
 Deno.test("FramedReader: readUint32BE reads big-endian across a split", async () => {
   const reader = new FramedReader(
@@ -433,8 +427,6 @@ Deno.test("FramedReader: one corrupt chunk is found at any split", async () => {
   );
 });
 
-// ── parseRange ──────────────────────────────────────────────────────────
-
 Deno.test("parseRange: no header or an ignorable one answers undefined", () => {
   for (
     const header of [
@@ -460,7 +452,6 @@ Deno.test("parseRange: bytes=a-b", () => {
   assertEquals(parseRange("bytes=2-5", 10), { start: 2, end: 5 });
   assertEquals(parseRange("bytes=9-9", 10), { start: 9, end: 9 });
   assertEquals(parseRange("bytes=0-9", 10), { start: 0, end: 9 });
-  // An end past the content is clamped.
   assertEquals(parseRange("bytes=3-1000", 10), { start: 3, end: 9 });
   assertEquals(parseRange("Bytes = 1-2 ", 10), { start: 1, end: 2 });
 });
@@ -503,8 +494,6 @@ Deno.test("parseRange: any satisfiable range lies inside the content", () => {
     ),
   );
 });
-
-// ── chunkReadResponse ───────────────────────────────────────────────────
 
 const CONTENT = bytesOf(10, 11, 12, 13, 14);
 const CONTENT_SHA = sha(CONTENT);
@@ -572,7 +561,6 @@ Deno.test("chunkReadResponse: serves a view of a larger buffer correctly", async
   assertEquals(new Uint8Array(await response.arrayBuffer()), bytesOf(2, 3));
 });
 
-/** Reads a commit body as serve's datastore API does. */
 async function readCommitBody(
   body: Uint8Array,
   cuts: readonly number[],

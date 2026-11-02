@@ -52,14 +52,10 @@ function memoryStore(): ControlPlaneStore & { data: Map<string, Uint8Array> } {
   };
 }
 
-/** A lease the test moves by hand. */
 class FakeLease implements LeadershipLease {
-  /** undefined: holds nothing; otherwise the fence and whether it is lost. */
   hold: { fence: number; lost: boolean } | undefined;
-  /** What the next take finds: free (taken at this fence) or busy. */
   free: number | undefined;
   takes = 0;
-  /** The lease's current fence as a follower reads it; unset reads none. */
   current: number | "unreadable" | undefined;
   holdsCurrent = () => this.hold !== undefined && !this.hold.lost;
   currentFence = (): Promise<number | undefined> =>
@@ -76,7 +72,6 @@ class FakeLease implements LeadershipLease {
   };
 }
 
-/** A commit feed the test switches between current and not. */
 class FakeFeed implements FollowerCopyFeed {
   current_ = false;
   followed: (string | undefined)[] = [];
@@ -119,7 +114,6 @@ function setup(
       events.push("lost");
       return Promise.resolve();
     },
-    // Ticks are driven by hand.
     tickMs: 3_600_000,
     ...(options.now !== undefined ? { now: options.now } : {}),
     ...(options.feed !== undefined ? { feed: options.feed } : {}),
@@ -187,7 +181,6 @@ Deno.test("ServeLeadership: a leader whose lease is taken over stops once, and n
     lease.hold.lost = true;
     await leadership.tick();
     assertEquals(events, ["lead", "lost"]);
-    // Stopped: later ticks take nothing and report nothing again.
     lease.free = 9;
     await leadership.tick();
     await leadership.tick();
@@ -365,8 +358,6 @@ Deno.test("ServeLeadership: a node whose leader record cannot be written does no
     await leadership.tick();
     assertEquals(leadership.role, "follower");
     assertEquals(leads, []);
-    // Still holding the lease, the next tick writes the record and leads,
-    // without taking the lease again.
     const takesBefore = lease.takes;
     await leadership.tick();
     assertEquals(lease.takes, takesBefore);
@@ -402,7 +393,6 @@ Deno.test("ServeLeadership: a follower whose commit feed is current restores not
   } finally {
     await leadership.stop();
   }
-  // Once before the restore, once at stop.
   assertEquals(feed.stops, 2);
 });
 
@@ -520,12 +510,10 @@ Deno.test("ServeLeadership: a signed record from an older fence, written back af
   await leadership.start("follower");
   try {
     assertEquals(leadership.leader()?.address, "https://new.example");
-    // An earlier leader's signed record, put back: the lease is at 4.
     await store.put(SERVE_LEADER_KEY, record(3, "https://old.example"));
     await leadership.tick();
     assertEquals(leadership.leader()?.instanceId, "leader-3");
     assertEquals(leadership.leader()?.address, undefined);
-    // A takeover the record has not caught up with names no address either.
     lease.current = 5;
     await store.put(SERVE_LEADER_KEY, record(4, "https://new.example"));
     await leadership.tick();

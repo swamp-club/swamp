@@ -32,23 +32,17 @@ import { workflowAccessFields } from "./handlers/workflow_handlers.ts";
 
 const logger = getSwampLogger(["serve", "trigger-authorizer"]);
 
-/** The outcome of authorizing a scheduled or webhook run. */
 export interface TriggerAuthorization {
   readonly allowed: boolean;
   /**
-   * The value the caller runs: the configured value itself. Execution
-   * resolves it name-first then by id, the same order the authorizer used,
-   * so it reaches the workflow the decision was made on. Running the
-   * resolved name instead could reach a different workflow that shadows it
-   * (a repo workflow with the name of an extension workflow configured by
-   * id). The decided workflow's canonical name is on `resource`.
+   * the configured value itself: execution resolves it name-first then by id,
+   * as the authorizer did, so it reaches the decided workflow; running the
+   * resolved name could reach a different workflow that shadows it
    */
   readonly workflowIdOrName: string;
-  /** The id of the workflow decided on, when it exists. */
   readonly workflowId?: string;
   readonly resource: AccessResource;
   readonly decision: AccessDecision | null;
-  /** Why the run was refused; unset when allowed. */
   readonly reason?: string;
 }
 
@@ -68,20 +62,17 @@ export interface TriggerAuthorizerDeps {
 }
 
 /**
- * Builds the authorizer for runs no client connection stands behind. It
- * follows the WebSocket path's rules (auth mode none allows, a missing
- * policy snapshot refuses, admin on access:* is the fallback) without a
- * socket: a service principal has no collectives or IdP groups, and its
- * local groups still resolve inside the decision service.
+ * follows the WebSocket path's rules without a socket: a service principal has
+ * no collectives or IdP groups, and its local groups still resolve in the
+ * decision service
  */
 export function createTriggerAuthorizer(
   deps: TriggerAuthorizerDeps,
 ): TriggerAuthorizer {
   return async (principal, configured) => {
-    // A workflow that does not exist is decided on the configured value and
-    // then fails in execution exactly as it did before authorization existed.
-    // A lookup that throws is different: deciding without the workflow's
-    // name and tags would skip denies written against them, so it refuses.
+    // a workflow that does not exist is decided on the configured value and
+    // fails in execution as before; a lookup that throws refuses, since
+    // deciding without the name and tags would skip denies written against them
     let workflow: Workflow | null = null;
     let lookupError: string | undefined;
     try {

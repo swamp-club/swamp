@@ -36,9 +36,8 @@ import {
 } from "./resume_reset.ts";
 
 /**
- * A resume refused because the run it names is no longer suspended. For a
- * resume serve launched by itself this is a lost race, not a failure: a peer
- * or a person resumed the run first.
+ * for a resume serve launched itself this is a lost race, not a failure: a peer
+ * or a person resumed the run first
  */
 export class RunNotSuspendedError extends UserError {
   constructor(message: string) {
@@ -54,16 +53,15 @@ export interface SuspendedRunInfo {
   run: WorkflowRun;
 }
 
-/** How a resolver looks up the workflow named by its argument. */
 export interface WorkflowLookupOptions {
   /**
-   * Treat the argument as a workflow id the caller already resolved, and look
-   * it up by id only, so the operation acts on the workflow it authorized.
+   * look up by id only, so the operation acts on the workflow the caller
+   * authorized
    */
   byId?: boolean;
   /**
-   * With `byId`, the name the caller authorized: ids are not guaranteed
-   * unique, so only a workflow with this name and the id is accepted.
+   * ids are not guaranteed unique, so only a workflow with both this name and
+   * the id is accepted
    */
   expectedName?: string;
 }
@@ -78,12 +76,7 @@ function lookupWorkflow(
     : findWorkflowByIdOrName(workflowRepo, workflowIdOrName);
 }
 
-/** Options for {@link resolveSuspendedRun}. */
 export interface ResolveSuspendedRunOptions extends WorkflowLookupOptions {
-  /**
-   * Whether a run recorded as `running` has lost its owning process, so a
-   * refusal that names such a run can point at `workflow recover`.
-   */
   ownerIsDead?: (run: WorkflowRun) => boolean;
 }
 
@@ -161,48 +154,26 @@ export async function resolveSuspendedRun(
 
 export type ResumableRunInfo = SuspendedRunInfo;
 
-/**
- * The refusal of a `--job` without `--from`: it names the job of the `--from`
- * step, so alone it would be ignored and a retry would re-run every job.
- */
+/** alone, --job would be ignored and a retry would re-run every job */
 export const FROM_JOB_WITHOUT_FROM =
   "--job requires --from: it names the job of the --from step.";
 
 export interface ResolveResumableRunOptions extends ResolveSuspendedRunOptions {
-  /** The --from step; when set, only a failed run is resumable. */
   fromStep?: string;
-  /** The --job naming the job of the --from step. */
   fromJob?: string;
-  /**
-   * Accept only a suspended run, as auto-resume after an approval needs.
-   * Takes precedence over `fromStep`.
-   */
+  /** as auto-resume after an approval needs; takes precedence over fromStep */
   suspendedOnly?: boolean;
   /**
-   * Where signal wait records are kept. With it, a refusal over a nested run
-   * that waits for a signal asks whether the wait is still open; without
-   * it, the nested run's record is read, which shows a signalled wait as
-   * open until that run is resumed.
+   * without it the nested run's record is read, which shows a signalled wait as
+   * open until that run is resumed
    */
   signalWaits?: SignalWaitSupport;
 }
 
 /**
- * Resolves the run for `workflow resume`.
- *
- * - With `suspendedOnly`: resolves like {@link resolveSuspendedRun}.
- * - With `runId`: loads that run. With --from it must be failed; without,
- *   suspended or failed (a failed run is retried).
- * - Without `runId`: requires exactly one failed run with --from, or exactly
- *   one suspended run without it. A failed run is retried only when named,
- *   so approve followed by a bare resume never becomes ambiguous because of
- *   old failed runs.
- *
- * The resolved run is checked here — retry eligibility and the structure
- * check for a failed run, the structure check for a suspended one — so
- * callers fail before starting anything; resume() checks again. Approve and
- * reject use {@link resolveSuspendedRun}, which does not check the structure,
- * so a gate can still be decided after the workflow changed.
+ * a failed run is retried only when named, so approve then a bare resume never
+ * becomes ambiguous; approve and reject skip the structure check so a gate can
+ * be decided after the workflow changed
  */
 export async function resolveResumableRun(
   workflowRepo: WorkflowRepository,
@@ -322,7 +293,6 @@ export async function resolveResumableRun(
   };
 }
 
-/** The next step for a run left `running` by an owner that is gone. */
 function deadOwnerNextAction(workflowName: string, runId: string): string {
   return ` Recover it with 'swamp workflow recover ${workflowName} --run ${runId}', then resume it.`;
 }
@@ -352,17 +322,12 @@ function noRunsInStateMessage(
       ...rejectedGateOf(workflow, latest),
     },
   );
-  // A failed run's hint already names the run id, so it is not repeated
-  // here; that keeps the message within serve's 512-character error limit.
+  // a failed run's hint already names the run id; leaving it out keeps the
+  // message within serve's 512-character error limit
   const id = latest.status === "failed" ? "" : ` (${latest.id})`;
   return `${base}. The latest run is ${latest.status}${id}.${suggestion}`;
 }
 
-/**
- * The step to re-ask when `run` failed on a rejected approval gate — the
- * same step `swamp workflow resume` names when it refuses to retry the run —
- * and its `--job` when the step name needs one (see {@link fromJobFor}).
- */
 function rejectedGateOf(
   workflow: Workflow,
   run: WorkflowRun,
@@ -382,10 +347,9 @@ function rejectedGateOf(
 }
 
 /**
- * A sentence, with a leading space, naming the command to run next for a
- * run in `status`. A failed run with a `rejectedStep` is retried from that
- * gate, since a plain retry never re-opens it; `rejectedJob` names the gate's
- * job when its step name is used in more than one job.
+ * a failed run with a rejected step is retried from that gate, since a plain
+ * retry never re-opens it; rejectedJob is named when the step name is used in
+ * more than one job
  */
 export function nextActionForStatus(
   status: string,
@@ -398,7 +362,7 @@ export function nextActionForStatus(
   } = {},
 ): string {
   if (status === "suspended" && options.nestedWait) {
-    // It has no gate of its own to approve (swamp-club#2736).
+    // a run waiting on a nested run has no gate of its own to approve
     return ` It waits on a nested workflow run: finish that run, then resume this one with 'swamp workflow resume ${workflowName} --run ${runId}'.`;
   }
   switch (status) {
@@ -407,7 +371,7 @@ export function nextActionForStatus(
     case "succeeded":
       return ` The workflow has already completed — inspect results with 'swamp workflow history ${workflowName}'.`;
     case "failed":
-      // A full command, since approve, reject and auto-resume show this too.
+      // a full command, since approve, reject and auto-resume show this too
       if (options.rejectedStep !== undefined) {
         const job = options.rejectedJob !== undefined
           ? ` --job ${quoteShellWord(options.rejectedJob)}`

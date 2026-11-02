@@ -167,7 +167,6 @@ Deno.test("buildRunnerEnvironment: trace headers overlay on top of snapshot", ()
   );
   assertEquals(env["TRACEPARENT"], "00-abc123-def456-01");
   assertEquals(env["API_KEY"], "secret");
-  // Only W3C trace headers reach the spawn env; other keys are dropped.
   assertEquals("LD_PRELOAD" in env, false);
 });
 
@@ -184,7 +183,6 @@ Deno.test("registerDispatchHandler: a dispatch whose runner cannot be spawned st
     onDispatch: (event) => events.push(event),
   });
 
-  // The mock's spawn() throws, as a missing runner binary does.
   const { result: failed } = await withMockedCommand(
     () => ({ stdout: "", code: 0 }),
     async () => {
@@ -280,7 +278,6 @@ Deno.test("registerDispatchHandler: a dispatch that waited for admission does no
     dispatchParams(),
     { timeoutMs: 1_000 },
   ).catch(() => {});
-  // One macrotask turn delivers the dispatch, which then waits on admission.
   await new Promise<void>((resolve) => setTimeout(resolve, 0));
   worker.close("socket dropped");
   admit();
@@ -466,7 +463,6 @@ Deno.test("buildRunnerEnvironment: lock variables shipped in the snapshot never 
 });
 
 Deno.test("buildRunnerEnvironment: drops trace context shipped in the snapshot", () => {
-  // An older orchestrator still ships its own TRACEPARENT in the snapshot.
   const env = buildRunnerEnvironment(
     {},
     {

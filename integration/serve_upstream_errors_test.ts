@@ -17,14 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * How a v3 checkout written through serve (swamp-club#3985) meets serve
- * failing it: unreachable, refusing its token, answering a conflict, lost
- * after it landed a commit, or feeding it a hostile record key. Opened the
- * production way, against a real serve in a Worker, with a proxy in front
- * where serve itself would never answer so.
- */
-
 import "../src/domain/models/models.ts";
 import { assert, assertEquals, assertRejects } from "@std/assert";
 import { exists } from "@std/fs";
@@ -67,7 +59,6 @@ import {
 
 await initializeLogging({});
 
-/** The follower copy's `commits.db` and outbox of `client` under serve at `origin`. */
 function copyFiles(
   client: Client,
   origin: string,
@@ -80,7 +71,6 @@ function copyFiles(
   return { commitsDb, outbox: v3OutboxPath(commitsDb) };
 }
 
-/** The commits (by partition, seq and txnId) and outbox entries of `client`'s copy. */
 async function copyContent(
   client: Client,
   origin: string,
@@ -101,7 +91,6 @@ async function copyContent(
   }
 }
 
-/** The outbox entries of `client`'s follower copy, by txnId. */
 async function outboxEntries(
   client: Client,
   origin: string,
@@ -138,7 +127,6 @@ Deno.test({
       );
       await serve.stop();
 
-      // The read: from the copy, saying it may be out of date.
       let read: unknown;
       const logs = await captureLogs(async () => {
         read = await readCommand(
@@ -146,8 +134,6 @@ Deno.test({
           client,
           env,
           async (repos) => {
-            // A second catch-up in the same command, as a longer command
-            // makes: still one warning.
             await v3DatastoreFor(client.repoDir, {
               path: serveUpstreamLocalRoot(client.repoDir, serve.origin, ""),
             }).catchUp();
@@ -181,13 +167,9 @@ Deno.test({
         `the warning interpolates the error object: ${JSON.stringify(logs)}`,
       );
 
-      // The write: the command works offline (swamp-club#4195), and a save
-      // to a behavior it holds no lease on, by a command no offline rule
-      // judged at its start, is refused at its commit by the serve sink's
-      // backstop, before anything changed. (A method run is judged before
-      // it starts: integration/serve_v3_offline_flush_test.ts.)
-      // Its local lease raises the copy's writer fence, so the files are
-      // compared by what they hold: commits and outbox entries.
+      // a save to a behavior this checkout holds no lease on, by a command no
+      // offline rule judged at its start, is refused at commit by the serve
+      // sink's backstop before anything changed
       const before = await copyContent(client, serve.origin);
       assert(before.commits.length > 0, "the copy holds no commits");
       let actionRan = false;
@@ -317,7 +299,6 @@ Deno.test({
           "a request carried the token file's token to a marker-only address",
         );
 
-        // Named by SWAMP_SERVE_URL too, the same file is bound, and sent.
         proxy.requests.length = 0;
         await save({
           SWAMP_SERVE_URL: proxy.origin,
@@ -384,7 +365,6 @@ Deno.test({
             ),
           String(error),
         );
-        // Refused as a local commit whose expect failed is.
         assertEquals((error as { reason?: unknown }).reason, "expect-failed");
         assertEquals(await outboxEntries(client, proxy.origin), []);
       } finally {
@@ -457,7 +437,6 @@ Deno.test({
         "the cut left no outbox entry to recover",
       );
 
-      // The next writing command settles it from serve.
       await writeCommand(
         scratch,
         client,
@@ -485,10 +464,6 @@ Deno.test({
   },
 });
 
-/**
- * Runs `write` as a command in `client` whose commit lands at serve while
- * its outbox entry is never settled, as a process killed there leaves it.
- */
 async function leaveUnsettledWrite(
   scratch: Parameters<typeof writeCommand>[0],
   client: Client,
@@ -537,8 +512,6 @@ Deno.test({
       const type = serve.modelType;
       const web = serve.models.web;
 
-      // Alice's write lands at serve, but her outbox entry is never
-      // settled, as a process killed there leaves it.
       await leaveUnsettledWrite(
         scratch,
         client,
@@ -559,8 +532,6 @@ Deno.test({
       assertEquals(exitCodeForError(refused), 1);
       assertEquals(await copyContent(client, serve.origin), before);
 
-      // Alice's next command settles it; then Bob's goes through and reads
-      // none of Alice's records.
       assertEquals(
         await writeCommand(
           scratch,
@@ -621,7 +592,6 @@ Deno.test({
       assertEquals(refused.serveUrl, serveA.origin);
       assertEquals(await copyContent(client, serveA.origin), before);
 
-      // A writing command on A settles it; then the move goes through.
       assertEquals(
         await writeCommand(
           scratch,
@@ -765,7 +735,6 @@ Deno.test({
   },
 });
 
-/** The id of the copy `client` holds of serve at `origin`. */
 function copyIdOf(client: Client, origin: string): string {
   const state = ServeUpstreamState.open(
     join(
@@ -804,7 +773,6 @@ Deno.test({
       const id = copyIdOf(client, serve.origin);
       assertEquals((await outboxEntries(client, serve.origin)).length, 1);
 
-      // Alice's access widens; the next command sees it.
       await serve.setGrants([
         ...MEMBER,
         { actions: ["read"], kind: "workflow", pattern: "*" },
@@ -834,7 +802,6 @@ Deno.test({
       assertEquals(copyIdOf(client, serve.origin), id);
       assertEquals((await outboxEntries(client, serve.origin)).length, 1);
 
-      // A writing command lands it; the next command rebuilds the copy.
       await writeCommand(
         scratch,
         client,
@@ -887,7 +854,6 @@ for (const state of ["rejected", "quarantined"] as const) {
           (repos) =>
             repos.unifiedDataRepo.save(type, web, dataOf("vpc"), json(1)),
         );
-        // A flush marked it: kept, never sent again.
         const outbox = new SqliteCommitOutbox(
           copyFiles(client, serve.origin).outbox,
         );
@@ -904,7 +870,6 @@ for (const state of ["rejected", "quarantined"] as const) {
         }
         const kept = await outboxEntries(client, serve.origin);
 
-        // Bob's token resets the copy: not refused, and the entry stays.
         assertEquals(
           await readCommand(
             scratch,

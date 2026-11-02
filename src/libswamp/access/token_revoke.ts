@@ -17,14 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Revoke a server token before its lifetime expires.
- *
- * Runs the `revoke` method on the existing `swamp/server-token` model
- * instance named by the token. Revoking an already-revoked token is a
- * no-op, reported via `alreadyRevoked`.
- */
-
 import type { LibSwampContext } from "../context.ts";
 import { withUnitOfWork } from "../unit_of_work.ts";
 import type { SwampError } from "../errors.ts";

@@ -17,11 +17,9 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// Worker for datastore_v3_outbox_test.ts (swamp-club#3490). It stands in for
-// a v3 writer that is killed while it commits: it writes an auto-definition
-// into the checkout as a repository does, then commits it through the same
-// unit, sink and outbox a v3 handle uses, stopping at each pause point the
-// test names until the test resumes it or terminates it there.
+// stands in for a v3 writer killed mid-commit: commits an auto-definition
+// through the same unit, sink and outbox a v3 handle uses, stopping at each
+// pause the test names
 
 import { dirname } from "@std/path";
 import { SOLO_NAMESPACE } from "../src/domain/data/namespace.ts";
@@ -39,7 +37,6 @@ import { SqliteCommitOutbox } from "../src/infrastructure/datastore_v3/sqlite_co
 import { SqliteCommitStore } from "../src/infrastructure/datastore_v3/sqlite_commit_store.ts";
 import { FileSystemStorage } from "../src/infrastructure/persistence/fs_datastore_storage.ts";
 
-/** Where the writer stops: before it prepares, after, or after it appends. */
 export type OutboxCrashPause =
   | "before-prepare"
   | "after-prepare"
@@ -47,19 +44,13 @@ export type OutboxCrashPause =
 
 export interface OutboxCrashRequest {
   readonly datastorePath: string;
-  /** Where the checkout's copy of the auto-definition is written. */
   readonly checkoutFile: string;
   readonly commitsDb: string;
   readonly outboxPath: string;
-  /** The fence of the lease the dead writer held. */
   readonly fence: number;
-  /** The pid its commits name: one that is gone. */
   readonly writerPid: number;
-  /** The auto-definition's id. */
   readonly id: string;
-  /** How many bytes it holds: past the inline limit, it is stored as chunks. */
   readonly bytes: number;
-  /** The points to stop at, in order. */
   readonly pauses: readonly OutboxCrashPause[];
 }
 
@@ -86,7 +77,6 @@ self.onmessage = (event: MessageEvent<OutboxCrashRequest | "resume">) => {
   );
 };
 
-/** The auto-definition's content: `bytes` of a fixed pattern. */
 export function outboxCrashContent(bytes: number): Uint8Array {
   const content = new Uint8Array(bytes);
   for (let i = 0; i < bytes; i++) content[i] = (i * 31 + 7) % 251;

@@ -41,9 +41,7 @@ import {
 import { isSwampExpression, type SwampScope } from "./swamp_namespaces.ts";
 import type { FailedExpressions } from "./unresolved_expression_guard.ts";
 
-/** Result of one CEL pass over a definition's data. */
 export interface DefinitionExpressionPassResult {
-  /** Real values: bound as self.globalArguments, cached, reported. */
   data: DefinitionData;
   /**
    * The same splices with sensitive values replaced by sentinels, for the
@@ -51,28 +49,20 @@ export interface DefinitionExpressionPassResult {
    */
   sanitizedData?: DefinitionData;
   failedExpressions: FailedExpressions;
-  /** Where data sits in `data`. */
   provenance: ProvenanceMap;
-  /** Where data sits in `sanitizedData`, when present. */
   sanitizedProvenance?: ProvenanceMap;
 }
 
-/**
- * Where data sits in the definition data a pass starts from: `raw` for
- * `definitionData`, `sanitized` for the sanitized base.
- */
 export interface DefinitionPassProvenance {
   raw: ProvenanceMap;
   sanitized: ProvenanceMap;
 }
 
-/** A definition read from source: no data anywhere in either copy. */
 export const AUTHORED_DEFINITION: DefinitionPassProvenance = {
   raw: ProvenanceMap.authored(),
   sanitized: ProvenanceMap.authored(),
 };
 
-/** Offsets a sanitizer's paths so it sees full definition paths. */
 function underPath(
   sanitizer: SpliceSanitizer,
   prefix: string,
@@ -96,26 +86,9 @@ function isGlobalArgumentPath(path: string): boolean {
 }
 
 /**
- * Evaluates CEL expressions in a definition's data, shared by the CLI and
- * workflow evaluation paths.
- *
- * Global arguments are evaluated first; everything else is then evaluated
- * with `self.globalArguments` bound to that result, so a method argument that
- * reads `self.globalArguments.X` sees X's value rather than its source text.
- * Global arguments that could not be evaluated keep their raw text there.
- *
- * Evaluation is lenient: an expression that fails, or that reads model data
- * not yet available, is left in place so it cannot break a method that never
- * uses it. Each one is recorded in `failedExpressions` with its reason, for
- * {@link assertMethodArgumentsEvaluated} to raise if the method being run
- * does use it. Text that is not valid CEL (prose documenting the syntax), or
- * CEL that is not swamp's — `${{ github.sha }}` or `${{ inputs.version }}`
- * written for another templating system, see {@link isSwampExpression} — is
- * left in place without being recorded.
- *
- * @param expressions - Expressions to evaluate. Callers exclude runtime
- *   (vault/env/deferred) expressions and apply their own provenance rules.
- * @param context - Not mutated; the second phase uses a copy.
+ * evaluation is lenient: a failing expression is left in place and recorded in
+ * failedExpressions, so it cannot break a method that never uses it; globals
+ * are evaluated first and bound as self.globalArguments
  */
 export async function evaluateDefinitionExpressions(
   definitionData: DefinitionData,
@@ -124,11 +97,9 @@ export async function evaluateDefinitionExpressions(
   celEvaluator: CelExpressionEvaluator & CelExpressionValidator,
   sanitizer?: SpliceSanitizer,
   /**
-   * What the sanitized copy is spliced from, when it differs from
-   * `definitionData` because values were already sanitized upstream (a
-   * direct-execution step's routed global arguments). It holds the same
-   * unevaluated expressions, so the values evaluated from `definitionData`
-   * apply to it unchanged.
+   * differs from definitionData when values were sanitized upstream; it holds
+   * the same unevaluated expressions, so values evaluated from definitionData
+   * apply to it unchanged
    */
   sanitizedBase: DefinitionData = definitionData,
   /**
@@ -205,17 +176,15 @@ export async function evaluateDefinitionExpressions(
         values.set(expr.raw, value);
         origins.set(expr.raw, spliceOrigin(expr.celExpression, ctx, value));
       } catch (error) {
-        // Only now is the text classified, so a classification mistake can
-        // never stop an expression that evaluates from resolving. Text that
-        // is not CEL (prose documenting the syntax), or CEL written for
-        // another templating system, is left in place unrecorded, as it
-        // always was.
+        // only now is the text classified, so a classification mistake never
+        // stops an expression that evaluates from resolving; non-CEL text or
+        // CEL for another templating system stays unrecorded
         if (
           !celEvaluator.validate(expr.celExpression).valid ||
           !isSwampExpression(expr.celExpression, scope)
         ) continue;
-        // Most often an input referenced directly (not inside a conditional
-        // branch) that only another method supplies — see #653.
+        // most often an input referenced directly (not inside a conditional
+        // branch) that only another method supplies
         recordFailure(expr.raw, error);
       }
     }
@@ -316,9 +285,8 @@ function originLookup(
 }
 
 /**
- * The context for the second phase: `self.globalArguments` bound to the
- * evaluated globals, with their provenance, so an argument that copies a
- * global inherits where its data sits.
+ * binds self.globalArguments with their provenance, so an argument that copies
+ * a global inherits where its data sits
  */
 function withEvaluatedGlobals(
   context: ExpressionContext,

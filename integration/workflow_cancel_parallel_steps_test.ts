@@ -17,19 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Integration test for a cancelled run whose level holds several model steps
- * (swamp-club#2918). The level stops reading its steps when the abort fires,
- * but the run must not save itself cancelled, and so let the CLI push and
- * exit, before each step's method has saved its method-run record cancelled.
- *
- * The unit tests in execution_service_test.ts pin the wait with an in-memory
- * run repository and tracker. This one wires the stores the CLI uses: the
- * YAML run, output and definition repositories on disk and the SQLite run
- * tracker, and checks the records as `swamp model method history` and
- * `swamp model cancel` would read them.
- */
-
 import { join } from "@std/path";
 import { assertEquals, assertExists } from "@std/assert";
 import { z } from "zod";
@@ -55,7 +42,6 @@ import { YamlOutputRepository } from "../src/infrastructure/persistence/yaml_out
 import { RunTrackerStore } from "../src/infrastructure/persistence/run_tracker_store.ts";
 import { CatalogStore } from "../src/infrastructure/persistence/catalog_store.ts";
 
-// Import models barrel to trigger built-in registration.
 import "../src/domain/models/models.ts";
 import { initializeLogging } from "../src/infrastructure/logging/logger.ts";
 
@@ -78,7 +64,6 @@ async function withRepo(fn: (repoDir: string) => Promise<void>): Promise<void> {
   }
 }
 
-/** Counts executions in flight, each until its promise has settled. */
 class InFlightCountingExecutor implements StepExecutor {
   inFlight = 0;
 
@@ -95,11 +80,9 @@ class InFlightCountingExecutor implements StepExecutor {
 }
 
 /**
- * Opens `gate` once the save that follows a failed job `main` has been
- * written: the abort has settled the level and the run goes on to record its
- * cancellation. Records, on entry to the save of the cancelled run, how many
- * executions were still in flight, which does not depend on how long the
- * disk writes take.
+ * opens gate after the cancelled-run save is reached and records how many
+ * executions were still in flight at that point, which does not depend on disk
+ * write timing
  */
 class GatedYamlRunRepository extends YamlWorkflowRunRepository {
   readonly gate = Promise.withResolvers<void>();
@@ -129,8 +112,6 @@ Deno.test("workflow cancel: parallel model steps save their method runs and trac
       () => executor.inFlight,
     );
 
-    // Both methods start, the cancel fires, and each fails as an
-    // interrupted process does once the level has moved on without it.
     let started = 0;
     const modelType = ModelType.create(
       `@test-2918/parallel-${crypto.randomUUID().slice(0, 8)}`,

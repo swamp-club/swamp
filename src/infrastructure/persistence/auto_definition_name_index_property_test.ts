@@ -42,7 +42,6 @@ const FILES = [
 
 let clock = Date.UTC(2020, 0, 1);
 
-/** Gives `path` an mtime no earlier change has used. */
 async function bump(path: string): Promise<void> {
   clock += 1_000;
   await Deno.utime(path, new Date(clock), new Date(clock));
@@ -75,17 +74,11 @@ const opArb: fc.Arbitrary<Op> = fc.oneof(
   }),
 );
 
-/** A file a lookup reads at its name-derived path, which the index leaves out. */
 function isNameDerived(file: string, name: string | undefined): boolean {
   return name !== undefined && isFilenameSafeDefinitionName(name) &&
     file === `${name}.yaml`;
 }
 
-/**
- * What a lookup answers for `name` from the files a scan of the directory
- * reads: the file its name gives when that file declares it, else the first
- * other file in name order that declares it.
- */
 function scan(files: Map<string, string | undefined>, name: string) {
   const named = `${name}.yaml`;
   if (isNameDerived(named, name) && files.get(named) === name) return named;
@@ -118,7 +111,6 @@ Deno.test("AutoDefinitionNameIndex: answers every name as a full scan does, acro
               repo.readDefinitionFile(path, segments, isSymlink),
             { now: () => Date.now() + 60_000 },
           );
-          // Each file's declared name; undefined for a broken file.
           const files = new Map<string, string | undefined>();
           for (const op of ops) {
             const path = join(typeDir, op.file);
@@ -169,7 +161,6 @@ Deno.test("AutoDefinitionNameIndex: answers every name as a full scan does, acro
   );
 });
 
-/** A definition file's text; a uuid-named file keeps its id. */
 function yamlOf(file: string, name: string): string {
   const stem = file.slice(0, -".yaml".length);
   const id = IDS.includes(stem) ? stem : crypto.randomUUID();

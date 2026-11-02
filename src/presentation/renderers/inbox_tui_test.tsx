@@ -133,7 +133,6 @@ function openInbox(view: InboxBrowseView, backend = fakeBackend()) {
     backend,
     frame,
     quits: () => quits,
-    /** The results column of the row holding `text`. */
     row: (text: string) =>
       frame().split("\n").map((r) => r.split("│")[0]).find((r) =>
         r.includes(text)
@@ -188,11 +187,9 @@ Deno.test({
 
     assertEquals(inbox.quits(), 0);
     assert(!inbox.row("2026-10-25").includes("●"));
-    // Enter opens the row the list came back on.
     inbox.stdin.write("\r");
     await inbox.until((f) => f.includes("Esc back"), "the message view");
     assertStringIncludes(inbox.frame(), "The fix is in swamp 1.42.");
-    // Read now, so opening it again sends nothing.
     assertEquals(inbox.backend.marks.length, 1);
   },
 });
@@ -343,7 +340,6 @@ Deno.test({
     );
     assertStringIncludes(inbox.row("2026-10-26"), "●");
 
-    // The next key clears it.
     inbox.stdin.write("\x1b[B");
     await inbox.until(
       (f) => !f.includes("Could not mark") && f.includes("Enter open"),
@@ -360,7 +356,6 @@ Deno.test({
     const inbox = openInbox(
       makeView(ROWS),
       fakeBackend({
-        // The announcement's batch landed before the request failed.
         outcome: (ids) =>
           Promise.resolve({
             kind: "failed",
@@ -388,7 +383,6 @@ Deno.test({
     const inbox = openInbox(
       makeView(ROWS),
       fakeBackend({
-        // Confirms the announcement, not the issue.
         outcome: (ids) =>
           Promise.resolve({
             kind: "confirmed",
@@ -427,7 +421,6 @@ Deno.test({
 
     assertEquals(inbox.backend.loads, [ISSUE.id]);
     assertStringIncludes(inbox.row("2026-10-23"), "direct        Welcom");
-    // That page was the last, so the new last row loads nothing more.
     inbox.stdin.write("\x1b[B");
     await inbox.until(
       (f) => f.includes("Glad to have you."),
@@ -612,7 +605,6 @@ Deno.test("connectInboxTui: closing waits for marks in flight and counts what wa
         await new Promise<void>((resolve) => release = resolve);
       }
       order.push(`marked ${ids.length}`);
-      // Swamp Club confirms all but an id it does not know.
       return {
         kind: "confirmed",
         ids: ids.filter((id) => id !== POINTS.id),

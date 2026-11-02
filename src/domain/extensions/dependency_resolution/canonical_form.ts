@@ -17,38 +17,20 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * The canonical shipped form (swamp-club#3970): every `npm:` and `jsr:`
- * import in an archive's source names the exact version its bundle holds,
- * `npm:<name>@<x.y.z>[/subpath]` or `jsr:@<scope>/<name>@<x.y.z>[/subpath]`.
- * Authors keep writing ranges, dist-tags, import-map names and
- * package.json dependencies; push pins each site to the version Deno's
- * module graph resolved it to.
- */
-
 import { exactVersion } from "@swamp-club/extension-scoring/dependency-audit";
 import { markErrorPaths, UserError } from "../../errors.ts";
 import type { SpecifierRewrite } from "../source_archive_plan.ts";
 import { scanImportSites } from "./import_sites.ts";
 import type { PackageVersions } from "./package_versions.ts";
 
-// `npm:` / `jsr:`, an optional leading slash, the package, its version and a subpath
 const PACKAGE_SPECIFIER_RE =
   /^(?<registry>npm|jsr):\/?(?<name>(?:@[^/@]+\/)?[^/@]+)(?:@(?<version>[^/]*))?(?<subpath>\/.*)?$/;
 
-/** What push ships for one `npm:` or `jsr:` specifier. */
 export type CanonicalSpecifier =
   | { kind: "outside" }
   | { kind: "pinned"; specifier: string }
   | { kind: "unresolved" };
 
-/**
- * The canonical form of `specifier`: unchanged for anything but `npm:` and
- * `jsr:` and for zod, which the host provides; an exact version in any
- * spelling (`=1.2.3`, `v1.2.3`) as plain semver; anything else at the
- * version `versions` says Deno resolved it to, keeping its subpath.
- * `unresolved` when the graph gave no exact version for it.
- */
 export function canonicalSpecifier(
   specifier: string,
   versions: PackageVersions,
@@ -87,10 +69,6 @@ function unresolvedError(
   );
 }
 
-/**
- * Pins one import-map target push ships for a bare import. Throws a
- * UserError when the graph gave no exact version for it.
- */
 export function canonicalTarget(
   target: string,
   versions: PackageVersions,
@@ -103,14 +81,6 @@ export function canonicalTarget(
   return canonical.kind === "pinned" ? canonical.specifier : target;
 }
 
-/**
- * The rewrites that pin every `npm:` and `jsr:` import `source` writes out
- * (static, side-effect, dynamic and type imports, and re-exports) to the
- * exact version the graph resolved it to. A site already in the canonical
- * form is left alone. Throws a UserError for a site the graph gave no exact
- * version for, so a range can never ship. A module that does not parse
- * plans nothing: push refuses it first.
- */
 export function canonicalImportRewrites(
   source: string,
   sourcePath: string,

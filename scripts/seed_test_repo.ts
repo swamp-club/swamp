@@ -17,14 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Seeds a test repo in /tmp/swamp-tag-test and prints CLI commands
- * to exercise definition tags → data, workflow tags → data, and
- * --tag runtime overrides.
- *
- * Usage:
- *   deno run --allow-all scripts/seed_test_repo.ts
- */
 
 import { ensureDir } from "@std/fs";
 import { join } from "@std/path";
@@ -45,7 +37,6 @@ const DENO_ARGS = [
   MAIN,
 ];
 
-// ── helpers ──────────────────────────────────────────────────────────
 
 async function swamp(...args: string[]): Promise<string> {
   const cmd = new Deno.Command("deno", {
@@ -68,9 +59,7 @@ async function writeYaml(path: string, data: Record<string, unknown>) {
   await Deno.writeTextFile(path, content);
 }
 
-// ── main ─────────────────────────────────────────────────────────────
 
-// Clean slate
 try {
   await Deno.remove(REPO, { recursive: true });
 } catch { /* ok */ }
@@ -78,11 +67,9 @@ await ensureDir(REPO);
 
 console.log("=== Seeding test repo at", REPO, "===\n");
 
-// 1. Init — `init` takes a positional path argument
 console.log("1. Initializing repo...");
 console.log(await swamp("init", REPO));
 
-// 2. Create echo models with definition-level tags
 console.log("\n2. Creating echo models...");
 console.log(
   await swamp("model", "create", "swamp/echo", "echo-dev", "--repo-dir", REPO),
@@ -98,7 +85,6 @@ console.log(
   ),
 );
 
-// Patch the definitions to include tags and a message
 const defsDir = join(SWAMP, "definitions", "swamp", "echo");
 const devDefs: string[] = [];
 const prodDefs: string[] = [];
@@ -113,7 +99,6 @@ for await (const entry of Deno.readDir(defsDir)) {
   }
 }
 
-// Patch echo-dev: tags { env: dev, team: platform }, method arg message
 for (const path of devDefs) {
   const text = await Deno.readTextFile(path);
   const patched = text
@@ -128,7 +113,6 @@ for (const path of devDefs) {
   await Deno.writeTextFile(path, patched);
 }
 
-// Patch echo-prod: tags { env: prod, team: infra }, method arg message
 for (const path of prodDefs) {
   const text = await Deno.readTextFile(path);
   const patched = text
@@ -146,13 +130,11 @@ for (const path of prodDefs) {
 console.log("  Patched echo-dev with tags: { env: dev, team: platform }");
 console.log("  Patched echo-prod with tags: { env: prod, team: infra }");
 
-// 3. Create a workflow with tags
 console.log("\n3. Creating workflow...");
 console.log(
   await swamp("workflow", "create", "deploy-pipeline", "--repo-dir", REPO),
 );
 
-// Find the workflow file and rewrite it with tags and steps
 const workflowsDir = join(SWAMP, "workflows");
 let workflowPath = "";
 let workflowId = "";
@@ -214,7 +196,6 @@ if (workflowPath) {
   );
 }
 
-// ── print the test plan ──────────────────────────────────────────────
 
 const RUN = `deno run --allow-all ${MAIN}`;
 const RD = `--repo-dir ${REPO}`;

@@ -17,15 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Fitness rules for serve's write confirmation (swamp-club#3489, Phase
- * 4D3): every write request answers only once its commits are replicated.
- * Dispatch wraps exactly the requests `CONFIRMED_WRITE_REQUESTS` names in
- * `confirmed(...)`, so a new writing request cannot be added without
- * deciding whether it waits, and the confirmation stays dormant: only
- * serve sets `confirmReplicated`, and only while replication is on.
- */
-
 import { assert, assertEquals } from "@std/assert";
 import { join } from "@std/path";
 import { CONFIRMED_WRITE_REQUESTS } from "../src/serve/write_confirmation.ts";
@@ -33,7 +24,6 @@ import { SYNC_GATED_REQUESTS } from "../src/serve/sync_gate.ts";
 
 const ROOT = join(import.meta.dirname!, "..");
 
-/** The request types whose dispatch case wraps its handler in `confirmed`. */
 async function confirmedCases(): Promise<Set<string>> {
   const source = await Deno.readTextFile(
     join(ROOT, "src", "serve", "connection.ts"),

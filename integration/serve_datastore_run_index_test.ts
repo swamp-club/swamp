@@ -17,13 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Serve's run search after a forwarded commit changes a run (swamp-club#3985):
- * the run index serve answers `workflow run search` and `workflow history
- * search` from follows the run record the catch-up wrote, rather than the
- * status it indexed before.
- */
-
 import { assertEquals } from "@std/assert";
 import { stringify as stringifyYaml } from "@std/yaml";
 import { partitionOf } from "../src/domain/datastore_v3/partition_key.ts";
@@ -45,7 +38,6 @@ function yamlBase64(value: unknown): string {
   return btoa(String.fromCharCode(...bytes));
 }
 
-/** Forwards the run record `runId` with `status`, as a client saves it. */
 async function forwardRun(
   server: Server,
   runId: string,
@@ -107,7 +99,6 @@ Deno.test({
 
       const runId = crypto.randomUUID();
       await forwardRun(server, runId, "run.create", "interrupted");
-      // Indexed and cached as serve's searches read it.
       assertEquals(await statusOf(runId), {
         search: "interrupted",
         history: "interrupted",
@@ -117,7 +108,6 @@ Deno.test({
         history: "interrupted",
       });
 
-      // A `workflow recover` on a client turns it suspended.
       await forwardRun(server, runId, "run.update", "suspended");
       assertEquals(await statusOf(runId), {
         search: "suspended",

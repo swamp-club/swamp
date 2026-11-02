@@ -50,26 +50,17 @@ import {
 } from "./list.ts";
 import { toPollOutcome } from "./poll_outcome.ts";
 
-/**
- * How many pages of unread messages `inbox read` lists while every entry on
- * them breaks the contract, before it reports nothing to read.
- */
 export const MAX_INBOX_READ_PAGES = 5;
 
-/**
- * How long a summary call made while reading may take: the one that finds
- * the message the notice announced, and the one that follows marking read.
- * Either falls back when it runs out, so this only bounds the wait.
- */
+/** either call falls back when it runs out, so this only bounds the wait. */
 export const INBOX_REFRESH_TIMEOUT_MS = 5_000;
 
-/** Dependencies for reading and marking inbox messages, injected for tests. */
 export interface InboxReadDeps {
   loadCredentials: () => Promise<AuthCredentials | null>;
   listMessages: InboxListDeps["listMessages"];
   /**
-   * The requested ids swamp-club confirmed as read. `onConfirmed` is given
-   * each batch's confirmed ids as it is answered, before any later throw.
+   * onConfirmed is given each batch's confirmed ids as it is answered, before
+   * any later throw.
    */
   markInboxRead: (
     serverUrl: string,
@@ -91,7 +82,6 @@ export interface InboxReadDeps {
   ) => Promise<InboxSummaryResult>;
   loadInboxState: (key: InboxCacheKey) => Promise<InboxState>;
   saveInboxState: (key: InboxCacheKey, state: InboxState) => Promise<void>;
-  /** Whether this process may write the swamp config directory. */
   ownsConfigDir: () => boolean;
   now: () => number;
   serverUrlOverride?: string;
@@ -102,7 +92,6 @@ export interface CreateInboxReadDepsOptions {
   identity?: ClientIdentity;
 }
 
-/** Wires real infrastructure into InboxReadDeps. */
 export function createInboxReadDeps(
   options: CreateInboxReadDepsOptions = {},
 ): InboxReadDeps {
@@ -130,17 +119,8 @@ export function createInboxReadDeps(
 }
 
 export interface InboxReadNextView {
-  /**
-   * The message the notice announced, or else the newest unread message, now
-   * read; null when nothing was unread.
-   */
   message: InboxMessageView | null;
-  /**
-   * Whether the message is read now: swamp-club confirmed marking it, or it
-   * was already read.
-   */
   marked: boolean;
-  /** Whether more unread messages are waiting after this one. */
   moreUnread: boolean;
   /** Entries Swamp Club sent that broke the inbox contract and were left out. */
   dropped: number;
@@ -183,10 +163,9 @@ function isAbort(error: unknown): error is DOMException {
 }
 
 /**
- * Asks for the unread summary, with no ETag, and stores the answer in the
- * key's inbox cache for the server it asked when this process owns the
- * config dir. Never throws: null when no answer came, and a cache that
- * cannot be written is left as it was.
+ * asks with no ETag and stores the answer in the key's inbox cache when this
+ * process owns the config dir. Never throws: null when no answer came, and an
+ * unwritable cache is left as it was.
  */
 async function askSummary(
   ctx: LibSwampContext,
@@ -229,9 +208,8 @@ async function askSummary(
 }
 
 /**
- * Asks for the unread count once more after marking read, so the notice
- * stops now rather than at the next poll. Never throws: the messages are
- * already read, and the next poll corrects the cache.
+ * so the notice stops now rather than at the next poll. Never throws: the
+ * messages are already read, and the next poll corrects the cache.
  */
 async function refreshInboxCache(
   ctx: LibSwampContext,
@@ -242,7 +220,6 @@ async function refreshInboxCache(
   await askSummary(ctx, deps, session);
 }
 
-/** The id of the message the notice announced; null when the summary gave none. */
 async function announcedMessageId(
   ctx: LibSwampContext,
   deps: InboxReadDeps,
@@ -253,10 +230,8 @@ async function announcedMessageId(
 }
 
 /**
- * The message the notice announced, while it is still unread. Null when the
- * summary named none, or the message is gone, read, or one this client
- * refuses: the caller then reads the newest unread message instead. Only an
- * abort propagates.
+ * null when the summary named none, or the message is gone, read or refused:
+ * the caller then reads the newest unread message. Only an abort propagates.
  */
 async function announcedUnread(
   ctx: LibSwampContext,
@@ -298,12 +273,9 @@ async function markAndRefresh(
 }
 
 /**
- * Reads the message the notice announced, or else the newest unread message:
- * fetches it and marks it read. Reading the announced message first lets the
- * notice stop at once, even when newer messages that never raise it, such as
- * onboarding messages, are waiting. The message is marked before it is shown, so a run
- * killed in between leaves it read but unseen; `swamp inbox --all` lists it,
- * and `swamp inbox read <id>` shows it.
+ * reading the announced message first lets the notice stop at once even when
+ * newer messages that never raise it are waiting. It is marked before it is
+ * shown, so a killed run leaves it read but unseen.
  */
 export async function* inboxReadNext(
   ctx: LibSwampContext,
@@ -381,7 +353,6 @@ export async function* inboxReadNext(
   }
 }
 
-/** The refusal for an id that is not a message id. */
 function notAMessageId(id: string): SwampError {
   return validationFailed(
     `Not a message id: ${id}. Message ids are the 26-character ids swamp inbox prints.`,
@@ -389,10 +360,9 @@ function notAMessageId(id: string): SwampError {
 }
 
 /**
- * Reads one message by its id: fetches it and, when it is unread, marks it
- * read. A message already read is shown again and nothing is sent. An id
- * that is not a ULID is refused before any request; an unknown one, or
- * someone else's, propagates as the client's UserError.
+ * a message already read is shown again and nothing is sent. A non-ULID id is
+ * refused before any request; an unknown one, or someone else's, propagates as
+ * the client's UserError.
  */
 export async function* inboxReadById(
   ctx: LibSwampContext,
@@ -470,15 +440,10 @@ export type InboxMarkOutcome =
   | { kind: "failed"; reason: string; ids: string[] };
 
 /**
- * Marks messages read while the inbox stays open. Requests reach Swamp Club
- * one at a time, in the order they were made, and the cache is refreshed
- * once, by `finish`.
+ * requests reach Swamp Club one at a time, in the order made; the cache is
+ * refreshed once, by finish.
  */
 export interface InboxMarkSession {
-  /**
-   * Marks exactly these ids read. Resolves to the ids swamp-club confirmed,
-   * or why the request failed and the ids it confirmed first; never rejects.
-   */
   mark(ids: readonly string[]): Promise<InboxMarkOutcome>;
   /**
    * Waits for the requests still in flight, for at most `finishTimeoutMs`,
@@ -490,7 +455,6 @@ export interface InboxMarkSession {
 }
 
 export interface InboxMarkSessionOptions {
-  /** How long `finish` waits for requests still in flight. */
   finishTimeoutMs?: number;
 }
 
@@ -582,7 +546,6 @@ class InboxMarkSessionImpl implements InboxMarkSession {
   }
 }
 
-/** Starts a mark session; credentials load with the first request. */
 export function createInboxMarkSession(
   ctx: LibSwampContext,
   deps: InboxReadDeps,

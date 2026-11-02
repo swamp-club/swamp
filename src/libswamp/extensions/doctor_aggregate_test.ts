@@ -77,7 +77,6 @@ function makeTestExtension(
 
 Deno.test("buildAggregateState: counts each RowState tag correctly", async () => {
   await withTempDir(async (dir) => {
-    // Create source files for non-terminal states so they aren't catalog orphans.
     const srcPath = join(dir, "extensions", "models", "test.ts");
     await ensureDir(join(dir, "extensions", "models"));
     await Deno.writeTextFile(srcPath, "// test");
@@ -124,7 +123,6 @@ Deno.test("buildAggregateState: detects catalog orphans when source missing", as
       "fp-test",
     );
 
-    // Source file does NOT exist on disk — this is a catalog orphan.
     const sources = [
       makeTestSource(dir, "extensions/models/missing.ts", {
         tag: "Indexed",
@@ -146,7 +144,6 @@ Deno.test("buildAggregateState: detects catalog orphans when source missing", as
 
 Deno.test("enumerateBundleFiles: finds .js files in bundle directories", async () => {
   await withTempDir(async (dir) => {
-    // Create a bundle file.
     const bundleDir = join(dir, ".swamp", "bundles", "abc12345");
     await ensureDir(bundleDir);
     await Deno.writeTextFile(join(bundleDir, "model.js"), "// bundle");
@@ -160,7 +157,6 @@ Deno.test("enumerateBundleFiles: finds .js files in bundle directories", async (
 
 Deno.test("enumerateBundleFiles: handles missing bundle directories gracefully", async () => {
   await withTempDir(async (dir) => {
-    // No .swamp directory at all.
     const files = await enumerateBundleFiles(dir);
     assertEquals(files.length, 0);
   });
@@ -168,12 +164,10 @@ Deno.test("enumerateBundleFiles: handles missing bundle directories gracefully",
 
 Deno.test("buildAggregateState: detects bundle orphans", async () => {
   await withTempDir(async (dir) => {
-    // Create a bundle file that is NOT referenced by any catalog row.
     const bundleDir = join(dir, ".swamp", "bundles", "orphan-ns");
     await ensureDir(bundleDir);
     await Deno.writeTextFile(join(bundleDir, "orphan.js"), "// orphan");
 
-    // Empty extension set — no catalog rows reference anything.
     const report = await buildAggregateState({
       extensions: [],
       repoDir: dir,
@@ -186,8 +180,6 @@ Deno.test("buildAggregateState: detects bundle orphans", async () => {
 
 Deno.test("buildAggregateState: source-mounted bundle not reported as orphan", async () => {
   await withTempDir(async (dir) => {
-    // Create a bundle file under .swamp/bundles/ for a source-mounted
-    // extension (source path is outside the repo root).
     const bundleDir = join(dir, ".swamp", "bundles", "a1b2c3d4", "models");
     await ensureDir(bundleDir);
     const bundleFile = join(bundleDir, "ext_model.js");
@@ -195,8 +187,6 @@ Deno.test("buildAggregateState: source-mounted bundle not reported as orphan", a
 
     const bundle = makeBundleLocation(bundleFile, "fp-ext");
 
-    // The source file is outside the repo root — this simulates a
-    // source-mounted extension.
     const externalSourcePath = "/external/repo/extensions/models/ext_model.ts";
     const source = makeSource({
       id: makeSourceLocation(externalSourcePath, dir),
@@ -286,7 +276,8 @@ Deno.test("enumerateBundleFiles: skips install staging next to bundle namespaces
 
 Deno.test("enumerateBundleFiles: finds bundles in a repo under an ancestor named like a staging dir", async () => {
   await withTempDir(async (parent) => {
-    // Only staging dirs below the bundle kind dir are skipped (swamp-club#3780).
+    // only staging dirs below the bundle kind dir are skipped; the repo path
+    // itself is staging-named
     const dir = join(parent, `.swamp-staging-${crypto.randomUUID()}`, "repo");
     const kindDir = join(dir, ".swamp", "bundles");
     await ensureDir(join(kindDir, "abc12345"));

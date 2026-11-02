@@ -20,10 +20,9 @@
 import { z } from "zod";
 
 /**
- * Persisted input values preserve every own key. Zod's record parser drops
- * `__proto__`, which would turn a pinned input into an apparently new input
- * after loading a cache or run. Object.fromEntries creates own properties
- * without invoking a prototype setter; nested values remain opaque data.
+ * Zod's record parser drops __proto__, which would make a pinned input look new
+ * after loading a cache or run; Object.fromEntries creates own properties
+ * without invoking a prototype setter
  */
 export const InputRecordSchema = z.custom<Record<string, unknown>>(
   (value: unknown) => {

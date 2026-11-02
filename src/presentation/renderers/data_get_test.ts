@@ -228,7 +228,6 @@ Deno.test("JsonDataGetRenderer - utf-8 application/json content is parsed inline
 });
 
 Deno.test("JsonDataGetRenderer - base64 application/json content is not parsed", async () => {
-  // "eyJhIjoxfQ==" is base64 for {"a":1}; it must stay an encoded string.
   const output = await captureRender("json", {
     kind: "completed",
     data: { ...testData, content: "eyJhIjoxfQ==", contentEncoding: "base64" },

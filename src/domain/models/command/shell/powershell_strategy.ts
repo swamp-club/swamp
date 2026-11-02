@@ -27,19 +27,9 @@ import {
 import type { ShellStrategy } from "./shell_strategy.ts";
 
 /**
- * `powershell.exe -NoProfile -Command <cmd>` shell strategy.
- *
- * Selected on native Windows hosts. Uses Windows PowerShell 5.1, which
- * ships with every Windows install since Windows 8 — no extra
- * dependency required, unlike PowerShell 7 (`pwsh.exe`).
- *
- * `-NoProfile` skips loading `$PROFILE` so the invocation is
- * deterministic regardless of the user's PowerShell config. `-Command`
- * accepts the command string as a single argument.
- *
- * Users running POSIX scripts on Windows should run swamp under WSL2.
- * Inside WSL the host OS is `linux` and `PosixShellStrategy` is
- * selected automatically.
+ * Windows PowerShell 5.1 ships with every Windows, unlike pwsh; -NoProfile
+ * keeps the invocation deterministic; POSIX scripts on Windows should run under
+ * WSL2, which selects PosixShellStrategy
  */
 const POWERSHELL_COMPATIBILITY_PREFIX =
   "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; " +

@@ -18,16 +18,8 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * Fixtures for the use-case sync characterization (swamp-club#2860): run a
- * datastore-writing use case through the CLI composition (the real Cliffy
- * command parsed in-process, then `flushDatastoreSync()` as `src/cli/mod.ts`
- * does at teardown) or the serve composition (`handleMessage`, so
- * `connection.ts` applies `withSyncGate`), against a repo wired to an
- * in-memory remote, and observe which paths were marked and what was pushed.
- *
- * Each row gets its own remote and two per-run datastore types — instance
- * "A" (the repo the use case runs in) and "B" (a peer used to settle seeds) —
- * so the op log of one row never mixes with another's.
+ * each row gets its own remote and two per-run datastore types, A (the use
+ * case's repo) and B (a peer that settles seeds), so op logs never mix
  */
 
 import { join } from "@std/path";
@@ -91,54 +83,28 @@ import {
 } from "./serve_request_harness.ts";
 import { withUnscopedWriteGuard } from "./unscoped_write_guard.ts";
 
-/** Which composition a row runs through. */
 export type Composition = "cli" | "serve";
 
-/** The repo context `requireInitializedRepoUnlocked` builds. */
 export type UnlockedRepo = Awaited<
   ReturnType<typeof requireInitializedRepoUnlocked>
 >;
 
-/** Options for {@link withRowRepos}. */
 export interface RowRepoOptions {
-  /** Add `managedConfig: true` under the repos' `datastore:` block. */
   managedConfig?: boolean;
-  /** Options for the row's in-memory remote. */
   remote?: InMemoryRemoteOptions;
-  /**
-   * Give both repos' providers the remote's `datastoreControlPlaneStore`.
-   * Needs `remote.controlPlane`.
-   */
   datastoreControlPlane?: boolean;
 }
 
-/** One row's remote, its two repos, and A's open repo context. */
 export interface RowRepos {
   remote: InMemoryRemote;
   repoA: string;
   repoB: string;
-  /**
-   * A per-run model type with a no-op read method, `noop`, and a no-op
-   * update, `touch`, which a run takes model locks for.
-   */
   modelType: ModelType;
-  /**
-   * A's repository context, with the markDirty hook wired to A's sync
-   * service. Seeds go through it; the serve composition uses it as serve's
-   * one shared context.
-   */
   a: UnlockedRepo;
-  /** {@link a} in the shape the serve harness takes. */
   serveRepo: ServeRepo;
-  /**
-   * The remote op-log length at each release of one of A's datastore locks
-   * and at each exit from serve's sync gate, in order: where a push sits
-   * relative to the lock or gate it ran under.
-   */
   releases: number[];
 }
 
-/** The marker line `withRowRepos` appends for `managedConfig`. */
 const MANAGED_CONFIG_LINE = "  managedConfig: true";
 
 async function initRepo(
@@ -165,18 +131,10 @@ async function initRepo(
   }
 }
 
-/** The datastore cache directory of a repo wired by {@link withRowRepos}. */
 export function cacheDir(repoDir: string): string {
   return join(repoDir, ".test-cache");
 }
 
-/**
- * Runs `fn` against a fresh remote and two repos, A and B, each on its own
- * per-run datastore type connecting to that remote as instance "A" or "B".
- * Everything is torn down in a `finally`: pending syncs are flushed, both
- * datastore types and the model type are unregistered, and the temp dir is
- * removed.
- */
 export async function withRowRepos(
   options: RowRepoOptions,
   fn: (repos: RowRepos) => Promise<void>,
@@ -220,8 +178,8 @@ export async function withRowRepos(
       },
     },
   });
-  // The CLI resolves a --repo-dir through a symlink (swamp-club#3552), and
-  // the macOS temp dir is one, so the fixture spells its repos that way too.
+  // the CLI resolves a --repo-dir through a symlink and the macOS temp dir is
+  // one, so the fixture spells its repos that way
   const dir = await Deno.realPath(
     await Deno.makeTempDir({ prefix: "swamp-usecase-sync-" }),
   );
@@ -235,8 +193,8 @@ export async function withRowRepos(
       repoDir: repoA,
       outputMode: "json",
     });
-    // A hooked write from production code that takes signalChange's hook
-    // fallback fails the test, seeds included (swamp-club#3056).
+    // a hooked write from production code that takes signalChange's hook
+    // fallback fails the test, seeds included
     await withUnscopedWriteGuard(() =>
       fn({
         remote,
@@ -269,10 +227,8 @@ export async function withRowRepos(
 }
 
 /**
- * Lands every seed on the remote before the baseline: flushes any
- * registered sync, pushes A's pending marks, and pulls them into B. Without
- * it a seed never reaches the remote, and a delete shows as deleting
- * nothing.
+ * without it a seed never reaches the remote, and a delete shows as deleting
+ * nothing
  */
 export async function settle(repos: RowRepos): Promise<void> {
   await flushDatastoreSync();
@@ -282,15 +238,12 @@ export async function settle(repos: RowRepos): Promise<void> {
     .pullChanged();
 }
 
-/** Where the op log and remote content stood before a use case ran. */
 export interface Baseline {
   opCount: number;
   files: ReadonlyMap<string, Uint8Array>;
-  /** How many lock releases and gate exits had been recorded. */
   releaseCount: number;
 }
 
-/** Snapshots the op log length and remote content. */
 export function baseline(repos: RowRepos): Baseline {
   return {
     opCount: repos.remote.ops().length,
@@ -300,10 +253,8 @@ export function baseline(repos: RowRepos): Baseline {
 }
 
 /**
- * A's push, prepare, commit and pull ops since `base`, in order, with
- * `release` wherever one or more lock releases or gate exits came between
- * them. Pins how many pushes a composition makes and where they sit relative
- * to the lock (CLI) or sync gate (serve) they run under.
+ * pins how many pushes a composition makes and where they sit relative to the
+ * lock (CLI) or sync gate (serve) they run under
  */
 export function syncOrder(repos: RowRepos, base: Baseline): string[] {
   const ops = repos.remote.ops();
@@ -325,7 +276,6 @@ export function syncOrder(repos: RowRepos, base: Baseline): string[] {
   return order;
 }
 
-/** What a use case did to the datastore, normalised for pinning. */
 export interface Observation {
   /**
    * Instance A's sync operations, in order: `markDirty <path>` for a path
@@ -333,19 +283,14 @@ export interface Observation {
    * `<op>[<paths> del <deleted>]` for push, prepare, commit and pull.
    */
   ops: string[];
-  /** Remote keys the use case added, removed or rewrote, sorted. */
   remote: { added: string[]; removed: string[]; changed: string[] };
-  /** The refusal message, for a row pinned as refused. */
   error?: string;
 }
 
 const UUID = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/g;
-/** The start-time stamp in an output file name. */
 const OUTPUT_STAMP = /\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-\d{3}Z/g;
-/** The random suffix `access grant create` gives a grant's instance name. */
 const GRANT_INSTANCE = /\bgrant-[0-9a-f]{8}\b/g;
 
-/** Replaces per-run ids, names and timestamps in a path or message. */
 export function normalisePath(repos: RowRepos, path: string): string {
   return path
     .replaceAll(repos.modelType.normalized, "<type>")
@@ -358,7 +303,6 @@ function sameBytes(a: Uint8Array, b: Uint8Array): boolean {
   return a.length === b.length && a.every((byte, i) => byte === b[i]);
 }
 
-/** Observes what happened on the remote since `base`. */
 export function observe(repos: RowRepos, base: Baseline): Observation {
   const norm = (path: string) => normalisePath(repos, path);
   const ops = repos.remote.ops().slice(base.opCount)
@@ -392,7 +336,6 @@ export function observe(repos: RowRepos, base: Baseline): Observation {
   };
 }
 
-/** The one part of the root command the rows use. */
 interface CliRoot {
   parse(args: string[]): Promise<unknown>;
 }
@@ -422,9 +365,9 @@ function root(): CliRoot {
 }
 
 /**
- * Replaces `Deno.stdin` for `fn` with a non-terminal stream of `content`,
- * as a piped `swamp model edit < file` sees it. Without it, a non-TTY test
- * stdin sends the edit commands down the editor path.
+ * a non-TTY test stdin would send the edit commands down the editor path, so
+ * this gives a non-terminal stream of `content` as piped `swamp model edit <
+ * file` sees
  */
 export async function withStdin<T>(
   content: string | null,
@@ -453,18 +396,11 @@ export async function withStdin<T>(
   }
 }
 
-/** A CLI invocation: argv after `swamp`, and optional piped stdin. */
 export interface CliInvocation {
   args: string[];
   stdin?: string;
 }
 
-/**
- * Parses the real command in-process, then flushes registered syncs as
- * `src/cli/mod.ts` does at teardown, or best-effort when the command threw,
- * as its error path does. Returns what the command logged to stdout.
- * Asserts the command left `Deno.exitCode` unchanged.
- */
 export async function runCli(invocation: CliInvocation): Promise<string[]> {
   if (outsideSeedRoot !== undefined) {
     const outside = outsideSeedRoot;
@@ -474,14 +410,12 @@ export async function runCli(invocation: CliInvocation): Promise<string[]> {
 }
 
 /**
- * Runs a seed's own CLI and serve calls outside the root unit of work a v3
- * row opens around its seed (`usecase_v3_fixtures.ts`), in the context that
- * was current before it opened: in production a command or request never
- * runs inside another one's root. Undefined outside such a seed.
+ * runs a seed's own CLI and serve calls outside the root unit a v3 row opens
+ * around its seed, since in production a command or request never runs inside
+ * another one's root
  */
 let outsideSeedRoot: (<T>(fn: () => Promise<T>) => Promise<T>) | undefined;
 
-/** Sets {@link outsideSeedRoot} for the duration of `fn`. */
 export async function withOutsideSeedRoot<T>(
   outside: <U>(fn: () => Promise<U>) => Promise<U>,
   fn: () => Promise<T>,
@@ -531,12 +465,6 @@ async function runCliHere(invocation: CliInvocation): Promise<string[]> {
   return stdout;
 }
 
-/**
- * Parses the real command in-process and returns the error it threw, then
- * flushes registered syncs best-effort, as `src/cli/mod.ts` does when a
- * command fails. Fails when the command resolved. What the command logged
- * to stdout is appended to `stdout` when given.
- */
 export async function runCliRejecting(
   invocation: CliInvocation,
   stdout?: string[],
@@ -564,20 +492,12 @@ export async function runCliRejecting(
   }
 }
 
-/** How an in-process command ended, from {@link runCliCapturing}. */
 export interface CapturedCli {
-  /** What the command wrote to stdout through the console, in order. */
   readonly stdout: string[];
-  /** The error the command threw, if it threw. */
   readonly error: unknown;
-  /** The exit code the command set (0 when it set none). */
   readonly exitCode: number;
 }
 
-/**
- * Parses the real command in-process and reports how it ended, whether it
- * threw or only set a failing exit code, with what it wrote to stdout.
- */
 export async function runCliCapturing(
   invocation: CliInvocation,
 ): Promise<CapturedCli> {
@@ -611,17 +531,11 @@ export async function runCliCapturing(
   return { stdout, error, exitCode };
 }
 
-/** A serve request type and payload. */
 export interface ServeInvocation {
   type: string;
   payload: Record<string, unknown>;
 }
 
-/**
- * Builds serve's connection context over A: the shared sync service, a real
- * sync gate, an active run registry, and the managed definitions dir under
- * `managedConfig`.
- */
 export function serveCtx(
   repos: RowRepos,
   options: { activeRunRegistry?: ActiveRunRegistry } = {},
@@ -643,10 +557,6 @@ export function serveCtx(
   });
 }
 
-/**
- * Serve's real sync gate (`createSyncGate` builds a plain
- * {@link ReadWriteLock}), recording each exit in {@link RowRepos.releases}.
- */
 export class ObservedSyncGate extends ReadWriteLock {
   readonly #repos: RowRepos;
 
@@ -666,7 +576,6 @@ export class ObservedSyncGate extends ReadWriteLock {
   }
 }
 
-/** Sends one request through `handleMessage`; asserts it did not fail. */
 export async function runServe(
   ctx: ConnectionContext,
   invocation: ServeInvocation,
@@ -695,62 +604,38 @@ async function runServeHere(
   return frames;
 }
 
-/**
- * One use case. `seed` runs before the settle step and its result reaches
- * the invocation builders; a `null` builder means the use case has no entry
- * point in that composition.
- */
 export interface UseCaseRow<S = void> {
   name: string;
   options?: RowRepoOptions;
-  /**
-   * Skip the settle step, for a row whose seed is the very change the use
-   * case publishes.
-   */
   noSettle?: boolean;
-  /** The CLI is expected to refuse: its error message is observed. */
   refuses?: boolean;
   /**
-   * The use case marks paths from parallel writes, so the order of each run
-   * of consecutive path marks is filesystem timing, not behaviour: compare
-   * those runs sorted. Their position among other ops stays pinned.
+   * parallel writes mark paths in filesystem order, so compare each run of
+   * consecutive path marks sorted; their position among other ops stays pinned
    */
   parallelMarks?: boolean;
   /**
-   * Marks the composition makes outside any use case's unit of work (hand
-   * marks pinned in `PINNED_MARK_CALL_SITES`), as observed op strings. The
-   * hook-identity check removes them before comparing the remaining marks
-   * with what the use cases' units staged. Each entry names its pinned site.
+   * marks made outside any use case's unit of work, removed before the
+   * hook-identity comparison; each entry names its pinned site
    */
   outsideUseCase?: Partial<Record<Composition, string[]>>;
-  /**
-   * The composition runs in one root unit of work (`runInRootUnitOfWork`,
-   * swamp-club#3032). The harness then also checks that the root staged every
-   * mark the row made, and that {@link syncOrder} matches the row's pin.
-   */
   rootUnit?: Partial<Record<Composition, true>>;
   /**
-   * How many root units a `rootUnit` composition opens; 1 when unset. More
-   * than one only where each run of the operation is its own root: the
-   * managed lockfile transaction opens one per outermost run, so a CLI
-   * `extension rm` opens one for its preview refresh and one for the
-   * removal (swamp-club#3192).
+   * more than one only where each run is its own root, e.g. the managed
+   * lockfile transaction opens one per outermost run, so a CLI extension rm
+   * opens two
    */
   rootUnits?: Partial<Record<Composition, number>>;
   /**
-   * {@link syncOrder} for each composition switched to a root unit, recorded
-   * from the composition before it adopted the root, so adopting it cannot
-   * move a push across a lock release or gate exit. A composition not yet
-   * in a root unit is checked against its pin too, so the pin is recorded
-   * from the code before the switch.
+   * recorded before the composition adopted the root, so adopting it cannot
+   * move a push across a lock release or gate exit; compositions not yet in a
+   * root unit are checked too
    */
   syncOrder?: Partial<Record<Composition, string[]>>;
   seed?: (repos: RowRepos, composition: Composition) => Promise<S>;
   cli: ((repos: RowRepos, seed: S) => CliInvocation) | null;
   serve: ((repos: RowRepos, seed: S) => ServeInvocation) | null;
-  /** Serve context overrides, for rows that own the active run registry. */
   serveCtx?: (seed: S) => { activeRunRegistry?: ActiveRunRegistry };
-  /** Asserts the use case did its local work, after it ran. */
   verify?: (
     repos: RowRepos,
     seed: S,
@@ -758,21 +643,17 @@ export interface UseCaseRow<S = void> {
   ) => Promise<void>;
 }
 
-/** A row with its seed type erased, so rows of any seed type share a table. */
 export type AnyRow = UseCaseRow<unknown>;
 
-/** Erases a row's seed type; the seed only ever flows back into the row. */
 export function row<S>(definition: UseCaseRow<S>): AnyRow {
   return definition as unknown as AnyRow;
 }
 
-/** A row's pinned observations; `null` where the composition has no entry. */
 export interface PinnedRow {
   cli: Observation | null;
   serve: Observation | null;
 }
 
-/** Runs one row through one composition and observes it. */
 export async function runRow<S>(
   row: UseCaseRow<S>,
   composition: Composition,
@@ -835,18 +716,15 @@ export async function runRow<S>(
   return observation!;
 }
 
-/** A unit of work opened during a row, with the role production gave it. */
 export interface CapturedUnit {
   unit: UnitOfWork;
   role: BoundUnitOfWorkOptions["role"];
 }
 
 /**
- * Runs `fn` with every repository-bound unit of work built in reject mode,
- * so a change staged after its unit ended fails the row, and returns the
- * units opened, in opening order. The factory receives the exact hook, flush
- * and parent production chose, so a unit bound to the wrong hook collects
- * nothing and fails the comparison below, and children still roll up.
+ * reject mode makes a change staged after its unit ended fail the row; the
+ * factory gets the hook, flush and parent production chose, so a wrongly bound
+ * unit collects nothing
  */
 export async function captureUnits(
   fn: () => Promise<void>,
@@ -862,8 +740,8 @@ export async function captureUnits(
     return unit;
   });
   try {
-    // A hooked write from production code that takes signalChange's hook
-    // fallback fails the row (swamp-club#3056).
+    // a hooked write from production code that falls back to signalChange's
+    // hook fails the row
     await withUnscopedWriteGuard(fn);
   } finally {
     dispose();
@@ -871,7 +749,6 @@ export async function captureUnits(
   return units;
 }
 
-/** The observed op string a staged change causes, or undefined if none. */
 function markFor(
   repos: RowRepos,
   change: ReturnType<UnitOfWork["staged"]>[number],
@@ -887,7 +764,6 @@ function markFor(
     : `markDirty ${normalisePath(repos, rel)}`;
 }
 
-/** The op strings a unit's staged changes cause, in staging order. */
 function marksOf(repos: RowRepos, unit: UnitOfWork): string[] {
   return unit.staged().map((change) => markFor(repos, change)).filter(
     (mark): mark is string => mark !== undefined,
@@ -895,9 +771,8 @@ function marksOf(repos: RowRepos, unit: UnitOfWork): string[] {
 }
 
 /**
- * The bound use-case units no other use-case unit contains. A nested use
- * case's unit is a child that rolls its changes up into its parent
- * (swamp-club#3032), so counting it as well would count its marks twice.
+ * a nested use case's unit rolls its changes up into its parent, so counting it
+ * too would count its marks twice
  */
 function outermostUseCaseUnits(
   units: readonly CapturedUnit[],
@@ -922,12 +797,6 @@ function outermostUseCaseUnits(
   );
 }
 
-/**
- * Hook identity (swamp-club#3025): every mark the row made inside a use
- * case was staged by a unit of work the use case opened, and each unit's
- * changes reached the remote in the order it staged them. Marks the row
- * declares in `outsideUseCase` are removed first, and each must occur.
- */
 function assertUnitsStagedTheirMarks(
   row: Pick<AnyRow, "name" | "outsideUseCase" | "parallelMarks">,
   composition: Composition,
@@ -970,13 +839,6 @@ function assertUnitsStagedTheirMarks(
   }
 }
 
-/**
- * Root unit (swamp-club#3032): the composition opened exactly one root unit
- * (or the row's {@link UseCaseRow.rootUnits}); together, in opening order,
- * they staged every mark the row made, use case or not, in the order they
- * reached the remote; and the row's pushes sit where its pinned
- * {@link syncOrder} says relative to lock releases and gate exits.
- */
 export function assertRootUnit(
   row: Pick<AnyRow, "name" | "parallelMarks" | "syncOrder" | "rootUnits">,
   composition: Composition,
@@ -1027,7 +889,6 @@ export function assertRootUnit(
   );
 }
 
-/** Sorts each run of consecutive path marks in place. */
 function sortPathMarkRuns(ops: string[]): void {
   const isPathMark = (op: string) => op.startsWith("markDirty ");
   for (let start = 0; start < ops.length;) {
@@ -1043,9 +904,8 @@ function sortPathMarkRuns(ops: string[]): void {
 }
 
 /**
- * The marks a read run's publish lock makes outside the use case: its push
- * stages each report version and its latest marker again before uploading
- * (swamp-club#3146, swamp-club#3934).
+ * a read run's push stages each report version and latest marker again before
+ * uploading
  */
 export const READ_RUN_PUBLISH_MARKS = [
   "markDirty data/<type>/<id>/report-swamp-method-summary-json/1",
@@ -1054,12 +914,6 @@ export const READ_RUN_PUBLISH_MARKS = [
   "markDirty data/<type>/<id>/report-swamp-method-summary/latest",
 ];
 
-/**
- * Registers one step per row and composition, comparing each observation
- * with its pinned entry. Every row must have a pinned entry, and a
- * composition is pinned `null` exactly when the row has no entry point
- * there.
- */
 async function checkEachRow(
   t: Deno.TestContext,
   rows: AnyRow[],
@@ -1093,8 +947,8 @@ async function checkEachRow(
 }
 
 /**
- * Environment the rows read as unset, so a developer's shell (a serve URL,
- * a repo dir, a datastore override) cannot redirect a CLI row.
+ * a developer's shell (serve URL, repo dir, datastore override) must not
+ * redirect a CLI row
  */
 export const UNSET_ENV: Record<string, undefined> = {
   SWAMP_SERVE_URL: undefined,
@@ -1120,9 +974,8 @@ function refuseFetch(request: Request): Response {
 }
 
 /**
- * Registers one step per row and composition, comparing each observation
- * with its pinned entry, with every network request refused: no row may
- * reach a registry, and a request a row swallowed still fails the test.
+ * every network request is refused, so a request a row swallowed still fails
+ * the test
  */
 export async function checkRows(
   t: Deno.TestContext,

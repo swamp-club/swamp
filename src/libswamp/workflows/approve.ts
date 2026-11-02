@@ -56,22 +56,12 @@ export interface WorkflowApproveData {
   approved: true;
   decidedBy: string;
   reason: string | null;
-  /**
-   * True when this approval decided the run's last pending gate, so the run
-   * is suspended with nothing left awaiting approval or a signal and can be
-   * resumed.
-   * A nested workflow step counts as decided once its child run finished.
-   */
   allGatesDecided: boolean;
   /**
-   * Set by serve on a run a member drives: serve does not resume it, and the
-   * run's owner does (swamp-club#4245).
+   * set by serve on a run a member drives: serve does not resume it, the run's
+   * owner does
    */
   ownerResumes?: boolean;
-  /**
-   * The parent run waiting on this nested run: resume it once this run
-   * finishes (swamp-club#2736).
-   */
   awaitingParent?: AwaitingParentData;
 }
 
@@ -83,14 +73,13 @@ export type WorkflowApproveEvent =
 export interface WorkflowApproveInput {
   workflowIdOrName: string;
   /**
-   * Treat `workflowIdOrName` as a workflow id the caller already resolved,
-   * and look it up by id only, so the decision lands on the workflow the
-   * caller authorized.
+   * look up by id only, so the decision lands on the workflow the caller
+   * authorized
    */
   byId?: boolean;
   /**
-   * With `byId`, the name the caller authorized: ids are not guaranteed
-   * unique, so only a workflow with this name and the id is accepted.
+   * ids are not guaranteed unique, so only a workflow with this name and the id
+   * is accepted
    */
   expectedName?: string;
   stepName: string;
@@ -103,18 +92,13 @@ export interface WorkflowApproveDeps {
   workflowRepo: WorkflowRepository;
   runRepo: WorkflowRunRepository;
   /**
-   * Claims the run for the decision, so it is made on the run as stored and
-   * no other writer saves over it (swamp-club#2919).
+   * claims the run so the decision is made on the run as stored and no other
+   * writer saves over it
    */
   runClaims: WorkflowRunClaims;
-  /**
-   * What cancelling a nested run nothing waits on any more needs beyond the
-   * repositories (swamp-club#2867). All optional.
-   */
   findEvaluatedWorkflow?: EvaluatedWorkflowLookup;
   runTracker?: RunTrackerRepository;
   runRecordCurrency?: RunRecordCurrency;
-  /** Fetches a parent run's record this host does not have. */
   fetchMissing?: (
     run: { workflowId: string; runId: string },
   ) => Promise<void>;
@@ -128,15 +112,10 @@ export function createWorkflowApproveDeps(
   return { workflowRepo, runRepo, runClaims };
 }
 
-/** A decision saved under the run's claim, or the refusal to make it. */
 type ApproveOutcome =
   | { error: SwampError }
   | { run: WorkflowRun; workflowName: string; decidedBy: string };
 
-/**
- * Records the approval on the run as read now. The caller holds the run's
- * claim, so nothing saves between this read and this save.
- */
 async function approveClaimedRun(
   deps: WorkflowApproveDeps,
   input: WorkflowApproveInput,
@@ -260,10 +239,9 @@ export async function* workflowApprove(
           return;
         }
         const { run, workflowName, decidedBy } = outcome;
-        // Whether a nested wait's child finished is derived from the child,
-        // never stored on this run.
-        // The decision is saved: an unreadable linked run must not turn it
-        // into an error, so these reads are best effort.
+        // whether a nested wait's child finished is derived from the child,
+        // never stored; the decision is already saved, so an unreadable linked
+        // run must not turn it into an error
         const allGatesDecided = run.status === "suspended" &&
           run.findWaitingApprovalStep() === undefined &&
           run.findSignalWaits().length === 0 &&

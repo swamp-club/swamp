@@ -32,10 +32,6 @@ const arbContributor: fc.Arbitrary<ExtensionContributor> = fc.record({
   pulled: fc.boolean(),
 });
 
-/**
- * Replays the attach loop's decision rule: the first contributor claims the
- * member, and each later one replaces the holder only when it outranks it.
- */
 function winnerByAttachOrder(
   order: readonly ExtensionContributor[],
 ): ExtensionContributor {
@@ -74,7 +70,6 @@ Deno.test("compareExtensionPrecedence: the winner does not depend on attach orde
       fc.nat(),
       (contributors, seed) => {
         const expected = [...contributors].sort(compareExtensionPrecedence)[0];
-        // Deterministic shuffle driven by the generated seed.
         const shuffled = [...contributors];
         let s = seed;
         for (let i = shuffled.length - 1; i > 0; i--) {

@@ -45,9 +45,6 @@ export interface WorkflowGetStepDependency {
   condition: TriggerConditionData;
 }
 
-/**
- * Data structure for the workflow get output.
- */
 export interface WorkflowGetData {
   id: string;
   name: string;
@@ -79,11 +76,8 @@ export type WorkflowGetEvent =
   | { kind: "completed"; data: WorkflowGetData }
   | { kind: "error"; error: SwampError };
 
-/** Dependencies for the workflow get operation. */
 export interface WorkflowGetDeps {
-  /** Looks up by name, then by exact id. */
   findWorkflow: (idOrName: string) => Promise<Workflow | null>;
-  /** Looks up by exact id only; required for a `byId` request. */
   findWorkflowById?: (
     id: string,
     expectedName?: string,
@@ -91,7 +85,6 @@ export interface WorkflowGetDeps {
   getWorkflowPath: (id: WorkflowId) => string;
 }
 
-/** Wires real infrastructure into WorkflowGetDeps. */
 export function createWorkflowGetDeps(
   workflowRepo: WorkflowRepository,
 ): WorkflowGetDeps {
@@ -103,7 +96,6 @@ export function createWorkflowGetDeps(
   };
 }
 
-/** Retrieves workflow details by ID or name. */
 export async function* workflowGet(
   _ctx: LibSwampContext,
   deps: WorkflowGetDeps,
@@ -164,5 +156,4 @@ export async function* workflowGet(
   );
 }
 
-/** Checks if a string looks like a UUID. */
 export { isUuid };

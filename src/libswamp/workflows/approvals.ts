@@ -53,15 +53,7 @@ export interface PendingApproval {
   suspendedAt: string | undefined;
   prompt: string | undefined;
   inputs: Readonly<Record<string, unknown>>;
-  /**
-   * Who started the run, as the run recorded it: the same string its history
-   * shows. Absent when the run recorded no one (swamp-club#3697).
-   */
   initiatedBy?: string;
-  /**
-   * On a nested workflow's run, the parent step that started it
-   * (swamp-club#2736).
-   */
   parentRun?: {
     workflowId: string;
     workflowName: string;
@@ -74,27 +66,19 @@ export interface PendingApproval {
    */
   parentWaiting?: boolean;
   /**
-   * With `parentRun`: true once a run above this one ended or moved on to
-   * another run, so the gate can no longer be decided and the run is
-   * cancelled when it is next touched (swamp-club#2867).
+   * with parentRun: true once a run above this one ended or moved on, so the
+   * gate cannot be decided and the run is cancelled when next touched
    */
   parentEnded?: boolean;
   /**
-   * With `parentRun`: true when a run above this one has no record on the
-   * host that listed it. Approve, reject and resume are refused while there
-   * is none; a serve instance fetches the record from the datastore before
-   * it refuses. The run can still be cancelled (swamp-club#2867).
+   * with parentRun: true when a run above this one has no record on the listing
+   * host; approve, reject and resume are refused (serve fetches the record from
+   * the datastore first), cancel still works
    */
   parentMissing?: boolean;
-  /** A serve instance started the run, so its cancel goes through serve. */
   serveStarted?: boolean;
 }
 
-/**
- * An expired gate: a `manual_approval` step past its timeout on a run that
- * is still suspended. It can no longer be approved or rejected, only
- * cancelled.
- */
 export interface ExpiredApproval {
   workflowId: string;
   workflowName: string;
@@ -102,20 +86,15 @@ export interface ExpiredApproval {
   stepName: string;
   suspendedAt: string;
   timeoutSeconds: number;
-  /** When the gate expired: `suspendedAt` plus the timeout. */
   expiredAt: string;
-  /** A serve instance started the run, so only a serve cancel clears it. */
   serveStarted: boolean;
-  /** On a nested workflow's run, the parent step that started it. */
   parentRun?: {
     workflowId: string;
     workflowName: string;
     runId: string;
     stepName: string;
-    /** A serve instance started the parent run. */
     serveStarted: boolean;
   };
-  /** With `parentRun`: whether the parent still waits on this run. */
   parentWaiting?: boolean;
 }
 
@@ -133,8 +112,8 @@ export interface WorkflowApprovalsDeps {
   workflowRepo: WorkflowRepository;
   runRepo: WorkflowRunRepository;
   /**
-   * The workflow's suspended runs. The listing passes its context's signal,
-   * so a cancelled request stops reading them (swamp-club#4088).
+   * the listing passes its context's signal so a cancelled request stops
+   * reading the runs
    */
   findSuspendedRuns?: (
     workflowId: WorkflowId,

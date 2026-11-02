@@ -17,33 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Serve's pollers against a real catalog, a real policy loader and a peer
- * (swamp-club#2863). Repo A is the serve side S: its shared sync service and
- * its `repoContext.catalogStore`, plus, in scenario 6, one sync gate shared
- * by the poller and S's gated requests. Repo B is the peer P, writing into
- * its own cache and pushing to the same in-memory remote. Each poller is
- * wired as `src/cli/commands/serve.ts` wires it (`catalogInvalidate` runs
- * `repoContext.catalogStore.invalidate()`), and each scenario checks what
- * S's `DataQueryService`, definition repository or `PolicySnapshotLoader`
- * return after one poll cycle. The later serve-leader phase replaces these pollers
- * with a commit feed and has to match this behaviour. The end-to-end
- * counterpart is swamp-uat#491.
- *
- * A poller only exposes `start()`/`stop()` on an interval, so "one cycle"
- * is a short interval, `waitFor` on the pulls the sync wrapper saw finish,
- * then `stop()`, which waits for the cycle's invalidation and policy reload.
- *
- * Today's behaviour is pinned, gaps included: an observation that differs
- * from what a user would expect must equal today's outcome and have its key
- * in {@link PINNED_GAPS}, so a fix forces this file to change on purpose.
- *
- * Drift from the issue text: a peer's delete is not visible after one poll,
- * because the pull leaves removals out of its count (swamp-club#2892) and an
- * invalidated catalog never removes rows (ADDITIVE BACKFILL, see
- * `integration/datastore_peer_propagation_test.ts`). Scenario 2 pins it.
- */
-
 import "../src/domain/models/models.ts";
 import { assert, assertEquals, equal } from "@std/assert";
 import { relative } from "@std/path";
@@ -93,26 +66,13 @@ import {
 await initializeLogging({});
 
 /**
- * Today's gaps, one key per observation that differs from what a user would
- * expect. Keys start with the scenario number. The causes:
- *
- * - UNCOUNTED REMOVAL (swamp-club#2892): a pull removes the local copy of a
- *   file a peer deleted but leaves it out of its count, so a delete-only
- *   pull returns 0 and RuntimeDataPoller does not invalidate. S's populated
- *   catalog keeps listing the row; an invalidation would not remove it
- *   either (ADDITIVE BACKFILL: backfill only upserts).
- * - VOID AS ZERO: AccessDataPoller and RuntimeDataPoller read a void pull
- *   result as 0 (access_data_poller.ts, runtime_data_poller.ts `typeof
- *   result === "number" ? result : 0`), while ConfigPoller and the sync
- *   contract read it as "changed, count unknown". After a void pull the
- *   pulled files are on disk but S neither invalidates nor reloads policy.
+ * observations that differ from what a user would expect, pinned to today's
+ * outcome so a fix forces this list to change on purpose
  */
 const PINNED_GAPS: readonly string[] = [
-  // UNCOUNTED REMOVAL (swamp-club#2892).
   "s2 delete: the poller does not invalidate after a delete-only pull",
   "s2 delete: S's query still lists the row P deleted",
   "s2 delete: S's latest lookup still returns the row P deleted",
-  // VOID AS ZERO.
   "s5 void: RuntimeDataPoller does not invalidate",
   "s5 void: S's query misses P's row",
   "s5 void: AccessDataPoller does not invalidate",
@@ -149,12 +109,6 @@ const POLL_INTERVAL_MS = 20;
 const PEER_MODEL = "peer-model";
 const PEER_MODEL_ID = crypto.randomUUID();
 
-/**
- * S's sync service as the pollers and handlers see it: every call reaches
- * the real service, the pulls that finished are counted, a pull can report
- * a void count, and any pull that overlaps a push (single- or two-phase) is
- * recorded.
- */
 interface CountingSyncService extends DatastoreSyncService {
   pullsCompleted: number;
   voidPulls: boolean;
@@ -212,7 +166,6 @@ function countingSyncService(
   return service;
 }
 
-/** S: repo A's context, its wrapped sync service and an invalidation count. */
 interface Serve {
   repos: RowRepos;
   ctx: UnlockedRepo;
@@ -241,10 +194,6 @@ interface Poller {
   stop(): Promise<void>;
 }
 
-/**
- * Starts `poller`, waits until `cycles` more pulls finished, and stops it,
- * which waits for the cycle's invalidation and any policy reload.
- */
 async function runCycles(
   poller: Poller,
   sync: CountingSyncService,
@@ -262,10 +211,6 @@ async function runCycles(
   }
 }
 
-/**
- * Opens P (repo B), runs `fn`, pushes what it marked through B's own sync
- * service, as a peer serve's handler does, and closes its catalog.
- */
 async function onPeer(
   repos: RowRepos,
   fn: (peer: UnlockedRepo) => Promise<void>,
@@ -307,7 +252,6 @@ async function peerSave(
   );
 }
 
-/** What S's catalog returns for the peer's model, as `name@version`. */
 async function serveView(
   s: Serve,
   name: string,
@@ -338,18 +282,13 @@ function runtimePoller(s: Serve, gate?: ReadWriteLock): RuntimeDataPoller {
   });
 }
 
-// ---------------------------------------------------------------------------
-// Scenarios 1 and 2: runtime data
-
 Deno.test("RuntimeDataPoller: s1 a peer's write becomes visible to S's queries after one poll", async () => {
   await withRowRepos({}, async (repos) => {
     const s = serveSide(repos);
-    // S's catalog is populated before P writes.
     assertEquals(await serveView(s, "x"), { latest: null, query: [] });
 
     await onPeer(repos, (peer) => peerSave(repos, peer, "x"));
     assert(remotePeerKeys(repos).length > 0, "P's push reached the remote");
-    // Negative control: nothing on S changes until a poll pulls.
     assertEquals(await serveView(s, "x"), { latest: null, query: [] });
 
     await runCycles(runtimePoller(s), s.sync);
@@ -362,7 +301,6 @@ Deno.test("RuntimeDataPoller: s2 a peer's delete after one poll, and a gated han
   const gaps: string[] = [];
   await withRowRepos({}, async (repos) => {
     const s = serveSide(repos);
-    // S's own model, which the handler write below renames.
     const own = await saveModel(repos.serveRepo, "m1");
     await saveData(repos.serveRepo, own, "state");
     await onPeer(repos, (peer) => peerSave(repos, peer, "x"));
@@ -405,7 +343,7 @@ Deno.test("RuntimeDataPoller: s2 a peer's delete after one poll, and a gated han
       null,
       "x@1",
     );
-    // The pull did remove S's copy (swamp-club#2999): only the catalog lags.
+    // the pull did remove S's copy: only the catalog lags
     assertEquals(
       await repos.a.repoContext.unifiedDataRepo.findByName(
         repos.modelType,
@@ -415,8 +353,8 @@ Deno.test("RuntimeDataPoller: s2 a peer's delete after one poll, and a gated han
       null,
     );
 
-    // A gated handler write on S, then its push (swamp-club#2247): the
-    // deleted item stays off the remote and P never sees it again.
+    // a gated handler write on S, then its push: the deleted item stays off the
+    // remote and P never sees it again
     const ctx = createServeCtx(repos.serveRepo, undefined, {
       syncService: s.sync,
       syncGate: new ReadWriteLock(),
@@ -442,9 +380,6 @@ Deno.test("RuntimeDataPoller: s2 a peer's delete after one poll, and a gated han
   });
   assertGaps(gaps, "s2");
 });
-
-// ---------------------------------------------------------------------------
-// Scenario 3: access
 
 const GRANTEE: AccessPrincipal = {
   principal: { kind: "user", id: "peer-grantee" },
@@ -531,7 +466,6 @@ Deno.test("AccessDataPoller: s3 a peer's grant and its revocation reach S's poli
         repos,
         (peer) => peerSaveGrant(peer, peerGrant(grantId, "active")),
       );
-      // Negative control: S's policy is unchanged until a poll.
       assertEquals(decision(loader), "deny");
       await runCycles(accessPoller(s, loader), s.sync);
       assertEquals(s.invalidations.count, 1);
@@ -551,16 +485,11 @@ Deno.test("AccessDataPoller: s3 a peer's grant and its revocation reach S's poli
   });
 });
 
-// ---------------------------------------------------------------------------
-// Scenario 4: config
-
 const RELOAD_OK: ExtensionReloadResult = { status: "ok", errors: [] };
 
 Deno.test("ConfigPoller: s4 a peer's definition and lockfile changes reach S after one poll each", async () => {
   await withRowRepos({ managedConfig: true }, async (repos) => {
     const s = serveSide(repos);
-    // The lockfile path serve watches (serve.ts takes it from
-    // requireInitializedRepoUnlocked as managedLockfilePath).
     const lockfilePath = s.ctx.lockfilePath;
     let reloads = 0;
     const poller = (bootHash: string | null) =>
@@ -595,7 +524,6 @@ Deno.test("ConfigPoller: s4 a peer's definition and lockfile changes reach S aft
     assertEquals(await findOnServe(), "peer-def");
     assertEquals(reloads, 0, "an unchanged lockfile reloads nothing");
 
-    // P changes the managed lockfile in its config tier and pushes it.
     await onPeer(repos, async (peer) => {
       await Deno.writeTextFile(
         peer.lockfilePath,
@@ -615,9 +543,6 @@ Deno.test("ConfigPoller: s4 a peer's definition and lockfile changes reach S aft
     assertEquals(reloads, 1, "the pulled lockfile change reloads once");
   });
 });
-
-// ---------------------------------------------------------------------------
-// Scenario 5: void pull results
 
 Deno.test("pollers: s5 a void pull result invalidates in ConfigPoller only", async () => {
   const gaps: string[] = [];
@@ -643,7 +568,6 @@ Deno.test("pollers: s5 a void pull result invalidates in ConfigPoller only", asy
     assert(configPulls >= 1);
     assertEquals(s.invalidations.count, configPulls);
     s.invalidations.count = 0;
-    // Repopulate S's catalog so the runtime check starts populated.
     assertEquals(await serveView(s, "x"), { latest: null, query: [] });
 
     await onPeer(repos, (peer) => peerSave(repos, peer, "x"));
@@ -693,10 +617,6 @@ Deno.test("pollers: s5 a void pull result invalidates in ConfigPoller only", asy
   assertGaps(gaps, "s5");
 });
 
-// ---------------------------------------------------------------------------
-// Scenario 6: the sync gate
-
-/** Serve's gate, counting queued exclusive acquisitions. */
 class CountingGate extends ReadWriteLock {
   queuedAcquires = 0;
 
@@ -713,7 +633,6 @@ Deno.test("RuntimeDataPoller: s6 a poll skips while the gate is held, escalates,
     assertEquals(await serveView(s, "x"), { latest: null, query: [] });
     await onPeer(repos, (peer) => peerSave(repos, peer, "x"));
 
-    // Held exclusively, as a gated write request holds it.
     await gate.acquire();
     const held = gate.queuedAcquires;
     const poller = runtimePoller(s, gate);
@@ -729,7 +648,6 @@ Deno.test("RuntimeDataPoller: s6 a poll skips while the gate is held, escalates,
       assertEquals(gate.queuedAcquires - held, 1);
       assertEquals(s.sync.pullsCompleted, 0, "no pull while the gate is held");
 
-      // A later exclusive acquirer waits behind the queued poller.
       const later = gate.acquire().then(() => {
         order.push(`acquired after ${s.sync.pullsCompleted} pull(s)`);
         gate.release();

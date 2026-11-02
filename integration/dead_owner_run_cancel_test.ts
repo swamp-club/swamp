@@ -17,11 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// A run left `running` by a serve process that died is cleared by a cancel
-// through its run id, and the status index follows the record
-// (swamp-club#2518). Wires the real run repository, run tracker and cancel
-// use case on a temp filesystem.
-
 import { assertEquals } from "@std/assert";
 import { join } from "@std/path";
 import { hostname } from "node:os";
@@ -57,8 +52,8 @@ async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
     await fn(tempDir);
   } finally {
     if (Deno.build.os === "windows") {
-      // Best-effort: EBUSY can fire when V8 hasn't GC'd native
-      // sqlite handles yet. Temp dir is ephemeral, OS reclaims.
+      // EBUSY can fire on windows before V8 frees native sqlite handles; the
+      // temp dir is ephemeral
       await Deno.remove(tempDir, { recursive: true }).catch(() => {});
     } else {
       await Deno.remove(tempDir, { recursive: true });

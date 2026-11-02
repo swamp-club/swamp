@@ -90,8 +90,7 @@ export async function modelMethodHistorySearchAction(
         payload: { query },
       },
     );
-    // A remote search prints a plain list and never starts the picker
-    // (swamp-club#3917).
+    // a remote search prints a plain list and never starts the picker.
     const renderer = createModelOutputSearchRenderer(
       interactiveOutputMode(ctx),
       undefined,
@@ -140,7 +139,7 @@ export async function modelMethodHistorySearchAction(
   if (selected) {
     ctx.logger.debug`Selected output: ${selected.id}`;
     const getRenderer = createModelOutputGetRenderer(effectiveMode);
-    // Read the selected run where the list found it (swamp-club#3743).
+    // read the selected run where the list found it.
     const getDeps = await createModelOutputGetDeps(
       repoDir,
       datastoreResolver,
@@ -158,13 +157,11 @@ export async function modelMethodHistorySearchAction(
   ctx.logger.debug("Model method history search command completed");
 }
 
-/** The preferred spelling: `swamp behavior history search`. */
 export const BEHAVIOR_HISTORY_SEARCH_SYNTAX: CommandSyntax = {
   invocation: "swamp behavior history search",
   surface: "behavior",
 };
 
-/** The legacy spelling: `swamp model method history search`. */
 export const MODEL_METHOD_HISTORY_SEARCH_SYNTAX: CommandSyntax = {
   invocation: "swamp model method history search",
   surface: "model",

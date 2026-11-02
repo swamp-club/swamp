@@ -23,39 +23,21 @@ import {
   MODEL_REPORT_SCOPE,
 } from "../terminology/behavior_aliases.ts";
 
-/**
- * The scope at which a report operates.
- */
 export type ReportScope = "method" | "model" | "workflow";
 
-/**
- * A report scope in its stored spelling: `behavior` becomes `model`
- * (swamp-club#3410), and every other value is returned unchanged.
- */
+/** behavior is stored as model; every other scope is returned unchanged */
 export function canonicalReportScope(scope: string): string {
   return scope === BEHAVIOR_REPORT_SCOPE ? MODEL_REPORT_SCOPE : scope;
 }
 
-/**
- * The result produced by a report execution.
- */
 export interface ReportResult {
-  /** Human-readable markdown content. */
   markdown: string;
-  /** Machine-readable structured data. */
   json: Record<string, unknown>;
 }
 
-/**
- * Definition of a report that can be registered and executed.
- */
 export interface ReportDefinition {
-  /** Human-readable description of what the report produces. */
   description: string;
-  /** The scope at which this report operates. */
   scope: ReportScope;
-  /** Labels for filtering (e.g., ["cost", "finops"]). */
   labels?: string[];
-  /** Execute the report and produce results. */
   execute(context: ReportContext): Promise<ReportResult>;
 }

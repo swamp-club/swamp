@@ -23,7 +23,6 @@ import { UserError } from "../../domain/errors.ts";
 import { NoToolConfiguredError } from "../../domain/audit/doctor/check.ts";
 import { VALID_AI_TOOLS } from "../ai_tool_parser.ts";
 
-// Import models barrel to trigger self-registration
 import "../../domain/models/models.ts";
 
 await initializeLogging({});
@@ -44,7 +43,6 @@ Deno.test("doctorAuditCommand has the expected option set", async () => {
   const { doctorAuditCommand } = await import("./doctor_audit.ts");
   const options = doctorAuditCommand.getOptions();
   const names = options.map((o) => o.name);
-  // Must expose --tool and --repo-dir; inherits --json from the global context
   if (!names.includes("tool")) {
     throw new Error(`expected --tool option, got: ${names.join(", ")}`);
   }
@@ -114,7 +112,6 @@ Deno.test(
   "resolveTargetTool: flag value is validated against the AiTool union (rejects garbage)",
   async () => {
     const { resolveTargetTool } = await import("./doctor_audit.ts");
-    // Arbitrary strings must fail validation, not silently pass through
     assertThrows(
       () => resolveTargetTool("not-a-tool", "kiro"),
       UserError,
@@ -180,14 +177,12 @@ Deno.test(
 
 Deno.test(
   "runChildWithAbort: aborting a SIGTERM-respecting child terminates it promptly",
-  // SIGTERM is not a portable kill signal on Windows; the underlying Deno
-  // ChildProcess.kill semantics differ. The bug being fixed is POSIX-only.
+  // SIGTERM is not a portable kill signal on Windows; ChildProcess.kill
+  // semantics differ there
   { ignore: Deno.build.os === "windows" },
   async () => {
     const { runChildWithAbort } = await import("./doctor_audit.ts");
     const controller = new AbortController();
-    // A child that blocks for 30s so we control its lifetime; default
-    // SIGTERM handling exits the child immediately.
     const cmd = makeStdinPipedCommand([
       "eval",
       "await new Promise((r) => setTimeout(r, 30_000));",
@@ -196,13 +191,11 @@ Deno.test(
     setTimeout(() => controller.abort(), 100);
     const result = await runChildWithAbort(cmd, "", controller.signal);
     const elapsed = performance.now() - start;
-    // A well-behaved child dies on SIGTERM in well under a second.
     if (elapsed > 2_000) {
       throw new Error(
         `expected SIGTERM-responding child to exit promptly; took ${elapsed}ms`,
       );
     }
-    // SIGTERM exit on POSIX yields code 143 (128 + 15) or similar non-zero.
     assertEquals(result.exitCode === 0, false);
   },
 );
@@ -213,9 +206,7 @@ Deno.test(
   async () => {
     const { runChildWithAbort } = await import("./doctor_audit.ts");
     const controller = new AbortController();
-    // Child registers a no-op SIGTERM handler so SIGTERM alone won't
-    // terminate it; only SIGKILL will. Tight escalation window keeps the
-    // test fast.
+    // the child registers a no-op SIGTERM handler so only SIGKILL terminates it
     const cmd = makeStdinPipedCommand([
       "eval",
       "Deno.addSignalListener('SIGTERM', () => {}); " +
@@ -227,7 +218,6 @@ Deno.test(
       sigkillAfterMs: 200,
     });
     const elapsed = performance.now() - start;
-    // SIGTERM lands at ~100ms, SIGKILL ~200ms later, plus reaping slack.
     if (elapsed > 2_000) {
       throw new Error(
         `expected SIGKILL escalation to terminate child; took ${elapsed}ms`,

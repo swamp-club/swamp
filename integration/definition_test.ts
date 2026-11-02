@@ -17,15 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Integration tests for the Definition entity with CEL expression evaluation.
- *
- * Tests the full flow:
- * 1. Create definitions with CEL expressions
- * 2. Evaluate expressions
- * 3. Verify evaluated definitions are correct
- */
-
 import { RunSensitiveValues } from "../src/domain/secrets/mod.ts";
 import { assertEquals } from "@std/assert";
 import { existsSync } from "@std/fs";
@@ -42,8 +33,8 @@ async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
     await fn(dir);
   } finally {
     if (Deno.build.os === "windows") {
-      // Best-effort: EBUSY can fire when V8 hasn't GC'd native
-      // sqlite handles yet. Temp dir is ephemeral, OS reclaims.
+      // EBUSY can fire on windows before V8 frees native sqlite handles; the
+      // temp dir is ephemeral
       await Deno.remove(dir, { recursive: true }).catch(() => {});
     } else {
       await Deno.remove(dir, { recursive: true });
@@ -56,7 +47,6 @@ Deno.test("Definition: create and save definition with static attributes", async
     const definitionRepo = new YamlDefinitionRepository(repoDir);
     const modelType = ModelType.create("command/shell");
 
-    // Create a definition with static attributes
     const definition = Definition.create({
       name: "my-echo",
       version: 1,
@@ -67,14 +57,11 @@ Deno.test("Definition: create and save definition with static attributes", async
       },
     });
 
-    // Save the definition
     await definitionRepo.save(modelType, definition);
 
-    // Verify the file was created at the correct path
     const path = definitionRepo.getPath(modelType, definition.id);
     assertEquals(existsSync(path), true, "Definition file should exist");
 
-    // Verify the content
     const content = await Deno.readTextFile(path);
     const data = parseYaml(content) as Record<string, unknown>;
     assertEquals(data.type, "command/shell");
@@ -94,7 +81,6 @@ Deno.test("Definition: definition with CEL expression is preserved on save", asy
     const definitionRepo = new YamlDefinitionRepository(repoDir);
     const modelType = ModelType.create("command/shell");
 
-    // Create a definition with CEL expressions
     const definition = Definition.create({
       name: "my-echo-with-expression",
       globalArguments: {
@@ -103,14 +89,11 @@ Deno.test("Definition: definition with CEL expression is preserved on save", asy
       },
     });
 
-    // Save the definition
     await definitionRepo.save(modelType, definition);
 
-    // Load it back
     const loaded = await definitionRepo.findById(modelType, definition.id);
     assertEquals(loaded !== null, true, "Definition should be loaded");
 
-    // Verify CEL expressions are preserved (not evaluated)
     assertEquals(
       loaded!.globalArguments.message,
       "${{ model.other.input.globalArguments.greeting }}",
@@ -127,7 +110,6 @@ Deno.test("Definition: evaluate definition with CEL expressions referencing self
     const definitionRepo = new YamlDefinitionRepository(repoDir);
     const modelType = ModelType.create("command/shell");
 
-    // Create a definition with self-referencing CEL expression
     const definition = Definition.create({
       name: "self-reference-test",
       version: 1,
@@ -140,13 +122,11 @@ Deno.test("Definition: evaluate definition with CEL expressions referencing self
 
     await definitionRepo.save(modelType, definition);
 
-    // Create the expression evaluation service
     const evalService = new ExpressionEvaluationService(
       definitionRepo,
       repoDir,
     );
 
-    // Evaluate the definition
     const result = await evalService.evaluateDefinition(
       definition,
       modelType,
@@ -167,8 +147,8 @@ Deno.test("Definition: evaluate definition with CEL expressions referencing othe
     const definitionRepo = new YamlDefinitionRepository(repoDir);
     const modelType = ModelType.create("command/shell");
 
-    // Create a source definition that will be referenced
-    // Note: Using underscore instead of hyphen because CEL interprets hyphens as subtraction
+    // underscore, not hyphen, in the name because CEL reads a hyphen as
+    // subtraction
     const sourceDefinition = Definition.create({
       name: "source_model",
       version: 1,
@@ -180,7 +160,6 @@ Deno.test("Definition: evaluate definition with CEL expressions referencing othe
     });
     await definitionRepo.save(modelType, sourceDefinition);
 
-    // Create a definition that references the other model
     const definition = Definition.create({
       name: "referencing_definition",
       globalArguments: {
@@ -192,13 +171,11 @@ Deno.test("Definition: evaluate definition with CEL expressions referencing othe
     });
     await definitionRepo.save(modelType, definition);
 
-    // Create the expression evaluation service
     const evalService = new ExpressionEvaluationService(
       definitionRepo,
       repoDir,
     );
 
-    // Evaluate the definition
     const result = await evalService.evaluateDefinition(
       definition,
       modelType,
@@ -219,7 +196,6 @@ Deno.test("Definition: evaluate definition with inputs parameter", async () => {
     const definitionRepo = new YamlDefinitionRepository(repoDir);
     const modelType = ModelType.create("command/shell");
 
-    // Create a definition with inputs schema and expression
     const definition = Definition.create({
       name: "parameterized-definition",
       globalArguments: {
@@ -237,13 +213,11 @@ Deno.test("Definition: evaluate definition with inputs parameter", async () => {
     });
     await definitionRepo.save(modelType, definition);
 
-    // Create the expression evaluation service
     const evalService = new ExpressionEvaluationService(
       definitionRepo,
       repoDir,
     );
 
-    // Evaluate the definition with input values
     const inputValues = {
       greeting: "Hello",
       name: "World",
@@ -268,7 +242,6 @@ Deno.test("Definition: save and load evaluated definitions", async () => {
     const evaluatedRepo = new YamlEvaluatedDefinitionRepository(repoDir);
     const modelType = ModelType.create("command/shell");
 
-    // Create a definition with CEL expression
     const definition = Definition.create({
       name: "to-be-evaluated",
       globalArguments: {
@@ -277,7 +250,6 @@ Deno.test("Definition: save and load evaluated definitions", async () => {
     });
     await definitionRepo.save(modelType, definition);
 
-    // Evaluate the definition
     const evalService = new ExpressionEvaluationService(
       definitionRepo,
       repoDir,
@@ -289,15 +261,12 @@ Deno.test("Definition: save and load evaluated definitions", async () => {
       new RunSensitiveValues(),
     );
 
-    // Save the evaluated definition
     await evaluatedRepo.save(modelType, result.definition, undefined);
 
-    // Load the evaluated definition
     const loaded = await evaluatedRepo.findById(modelType, definition.id);
     assertEquals(loaded !== null, true, "Evaluated definition should exist");
     assertEquals(loaded!.globalArguments.computed, 6);
 
-    // Verify the original is unchanged
     const original = await definitionRepo.findById(modelType, definition.id);
     assertEquals(
       original!.globalArguments.computed,
@@ -312,7 +281,6 @@ Deno.test("Definition: definition without expressions returns hadExpressions=fal
     const definitionRepo = new YamlDefinitionRepository(repoDir);
     const modelType = ModelType.create("command/shell");
 
-    // Create a definition without any expressions
     const definition = Definition.create({
       name: "static-only",
       globalArguments: {
@@ -346,7 +314,6 @@ Deno.test("Definition: findByName works correctly", async () => {
     const definitionRepo = new YamlDefinitionRepository(repoDir);
     const modelType = ModelType.create("command/shell");
 
-    // Create multiple definitions
     const def1 = Definition.create({
       name: "first-def",
       globalArguments: { a: 1 },
@@ -359,13 +326,11 @@ Deno.test("Definition: findByName works correctly", async () => {
     await definitionRepo.save(modelType, def1);
     await definitionRepo.save(modelType, def2);
 
-    // Find by name
     const found = await definitionRepo.findByName(modelType, "second-def");
     assertEquals(found !== null, true);
     assertEquals(found!.name, "second-def");
     assertEquals(found!.globalArguments.b, 2);
 
-    // Find non-existent
     const notFound = await definitionRepo.findByName(modelType, "no-such-def");
     assertEquals(notFound, null);
   });
@@ -377,7 +342,6 @@ Deno.test("Definition: findByNameGlobal works across types", async () => {
     const type1 = ModelType.create("command/shell");
     const type2 = ModelType.create("aws/ec2/vpc");
 
-    // Create definitions in different types
     const def1 = Definition.create({
       name: "unique-name",
       globalArguments: { x: 1 },
@@ -390,7 +354,6 @@ Deno.test("Definition: findByNameGlobal works across types", async () => {
     await definitionRepo.save(type1, def1);
     await definitionRepo.save(type2, def2);
 
-    // Find globally
     const found = await definitionRepo.findByNameGlobal("another-name");
     assertEquals(found !== null, true);
     assertEquals(found!.definition.name, "another-name");

@@ -37,7 +37,6 @@ const ARCHIVE = new Uint8Array(4096).map((_, i) => i % 251);
 const HALF = 2048;
 const ETAG = '"archive-v1"';
 
-/** A request the test server saw. */
 interface SeenRequest {
   range: string | null;
   ifRange: string | null;
@@ -46,10 +45,6 @@ interface SeenRequest {
 
 type Handler = (req: Request, index: number) => Response;
 
-/**
- * Serves each request with `handlers[i]` (the last one repeats) on a port-0
- * server, runs `fn` with the URL, then shuts the server down.
- */
 async function withServer<T>(
   handlers: Handler[],
   fn: (url: string, seen: SeenRequest[]) => Promise<T>,
@@ -86,14 +81,12 @@ async function withTempDir<T>(fn: (dir: string) => Promise<T>): Promise<T> {
   }
 }
 
-/** The whole archive, with its length and ETag. */
 function full(): Response {
   return new Response(ARCHIVE, {
     headers: { "content-length": String(ARCHIVE.length), etag: ETAG },
   });
 }
 
-/** The archive from `start` on, as a 206. */
 function partial(start: number, contentRangeStart = start): Response {
   return new Response(ARCHIVE.slice(start), {
     status: 206,
@@ -106,11 +99,6 @@ function partial(start: number, contentRangeStart = start): Response {
   });
 }
 
-/**
- * Answers a request for the archive from `start` (a 200 from zero, else a
- * 206) and sends the bytes up to `end`. Then it either drops the connection
- * or sends nothing more until the client gives up.
- */
 function sendThen(
   start: number,
   end: number,
@@ -142,7 +130,6 @@ function sendThen(
   return new Response(body, { status: start > 0 ? 206 : 200, headers });
 }
 
-/** The offset a request's `Range` header asks for, or 0 without one. */
 function rangeStart(req: Request): number {
   const match = req.headers.get("range")?.match(/^bytes=(\d+)-$/);
   return match ? Number(match[1]) : 0;

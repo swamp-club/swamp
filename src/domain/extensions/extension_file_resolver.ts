@@ -21,29 +21,11 @@ import { join } from "@std/path";
 import { markErrorPaths, UserError } from "../errors.ts";
 import { isSafeRelativePath } from "./extension_manifest.ts";
 
-// Hardcoded on purpose: importing SWAMP_DATA_DIR from infrastructure would
-// introduce a new domain→infrastructure dependency (see
-// integration/ddd_layer_rules_test.ts ratchet). The underlying constant is
-// stable (`.swamp`) and the pulled-extensions layout is a swamp-wide
-// convention, not an infrastructure detail.
-//
-// Anchored to a path boundary (start-of-string OR forward slash) so the
-// match works regardless of whether `root` begins with a separator. The
-// caller normalizes backslashes to forward slashes before testing.
+// hardcoded to avoid a domain-to-infrastructure import of SWAMP_DATA_DIR;
+// anchored at start or a forward slash, the caller having normalized
+// backslashes
 const PULLED_MARKER = /(^|\/)\.swamp\/(config\/)?pulled-extensions\//;
 
-/**
- * Resolve a relative `additionalFiles` path against an extension's files
- * root. Mirrors the `extensionFile()` helper exposed on `MethodContext` and
- * `MethodReportContext`. Shared here so both contexts produce identical
- * validation, mode detection, and error messages without depending on each
- * other.
- *
- * Throws `UserError` when:
- *   - `root` is undefined (model is not part of an extension manifest)
- *   - `relPath` is unsafe (absolute, contains `..`, or starts with `/`)
- *   - the resolved file does not exist on disk
- */
 export function resolveExtensionFile(
   root: string | undefined,
   relPath: string,

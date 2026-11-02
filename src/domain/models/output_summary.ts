@@ -25,11 +25,6 @@ import {
   TriggerTypes,
 } from "./model_output.ts";
 
-/**
- * What a listing of a method's runs needs to know about one run: a read-only
- * projection of a {@link ModelOutput}, without the content (artifacts, inputs,
- * log file) only a caller opening that one run needs.
- */
 export interface OutputSummary {
   readonly id: string;
   readonly definitionId: string;
@@ -50,7 +45,6 @@ export interface OutputSummary {
   readonly errorMessage?: string;
 }
 
-/** An {@link OutputSummary} as stored: one line of a summary shard. */
 export interface OutputSummaryData {
   id: string;
   definitionId: string;
@@ -67,7 +61,6 @@ export interface OutputSummaryData {
 const STATUSES: ReadonlySet<string> = new Set(ExecutionStatuses);
 const TRIGGERS: ReadonlySet<string> = new Set(TriggerTypes);
 
-/** The summary of `output`. */
 export function outputSummaryOf(output: ModelOutput): OutputSummary {
   const { triggeredBy, workflowId, workflowRunId, stepName } =
     output.provenance;
@@ -91,7 +84,6 @@ export function outputSummaryOf(output: ModelOutput): OutputSummary {
   };
 }
 
-/** `summary` as stored, leaving out its error message. */
 export function outputSummaryToData(summary: OutputSummary): OutputSummaryData {
   return {
     id: summary.id,

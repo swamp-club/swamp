@@ -40,32 +40,13 @@ import {
 } from "./extension_source_ast.ts";
 
 /**
- * Deterministic, push-time static rules for extensions.
- *
- * IMPORTANT: this is NOT the adversarial review. The adversarial review is a
- * judgment pass performed by an AI agent (and by the CI
- * `claude-adversarial-review` action) that reasons about intent across all
- * dimensions — idempotency, API contracts, error-before-write, resource
- * cleanup, and so on. Those cannot be decided by a static scan.
- *
- * This ruleset only enforces the small, mechanically-decidable floor (e.g.
- * an empty-object `.passthrough()`, a missing sibling test, an unmarked
- * sensitive field). It runs at push time exactly like the dependency-trust
- * audit: findings carry a severity and the result partitions by it —
- * `critical`/`high` block the push, `medium`/`low` only warn. It complements
- * the adversarial review; it does not replace it.
- *
- * New checks are added as {@link ReviewRule} entries in
- * {@link DEFAULT_REVIEW_RULES}. Each rule is self-contained: it declares the
- * adversarial-review dimension it relates to (see
- * `.claude/skills/swamp/references/extension/references/adversarial-review.md`), the
- * content kinds it inspects, its severity, and a pure detector.
+ * the mechanically decidable floor, not the adversarial review: critical and
+ * high findings block the push, medium and low warn; judgment checks stay with
+ * the adversarial review
  */
 
-/** Severity of a review-rule finding. Mirrors the CI review scale. */
 export type ReviewSeverity = "critical" | "high" | "medium" | "low";
 
-/** The extension content kinds a rule can inspect. */
 export type ExtensionContentKind =
   | "model"
   | "vault"
@@ -73,105 +54,68 @@ export type ExtensionContentKind =
   | "report"
   | "webhook";
 
-/** A single source file presented to the ruleset. */
 export interface ReviewSource {
-  /** Absolute path of the source file. */
   path: string;
-  /** Which content kind this file belongs to. */
   kind: ExtensionContentKind;
-  /** File contents. */
   content: string;
-  /** Whether this file is an entry point (the main implementation file). */
   isEntryPoint: boolean;
-  /** Whether a sibling `<base>_test.ts` exists for this file. */
   hasSiblingTest: boolean;
 }
 
-/** A finding emitted by a rule against a single source file. */
 export interface ReviewFinding {
-  /** The id of the rule that produced this finding. */
   ruleId: string;
-  /** The adversarial-review dimension this rule relates to. */
   dimension: string;
-  /** Severity — determines whether the finding blocks or only warns. */
   severity: ReviewSeverity;
-  /** Absolute path of the offending file. */
   file: string;
   /**
-   * The 1-based line the finding fires on. Absent for file-level findings
-   * (testing-completeness) and extension-level ones (bare-specifiers, the
-   * adversarial-review report). Together with `file` and `ruleId` it is the
-   * identity a declared acceptance names.
+   * absent for file-level and extension-level findings; with file and ruleId it
+   * is the identity a declared acceptance names
    */
   line?: number;
-  /** Actionable description of the issue. */
   message: string;
-  /** How to fix the finding properly, from the rule catalog. */
   remediation?: string;
   /**
-   * The files a collapsed finding stands for. Set only on the
-   * once-per-extension testing-completeness finding, which lists the entry
-   * points still without a sibling test so each can be accepted on its own.
+   * set only on the once-per-extension testing-completeness finding, listing
+   * entry points without a sibling test so each can be accepted on its own
    */
   files?: string[];
   /**
-   * Optional fill-in report skeleton. Set only on the missing-report finding
-   * so JSON consumers get it as a discrete object rather than parsing it out
-   * of `message`.
+   * set only on the missing-report finding so JSON consumers get it as an
+   * object instead of parsing message
    */
   skeleton?: ReviewReportSkeleton;
 }
 
-/** A detection a rule reports: its message, and the line when it has one. */
 export interface RuleDetection {
   message: string;
-  /** 1-based line of the match; omitted for file-level findings. */
   line?: number;
 }
 
-/**
- * A single review rule. Add new rules to {@link DEFAULT_REVIEW_RULES} to grow
- * the enforced set.
- */
 export interface ReviewRule {
-  /** Stable identifier, e.g. `schema-strictness`. */
   id: string;
-  /** The adversarial-review dimension this rule relates to. */
   dimension: string;
-  /** Severity assigned to every finding this rule emits. */
   severity: ReviewSeverity;
-  /** Content kinds this rule inspects. */
   appliesTo: ExtensionContentKind[];
   /**
-   * Pure detector. Returns one entry per issue found in `source` (a bare
-   * message, or a {@link RuleDetection} carrying the line); an empty array
-   * means the file passes this rule. The framework attaches the rule's id,
-   * dimension, severity and remediation.
+   * pure; one entry per issue found, empty means the file passes; the framework
+   * attaches id, dimension, severity and remediation
    */
   detect: (source: ReviewSource) => Array<string | RuleDetection>;
 }
 
-/** Result of running the ruleset over a set of sources. */
 export interface ReviewRulesResult {
-  /** Findings whose severity is `critical` or `high` — these block the push. */
   errors: ReviewFinding[];
-  /** Findings whose severity is `medium` or `low` — these only warn. */
   warnings: ReviewFinding[];
-  /** True when there are no blocking (error) findings. */
   passed: boolean;
 }
 
-/** Returns true when a severity blocks the push. */
 export function isBlockingSeverity(severity: ReviewSeverity): boolean {
   return severity === "critical" || severity === "high";
 }
 
-// ── Detection helpers ─────────────────────────────────────────────────
-
 /**
- * Strips `//` line comments from a single source line so detectors don't
- * fire on commented-out code. Not a full tokenizer — block comments and
- * string-literal occurrences are out of scope for this first cut.
+ * not a full tokenizer: block comments and string-literal occurrences of // are
+ * not handled
  */
 function stripLineComment(line: string): string {
   const idx = line.indexOf("//");
@@ -179,29 +123,16 @@ function stripLineComment(line: string): string {
 }
 
 /**
- * Identifiers in key position: bare, or quoted with any characters (so
- * `"auth.token"` and `"api token"` are inspected), optionally followed by
- * `?`, and preceded by the start of the line, `{`, `,` or `(` so that inline
- * object literals and lines with several keys are all inspected. The
- * per-line scan has one known limit: text shaped like `, token:` inside a
- * string literal on the same line also matches, as it did before whole-
- * identifier matching.
+ * known limit: text shaped like `, token:` inside a string literal on the same
+ * line also matches
  */
 const KEY_IDENTIFIER =
   /(?:^|[{,(])\s*(?:([A-Za-z_$][\w$]*)|"([^"]+)"|'([^']+)')\s*(?:\?\s*)?:/g;
 
-/**
- * A declaration or assignment at the start of the line: `const apiKey =`,
- * `export let token =`, and class fields such as `private apiKey =` or
- * `static readonly token =`. The `(?!=)` keeps `==` comparisons out.
- */
+/** the (?!=) keeps == comparisons out */
 const DECLARED_IDENTIFIER =
   /^\s*(?:(?:export|declare|public|private|protected|static|readonly|const|let|var)\s+)*([A-Za-z_$][\w$]*)\s*(?::[^=]*?)?=(?!=)/;
 
-/**
- * Returns the identifiers declared on a comment-stripped line: every key in
- * key position plus a `const`/`let`/`var` declaration.
- */
 function declaredIdentifiers(line: string): string[] {
   const identifiers: string[] = [];
   for (const match of line.matchAll(KEY_IDENTIFIER)) {
@@ -213,24 +144,16 @@ function declaredIdentifiers(line: string): string[] {
 }
 
 /**
- * Zod types whose parsed value cannot hold a secret — numbers, dates,
- * booleans, and structural types. When a line's Zod call matches one of
- * these, the credentials-sensitive-field rule skips it even if the field
- * name looks sensitive. `z.coerce.` is accepted only in front of a numeric,
- * date, or boolean type: it changes what input parses, not the parsed type,
- * so `z.coerce.string()` stays flagged.
+ * z.coerce. is accepted only before numeric, date or boolean types: it changes
+ * what parses, not the parsed type, so z.coerce.string() stays flagged
  */
 const NON_SECRET_ZOD_TYPE =
   /\bz\s*\.\s*(?:(?:number|boolean|literal|object|array|enum|int|int32|uint32|int64|uint64|float32|float64|bigint|date)|coerce\s*\.\s*(?:number|bigint|boolean|date))\s*\(/;
 
-/** Matches `z.object({}).passthrough()` — an empty-object passthrough. */
 const EMPTY_OBJECT_PASSTHROUGH =
   /z\s*\.\s*object\s*\(\s*\{\s*\}\s*\)\s*\.\s*passthrough\s*\(/;
 
-/**
- * True when a `.`-prefixed continuation line after line `index` carries the
- * sensitive marker — the text check for a source that does not parse.
- */
+/** text fallback for a source that does not parse */
 function markedOnContinuationLines(lines: string[], index: number): boolean {
   for (let j = index + 1; j < lines.length; j++) {
     const cont = stripLineComment(lines[j]);
@@ -240,14 +163,12 @@ function markedOnContinuationLines(lines: string[], index: number): boolean {
   return false;
 }
 
-/** The syntax-tree nodes whose `key` or `id` names a field. */
 const FIELD_NODES = new Set([
   "ObjectProperty",
   "ClassProperty",
   "VariableDeclarator",
 ]);
 
-/** The name a field node declares: an identifier or a string-literal key. */
 function fieldName(node: AstNode): string | undefined {
   const key = child(node, node.type === "VariableDeclarator" ? "id" : "key");
   if (key?.type === "Identifier") {
@@ -256,16 +177,11 @@ function fieldName(node: AstNode): string | undefined {
   return literalKey(key);
 }
 
-/** The child nodes held in an array property, such as call arguments. */
 function childList(node: AstNode, key: string): AstNode[] {
   const value = node[key];
   return Array.isArray(value) ? value.filter(isNode) : [];
 }
 
-/**
- * `sensitive: true` as an object-literal entry; the key may be quoted and
- * the value cast (`true as const`).
- */
 function isSensitiveEntry(node: AstNode): boolean {
   const value = unwrap(child(node, "value"));
   return node.type === "ObjectProperty" && fieldName(node) === "sensitive" &&
@@ -273,14 +189,9 @@ function isSensitiveEntry(node: AstNode): boolean {
 }
 
 /**
- * True when a field's value expression carries `sensitive: true` on its own
- * chain: in an object literal passed to one of its calls (`.meta({ ... })`,
- * `.register(z.globalRegistry, { ... })`), however the object is laid out.
- * The search follows calls, member access, casts, parentheses and array
- * elements, and checks only an object literal's direct entries, so the
- * metadata of a nested field (a `z.object` inside a `z.union`) never marks
- * the field that holds it. The stack is explicit because extension source is
- * untrusted.
+ * checks only an object literal's direct entries, so a nested field's metadata
+ * never marks the field holding it; the stack is explicit because extension
+ * source is untrusted
  */
 function carriesSensitiveMarker(value: AstNode): boolean {
   const stack: AstNode[] = [value];
@@ -307,11 +218,6 @@ function carriesSensitiveMarker(value: AstNode): boolean {
   return false;
 }
 
-/**
- * True when `value` is a Zod schema expression: a chain of calls, member
- * access and casts that starts at `z` (`z.string().meta({ ... })`,
- * `z.optional(...)`).
- */
 function isZodChain(value: AstNode | undefined): value is AstNode {
   let current = unwrap(value);
   while (current) {
@@ -322,13 +228,6 @@ function isZodChain(value: AstNode | undefined): value is AstNode {
   return false;
 }
 
-/**
- * Parses `source` and returns, for each line (1-based, split on `\n`) that
- * declares a secret-named schema field, whether every such field declared there
- * carries `sensitive: true` (see {@link carriesSensitiveMarker}), so one
- * marked field never hides an unmarked one on its line. Null when the source
- * does not parse.
- */
 function parsedSensitiveFields(
   source: ReviewSource,
 ): Map<number, boolean> | null {
@@ -357,15 +256,9 @@ function parsedSensitiveFields(
   return marked;
 }
 
-// ── Default ruleset ───────────────────────────────────────────────────
-
 /**
- * The default review ruleset. All starter rules are non-blocking
- * (`medium`/`low`) — none of the mechanical patterns is an unambiguous hard
- * rule (the skill phrases every dimension as "should", and even
- * `.passthrough()` is legitimate when properties are declared). The severity
- * machinery still routes any future `critical`/`high` rule to the blocking
- * path. Append new rules here.
+ * all starter rules are non-blocking: no mechanical pattern is an unambiguous
+ * hard rule (even .passthrough() is legitimate when properties are declared)
  */
 export const DEFAULT_REVIEW_RULES: ReviewRule[] = [
   {
@@ -413,8 +306,6 @@ export const DEFAULT_REVIEW_RULES: ReviewRule[] = [
     detect: (source) => {
       const detections: RuleDetection[] = [];
       const lines = source.content.split("\n");
-      // Parsed on the first field not marked on its own line; null when the
-      // source does not parse.
       let parsed: Map<number, boolean> | null | undefined;
       for (let i = 0; i < lines.length; i++) {
         const line = stripLineComment(lines[i]);
@@ -431,7 +322,6 @@ export const DEFAULT_REVIEW_RULES: ReviewRule[] = [
         const parsedMarked = parsed?.get(i + 1);
         if (parsedMarked === true) continue;
 
-        // Otherwise read the chain's continuation lines as text.
         if (
           parsedMarked === undefined && markedOnContinuationLines(lines, i)
         ) continue;
@@ -449,12 +339,6 @@ export const DEFAULT_REVIEW_RULES: ReviewRule[] = [
   },
 ];
 
-// ── Pure evaluator ────────────────────────────────────────────────────
-
-/**
- * Runs `rules` over `sources` and partitions findings by severity.
- * Pure and synchronous — all I/O is the caller's responsibility.
- */
 export function evaluateReviewRules(
   sources: ReviewSource[],
   rules: ReviewRule[] = DEFAULT_REVIEW_RULES,
@@ -491,33 +375,18 @@ export function evaluateReviewRules(
   return { errors, warnings, passed: errors.length === 0 };
 }
 
-// ── Adversarial-review report ─────────────────────────────────────────
-
 /**
- * The adversarial review itself (the agent/CI judgment pass) records its
- * verdicts to a report at a content-hash-bound tmp path. The push gate
- * verifies that report exists, matches the current code, and is complete —
- * making the review a non-optional step. Editing any source changes the
- * content hash, which changes the report path, so a stale review is simply
- * "not found" and re-blocks the push.
+ * the report path is bound to the content hash: editing any source changes it,
+ * so a stale review is not found and re-blocks the push
  */
 
-/** A review dimension from the adversarial-review skill reference. */
 export interface ReviewDimension {
-  /** Stable identifier, e.g. `credentials-secrets`. */
   id: string;
-  /** Human label matching the skill reference. */
   label: string;
-  /** Content kinds this dimension applies to, or "all" for universal. */
   appliesTo: ExtensionContentKind[] | "all";
 }
 
-/**
- * The catalog of adversarial-review dimensions. Single source of truth,
- * mirroring `.claude/skills/swamp/references/extension/references/adversarial-review.md`.
- */
 export const REVIEW_DIMENSIONS: ReviewDimension[] = [
-  // Universal
   {
     id: "credentials-secrets",
     label: "Credentials & Secrets",
@@ -542,7 +411,6 @@ export const REVIEW_DIMENSIONS: ReviewDimension[] = [
     label: "Published-Surface Hygiene",
     appliesTo: "all",
   },
-  // Models
   { id: "schema-strictness", label: "Schema strictness", appliesTo: ["model"] },
   { id: "lifetime-gc", label: "Lifetime & GC", appliesTo: ["model"] },
   { id: "crud-completeness", label: "CRUD completeness", appliesTo: ["model"] },
@@ -550,7 +418,6 @@ export const REVIEW_DIMENSIONS: ReviewDimension[] = [
   { id: "instance-names", label: "Instance names", appliesTo: ["model"] },
   { id: "data-access", label: "Data access", appliesTo: ["model"] },
   { id: "version-upgrades", label: "Version upgrades", appliesTo: ["model"] },
-  // Vaults
   { id: "vault-get-throws", label: "Vault get throws", appliesTo: ["vault"] },
   {
     id: "vault-put-idempotent",
@@ -563,7 +430,6 @@ export const REVIEW_DIMENSIONS: ReviewDimension[] = [
     appliesTo: ["vault"],
   },
   { id: "vault-getname", label: "Vault getName", appliesTo: ["vault"] },
-  // Datastores
   {
     id: "datastore-createlock",
     label: "Datastore createLock",
@@ -591,7 +457,6 @@ export const REVIEW_DIMENSIONS: ReviewDimension[] = [
   },
 ];
 
-/** Returns the dimensions applicable to the content kinds present. */
 export function applicableDimensions(
   kinds: ExtensionContentKind[],
 ): ReviewDimension[] {
@@ -601,7 +466,6 @@ export function applicableDimensions(
   );
 }
 
-/** Accepted verdict values for the adversarial-review report. */
 export const REVIEW_VERDICT_VALUES = [
   "pass",
   "issue",
@@ -609,10 +473,8 @@ export const REVIEW_VERDICT_VALUES = [
   "pending",
 ] as const;
 
-/** A per-dimension verdict recorded by the reviewer. */
 const ReviewVerdictSchema = z.enum(REVIEW_VERDICT_VALUES);
 
-/** Schema for the on-disk adversarial-review report. */
 const ExtensionReviewReportSchema = z.object({
   extension: z.string(),
   version: z.string(),
@@ -624,16 +486,13 @@ const ExtensionReviewReportSchema = z.object({
   })),
 });
 
-/** The on-disk adversarial-review report. */
 export type ExtensionReviewReport = z.infer<typeof ExtensionReviewReportSchema>;
 
-/** Result of parsing a review report: success, validation errors, or null (not JSON). */
 export type ReviewReportParseResult =
   | { ok: true; report: ExtensionReviewReport }
   | { ok: false; errors: string[] }
   | null;
 
-/** Parses report JSON. Returns null for non-JSON, structured errors for valid JSON that fails validation. */
 export function parseReviewReport(raw: string): ReviewReportParseResult {
   let parsed: unknown;
   try {
@@ -664,12 +523,9 @@ function sanitizeName(name: string): string {
 }
 
 /**
- * Content-hash-bound path of the adversarial-review report. The full content
- * hash in the filename binds the report to the exact code and is the real
- * uniqueness key — the content hash already encodes the manifest name, so even
- * if the human-readable name prefix collides under `sanitizeName` (e.g. `@a/b`
- * vs `@a_b`), the hashes differ and the files do not clash. Any source change
- * yields a different path, so a prior review no longer satisfies the gate.
+ * the full content hash is the uniqueness key, so names colliding under
+ * sanitizeName still do not clash; any source change yields a new path, so an
+ * earlier review does not satisfy the gate
  */
 export function reviewReportPath(
   extensionName: string,
@@ -683,10 +539,6 @@ export function reviewReportPath(
   );
 }
 
-/**
- * A fill-in-the-blanks review report: the shape the reviewer writes to the
- * report path, with every dimension still pending.
- */
 export interface ReviewReportSkeleton {
   extension: string;
   version: string;
@@ -694,7 +546,6 @@ export interface ReviewReportSkeleton {
   dimensions: { id: string; verdict: "pending"; note: string }[];
 }
 
-/** Builds a fill-in-the-blanks report skeleton for the given dimensions. */
 export function buildReviewReportSkeleton(
   extensionName: string,
   extensionVersion: string,
@@ -712,48 +563,28 @@ export function buildReviewReportSkeleton(
   };
 }
 
-/** Context for evaluating the adversarial-review report at push time. */
 export interface ReviewReportContext {
-  /** Parsed report, or null when missing or not JSON. */
   report: ExtensionReviewReport | null;
-  /** Validation errors when the report is valid JSON but fails schema validation. */
   parseErrors?: string[];
-  /** The content-hash-bound path the report was looked up at. */
   reportPath: string;
-  /** Expected extension name (from the manifest). */
   extensionName: string;
-  /** Expected extension version (from the manifest). */
   extensionVersion: string;
-  /** Dimensions that must each carry a non-pending verdict. */
   applicableDimensions: ReviewDimension[];
-  /** Skeleton to show the reviewer when the report is missing. */
   skeleton: ReviewReportSkeleton;
 }
 
 const REVIEW_REPORT_RULE = "adversarial-review-report";
 /**
- * Distinct ruleId for the "review is present and complete, but a dimension
- * honestly recorded an `issue` verdict" finding. Keeping it separate from
- * {@link REVIEW_REPORT_RULE} — which covers a review that is owed, stale, or
- * incomplete (missing file, name/version mismatch, missing/pending verdicts,
- * parse error) — lets a downstream CI gate keying on
- * `warnings.review[].ruleId === "adversarial-review-report"` pass a
- * completed, hash-matching review regardless of its dimension verdicts, while
- * the honest `issue` note still surfaces under this id. Without the split the
- * two states are indistinguishable and an honest `issue` verdict reads as a
- * missing review, pressuring reviewers to launder findings into `pass`.
+ * separate from REVIEW_REPORT_RULE so a gate keyed on that passes a complete
+ * review whatever its verdicts, and an honest issue verdict is not read as a
+ * missing review
  */
 const REVIEW_ISSUE_VERDICT_RULE = "adversarial-review-dimension-issue";
 const REVIEW_REPORT_DIMENSION = "Adversarial review";
 
 /**
- * Validates the adversarial-review report against the current code. All
- * report findings are `medium` warnings: at push time they surface a
- * "continue despite warnings?" prompt (bypassable with `--yes`) rather than a
- * hard block — so a manual version bump or other benign hash change nudges the
- * reviewer without bricking the push. A hard block here would punish the common
- * "bumped the version, didn't touch the code" case, since the version is part
- * of the content hash.
+ * findings are medium warnings, not hard blocks: a version bump with no code
+ * change alters the content hash and should only nudge the reviewer
  */
 export function evaluateReviewReport(
   ctx: ReviewReportContext,
@@ -781,10 +612,8 @@ export function evaluateReviewReport(
       dimension: REVIEW_REPORT_DIMENSION,
       severity: gate,
       file: ctx.reportPath,
-      // Single-line, self-sufficient message (the path is the finding's
-      // `file`); the skeleton rides on its own field for JSON consumers.
-      // `--dry-run --json` is the safe incantation — `--json` alone would
-      // bypass the confirmation prompt and push without the review.
+      // single-line message; the skeleton rides its own field for JSON
+      // consumers
       message:
         "No adversarial review recorded for the current code — perform the " +
         "review and write the report here (run with --dry-run --json for the " +
@@ -844,9 +673,9 @@ export function evaluateReviewReport(
   for (const entry of ctx.report.dimensions) {
     if (entry.verdict === "issue") {
       findings.push({
-        // Distinct ruleId so a gate on REVIEW_REPORT_RULE treats a completed
-        // review as clean regardless of verdict; `file` still points at the
-        // review (where the note lives), not a remediation target.
+        // distinct ruleId so a gate on REVIEW_REPORT_RULE treats a completed
+        // review as clean whatever its verdict; file points at the review,
+        // where the note lives
         ruleId: REVIEW_ISSUE_VERDICT_RULE,
         dimension: REVIEW_REPORT_DIMENSION,
         severity: "medium",
@@ -861,33 +690,19 @@ export function evaluateReviewReport(
   return findings;
 }
 
-// ── Async wrapper (reads source from disk) ────────────────────────────
-
-/** A source file to review, before its content has been read. */
 export interface ReviewFileRef {
   path: string;
   kind: ExtensionContentKind;
   isEntryPoint: boolean;
 }
 
-/**
- * The report lookup request push hands to {@link checkReviewRules}. The
- * parsed report is filled in by the checker after reading from disk.
- */
 export type ReviewReportRequest = Omit<ReviewReportContext, "report">;
 
-/** Input to {@link checkReviewRules}: source files plus optional report. */
 export interface ExtensionReviewInput {
-  /** Source files to run the static file rules over. */
   files: ReviewFileRef[];
-  /**
-   * When present, the adversarial-review report is also validated. Omitted
-   * by non-push callers (e.g. quality packaging) that only need file rules.
-   */
   report?: ReviewReportRequest;
 }
 
-/** Injectable I/O for {@link checkReviewRules}. */
 export interface ReviewRulesIo {
   readTextFile: (path: string) => Promise<string>;
   fileExists: (path: string) => Promise<boolean>;
@@ -905,7 +720,6 @@ const DEFAULT_IO: ReviewRulesIo = {
   },
 };
 
-/** Computes the sibling test path for a `.ts` source file. */
 function siblingTestPath(path: string): string {
   const ext = extname(path);
   const base = path.slice(0, path.length - ext.length);
@@ -913,11 +727,8 @@ function siblingTestPath(path: string): string {
 }
 
 /**
- * Reads each referenced file, runs the static file rules, and — when a report
- * request is supplied — reads and validates the adversarial-review report.
- * Findings from both are re-partitioned by severity. Files that cannot be read
- * are skipped (they are surfaced by the safety analyzer's read check).
- * Modelled on `checkDependencyTrust`.
+ * files that cannot be read are skipped; the safety analyzer's read check
+ * surfaces them
  */
 export async function checkReviewRules(
   input: ExtensionReviewInput,

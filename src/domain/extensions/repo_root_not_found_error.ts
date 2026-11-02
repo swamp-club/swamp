@@ -19,12 +19,6 @@
 
 import { markErrorPaths } from "../errors.ts";
 
-/**
- * Thrown by {@link findRepoRoot} when no ancestor directory of the start
- * path contains a `.swamp/` marker. Callers should treat this as
- * "not inside a swamp repository" and fall back to whatever cold-start
- * behaviour they support.
- */
 export class RepoRootNotFoundError extends Error {
   constructor(start: string) {
     super(

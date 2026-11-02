@@ -33,10 +33,8 @@ import { SWAMP_SUBDIRS } from "../../infrastructure/persistence/paths.ts";
 import { BUNDLE_STAGING_PREFIX } from "../../domain/extensions/install_journal.ts";
 
 /**
- * True when a path found under a bundle kind dir lies inside an install
- * staging sibling. Only the segments below `kindDir` count, so a repo
- * whose own ancestors match the staging prefix still has its bundles
- * enumerated (swamp-club#3780).
+ * only the segments below kindDir count, so a repo whose own ancestors match
+ * the staging prefix still has its bundles enumerated
  */
 function isInStagingDir(kindDir: string, path: string): boolean {
   return relative(kindDir, path).split(/[\\/]/).some((segment) =>
@@ -44,7 +42,6 @@ function isInStagingDir(kindDir: string, path: string): boolean {
   );
 }
 
-/** Per-extension aggregate summary. */
 export interface DoctorAggregateSummary {
   readonly name: string;
   readonly version: string;
@@ -53,7 +50,6 @@ export interface DoctorAggregateSummary {
   readonly stateDistribution: Readonly<Record<RowStateTag, number>>;
 }
 
-/** Per-source detail (shown in verbose mode). */
 export interface DoctorSourceDetail {
   readonly sourcePath: string;
   readonly stateTag: RowStateTag;
@@ -63,7 +59,6 @@ export interface DoctorSourceDetail {
   readonly lastError?: string;
 }
 
-/** A catalog row whose source_path doesn't exist on disk. */
 export interface DoctorCatalogOrphan {
   readonly sourcePath: string;
   readonly extensionName: string;
@@ -71,14 +66,12 @@ export interface DoctorCatalogOrphan {
   readonly bundlePath: string;
 }
 
-/** A bundle file on disk not referenced by any catalog row. */
 export interface DoctorBundleOrphan {
   readonly absolutePath: string;
   readonly repoRelativePath: string;
   readonly bundleDir: string;
 }
 
-/** Full aggregate-state report. */
 export interface DoctorAggregateReport {
   readonly aggregates: readonly DoctorAggregateSummary[];
   readonly sourceDetails: readonly DoctorSourceDetail[];
@@ -136,10 +129,8 @@ function extractLastError(source: Source): string | undefined {
 }
 
 /**
- * Walks all bundle directories under `.swamp/` and returns every `.js`
- * file found. Missing directories are silently skipped, as are install
- * staging dirs: their bundles are not installed yet, and `--repair` must
- * never delete them from under an install or its crash recovery.
+ * install staging dirs are skipped: their bundles are not installed yet, and
+ * --repair must never delete them from under an install or its crash recovery
  */
 export async function enumerateBundleFiles(
   repoDir: string,
@@ -181,12 +172,9 @@ async function fileExists(path: string): Promise<boolean> {
 }
 
 /**
- * Converts an internal catalog key to the native path users expect to see.
- * Catalog keys intentionally case-fold and slash-normalize on Windows, so
- * recover the filesystem spelling there where the file still exists. Other
- * platforms retain the input to avoid resolving symlink aliases in output.
- * Windows orphans have no filesystem entry to recover and fall back to
- * native-separator formatting.
+ * catalog keys case-fold and slash-normalize on Windows, so recover the
+ * filesystem spelling there when the file exists; other platforms keep the
+ * input to avoid resolving symlink aliases
  */
 async function toDisplayPath(path: string): Promise<string> {
   if (Deno.build.os !== "windows") return path;
@@ -201,7 +189,6 @@ async function toDisplayPath(path: string): Promise<string> {
   }
 }
 
-/** Builds the aggregate-state report from Extension aggregates. */
 export async function buildAggregateState(deps: {
   extensions: readonly Extension[];
   repoDir: string;
@@ -213,14 +200,11 @@ export async function buildAggregateState(deps: {
   let totalSources = 0;
   let healthySources = 0;
 
-  // Collect repo-relative bundle paths from all sources. States without
-  // a bundle (Tombstoned, BundleBuildFailed, EntryPointUnreadable) return
-  // "" from extractBundlePath and are filtered by the if-guard below.
-  // Repo-relative comparison is immune to symlink aliasing.
+  // states without a bundle return an empty string from extractBundlePath and
+  // are filtered by the guard below; repo-relative comparison is immune to
+  // symlink aliasing
   const referencedBundleRelPaths = new Set<string>();
 
-  // Collect source metadata and paths to check in a single pass,
-  // then batch the fileExists calls with Promise.all.
   interface OrphanCandidate {
     sourcePath: string;
     extensionName: string;
@@ -291,7 +275,6 @@ export async function buildAggregateState(deps: {
     ),
   );
 
-  // Batch all fileExists checks in parallel.
   const existsResults = await Promise.all(
     orphanCandidates.map((c) => fileExists(c.sourcePath)),
   );
@@ -308,8 +291,6 @@ export async function buildAggregateState(deps: {
     }
   }
 
-  // Detect bundle orphans: files on disk not referenced by any catalog row.
-  // Compare via repo-relative paths to avoid symlink aliasing.
   const allBundleFiles = await enumerateBundleFiles(deps.repoDir);
   const bundleOrphans: DoctorBundleOrphan[] = [];
   for (const bf of allBundleFiles) {

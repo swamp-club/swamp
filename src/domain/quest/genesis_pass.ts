@@ -18,17 +18,13 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * The `swamp quest` linear-pass view — the read model returned by swamp-club's
- * `GET /api/u/:username/genesis` endpoint. This mirrors swamp-club's
- * `GenesisPassView` (lib/app/views/genesis-pass-view.ts) field-for-field, since
- * that endpoint is the single source of truth both the web profile and this CLI
- * render from. Field names are camelCase to match the wire format verbatim.
+ * mirrors swamp-club's GenesisPassView field-for-field, camelCase as on the
+ * wire; that endpoint is the single source of truth for the web profile and
+ * this CLI
  */
 
-/** Claim state of one tier reward in a lane. */
 export type ClaimState = "claimed" | "claimable" | "locked";
 
-/** A single lane reward (free or premium) at a tier. */
 export interface GenesisReward {
   readonly kind: string;
   readonly name: string;
@@ -39,7 +35,6 @@ export interface GenesisReward {
   readonly offer: boolean;
 }
 
-/** One rung on the 15-tier ladder, with both lanes. */
 export interface GenesisTier {
   readonly n: number;
   readonly cumXp: number;
@@ -48,7 +43,6 @@ export interface GenesisTier {
   readonly premium: GenesisReward;
 }
 
-/** A challenge (the XP "spike" source), with live progress. */
 export interface GenesisChallenge {
   readonly id: string;
   readonly name: string;
@@ -66,7 +60,6 @@ export interface GenesisChallenge {
   readonly done: boolean;
 }
 
-/** Summary of the next tier above the operative's current position. */
 export interface GenesisNextTier {
   readonly n: number;
   readonly name: string;
@@ -74,10 +67,6 @@ export interface GenesisNextTier {
   readonly premiumName: string;
 }
 
-/**
- * The full linear-pass read model for one operative's Genesis campaign.
- * A pure projection — no invariants, no writes.
- */
 export interface GenesisPass {
   readonly campaign: "genesis";
   readonly username: string;
@@ -87,7 +76,6 @@ export interface GenesisPass {
   readonly hasPremium: boolean;
   /** Only the profile owner may claim. */
   readonly canClaim: boolean;
-  /** First free-lane tier awaiting a claim (the centerpiece), or null. */
   readonly claimableTier: number | null;
   readonly nextTier: GenesisNextTier | null;
   readonly xpIntoCurrent: number;

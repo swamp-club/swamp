@@ -17,18 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Step outputs (`steps.<name>.outputs`) end to end (swamp-club#2386).
- *
- * The run record keeps no resource attributes (swamp-club#1673), so a step's
- * outputs come from its full output during a live run and from the datastore
- * everywhere else: on resume, for a child workflow, and in workflow history.
- * The earlier unit tests built step outputs carrying a field real runs never
- * produce, so they passed while every real run failed. These tests wire the
- * execution service, the data repository, the run repository and workflow
- * history together in-process against a real temp repo.
- */
-
 import { assert, assertEquals, assertRejects } from "@std/assert";
 import { join } from "@std/path";
 import { z } from "zod";
@@ -194,19 +182,16 @@ Deno.test("step outputs: a downstream step reads an upstream step's resource att
       })],
     }));
 
-    // Before the fix: "Invalid expression: No such key: outputs".
     const run = await (await service(repo, dir)).execute("outputs-flow");
     assertEquals(run.status, "succeeded", JSON.stringify(run.toData()));
     assertEquals(received, ["hello"]);
 
-    // The run record itself keeps no attribute values.
     const saved = await repo.workflowRunRepo.findById(
       createWorkflowId(run.workflowId),
       run.id,
     );
     assertEquals(JSON.stringify(saved!.toData()).includes("hello"), false);
 
-    // History reads them back from the datastore only when asked.
     const withOutputs = await history(repo, dir, "outputs-flow", true);
     assertEquals(stepView(withOutputs, "write_record").outputs, {
       stdout: "hello",
@@ -286,7 +271,6 @@ Deno.test("step outputs: a resumed run reads earlier step outputs from the datas
     gate.succeed();
     await repo.workflowRunRepo.save(workflowId, toApprove);
 
-    // A fresh service: nothing from the first process is in memory.
     let resumed: WorkflowRun | undefined;
     for await (
       const event of (await service(repo, dir)).resume(
@@ -338,7 +322,6 @@ Deno.test("step outputs: resolution exports catalog_open and output_walk phases 
     };
     const allow = () => Promise.resolve(true);
 
-    // Tracing off: the reference result.
     const untraced = await resolve(allow);
     assertEquals(untraced.main.write_own.outputs, {
       stdout: "from-parent",
@@ -383,7 +366,6 @@ Deno.test("step outputs: resolution exports catalog_open and output_walk phases 
       assertEquals(outer.attributes["step_outputs.child_runs_read"], 1);
     });
 
-    // Denied: nothing is read, as before.
     await withObservedSpans(async (spans) => {
       const denied = await resolve(() => Promise.resolve(false));
       assertEquals(denied.main.write_own.outputs, undefined);
@@ -398,7 +380,6 @@ Deno.test("step outputs: resolution exports catalog_open and output_walk phases 
       );
     });
 
-    // No read policy (the CLI): no authorization counters.
     await withObservedSpans(async (spans) => {
       assertEquals(await resolve(), untraced);
       const [walk] = diagnosticPhases(spans, "output_walk");
@@ -413,7 +394,6 @@ Deno.test("step outputs: resolution exports catalog_open and output_walk phases 
       assertEquals(walk.attributes["swamp.diagnostic.resources_attempted"], 2);
     });
 
-    // Cancelled before it starts: the walk ends cancelled with what it reached.
     await withObservedSpans(async (spans) => {
       const controller = new AbortController();
       controller.abort();
@@ -424,7 +404,6 @@ Deno.test("step outputs: resolution exports catalog_open and output_walk phases 
       assertEquals(walk.attributes["swamp.diagnostic.cancel_observed"], true);
       assertEquals(walk.attributes["swamp.diagnostic.resources_attempted"], 0);
       assertEquals(walk.attributes["swamp.diagnostic.child_runs_unique"], 0);
-      // The step outputs span keeps its counts on a failed resolve too.
       assertEquals(
         findSpan(spans, "swamp.workflow.step_outputs.resolve")
           .attributes["step_outputs.resources_read"],
@@ -432,7 +411,6 @@ Deno.test("step outputs: resolution exports catalog_open and output_walk phases 
       );
     });
 
-    // A failed authorization fails the walk with error, counted.
     await withObservedSpans(async (spans) => {
       await assertRejects(
         () => resolve(() => Promise.reject(new Error("policy unavailable"))),
@@ -445,7 +423,6 @@ Deno.test("step outputs: resolution exports catalog_open and output_walk phases 
       assertEquals(walk.attributes["swamp.diagnostic.authorize_errors"], 1);
     });
 
-    // A child run gone since: looked up, missing, and the parent unchanged.
     const child = await repo.workflowRepo.findByName("child-flow");
     await repo.workflowRunRepo.deleteAllByWorkflowId(child!.id);
     await withObservedSpans(async (spans) => {

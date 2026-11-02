@@ -31,8 +31,6 @@ import {
   resetRateLimitState,
 } from "./rate_limiter.ts";
 
-// ── rateLimitKey ────────────────────────────────────────────────────────
-
 Deno.test("rateLimitKey: returns token-name key for valid token format", () => {
   assertEquals(rateLimitKey("mytoken.secret123", "10.0.0.1"), "token:mytoken");
 });
@@ -56,8 +54,6 @@ Deno.test("rateLimitKey: returns IP key for token starting with dot", () => {
 Deno.test("rateLimitKey: returns IP key for token ending with dot", () => {
   assertEquals(rateLimitKey("name.", "10.0.0.1"), "ip:10.0.0.1");
 });
-
-// ── checkRateLimit (per-principal) ──────────────────────────────────────
 
 Deno.test("checkRateLimit: allows up to 5 attempts for a key", () => {
   resetRateLimitState();
@@ -86,11 +82,9 @@ Deno.test("checkRateLimit: different token names are independent", () => {
   for (let i = 0; i < 5; i++) {
     checkRateLimit(keyA);
   }
-  // keyA is now exhausted
   const resultA = checkRateLimit(keyA);
   assertEquals(resultA.allowed, false);
 
-  // keyB should still be allowed
   const resultB = checkRateLimit(keyB);
   assertEquals(resultB.allowed, true);
 });
@@ -100,12 +94,10 @@ Deno.test("checkRateLimit: rate-limited token does not block different token on 
   const badToken = "token:bad-worker";
   const goodToken = "token:good-user";
 
-  // Exhaust bad token's budget
   for (let i = 0; i < 6; i++) {
     checkRateLimit(badToken);
   }
 
-  // Good token on same conceptual IP is unaffected
   const result = checkRateLimit(goodToken);
   assertEquals(result.allowed, true);
 });
@@ -121,20 +113,16 @@ Deno.test("checkRateLimit: IP-keyed fallback works like token keys", () => {
   assertEquals(result.allowed, false);
 });
 
-// ── clearRateLimit ──────────────────────────────────────────────────────
-
 Deno.test("clearRateLimit: resets count for token-name key", () => {
   resetRateLimitState();
   const key = "token:clear-test";
   for (let i = 0; i < 5; i++) {
     checkRateLimit(key);
   }
-  // Now at limit
   assertEquals(checkRateLimit(key).allowed, false);
 
   clearRateLimit(key);
 
-  // Should be allowed again
   assertEquals(checkRateLimit(key).allowed, true);
 });
 
@@ -142,8 +130,6 @@ Deno.test("clearRateLimit: no-op for unknown key", () => {
   resetRateLimitState();
   clearRateLimit("token:nonexistent");
 });
-
-// ── checkIpBurst ────────────────────────────────────────────────────────
 
 Deno.test("checkIpBurst: allows up to 50 requests from one IP", () => {
   resetRateLimitState();
@@ -172,10 +158,8 @@ Deno.test("checkIpBurst: different IPs are independent", () => {
   for (let i = 0; i < 50; i++) {
     checkIpBurst(ipA);
   }
-  // ipA is exhausted
   assertEquals(checkIpBurst(ipA).allowed, false);
 
-  // ipB is unaffected
   assertEquals(checkIpBurst(ipB).allowed, true);
 });
 
@@ -183,15 +167,11 @@ Deno.test("checkIpBurst: prevents bypass via token name enumeration", () => {
   resetRateLimitState();
   const ip = "10.0.0.200";
 
-  // Simulate attacker sending 50 requests with different fake token names
-  // The IP burst limiter catches this regardless of token diversity
   for (let i = 0; i < 50; i++) {
     checkIpBurst(ip);
   }
   assertEquals(checkIpBurst(ip).allowed, false);
 });
-
-// ── checkPrincipalRate ──────────────────────────────────────────────────
 
 Deno.test("checkPrincipalRate: allows the burst, then refuses with a retry hint", () => {
   resetRateLimitState();
@@ -202,7 +182,6 @@ Deno.test("checkPrincipalRate: allows the burst, then refuses with a retry hint"
   const refused = checkPrincipalRate("p-burst", now);
   assertEquals(refused.allowed, false);
   if (!refused.allowed) {
-    // One token refills in 60 000 / 600 = 100 ms, rounded up to 1 s.
     assertEquals(refused.retryAfterSeconds, 1);
   }
 });
@@ -221,7 +200,6 @@ Deno.test("checkPrincipalRate: refills at the sustained rate", () => {
   );
   assertEquals(checkPrincipalRate("p-refill", now + perToken).allowed, true);
   assertEquals(checkPrincipalRate("p-refill", now + perToken).allowed, false);
-  // A full minute refills the burst cap, not more.
   const later = now + 10 * 60_000;
   for (let i = 0; i < PRINCIPAL_RATE_BURST; i++) {
     assertEquals(checkPrincipalRate("p-refill", later).allowed, true);
@@ -274,7 +252,6 @@ Deno.test("checkPrincipalRate: does not touch the auth-failure or IP limiters", 
 Deno.test("checkPrincipalRate: the bucket map stays bounded, evicting idle buckets first", () => {
   resetRateLimitState();
   const now = 50_000_000;
-  // An active bucket, drained, used before the flood.
   for (let i = 0; i < PRINCIPAL_RATE_BURST; i++) {
     checkPrincipalRate("p-active", now);
   }
@@ -285,7 +262,6 @@ Deno.test("checkPrincipalRate: the bucket map stays bounded, evicting idle bucke
   assertEquals(principalRateBucketCount(), MAX_PRINCIPAL_RATE_BUCKETS);
   resetRateLimitState();
 
-  // Idle buckets (refilled to the burst) are swept before a busy one goes.
   for (let i = 0; i < MAX_PRINCIPAL_RATE_BUCKETS - 1; i++) {
     checkPrincipalRate(`p-idle-${i}`, now);
   }
@@ -296,7 +272,6 @@ Deno.test("checkPrincipalRate: the bucket map stays bounded, evicting idle bucke
   assertEquals(principalRateBucketCount(), MAX_PRINCIPAL_RATE_BUCKETS);
   assertEquals(checkPrincipalRate("p-new", later).allowed, true);
   assertEquals(principalRateBucketCount(), 2);
-  // p-busy kept its drained bucket: 1 s refilled 10 tokens, not a burst.
   for (let i = 0; i < 10; i++) {
     assertEquals(checkPrincipalRate("p-busy", later).allowed, true);
   }

@@ -19,19 +19,14 @@
 
 import type { RepoMarkerData } from "./repo_marker_repository.ts";
 
-/** Reads the `SWAMP_DATASTORE` override; injectable for tests. */
 export type DatastoreEnvReader = () => string | undefined;
 
 const readDatastoreEnvDefault: DatastoreEnvReader = () =>
   Deno.env.get("SWAMP_DATASTORE");
 
 /**
- * The datastore type a repo actually uses: the `SWAMP_DATASTORE` override's
- * type prefix when set (`filesystem:/path`, `s3:bucket`,
- * `@scope/type:{...}`), otherwise the marker's type, otherwise the default
- * filesystem datastore. Mirrors the precedence of resolveDatastoreConfig
- * without resolving anything, except that it skips the `cliArg` tier, which
- * no caller of resolveDatastoreConfig passes today.
+ * mirrors resolveDatastoreConfig precedence without resolving anything, except
+ * it skips the cliArg tier
  */
 export function effectiveDatastoreType(
   marker: RepoMarkerData | null,
@@ -45,12 +40,6 @@ export function effectiveDatastoreType(
   return marker?.datastore?.type ?? "filesystem";
 }
 
-/**
- * True when the repo uses managedConfig on a datastore provided by an
- * extension (S3, GCS, ...). Only such repos need their datastore extension
- * loaded before the managed config base can be resolved; a filesystem
- * datastore resolves without any extension.
- */
 export function isExtensionBackedDatastore(
   marker: RepoMarkerData | null,
   readDatastoreEnv: DatastoreEnvReader = readDatastoreEnvDefault,

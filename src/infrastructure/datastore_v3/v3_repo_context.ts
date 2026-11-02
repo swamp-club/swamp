@@ -18,18 +18,9 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * Opens a v3 datastore for the CLI's and serve's repository contexts
- * (swamp-club#3279): the one place outside the v3 directories that builds
- * the engine. A repository context on a v3 datastore gets the commit-log
- * engine and the read model's catalog from here; every other choice follows
- * from those.
- *
- * One handle per checkout and datastore is opened per process, caught up
- * when a context opens, and closed by {@link closeV3Datastores} when the
- * process tears down. A writing context also joins the process's hold on
- * the datastore's writer lock.
- *
- * @module
+ * one handle per checkout and datastore per process, caught up when a context
+ * opens and closed by closeV3Datastores at teardown; a writing context joins
+ * the process's hold on the writer lock
  */
 
 import { dirname, join, resolve } from "@std/path";
@@ -168,22 +159,9 @@ const logger = getSwampLogger(["datastore", "v3"]);
 
 export { v3ReplicatesAt };
 
-/**
- * The v3 datastore a context opens: a filesystem datastore's config, or a
- * bucket datastore's location (`bindV3BucketDatastore`, swamp-club#3534).
- * Only its path, namespace and layout are read.
- */
 export type V3DatastoreConfig = V3DatastoreLocation | FilesystemDatastoreConfig;
 
-/**
- * What the v3 helpers open for the v3 datastore `config` names: a
- * filesystem datastore's config as it is, or a bucket datastore's location,
- * bound once per config object (swamp-club#3534). Call it only for a config
- * the format guard opened as v3.
- *
- * @throws V3HostingUnsupportedError, or UserError when replication is
- *   unavailable here or the provider refuses its replica target
- */
+/** call only for a config the format guard opened as v3 */
 export async function v3DatastoreConfigOf(
   repoDir: string,
   config: DatastoreConfig,
@@ -193,11 +171,6 @@ export async function v3DatastoreConfigOf(
     bindV3BucketDatastore(repoDir, config, await resolveCustomProvider(config));
 }
 
-/**
- * The control plane the namespaced records of the bucket datastore at
- * `location` live in (signal waits, retention watermarks), or undefined for
- * a filesystem datastore, which keeps them under its own path.
- */
 export function v3BucketNamespacedStoreAt(
   location: V3DatastoreConfig,
 ): WritableDatastoreControlPlaneStore | undefined {
@@ -207,13 +180,6 @@ export function v3BucketNamespacedStoreAt(
     : v3BucketNamespacedStore(binding, location.namespace);
 }
 
-/**
- * Serve's control plane on the v3 datastore at `location` (swamp-club#4096):
- * heartbeats, active and pending runs, claims and the leader record, under
- * the datastore's namespaced records, so every serve node of the datastore
- * shares it. A bucket datastore keeps them in its datastore-wide control
- * plane, a filesystem one under its own `_control/`.
- */
 export function v3ServeControlPlaneAt(
   location: V3DatastoreConfig,
 ): WritableDatastoreControlPlaneStore {
@@ -222,11 +188,7 @@ export function v3ServeControlPlaneAt(
 
 const opened = new Map<string, V3Datastore>();
 
-/**
- * The Litestream sidecars this process's writers hold (swamp-club#3416),
- * by datastore: synced once each at teardown, then released. Empty unless
- * replication is on.
- */
+/** synced once each at teardown, then released; empty unless replication is on */
 const replications = new Map<string, ReplicationHandle[]>();
 
 /**
@@ -237,37 +199,26 @@ const replications = new Map<string, ReplicationHandle[]>();
 const owedReplications = new Set<string>();
 
 /**
- * Whether the command's own commits were confirmed replicated after its
- * action returned ({@link confirmV3CommandReplicated}). A closing sync that
- * fails after that covers only commits made since (the end-of-command
- * retention pass's), which never fail the command (swamp-club#3534).
+ * a closing sync that fails after the command's own commits were confirmed
+ * covers only later commits (the retention pass's), which never fail the
+ * command
  */
 let commandConfirmed = false;
 
-/**
- * The commit log's high-water mark of each replicated datastore when this
- * process first held its writer for the command, by datastore, with the
- * datastore's path as configured: whether the command committed anything
- * is whether a mark moved (swamp-club#3882).
- */
+/** whether the command committed anything is whether a mark moved */
 const commandStartMarks = new Map<
   string,
   { readonly path: string; readonly mark: number }
 >();
 
-/** What {@link v3CommandCommits} finds. */
 export type V3CommandCommits =
   | { readonly committed: true }
   | { readonly committed: false; readonly datastorePath: string };
 
 /**
- * Whether this process committed anything to a replicated v3 datastore
- * since it first held its writer: a {@link V3ReplicationError} says the
- * command's changes are saved locally, which is true only then
- * (swamp-club#3882). Read before {@link closeV3Datastores}, which closes the
- * handles and forgets the marks. A process that held no replicated writer,
- * or whose datastore is no longer open, counts as committed: what was
- * committed cannot be told, and the error keeps its wording.
+ * a replication error says changes are saved locally, true only if something
+ * committed; a process with no replicated writer or open datastore counts as
+ * committed. Read before closeV3Datastores
  */
 export function v3CommandCommits(): V3CommandCommits {
   if (commandStartMarks.size === 0) return { committed: true };
@@ -284,15 +235,8 @@ export function v3CommandCommits(): V3CommandCommits {
 }
 
 /**
- * The error a command reports for `error` (swamp-club#3882). A
- * {@link V3ReplicationError} says the command's changes are saved locally,
- * which is true only for a command that committed something; one that
- * committed nothing (`commits`) changed nothing. Then a failure to reach
- * the storage is {@link V3StorageUnreachableError}, as for the rest of the
- * writer's start (swamp-club#3802), worded for the closing sync when
- * `options.closing` says it came from there, and any other failure
- * {@link V3ReplicationUnavailableError}. Every other error is returned as
- * it is.
+ * a replication error says changes are saved locally only for a command that
+ * committed something; one that committed nothing changed nothing
  */
 export function reportedV3Failure(
   error: unknown,
@@ -315,68 +259,52 @@ export function reportedV3Failure(
     : new V3StorageUnreachableError(commits.datastorePath, cause);
 }
 
-/** Whether the lease listener that records replication lineages is set. */
 let lineageListening = false;
 
-/**
- * The checkouts' copies this process made current (swamp-club#3482), by
- * handle key: while replicating, a handle opens only on one of them.
- */
+/** while replicating, a handle opens only on one of these */
 const currentCopies = new Set<string>();
 
-/** The copies this process restored, so their writers restart a lineage. */
+/** restored copies, so their writers restart a lineage */
 const restoredCopies = new Set<string>();
 
 /**
- * The copies this process has used, by datastore, with their handle keys:
- * kept across teardowns, so a later lease in the process still finds its
- * copy's lineage.
+ * kept across teardowns, so a later lease in the process still finds its copy's
+ * lineage
  */
 const copiesByDatastore = new Map<
   string,
   (V3Copy & { readonly key: string })[]
 >();
 
-/** Handles this process caught up while holding their writer lock. */
 const caughtUpWriters = new WeakSet<V3Datastore>();
 const releases: (() => Promise<void>)[] = [];
 
-/**
- * Checkouts this process recovers and marks as their writer, since it last
- * closed: the first hold's recovery and marker write, which later holds
- * wait for.
- */
+/** the first hold's recovery and marker write, which later holds wait for */
 const markedCheckouts = new Map<string, Promise<void>>();
 
 /** Teardown keeps the writer markers: work may still be uncommitted. */
 let keepMarkers = false;
 
 /**
- * Checkouts, by resolved path, whose teardown keeps the writer marker
- * because their dropped work was not recovered (swamp-club#3553): the next
- * command recovers them. The close resets it.
+ * dropped work was not recovered, so the next command recovers it; the close
+ * resets this
  */
 const keptMarkers = new Set<string>();
 
 /**
- * The writer checkout this process last recorded for each datastore, by
- * resolved datastore path: which checkout, at which fence. Set once the
- * sidecar is written; a hold at the same fence for the same checkout does
- * not write it again (swamp-club#3564).
+ * set once the sidecar is written; a hold at the same fence for the same
+ * checkout does not write it again
  */
 const recordedCheckouts = new Map<
   string,
   { readonly repoDir: string; readonly fence: number }
 >();
 
-/** Whether the sidecar is kept current across serve's retakes. */
 let retakeListening = false;
 
 /**
- * How a hold on a v3 datastore's writer lease meets a claim on it
- * (swamp-club#4063): a direct writer is refused, `datastore claim` and
- * `release` change the claim, and serve writes as the owner only when its
- * address is the owner's.
+ * a direct writer is refused, datastore claim and release change the claim, and
+ * serve writes as the owner only when its address is the owner's
  */
 export type V3OwnerCheck =
   | { readonly as: "writer" }
@@ -384,10 +312,8 @@ export type V3OwnerCheck =
   | { readonly as: "serve"; readonly address: string | undefined };
 
 /**
- * Serve's holds, by resolved datastore path: its address, and the fence at
- * which the claim was last found to name it. A retake or a move of the
- * lease changes the fence, and the next commit checks again, so a claim
- * written while serve's lease had lapsed stops serve writing.
+ * a retake or move of the lease changes the fence and the next commit checks
+ * again, so a claim written while serve's lease had lapsed stops serve writing
  */
 const serveHolds = new Map<
   string,
@@ -395,19 +321,11 @@ const serveHolds = new Map<
 >();
 
 /**
- * The datastores this process's serve writes in team mode
- * (swamp-club#4096), by resolved path: while serve does not hold the
- * current writer lease it follows, and each commit is refused with the
- * leader this names.
+ * while serve does not hold the current writer lease it follows, and each
+ * commit is refused with the leader this names
  */
 const serveTeams = new Map<string, () => ServeLeader | undefined>();
 
-/**
- * Serve's team mode on the v3 datastore at `datastorePath`
- * (swamp-club#4096): from now on, a commit while this process does not hold
- * the current writer lease is refused with {@link ServeNotLeaderError},
- * naming the leader `leader` returns. Returns the undo.
- */
 export function enableV3ServeTeamMode(
   datastorePath: string,
   leader: () => ServeLeader | undefined,
@@ -420,28 +338,21 @@ export function enableV3ServeTeamMode(
 }
 
 /**
- * Refuses a write on a serve node that follows the datastore at
- * `datastorePath` in team mode, holding no lease (swamp-club#4096): the
- * backstop for a write no request gate forwarded to the leader
- * (swamp-club#4120). A node whose lease was taken over is refused as
- * fenced by the writer's own check. Does nothing outside team mode.
- *
- * @throws ServeNotLeaderError
+ * backstop for a write no request gate forwarded to the leader; a node whose
+ * lease was taken over is refused as fenced by the writer's own check
  */
 export function refuseV3FollowerWrite(datastorePath: string): void {
   const leader = serveTeams.get(resolve(datastorePath));
-  // A process that held the lease, current or lost, is the writer's check:
-  // a lost one is refused as fenced, which says the request may already have
-  // done work, never "nothing was changed" (swamp-club#4096).
+  // a process that held the lease is the writer's check: a lost one is refused
+  // as fenced, which says the request may already have done work, never that
+  // nothing was changed
   if (leader === undefined || holdsV3WriterLock(datastorePath)) return;
   throw new ServeNotLeaderError(leader());
 }
 
 /**
- * Brings a serve follower's copy of the v3 datastore `config` names up to
- * the leader's commits (swamp-club#4096): restored from the published
- * lineage when it is behind, and its read model caught up. Does nothing
- * while this process leads, whose copy is its own.
+ * restored from the published lineage when behind, then its read model caught
+ * up; does nothing while this process leads
  */
 export async function refreshV3FollowerCopy(
   repoDir: string,
@@ -461,10 +372,8 @@ export async function refreshV3FollowerCopy(
 }
 
 /**
- * Tells this process's next {@link closeV3Datastores} to keep the writer
- * markers (swamp-club#3299): serve calls it when its shutdown drain leaves
- * runs that may still be writing, so the next command recovers the checkout.
- * The close resets it.
+ * serve calls it when its shutdown drain leaves runs that may still be writing,
+ * so the next command recovers the checkout
  */
 export function keepV3WriterMarkers(): void {
   keepMarkers = true;
@@ -475,16 +384,14 @@ function handleKey(repoDir: string, config: V3DatastoreConfig): string {
     .join("\0");
 }
 
-/** This process's handle on the v3 datastore `config` names for `repoDir`. */
 export function v3DatastoreFor(
   repoDir: string,
   config: V3DatastoreConfig,
 ): V3Datastore {
   if (!lineageListening) {
-    // A fence this process takes outside a writer's hold (the read-only
-    // recovery, serve's retake) continues the copy's lineage when it may
-    // (swamp-club#3482); a writer prepares its own once its copy is
-    // current. It does nothing while replication is off.
+    // a fence taken outside a writer's hold (read-only recovery, serve's
+    // retake) continues the copy's lineage when it may; a writer prepares its
+    // own once its copy is current
     lineageListening = true;
     onV3LeaseTaken(async (path, fence) => {
       // Safe before the copy is current: a lineage continues only while
@@ -492,10 +399,9 @@ export function v3DatastoreFor(
       for (const copy of copiesByDatastore.get(resolve(path)) ?? []) {
         await recordV3LeaseFence(copy, fence);
       }
-      // Serve's retake of a lost hold recovers what a writer between its
-      // two holds left (swamp-club#3490). Its first hold recovers in
-      // recoverAndMark; while replicating, the sidecar upkeep recovers once
-      // the copy is current again; a read-only hold never recovers.
+      // serve's retake of a lost hold recovers what a writer between its two
+      // holds left; a first hold recovers in recoverAndMark and a read-only
+      // hold never recovers
       if (v3ReplicatesAt(path) || !holdsV3WriterLock(path)) return;
       for (const [key, handle] of opened) {
         if (
@@ -532,8 +438,8 @@ export function v3DatastoreFor(
       assertWriterCurrent: () => {
         refuseV3FollowerWrite(config.path);
         assertV3WriterCurrent(config.path);
-        // While replicating, nothing commits onto a copy that is not current
-        // (swamp-club#3482): after serve's retake, until its restore lands.
+        // while replicating, nothing commits onto a copy that is not current:
+        // after serve's retake, until its restore lands
         if (v3ReplicatesAt(config.path) && !currentCopies.has(key)) {
           throw new WriterFencedError(
             v3WriterFence(config.path),
@@ -561,9 +467,8 @@ export function v3DatastoreFor(
           );
         }
       },
-      // Nor while another copy may still restore a lineage that names
-      // chunks this copy does not (swamp-club#3491), nor before what this
-      // copy holds is replicated (swamp-club#3534).
+      // nor while another copy may still restore a lineage that names chunks
+      // this copy does not, nor before what this copy holds is replicated
       assertCollectable: async () => {
         await assertV3ChunksCollectable(copyOf(repoDir, config));
         if (v3ReplicatesAt(config.path)) {
@@ -577,16 +482,9 @@ export function v3DatastoreFor(
 }
 
 /**
- * Refuses a chunk sweep on a replicating datastore until everything the
- * copy holds is replicated (swamp-club#3534): a sweep deletes the chunks the
- * copy's commits released, compaction's included, and a restore of the
- * replica must never name one it deleted. So the sweep runs only after a
- * sync that resolves after the pass's compaction, and only while no commit
- * landed since: the high-water mark is read before the sync and again after
- * it. Compaction comes before the sweep in every pass, so a pass whose sync
- * failed sweeps nothing.
- *
- * @throws V3ChunkCollectionDeferredError when the sweep must wait
+ * a restore of the replica must never name a chunk the sweep deleted, so sweep
+ * only after a sync that resolves after the pass's compaction and while no
+ * commit landed since (mark read before and after)
  */
 async function assertSweepReplicated(
   datastorePath: string,
@@ -623,7 +521,6 @@ async function assertSweepReplicated(
   }
 }
 
-/** The checkout's copy of the datastore `config` names. */
 function copyOf(repoDir: string, config: { readonly path: string }): V3Copy {
   return {
     datastorePath: config.path,
@@ -633,16 +530,9 @@ function copyOf(repoDir: string, config: { readonly path: string }): V3Copy {
 }
 
 /**
- * Makes the checkout's copy of the datastore `config` names current before
- * this process reads or writes it (swamp-club#3482): restores it from the
- * published lineage when it is missing, behind or holds another lineage.
- * Once per process for a reader; a writer's hold and serve's retake make it
- * current again. Does nothing while replication is off.
- *
- * `stillCurrent` is asked just before the copy is marked current: serve's
- * replacement passes it, since a retake while the restore ran may follow
- * commits the restored lineage lacks (swamp-club#3565). When it answers
- * false the copy is left not current and the result says `stale`.
+ * stillCurrent is asked just before the copy is marked current, since a retake
+ * while the restore ran may follow commits the restored lineage lacks; false
+ * leaves it not current and the result says stale
  */
 export async function ensureV3CopyCurrent(
   repoDir: string,
@@ -656,7 +546,7 @@ export async function ensureV3CopyCurrent(
     return {};
   }
   if (mode === "read" && currentCopies.has(key)) return {};
-  // Named, since a first clone spends most of its time here (swamp-club#3803).
+  // named, since a first clone spends most of its time here
   return await withSpan(
     "swamp.datastore.v3.copy.ensure",
     { "swamp.datastore.v3.mode": mode },
@@ -671,7 +561,6 @@ async function ensureV3CopyCurrentNow(
   key: string,
   options: { readonly stillCurrent?: () => boolean },
 ): Promise<V3CopyRefresh & { readonly stale?: true }> {
-  // The handle's directory: the copy lives under the checkout's .swamp/.
   await Deno.mkdir(resolve(repoDir), { recursive: true });
   const copy = copyOf(repoDir, config);
   const handle = opened.get(key);
@@ -693,12 +582,9 @@ async function ensureV3CopyCurrentNow(
   if (!stale) currentCopies.add(key);
   if (refresh.restored !== undefined) {
     if (refresh.restored.readModelMoved) {
-      // The checkout applied commits the restore dropped or replaced: it
-      // is rebuilt from the restored commits, and the files no commit owns
-      // are removed, as after an interrupted writer, under the writer lease
-      // so no writer materialises files meanwhile. A reader that cannot
-      // take it replays the commits instead, leaving the dropped commits'
-      // files until a rebuild.
+      // rebuild from the restored commits and remove files no commit owns,
+      // under the writer lease; a reader that cannot take it replays instead,
+      // leaving the dropped commits' files until a rebuild
       const rebuilt = handle ?? v3DatastoreFor(repoDir, config);
       // Before as well as after the replay: this branch does not run again
       // once the copy state names the restore, so a process killed during
@@ -719,12 +605,9 @@ async function ensureV3CopyCurrentNow(
           }
           await release?.();
         } else {
-          // The read model replays every commit from the start. Files only
-          // dropped commits wrote may stay: the reset keeps the files it
-          // shows present as removal candidates (swamp-club#3617), but only
-          // a compacted-base load removes them, so they go only when the
-          // restored store has compacted history, and then possibly by a
-          // reader without the writer lease.
+          // files only dropped commits wrote may stay: they go only when the
+          // restored store has compacted history, and then possibly by a reader
+          // without the writer lease
           rebuilt.catalogStore.invalidate();
           await rebuilt.catchUp();
         }
@@ -734,7 +617,6 @@ async function ensureV3CopyCurrentNow(
         await removeStaleOutputSummaries(repoDir);
       }
     } else if (handle !== undefined) {
-      // An open handle's read model catches up with the restored commits.
       await handle.catchUp();
     }
   }
@@ -742,33 +624,18 @@ async function ensureV3CopyCurrentNow(
 }
 
 /**
- * Joins this process's hold on the writer lease of the v3 datastore `config`
- * names, waiting up to the lock timeout for another process to finish. A
- * writing command calls it before it takes any other lock, so it never
- * holds the global or a model lock while it waits for another writer.
- * Released by {@link closeV3Datastores}.
- *
- * @throws V3WriterBusyError when another process is writing
- * @throws V3StorageUnreachableError when the datastore's storage cannot be
- *   reached meanwhile (swamp-club#3802): nothing was changed yet
+ * a writing command calls it before taking any other lock, so it never holds
+ * the global or a model lock while waiting for another writer
  */
 export async function holdV3Writer(
   config: V3DatastoreConfig,
   repoDir: string,
   options: {
-    /** Take the lease again once it is lost: serve's lifetime hold. */
     readonly retakeLost?: boolean;
-    /**
-     * How the hold meets a claim on the datastore (swamp-club#4063); a
-     * direct writer's by default, or serve's once this process holds as
-     * serve.
-     */
     readonly ownerCheck?: V3OwnerCheck;
     /**
-     * Follow when another process holds the lease, instead of waiting for
-     * it: serve's team mode (swamp-club#4096). The lease is tried once,
-     * without waiting; a busy one leaves this process reading its own copy,
-     * made current, and holding nothing.
+     * follow instead of waiting: the lease is tried once; a busy one leaves
+     * this process reading its own current copy and holding nothing
      */
     readonly follow?: boolean;
   } = {},
@@ -782,12 +649,9 @@ export async function holdV3Writer(
     }
     throw error;
   }
-  // A checkout whose upstream is serve holds only its local lease, which
-  // orders this machine's processes; serve orders the writers. Its copy is
-  // brought up to serve's log before it writes (swamp-club#3985). A serve
-  // it cannot reach puts it in offline mode for the command, when its copy
-  // has read serve's feed (swamp-club#4195): the offline rules then judge
-  // each piece of work.
+  // a serve-upstream checkout holds only a local lease, ordering this machine's
+  // processes; serve orders the writers. Its copy is brought up to serve's log
+  // before it writes, or goes offline if serve is unreachable
   if (role === "writer" && serveUpstreamAt(config.path) !== undefined) {
     await v3DatastoreFor(repoDir, config).catchUpForWrite?.(undefined, {
       mayGoOffline: true,
@@ -797,12 +661,9 @@ export async function holdV3Writer(
 }
 
 /**
- * Watches serve's commit feed for every v3 datastore this process reads
- * through serve (a serve-mode checkout), while a long-running command runs
- * (swamp-club#4120): what other callers commit reaches the copy within about
- * a second. Does nothing for a datastore not read through serve, so serve
- * itself never watches. The watches stop when the datastores close
- * ({@link closeV3Datastores}), before anything else closes.
+ * does nothing for a datastore not read through serve, so serve itself never
+ * watches; the watches stop when the datastores close, before anything else
+ * closes
  */
 export function watchV3ServeFeeds(): void {
   for (const handle of [...opened.values()]) {
@@ -815,16 +676,12 @@ export function watchV3ServeFeeds(): void {
   }
 }
 
-/** {@link watchV3ServeFeeds}'s watches, stopped at close. */
 const feedWatches: ServeFeedWatch[] = [];
 
 /**
- * Brings every handle this process opened on the v3 datastore at
- * `datastorePath` up to serve's log, its read model included, refusing when
- * serve cannot be reached. A serve-mode checkout calls it once it holds a
- * lock at serve (swamp-club#3985), so the work under the lock reads every
- * version another machine wrote before it; {@link holdV3Writer}'s catch-up
- * ran before the lock was taken.
+ * a serve-mode checkout calls it once it holds a lock at serve, so the work
+ * under the lock reads every version another machine wrote; holdV3Writer's
+ * catch-up ran before the lock was taken
  */
 export async function catchUpV3HandlesAt(datastorePath: string): Promise<void> {
   const path = resolve(datastorePath);
@@ -835,7 +692,6 @@ export async function catchUpV3HandlesAt(datastorePath: string): Promise<void> {
   }
 }
 
-/** {@link holdV3Writer}, before a storage failure is given its code. */
 async function takeV3WriterHold(
   config: V3DatastoreConfig,
   repoDir: string,
@@ -845,28 +701,27 @@ async function takeV3WriterHold(
     readonly follow?: boolean;
   },
 ): Promise<"writer" | "follower"> {
-  // Before the lease and the recovery of an interrupted writer, which
-  // would meet the same checkout (swamp-club#3691).
+  // before the lease and the recovery of an interrupted writer, which would
+  // meet the same checkout
   await refuseUnsafeV3Checkout(repoDir, config);
-  // A checkout that holds records never joins (swamp-club#3690): refused
-  // before the lease, which records this checkout in the datastore.
+  // a checkout that holds records never joins: refused before the lease, which
+  // records this checkout in the datastore
   await assertV3CheckoutJoinable(repoDir, config.namespace);
   // Before the handle opens: opening migrates commits.db, which a swamp from
   // before the lease, still writing, could not open again.
   await refuseLiveV3LegacyWriter(config.path);
   const key = handleKey(repoDir, config);
-  // A claim this writer may not write under, as the file showed it before
-  // the lease: the writer does not wait for a lease serve holds to be told
-  // so (swamp-club#4063). Only the check under the lease below decides; a
-  // stale copy's claim costs a free lease nothing.
+  // a claim this writer may not write under, as the file showed before the
+  // lease, so it need not wait on a lease serve holds; only the check under the
+  // lease decides
   const claimHint = serveUpstreamAt(config.path) === undefined
     ? claimRefusal(
       peekDatastoreOwner(v3CommitsDbPath(config.path, repoDir)),
       ownerCheckOf(config, options.ownerCheck),
     )
     : undefined;
-  // A claim this serve may not write under is refused as before: it never
-  // follows (swamp-club#4096).
+  // a claim this serve may not write under is refused as before: it never
+  // follows
   const follows = options.follow === true && claimHint === undefined &&
     serveUpstreamAt(config.path) === undefined;
   let release: () => Promise<void>;
@@ -875,10 +730,9 @@ async function takeV3WriterHold(
       maxWaitMs: claimHint === undefined && !follows
         ? resolveLockTimeoutMs()
         : 0,
-      // Records the lease's fence in commits.db, so a writer that loses the
-      // lease later can commit nothing (swamp-club#3359). While replicating,
-      // the copy is opened only once it is current, and the first fence is
-      // raised then (swamp-club#3482); a retake raises it here.
+      // records the lease's fence in commits.db, so a writer that loses the
+      // lease can commit nothing; while replicating the copy opens only once
+      // current and the first fence is raised then; a retake raises it here
       fenceStore: {
         writerFence: () =>
           !v3ReplicatesAt(config.path) || currentCopies.has(key)
@@ -921,14 +775,14 @@ async function takeV3WriterHold(
   }
   if (v3ReplicatesAt(config.path)) {
     try {
-      // The lease first, then the restore: every commit the previous writer
-      // acknowledged is in what this one restores (swamp-club#3482).
+      // the lease first, then the restore: every commit the previous writer
+      // acknowledged is in what this one restores
       await ensureV3CopyCurrent(repoDir, config, "write");
       const handle = v3DatastoreFor(repoDir, config);
       const fence = v3WriterFence(config.path);
       if (fence !== undefined) await handle.raiseWriterFence(fence);
-      // Before the recovery, lineage and sidecar this hold starts, which
-      // can fail before the command commits anything (swamp-club#3882).
+      // before the recovery, lineage and sidecar this hold starts, which can
+      // fail before the command commits anything
       const datastore = resolve(config.path);
       if (!commandStartMarks.has(datastore)) {
         commandStartMarks.set(datastore, {
@@ -941,10 +795,9 @@ async function takeV3WriterHold(
       throw error;
     }
   }
-  // Once the lease is held and the copy current, before the recovery below
-  // lands any commit: a claim written while this writer waited is seen,
-  // and a writer it refuses commits nothing (swamp-club#4063). A serve-mode
-  // checkout writes through serve, which is the owner.
+  // checked once the lease is held and the copy current, before recovery lands
+  // any commit, so a claim written while this writer waited is seen. A
+  // serve-mode checkout writes through serve, the owner
   if (serveUpstreamAt(config.path) === undefined) {
     try {
       refuseUnlessOwner(config, repoDir, options.ownerCheck);
@@ -957,9 +810,9 @@ async function takeV3WriterHold(
   let marking = markedCheckouts.get(checkout);
   const marks = marking === undefined;
   if (marking === undefined) {
-    // A writer that ended without tearing down left files no commit names:
-    // recover them before this process writes (swamp-club#3299). Later holds
-    // in this process wait for the same recovery.
+    // a writer that ended without tearing down left files no commit names:
+    // recover them before this process writes; later holds in this process wait
+    // for the same recovery
     marking = recoverAndMark(config, repoDir);
     // Handled here, awaited below: a recovery that fails while the sidecar
     // write is still pending must not reject unhandled.
@@ -969,8 +822,8 @@ async function takeV3WriterHold(
   try {
     await recordWriterCheckout(config.path, repoDir);
     await marking;
-    // Once the checkout is recovered and marked: a sidecar for this hold's
-    // fence, when replication is on (swamp-club#3416).
+    // a sidecar for this hold's fence once the checkout is recovered and
+    // marked, when replication is on
     const fence = v3WriterFence(config.path);
     if (fence !== undefined && v3ReplicatesAt(config.path)) {
       await prepareV3WriterLineage(copyOf(repoDir, config), fence, {
@@ -1028,13 +881,9 @@ async function takeV3WriterHold(
 }
 
 /**
- * Sets this process up to follow the v3 datastore `config` names, while
- * another process holds its writer lease (swamp-club#4096): its copy made
- * current for reads, and the claim checked as the lease's hold would, so a
- * serve with another `--address` is refused here too. Nothing is recovered,
- * marked or replicated: the writer does that.
- *
- * @throws DatastoreClaimedError when this serve may not write the datastore
+ * nothing is recovered, marked or replicated: the writer does that; the claim
+ * is checked as the lease's hold would, so a serve with another --address is
+ * refused here too
  */
 async function followV3Datastore(
   config: V3DatastoreConfig,
@@ -1055,12 +904,8 @@ async function followV3Datastore(
 }
 
 /**
- * Refuses the hold `check` describes on a claimed datastore unless it may
- * write it (swamp-club#4063). Serve's hold is remembered, so a later hold in
- * the same process is serve's too and its commits check the claim again
- * whenever the fence moves.
- *
- * @throws DatastoreClaimedError when the hold may not write
+ * serve's hold is remembered, so a later hold in the same process is serve's
+ * too and its commits check the claim again whenever the fence moves
  */
 function refuseUnlessOwner(
   config: V3DatastoreConfig,
@@ -1084,10 +929,6 @@ function refuseUnlessOwner(
   }
 }
 
-/**
- * The check a hold meets: the one asked for, serve's once this process holds
- * the datastore as serve, or a direct writer's.
- */
 function ownerCheckOf(
   config: V3DatastoreConfig,
   ownerCheck: V3OwnerCheck | undefined,
@@ -1100,12 +941,9 @@ function ownerCheckOf(
 }
 
 /**
- * Before each of serve's commits: refuses once the claim no longer names
- * serve, checked again whenever the fence moved since it last named it
- * (swamp-club#4063). A retake or a move of the lease is the only way a
- * claim can change under serve's hold.
- *
- * @throws DatastoreClaimedError
+ * a retake or a move of the lease is the only way a claim can change under
+ * serve's hold, so check again only when the fence moved since it last named
+ * serve
  */
 function assertServeStillOwner(datastorePath: string, key: string): void {
   const serve = serveHolds.get(resolve(datastorePath));
@@ -1127,11 +965,9 @@ function assertServeStillOwner(datastorePath: string, key: string): void {
 }
 
 /**
- * `refusal`, telling of the commits an earlier command on this checkout left
- * in its outbox, which the claim strands (swamp-club#4063). Only a
- * replicated checkout has an outbox of its own: on a shared filesystem
+ * only a replicated checkout has an outbox of its own: on a shared filesystem
  * datastore the claim's own hold lands them before the claim. The command
- * itself still changed nothing.
+ * itself still changed nothing
  */
 function withStrandedOutbox(
   refusal: DatastoreClaimedError,
@@ -1160,7 +996,6 @@ function withStrandedOutbox(
   );
 }
 
-/** The refusal `check` meets on a datastore `owner` claims, if any. */
 function claimRefusal(
   owner: DatastoreOwner | undefined,
   check: V3OwnerCheck,
@@ -1188,13 +1023,7 @@ function claimRefusal(
   }
 }
 
-/**
- * Records that this process writes the checkout at `repoDir` under its
- * current hold, unless it already recorded that checkout at that fence. A
- * hold that was lost records nothing: its sidecar is the new writer's now.
- *
- * @throws WriterFencedError when the hold was lost
- */
+/** a hold that was lost records nothing: its sidecar is the new writer's now */
 async function recordWriterCheckout(
   datastorePath: string,
   repoDir: string,
@@ -1207,8 +1036,8 @@ async function recordWriterCheckout(
   const recorded = recordedCheckouts.get(datastore);
   if (recorded?.fence === fence && recorded.repoDir === canonical) return;
   const sidecar = writerCheckoutPath(datastorePath);
-  // A bucket datastore's local root has no _control/ of its own until
-  // this first write (swamp-club#3534).
+  // a bucket datastore's local root has no _control/ of its own until this
+  // first write
   await Deno.mkdir(dirname(sidecar), { recursive: true });
   const local = await localProcess();
   await atomicWriteTextFile(
@@ -1224,8 +1053,8 @@ async function recordWriterCheckout(
   recordedCheckouts.set(datastore, { repoDir: canonical, fence });
   if (!retakeListening) {
     retakeListening = true;
-    // Serve's retake writes the checkout under its new fence, so readers
-    // there stay out (swamp-club#3564).
+    // serve's retake writes the checkout under its new fence, so readers there
+    // stay out
     onV3HoldRetaken(async (path, retaken) => {
       const previous = recordedCheckouts.get(resolve(path));
       if (previous === undefined || previous.fence === retaken) return;
@@ -1235,17 +1064,16 @@ async function recordWriterCheckout(
 }
 
 /**
- * Recovers the checkout's interrupted writer, then marks this process. A
- * recovery that fails names the marker, so a user can clear it when the
- * failure persists.
+ * a recovery that fails names the marker, so a user can clear it when the
+ * failure persists
  */
 async function recoverAndMark(
   config: V3DatastoreConfig,
   repoDir: string,
 ): Promise<void> {
-  // What a writer that died left in the outbox lands first, so the
-  // interrupted-writer recovery keeps the files its commits own
-  // (swamp-club#3490). Its failures name the outbox, not the marker.
+  // what a writer that died left in the outbox lands first, so the
+  // interrupted-writer recovery keeps the files its commits own; failures name
+  // the outbox, not the marker
   const handle = v3DatastoreFor(repoDir, config);
   const fence = v3WriterFence(config.path);
   if (fence !== undefined) await recoverV3Outbox(handle, fence);
@@ -1254,8 +1082,8 @@ async function recoverAndMark(
       holdsWriterLock: true,
     });
   } catch (error) {
-    // Cut off from the storage, the recovery is retried by the next command;
-    // the hold gives the failure its code (swamp-club#3802).
+    // cut off from the storage, the recovery is retried by the next command;
+    // the hold gives the failure its code
     if (!(error instanceof UserError) && isNetworkFailure(error)) throw error;
     const markerPath = writerMarkerPath(repoDir);
     const recoveryError = markErrorPaths(
@@ -1270,26 +1098,20 @@ async function recoverAndMark(
     recoveryError.cause = error;
     throw recoveryError;
   }
-  // A marker that is left stays: another host's, or a still-running
-  // process's, whose writer may yet leave uncommitted files, or this
-  // process's own from before a kept close. Its start is no later than this
-  // process's writes, so it covers them too. An unreadable one was
-  // recovered above, never written over first (swamp-club#3617).
+  // a marker left stays: another host's or live process's, whose writer may yet
+  // leave uncommitted files, or this process's own from before a kept close. An
+  // unreadable one was recovered above
   if ((await readWriterMarkerFile(repoDir)).kind === "absent") {
     await writeWriterMarker(repoDir);
   }
 }
 
-/**
- * The fence each commit store's outbox was last recovered at in this
- * process, by `commits.db` path: a writer recovers once per fence it takes.
- */
+/** a writer recovers once per fence it takes */
 const outboxRecoveredAt = new Map<string, number>();
 
 /**
- * Lands, settles or drops what the outbox of `handle`'s commit store holds
- * (swamp-club#3490), under the writer lease at `fence`. Once per fence per
- * store: checkouts sharing the datastore's `commits.db` share its outbox.
+ * checkouts sharing the datastore's commits.db share its outbox, so recover
+ * once per fence per store
  */
 async function recoverV3Outbox(
   handle: V3Datastore,
@@ -1297,16 +1119,16 @@ async function recoverV3Outbox(
 ): Promise<void> {
   const store = resolve(handle.commitsDbPath);
   if (outboxRecoveredAt.get(store) === fence) return;
-  // A serve-mode checkout lands its entries through serve, never only in
-  // its copy of serve's log (swamp-club#3985).
+  // a serve-mode checkout lands its entries through serve, never only in its
+  // copy of serve's log
   const upstream = handle.serveUpstreamStore;
   try {
     await recoverCommitOutbox(
       upstream === undefined ? handle : {
         ...handle,
         commitStore: upstream,
-        // What the checkout queued offline is flushed here, under the
-        // writer hold (swamp-club#4195): read-only commands never flush.
+        // what the checkout queued offline is flushed here, under the writer
+        // hold: read-only commands never flush
         ...(handle.offlineFlushPort !== undefined
           ? { offline: handle.offlineFlushPort }
           : {}),
@@ -1318,9 +1140,9 @@ async function recoverV3Outbox(
       },
     );
   } catch (error) {
-    // Serve unreachable: what the outbox holds waits for the next command
-    // that reaches it. The writer hold's catch-up then decides whether this
-    // one works offline or is refused (swamp-club#4195).
+    // serve unreachable: what the outbox holds waits for the next command that
+    // reaches it; the writer hold's catch-up decides whether this one works
+    // offline or is refused
     if (upstream !== undefined && error instanceof ServeUnreachableError) {
       logger
         .debug`Could not reach serve to land this checkout's outbox; a later command lands it: ${error}`;
@@ -1336,16 +1158,14 @@ function errorMessage(error: unknown): string {
 }
 
 /**
- * Which checkout this datastore's writer process writes, beside its writer
- * lock (swamp-club#3279). A reader in that same checkout must not catch up
- * while the writer runs: the writer's files there are newer than its last
- * commit, and replaying older commits over them would undo its work.
+ * a reader in that same checkout must not catch up while the writer runs: its
+ * files are newer than its last commit, and replaying older commits over them
+ * would undo its work
  */
 function writerCheckoutPath(datastorePath: string): string {
   return join(datastorePath, "_control", "writer.checkout.json");
 }
 
-/** What the sidecar records. Older swamps wrote no identity or fence. */
 interface WriterCheckoutRecord {
   readonly repoDir: string;
   readonly hostname: string;
@@ -1381,8 +1201,8 @@ async function readWriterCheckout(
 }
 
 /**
- * Removes the sidecar when it is still this process's record at the fence
- * it wrote it with: a writer that took over since wrote its own.
+ * removes the sidecar only when it is still this process's record at the fence
+ * it wrote it with; a writer that took over wrote its own
  */
 async function removeOwnWriterCheckout(datastorePath: string): Promise<void> {
   const datastore = resolve(datastorePath);
@@ -1402,7 +1222,6 @@ async function removeOwnWriterCheckout(datastorePath: string): Promise<void> {
   }
 }
 
-/** `path` with symlinks resolved, so two spellings of a checkout compare equal. */
 async function canonicalPath(path: string): Promise<string> {
   try {
     return await Deno.realPath(path);
@@ -1412,15 +1231,9 @@ async function canonicalPath(path: string): Promise<string> {
 }
 
 /**
- * Whether another process writes the checkout at `repoDir` under the
- * datastore's lease, so a reader there must not catch up (swamp-club#3279):
- * the sidecar names the checkout, and its fence is still the lease's
- * highest. Its writer is then protected while it runs, whatever its TTL,
- * and until a higher fence fences it when this process cannot judge it
- * (another namespace, host or boot: swamp-club#3564). A released fence
- * keeps the protection too: the commit store takes the released holder's
- * commits until a new writer raises its fence. A sidecar from a swamp
- * before identities is judged by the lease record as it was.
+ * protects the writer while it runs, whatever its TTL, and until a higher fence
+ * fences it when this process cannot judge it; a released fence keeps the
+ * protection until a new writer raises its fence
  */
 async function anotherProcessWritesCheckout(
   repoDir: string,
@@ -1447,7 +1260,6 @@ async function anotherProcessWritesCheckout(
     : holder.fence === recorded.fence;
 }
 
-/** Whether `recorded` is the sidecar this process wrote for its current hold. */
 function isOwnWriterCheckout(
   datastorePath: string,
   recorded: WriterCheckoutRecord,
@@ -1459,10 +1271,8 @@ function isOwnWriterCheckout(
 }
 
 /**
- * Whether `recorded` names this process: by its pid and identity, whatever
- * the hostname is now (swamp-club#3801). A record without an identity, or
- * one this kernel cannot place (its boot id unreadable), by its pid and
- * hostname, as before.
+ * by pid and identity, whatever the hostname is now; a record without an
+ * identity, or one this kernel cannot place, by pid and hostname
  */
 function isThisProcess(
   recorded: WriterCheckoutRecord,
@@ -1479,11 +1289,6 @@ function isThisProcess(
   return recorded.hostname === hostnameOf(local);
 }
 
-/**
- * Whether the sidecar may name another process that still writes: not this
- * process's own record, and, for a record with an identity, not one judged
- * gone.
- */
 function mayBeAnotherWriter(
   recorded: WriterCheckoutRecord,
   local: LocalProcess,
@@ -1505,8 +1310,8 @@ function mayBeAnotherWriter(
 }
 
 /**
- * A sidecar from a swamp before swamp-club#3564, judged by the lease record
- * of the same process: on this host by its pid, else within its TTL.
+ * a sidecar from before identities, judged by the lease record of the same
+ * process: on this host by its pid, else within its TTL
  */
 function legacyWriterWritesCheckout(
   recorded: WriterCheckoutRecord,
@@ -1525,26 +1330,15 @@ function legacyWriterWritesCheckout(
 }
 
 /**
- * What `createRepositoryContext` takes to build a v3 context over the
- * datastore `config` names: the commit-log engine and the read model's
- * catalog. Catches the read model up first, so the context reads every
- * commit made before it opened.
- *
- * Its `fetchForeignContent` reads another namespace's content from that
- * namespace's cache root in the checkout (swamp-club#3691). It is marked
- * `readsSoloNamespace`, and the context builders spread this config after
- * the v2 sync service's fetcher, so it replaces that one.
+ * catches the read model up first, so the context reads every commit made
+ * before it opened; fetchForeignContent replaces the v2 sync service's fetcher
+ * since builders spread this config after it
  */
 export async function v3RepositoryFactoryConfig(
   repoDir: string,
   config: V3DatastoreConfig,
   options: {
-    /** The repo keeps its definitions in the datastore's config tier. */
     readonly managedConfig?: boolean;
-    /**
-     * A read-only command's context: it takes no writer lock, and any change
-     * staged through it is refused.
-     */
     readonly readOnly?: boolean;
   } = {},
 ): Promise<
@@ -1568,12 +1362,12 @@ export async function v3RepositoryFactoryConfig(
   }
   // Before recovery and catch-up, which would write into the checkout.
   await refuseUnsafeV3Checkout(repoDir, config);
-  // A checkout that holds records never joins (swamp-club#3690): refused
-  // before its copy is restored or its read model opens.
+  // a checkout that holds records never joins: refused before its copy is
+  // restored or its read model opens
   await assertV3CheckoutJoinable(repoDir, config.namespace);
   const writer = holdsV3WriterLock(config.path);
-  // A reader's copy is made current first (swamp-club#3482), unless another
-  // process writes this checkout: that writer keeps it current.
+  // a reader's copy is made current first, unless another process writes this
+  // checkout: that writer keeps it current
   if (
     !writer && v3ReplicatesAt(config.path) &&
     await anotherProcessWritesCheckout(repoDir, config.path)
@@ -1583,8 +1377,8 @@ export async function v3RepositoryFactoryConfig(
     try {
       await ensureV3CopyCurrent(repoDir, config, "read");
     } catch (error) {
-      // Cut off from the replica's storage, the reader changed nothing, and
-      // the next command makes its copy current (swamp-club#3802).
+      // cut off from the replica's storage, the reader changed nothing, and the
+      // next command makes its copy current
       if (
         error instanceof Error && !(error instanceof UserError) &&
         isNetworkFailure(error)
@@ -1595,25 +1389,22 @@ export async function v3RepositoryFactoryConfig(
     }
   }
   const handle = v3DatastoreFor(repoDir, config);
-  // Before the recovery and catch-up: a projection another view built (a
-  // serve copy of another token, address or namespace, or the solo log) is
-  // rebuilt from this one first (swamp-club#3985).
+  // before the recovery and catch-up: a projection another view built (a serve
+  // copy of another token, address or namespace, or the solo log) is rebuilt
+  // from this one first
   await alignCheckoutView(
     repoDir,
     handle,
     checkoutViewOf(config.path, config.namespace ?? "", handle.serveCopyId),
     { holdsWriterLock: writer },
   );
-  // In the checkout another process is writing, its files are already the
-  // newest: catching up would replay older commits over them. A writing
-  // process catches up once: after that its own files are the newest too,
-  // and a context it opens mid-command must not replay a commit over a file
-  // it has rewritten since.
+  // in a checkout another process writes its files are already newest, so
+  // catching up would replay older commits over them; a writer catches up once,
+  // so a context opened mid-command cannot replay over its rewrites
   if (!writer) {
-    // A read-only command recovers a checkout whose writer ended without
-    // tearing down, when it can take the writer lock (swamp-club#3299). A
-    // recovery that fails leaves the marker for the next command, and the
-    // read goes on.
+    // a read-only command recovers a checkout whose writer ended without
+    // tearing down, when it can take the writer lock; a failed recovery leaves
+    // the marker for the next command and the read goes on
     try {
       await recoverInterruptedWriter(handle, repoDir, {
         holdsWriterLock: false,
@@ -1629,11 +1420,9 @@ export async function v3RepositoryFactoryConfig(
     await handle.catchUp();
     if (writer) caughtUpWriters.add(handle);
   } else {
-    // The writer's files are the newest only once the read model is
-    // complete. Until then a catch-up is in progress or was cut short, and
-    // the files may be anywhere between two commits: wait for it, bounded
-    // by the lock timeout, and finish it if it was cut short
-    // (swamp-club#3803).
+    // the writer's files are newest only once the read model is complete; until
+    // then a catch-up is in progress or cut short, so wait for it, bounded by
+    // the lock timeout, and finish it if cut short
     await handle.catchUpUnlessComplete(resolveLockTimeoutMs());
   }
   const unreadableContent = unreadableContentLookup(repoDir, handle.readModel);
@@ -1643,11 +1432,10 @@ export async function v3RepositoryFactoryConfig(
         readOnly: options.readOnly === true,
       }),
     catalogStore: handle.catalogStore,
-    // A read of a record the read model could not materialise fails loudly
-    // (swamp-club#3617).
+    // a read of a record the read model could not materialise fails loudly
     unreadableContent,
-    // Another namespace's row is read from its own cache root in this
-    // checkout, never from this namespace's (swamp-club#3691).
+    // another namespace's row is read from its own cache root in this checkout,
+    // never from this namespace's
     fetchForeignContent: v3ForeignContentFetcher(
       repoDir,
       config,
@@ -1656,15 +1444,12 @@ export async function v3RepositoryFactoryConfig(
   };
 }
 
-/** Error code for a v3 checkout bound to a reserved namespace. */
 export const V3_RESERVED_NAMESPACE_CODE = "datastore_v3_reserved_namespace";
 
 /**
- * Refuses a checkout the read model cannot materialise into safely
- * (swamp-club#3691): one bound to a reserved namespace, whose cache root
- * `.swamp/{namespace}/` is a directory swamp keeps its own files in, or one
- * whose materialised subdirectories link out of their cache root, where
- * every catch-up would fail.
+ * a reserved namespace's cache root is a directory swamp keeps its own files
+ * in, and subdirectories linking out of their cache root would fail every
+ * catch-up
  */
 async function refuseUnsafeV3Checkout(
   repoDir: string,
@@ -1680,15 +1465,13 @@ async function refuseUnsafeV3Checkout(
   await assertV3CacheSubdirsContained(repoDir, namespace, config.directories);
 }
 
-/** Whether teardown keeps the writer marker of the checkout at `repoDir`. */
 function keepsMarker(repoDir: string): boolean {
   return keepMarkers || keptMarkers.has(resolve(repoDir));
 }
 
 /**
- * Whether this process still writes the datastore of the handle at `key`:
- * it holds a current writer lease, and while replicating its copy is
- * current. Only then may it rebuild the checkout.
+ * it holds a current writer lease, and while replicating its copy is current;
+ * only then may it rebuild the checkout
  */
 function writesCurrentCopy(key: string, handle: V3Datastore): boolean {
   if (!holdsV3WriterLock(handle.datastorePath)) return false;
@@ -1707,31 +1490,24 @@ function writesCurrentCopy(key: string, handle: V3Datastore): boolean {
 }
 
 /**
- * The closing sync's deadline once the datastore's storage is known
- * unreachable (swamp-club#3802): what it would confirm replicates with the
- * next write in this checkout, so the command does not wait for it.
+ * what it would confirm replicates with the next write in this checkout, so the
+ * command does not wait for it
  */
 export const UNREACHABLE_SYNC_DEADLINE_MS = 1_000;
 
-/**
- * How long a closing sync runs before its storage is probed
- * (swamp-club#3802): a sync that answers sooner, as a healthy one does, is
- * never probed.
- */
+/** a sync that answers sooner, as a healthy one does, is never probed */
 export const STORAGE_PROBE_GRACE_MS = 2_000;
 
 /**
- * How long a lease release may take once the storage is known unreachable
- * (swamp-club#3802): one that cannot finish leaves the lease to expire by
- * its TTL, as a release that fails does.
+ * one that cannot finish leaves the lease to expire by its TTL, as a release
+ * that fails does
  */
 export const UNREACHABLE_RELEASE_BOUND_MS = 1_000;
 
 /**
- * The most a lease release may take at serve's shutdown (swamp-club#3961),
- * within what the shutdown deadline has left: a slow bucket otherwise holds
- * it behind a renewal in flight and then its own write. One that misses
- * leaves the lease to expire by its TTL, as a release that fails does.
+ * within what the shutdown deadline has left: a slow bucket otherwise holds it
+ * behind a renewal in flight and then its own write; one that misses leaves the
+ * lease to expire by its TTL
  */
 export const SHUTDOWN_RELEASE_BOUND_MS = 5_000;
 
@@ -1740,7 +1516,6 @@ let teardownTiming = {
   releaseBoundMs: UNREACHABLE_RELEASE_BOUND_MS,
 };
 
-/** Test seam: the teardown's probe grace and release bound, or the defaults. */
 export function setV3TeardownTimingForTesting(
   timing: { probeGraceMs: number; releaseBoundMs: number } | undefined,
 ): void {
@@ -1754,13 +1529,9 @@ export function setV3TeardownTimingForTesting(
 const PROBE_HASH = "0".repeat(64);
 
 /**
- * Watches a closing sync of `datastore` (swamp-club#3802): once it has run
- * {@link STORAGE_PROBE_GRACE_MS}, asks the datastore's storage whether a
- * chunk exists, and aborts `signal` when the storage cannot be reached, so
- * the sync is given up as a definite failure instead of waiting out its
- * deadline. `stop` ends the watch and says whether the storage was found
- * unreachable. Nothing is watched when the storage is already known
- * unreachable or the datastore has no open handle.
+ * aborts signal when the storage cannot be reached, so the sync is given up as
+ * a definite failure instead of waiting out its deadline; nothing is watched
+ * when storage is already known unreachable
  */
 function watchStorageDuringSync(
   datastore: string,
@@ -1808,11 +1579,9 @@ function watchStorageDuringSync(
 }
 
 /**
- * Runs a lease release, but waits at most `boundMs` for it: with the storage
- * unreachable it can only fail (swamp-club#3802), and at serve's shutdown a
- * slow bucket must not hold the process past its deadline
- * (swamp-club#3961). One that misses leaves the lease to expire by its TTL.
- * The release keeps running until the process exits; its outcome is logged.
+ * with the storage unreachable a release can only fail, and at serve's shutdown
+ * a slow bucket must not hold the process past its deadline; one that misses
+ * leaves the lease to expire by its TTL
  */
 async function boundedRelease(
   release: () => Promise<void>,
@@ -1838,10 +1607,8 @@ async function boundedRelease(
 }
 
 /**
- * Releases a writer lease after the work under it failed with `failure`,
- * which stays the error reported (swamp-club#3802): a release that fails too,
- * as one cut off from the storage does, is logged, and the lease expires by
- * its TTL.
+ * the original failure stays the error reported; a release that fails too, as
+ * one cut off from the storage does, is logged and the lease expires by its TTL
  */
 async function releaseAfterFailure(
   release: () => Promise<void>,
@@ -1856,11 +1623,9 @@ async function releaseAfterFailure(
 }
 
 /**
- * Recovers the work a checkout's units dropped (swamp-club#3553) before the
- * command ends, with the swamp-club#3299 recovery. A process that lost its
- * lease, a checkout with a unit still open, or a recovery that fails keeps
- * the writer marker instead, so the next command in the checkout recovers.
- * Never fails the teardown.
+ * a process that lost its lease, a checkout with a unit still open, or a
+ * recovery that fails keeps the writer marker instead, so the next command
+ * recovers. Never fails the teardown
  */
 async function recoverDroppedWork(
   key: string,
@@ -1885,7 +1650,7 @@ async function recoverDroppedWork(
     return;
   }
   if (storageUnreachable) {
-    // Its replay would wait on the storage too (swamp-club#3802).
+    // its replay would wait on the storage too
     keep("the datastore's storage could not be reached");
     return;
   }
@@ -1913,17 +1678,9 @@ async function recoverDroppedWork(
 }
 
 /**
- * Closes every v3 datastore handle this process opened and releases its
- * writer-lock holds. Idempotent; the CLI calls it at teardown on every
- * outcome, and serve when it stops.
- *
- * Once the datastore's storage is known unreachable (swamp-club#3802),
- * because `options.storageUnreachable` says the command found it so or the
- * closing sync's probe finds it so, nothing waits on retries that cannot
- * succeed: compaction and the recovery of dropped work are left to the next
- * command, the closing sync gets {@link UNREACHABLE_SYNC_DEADLINE_MS}, and
- * each lease release gets {@link UNREACHABLE_RELEASE_BOUND_MS} before the
- * lease is left to expire by its TTL. It holds for this call only.
+ * with the storage known unreachable nothing waits on retries that cannot
+ * succeed: compaction and dropped-work recovery are left to the next command,
+ * and the sync and lease releases are bounded
  */
 export async function closeV3Datastores(
   options: { readonly storageUnreachable?: boolean } = {},
@@ -1938,31 +1695,30 @@ export async function closeV3Datastores(
   commandStartMarks.clear();
   serveHolds.clear();
   serveTeams.clear();
-  // Offline mode lasts the command (swamp-club#4195); json mode says what
-  // it queued now, after its result.
+  // offline mode lasts the command; json mode says what it queued now, after
+  // its result
   reportQueuedOffline();
   resetServeOffline();
   const entries = [...opened.entries()];
   const handles = entries.map(([, handle]) => handle);
   opened.clear();
-  // Whether each checkout that dropped work may recover it now
-  // (swamp-club#3553), judged while the lease and copy state are here.
+  // whether each checkout that dropped work may recover it now, judged while
+  // the lease and copy state are here
   const dropped = entries.flatMap(([key, handle]) =>
     handle.droppedWork() === undefined
       ? []
       : [{ key, handle, current: writesCurrentCopy(key, handle) }]
   );
-  // A writer folds history the policy no longer retains before it lets go
-  // of the lock: compaction is the single writer's (swamp-club#3258).
+  // a writer folds history the policy does not retain before it lets go of the
+  // lock: compaction is the single writer's
   for (const handle of unreachable ? [] : handles) {
     if (holdsV3WriterLock(handle.datastorePath)) {
       await compactQuietly(handle, CLOSING_COMPACTION_BUDGET_MS);
     }
   }
-  // One sync per datastore confirms every commit this process made,
-  // compaction's included (swamp-club#3416). It comes before the stores
-  // close: it makes Litestream open commits.db, so swamp's close is not the
-  // last one and the WAL survives for the next sidecar start.
+  // one sync per datastore confirms every commit this process made,
+  // compaction's included; before the stores close, since it makes Litestream
+  // open commits.db and the WAL must survive for the next sidecar start
   const heldEntries = [...replications.entries()];
   const held = heldEntries.map(([, uses]) => uses);
   const owed = [...owedReplications].filter((key) => !replications.has(key));
@@ -1981,8 +1737,7 @@ export async function closeV3Datastores(
           handles,
           deadlineMs,
           watch.signal,
-          // Serve's shutdown deadline covers the wait for a probe's sync
-          // too (swamp-club#3961).
+          // serve's shutdown deadline covers the wait for a probe's sync too
           { queueWaitCounts: shutdownDeadline !== undefined },
         );
       } finally {
@@ -2008,9 +1763,9 @@ export async function closeV3Datastores(
   for (const { key, handle, current } of dropped) {
     await recoverDroppedWork(key, handle, current, unreachable);
   }
-  // Once the command's own commits were confirmed, a closing sync that
-  // fails covers only what was committed since: kept in commits.db, it
-  // replicates with the next write and does not fail the command.
+  // once the command's own commits were confirmed, a closing sync that fails
+  // covers only what was committed since: kept in commits.db, it replicates
+  // with the next write and does not fail the command
   const confirmedEarlier = commandConfirmed;
   commandConfirmed = false;
   const closing = synced.map((result) => {
@@ -2059,16 +1814,9 @@ export async function closeV3Datastores(
 }
 
 /**
- * Syncs the sidecar `use` holds for `datastore` and, between the sync and
- * the lease check, publishes the head it confirmed (swamp-club#3482): the
- * last commit before the sync is the high-water mark. Collects the
- * lineages a first confirmation replaced once the check passed. Resolves
- * with the published head's high-water mark, or undefined when the sync
- * published no head.
- *
- * With `options.queueWaitCounts` the wait for a sync already running counts
- * against `deadlineMs` (serve's closing sync, swamp-club#3961); otherwise the
- * sync gets all of `deadlineMs` once that one has settled.
+ * publishes between the sync and the lease check the head it confirmed (the
+ * last commit before the sync is the mark); with queueWaitCounts the wait for a
+ * running sync counts against deadlineMs
  */
 async function syncAndPublish(
   datastore: string,
@@ -2120,7 +1868,6 @@ async function syncAndPublish(
   }
 }
 
-/** Whether `promise` settles, either way, within `ms`. */
 async function settlesWithin(
   promise: Promise<unknown>,
   ms: number,
@@ -2138,12 +1885,11 @@ async function settlesWithin(
 }
 
 /**
- * The least a closing sync that waited for an earlier one starts its own
- * with (swamp-club#3961); with less left it gives up instead.
+ * with less left than this, a closing sync that waited for an earlier one gives
+ * up instead of starting
  */
 const MIN_QUEUED_SYNC_MS = 500;
 
-/** The sync-and-publish in flight, by datastore. */
 const publishing = new Map<string, Promise<unknown>>();
 
 async function syncAndPublishNow(
@@ -2166,10 +1912,9 @@ async function syncAndPublishNow(
     await use.sync(deadlineMs, signal === undefined ? {} : { signal });
     return undefined;
   }
-  // Taken before the sync: what the sync covers. A serve that lost its lease
-  // meanwhile still publishes this head on its old lineage before its lease
-  // check fails; it covers only commits nobody acknowledged, which a newer
-  // lineage's writer ignores (`decideLocalCopy`).
+  // taken before the sync: what the sync covers. A serve that lost its lease
+  // meanwhile still publishes this head before its lease check fails; it covers
+  // only commits nobody acknowledged
   const mark = handle.commitStore.highWaterMark();
   let first = false;
   await use.sync(deadlineMs, {
@@ -2194,12 +1939,11 @@ async function syncAndPublishNow(
       // A listener's failure is its own.
     }
   }
-  // The lease check passed: the heads below this writer's are never read
-  // again (swamp-club#3803).
+  // the lease check passed: the heads below this writer's are never read again
   await pruneV3Heads(copy, use.lineageFence, writerFence);
   if (first) {
-    // A bucket datastore's old lineage paths go through its provider's
-    // replica paths (swamp-club#3531, #3534).
+    // a bucket datastore's old lineage paths go through its provider's replica
+    // paths
     const replicaPaths = v3BucketBindingAt(datastore)?.replicaPaths;
     await collectV3Lineages(
       copy,
@@ -2211,17 +1955,9 @@ async function syncAndPublishNow(
 }
 
 /**
- * Confirms that every commit this process made so far to each v3 datastore
- * it writes is replicated and its head published, at the CLI's closing
- * deadline (swamp-club#3534). The end-of-command retention pass calls it
- * once the command's action has returned, so every commit the command made
- * has landed: once it succeeded, the closing sync's failure covers only the
- * pass's own commits, which never fail the command. A datastore whose
- * published head already covers its commits is not synced again. Does
- * nothing for a datastore that does not replicate.
- *
- * @throws V3ReplicationError when the commits were not confirmed
- * @throws WriterFencedError when this process lost its writer lease
+ * called once the action has returned, so a later closing-sync failure covers
+ * only the retention pass's own commits, which never fail the command; a head
+ * already covering the commits is not synced again
  */
 export async function confirmV3CommandReplicated(): Promise<void> {
   const handles = [...opened.values()];
@@ -2239,20 +1975,12 @@ export async function confirmV3CommandReplicated(): Promise<void> {
   commandConfirmed = true;
 }
 
-/** Serve's group commits, by datastore (swamp-club#3489). */
 const groupCommits = new Map<string, ReplicationGroupCommit>();
 
 /**
- * Confirms that every commit this process made to the v3 datastore at
- * `datastorePath` so far is replicated and its head published, before serve
- * answers the write request that made them (swamp-club#3489). Concurrent
- * requests share syncs ({@link ReplicationGroupCommit}); a request whose
- * commits a published head already covers does not sync. Does nothing
- * while replication is off.
- *
- * @throws V3ReplicationError when the commits were not confirmed: they stay
- *   in commits.db and ship with the next sync
- * @throws WriterFencedError when serve lost its writer lease
+ * concurrent requests share syncs; one whose commits a published head already
+ * covers does not sync; unconfirmed commits stay in commits.db and ship with
+ * the next sync
  */
 export async function confirmV3Replicated(
   datastorePath: string,
@@ -2279,9 +2007,8 @@ export async function confirmV3Replicated(
 }
 
 /**
- * The high-water mark of the commits this process made to the v3 datastore
- * at `datastorePath`, or -1 when it is not open: serve reads it when a write
- * request starts, so a request that committed nothing confirms nothing.
+ * -1 when not open; serve reads it when a write request starts, so a request
+ * that committed nothing confirms nothing
  */
 export function v3CommitMark(datastorePath: string): number {
   const datastore = resolve(datastorePath);
@@ -2292,14 +2019,9 @@ export function v3CommitMark(datastorePath: string): number {
 }
 
 /**
- * The commit log of the v3 datastore `config` names, as `swamp datastore
- * claim` and `release` and serve's requests for them change its claim
- * (swamp-club#4063), under this process's writer lease. A claim moves no
- * high-water mark, so the command counts it as a change for the closing
- * sync's report, and serve confirms it replicated before it answers
- * (`confirmReplicated`), which no commit mark would make it do.
- *
- * @throws Error when this process holds no writer lease on the datastore
+ * a claim moves no high-water mark, so the command counts it as a change for
+ * the closing sync's report, and serve confirms it replicated before it
+ * answers, which no commit mark would make it do
  */
 export function v3ClaimCommitLog(
   repoDir: string,
@@ -2366,7 +2088,6 @@ export function v3ClaimCommitLog(
   };
 }
 
-/** One group commit's sync: the held sidecar's, at a request's deadline. */
 async function syncForRequests(
   datastore: string,
 ): Promise<number | undefined> {
@@ -2387,39 +2108,25 @@ async function syncForRequests(
 }
 
 /**
- * The highest high-water mark each datastore's head was published at by
- * this process, which serve's probe compares against. It is not reset when
- * serve's lineage restarts: a restarted lineage's first head is published by
- * the retake's own first sync or the next commit, and until then the
- * previous lineage stays the current state, which holds the same commits.
+ * not reset when serve's lineage restarts: a restarted lineage's first head is
+ * published by the retake's first sync or the next commit, and until then the
+ * previous lineage holds the same commits
  */
 const publishedMarks = new Map<string, number>();
 
-/** Called when a datastore's published mark moves, by datastore. */
 const publishListeners = new Map<string, Set<() => void>>();
 
-/**
- * What serve's commit feed reads (swamp-club#4120): the datastore, how far
- * the feed may go, and a signal when that moved.
- */
 export interface V3CommitFeedSource {
   readonly datastore: V3Datastore;
   /**
-   * The last cursor the feed may send. A replicating datastore's writer
-   * sends only what it published: a commit not yet replicated could be lost
-   * to a failover, and a follower or checkout that applied it would then
-   * hold a commit the next leader never had. Otherwise everything the copy
-   * holds.
+   * a replicating datastore's writer sends only what it published: an
+   * unreplicated commit could be lost to a failover and leave a follower
+   * holding a commit the next leader never had
    */
   bound(): number;
-  /**
-   * Calls `listener` when the copy's rows or the published mark moved.
-   * Returns the call that removes it.
-   */
   onMoved(listener: (replaced: boolean) => void): () => void;
 }
 
-/** The commit feed's view of the v3 datastore `config` names. */
 export function v3CommitFeedSource(
   repoDir: string,
   config: V3DatastoreConfig,
@@ -2455,10 +2162,8 @@ export function v3CommitFeedSource(
   };
 }
 
-/** How often serve checks that its Litestream sidecar still answers. */
 export const SERVE_REPLICATION_PROBE_INTERVAL_MS = 30_000;
 
-/** Whether this process's writer lease on `datastorePath` was taken over. */
 function leaseLost(datastorePath: string): boolean {
   try {
     assertV3WriterCurrent(datastorePath);
@@ -2469,25 +2174,18 @@ function leaseLost(datastorePath: string): boolean {
   }
 }
 
-/** Serve's upkeep of its Litestream sidecar; see {@link startV3ReplicationUpkeep}. */
 export interface V3ReplicationUpkeep {
   /**
-   * Stops the triggers and waits for a probe or replacement in flight: at
-   * most `waitMs` when given (serve's shutdown, swamp-club#3961), aborting a
-   * probe's sync. A replacement that ends after that releases what it
-   * acquired rather than keep it.
+   * a replacement that ends after a bounded wait releases what it acquired
+   * rather than keep it
    */
   stop(options?: { readonly waitMs?: number }): Promise<void>;
 }
 
 /**
- * Keeps serve's Litestream sidecar for the datastore at `datastorePath`
- * (swamp-club#3416) while serve holds its writer lease. Two triggers replace
- * it: serve retaking the lease at a new fence, which may start a new
- * lineage, and a probe that finds the sidecar no longer answering. Both go
- * through one replacement at a time, which {@link V3ReplicationUpkeep.stop}
- * awaits; none starts once stopping has begun. Does nothing while
- * replication is off.
+ * two triggers replace it, serve retaking the lease at a new fence and a probe
+ * finding the sidecar not answering; both go through one replacement at a time,
+ * none starts once stopping has begun
  */
 export function startV3ReplicationUpkeep(
   repoDir: string,
@@ -2508,11 +2206,10 @@ export function startV3ReplicationUpkeep(
   // fence it announced is the retake's even before the lease records it.
   let retakes = 0;
   let announced = 0;
-  // A replacement asked for while one runs (swamp-club#3565): it runs again
-  // once the running one settles, instead of being dropped.
+  // a replacement asked for while one runs runs again once the running one
+  // settles, instead of being dropped
   let again = false;
-  // Moves away from broken lineages, at most one per outage
-  // (swamp-club#4096).
+  // moves away from broken lineages, at most one per outage
   const lineageMoves = new BrokenLineageMoveGuard();
   const replace = (): void => {
     if (stopped) return;
@@ -2521,9 +2218,8 @@ export function startV3ReplicationUpkeep(
       return;
     }
     const startedAt = retakes;
-    // A bounded stop() that gave up ends the replacement at its next
-    // checkpoint too: the teardown is closing the stores it would touch
-    // (swamp-club#3961).
+    // a bounded stop() that gave up ends the replacement at its next checkpoint
+    // too: teardown is closing the stores it would touch
     const stale = () => retakes !== startedAt || stopping.signal.aborted;
     replacing = (async () => {
       const uses = replications.get(key) ?? [];
@@ -2543,12 +2239,9 @@ export function startV3ReplicationUpkeep(
       // copy, and the retake asks for a replacement of its own, so none
       // restores at the lost fence meanwhile.
       if (fence === held && leaseLost(datastorePath)) return;
-      // A retake may follow another writer's commits: the copy is made
-      // current and the lineage prepared before the sidecar is held again,
-      // as a writer's hold does (swamp-club#3482). The restore updates
-      // serve's open store in place. A retake meanwhile makes what it
-      // restored stale: it is not marked current, and nothing more runs
-      // at this fence (swamp-club#3565).
+      // a retake may follow another writer's commits: make the copy current and
+      // prepare the lineage before the sidecar is held again; a retake
+      // meanwhile makes the restore stale, so nothing more runs at this fence
       const refresh = await ensureV3CopyCurrent(repoDir, config, "write", {
         stillCurrent: () => !stale(),
       });
@@ -2557,7 +2250,7 @@ export function startV3ReplicationUpkeep(
       if (refresh.restored !== undefined) {
         await handle.raiseWriterFence(fence);
       }
-      // What a writer between serve's two holds left (swamp-club#3490).
+      // what a writer between serve's two holds left
       await recoverV3Outbox(handle, fence);
       if (stale()) return;
       await prepareV3WriterLineage(copyOf(repoDir, config), fence, {
@@ -2592,9 +2285,9 @@ export function startV3ReplicationUpkeep(
       ) {
         currentCopies.delete(copyKey);
       }
-      // A broken lineage the move did not get away from is left at the
-      // next probe by retrying the replacement at the fence the move took,
-      // never by moving again (swamp-club#3935, swamp-club#4096).
+      // a broken lineage the move did not get away from is left at the next
+      // probe by retrying the replacement at the fence the move took, never by
+      // moving again
       lineageMoves.replacementFailed();
       logger
         .warn`Replacing the Litestream sidecar of the v3 datastore at ${datastorePath} failed; the next probe retries: ${error}`;
@@ -2606,11 +2299,9 @@ export function startV3ReplicationUpkeep(
       }
     });
   };
-  // Runs inside the lease's renewal: it only starts the replacement. A
-  // retake may follow another writer's commits, so the copy stops being
-  // current at once, before the retaken lease admits a commit: nothing
-  // commits onto it, nor collects its chunks, until the replacement has
-  // made it current again (swamp-club#3482).
+  // runs inside the lease's renewal, so it only starts the replacement; the
+  // copy stops being current at once, so nothing commits onto it or collects
+  // its chunks until the replacement makes it current
   const unsubscribe = onV3LeaseTaken((path, fence) => {
     if (resolve(path) !== key) return;
     retakes++;
@@ -2631,11 +2322,9 @@ export function startV3ReplicationUpkeep(
         replace();
         return;
       }
-      // Serve holds one fence, so a lineage its sidecar found it cannot
-      // restore is restarted at the next one (swamp-club#3935): the
-      // replacement the move sets off starts the new lineage from serve's
-      // copy. Once per lineage: from a copy that fails its own check the
-      // lineage is kept, and moving again would only fence serve's commits.
+      // a lineage the sidecar found unrestorable is restarted at the next
+      // fence, once per lineage: from a copy failing its own check the lineage
+      // is kept, and moving again would only fence serve's commits
       const check = await v3ReplicaCheckOf(copyOf(repoDir, config));
       const broken = check !== undefined &&
           isLineageBroken(check.verdict, check.lineageFence)
@@ -2659,9 +2348,9 @@ export function startV3ReplicationUpkeep(
         }
         return;
       }
-      // Serve's commits replicate passively; a head is published whenever
-      // the last commit moved, so a takeover after serve dies keeps every
-      // commit up to the last probe (swamp-club#3482).
+      // serve's commits replicate passively; a head is published whenever the
+      // last commit moved, so a takeover after serve dies keeps every commit up
+      // to the last probe
       const handle = opened.get(copyKey);
       if (
         handle === undefined ||
@@ -2716,21 +2405,17 @@ export function startV3ReplicationUpkeep(
 }
 
 /**
- * How long a CLI writer's closing compaction may run (swamp-club#3916).
- * Each batch commits on its own, so a backlog an upgrade leaves, thousands
- * of commits, is folded a budget at a time over the next writers rather
- * than at the end of one command.
+ * each batch commits on its own, so a backlog an upgrade leaves is folded a
+ * budget at a time over the next writers rather than at the end of one command
  */
 export const CLOSING_COMPACTION_BUDGET_MS = 2_000;
 
-/** How long serve's hourly maintenance compaction may run. */
 export const SERVE_COMPACTION_TIMEOUT_MS = 60_000;
 
 /**
- * Runs `handle`'s due compaction within `budgetMs`, logging rather than
- * throwing a failure: the command's own work is already committed, and the
- * next writer compacts again. Running out of budget is not a failure: the
- * batches folded so far stay folded, and the next writer goes on.
+ * logs rather than throws a failure: the command's work is already committed
+ * and the next writer compacts again; running out of budget is not a failure,
+ * folded batches stay folded
  */
 export async function compactQuietly(
   handle: V3Datastore,
@@ -2754,34 +2439,23 @@ export async function compactQuietly(
   }
 }
 
-/** How often serve maintains a v3 datastore it writes. */
 export const SERVE_MAINTENANCE_INTERVAL_MS = 60 * 60 * 1000;
 
-/** How long one chunk sweep in serve may run. */
 const SERVE_CHUNK_GC_TIMEOUT_MS = 10 * 60 * 1000;
 
 /**
- * How many bytes of chunks each maintenance tick reads and checks before
- * its sweep, from a random shard prefix (swamp-club#3617): the only place
- * stored chunks are verified, so same-size damage is found while serve
- * runs. A CLI sweep verifies nothing, and neither does serve on bucket
- * storage: it cannot move a damaged chunk aside, so a pass there would
- * only spend reads on reporting.
+ * the only place stored chunks are verified, so same-size damage is found while
+ * serve runs; a CLI sweep verifies nothing, nor does serve on bucket storage,
+ * which cannot move a damaged chunk aside
  */
 export const SERVE_CHUNK_VERIFY_BYTES = 64 * 1024 * 1024;
 
-/** The datastores whose deferred chunk collection was logged at info. */
 const deferredCollections = new Set<string>();
 
-/**
- * Sweeps `handle`'s unreferenced chunks, logging rather than throwing a
- * failure: the next sweep retries. Resolves with the sweep's report, or
- * undefined when it failed or was deferred.
- */
+/** logs rather than throws a failure: the next sweep retries */
 export async function collectChunksQuietly(
   handle: V3Datastore,
   timeoutMs: number = SERVE_CHUNK_GC_TIMEOUT_MS,
-  /** Bytes of chunks to verify first; none unless given. */
   verifyBytes = 0,
 ): Promise<ChunkCollectionReport | undefined> {
   try {
@@ -2802,9 +2476,9 @@ export async function collectChunksQuietly(
     return report;
   } catch (error) {
     if (error instanceof V3ChunkCollectionDeferredError) {
-      // Waiting on another lineage is expected, not a failure
-      // (swamp-club#3491), but it can last: said once per datastore at
-      // info, so a collection that never runs can be found.
+      // waiting on another lineage is expected, not a failure, but it can last:
+      // said once per datastore at info, so a collection that never runs can be
+      // found
       const datastore = resolve(handle.datastorePath);
       if (deferredCollections.has(datastore)) {
         logger
@@ -2822,53 +2496,28 @@ export async function collectChunksQuietly(
   }
 }
 
-/** How long a retention pass's history compaction may run. */
 const RETENTION_COMPACTION_TIMEOUT_MS = 10 * 60 * 1000;
 
-/** What {@link compactRetentionQuietly} did. */
 export interface RetentionCompaction {
-  /**
-   * Commits written before this instant are folded out of history: the
-   * earlier of the retention cutoff and the policy's last day.
-   */
+  /** the earlier of the retention cutoff and the policy's last day */
   readonly bound: Date;
-  /** The compaction point after it: the last commit cursor folded. */
   readonly compactedThrough: number;
-  /** Commits folded by this call. */
   readonly compacted: number;
-  /**
-   * Chunks the sweep after it deleted; 0 when the sweep failed or was
-   * deferred (logged), which the next sweep retries.
-   */
+  /** 0 when the sweep failed or was deferred (logged); the next sweep retries */
   readonly chunksDeleted: number;
 }
 
 /**
- * After a retention pass on a v3 datastore (swamp-club#3473): folds every
- * commit written before `cutoff` out of history, however few, then sweeps
- * the chunks no commit names any more. Logs rather than throws a failure,
- * resolving with undefined when compaction failed; the next pass retries.
- *
- * The effective guarantee is weaker than the cutoff: the content a remove
- * took away stays in history until the remove itself is folded, and no
- * commit newer than the cutoff or inside the policy's last day
- * (`DEFAULT_COMPACTION_POLICY.retainMs`) is folded. A released chunk is then
- * deleted only past the sweep's 24-hour grace (`DEFAULT_CHUNK_GRACE_MS`).
- * Content a remove at time T took away is gone from the datastore at the
- * first pass after T + max(retention period, 1 day) + 24 hours, so call
- * this on every pass, not only on those that deleted something: the pass
- * that deletes an item can never fold its own remove.
- *
- * Run it only while this process holds the writer lock: compaction passes
- * the writer's fence, which the commit store checks, and the sweep refuses
- * a copy not made current under the lease.
+ * weaker than the cutoff: content a remove took away stays until the remove is
+ * folded, which never happens inside the policy's last day, so call on every
+ * pass. Run only while holding the writer lock
  */
 export async function compactRetentionQuietly(
   handle: V3Datastore,
   cutoff: Date,
   /**
-   * How long compaction and the chunk sweep may each run; a CLI command
-   * passes a short one so its exit is not held up (the next pass resumes).
+   * a CLI command passes a short one so its exit is not held up; the next pass
+   * resumes
    */
   timeoutMs: number = RETENTION_COMPACTION_TIMEOUT_MS,
 ): Promise<RetentionCompaction | undefined> {
@@ -2900,23 +2549,15 @@ export async function compactRetentionQuietly(
   };
 }
 
-/** How far back a v3 datastore's history reaches (swamp-club#3473). */
 export interface V3RetentionHistory {
-  /** The write time of the oldest stored commit, or null when none is. */
   readonly oldestCommitAt: string | null;
-  /**
-   * Commits written before this are folded by each retention pass
-   * ({@link compactRetentionQuietly} with the pass's own time): the policy's
-   * last day always binds.
-   */
+  /** the policy's last day always binds */
   readonly compactionBound: Date;
 }
 
 /**
- * The oldest commit the v3 datastore at `config` still stores, and the bound
- * retention compacts before at `now`, for `swamp doctor datastores
- * --retention`. Read-only: call it after a repository context has made the
- * checkout's copy current.
+ * read-only: call it after a repository context has made the checkout's copy
+ * current
  */
 export async function v3RetentionHistory(
   repoDir: string,
@@ -2930,11 +2571,7 @@ export async function v3RetentionHistory(
   };
 }
 
-/**
- * Makes the read model's unsynced files durable and clears its list
- * (swamp-club#3416), logging rather than throwing a failure: the next tick
- * retries, and the reboot check still covers the files.
- */
+/** the next tick retries, and the reboot check still covers the files */
 export async function syncUnsyncedQuietly(handle: V3Datastore): Promise<void> {
   try {
     const synced = await handle.readModel.syncUnsyncedFiles();
@@ -2949,11 +2586,8 @@ export async function syncUnsyncedQuietly(handle: V3Datastore): Promise<void> {
 }
 
 /**
- * Maintains a v3 datastore on a timer while serve holds its writer lock
- * (swamp-club#3279): history compaction, then chunk garbage collection, so
- * the chunks compaction frees are reclaimed while serve runs. A CLI
- * `swamp datastore gc` cannot run then: serve holds the lock. Runs never
- * overlap, and {@link stop} waits for the one in flight.
+ * a CLI swamp datastore gc cannot run meanwhile because serve holds the lock;
+ * runs never overlap, and stop waits for the one in flight
  */
 export class V3MaintenanceTimer {
   #timer: ReturnType<typeof setInterval> | undefined;
@@ -2975,7 +2609,6 @@ export class V3MaintenanceTimer {
     });
   }
 
-  /** One timer tick: starts a maintenance run unless one is still running. */
   tick(): void {
     if (this.#running !== undefined) return;
     this.#running = (async () => {
@@ -2983,8 +2616,8 @@ export class V3MaintenanceTimer {
       await collectChunksQuietly(
         this.handle,
         SERVE_CHUNK_GC_TIMEOUT_MS,
-        // Only storage that quarantines a damaged chunk is verified: the
-        // filesystem's own `_blobs/` (swamp-club#3617).
+        // only storage that quarantines a damaged chunk is verified: the
+        // filesystem's own _blobs/
         isChunkQuarantine(this.handle.storage) ? SERVE_CHUNK_VERIFY_BYTES : 0,
       );
       await syncUnsyncedQuietly(this.handle);
@@ -2994,11 +2627,9 @@ export class V3MaintenanceTimer {
   }
 
   /**
-   * Runs `fn` as this timer's maintenance run, once the one in flight ends,
-   * so other work on the same datastore (a retention pass's compaction and
-   * chunk sweep, swamp-club#3473) never overlaps a tick: the sweep marker
-   * is one row, and two sweeps at once hide a sweep from writers.
-   * Ticks while `fn` runs start nothing.
+   * other work on the same datastore (a retention pass's compaction and chunk
+   * sweep) must never overlap a tick: the sweep marker is one row, and two
+   * sweeps at once hide a sweep from writers
    */
   async runExclusive<T>(fn: () => Promise<T>): Promise<T> {
     while (this.#running !== undefined) await this.#running;

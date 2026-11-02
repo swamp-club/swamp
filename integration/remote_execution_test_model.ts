@@ -71,7 +71,7 @@ defineModel({
           });
         }
 
-        // Overrides travel to serve with the write (swamp-club#3574).
+        // overrides travel to serve with the write
         const writer = context.createFileWriter!("log", "log-main", {
           contentType: "text/x-log",
           lifetime: "1h",

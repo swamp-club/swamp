@@ -59,13 +59,13 @@ Deno.test({
     } finally {
       try {
         child.kill("SIGKILL");
-      } catch { /* already gone */ }
+      } catch { /* the process is already gone */ }
       await child.status;
       const pid = await readPid().catch(() => 0);
       if (pid > 0) {
         try {
           Deno.kill(pid, "SIGKILL");
-        } catch { /* already gone */ }
+        } catch { /* the pid file is already gone */ }
       }
       await Deno.remove(pidFile).catch(() => {});
     }
@@ -133,13 +133,13 @@ Deno.test({
     } finally {
       try {
         owner.kill("SIGKILL");
-      } catch { /* already gone */ }
+      } catch { /* the process is already gone */ }
       await owner.status;
       const pid = await readPid().catch(() => 0);
       if (pid > 0) {
         try {
           Deno.kill(pid, "SIGKILL");
-        } catch { /* already gone */ }
+        } catch { /* the pid file is already gone */ }
       }
       await Deno.remove(pidFile).catch(() => {});
     }
@@ -174,7 +174,6 @@ Deno.test("withoutReusedPids: keeps every pid when start times are unavailable",
   assertEquals(withoutReusedPids([10, 11], starts, undefined), [10, 11]);
 });
 
-/** Records what sendGracefulStop does; `delivered` is requestStop's answer. */
 function gracefulStopSpy(delivered: boolean) {
   const sent: string[] = [];
   return {

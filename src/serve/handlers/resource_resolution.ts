@@ -18,15 +18,9 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * Resolves the id-or-name in a serve request to the resource it names, and
- * builds the access resource to authorize from that resource's canonical
- * name and fields (swamp-club#2674).
- *
- * A grant selector matches a resource name, so a handler must never authorize
- * the raw string a client sent: a model's UUID would sidestep a deny on its
- * name. Handlers resolve first, authorize on {@link ResourceResolution}'s
- * `resource`, then act on {@link targetArgument} — the resolved id, looked up
- * by id only — so the resource acted on is the resource authorized.
+ * a grant selector matches a resource name, so never authorize the raw string a
+ * client sent: a model's UUID would sidestep a deny on its name. Resolve,
+ * authorize the resource, act on the resolved id.
  */
 
 import { controlPlaneRecordResource } from "../../domain/access/control_plane_records.ts";
@@ -82,8 +76,6 @@ import {
   sendError,
 } from "./shared.ts";
 
-// The builders moved to the domain so the local `swamp access check` shares
-// them (swamp-club#3224); handlers keep importing them from here.
 export {
   modelAccessResource,
   type ModelResourceKind,
@@ -91,22 +83,15 @@ export {
   workflowAccessResource,
 };
 
-/** How a request's id-or-name resolved. */
 export type ResourceResolution =
   | {
-    /** It names an existing resource; authorize `resource`, act on `id`. */
     status: "found";
     resource: AccessResource;
     id: string;
     name: string;
-    /** The model's normalized type, for a model reference. */
     modelType?: string;
   }
   | {
-    /**
-     * It names a workflow file that does not parse. `resource` carries the
-     * name the file declares; `id` is its declared id, when readable.
-     */
     status: "broken";
     resource: AccessResource;
     id: string | null;
@@ -114,15 +99,15 @@ export type ResourceResolution =
   }
   | {
     /**
-     * Nothing matches. `resource` is built from the raw string, so a deny on
-     * that string still applies; the operation then reports its own
-     * not-found.
+     * nothing matches; the resource is built from the raw string so a deny on
+     * that string still applies, and the operation then reports its own
+     * not-found
      */
     status: "missing";
     resource: AccessResource;
   }
   | {
-    /** The lookup itself failed; the request must fail, never proceed. */
+    /** the lookup itself failed; the request must fail, never proceed */
     status: "failed";
     error: unknown;
   };
@@ -154,12 +139,9 @@ async function resolveModel(
 }
 
 /**
- * What a change to a resolved model — editing, deleting, or deleting or
- * renaming its data — is authorized as: `action` on its resource, or, for a
- * model of a restricted type, admin on access:* judged on the model's fields,
- * as creating or running one is (swamp-club#3131). Only the resource and
- * action change, so the request still acts on the id and name judged. A
- * control-plane model keeps its access record, which already needs admin.
+ * only the resource and action change, so the request still acts on the id and
+ * name judged; a control-plane model keeps its access record, which already
+ * needs admin
  */
 export function restrictedModelAuthorization(
   resolution: ResourceResolution,
@@ -177,8 +159,8 @@ export function restrictedModelAuthorization(
     action: "admin",
     resolution: {
       ...resolution,
-      // A data resource carries no modelType; the admin decision is on the
-      // model's type whichever kind the request named it as.
+      // a data resource carries no modelType; the admin decision is on the
+      // model's type whichever kind the request named it as
       resource: {
         kind: "access",
         name: "*",
@@ -191,7 +173,6 @@ export function restrictedModelAuthorization(
   };
 }
 
-/** Resolves a model reference by name, then exact id. */
 export function resolveModelTarget(
   definitionRepo: DefinitionRepository,
   idOrName: string,
@@ -204,7 +185,6 @@ export function resolveModelTarget(
   );
 }
 
-/** Resolves a model by exact definition id only. */
 export function resolveModelTargetById(
   definitionRepo: DefinitionRepository,
   id: string,
@@ -218,9 +198,9 @@ export function resolveModelTargetById(
 }
 
 /**
- * Resolves a model recorded as `id` and `name` — a run's resource. Ids are not
- * guaranteed unique, so the definition with both is preferred; if none has
- * both, the model was renamed since, and it is found by id alone.
+ * ids are not guaranteed unique, so the definition with both id and name is
+ * preferred; if none has both, the model was renamed since and is found by id
+ * alone
  */
 export async function resolveRecordedModel(
   definitionRepo: DefinitionRepository,
@@ -239,11 +219,8 @@ export async function resolveRecordedModel(
 }
 
 /**
- * The model a method run is recorded under for its cancel and attach: the
- * definition's own name (or `fallbackName` when there is none yet), and the
- * normalized type the run executes (`typeArg`) or its model has. A
- * control-plane type wins whichever it comes from, so a control-plane run
- * stays admin-only once its model is gone (swamp-club#2756).
+ * a control-plane type wins whichever it comes from, so a control-plane run
+ * stays admin-only once its model is gone
  */
 export function recordedRunModel(
   definition: DefinitionLookupResult | null,
@@ -285,9 +262,9 @@ async function resolveWorkflow(
     };
   }
   if (workflowsDir) {
-    // A file that fails to parse is invisible to the repository, but the
-    // operations still find it by the name or id it declares, so it must be
-    // authorized by the name it declares too.
+    // a file that fails to parse is invisible to the repository but operations
+    // still find it by the name or id it declares, so it must be authorized by
+    // the name it declares too
     let broken;
     try {
       broken = await findBrokenWorkflow(workflowsDir, idOrName);
@@ -309,10 +286,6 @@ async function resolveWorkflow(
   };
 }
 
-/**
- * Resolves a workflow reference by name, then exact id, then — when
- * `workflowsDir` is given — a workflow file that fails to parse.
- */
 export function resolveWorkflowTarget(
   workflowRepo: WorkflowRepository,
   idOrName: string,
@@ -326,7 +299,6 @@ export function resolveWorkflowTarget(
   );
 }
 
-/** Resolves a workflow by exact id only. */
 export function resolveWorkflowTargetById(
   workflowRepo: WorkflowRepository,
   id: string,
@@ -341,9 +313,8 @@ export function resolveWorkflowTargetById(
 }
 
 /**
- * Resolves a workflow recorded as `id` and `name` — a run's workflow. Ids are
- * not guaranteed unique, so the workflow with both is preferred; if none has
- * both, it was renamed since, and it is found by id alone.
+ * ids are not guaranteed unique, so the workflow with both id and name is
+ * preferred; if none has both it was renamed since and is found by id alone
  */
 export async function resolveRecordedWorkflow(
   workflowRepo: WorkflowRepository,
@@ -362,18 +333,9 @@ export async function resolveRecordedWorkflow(
 }
 
 /**
- * The argument to hand the operation after authorizing `resolution`.
- *
- * A resolved resource is passed by its id with `byId` and its authorized name
- * as `expectedName`: the operation accepts only a resource with both, so it
- * cannot land on a resource named with that id, nor on another file that
- * declares the same id (ids are not guaranteed unique). A broken workflow
- * file that declares an id is passed the same way. A missing resource passes
- * the raw string by id only: the operation reports its own not-found as
- * before, and can only ever act on a resource whose id is the very string
- * that was authorized. A broken file with no readable id passes the raw
- * string as sent: no parsed workflow matches it, so the operation reaches the
- * same broken file.
+ * a resolved resource is passed by id with its authorized name as expectedName,
+ * so the operation cannot land on another resource with that id; a missing one
+ * passes the raw string by id only
  */
 export function targetArgument(
   resolution: SettledResolution,
@@ -395,18 +357,14 @@ export function targetArgument(
   }
 }
 
-/** A resolution that did not fail. */
 export type SettledResolution = Exclude<
   ResourceResolution,
   { status: "failed" }
 >;
 
 /**
- * Authorizes `action` on what `resolution` resolved to, replying to the
- * client when the request cannot proceed: a denial as authorizeOrReject
- * replies, and a failed lookup — after the raw string is authorized, so a
- * denied caller learns nothing more — as `failedCode` with a sanitized
- * message. Returns whether the request may proceed.
+ * a failed lookup is answered after the raw string is authorized, so a denied
+ * caller learns nothing more
  */
 export function authorizeResolved(
   socket: WebSocket,
@@ -435,8 +393,8 @@ export function authorizeResolved(
     );
     return false;
   }
-  // The response is audited under the resolved name, not the id the client
-  // sent (swamp-club#2603). A string that matched nothing keeps it.
+  // the response is audited under the resolved name, not the id the client
+  // sent; a string that matched nothing keeps it
   if (resolution.status !== "missing") {
     recordAuditedResource(socket, requestId, kind, resolution.name, ctx);
   }
@@ -444,15 +402,9 @@ export function authorizeResolved(
 }
 
 /**
- * What a read by output or run reference resolved to, and every resource the
- * caller must be allowed to read for it (swamp-club#2673). The read is then
- * handed `resolved.reference` and acts on exactly that.
- *
- * A prefix matching several outputs or runs is `ambiguous`: `candidates`
- * holds the owners of each match, in the order of the reference's `ids`, and
- * `narrow` keeps only the matches at the given indexes, so the ambiguity
- * error lists only what the caller may read (swamp-club#2743). Matches with
- * the same owners share one array, so each owner is decided once.
+ * an ambiguous prefix lists candidate owners per match in the order of the
+ * reference's ids, and narrow keeps given indexes so the ambiguity error lists
+ * only what the caller may read; shared owners share one array
  */
 export type ReferenceAccess<T> =
   | { status: "resolved"; resolved: T; resources: AccessResource[] }
@@ -469,10 +421,9 @@ type AnyOutputReference =
   | OutputIdReference<{ definitionId: string }>;
 
 /**
- * The resources that own what is stored under an output's model: every
- * definition declaring its definition id, since ids are not unique and a copy
- * shares the original's outputs and data. An output whose model was deleted
- * has no owner left to name, so it is authorized on its definition id.
+ * ids are not unique and a copy shares the original's outputs and data, so each
+ * definition declaring the id counts; an output whose model was deleted is
+ * authorized on its definition id
  */
 async function outputOwners(
   definitionRepo: DefinitionRepository,
@@ -490,8 +441,8 @@ async function outputOwners(
       definitionId,
     );
   }
-  // An owner no longer found is judged on its recorded type, so the output
-  // of a deleted control-plane model stays admin-only (swamp-club#2756).
+  // an owner that is not found is judged on its recorded type, so the output of
+  // a deleted control-plane model stays admin-only
   if (isControlPlaneModelType(type.normalized)) {
     return [
       controlPlaneRecordResource(type.normalized, { name: definitionId }),
@@ -505,11 +456,9 @@ async function outputOwners(
 }
 
 /**
- * The owners of something recorded under a control-plane type always include
- * that type's access record, whatever definitions now share its id: a user
- * definition reusing a deleted grant's id must not turn the grant's data into
- * that user model's (swamp-club#2756). Callers require every owner, so the
- * record stays admin-only.
+ * a control-plane recorded type always includes that type's access record, so a
+ * user definition reusing a deleted grant's id cannot turn the grant's data
+ * into that user model's; callers require every owner
  */
 function withRecordedType(
   resources: AccessResource[],
@@ -520,14 +469,13 @@ function withRecordedType(
   const record = controlPlaneRecordResource(recordedType, {
     name: recordedName,
   });
-  // A live control-plane owner already carries its own access record.
+  // a live control-plane owner already carries its own access record
   if (resources.some((r) => r.kind === "access" && r.name === record.name)) {
     return distinct(resources);
   }
   return distinct([...resources, record]);
 }
 
-/** Drops resources that repeat an earlier one exactly. */
 function distinct(resources: AccessResource[]): AccessResource[] {
   const seen = new Set<string>();
   return resources.filter((resource) => {
@@ -539,11 +487,9 @@ function distinct(resources: AccessResource[]): AccessResource[] {
 }
 
 /**
- * Resolves an output read with `resolve` and collects what to authorize, as
- * each of `kinds`: for an output, every model that owns it; for a model, that
- * model and every owner of the latest output the read will return; for an
- * ambiguous prefix, the owners of each output it matched, looked up once per
- * model id; for an unmatched argument, the raw string as sent.
+ * an output: every model that owns it; a model: it and every owner of the
+ * latest output the read returns; an ambiguous prefix: owners of each match,
+ * looked up once per model id; unmatched: the raw string
  */
 export async function resolveOutputAccess<
   T extends { reference: AnyOutputReference },
@@ -624,11 +570,8 @@ export async function resolveOutputAccess<
 }
 
 /**
- * The workflows a run belongs to: the workflow recorded on it, by its
- * recorded name, and — when a workflow with the recorded id now goes by
- * another name — that workflow too. The recorded name always counts, so a
- * run is judged on the workflow that made it even if that workflow was
- * deleted or renamed, or a copy now shares its id.
+ * the recorded name always counts, so a run is judged on the workflow that made
+ * it even if deleted, renamed, or a copy now shares its id
  */
 function runOwners(
   workflowRepo: WorkflowRepository,
@@ -637,10 +580,6 @@ function runOwners(
   return recordedWorkflowOwners(workflowRepo, run.workflowId, run.workflowName);
 }
 
-/**
- * The workflows something recorded as workflow `id` named `name` belongs to,
- * by the rule {@link runOwners} describes.
- */
 async function recordedWorkflowOwners(
   workflowRepo: WorkflowRepository,
   id: string,
@@ -655,30 +594,18 @@ async function recordedWorkflowOwners(
     : [recorded, resolution.resource];
 }
 
-/**
- * The owner a stored item records: a model or, for workflow-scope data such
- * as workflow reports, a workflow (model type `workflow`).
- */
 export interface RecordedOwner {
   readonly modelType: string;
   readonly modelId: string;
   readonly modelName: string;
 }
 
-/** The model type workflow-scope data is stored under. */
 const WORKFLOW_OWNER_TYPE = "workflow";
 
 /**
- * Complete access resources for items a collection returns, looked up by id
- * and memoized for one request (swamp-club#2675). Items are judged on the
- * resources that own them now — by id, not by the name recorded when they
- * were written — with every resource field present, so conditional denies
- * decide on them. An owner no longer found is judged on its recorded name,
- * as it is today. Definitions are scanned once per instance, however many
- * items share them; {@link canonicalResources} reads extension workflows
- * once per request too. Given serve's definition index, an instance checks
- * it once and reads only the files declaring each id it is asked about,
- * instead of scanning every definition (swamp-club#3968).
+ * items are judged on the resources owning them now, by id not recorded name,
+ * with every field present so conditional denies decide; an owner not found is
+ * judged on its recorded name
  */
 export class CanonicalResources {
   readonly #definitionRepo: DefinitionRepository;
@@ -703,8 +630,8 @@ export class CanonicalResources {
   }
 
   #definitionsById(id: string): Promise<DefinitionLookupResult[]> {
-    // Inside a diagnostic phase, every lookup is counted, and those this
-    // instance answers without a new lookup or scan count as reused.
+    // inside a diagnostic phase every lookup is counted, and those answered
+    // without a new lookup or scan count as reused
     const tally = currentDiagnosticTally();
     tally.add("owner_lookups");
     const ownerIndex = this.#ownerIndex;
@@ -719,9 +646,9 @@ export class CanonicalResources {
       }
       return found;
     }
-    // One scan of every definition per request, grouped by id, when the
+    // one scan of every definition per request, grouped by id, when the
     // repository offers it; a scan per id would make a collection of N items
-    // cost N full scans.
+    // cost N full scans
     if (this.#definitionRepo.findAllIncludingAutoGlobal) {
       if (this.#index) tally.add("owner_lookups_reused");
       this.#index ??= this.#definitionRepo.findAllIncludingAutoGlobal().then(
@@ -748,16 +675,13 @@ export class CanonicalResources {
     return found;
   }
 
-  /** The name of a definition with this id, under any type. */
   async anyModelName(id: string): Promise<string | undefined> {
     return (await this.#definitionsById(id))[0]?.definition.name;
   }
 
   /**
-   * The name of the first definition of `modelType` declaring `id`, primary
-   * definitions first, as a scan of every definition names it; undefined when
-   * none does. Looked up as the owners are, so naming a collection's items
-   * and then authorizing them reads each definition once (swamp-club#4141).
+   * primary definitions first; looked up as the owners are, so naming a
+   * collection's items and then authorizing them reads each definition once
    */
   async modelName(id: string, modelType: string): Promise<string | undefined> {
     const owners = await this.#definitionsById(id);
@@ -766,9 +690,8 @@ export class CanonicalResources {
   }
 
   /**
-   * A model definition a collection lists, as itself: the definition with
-   * that id and name, or — when none has both — every definition with the
-   * id, since a copy shares its id.
+   * the definition with that id and name, or when none has both every
+   * definition with the id, since a copy shares its id
    */
   async model(
     id: string,
@@ -796,9 +719,8 @@ export class CanonicalResources {
   }
 
   /**
-   * Every model owning what is stored under `modelId`, as `kind`. Ids are
-   * not unique and a copy shares its original's outputs and data, so each
-   * definition declaring the id counts.
+   * ids are not unique and a copy shares its original's outputs and data, so
+   * each definition declaring the id counts
    */
   async modelOwners(
     modelId: string,
@@ -814,8 +736,8 @@ export class CanonicalResources {
         recordedName,
       );
     }
-    // An owner no longer found is judged on its recorded type too, so an
-    // orphaned token record is never read as plain data.
+    // an owner that is not found is judged on its recorded type too, so an
+    // orphaned token record is never read as plain data
     if (isControlPlaneModelType(modelType)) {
       return [controlPlaneRecordResource(modelType, { name: recordedName })];
     }
@@ -826,10 +748,8 @@ export class CanonicalResources {
     }];
   }
 
-  /** The workflows something recorded as workflow `id` named `name` belongs to. */
   workflowOwners(id: string, name: string): Promise<AccessResource[]> {
     const key = JSON.stringify([id, name]);
-    // Counted as {@link #definitionsById} counts its lookups.
     const tally = currentDiagnosticTally();
     tally.add("owner_lookups");
     let found = this.#workflows.get(key);
@@ -843,9 +763,8 @@ export class CanonicalResources {
   }
 
   /**
-   * The resources owning a stored data item, as `data`: its models, or for
-   * workflow-scope data its workflows — named by the workflow, with the
-   * workflow's tags, so it has one identity wherever it is read.
+   * workflow-scope data is named by the workflow, with the workflow's tags, so
+   * it has one identity wherever it is read
    */
   async dataOwners(owner: RecordedOwner): Promise<AccessResource[]> {
     if (owner.modelType !== WORKFLOW_OWNER_TYPE) {
@@ -865,13 +784,6 @@ export class CanonicalResources {
   }
 }
 
-/**
- * Resolves a workflow history read with `resolve` and collects what to
- * authorize: for a run, the workflows it belongs to; for a workflow, that
- * workflow and the workflows of the latest run the read will return; for an
- * ambiguous prefix, the workflows of each run it matched, looked up once per
- * recorded workflow; for an unmatched argument, the raw string as sent.
- */
 export async function resolveRunAccess<T extends { reference: RunReference }>(
   workflowRepo: WorkflowRepository,
   resolve: () => Promise<T>,
@@ -879,8 +791,8 @@ export async function resolveRunAccess<T extends { reference: RunReference }>(
 ): Promise<ReferenceAccess<T>> {
   try {
     const resolved = await resolve();
-    // Collecting the owners reads the workflow repository again; the span
-    // separates that from the lookup (swamp-club#3741).
+    // collecting the owners reads the workflow repository again; the span
+    // separates that from the lookup
     return await withSpan("swamp.serve.authorize", {}, async (span) => {
       const reference = resolved.reference;
       let resources: AccessResource[];
@@ -936,14 +848,9 @@ export async function resolveRunAccess<T extends { reference: RunReference }>(
 }
 
 /**
- * Authorizes `action` on every resource `access` collected, stopping at the
- * first denial, which is replied as authorizeOrReject replies. A failed
- * lookup is replied as `failedCode` with a sanitized message, after the raw
- * argument is authorized as each of `kinds`, so a refused caller learns
- * nothing more. An ambiguous prefix keeps only the matches whose owners are
- * all allowed; a refused match is audited but not replied, and when none is
- * allowed the first is replied as a unique prefix of it would be
- * (swamp-club#2743). Returns what the read may proceed with, or null.
+ * a failed lookup is answered after the raw argument is authorized as each
+ * kind, so a refused caller learns nothing more; an ambiguous prefix keeps only
+ * matches whose owners are all allowed
  */
 export function authorizeReferenceAccess<T>(
   socket: WebSocket,
@@ -988,11 +895,9 @@ export function authorizeReferenceAccess<T>(
 }
 
 /**
- * Keeps the matches of an ambiguous prefix whose owners the caller may all
- * read. Each distinct owner array is decided and audited once, however many
- * matches share it, so a short prefix over a large history cannot flood the
- * audit log. The first match is decided last, so that when no other is
- * readable its refusal is the one replied.
+ * each distinct owner array is decided and audited once, so a short prefix over
+ * a large history cannot flood the audit log; the first match is decided last
+ * so its refusal is replied when no other is readable
  */
 function authorizeAmbiguous<T>(
   socket: WebSocket,
@@ -1013,9 +918,9 @@ function authorizeAmbiguous<T>(
     }
     return allowed;
   };
-  // The first match's owners are decided last, and only once: through
-  // authorizeOrReject when nothing else is readable, so its refusal is the
-  // one replied, and otherwise silently. Matches sharing them follow suit.
+  // the first match's owners are decided last and only once: through
+  // authorizeOrReject when nothing else is readable, so its refusal is the one
+  // replied, otherwise silently; matches sharing them follow suit
   const first = access.candidates[0];
   const others = new Set<number>();
   for (let i = 1; i < access.candidates.length; i++) {
@@ -1038,17 +943,13 @@ function authorizeAmbiguous<T>(
   return access.narrow(readable);
 }
 
-/**
- * A {@link CanonicalResources} for one request on `ctx`'s repository. With
- * `signal`, looking definitions up stops when the request is cancelled.
- */
 export function canonicalResources(
   ctx: ConnectionContext,
   signal?: AbortSignal,
 ): CanonicalResources {
   const { definitionRepo, workflowRepo } = ctx.repoContext;
-  // One read of the extension workflows per request: each lookup through
-  // the repository itself would walk them all again (swamp-club#3779).
+  // one read of the extension workflows per request: each lookup through the
+  // repository itself would walk them all again
   return new CanonicalResources(
     definitionRepo,
     workflowRepo.memoizedView?.() ?? workflowRepo,

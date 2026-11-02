@@ -18,18 +18,11 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * Default cap on how many workflows are read concurrently when collecting run
- * summaries across all workflows. Bounds peak transient memory: an unbounded
- * `Promise.all` over every workflow would have one in-flight file parse per
- * workflow simultaneously; a modest cap keeps that to `concurrency` at a time.
+ * caps concurrent workflow reads to bound peak memory; an unbounded Promise.all
+ * would hold one file parse per workflow at once
  */
 export const RUN_FANOUT_CONCURRENCY = 8;
 
-/**
- * Maps `items` to arrays via `fn` with bounded concurrency and flattens the
- * results into a single array, preserving no particular order (callers sort
- * afterward). At most `concurrency` invocations of `fn` are in flight at once.
- */
 export async function collectBounded<T, R>(
   items: readonly T[],
   concurrency: number,

@@ -20,19 +20,6 @@
 import { parseDuration } from "../libswamp/data/search.ts";
 import { UserError } from "../domain/errors.ts";
 
-/**
- * Parses a CLI timeout value into milliseconds. Accepts:
- *
- * - A bare integer interpreted as seconds: `1800` → 1,800,000ms. Matches
- *   the convention used by `swamp datastore sync --timeout` so knowledge
- *   transfers across commands.
- * - A `<n>s` suffix for explicit seconds: `30s` → 30,000ms.
- * - libswamp's `parseDuration` units (`m`, `h`, `d`, `w`, `mo`, `y`):
- *   `5m`, `1h`, `7d`, etc.
- *
- * Returns milliseconds, always > 0. Throws `UserError` on non-positive
- * values or unrecognized formats.
- */
 export function parseTimeout(
   value: string,
   flagName = "--timeout",

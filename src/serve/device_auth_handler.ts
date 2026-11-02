@@ -67,11 +67,6 @@ import {
 
 const logger = getSwampLogger(["serve", "device-auth"]);
 
-/**
- * Dependencies injected into the device auth handler for testability.
- * Production callers should use {@link createDeviceAuthDeps} to wire up
- * real implementations.
- */
 export interface DeviceAuthDeps {
   readonly authConfig: Omit<ServeAuthConfig, "oauthClientId"> & {
     oauthClientId: string;
@@ -119,13 +114,10 @@ export interface DeviceAuthDeps {
   readonly auditEmitter?: AuditEmitter;
   readonly instanceId?: string;
   readonly sourceIp?: string;
-  /** Known user names by id, for login events' username fallback. */
   readonly resolvedUserNames?: Readonly<Record<string, string>>;
-  /** Told the user name the provider gave for each user it admits. */
   readonly onUsernamesResolved?: UsernamesResolved;
 }
 
-/** Route and response customizations for a browser-specific device flow. */
 export interface DeviceAuthRoutes {
   readonly startPath: string;
   readonly tokenPath: string;
@@ -190,17 +182,6 @@ function jsonResponse(
   });
 }
 
-/**
- * Handles HTTP requests for the OAuth device authorization flow.
- *
- * Matches:
- * - `POST /auth/device` — starts the device grant flow
- * - `POST /auth/device/token` — polls for completion, checks admission,
- *   mints a server token
- *
- * Returns `null` for paths that do not match, allowing the caller to
- * fall through to other handlers.
- */
 export async function handleDeviceAuth(
   req: Request,
   deps: DeviceAuthDeps,
@@ -266,8 +247,8 @@ async function handleStartDeviceGrant(
 }
 
 /**
- * Largest body the unauthenticated sign-in routes read: each carries one
- * device code or token (swamp-club#3862).
+ * largest body the unauthenticated sign-in routes read: each carries one device
+ * code or token
  */
 export const MAX_AUTH_BODY_BYTES = 16 * 1024;
 
@@ -451,10 +432,6 @@ async function handleDeviceToken(
   }
 }
 
-/**
- * Creates production {@link DeviceAuthDeps} wired to real implementations
- * from `oauth_client.ts` and `admission.ts`.
- */
 const TOKEN_DATA_NAME = "token-main";
 const DEFAULT_DURATION_MS = 30 * 24 * 60 * 60 * 1000;
 
@@ -483,10 +460,8 @@ async function mintServerTokenImpl(
     await vaultService.put(vaultName, secretKey, plaintext);
   });
 
-  // The writes run in a root unit of work with no push, so their marks
-  // stage into it instead of reaching the hook through signalChange's
-  // fallback (swamp-club#3056). The push below opens its own root once this
-  // one has ended.
+  // writes run in a root unit of work with no push, so marks stage into it
+  // instead of signalChange's fallback; the push below opens its own root
   const { def, savedDefinitionPath } = await runInRootUnitOfWork(
     repoContext,
     { flush: undefined },
@@ -506,8 +481,6 @@ async function mintServerTokenImpl(
           const created = Definition.create({
             type: SERVER_TOKEN_MODEL_TYPE.normalized,
             name: tokenName,
-            // Creation owns typeVersion now that the repository no longer stamps
-            // it (swamp-club#900).
             typeVersion: serverTokenModel.version,
           });
           const autoDefRepo = new YamlDefinitionRepository(
@@ -534,9 +507,8 @@ async function mintServerTokenImpl(
         state: "active" as const,
         principalId,
         principalEmail,
-        // Only this OAuth login sets it, so audit events name a user by what
-        // the provider said rather than by an operator-typed email
-        // (swamp-club#3076).
+        // only this OAuth login sets it, so audit events name a user by what
+        // the provider said, not an operator-typed email
         oauthIdentity: {
           email: principalEmail,
           ...(username !== undefined ? { username } : {}),
@@ -573,16 +545,12 @@ async function mintServerTokenImpl(
   );
 
   if (syncService) {
-    // The push runs inside this active span, so the datastore's own push
-    // span is parented to the login rather than starting a root trace
-    // (swamp-club#2417).
+    // the push runs inside this span so the datastore's push span is parented
+    // to the login rather than starting a root trace
     await withSpan("swamp.serve.auth.mint.push", {}, async () => {
-      // The repositories mark each path dirty before writing it. An ungated
-      // push (post-run, post-resume) that lands in between takes the path as
-      // a delete and clears the mark, so mark the token's paths again now
-      // that both writes are done. Per path, not bare: a bare markDirty()
-      // sets bulkInvalidated and turns every login's push into a walk of the
-      // whole cache (swamp-club#2408).
+      // an ungated push between mark and write clears the mark, so mark the
+      // token's paths again; per path, as a bare markDirty() turns every
+      // login's push into a walk of the whole cache
       await stageWritesThenPush(
         repoContext,
         [
@@ -620,7 +588,6 @@ async function mintServerTokenImpl(
   return `${tokenName}.${plaintext}`;
 }
 
-/** The principal id a server token minted at OAuth login carries. */
 export function oauthPrincipalId(sub: string): string {
   return `user:${sub}`;
 }
@@ -663,12 +630,9 @@ export function createDeviceAuthDeps(
       rc: RepositoryContext,
       username?: string,
     ) =>
-      // The mint writes a definition, a token resource and then pushes — one
-      // unit that a poller pull must not interleave with (swamp-club#2247).
-      // This HTTP path is never reached from inside a gated WebSocket
-      // handler, so taking the non-reentrant gate here is safe. The token
-      // is handed out only once its commits are replicated, outside the
-      // gate (swamp-club#3489).
+      // mint and push are one unit a poller pull must not interleave with;
+      // never reached from a gated handler, so the non-reentrant gate is safe;
+      // the token is handed out outside the gate once replicated
       withSyncGate(syncGate, () =>
         mintServerTokenImpl(
           principalId,

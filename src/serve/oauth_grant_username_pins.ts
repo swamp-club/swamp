@@ -18,26 +18,9 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * Resolves and pins the `username:<name>` subjects of grant files to OAuth
- * subjects (swamp-club#3123).
- *
- * Pins live in their own `_token-secrets` key, apart from the admin and
- * allowed-user resolutions. The rules are stricter than theirs on purpose:
- *
- * - A pinned name is used as pinned and never looked up again, so a rename
- *   or a re-registered name never re-points a grant.
- * - A name the provider reports as not found is recorded with the time it
- *   was first seen missing and never looked up again; its file stays
- *   rejected until the name is removed from it. A typo can then never be
- *   claimed by whoever registers that name later.
- * - Any other lookup failure records nothing.
- * - A record is forgotten only when its name is in no grant file and every
- *   grant source loaded, so a source held back keeps the pins of its names.
- *   Forgetting a name is the only way to look it up afresh.
- *
- * The key is read again on every resolve, so a pin a peer instance wrote
- * since wins over a fresh lookup, and written before the caller acts on the
- * answer, so a refused start still records a missing name.
+ * pins are never looked up again, so a rename or re-registered name cannot
+ * re-point a grant; a not-found name is recorded and never re-checked, so a
+ * typo cannot be claimed later; a peer's pin wins
  */
 
 import type {
@@ -47,32 +30,23 @@ import type {
 } from "../domain/access/grant_username_resolution.ts";
 import { UsernameNotFoundError } from "./oauth_client.ts";
 
-/** The `_token-secrets` key holding grant-file username pins. */
 export const OAUTH_GRANT_USERNAMES_KEY = "oauth-resolved-grant-usernames";
 
-/** How many new names one resolve looks up at once. */
 export const GRANT_USERNAME_LOOKUP_CONCURRENCY = 4;
-/** How long one resolve may spend looking names up, in total. */
 export const GRANT_USERNAME_LOOKUP_DEADLINE_MS = 60_000;
-/** How many new names one resolve looks up at most. */
 export const MAX_NEW_GRANT_USERNAMES = 200;
 
-/** The stored pins. */
 export interface GrantUsernamePins {
-  /** Username to the sub it resolved to. */
   readonly pinned: Record<string, string>;
-  /** Username to when the provider first reported it not found. */
   readonly missing: Record<string, string>;
 }
 
-/** Reads and writes the pins. */
 export interface GrantUsernamePinStore {
   /** Throws when the pins cannot be read; absent pins read as empty. */
   read(): Promise<GrantUsernamePins>;
   write(pins: GrantUsernamePins): Promise<void>;
 }
 
-/** Looks one username up on the provider; throws UsernameNotFoundError. */
 export type GrantUsernameLookup = (
   username: string,
   signal: AbortSignal,
@@ -80,20 +54,13 @@ export type GrantUsernameLookup = (
 
 export interface OAuthGrantUsernameResolverOptions {
   readonly store: GrantUsernamePinStore;
-  /**
-   * Looks up a name that has no record, or null when no credential to look
-   * names up is available; new names are then left unresolved with
-   * {@link noLookupMessage}.
-   */
   readonly lookup: () => GrantUsernameLookup | null;
   readonly noLookupMessage: string;
   readonly providerUrl: string;
-  /** Current time as an ISO string; injected for tests. */
   readonly now?: () => string;
   readonly concurrency?: number;
   readonly deadlineMs?: number;
   readonly maxNewNames?: number;
-  /** Called with each name newly pinned or recorded missing. */
   readonly onRecorded?: (event: GrantUsernameRecordEvent) => void;
 }
 
@@ -110,7 +77,6 @@ function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
-/** Parses stored pins, refusing anything that is not their shape. */
 export function parseGrantUsernamePins(raw: string): GrantUsernamePins {
   const value: unknown = JSON.parse(raw);
   const isStringRecord = (v: unknown): v is Record<string, string> =>
@@ -139,7 +105,6 @@ export function serializeGrantUsernamePins(pins: GrantUsernamePins): string {
   return JSON.stringify({ pinned: pins.pinned, missing: pins.missing });
 }
 
-/** A pin store over the `_token-secrets` vault. */
 export function vaultGrantUsernamePinStore(
   vault: {
     list(): Promise<string[]>;
@@ -274,11 +239,9 @@ export function createOAuthGrantUsernameResolver(
       return answers;
     }
 
-    // Read again and merge rather than write what was read above: a peer
-    // instance sharing the vault may have recorded names since, and writing
-    // the whole key over them would drop a pin (re-pointable on its next
-    // lookup) or a missing-name record (claimable). A record already stored
-    // wins over this resolve's answer for the same name.
+    // read again and merge: a peer sharing the vault may have recorded names,
+    // and overwriting would drop a pin (re-pointable) or a missing record
+    // (claimable); a stored record wins
     const latest = await options.store.read();
     const pinned: Record<string, string> = Object.assign(
       Object.create(null),

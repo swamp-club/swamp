@@ -73,8 +73,8 @@ function matchesRule(event: AuditEvent, match: AlertRuleMatch): boolean {
   if (match.category !== undefined && event.category !== match.category) {
     return false;
   }
-  // The rule's action in the stored spelling (swamp-club#3334); the
-  // configured rule is left as written.
+  // compares the rule's action in the stored spelling; the configured rule is
+  // left as written
   if (
     match.action !== undefined &&
     event.action !== canonicalAuditAction(match.action)

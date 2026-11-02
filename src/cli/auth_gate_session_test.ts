@@ -81,7 +81,6 @@ Deno.test("deferredWorkerAdmission: absent when the worker passed the gate itsel
 Deno.test("deferredWorkerAdmission: a valid orchestrator pass publishes the worker's own pass", async () => {
   await withSession(true, async (repo) => {
     const key = await generateTestSigningKey();
-    // Cache the key, the way an earlier whoami would.
     const cached = await mintTestProof(key, "other", { iat: NOW - DAY });
     await repo.save(cached.proof, cached.signature, cached.publicKeys);
     const serveProof = await mintTestProof(key, "serve_key", {

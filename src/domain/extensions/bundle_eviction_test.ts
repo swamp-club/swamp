@@ -39,7 +39,6 @@ async function withTempDir(
   }
 }
 
-/** A catalog lookup that answers from a fixed set and records queries. */
 function lookup(referenced: string[] = []): BundleReferenceLookup & {
   queried: string[];
 } {

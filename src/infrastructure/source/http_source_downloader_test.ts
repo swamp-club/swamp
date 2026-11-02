@@ -26,14 +26,12 @@ import { UserError } from "../../domain/errors.ts";
 Deno.test("downloadAndExtract copies regular files", async () => {
   const tempDir = await Deno.makeTempDir({ prefix: "swamp-test-" });
   try {
-    // Create a fake archive structure: top-level dir with files
     const archiveRoot = join(tempDir, "archive");
     const innerDir = join(archiveRoot, "swamp-main");
     await ensureDir(innerDir);
     await Deno.writeTextFile(join(innerDir, "file1.txt"), "hello");
     await Deno.writeTextFile(join(innerDir, "file2.txt"), "world");
 
-    // Create a tarball from the archive
     const tarball = join(tempDir, "test.tar.gz");
     const tar = new Deno.Command("tar", {
       args: ["-czf", tarball, "-C", archiveRoot, "swamp-main"],
@@ -43,7 +41,6 @@ Deno.test("downloadAndExtract copies regular files", async () => {
     const tarResult = await tar.output();
     assert(tarResult.success, "tar creation should succeed");
 
-    // Serve the tarball via a local HTTP server
     const server = Deno.serve({ port: 0, onListen: () => {} }, (_req) => {
       const body = Deno.readFileSync(tarball);
       return new Response(body, {
@@ -56,7 +53,6 @@ Deno.test("downloadAndExtract copies regular files", async () => {
     const targetDir = join(tempDir, "target");
     await ensureDir(targetDir);
 
-    // Bypass URL construction by subclassing to point to our test server
     const TestDownloader = class extends HttpSourceDownloader {
       protected override getArchiveUrl(_version: string): string {
         return `http://localhost:${port}/test.tar.gz`;
@@ -88,7 +84,6 @@ Deno.test("downloadAndExtract copies regular files", async () => {
 Deno.test("downloadAndExtract preserves symlinks", async () => {
   const tempDir = await Deno.makeTempDir({ prefix: "swamp-test-" });
   try {
-    // Create archive structure with a symlink
     const archiveRoot = join(tempDir, "archive");
     const innerDir = join(archiveRoot, "swamp-main");
     const subDir = join(innerDir, "target-dir");
@@ -108,7 +103,6 @@ Deno.test("downloadAndExtract preserves symlinks", async () => {
     const tarResult = await tar.output();
     assert(tarResult.success, "tar creation should succeed");
 
-    // Serve tarball
     const server = Deno.serve({ port: 0, onListen: () => {} }, (_req) => {
       const body = Deno.readFileSync(tarball);
       return new Response(body, {
@@ -133,7 +127,6 @@ Deno.test("downloadAndExtract preserves symlinks", async () => {
       targetDir,
     );
 
-    // The symlink should be preserved, not dereferenced
     const linkPath = join(targetDir, "link-to-dir");
     const linkStat = await Deno.lstat(linkPath);
     assert(linkStat.isSymlink, "link-to-dir should be a symlink");
@@ -141,13 +134,11 @@ Deno.test("downloadAndExtract preserves symlinks", async () => {
     const linkTarget = await Deno.readLink(linkPath);
     assertEquals(linkTarget, "target-dir");
 
-    // The symlink should still work (resolve to the target directory)
     const resolvedContent = await Deno.readTextFile(
       join(linkPath, "content.txt"),
     );
     assertEquals(resolvedContent, "linked content");
 
-    // fileCount should only count regular files, not symlinks or directories
     assertEquals(fileCount, 1);
 
     await server.shutdown();
@@ -213,7 +204,6 @@ Deno.test("downloadAndExtract copies nested directories", async () => {
 Deno.test("downloadAndExtract throws on download failure", async () => {
   const tempDir = await Deno.makeTempDir({ prefix: "swamp-test-" });
   try {
-    // Serve a response that aborts mid-stream
     const server = Deno.serve({ port: 0, onListen: () => {} }, (_req) => {
       const stream = new ReadableStream<Uint8Array>({
         start(controller) {
@@ -260,7 +250,6 @@ Deno.test("downloadAndExtract rejects symlinks escaping via relative path", asyn
     const innerDir = join(archiveRoot, "swamp-main");
     await ensureDir(innerDir);
     await Deno.writeTextFile(join(innerDir, "safe.txt"), "safe");
-    // Create a symlink that escapes via relative path
     await Deno.symlink("../../etc/passwd", join(innerDir, "escape-link"), {
       type: "file",
     });
@@ -382,7 +371,6 @@ Deno.test("downloadAndExtract rejects symlinks escaping via absolute path", asyn
     const innerDir = join(archiveRoot, "swamp-main");
     await ensureDir(innerDir);
     await Deno.writeTextFile(join(innerDir, "safe.txt"), "safe");
-    // Create a symlink with an absolute path outside the target
     await Deno.symlink("/etc/passwd", join(innerDir, "abs-escape-link"), {
       type: "file",
     });

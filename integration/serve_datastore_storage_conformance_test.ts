@@ -17,12 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Serve's chunk endpoints, as a serve-mode checkout reaches them through
- * `ServeChunkStorage` (swamp-club#3985), held to the published `storage/1`
- * conformance suite extension storages are held to.
- */
-
 import { assertEquals, assertInstanceOf, assertRejects } from "@std/assert";
 import { assertStorageConformance } from "@swamp-club/swamp-testing";
 import { ServeDatastoreClient } from "../src/infrastructure/datastore_v3/serve_datastore_client.ts";
@@ -36,7 +30,6 @@ import {
   writer,
 } from "./serve_datastore_api_harness.ts";
 
-/** Opens clients onto `server` with `token`, and closes them all. */
 function clients(server: Server, token: string) {
   const opened: ServeDatastoreClient[] = [];
   return {
@@ -61,14 +54,12 @@ Deno.test({
   sanitizeOps: false,
   sanitizeResources: false,
   fn: async () => {
-    // A put that names no partition needs admin.
     await withServer(writer(), async (server) => {
       const opened = clients(server, "alice-token");
       try {
         await assertStorageConformance(
           () => new ServeChunkStorage(opened.open()),
           {
-            // The unnamespaced datastore: serve's `_default`.
             namespace: "",
             unsupported: {
               list:

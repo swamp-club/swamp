@@ -63,10 +63,8 @@ import { isUuid } from "../../domain/models/model_lookup.ts";
 
 import { diagnoseSecretMisuse } from "../../infrastructure/cel/secret_diagnostics.ts";
 
-/** Checks if a string looks like a UUID. */
 export { isUuid };
 
-/** Validation result for a single check. */
 export interface ValidationItemData {
   name: string;
   passed: boolean;
@@ -76,7 +74,6 @@ export interface ValidationItemData {
   location?: string;
 }
 
-/** Validation result for a single workflow. */
 export interface WorkflowValidateData {
   workflowId: string;
   workflowName: string;
@@ -85,7 +82,6 @@ export interface WorkflowValidateData {
   passed: boolean;
 }
 
-/** Aggregate validation result for all workflows. */
 export interface WorkflowValidateAllData {
   workflows: WorkflowValidateData[];
   totalPassed: number;
@@ -123,37 +119,30 @@ export interface WorkflowValidateInput {
   include?: (workflow: WorkflowIdentity) => boolean;
 }
 
-/** What {@link WorkflowValidateInput.include} decides a workflow on. */
 export interface WorkflowIdentity {
   name: string;
   tags: Record<string, string>;
 }
 
-/** Dependencies for the workflow validate operation. */
 export interface WorkflowValidateDeps {
   findWorkflowById: (id: string) => Promise<Workflow | null>;
   findWorkflowByName: (name: string) => Promise<Workflow | null>;
   findAllWorkflows: () => Promise<Workflow[]>;
   validate: (workflow: Workflow) => Promise<WorkflowValidationResult[]>;
   /**
-   * Raw-scans workflow files that fail schema parsing (and are therefore
-   * invisible to the repository lookups above), so validate can report
-   * the parse error instead of "Workflow not found". Optional for
-   * backwards compatibility with callers that lack a workflows directory.
+   * raw-scans workflow files that fail schema parsing, which the repository
+   * lookups cannot see, so validate reports the parse error instead of not
+   * found. Optional for callers without a workflows directory.
    */
   listBrokenWorkflows?: () => Promise<BrokenWorkflow[]>;
   /**
-   * Finds a file the repository skips for its name that declares the given
-   * name or id, so a not-found error can say why (swamp-club#3839).
-   * Optional for the same reason as `listBrokenWorkflows`.
+   * finds a file the repository skips for its name that declares the given name
+   * or id, so a not-found error can say why. Optional like
+   * `listBrokenWorkflows`.
    */
   findMisnamedWorkflow?: (idOrName: string) => Promise<MisnamedWorkflow | null>;
 }
 
-/**
- * Creates a ModelMethodResolver that uses the definition repository and
- * extension auto-resolver to look up method argument schemas.
- */
 function createModelMethodResolver(
   definitionRepo: YamlDefinitionRepository,
 ): ModelMethodResolver {
@@ -182,17 +171,14 @@ function createModelMethodResolver(
         return { status: "method_not_found", modelType: modelType.normalized };
       }
 
-      // What the step must supply is what the method's arguments fail to
-      // parse without: a transform's input keys, not the keys it produces
-      // (swamp-club#3681), decided by parsing rather than by the JSON Schema
-      // a given Zod version renders (swamp-club#3873).
+      // what the step must supply is what the method's arguments fail to parse
+      // without: a transform's input keys, not the keys it produces; decided by
+      // parsing, not by the JSON Schema a Zod version renders
       const requiredArgs = await requiredArgumentNames(method.arguments);
 
-      // Arguments the definition already supplies — runtime merges these as
-      // fallbacks under step-level inputs (see DefaultMethodExecutionService).
-      // The validator treats any defined key as "present" regardless of value,
-      // including unresolved ${{ ... }} expressions: invalid CEL is a runtime
-      // concern, not a validator concern.
+      // Runtime merges definition-supplied arguments as fallbacks under step
+      // inputs; any defined key counts as present, even with unresolved
+      // expressions.
       const { definition } = lookupResult;
       const methodArgValues = definition.getMethodArguments(methodName);
       const definitionProvidedArgs = Array.from(
@@ -240,8 +226,7 @@ async function resolveByType(
     return { status: "method_not_found", modelType: type.normalized };
   }
 
-  // What the step supplies is what each schema fails to parse without
-  // (swamp-club#3681, swamp-club#3873).
+  // what the step supplies is what each schema fails to parse without
   const methodRequired = await requiredArgumentNames(method.arguments);
   const globalRequired = modelDef.globalArguments
     ? await requiredArgumentNames(modelDef.globalArguments)
@@ -261,12 +246,6 @@ async function resolveByType(
   };
 }
 
-/**
- * Creates a SensitiveOutputVaultResolver that predicts a step's
- * sensitive-output vaults with the data writer's resolver, from the model
- * type's resources, the definition's and step's overrides, and the repo's
- * vault configuration (loaded once, on first use).
- */
 function createSensitiveOutputVaultResolver(
   definitionRepo: YamlDefinitionRepository,
   loadVaultConfig: () => Promise<SensitiveOutputVaultConfig>,
@@ -308,15 +287,10 @@ function createSensitiveOutputVaultResolver(
   };
 }
 
-/** Wires real infrastructure into WorkflowValidateDeps. */
 export function createWorkflowValidateDeps(
   workflowRepo: WorkflowRepository,
   definitionRepo?: YamlDefinitionRepository,
   workflowsDir?: string,
-  /**
-   * Loads the repo's vault configuration, so validate can report a
-   * sensitive-output target vault missing from a workflow's vaults list.
-   */
   loadVaultConfig?: () => Promise<SensitiveOutputVaultConfig>,
 ): WorkflowValidateDeps {
   const methodResolver = definitionRepo
@@ -359,7 +333,6 @@ export function createWorkflowValidateDeps(
   };
 }
 
-/** Converts a broken workflow file into a failed validation result. */
 function toBrokenValidateData(broken: BrokenWorkflow): WorkflowValidateData {
   return {
     workflowId: broken.id ?? "",
@@ -376,7 +349,6 @@ function toBrokenValidateData(broken: BrokenWorkflow): WorkflowValidateData {
   };
 }
 
-/** Converts raw results to presentation format. */
 function toValidationItemData(
   results: WorkflowValidationResult[],
 ): ValidationItemData[] {
@@ -389,14 +361,12 @@ function toValidationItemData(
   }));
 }
 
-/** Type guard to check if data is WorkflowValidateAllData. */
 export function isWorkflowValidateAllData(
   data: WorkflowValidateData | WorkflowValidateAllData,
 ): data is WorkflowValidateAllData {
   return "workflows" in data;
 }
 
-/** Validates all workflows. */
 async function* validateAll(
   deps: WorkflowValidateDeps,
   include: (workflow: WorkflowIdentity) => boolean = () => true,
@@ -462,7 +432,6 @@ async function* validateAll(
   };
 }
 
-/** Validates a single workflow. */
 async function* validateSingle(
   deps: WorkflowValidateDeps,
   workflowIdOrName: string,
@@ -480,9 +449,9 @@ async function* validateSingle(
       ? await findWorkflowById(lookupRepo, workflowIdOrName, expectedName)
       : await findWorkflowByIdOrName(lookupRepo, workflowIdOrName);
   } catch (error) {
-    // A file named after the workflow is read by the lookup itself, so its
-    // schema failure is thrown rather than hidden. Report it as the failed
-    // schema check a file the lookup cannot see gets (swamp-club#3832).
+    // a file named after the workflow is read by the lookup itself, so its
+    // schema failure is thrown rather than hidden; report it as the failed
+    // schema check a file the lookup cannot see gets
     if (!(error instanceof WorkflowSchemaError)) throw error;
     workflow = null;
     schemaError = error;
@@ -536,7 +505,6 @@ async function* validateSingle(
   };
 }
 
-/** Validates workflow definitions against their schemas. */
 export async function* workflowValidate(
   _ctx: LibSwampContext,
   deps: WorkflowValidateDeps,

@@ -52,7 +52,6 @@ export interface StoreSinkOptions {
   readonly flushIntervalMs?: number;
   readonly signal?: AbortSignal;
   readonly gcIntervalMs?: number;
-  /** Most bytes of failed per-store puts held for retry. Default 32MB. */
   readonly maxRetryBytes?: number;
 }
 
@@ -73,16 +72,11 @@ export class StoreSink implements AuditSink {
   readonly #batchSize: number;
   readonly #flushIntervalMs: number;
   #batch: AuditEvent[] = [];
-  // Batch writes still running, so flush can wait for them.
   readonly #writing = new Set<Promise<void>>();
-  // Sequences of events in batches that reached no store, reported and
-  // cleared by flush; unknownUnstored when such an event had no sequence.
   #unstored = new Set<number>();
   #unknownUnstored = false;
-  // Puts that failed for some stores of a batch others stored.
   #retries: PendingPut[] = [];
   #retrying: PendingPut[] = [];
-  // Keys of retried date objects no store has yet, with their sequences.
   readonly #unheld = new Map<string, readonly number[] | null>();
   #retryBytes = 0;
   readonly #maxRetryBytes: number;
@@ -146,10 +140,8 @@ export class StoreSink implements AuditSink {
   }
 
   /**
-   * Writes the pending batch, waits for batch writes already running, and
-   * retries puts that failed for some stores. Rejects when a batch since the
-   * previous flush reached no store at all, including one the interval timer
-   * wrote, so a caller holding the events elsewhere (the WAL) keeps them.
+   * rejects when a batch since the previous flush reached no store, so a caller
+   * holding the events elsewhere (the WAL) keeps them
    */
   async flush(): Promise<void> {
     if (this.#batch.length > 0) {
@@ -268,10 +260,8 @@ export class StoreSink implements AuditSink {
       partition.push(event);
     }
 
-    // One put per date partition. A batch counts as stored once any part of
-    // it reached a store: parts that missed a store are retried here under
-    // their own key, so re-sending the batch can never store a part twice.
-    // Only a batch no part of which reached any store is reported.
+    // a batch counts as stored once any part reached a store; missed parts
+    // retry under their own key so re-sending never stores a part twice
     let anyStored = false;
     const missed: PendingPut[] = [];
     const unheld = new Map<string, number[] | null>();
@@ -307,7 +297,6 @@ export class StoreSink implements AuditSink {
       for (const retry of missed) this.#queueRetry(retry);
       return;
     }
-    // No store has any of it: the caller still holds it (the WAL) and is told.
     for (const event of events) {
       const sequence = (event as { sequence?: unknown }).sequence;
       if (typeof sequence === "number") this.#unstored.add(sequence);
@@ -315,10 +304,6 @@ export class StoreSink implements AuditSink {
     }
   }
 
-  /**
-   * A batch that reached some stores but not this one is retried on flush,
-   * under the same key, so a retry that lands never stores it twice.
-   */
   #queueRetry(retry: PendingPut): void {
     this.#retries.push(retry);
     this.#retryBytes += retry.data.byteLength;
@@ -385,7 +370,6 @@ export class StoreSink implements AuditSink {
   }
 }
 
-/** The chain sequences of some events, or null when any event lacks one. */
 function sequencesOf(events: readonly AuditEvent[]): number[] | null {
   const sequences: number[] = [];
   for (const event of events) {

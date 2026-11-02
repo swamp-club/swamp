@@ -37,8 +37,8 @@ export interface ActiveRunData {
   readonly runKind: RunKind;
   readonly modelType: string | null;
   /**
-   * The definition a method run executes. Absent on workflow rows and on
-   * method rows registered before the tracker recorded it (swamp-club#3244).
+   * absent on workflow rows and on method rows registered before the tracker
+   * recorded it
    */
   readonly definitionId?: string | null;
   readonly methodName: string | null;
@@ -50,15 +50,9 @@ export interface ActiveRunData {
   readonly status: ActiveRunStatus;
   readonly initiatedBy?: string | null;
   readonly instanceId?: string;
-  /**
-   * Whether an `interrupted` row's run record has been settled
-   * (`markSettled`). Read from the tracker only; never written by `toData`.
-   */
+  /** read from the tracker only; never written by toData */
   readonly settled?: boolean;
-  /**
-   * The reason stored with the row's terminal status, if any. Read from the
-   * tracker only; never written by `toData`.
-   */
+  /** read from the tracker only; never written by toData */
   readonly cancelReason?: string | null;
 }
 
@@ -77,9 +71,7 @@ export class ActiveRun {
   readonly startedAt: Date;
   readonly initiatedBy: string | null;
   readonly instanceId: string | undefined;
-  /** Whether the run record behind an `interrupted` row has been settled. */
   readonly settled: boolean;
-  /** The reason stored with the row's terminal status, if any. */
   readonly cancelReason: string | null;
 
   private constructor(data: ActiveRunData) {

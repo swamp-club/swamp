@@ -107,9 +107,9 @@ export const extensionInstallCommand = withRemoteOptions(
   }
 
   const repoDir = resolveRepoDir(options.repoDir);
-  // The guard runs before the repo context resolves the datastore, so an
-  // unresolved managed config base reports managed_config_unresolved
-  // rather than a raw "Unknown datastore type" (swamp-club#2483).
+  // the guard runs before the repo context resolves the datastore, so an
+  // unresolved managed config base reports managed_config_unresolved rather
+  // than a raw unknown datastore type.
   const deps = await createExtensionInstallDeps(repoDir, cliCtx.logger);
   await requireInitializedRepoReadOnly({
     repoDir,
@@ -121,10 +121,8 @@ export const extensionInstallCommand = withRemoteOptions(
 
   const markerRepo = new RepoMarkerRepository();
   const marker = await markerRepo.read(RepoPath.create(repoDir));
-  // Restores what the datastore's lockfile pins, and publishes any entry
-  // the restore rewrites as it lands (swamp-club#2838). The guard in
-  // createExtensionInstallDeps has already refused an unresolved base, so
-  // the lockfile is the datastore's.
+  // restores what the datastore's lockfile pins and publishes any rewritten
+  // entry as it lands; the guard already refused an unresolved base.
   await withManagedLockfileTransaction(
     createManagedLockfileTransaction(repoDir, marker, {
       lockfilePath: deps.lockfilePath,

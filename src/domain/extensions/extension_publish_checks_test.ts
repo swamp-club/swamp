@@ -103,7 +103,6 @@ Deno.test("evaluateCollectiveMembership: no collectives and no username leaves m
       "to check against.",
     cause: "registry-unavailable",
   });
-  // A dry run stays red: the push would refuse.
   assertEquals(registryChecksVerdict([result.membership]).ok, false);
 });
 
@@ -315,8 +314,6 @@ Deno.test("classifyApiCallService: groups by host", () => {
   assertEquals(classifyApiCallService("not a url", registry), "other");
 });
 
-// ── Private entitlement ───────────────────────────────────────────────
-
 const SERVER = "https://swamp-club.com";
 const BILLING = "https://swamp-club.com/o/acme/billing";
 const REFUSAL =
@@ -390,9 +387,6 @@ Deno.test("evaluatePrivateEntitlement: allowed in a free trial passes and names 
 });
 
 Deno.test("evaluatePrivateEntitlement: a personal namespace the registry allows through another collective passes (swamp-club#3311)", () => {
-  // The issue's repro: the owner's personal trial expired (or a team's plan
-  // superseded it), but a paid collective the owner belongs to covers the
-  // personal namespace, so the registry allows it.
   for (const trial of [EXPIRED, null]) {
     const result = check({
       slug: "alice",
@@ -430,7 +424,6 @@ Deno.test("evaluatePrivateEntitlement: trial-ended fails with the trial's length
         `Private extensions need a paid plan; upgrade at ${BILLING}.`,
     },
   );
-  // No length reported, or no trial at all: no length invented.
   for (
     const trial of [
       { ...EXPIRED, totalDays: undefined },
@@ -448,7 +441,6 @@ Deno.test("evaluatePrivateEntitlement: trial-ended fails with the trial's length
 });
 
 Deno.test("evaluatePrivateEntitlement: paywalled fails with the paid-plan wording and claims nothing about a trial", () => {
-  // A former customer, a superseded trial and no trial at all read the same.
   for (const trial of [EXPIRED, null, undefined]) {
     assertEquals(check(acme({ trial, privateExtensions: "paywalled" })), {
       name: "private-entitlement",

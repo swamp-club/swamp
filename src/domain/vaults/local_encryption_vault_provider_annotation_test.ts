@@ -85,10 +85,8 @@ Deno.test("deleteAnnotation: idempotent when annotation does not exist", async (
     const vault = createVault("delete-idempotent-vault", dir);
     await vault.put("my-secret", "secret-value");
 
-    // Should not throw when deleting a non-existent annotation
     await vault.deleteAnnotation("my-secret");
 
-    // Verify it is still null
     const annotation = await vault.getAnnotation("my-secret");
     assertEquals(annotation, null);
   });
@@ -111,7 +109,6 @@ Deno.test("listAnnotations: returns correct map of annotations", async () => {
 
     await vault.putAnnotation("secret-a", annotationA);
     await vault.putAnnotation("secret-b", annotationB);
-    // secret-c has no annotation
 
     const annotations = await vault.listAnnotations();
     assertEquals(annotations.size, 2);
@@ -147,7 +144,6 @@ Deno.test("putAnnotation: overwrites existing annotation", async () => {
     });
     await vault.putAnnotation("my-secret", original);
 
-    // Verify original was stored
     const first = await vault.getAnnotation("my-secret");
     assertEquals(first!.url, "https://old.example.com");
     assertEquals(first!.notes, "Original note");
@@ -159,7 +155,6 @@ Deno.test("putAnnotation: overwrites existing annotation", async () => {
     });
     await vault.putAnnotation("my-secret", updated);
 
-    // Verify overwrite took effect
     const second = await vault.getAnnotation("my-secret");
     assertEquals(second!.url, "https://new.example.com");
     assertEquals(second!.notes, "Updated note");

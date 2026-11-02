@@ -32,13 +32,9 @@ import {
   parseWorkspaceNameWithCode,
 } from "./workspace_store.ts";
 
-/** One workspace in detail. */
 export interface WorkspaceGetData extends WorkspaceSummary {
-  /** True when the user confirmed that agents may work in the folder. */
   readonly trusted: boolean;
-  /** Tools the workspace is set up for; empty when its folder is gone. */
   readonly enrolledTools: readonly string[];
-  /** True when a `swamp start` has the workspace open. */
   readonly openInStart: boolean;
 }
 
@@ -46,7 +42,6 @@ export type WorkspaceGetEvent =
   | { kind: "completed"; data: WorkspaceGetData }
   | { kind: "error"; error: SwampError };
 
-/** Shows one registered workspace. Writes nothing. */
 export async function* workspaceGet(
   ctx: LibSwampContext,
   deps: WorkspaceDeps,

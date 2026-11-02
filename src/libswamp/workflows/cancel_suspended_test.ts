@@ -70,7 +70,6 @@ function suspendedServeRun(workflow: Workflow): WorkflowRun {
 
 interface Harness {
   deps: WorkflowCancelSuspendedDeps;
-  /** Every run and workflow repository call, as `repo.method`. */
   calls: string[];
   saved: WorkflowRun[];
   authorized: CancelTargetWorkflow[];
@@ -509,7 +508,6 @@ Deno.test("locateSuspendedRunToCancel: a run of a deleted workflow is matched an
   assertEquals(renamed.authorized, []);
 });
 
-/** A run left `running` with its gate step in flight, as a dead owner leaves it. */
 function runningServeRun(workflow: Workflow): WorkflowRun {
   const run = WorkflowRun.create(workflow);
   run.start(Deno.pid, crypto.randomUUID());

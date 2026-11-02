@@ -17,8 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// Threshold: ≤ 50 MB heap growth after 100 reloads.
-
 import { join } from "@std/path";
 import { assert } from "@std/assert";
 import {
@@ -29,7 +27,7 @@ import {
 } from "../../infrastructure/testing/subprocess_harness.ts";
 
 const RELOAD_COUNT = 100;
-const MAX_HEAP_GROWTH_BYTES = 50 * 1024 * 1024; // 50 MB
+const MAX_HEAP_GROWTH_BYTES = 50 * 1024 * 1024;
 
 Deno.bench(
   "module-reload RAM growth: 100 reloads with distinct fingerprints",

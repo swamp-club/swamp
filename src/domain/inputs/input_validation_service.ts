@@ -23,37 +23,22 @@ import type {
 } from "../definitions/definition.ts";
 import { stopsAtFirstFailingArgument } from "../untrusted_parse.ts";
 
-/**
- * Individual validation error.
- */
 export interface InputValidationError {
   path: string;
   message: string;
 }
 
-/**
- * Result of input validation.
- */
 export interface InputValidationResult {
   valid: boolean;
   errors: InputValidationError[];
 }
 
 /**
- * Domain service for validating inputs against JSON Schema.
- *
- * Under serve's untrusted argument policy each array and object walk stops
- * after its first failing entry, so a remote client's oversized input cannot
- * make it collect one error per entry (swamp-club#3862).
+ * under serve's untrusted argument policy each array and object walk stops
+ * after its first failing entry, so an oversized remote input cannot collect
+ * one error per entry
  */
 export class InputValidationService {
-  /**
-   * Validates input values against an inputs schema.
-   *
-   * @param inputs - The input values to validate
-   * @param schema - The inputs schema to validate against
-   * @returns Validation result with any errors
-   */
   validate(
     inputs: Record<string, unknown>,
     schema: InputsSchema,
@@ -61,7 +46,6 @@ export class InputValidationService {
     const errors: InputValidationError[] = [];
     const required = schema.required ?? [];
 
-    // Check for missing required inputs
     for (const key of required) {
       if (!(key in inputs) || inputs[key] === undefined) {
         errors.push({
@@ -82,13 +66,9 @@ export class InputValidationService {
   }
 
   /**
-   * Validates only the inputs that were supplied, skipping the required-input
-   * check. For a partial input set, such as the override inputs of a workflow
-   * resume, which merge over the run's stored inputs.
-   *
-   * @param inputs - The input values supplied
-   * @param schema - The inputs schema to validate against
-   * @returns Validation result with any errors
+   * validates only the supplied inputs and skips the required check, for
+   * partial sets such as the override inputs of a workflow resume that merge
+   * over stored inputs
    */
   validateProvided(
     inputs: Record<string, unknown>,
@@ -101,17 +81,12 @@ export class InputValidationService {
     };
   }
 
-  /**
-   * Validates each supplied input against its declared property, and refuses
-   * an undeclared one when the schema forbids additional properties.
-   */
   private validateEntries(
     inputs: Record<string, unknown>,
     schema: InputsSchema,
   ): InputValidationError[] {
     const errors: InputValidationError[] = [];
 
-    // Get properties from schema (supports both flat and nested object formats)
     const properties = schema.properties ?? schema;
 
     for (const [key, value] of Object.entries(inputs)) {
@@ -135,13 +110,6 @@ export class InputValidationService {
     return errors;
   }
 
-  /**
-   * Gets the names of required inputs that are missing.
-   *
-   * @param inputs - The input values provided
-   * @param schema - The inputs schema
-   * @returns Array of missing required input names
-   */
   getMissingRequiredInputs(
     inputs: Record<string, unknown>,
     schema: InputsSchema,
@@ -152,7 +120,6 @@ export class InputValidationService {
 
     for (const key of required) {
       if (!(key in inputs) || inputs[key] === undefined) {
-        // Check if the property has a default value
         const propSchema = properties[key] as JsonSchemaProperty | undefined;
         if (!propSchema?.default) {
           missing.push(key);
@@ -163,13 +130,6 @@ export class InputValidationService {
     return missing;
   }
 
-  /**
-   * Applies default values from schema to inputs.
-   *
-   * @param inputs - The input values provided
-   * @param schema - The inputs schema
-   * @returns New inputs object with defaults applied
-   */
   applyDefaults(
     inputs: Record<string, unknown>,
     schema: InputsSchema,
@@ -187,9 +147,6 @@ export class InputValidationService {
     return result;
   }
 
-  /**
-   * Validates a single property value against its schema.
-   */
   private validateProperty(
     path: string,
     value: unknown,
@@ -197,9 +154,7 @@ export class InputValidationService {
   ): InputValidationError[] {
     const errors: InputValidationError[] = [];
 
-    // Handle null/undefined
     if (value === null || value === undefined) {
-      // Null/undefined is only valid if there's a default
       if (schema.default === undefined) {
         errors.push({
           path,
@@ -209,16 +164,14 @@ export class InputValidationService {
       return errors;
     }
 
-    // Type validation
     if (schema.type) {
       const typeError = this.validateType(path, value, schema.type);
       if (typeError) {
         errors.push(typeError);
-        return errors; // Stop further validation if type is wrong
+        return errors;
       }
     }
 
-    // Enum validation
     if (schema.enum && schema.enum.length > 0) {
       if (!schema.enum.includes(value)) {
         const allowedValues = schema.enum
@@ -231,13 +184,11 @@ export class InputValidationService {
       }
     }
 
-    // Array validation
     if (schema.type === "array" && Array.isArray(value)) {
       const arrayErrors = this.validateArray(path, value, schema);
       for (const error of arrayErrors) errors.push(error);
     }
 
-    // Object validation
     if (
       schema.type === "object" && typeof value === "object" && value !== null
     ) {
@@ -252,9 +203,6 @@ export class InputValidationService {
     return errors;
   }
 
-  /**
-   * Validates value type matches schema type.
-   */
   private validateType(
     path: string,
     value: unknown,
@@ -262,7 +210,6 @@ export class InputValidationService {
   ): InputValidationError | null {
     const actualType = this.getValueType(value);
 
-    // Handle integer as a special case of number
     if (expectedType === "integer") {
       if (typeof value !== "number" || !Number.isInteger(value)) {
         return {
@@ -283,18 +230,12 @@ export class InputValidationService {
     return null;
   }
 
-  /**
-   * Gets the JSON Schema type of a value.
-   */
   private getValueType(value: unknown): string {
     if (value === null) return "null";
     if (Array.isArray(value)) return "array";
     return typeof value;
   }
 
-  /**
-   * Validates array values.
-   */
   private validateArray(
     path: string,
     value: unknown[],
@@ -302,7 +243,6 @@ export class InputValidationService {
   ): InputValidationError[] {
     const errors: InputValidationError[] = [];
 
-    // Validate minItems
     const minItems = schema.minItems as number | undefined;
     if (minItems !== undefined && value.length < minItems) {
       errors.push({
@@ -313,7 +253,6 @@ export class InputValidationService {
       });
     }
 
-    // Validate maxItems
     const maxItems = schema.maxItems as number | undefined;
     if (maxItems !== undefined && value.length > maxItems) {
       errors.push({
@@ -324,7 +263,6 @@ export class InputValidationService {
       });
     }
 
-    // Validate uniqueItems
     const uniqueItems = schema.uniqueItems as boolean | undefined;
     if (uniqueItems) {
       const stringified = value.map((v) => JSON.stringify(v));
@@ -337,7 +275,6 @@ export class InputValidationService {
       }
     }
 
-    // Validate items schema
     if (schema.items) {
       for (let i = 0; i < value.length; i++) {
         const itemErrors = this.validateProperty(
@@ -353,9 +290,6 @@ export class InputValidationService {
     return errors;
   }
 
-  /**
-   * Validates object values.
-   */
   private validateObject(
     path: string,
     value: Record<string, unknown>,
@@ -363,7 +297,6 @@ export class InputValidationService {
   ): InputValidationError[] {
     const errors: InputValidationError[] = [];
 
-    // Validate required properties
     if (schema.required) {
       for (const key of schema.required) {
         // Own properties only: a required key named after an
@@ -377,7 +310,6 @@ export class InputValidationService {
       }
     }
 
-    // Validate properties
     if (schema.properties) {
       for (const [key, propValue] of Object.entries(value)) {
         const propSchema = Object.hasOwn(schema.properties, key)
@@ -399,7 +331,6 @@ export class InputValidationService {
           typeof schema.additionalProperties === "object" &&
           schema.additionalProperties
         ) {
-          // Validate against additionalProperties schema
           const propErrors = this.validateProperty(
             `${path}.${key}`,
             propValue,
@@ -413,7 +344,6 @@ export class InputValidationService {
       typeof schema.additionalProperties === "object" &&
       schema.additionalProperties
     ) {
-      // All properties must match additionalProperties schema
       for (const [key, propValue] of Object.entries(value)) {
         const propErrors = this.validateProperty(
           `${path}.${key}`,

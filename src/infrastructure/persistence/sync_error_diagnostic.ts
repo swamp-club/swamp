@@ -18,11 +18,8 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * Duck-typed diagnostic helper for datastore sync errors. Extensions can
- * throw arbitrary values from pullChanged/pushChanged — including opaque
- * AWS SDK errors whose `.message` is unhelpful. This module extracts any
- * standard metadata fields an SDK-style error may carry without importing
- * or depending on any SDK.
+ * duck-typed because extensions throw arbitrary values, including opaque SDK
+ * errors; extracts standard metadata fields without depending on any SDK
  */
 
 export type SyncOperation = "pull" | "push";
@@ -30,24 +27,17 @@ export type SyncOperation = "pull" | "push";
 const MESSAGE_PREVIEW_LIMIT = 2000;
 
 export interface SyncErrorSummary {
-  /**
-   * Single-line human-readable summary suitable for use as a thrown
-   * Error's `.message`. Contains the operation, extension label, any
-   * extracted metadata, and (optionally) the original message.
-   */
   summary: string;
   /**
-   * Structured fields for LogTape properties and telemetry. Only keys
-   * that could be extracted are included — missing fields are absent,
-   * not present as "undefined" strings.
+   * only keys that could be extracted are included; missing fields are absent,
+   * not 'undefined' strings
    */
   fields: Record<string, string | number>;
 }
 
 /**
- * Reads a property from an unknown value without throwing on proxies,
- * non-objects, or exotic getters. Returns undefined if the read is not
- * safe or the property is missing.
+ * must not throw on proxies, non-objects or exotic getters; returns undefined
+ * if the read is unsafe
  */
 function readProp(obj: unknown, key: string): unknown {
   if (obj === null || typeof obj !== "object") return undefined;
@@ -78,14 +68,6 @@ function truncate(message: string): string {
     : message.slice(0, MESSAGE_PREVIEW_LIMIT) + "…";
 }
 
-/**
- * Summarizes an unknown error value thrown from a datastore sync
- * operation (pullChanged/pushChanged) for logging and re-throwing.
- *
- * Duck-typed: reads .message, .name, .Code / .code,
- * .$metadata.httpStatusCode, .$metadata.requestId. Safe on strings,
- * numbers, null, plain objects, and proxies.
- */
 export function summarizeSyncError(
   operation: SyncOperation,
   label: string,
@@ -133,7 +115,6 @@ export function summarizeSyncError(
   return { summary, fields };
 }
 
-/** Error codes a datastore answers with when it refuses the credentials. */
 const AUTHORIZATION_CODES = new Set([
   "AccessDenied",
   "Forbidden",
@@ -142,19 +123,12 @@ const AUTHORIZATION_CODES = new Set([
   "Unauthorized",
 ]);
 
-/** How many `cause` links {@link isDatastoreAuthorizationError} follows. */
 const CAUSE_DEPTH = 5;
 
 /**
- * True when a datastore refused an operation because the credentials may
- * not perform it (HTTP 401 or 403, an access-denied code), as with read-only
- * credentials, rather than failing to answer at all (swamp-club#3934).
- *
- * Duck-typed like {@link summarizeSyncError}, since extensions throw their
- * own error classes: reads `.httpStatusCode`, `.$metadata.httpStatusCode`, a
- * numeric `.code` or `.status`, and `.Code` / `.code` / `.name`, through up
- * to five `.cause` links. Core rewraps some errors by message alone, so a
- * message naming HTTP 401 or 403, or rejected credentials, counts too.
+ * duck-typed since extensions throw their own error classes; core rewraps some
+ * errors by message alone, so a message naming HTTP 401 or 403 or rejected
+ * credentials counts too
  */
 export function isDatastoreAuthorizationError(error: unknown): boolean {
   let current = error;

@@ -32,7 +32,8 @@ async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
     await fn(dir);
   } finally {
     if (Deno.build.os === "windows") {
-      // Best-effort: EBUSY can fire when V8 hasn't released a handle yet.
+      // EBUSY can fire on Windows when V8 has not released a handle yet; the
+      // temp dir is ephemeral so the error is ignored
       await Deno.remove(dir, { recursive: true }).catch(() => {});
     } else {
       await Deno.remove(dir, { recursive: true });
@@ -77,7 +78,6 @@ Deno.test("ancestorConfigResolves: the bare imports whose package a package.json
       ]),
       ["@scope/pkg/deep", "ms/sub"],
     );
-    // One that cannot be read declares nothing.
     await Deno.writeTextFile(path, "{");
     assertEquals(
       await ancestorConfigResolves({ path, kind: "package-json" }, ["ms"]),

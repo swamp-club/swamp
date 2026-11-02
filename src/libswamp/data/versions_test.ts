@@ -68,15 +68,14 @@ Deno.test("dataVersions yields resolving then completed", async () => {
     { kind: "completed" }
   >;
   assertEquals(completed.data.total, 3);
-  assertEquals(completed.data.versions[0].version, 3); // sorted desc
+  assertEquals(completed.data.versions[0].version, 3);
   assertEquals(completed.data.versions[0].isLatest, true);
 });
 
 Deno.test(
   "dataVersions marks the highest version latest past the spread-argument ceiling",
   async () => {
-    // Math.max(...versions) threw RangeError above ~125k versions
-    // (swamp-club#2565).
+    // Math.max(...versions) throws RangeError for very large version counts
     const count = 150_000;
     const deps = makeDeps({
       listVersions: () =>

@@ -18,19 +18,9 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * Serve's role in team mode on a v3 datastore (swamp-club#4096). The node
- * that holds the datastore's writer lease leads: it writes, runs the work
- * and its timers, and records itself as the leader. The others follow: they
- * keep their copy current, answer reads from it, refuse writes, and try the
- * lease on every tick, so one takes over once the leader's lease expires.
- * A leader whose lease another node took over does not follow: it shuts down
- * (`onLostLead`), and its supervisor starts it again as a fresh follower, so
- * no state of its time as leader carries into following.
- *
- * The lease and its fence alone decide who commits; this service only
- * tracks the role so serve starts and stops the leader's work.
- *
- * @module
+ * the lease holder leads, others follow and retry the lease. A leader that
+ * loses it shuts down and restarts as a fresh follower so no leader state
+ * carries over. The lease and fence alone decide who commits.
  */
 
 import { getSwampLogger } from "../infrastructure/logging/logger.ts";
@@ -44,7 +34,6 @@ import {
 
 const logger = getSwampLogger(["serve", "leadership"]);
 
-/** How often a node checks the lease and refreshes its copy. */
 export const DEFAULT_LEADERSHIP_TICK_MS = 10_000;
 
 /**
@@ -54,62 +43,43 @@ export const DEFAULT_LEADERSHIP_TICK_MS = 10_000;
  */
 export const DEFAULT_FOLLOWER_STALE_AFTER_MS = 3 * DEFAULT_LEADERSHIP_TICK_MS;
 
-/** Serve's role on the datastore. */
 export type ServeRole = "leader" | "follower";
 
-/** The writer lease, as this node sees it. */
 export interface LeadershipLease {
-  /** Whether this process holds the current lease. */
   holdsCurrent(): boolean;
-  /** The fence this process holds, if any. */
   fence(): number | undefined;
-  /**
-   * Tries the lease once, without waiting. A `writer` result holds it with
-   * the copy made current, so the node can lead at once.
-   */
   take(): Promise<"writer" | "follower">;
   /**
-   * The lease's current (highest) fence, whoever holds it; undefined when
-   * it cannot be read. A follower forwards to a leader record's address
-   * only at this fence (swamp-club#4120).
+   * the highest fence whoever holds it, undefined when unreadable; a follower
+   * forwards to a leader record's address only at this fence
    */
   currentFence?(): Promise<number | undefined>;
 }
 
 /**
- * The leader's commit feed, as a follower follows it (swamp-club#4120):
- * while it is current for the leader the record names, a tick restores
- * nothing, and each batch it applies marks the copy fresh
- * ({@link ServeLeadership.markRefreshed}).
+ * while current for the leader the record names, a tick restores nothing, and
+ * each applied batch marks the copy fresh
  */
 export interface FollowerCopyFeed {
-  /** Whether the feed keeps the copy current for `leader`. */
   current(leader: ServeLeader | undefined): boolean;
-  /** Follows `leader`'s feed from the copy as it is now. */
   follow(leader: ServeLeader | undefined): void;
-  /** Stops following. */
   stop(): Promise<void>;
 }
 
-/** What {@link ServeLeadership} needs. */
 export interface ServeLeadershipDeps {
   readonly instanceId: string;
-  /** This node's own address, published in the leader record. */
   readonly address?: string;
   readonly lease: LeadershipLease;
-  /** The control plane every node shares, where the leader record lives. */
   readonly store: ControlPlaneStore;
-  /** Brings this node's copy up to the leader's commits. */
   refreshCopy(): Promise<void>;
   /**
-   * The leader's commit feed (swamp-club#4120): a follower applies it in
-   * place of restoring on every tick, and restores only when it is not
-   * current. Absent, every tick restores.
+   * a follower applies it instead of restoring every tick, and restores only
+   * when it is not current. Absent, every tick restores.
    */
   readonly feed?: FollowerCopyFeed;
   /**
-   * Signs this node's leader record with the team's peer key
-   * (swamp-club#4120). Absent, the record carries no proof.
+   * signs this node's leader record with the team's peer key. Absent, the
+   * record carries no proof.
    */
   prove?(leader: ServeLeader): Promise<string | undefined>;
   /**
@@ -118,7 +88,6 @@ export interface ServeLeadershipDeps {
    * Absent, every record is taken as written.
    */
   trust?(leader: ServeLeader): Promise<boolean>;
-  /** Starts the leader's work; called when this node takes the lead. */
   onLead(): Promise<void>;
   /**
    * Called once, when this node finds it lost the lead: serve shuts down.
@@ -130,7 +99,6 @@ export interface ServeLeadershipDeps {
   readonly now?: () => number;
 }
 
-/** See the module documentation. */
 export class ServeLeadership {
   readonly #deps: ServeLeadershipDeps;
   readonly #tickMs: number;
@@ -149,7 +117,6 @@ export class ServeLeadership {
    * next tick retries the record, not the lease.
    */
   #leadPending = false;
-  /** The lost-lead handler, started outside any tick. */
   #lostLead: Promise<void> | undefined;
   #stopped = false;
 
@@ -160,41 +127,24 @@ export class ServeLeadership {
     this.#now = deps.now ?? Date.now;
   }
 
-  /** This node's role. */
   get role(): ServeRole {
     return this.#role;
   }
 
-  /**
-   * The leader as this node knows it: itself while it leads, otherwise the
-   * last record it read, if any.
-   */
   leader(): ServeLeader | undefined {
     return this.#role === "leader" ? this.#ownRecord() : this.#leader;
   }
 
-  /**
-   * The copy was brought up to the leader's commits just now, by the
-   * leader's commit feed (swamp-club#4120).
-   */
   markRefreshed(): void {
     if (this.#role === "follower") this.#refreshedAt = this.#now();
   }
 
-  /**
-   * Whether this node's copy is too old to answer reads from: only a
-   * follower's, once it went without a refresh for longer than the bound.
-   */
   isStale(): boolean {
     if (this.#role === "leader") return false;
     return this.#refreshedAt === undefined ||
       this.#now() - this.#refreshedAt > this.#staleAfterMs;
   }
 
-  /**
-   * Starts in the role serve's first hold gave it (`writer` when it took the
-   * lease), then checks on every tick.
-   */
   async start(initial: "writer" | "follower"): Promise<void> {
     if (initial === "writer") {
       // Serve's boot did the leader's work before it listened, so a node
@@ -227,15 +177,10 @@ export class ServeLeadership {
     }, this.#tickMs);
   }
 
-  /**
-   * Settles once the lost-lead handler has run; resolves at once while this
-   * node has not lost the lead.
-   */
   lostLeadHandled(): Promise<void> {
     return this.#lostLead ?? Promise.resolve();
   }
 
-  /** One check of the lease, one at a time; ticks during one are skipped. */
   tick(): Promise<void> {
     if (this.#stopped) return Promise.resolve();
     if (this.#ticking !== undefined) return this.#ticking;
@@ -293,14 +238,13 @@ export class ServeLeadership {
     }
     const feed = this.#deps.feed;
     if (feed !== undefined) {
-      // The feed keeps the copy current while it follows the leader the
-      // record names. A new leader, or a feed that stopped, restores from
-      // the lineage first, so no commit an old leader never published
-      // stays in the copy (swamp-club#4120).
+      // the feed keeps the copy current while following the leader the record
+      // names. A new leader, or a stopped feed, restores from the lineage first
+      // so no commit an old leader never published stays in the copy.
       await this.#readLeader();
       if (feed.current(this.#leader)) return;
-      // Stopped before the restore, so nothing the old socket delivers is
-      // queued to apply after it (swamp-club#4148).
+      // stopped before the restore so nothing the old socket delivers is queued
+      // to apply after it
       await feed.stop();
     }
     await this.#deps.refreshCopy();
@@ -310,10 +254,9 @@ export class ServeLeadership {
   }
 
   /**
-   * Takes the lead: the leader's work runs first, while the node still
-   * answers as a follower, and the role (which opens the request gates)
-   * changes only once it is done, so what the leader settles and sweeps on
-   * taking the lead is never work it has just accepted.
+   * the leader's work runs first while the node still answers as a follower;
+   * the role, which opens request gates, changes after, so what it settles and
+   * sweeps on taking the lead is never work it just accepted
    */
   async #lead(): Promise<void> {
     this.#since = new Date(this.#now()).toISOString();
@@ -348,7 +291,6 @@ export class ServeLeadership {
     }
   }
 
-  /** Writes the leader record; false when it could not be written. */
   async #writeRecord(): Promise<boolean> {
     let record = this.#ownRecord();
     if (record === undefined) return false;
@@ -390,11 +332,9 @@ export class ServeLeadership {
     try {
       const data = await this.#deps.store.get(SERVE_LEADER_KEY);
       let leader = data === null ? undefined : parseServeLeader(data);
-      // A record is forwarded to only at the lease's current fence: one
-      // signed by an earlier leader, written back after a takeover, names an
-      // address that leader may no longer own. Any other fence, or a record
-      // without the team's proof, names the leader but no address, and the
-      // follower refuses until the leader records itself at its fence.
+      // forward only at the lease's current fence: an earlier leader's record
+      // may name an address it does not own; any other fence, or a record
+      // without the team's proof, names no address and followers refuse
       if (leader?.address !== undefined && this.#deps.trust !== undefined) {
         const current = await this.#deps.lease.currentFence?.()
           .catch(() => undefined);

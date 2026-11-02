@@ -38,7 +38,6 @@ function reserved(admission: UploadAdmission): UploadReservation {
   return admission.reservation;
 }
 
-/** Reserves and records one upload, as serve does once it is stored. */
 function put(
   ledger: UploadLedger,
   principalId: string,
@@ -100,7 +99,6 @@ Deno.test("UploadLedger: unreferencedBytes sums a principal's live, unreleased u
   assertEquals(ledger.unreferencedBytes("alice", T0 + 500), 30);
   assertEquals(ledger.unreferencedBytes("bob", T0 + 500), 40);
   assertEquals(ledger.unreferencedBytes("carol", T0 + 500), 0);
-  // A's window ends; B's has not.
   assertEquals(ledger.unreferencedBytes("alice", T0 + 1000), 20);
 });
 
@@ -115,10 +113,8 @@ Deno.test("UploadLedger: release stops the bytes counting but keeps the proof", 
   assertEquals(ledger.unreferencedBytes("bob", T0), 0);
   assertEquals(ledger.holds("alice", "ns", A, T0), true);
   assertEquals(ledger.holds("bob", "ns", A, T0), true);
-  // Releasing twice changes nothing.
   ledger.release("ns", [A]);
   assertEquals(ledger.unreferencedBytes("alice", T0), 25);
-  // A released entry expiring does not take the count below zero.
   assertEquals(ledger.unreferencedBytes("bob", T0 + 1000), 0);
   assertEquals(ledger.unreferencedBytes("alice", T0 + 1000), 0);
 });
@@ -131,7 +127,6 @@ Deno.test("UploadLedger: a released chunk recorded again counts again", () => {
   assertEquals(ledger.unreferencedBytes("alice", T0 + 1), 10);
 });
 
-/** Whether a reservation is granted; a granted one is cancelled at once. */
 function allowed(admission: UploadAdmission): boolean {
   if (admission.allowed) admission.reservation.cancel();
   return admission.allowed;
@@ -152,12 +147,9 @@ Deno.test("UploadLedger: reserve refuses past the per-principal byte quota", () 
     unreferencedBytes: 60,
     limitBytes: 100,
   });
-  // Other principals have their own quota.
   assertEquals(allowed(ledger.reserve("bob", 100, T0)), true);
-  // Releasing frees quota.
   ledger.release("ns", [A]);
   assertEquals(allowed(ledger.reserve("alice", 100, T0)), true);
-  // So does the window ending.
   put(ledger, "alice", "ns", B, 100, T0);
   assertEquals(allowed(ledger.reserve("alice", 1, T0 + 999)), false);
   assertEquals(allowed(ledger.reserve("alice", 1, T0 + 1000)), true);
@@ -175,25 +167,23 @@ Deno.test("UploadLedger: reserve refuses past the per-principal entry cap", () =
 });
 
 Deno.test("UploadLedger: released entries do not count toward the per-principal entry cap", () => {
-  // swamp-club#3938: a busy client whose uploads every commit references
-  // must not be locked out until its entries expire.
+  // a busy client whose uploads every commit references must not be locked out
+  // until its entries expire
   const ledger = new UploadLedger({ maxEntriesPerPrincipal: 2 });
   put(ledger, "alice", "ns", A, 1, T0);
   put(ledger, "alice", "ns", B, 1, T0);
   assertEquals(allowed(ledger.reserve("alice", 1, T0)), false);
   ledger.release("ns", [A, B]);
   assertEquals(allowed(ledger.reserve("alice", 1, T0)), true);
-  // The released uploads still hold, for a retried commit.
   assertEquals(ledger.holds("alice", "ns", A, T0), true);
-  // An unreleased entry still counts.
   put(ledger, "alice", "ns", C, 1, T0);
   put(ledger, "alice", "ns", "d".repeat(64), 1, T0);
   assertEquals(allowed(ledger.reserve("alice", 1, T0)), false);
 });
 
 Deno.test("UploadLedger: outstanding reservations count toward the byte quota and entry cap", () => {
-  // swamp-club#3938: requests in flight together are each admitted
-  // against what the others reserved, not against what was recorded.
+  // requests in flight together are each admitted against what the others
+  // reserved, not against what was recorded
   const ledger = new UploadLedger({
     maxUnreferencedBytesPerPrincipal: 100,
     maxEntriesPerPrincipal: 3,
@@ -202,7 +192,6 @@ Deno.test("UploadLedger: outstanding reservations count toward the byte quota an
   assertEquals(ledger.reserve("alice", 41, T0).allowed, false);
   const second = reserved(ledger.reserve("alice", 40, T0));
   assertEquals(ledger.reserved, 2);
-  // Cancelling gives the room back, once.
   second.cancel();
   second.cancel();
   assertEquals(ledger.reserved, 1);
@@ -211,7 +200,6 @@ Deno.test("UploadLedger: outstanding reservations count toward the byte quota an
   const refused = ledger.reserve("alice", 0, T0);
   assertEquals(refused.allowed, false);
   if (!refused.allowed) assertEquals(refused.reason, "entries");
-  // Recording spends the reservation: the bytes are now the entry's.
   ledger.record(first, "ns", A, T0);
   first.cancel();
   assertEquals(ledger.unreferencedBytes("alice", T0), 60);
@@ -237,7 +225,6 @@ Deno.test("UploadLedger: at the global cap, the oldest released entry makes room
   put(ledger, "alice", "ns", A, 1, T0);
   put(ledger, "bob", "ns", B, 2, T0 + 1);
   put(ledger, "alice", "ns", C, 4, T0 + 2);
-  // C's commit landed: C is released and goes before the older A and B.
   ledger.release("ns", [C]);
   put(ledger, "carol", "ns", A, 8, T0 + 3);
   assertEquals(ledger.size, 3);
@@ -249,19 +236,16 @@ Deno.test("UploadLedger: at the global cap, the oldest released entry makes room
 });
 
 Deno.test("UploadLedger: at the global cap, a light principal's uploads are never evicted for a heavier one", () => {
-  // swamp-club#3938: eviction took the oldest entries whoever owned them.
+  // eviction must not take the oldest entries whoever owned them
   const ledger = new UploadLedger({ maxEntries: 4 });
   put(ledger, "bob", "ns", A, 1, T0);
   for (let i = 0; i < 3; i++) {
     put(ledger, "flood", "ns", i.toString(16).padStart(64, "0"), 1, T0 + 1);
   }
-  // The ledger is full and the flooder holds the most: it is refused,
-  // rather than pushing out bob's older upload.
   const refused = ledger.reserve("flood", 1, T0 + 2);
   assertEquals(refused.allowed, false);
   if (!refused.allowed) assertEquals(refused.reason, "full");
   assertEquals(ledger.holds("bob", "ns", A, T0 + 2), true);
-  // A lighter principal's upload makes room from the flooder's oldest.
   put(ledger, "carol", "ns", B, 1, T0 + 2);
   assertEquals(ledger.holds("bob", "ns", A, T0 + 2), true);
   assertEquals(ledger.holds("carol", "ns", B, T0 + 2), true);
@@ -286,11 +270,9 @@ Deno.test("UploadLedger: reservations count toward the global cap and are never 
   const ledger = new UploadLedger({ maxEntries: 2 });
   const held = reserved(ledger.reserve("alice", 1, T0));
   reserved(ledger.reserve("bob", 1, T0));
-  // Full of reservations: nothing recorded can make room.
   const refused = ledger.reserve("carol", 1, T0);
   assertEquals(refused.allowed, false);
   if (!refused.allowed) assertEquals(refused.reason, "full");
-  // Recording a reservation never evicts.
   ledger.record(held, "ns", A, T0);
   assertEquals(ledger.size, 1);
   assertEquals(ledger.reserved, 1);

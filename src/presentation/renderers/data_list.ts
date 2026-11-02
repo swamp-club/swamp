@@ -28,7 +28,6 @@ import type { OutputMode } from "../output/output.ts";
 import { UserError } from "../../domain/errors.ts";
 import { getTerminalColumns } from "../output/terminal_size.ts";
 
-/** Formats a byte size into a human-readable string. */
 function formatSize(bytes?: number): string {
   if (bytes === undefined) return "";
   if (bytes < 1024) return `${bytes}B`;
@@ -36,7 +35,6 @@ function formatSize(bytes?: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)}MB`;
 }
 
-/** Type guard to check if data is WorkflowDataListData. */
 function isWorkflowData(
   data: DataListData | WorkflowDataListData,
 ): data is WorkflowDataListData {

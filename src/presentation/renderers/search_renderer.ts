@@ -20,20 +20,14 @@
 import type { StreamEvent } from "../../libswamp/stream.ts";
 import type { Renderer } from "../renderer.ts";
 
-/**
- * Extended renderer interface for search commands that support interactive
- * item selection. After `consumeStream()` completes, `selectedItem()` returns
- * the item the user chose (Ink) or `undefined` (JSON / cancelled).
- */
 export interface SearchRenderer<E extends StreamEvent, T> extends Renderer<E> {
   selectedItem(): T | undefined;
 }
 
-/** How a search renderer factory builds its log-mode renderer. */
 export interface SearchRendererOptions {
   /**
-   * False prints a plain list instead of the interactive picker. Remote
-   * (`--server`) searches pass false: they never start the picker.
+   * false prints a plain list; remote (`--server`) searches pass false because
+   * they never start the picker
    */
   interactive?: boolean;
 }

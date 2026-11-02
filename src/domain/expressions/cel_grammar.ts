@@ -18,10 +18,8 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * What swamp knows about CEL's grammar: whether text parses the way
- * evaluation parses it, and which root identifiers a parsed expression reads.
- * It depends only on cel-js and the string lexer, so the expression scanner
- * and the namespace classifier can both use it without an import cycle.
+ * depends only on cel-js and the string lexer so the expression scanner and the
+ * namespace classifier can both use it without an import cycle
  */
 
 import { type ASTNode, Environment } from "cel-js";
@@ -31,20 +29,17 @@ import {
   rewriteHyphenatedModelRefs,
 } from "./vault_call_syntax.ts";
 
-/** Preserves the existing public model-name transformation. */
 export function transformHyphenatedModelRefs(expression: string): string {
   return rewriteHyphenatedModelRefs(expression).text;
 }
 
 /**
- * The one function swamp adds to CEL: `literal('...')` returns its string
- * unchanged, so a value can mix a swamp expression with another service's
- * template text. Declared here so the evaluator and the type check below
- * register the same signature.
+ * literal('...') returns its string unchanged so a value can mix a swamp
+ * expression with another service's template text; declared here so evaluator
+ * and type check register the same signature
  */
 export const LITERAL_FUNCTION_SIGNATURE = "literal(string): string";
 
-/** The implementation of {@link LITERAL_FUNCTION_SIGNATURE}. */
 export function literal(text: string): string {
   return text;
 }
@@ -59,10 +54,9 @@ const EVALUATION_GRAMMAR = new Environment({
 });
 
 /**
- * The evaluation grammar with swamp's own function registered, for type
- * checking. It knows CEL's standard functions and `literal`, but not the
- * namespace receivers (`data.latest`, `file.contents`), so only expressions
- * that read no root identifier are checked with it.
+ * knows CEL's standard functions and literal, but not the namespace receivers
+ * (data.latest, file.contents), so only expressions that read no root
+ * identifier are checked with it
  */
 const CONSTANT_CHECKER = new Environment({
   unlistedVariablesAreDyn: true,
@@ -71,11 +65,8 @@ const CONSTANT_CHECKER = new Environment({
 CONSTANT_CHECKER.registerFunction(LITERAL_FUNCTION_SIGNATURE, literal);
 
 /**
- * Whether an expression that reads no root identifier type-checks, so every
- * function it calls exists with those argument types: `literal('{{a}}')` does,
- * `now()` and `literal(123)` do not. Mixed int and double arithmetic, which
- * the evaluator adds overloads for, does not check here, so such a constant
- * is conservatively reported.
+ * mixed int and double arithmetic, which the evaluator adds overloads for, does
+ * not check here, so such a constant is conservatively reported
  */
 export function typeChecksAsConstant(celExpression: string): boolean {
   try {
@@ -86,11 +77,6 @@ export function typeChecksAsConstant(celExpression: string): boolean {
   }
 }
 
-/**
- * Parses text the way evaluation parses it: with optional syntax enabled,
- * and hyphenated model refs (`model.web-1a`) rewritten first. Returns
- * undefined when the text does not parse.
- */
 function parseForEvaluation(celExpression: string): ASTNode | undefined {
   try {
     return EVALUATION_GRAMMAR.parse(prepareVaultSource(celExpression).text)
@@ -100,25 +86,14 @@ function parseForEvaluation(celExpression: string): ASTNode | undefined {
   }
 }
 
-/**
- * Whether text parses as CEL the way evaluation parses it: with optional
- * syntax enabled, and hyphenated model refs (`model.web-1a`) rewritten first.
- * Text that evaluates always parses here.
- */
 export function parsesAsCel(celExpression: string): boolean {
   return parseForEvaluation(celExpression) !== undefined;
 }
 
-/**
- * The free root identifiers an expression reads, parsed the way evaluation
- * parses it, or undefined when the text does not parse. A constant such as
- * `literal('{{host.name}}')` or `'a' + 'b'` has none.
- */
 export function freeRoots(celExpression: string): Set<string> | undefined {
   return expressionReferences(celExpression)?.roots;
 }
 
-/** Free roots and input reads, including computed or whole-input accesses. */
 export function expressionReferences(
   celExpression: string,
 ): References | undefined {
@@ -133,13 +108,7 @@ export function expressionReferences(
   return refs;
 }
 
-/**
- * The workflow inputs an expression reads, parsed the way evaluation parses
- * it: each name read as `inputs.X`, `inputs["X"]`, `run.inputs.X` or
- * `run.inputs["X"]`, and whether it reads them in a way that names no single
- * input (`inputs`, `run.inputs` or `run` whole, or with a computed key). Text
- * that does not parse reads every input, so `opaque` is set.
- */
+/** text that does not parse reads every input, so opaque is set */
 export function inputNamesRead(
   celExpression: string,
 ): { names: Set<string>; opaque: boolean } {
@@ -158,10 +127,6 @@ export function inputNamesRead(
   };
 }
 
-/**
- * Whether an expression is the empty string or null, written directly or
- * through `literal()`: a constant that carries no text at all.
- */
 export function isBlankConstant(celExpression: string): boolean {
   let node = parseForEvaluation(celExpression);
   if (
@@ -174,11 +139,9 @@ export function isBlankConstant(celExpression: string): boolean {
 }
 
 /**
- * A `${{ literal('...') }}` occurrence that evaluates to `text`. The string
- * is single-quoted and escapes only what a single-quoted CEL string cannot
- * hold: the quote, the backslash and the two line breaks. A `}}` in `text`
- * sits inside that string, where the expression scanner does not end an
- * occurrence.
+ * escapes only what a single-quoted CEL string cannot hold: the quote, the
+ * backslash and the line breaks; a }} in text sits inside the string, where the
+ * scanner does not end an occurrence
  */
 export function literalOccurrence(text: string): string {
   const quoted = text.replace(
@@ -188,12 +151,7 @@ export function literalOccurrence(text: string): string {
   return `\${{ literal('${quoted}') }}`;
 }
 
-/**
- * The text every `literal('...')` call in an expression produces, wherever
- * the call sits, or undefined when the text does not parse or nests too
- * deeply to walk. A call whose argument is not a string constant produces no
- * text of its own.
- */
+/** a call whose argument is not a string constant produces no text of its own */
 export function literalCallTexts(celExpression: string): string[] | undefined {
   const ast = parseForEvaluation(celExpression);
   if (ast === undefined) return undefined;
@@ -233,19 +191,10 @@ export function literalCallTexts(celExpression: string): string[] | undefined {
  */
 export { BINDING_MACROS } from "./vault_call_syntax.ts";
 
-/** What {@link collectReferences} finds in an expression. */
 export interface References {
-  /** Free root identifiers. */
   roots: Set<string>;
-  /** Names read as `inputs.X` or `inputs["X"]`. */
   inputs: Set<string>;
-  /** `inputs` read bare or with a computed key. */
   opaqueInputs: boolean;
-  /**
-   * Set to also collect the inputs read through `run.inputs`: names read as
-   * `run.inputs.X` or `run.inputs["X"]`, and whether `run.inputs` or `run` is
-   * read whole or with a computed key.
-   */
   runInputs?: { names: Set<string>; opaque: boolean };
 }
 
@@ -257,16 +206,11 @@ function isFreeRun(node: ASTNode, bound: ReadonlySet<string>): boolean {
   return node.op === "id" && node.args === "run" && !bound.has("run");
 }
 
-/** `run.inputs`, read from the free `run` root. */
 function isRunInputs(node: ASTNode, bound: ReadonlySet<string>): boolean {
   return (node.op === "." || node.op === ".?") &&
     isFreeRun(node.args[0], bound) && node.args[1] === "inputs";
 }
 
-/**
- * Collects the free root identifiers a parsed expression reads, and which
- * inputs it names, honouring variables bound by macros and `cel.bind`.
- */
 export function collectReferences(
   node: ASTNode,
   bound: ReadonlySet<string>,
@@ -364,17 +308,11 @@ export function collectReferences(
   }
 }
 
-/** A static read of a binding: `inputs.a.b`, `self["x"][0]`, `model.web-1a.definition`. */
 export interface StaticAccess {
   root: string;
   segments: (string | number)[];
 }
 
-/**
- * The binding an expression reads when it is nothing but a chain of field
- * and literal-index accesses from a free root identifier, or undefined for
- * any other expression (a computation, a call, a dynamic index).
- */
 export function staticAccessPath(
   celExpression: string,
 ): StaticAccess | undefined {

@@ -120,7 +120,7 @@ export const extensionRemoveCommand = withRemoteOptions(
     resolveRepoDir(options.repoDir),
   );
 
-  // Refuses to change a guessed managed config base (swamp-club#2483).
+  // refuses to change a guessed managed config base.
   const lockfileWrite = await resolveManagedLockfileForWrite(
     repoDir,
     marker,
@@ -138,16 +138,13 @@ export const extensionRemoveCommand = withRemoteOptions(
     skillsDirRelative,
   );
 
-  // Create libswamp context, deps, renderer.
-  // W2 (commit 4): the deps now own a catalog handle (via the W2
-  // ExtensionRepository) so the rm flow routes through
-  // RemoveExtensionService and prunes catalog rows (closes
-  // swamp-club#201). Catalog must be closed when we're done.
+  // the deps own a catalog handle so rm prunes catalog rows; it must be closed
+  // when done.
   const libCtx = createLibSwampContext({ logger: ctx.logger });
   const deps = await createExtensionRmDeps(repoDir, lockfilePath);
-  // The preview reads, and the removal changes, the datastore's lockfile
-  // rather than a stale cache; the removal is published as it lands
-  // (swamp-club#2838). No lock is held across the prompt.
+  // the preview reads, and the removal changes, the datastore's lockfile rather
+  // than a stale cache; the removal is published as it lands. No lock is held
+  // across the prompt.
   const lockfileTransaction = createManagedLockfileTransaction(
     repoDir,
     marker,
@@ -158,15 +155,12 @@ export const extensionRemoveCommand = withRemoteOptions(
       const renderer = createExtensionRmRenderer(ctx.outputMode);
       const input = { extensionName: ref.name };
 
-      // Preview: validates extension, returns preview data
       const preview = await extensionRmPreview(libCtx, deps, input);
 
-      // Dependency warning
       if (preview.dependents.length > 0) {
         renderer.renderDependencyWarning(preview.dependents);
       }
 
-      // Confirmation prompt (log mode only, unless --force)
       if (ctx.outputMode === "log" && !options.yes && !options.force) {
         const confirmed = await promptConfirmation(
           `Remove ${preview.name} (v${preview.version})? This will delete ${preview.fileCount} file(s).`,
@@ -177,7 +171,6 @@ export const extensionRemoveCommand = withRemoteOptions(
         }
       }
 
-      // Execute removal
       await consumeStream(
         extensionRm(libCtx, deps, input),
         renderer.handlers(),

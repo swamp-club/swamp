@@ -43,7 +43,6 @@ const arbOperation: fc.Arbitrary<Operation> = fc.oneof(
 
 const NOW = new Date("2026-10-27T12:00:00.000Z");
 
-/** Applies `op`, returning the lease unchanged when the operation is refused. */
 function apply(lease: StepLease, op: Operation): StepLease {
   try {
     if (op.kind === "mark_writes") {

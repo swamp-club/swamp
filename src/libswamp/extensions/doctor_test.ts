@@ -270,8 +270,6 @@ Deno.test(
   async () => {
     const tmpDir = await Deno.makeTempDir({ prefix: "swamp_doctor_orphan_" });
     try {
-      // Seed a tracked file plus an UNtracked sibling — the sibling
-      // is the orphan we expect doctor to flag.
       const extDir = join(
         tmpDir,
         ".swamp/pulled-extensions/@x/y/models",
@@ -401,8 +399,6 @@ Deno.test(
         throw new Error("expected completed event");
       }
 
-      // Even though there's an orphan, overallStatus stays "pass" —
-      // orphans are warnings, not failures.
       assertEquals(completed.report.orphanFiles.length, 1);
       assertEquals(completed.report.overallStatus, "pass");
     } finally {
@@ -420,7 +416,6 @@ Deno.test(
         repoDir: tmpDir,
         skillsDir: ".claude/skills",
       });
-      // Default readUpstreamExtensions returns {} — the no-lockfile case.
       const events = await collect(doctorExtensions(deps));
       const completed = events.find((e) => e.kind === "completed");
       if (completed?.kind !== "completed") {
@@ -436,9 +431,6 @@ Deno.test(
 Deno.test(
   "doctorExtensions: skill-dir entries do NOT produce orphan walks",
   async () => {
-    // Skills are tracked as directory paths only; we cannot
-    // meaningfully orphan-detect within a skill dir. extractTopLevelRoot
-    // returns null for skill paths, so the walk skips them.
     const tmpDir = await Deno.makeTempDir({ prefix: "swamp_doctor_orphan_" });
     try {
       const skillDir = join(tmpDir, ".claude/skills/foo");
@@ -470,7 +462,6 @@ Deno.test(
       if (completed?.kind !== "completed") {
         throw new Error("expected completed event");
       }
-      // Inner files of a skill dir are NOT walked — no orphan reported.
       assertEquals(completed.report.orphanFiles, []);
     } finally {
       await Deno.remove(tmpDir, { recursive: true });
@@ -481,16 +472,8 @@ Deno.test(
 Deno.test(
   "doctorExtensions: detects an orphan inside a bundle namespace",
   async () => {
-    // The orphan path that closes the #201 catalog loop: a stray bundle
-    // file under .swamp/bundles/<hash>/ that was dropped between
-    // versions but never removed from disk. The doctor scan must walk
-    // the bundle namespace as a separate root from the per-extension
-    // subtree, since bundles live in a different tree.
     const tmpDir = await Deno.makeTempDir({ prefix: "swamp_doctor_orphan_" });
     try {
-      // Tracked: a model file under pulled-extensions AND its bundle
-      // under bundles/abc/. Untracked: a stray bundle file in the same
-      // namespace from a prior version.
       const extDir = join(tmpDir, ".swamp/pulled-extensions/@x/y/models");
       const bundleDir = join(tmpDir, ".swamp/bundles/abc");
       await ensureDir(extDir);
@@ -530,8 +513,6 @@ Deno.test(
         throw new Error("expected completed event");
       }
 
-      // Exactly one orphan: the stray bundle file. The pulled-extensions
-      // subtree is clean (only current.ts).
       assertEquals(completed.report.orphanFiles.length, 1);
       assertEquals(completed.report.orphanFiles[0].extensionName, "@x/y");
       assertEquals(
@@ -708,7 +689,6 @@ Deno.test(
         message: w.error,
       }));
 
-    // First invocation
     let events = await collect(doctorExtensions(deps));
     let completed = events.find((e) => e.kind === "completed");
     if (completed?.kind !== "completed") {
@@ -716,7 +696,6 @@ Deno.test(
     }
     assertEquals(completed.report.warnings.length, 1);
 
-    // Second invocation — reset should clear, loader re-emits exactly once
     events = await collect(doctorExtensions(deps));
     completed = events.find((e) => e.kind === "completed");
     if (completed?.kind !== "completed") {
@@ -746,8 +725,6 @@ Deno.test("doctorExtensions: rescanSkipped from deps reaches the report", async 
   });
   assertEquals(completed.report.repairReport, undefined);
 });
-
-// -- Extension member collisions (swamp-club#2562) ---------------------------
 
 Deno.test("doctorExtensions: attaches extension members after every registry loads and reports collisions as warnings", async () => {
   const { deps, events } = buildDeps();
@@ -832,7 +809,6 @@ Deno.test("extensionMemberDoctorDeps: loads each registered target type and repo
       row(broken),
       row(""),
       row("@test/unregistered"),
-      // Malformed: ModelType.create rejects it inside `has`.
       row("   "),
     ],
   };
@@ -848,7 +824,6 @@ Deno.test("extensionMemberDoctorDeps: loads each registered target type and repo
     const failures = await extensionMemberDoctorDeps(catalog)
       .attachExtensionMembers!();
     assertEquals(loaded.sort(), [broken, good].sort());
-    // Sorted: the malformed "   " row sorts first.
     assertEquals(failures.map((f) => [f.sourcePath, f.category]), [
       ["   ", "ExtensionAttachFailed"],
       [broken, "ExtensionAttachFailed"],
@@ -890,7 +865,6 @@ Deno.test("extensionMemberDoctorDeps: collisions come from the attach record, no
       { loaded: [], extended: [], failed: [] },
       { sourcePath: "/repo/extensions/models/ext.ts", pulled: false },
     );
-    // Doctor resets warnings before it runs; the record must survive that.
     resetExtensionLoadWarnings();
     const collisions = extensionMemberDoctorDeps({ findByKind: () => [] })
       .getMemberCollisions!()

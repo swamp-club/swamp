@@ -42,7 +42,6 @@ function definition(name: string, id: string): Definition {
   return Definition.create({ id, name, version: 1 });
 }
 
-/** Deps over an in-memory set of outputs and definitions, recording calls. */
 function fakeDeps(
   outputs: FakeOutput[],
   definitions: Definition[],
@@ -154,7 +153,6 @@ Deno.test("resolveOutputReference: a model name resolves to the model with its l
     type: TYPE,
     latest: OUT_B,
   });
-  // Not hex: no output match is attempted.
   assertEquals(deps.calls, ["definition:my-model", `latest:${MODEL.id}`]);
 });
 

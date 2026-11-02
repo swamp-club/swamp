@@ -88,14 +88,11 @@ interface Fixture {
   run: WorkflowRun;
   waitId: string;
   waits: InMemorySignalWaitStore;
-  /** The run records this host has; clear it to lose them. */
   runs: Map<string, WorkflowRun>;
-  /** The workflows this host has; clear it to delete them. */
   workflows: Map<string, Workflow>;
   ctxWith(grants: Grant[]): ConnectionContext;
 }
 
-/** A run suspended on a registered wait, opened a moment ago. */
 async function fixture(name = "release"): Promise<Fixture> {
   const workflow = waitingWorkflow(name);
   const run = WorkflowRun.create(workflow);
@@ -276,12 +273,9 @@ Deno.test("deliverSignalForCaller: a registration whose workflow ID was changed 
   const f = await fixture("restricted");
   const allowed = waitingWorkflow("open");
   f.workflows.set(allowed.name, allowed);
-  // The limit of the check above, pinned so it is not mistaken for a
-  // guarantee: with the ID changed too, the run is looked for under the
-  // other workflow and not found, so the registration is all there is to
-  // go on and the caller is authorized against the workflow it names.
-  // Whoever can rewrite a registration can also create the outcome record
-  // directly, so this path gives them nothing they did not have.
+  // pins the limit of the check above: with the ID changed too, the run is not
+  // found, so the caller is authorized against the workflow the registration
+  // names; whoever can rewrite it could write the outcome directly anyway
   const stored = await f.waits.findRegistration(f.waitId);
   assert(stored.kind === "found");
   f.waits.registrations.set(
@@ -339,7 +333,6 @@ Deno.test("deliverSignalForCaller: a wait with only its outcome left is authoriz
   );
   assert(seen.status === "already_settled" && seen.receipt !== undefined);
 
-  // With its workflow deleted too, nothing ties the wait to a grant.
   f.workflows.clear();
   assertEquals(
     await deliver(f.ctxWith([grantOf(["signal", "read"])]), f.waitId),
@@ -353,7 +346,6 @@ Deno.test("deliverSignalForCaller: a renamed workflow's settled wait stays close
     (await deliver(f.ctxWith([grantOf(["signal"])]), f.waitId)).status,
     "delivered",
   );
-  // The workflow is renamed after the run recorded its name.
   f.workflows.clear();
   f.workflows.set("open", waitingWorkflow("open", f.workflow.id));
   const denied = f.ctxWith([
@@ -364,7 +356,6 @@ Deno.test("deliverSignalForCaller: a renamed workflow's settled wait stays close
 
   assertEquals(await deliver(denied, f.waitId), NOT_FOUND);
 
-  // The run ended and its registration was removed; the run record is kept.
   await f.waits.removeRegistration(f.waitId);
 
   assertEquals(await deliver(denied, f.waitId), NOT_FOUND);
@@ -375,7 +366,6 @@ Deno.test("deliverSignalForCaller: a renamed workflow's settled wait stays close
 Deno.test("deliverSignalForCaller: a wait this host cannot place is not found, without scanning runs", async () => {
   const f = await fixture();
   await f.waits.removeRegistration(f.waitId);
-  // The fixture's run repository throws if it is scanned.
   assertEquals(
     await deliver(f.ctxWith([grantOf(["signal", "read"])]), f.waitId),
     NOT_FOUND,
@@ -446,7 +436,6 @@ Deno.test("deliverSignalForCaller: a caller who may not signal the workflow gets
           assertEquals(real, unknown);
           assertEquals((await f.waits.findOutcome(f.waitId)).kind, "absent");
         } else {
-          // An allowed caller is never told the wait does not exist.
           assert(real.status !== "not_found", JSON.stringify(real));
         }
       },
@@ -455,11 +444,8 @@ Deno.test("deliverSignalForCaller: a caller who may not signal the workflow gets
   );
 });
 
-// --- Continuing the run after a delivery (swamp-club#3108) --------------------
-
 const SUBJECT = { principal: { kind: "user" as const, id: CALLER_ID } };
 
-/** `ctx` as a server that can launch resumes, with auto-resume on. */
 function launching(
   ctx: ConnectionContext,
 ): { ctx: ConnectionContext; registry: ActiveRunRegistry } {
@@ -531,7 +517,6 @@ Deno.test("continueAfterSignal: fetches a run record this instance does not have
     return Promise.resolve(true);
   };
 
-  // The record is here: nothing is fetched over it.
   const other = await fixture("other");
   f.runs.set(other.run.id, other.run);
   f.workflows.set(other.workflow.name, other.workflow);
@@ -542,7 +527,6 @@ Deno.test("continueAfterSignal: fetches a run record this instance does not have
   assertEquals(hydrated, []);
   await registry.get(other.run.id)?.completion;
 
-  // The record is missing: it is fetched, and the run continued.
   f.runs.delete(f.run.id);
   const result = await deliver(ctx, f.waitId);
   assert(result.status === "delivered");
@@ -590,7 +574,6 @@ Deno.test("continueAfterSignal: a failure to continue never reaches the caller",
   await continueAfterSignal(ctx, result, SUBJECT);
 });
 
-/** `f`'s context with a wait store that fails the test if anything reads it. */
 function withUnreadableWaits(
   f: Fixture,
   grants: Grant[],
@@ -635,7 +618,6 @@ Deno.test("deliverSignalForCaller: by key, a caller who may not signal the workf
     ]
   ) {
     const ctx = withUnreadableWaits(f, grants);
-    // By name and by ID: a selector matches the name either way.
     for (const workflow of [f.workflow.name, f.workflow.id]) {
       assertEquals(await deliverByKey(ctx, workflow, "verdict"), NOT_FOUND);
     }
@@ -676,11 +658,8 @@ Deno.test("deliverSignalForCaller: by key, a payload over the limit is refused b
   assertEquals(result.status, "invalid_payload");
 });
 
-// A signal by key held before its wait opens (swamp-club#3212).
-
 const EARLY_KEY = "kitchen-verdict";
 
-/** `f` with a workflow whose keyed wait takes an early signal, and no run of it. */
 function withEarlyWorkflow(f: Fixture): Workflow {
   const workflow = Workflow.create({
     name: "kitchen",
@@ -768,7 +747,6 @@ Deno.test("deliverSignalForCaller: by key, a retry under the idempotency key of 
   assertEquals((await send("order-2")).status, "already_pending");
 });
 
-/** Opens a wait under the early key for a run of `workflow`, as its step does. */
 async function openEarlyWait(
   f: Fixture,
   workflow: Workflow,
@@ -814,7 +792,6 @@ Deno.test("deliverSignalForCaller: by key, a caller with signal alone gets the r
     return result;
   };
 
-  // Held: no wait is open.
   const held = await fixture();
   const heldWorkflow = withEarlyWorkflow(held);
   const pending = shape(
@@ -827,8 +804,6 @@ Deno.test("deliverSignalForCaller: by key, a caller with signal alone gets the r
   assertEquals(pending.run, undefined);
   assertEquals(held.waits.pendingRecords.size, 1);
 
-  // Delivered: a wait is open and takes it. The run is named for the server
-  // alone, so the run is continued.
   const open = await fixture();
   const openWorkflow = withEarlyWorkflow(open);
   const { waitId, runId } = await openEarlyWait(open, openWorkflow);
@@ -872,7 +847,6 @@ Deno.test("deliverSignalForCaller: by key, a caller with signal alone is held to
       holdEarly: false,
     },
   );
-  // `no_open_wait` would say no run is waiting.
   assertEquals(result.status, "accepted");
   assertEquals(f.waits.pendingRecords.size, 1);
 });
@@ -908,8 +882,6 @@ Deno.test("deliverSignalForCaller: by key, a client that cannot read the receipt
   assertEquals(f.waits.pendingRecords.size, 0);
   assertEquals(f.waits.outcomes.size, 0);
 
-  // A reader is answered as before, and so is a key that takes no early
-  // signal.
   assertEquals(
     (await send(f.ctxWith([grantOf(["signal", "read"])]))).status,
     "delivered",
@@ -952,7 +924,6 @@ Deno.test("deliverSignalForCaller: by key, a retry held after the key's last wai
   for (const actions of [["signal", "read"], ["signal"]] as Action[][]) {
     const f = await fixture();
     const workflow = withEarlyWorkflow(f);
-    // The step of an earlier run took a signal and its run went on.
     const at = new Date(Date.now() - 1000);
     const wait = SignalWait.open(SCHEMA, 3600, at, undefined, EARLY_KEY);
     const runId = crypto.randomUUID();
@@ -978,7 +949,6 @@ Deno.test("deliverSignalForCaller: by key, a retry held after the key's last wai
       workflow.name,
       EARLY_KEY,
     );
-    // A caller with signal alone is told nothing of the key's earlier wait.
     if (!actions.includes("read")) {
       assert(result.status === "accepted", `got ${result.status}`);
       assertEquals(Object.keys(result.data), ["signal"]);
@@ -1036,7 +1006,6 @@ Deno.test("deliverSignalForCaller: by key, a second early signal is refused, and
     EARLY_KEY,
   );
   assert(signalOnly.status === "already_pending");
-  // Until when the earlier signal is held is for a reader.
   assertEquals(signalOnly.pending, undefined);
   assertEquals(signalOnly.message.includes(first.data.heldUntil), false);
   assertEquals(signalOnly.message.includes(first.data.signal.id), false);
@@ -1058,7 +1027,6 @@ Deno.test("deliverSignalForCaller: by key, an early payload the schema refuses i
     },
   );
   assert(result.status === "invalid_payload", `got ${result.status}`);
-  // A caller with signal alone is not told whether a wait was open.
   assertEquals(result.message.startsWith("Payload refused:\n"), true);
   assertEquals(f.waits.pendingRecords.size, 0);
 
@@ -1078,7 +1046,6 @@ Deno.test("deliverSignalForCaller: by key, an early payload the schema refuses i
     true,
   );
 
-  // With a wait open the caller with signal alone reads the same sentence.
   await openEarlyWait(f, workflow);
   const open = await deliverSignalForCaller(
     f.ctxWith([grantOf(["signal"])]),
@@ -1127,7 +1094,6 @@ Deno.test("auditTakenSignals: a wait that takes a pending signal is audited by r
   assertEquals(actions().includes("workflow.signal.pending"), true);
   assertEquals(actions().includes("workflow.signal.taken"), false);
 
-  // The step opens its wait and takes the signal.
   const at = new Date();
   const wait = SignalWait.open(SCHEMA, 3600, at, undefined, EARLY_KEY);
   const runId = crypto.randomUUID();

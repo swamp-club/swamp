@@ -75,7 +75,6 @@ import { setV3ReplicationForTesting, v3PrivateRoot } from "./v3_replication.ts";
 
 const AT = "2026-10-14T00:00:00.000Z";
 
-/** Litestream replication needs a Unix user id: unavailable on Windows. */
 const UNIX = Deno.build.os !== "windows";
 
 interface Env {
@@ -100,8 +99,8 @@ async function withCopy(
     repoDir: join(dir, "repo"),
     commitsDb: join(dir, "repo", ".swamp", "copies", "commits.db"),
   };
-  // The copy's private dirs stay under the test dir, never the real
-  // /tmp/swamp-<uid> (swamp-club#3854).
+  // the copy's private dirs stay under the test dir, never the real
+  // /tmp/swamp-<uid>
   setV3ReplicationForTesting({ privateRoot: join(dir, "priv") });
   try {
     const setting = options.setting ??
@@ -131,7 +130,6 @@ async function publish(
     holder: "test",
     replicaRoot: options.root ?? env.root,
     startedAt: AT,
-    // A lineage this swamp began: it names what it follows.
     ...(options.follows !== undefined
       ? { follows: options.follows, chained: true as const }
       : {}),
@@ -163,7 +161,6 @@ async function pathsOf(env: Env) {
   return paths;
 }
 
-/** The start record of the lineage at `fence`, if one parses. */
 async function startOf(env: Env, fence: number) {
   const started = await lineageRegistryFor(env.copy.datastorePath).started(
     fence,
@@ -253,8 +250,8 @@ Deno.test({
         assert(error.cause instanceof V3LineageOutrankedError);
       }
       assertEquals(await startOf(env, 3), undefined, "nothing was started");
-      // Another root's newer lineage is refused, never forked beside
-      // (swamp-club#3801), and nothing is started.
+      // another root's newer lineage is refused, never forked beside, and
+      // nothing is started
       await publish(env, 9, { root: "file:/elsewhere" });
       for (const restored of [true, false]) {
         await assertRejects(
@@ -264,7 +261,6 @@ Deno.test({
         );
       }
       assertEquals(await startOf(env, 5), undefined, "nothing was started");
-      // Once a lineage of its own outranks it, it is history.
       await publish(env, 10);
       await prepareV3WriterLineage(env.copy, 11, { restored: true });
       assertEquals((await lineageOf(env))?.lineageFence, 11);
@@ -300,11 +296,9 @@ Deno.test({
           recursive: true,
         });
       }
-      // A lineage another replica root started, below the current one.
       await publish(env, 3, { confirmed: true, root: "file:/elsewhere" });
       await publish(env, 4, { confirmed: true });
       await Deno.mkdir(replicaPathFor(env.replica, 4), { recursive: true });
-      // This copy's own record, abandoned lineages under both roots.
       await writeLineage(await pathsOf(env), {
         replicaRoot: env.root,
         lineageFence: 4,
@@ -373,7 +367,6 @@ Deno.test({
     await withCopy(async (env) => {
       await publish(env, 1, { confirmed: true });
       await Deno.mkdir(replicaPathFor(env.replica, 1), { recursive: true });
-      // Its root cannot be told: it may be another replica's.
       await Deno.writeTextFile(
         join(
           env.copy.datastorePath,
@@ -395,14 +388,12 @@ Deno.test({
   },
 });
 
-/** A bucket replica, as a provider's replica target would set it. */
 const BUCKET_REPLICA: V3ReplicaSetting = {
   type: "s3",
   bucket: "bucket",
   path: "team/root",
 };
 
-/** A provider's replica paths that records every call. */
 function recordingStore(
   options: {
     readonly listed?: string[];
@@ -501,7 +492,6 @@ Deno.test({
     await withCopy(async (env) => {
       await publish(env, 3, { confirmed: true, root: "file:/elsewhere" });
       await publish(env, 4, { confirmed: true });
-      // A key the registry does not read still marks fence 2 as recorded.
       const stray = join(
         env.copy.datastorePath,
         "_control",
@@ -625,7 +615,6 @@ Deno.test({
   ignore: !UNIX,
   async fn() {
     await withCopy(async (env) => {
-      // Serve's retake beside a writer's hold, both at the retaken fence.
       await Promise.all([
         prepareV3WriterLineage(env.copy, 3, { restored: true }),
         prepareV3WriterLineage(env.copy, 3, { restored: true }),
@@ -693,7 +682,6 @@ Deno.test({
           mark: { cursor: Number.parseInt(txid, 16) },
         });
       await at(5, 5, "0000000000000004");
-      // A fenced process of this checkout, still on lineage 3, publishes late.
       await publish(env, 3);
       await at(3, 3, "0000000000000009");
       const held = await readCopyState(await pathsOf(env));
@@ -702,7 +690,6 @@ Deno.test({
   },
 });
 
-/** A shared commits.db in the datastore, holding one commit. */
 async function sharedWithOneCommit(env: Env): Promise<void> {
   const store = SqliteCommitStore.open(
     join(env.copy.datastorePath, "commits.db"),
@@ -729,10 +716,6 @@ Deno.test({
   async fn() {
     await withCopy(async (env) => {
       await sharedWithOneCommit(env);
-      // Confirmed under another replica root, with nothing under this one:
-      // the shared commits are no longer the state, and that lineage would
-      // decide it, so the copy is refused and nothing is seeded
-      // (swamp-club#3801).
       await publish(env, 2, { confirmed: true, root: "file:/elsewhere" });
       await assertRejects(
         () => makeV3CopyCurrent(env.copy, { mode: "write", lockWaitMs: 1_000 }),
@@ -787,8 +770,6 @@ Deno.test({
   ignore: !UNIX,
   async fn() {
     await withCopy(async (env) => {
-      // The writer reached the bucket directly, this checkout through a
-      // proxy: one replica.
       await publish(env, 9, {
         confirmed: true,
         root: "s3:http://localhost:47411/:bucket:prefix",
@@ -801,7 +782,6 @@ Deno.test({
         assert(error.cause instanceof V3LineageOutrankedError);
       }
       assertEquals(await startOf(env, 5), undefined, "nothing was started");
-      // Above it, the lineage continues the one chain.
       await prepareV3WriterLineage(env.copy, 10, { restored: true });
       assertEquals(
         (await startOf(env, 10))?.replicaRoot,
@@ -833,7 +813,6 @@ Deno.test({
   },
 });
 
-/** BUCKET_REPLICA's bucket and path, reached through a proxy. */
 const PROXIED_BUCKET_ROOT = "s3:http://proxy:47441:bucket:team/root";
 
 Deno.test({
@@ -855,18 +834,14 @@ Deno.test({
   ignore: !UNIX,
   async fn() {
     await withCopy(async (env) => {
-      // A swamp before the fix collected each side down to one lineage:
-      // two spellings that never saw each other.
       await publish(env, 3, { confirmed: true });
       await publish(env, 4, { confirmed: true, root: PROXIED_BUCKET_ROOT });
-      // The first lineage after the fix continued the highest of them.
       await publish(env, 6, { confirmed: true, follows: 4 });
       const first = recordingStore();
       await collectV3Lineages(env.copy, 6, {
         replicaPaths: { root: env.root, store: first.store },
       });
       assertEquals(first.removed, ["000000000004"], "6 continues 4, not 3");
-      // A later lineage's first confirmation collects again.
       await publish(env, 8, { confirmed: true, follows: 6 });
       const second = recordingStore();
       await collectV3Lineages(env.copy, 8, {
@@ -909,13 +884,11 @@ Deno.test({
   async fn() {
     await withCopy(async (env) => {
       await publish(env, 3, { confirmed: true });
-      // The upgraded checkout, through its proxy, continued 3.
       await publish(env, 5, {
         confirmed: true,
         root: PROXIED_BUCKET_ROOT,
         follows: 3,
       });
-      // An older swamp, blind to 5, continued its own 3.
       await publish(env, 6, { confirmed: true });
       await publish(env, 7, { confirmed: true, follows: 6 });
       const { store, removed } = recordingStore();
@@ -939,7 +912,6 @@ Deno.test({
       await publish(env, 7, { confirmed: true, follows: 5 });
       const registry = lineageRegistryFor(env.copy.datastorePath);
       await registry.keep(3);
-      // Not every gc run decides to keep them: each still says so.
       for (let run = 0; run < 2; run++) {
         const error = await assertRejects(
           () => assertV3ChunksCollectable(env.copy),
@@ -955,8 +927,6 @@ Deno.test({
         (await v3KeptLineages(env.copy.datastorePath)).map((l) => l.fence),
         [3],
       );
-      // A kept record whose lineage is gone lists nothing, and holds
-      // nothing up: removing the lineage removes its record too.
       await registry.remove(3);
       assertEquals(await v3KeptLineages(env.copy.datastorePath), []);
       assertEquals([...await registry.kept()], []);
@@ -985,10 +955,8 @@ Deno.test({
         (await v3ControlPlaneAt(env.copy.datastorePath).list(
           "lineage/000000000003/",
         )).filter((key) => key.includes("/head-")).length;
-      // Writer 15 is not a 16th fence: nothing goes.
       await pruneV3Heads(env.copy, 3, 15);
       assertEquals(await heads(), 5);
-      // Writer 16 keeps its own head and writer 15's.
       await pruneV3Heads(env.copy, 3, V3_HEAD_PRUNE_EVERY);
       assertEquals(await heads(), 2);
     });
@@ -1001,10 +969,8 @@ Deno.test({
   ignore: !UNIX,
   async fn() {
     await withCopy(async (env) => {
-      // No head of writer 32 was published: nothing to prune, no error.
       await publish(env, 3, { confirmed: true });
       await pruneV3Heads(env.copy, 3, 2 * V3_HEAD_PRUNE_EVERY);
-      // A control plane that refuses the list: the prune fails quietly.
       let lineageDir: string | undefined;
       for await (const entry of walk(env.copy.datastorePath)) {
         if (entry.name === "started.json") lineageDir = dirname(entry.path);
@@ -1047,13 +1013,11 @@ Deno.test({
         ok: false,
         error: "the restored database failed SQLite's integrity check",
       };
-      // No verdict, a passing one, or one on another lineage: continue.
       assertEquals(await restartsBrokenLineage(paths, lineage), false);
       await writeReplicaVerification(paths, { ...verdict, ok: true });
       assertEquals(await restartsBrokenLineage(paths, lineage), false);
       await writeReplicaVerification(paths, { ...verdict, lineageFence: 3 });
       assertEquals(await restartsBrokenLineage(paths, lineage), false);
-      // Broken, from an intact copy: restart.
       await writeReplicaVerification(paths, verdict);
       assertEquals(quickCheck(commitsDb), "ok");
       assertEquals(await restartsBrokenLineage(paths, lineage), true);

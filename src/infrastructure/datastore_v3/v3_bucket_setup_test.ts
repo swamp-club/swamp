@@ -31,11 +31,6 @@ import {
   V2_ROOT_INDEX_KEYS,
 } from "./v3_bucket_setup.ts";
 
-/**
- * The refusal the S3 and GCS extensions' sync services throw for a prefix
- * whose marker says format 3 or more (swamp-club#3549): a `code` and a
- * message telling the user to upgrade.
- */
 class FormatUnsupportedError extends Error {
   readonly code = "datastore_format_unsupported";
 
@@ -48,15 +43,6 @@ class FormatUnsupportedError extends Error {
   }
 }
 
-/**
- * A provider over the in-memory remote whose sync service answers
- * `fetchContent` from `rootFiles`, as a real bucket's root index would:
- * the fake keeps no index files of its own. Like the extensions, it refuses
- * every read once the marker says format 3. `refuseFetch` makes it refuse
- * whatever the marker says: `"marker"` first writes one, as a concurrent
- * setup would after inspection read none; `"other"` writes nothing.
- * `namespaces` is what `listNamespaces` lists.
- */
 function provider(
   options: {
     rootFiles?: Record<string, string>;

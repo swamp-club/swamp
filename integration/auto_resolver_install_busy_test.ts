@@ -27,10 +27,8 @@ import {
 } from "../src/domain/extensions/extension_auto_resolver.ts";
 import { FileLock } from "../src/infrastructure/persistence/file_lock.ts";
 
-// swamp-club#3656: when another process holds the install lock for longer
-// than this one waits, auto-resolution reports which process is installing
-// rather than a type that is not registered. A real FileLock is held, so the
-// holder comes from the lock file the way it does across processes.
+// a real FileLock is held so the holder comes from the lock file, as it does
+// across processes
 
 const TYPE = "@swamp/gcs-datastore";
 const LOCK_KEY = ".extension-install.lock";
@@ -72,7 +70,6 @@ function recordingOutput(): AutoResolveOutputPort & {
   };
 }
 
-/** Installer whose lock is a real FileLock that gives up after a moment. */
 function installerWaitingOn(dir: string): ExtensionInstallerPort {
   const unexpected = () => Promise.reject(new Error("unexpected call"));
   return {

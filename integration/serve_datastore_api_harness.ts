@@ -18,10 +18,9 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * The datastore API test server (swamp-club#3915, swamp-club#3922): an
- * in-process client against a port-0 server over a real v3 repository, as
- * serve wires it, with commit and content helpers that write what a real
- * client's repositories write.
+ * an in-process client against a port-0 server over a real v3 repository as
+ * serve wires it, with helpers that write what a real client's repositories
+ * write
  */
 
 import { assert, assertEquals } from "@std/assert";
@@ -63,11 +62,10 @@ import { swampPath } from "../src/infrastructure/persistence/paths.ts";
 import { createServeCtx, grant } from "./serve_request_harness.ts";
 import { withV3RowRepos } from "./usecase_v3_fixtures.ts";
 
-/** Bearer tokens the test server accepts, and whom they authenticate. */
 export const TOKENS: Record<string, string> = {
   "alice-token": "user:caller",
   "bob-token": "user:bob",
-  // Neither an admin nor any test change's author (swamp-club#4195).
+  // neither an admin nor any test change's author
   "carol-token": "user:carol",
 };
 
@@ -77,20 +75,13 @@ export interface Server {
   readonly ctx: ConnectionContext;
   readonly modelType: ModelType;
   readonly model: Definition;
-  /** The locks serve holds for callers, as serve wires them. */
   readonly locks: DatastoreLockLeases;
-  /** The changes serve keeps for an admin (swamp-club#4195). */
   readonly quarantine: ControlPlaneQuarantineStore;
-  /** Answers a request in-process, as the server does. */
   readonly handle: (req: Request) => Promise<Response>;
   policyLoads: number;
   close(): Promise<void>;
 }
 
-/**
- * Starts a port-0 server over a fresh v3 repository that holds one
- * behavior, `web`, and enforces `grants`.
- */
 export async function withServer(
   grants: Grant[],
   fn: (server: Server) => Promise<void>,
@@ -102,10 +93,6 @@ export async function withServer(
      * token names them; read live, so a test may change them mid-way.
      */
     tokenGroups?: Record<string, string[]>;
-    /**
-     * Builds the leases serve holds for callers over serve's own locks, in
-     * place of the plain ones (swamp-club#4258).
-     */
     locks?: (
       createLock: (target: LockTarget) => Promise<TryLock>,
     ) => DatastoreLockLeases;
@@ -230,7 +217,6 @@ export function sha256Hex(bytes: Uint8Array): Promise<string> {
     );
 }
 
-/** The framed body of a commit request. */
 export function commitBody(
   envelope: Record<string, unknown>,
   chunks: readonly Uint8Array[] = [],
@@ -249,7 +235,6 @@ export function partitionPath(server: Server, id = server.model.id): string {
   }/commits`;
 }
 
-/** Data metadata as the data repository writes it. */
 export function dataMetadata(
   name: string,
   version: number,
@@ -267,7 +252,6 @@ export function dataMetadata(
   };
 }
 
-/** A behavior definition's file, as the definition repository writes it. */
 export function definitionYaml(
   name: string,
   type: string,
@@ -282,7 +266,6 @@ export function definitionYaml(
   );
 }
 
-/** The ops of a data save of `bytes`, stored as a chunk. */
 export async function blobSaveOps(
   server: Server,
   name: string,
@@ -346,7 +329,6 @@ export async function getJson(
   return { status: response.status, json: await response.json() };
 }
 
-/** A team member's grants: run, write and read, but not admin. */
 export const member = (): Grant[] => [
   grant({
     actions: ["read", "write", "run"],
@@ -403,7 +385,6 @@ export async function fencedLease(
   };
 }
 
-/** The framed commit saving version `version` of `vpc`. */
 export async function saveBody(
   server: Server,
   version: number,
@@ -420,7 +401,6 @@ export async function saveBody(
   }, [content]);
 }
 
-/** Saves version `version` of `vpc`, naming `lease` when given. */
 export async function save(
   server: Server,
   token: string,

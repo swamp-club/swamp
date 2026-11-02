@@ -319,7 +319,6 @@ Deno.test("RunEventBuffer: holding the outcome, a run's progress streams and its
     [[1, "executing"], [2, "completed"], [3, "auto_gc_completed"]],
   );
   assertEquals(sub.terminals, [{ kind: "done" }]);
-  // A follower that attaches afterwards replays them too.
   const late = collectingSubscriber();
   buffer.subscribe(late.subscriber);
   assertEquals(late.events.length, 3);

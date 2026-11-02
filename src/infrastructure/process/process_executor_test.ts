@@ -97,7 +97,6 @@ Deno.test("streamLines works without callback", async () => {
   assertEquals(result, "hello\nworld");
 });
 
-/** A stream that delivers each string as its own chunk. */
 function chunkedStream(chunks: string[]): ReadableStream<Uint8Array> {
   const encoder = new TextEncoder();
   return new ReadableStream<Uint8Array>({
@@ -171,7 +170,6 @@ Deno.test("streamLines: keeps every CR by default", async () => {
   assertEquals(lines, ["one\r", "two\r"]);
 });
 
-/** The three capture paths of executeProcess. */
 const CAPTURE_PATHS = [
   { name: "buffered", logger: false, timeoutMs: undefined },
   { name: "streaming", logger: true, timeoutMs: undefined },
@@ -182,7 +180,6 @@ for (const path of CAPTURE_PATHS) {
   Deno.test({
     name:
       `executeProcess: normalizeCrlf captures CRLF output as LF (${path.name})`,
-    // printf through sh writes the CRLF bytes; POSIX only.
     ignore: Deno.build.os === "windows",
     fn: async () => {
       const streamed: string[] = [];
@@ -303,7 +300,6 @@ Deno.test("executeProcess streams to logger", async () => {
   const infoLines: string[] = [];
   const warnLines: string[] = [];
 
-  // Create a minimal mock logger
   const mockLogger = {
     info: (line: string) => {
       infoLines.push(line);
@@ -358,8 +354,6 @@ Deno.test("executeProcess handles timeout with logger", async () => {
   }
 });
 
-// --- Stream-0 regression net: abort signal & SIGTERM-on-timeout ---
-
 Deno.test({
   name:
     "executeProcess: AbortSignal aborted mid-execution surfaces AbortError (streaming mode)",
@@ -393,8 +387,6 @@ Deno.test({
       true,
       "expected executeProcess to reject when signal aborts",
     );
-    // The executor surfaces a DOMException with name "AbortError" when
-    // the abort signal was responsible for the kill.
     const err = caught as { name?: string; message?: string };
     assertEquals(
       err.name,
@@ -407,11 +399,9 @@ Deno.test({
 Deno.test({
   name:
     "executeProcess: timeout sends SIGTERM to child and surfaces timeout error",
-  // SIGTERM-on-timeout semantics: the child process is killed via SIGTERM
-  // (not SIGKILL) so signal-aware children can clean up. The executor
-  // surfaces a generic "timed out" Error after the kill — this pins both
-  // halves so a refactor that switches to SIGKILL or drops the kill
-  // entirely will fail.
+  // the child is killed with SIGTERM, not SIGKILL, so signal-aware children can
+  // clean up, and the executor then surfaces a generic timed out error; this
+  // pins both
   ignore: Deno.build.os === "windows",
   fn: async () => {
     // Use sh with a SIGTERM-trapping handler. If SIGTERM arrives, the
@@ -439,17 +429,13 @@ Deno.test({
   },
 });
 
-// --- Surviving child process: timeout must not override the real exit code ---
-
 Deno.test({
   name:
     "executeProcess: timeout + surviving child returns actual exit code, not -1 (buffered mode)",
   ignore: Deno.build.os === "windows",
   fn: async () => {
-    // The main shell exits immediately with code 0, but backgrounds a child
-    // that holds the pipes open briefly.  With the old code this caused a
-    // spurious timeout error; the fix races process.status against the
-    // timeout so the real exit code is captured.
+    // the shell exits 0 at once but backgrounds a child that briefly holds the
+    // pipes open; the real exit code must win over the timeout
     const result = await executeProcess({
       command: "sh",
       args: ["-c", "echo hello; sleep 1 & exit 0"],
@@ -538,15 +524,12 @@ Deno.test("executeProcess redacts secrets from streamed stdout lines", async () 
   });
 
   assertEquals(result.success, true);
-  // Streamed lines to logger should be redacted
   assertEquals(infoLines, ["***"]);
   assertEquals(warnLines, ["***"]);
   // Raw captured output is NOT redacted by process executor (shell model handles that)
   assertStringIncludes(result.stdout, "my-secret-token");
   assertStringIncludes(result.stderr, "my-secret-token");
 });
-
-// --- Abort signal in buffered mode (no logger, no timeout) ---
 
 Deno.test({
   name:
@@ -638,14 +621,8 @@ Deno.test({
   },
 });
 
-// --- Process tree termination (swamp-club#2634) ---
-//
-// A step's command used to be killed with a single SIGTERM to the direct
-// child: `sh -c "sleep 30; ..."` died and its `sleep` was reparented to init,
-// still running after the run was reported cancelled. A child that ignored
-// SIGTERM was never killed at all. Each script below backgrounds a
-// grandchild and writes its pid to a file, so the test can check what
-// survived.
+// each script backgrounds a grandchild and writes its pid to a file, so the
+// test can check what survived the kill
 
 const silentLogger = {
   info: () => {},
@@ -653,7 +630,6 @@ const silentLogger = {
   debug: () => {},
 } as unknown as import("@logtape/logtape").Logger;
 
-/** Pins isolation on, so results do not depend on the test's terminal. */
 async function withIsolatedGroups(fn: () => Promise<void>): Promise<void> {
   const previous = setProcessGroupIsolation("always");
   try {
@@ -663,7 +639,6 @@ async function withIsolatedGroups(fn: () => Promise<void>): Promise<void> {
   }
 }
 
-/** Runs `fn` with a pid file, then SIGKILLs any pid it names. */
 async function withPidFile(
   fn: (pidFile: string, readPid: () => Promise<number>) => Promise<void>,
 ): Promise<void> {
@@ -676,7 +651,7 @@ async function withPidFile(
     if (pid > 0) {
       try {
         Deno.kill(pid, "SIGKILL");
-      } catch { /* already gone */ }
+      } catch { /* the process is already gone */ }
     }
     await Deno.remove(pidFile).catch(() => {});
   }
@@ -686,7 +661,6 @@ async function pidWritten(readPid: () => Promise<number>): Promise<boolean> {
   return await readPid().then((pid) => pid > 0, () => false);
 }
 
-/** `sh -c` script that backgrounds `sleep 30`, records its pid, and waits. */
 function grandchildScript(pidFile: string, prefix = ""): string[] {
   return ["-c", `${prefix}sleep 30 & echo $! > '${pidFile}'; wait`];
 }
@@ -802,9 +776,9 @@ Deno.test({
       controller.abort();
 
       await assertRejects(() => run);
-      // Only the direct child is signalled here, so the grandchild is
-      // still running: the run settled through SIGKILL escalation, not by
-      // waiting out the 30 s sleep.
+      // only the direct child is signalled, so the grandchild is still running:
+      // the run settled through SIGKILL escalation, not by waiting out the
+      // sleep
       assert(
         isProcessAlive(await readPid()),
         "grandchild should outlive a direct-child kill",
@@ -1026,7 +1000,6 @@ Deno.test({
   },
 });
 
-/** A fake Job Object factory recording what happened to each job. */
 function recordingJobs(): {
   attachJob: (pid: number) => ProcessJob;
   events: string[];

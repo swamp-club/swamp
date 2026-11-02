@@ -17,18 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Data spliced into a command/shell `run` reaches the shell through the
- * environment, never as syntax (swamp-club#3868).
- *
- * Runs the real workflow execution path in-process against a temp repo and
- * spawns real `sh` for the command/shell steps. A value from a workflow's
- * caller, a webhook-triggered run's input or an environment read is one
- * literal word to the shell, so shell syntax in it never runs; text the
- * author wrote, including an input's default, keeps the behaviour it always
- * had.
- */
-
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import { join } from "@std/path";
 import { exists, walk } from "@std/fs";
@@ -81,7 +69,6 @@ async function withRepo(
   }
 }
 
-/** Saves a shell definition `name` whose `run` reads `inputs.value`. */
 async function saveShell(
   repoDir: string,
   name: string,
@@ -113,7 +100,6 @@ async function saveShell(
   );
 }
 
-/** A workflow whose one step runs `model` with `inputs.value` passed on. */
 function workflowFor(
   model: string,
   trigger?: { inputs: Record<string, unknown> },
@@ -163,11 +149,6 @@ async function runWorkflow(
   }
 }
 
-/**
- * Runs `execute` on the shell definition `model` directly, as
- * `swamp behavior run` does, with `inputs` given as `--input` values. Returns
- * the error events, as text.
- */
 async function runDirect(
   repoDir: string,
   model: string,
@@ -192,7 +173,6 @@ async function runDirect(
   }
 }
 
-/** The stdout and recorded command of every shell result in the repo. */
 async function shellResults(
   repoDir: string,
 ): Promise<{ stdout: string; command: string }[]> {

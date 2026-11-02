@@ -17,13 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Serve's evaluate saves only what the caller may run (swamp-club#3940). A
- * later `--last-evaluated` run replays the saved evaluation, recorded inputs
- * included, so a caller who may only read gets the evaluation back unsaved
- * and cannot change what a later run executes.
- */
-
 import { assert, assertEquals } from "@std/assert";
 import "../src/domain/models/models.ts";
 import { initializeLogging } from "../src/infrastructure/logging/logger.ts";
@@ -68,7 +61,6 @@ function request(type: string, payload: Record<string, unknown>) {
   return { type, id: crypto.randomUUID(), payload };
 }
 
-/** The evaluate reply's data, after asserting it is not an error. */
 function replyData(frames: Frame[], label: string): Record<string, unknown> {
   assertEquals(errorFrame(frames), undefined, label);
   const reply = frames.find((f) => f.type.endsWith(".evaluate"));
@@ -208,7 +200,6 @@ Deno.test("serve evaluate: a read-only model.evaluate does not write the evaluat
 Deno.test("serve evaluate: run granted only for a named method evaluates but does not save", async () => {
   await withServeRepo(async (repo) => {
     const model = await saveModel(repo, "target");
-    // evaluate has no method, so the condition sees an empty methodName.
     const methodOnly = createServeCtx(repo, [
       grant({ actions: ["read"], resource: { kind: "model", pattern: "*" } }),
       grant({
@@ -262,8 +253,8 @@ Deno.test("serve evaluate: a restricted behavior type saves only for a caller wi
   });
 });
 
-// A stored env tag that evaluates to prod: a grant conditioned on prod must
-// judge the stored text, not the value evaluation gives it (swamp-club#4090).
+// a stored env tag that evaluates to prod: a grant conditioned on prod must
+// judge the stored text, not the value evaluation gives it
 const PLANTED_ENV = '${{ "prod" }}';
 
 Deno.test("serve evaluate: every behavior is saved only as its stored tags allow, as one behavior is (swamp-club#4090)", async () => {
@@ -294,7 +285,6 @@ Deno.test("serve evaluate: every behavior is saved only as its stored tags allow
     assertEquals(items.map((i) => [i.name, i.saved]), [["target", false]]);
     assertEquals(await cachedDefinition(repo, model), null);
 
-    // A caller who may run it saves it, and the cache shows the tag evaluated.
     const runner = createServeCtx(repo, RUNNER);
     const ran = replyData(
       await sendRequest(runner, request("model.evaluate", {})),

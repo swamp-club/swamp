@@ -37,8 +37,8 @@ export async function assessRecoveryForRun(
   run: WorkflowRun,
 ): Promise<RecoveryAssessment> {
   let fingerprintMismatch = false;
-  // Starting over is the only way forward from a refused run: resume --from
-  // accepts failed runs, not interrupted ones (swamp-club#2443).
+  // starting over is the only way forward from a refused run: resume --from
+  // accepts failed runs, not interrupted ones
   const newRunHint =
     `start a new run with 'swamp workflow run ${workflow.name}'`;
   let mismatchReason =
@@ -49,11 +49,8 @@ export async function assessRecoveryForRun(
       fingerprintMismatch =
         currentFingerprint !== run.runPlan.definitionFingerprint;
     } else if (currentFingerprint !== run.runPlan.fingerprint) {
-      // Recorded before runs stored a definition fingerprint. The evaluated
-      // fingerprint equals the definition's only when evaluation left the
-      // definition unchanged, so a difference cannot tell drift from
-      // evaluation. Refuse rather than resume a definition that may have
-      // changed.
+      // without a recorded definition fingerprint drift cannot be told from
+      // evaluation, so refuse rather than resume a possibly changed definition
       fingerprintMismatch = true;
       mismatchReason =
         `Run was recorded before swamp stored definition fingerprints, so an unchanged workflow definition cannot be confirmed — ${newRunHint}`;
@@ -63,10 +60,8 @@ export async function assessRecoveryForRun(
   const guardedSteps: string[] = [];
   const unguardedSteps: string[] = [];
 
-  // A step is resolved in its own job, and a forEach iteration by the step it
-  // was expanded from: another job may have a step of the same name, and no
-  // step of the definition has an iteration's name. One that resolves to
-  // nothing counts as unguarded (swamp-club#3221).
+  // a step resolves in its own job and a forEach iteration by its source step;
+  // one that resolves to nothing counts as unguarded
   for (const jobRun of run.jobs) {
     const job = workflow.getJob(jobRun.jobName);
     for (const stepRun of jobRun.steps) {

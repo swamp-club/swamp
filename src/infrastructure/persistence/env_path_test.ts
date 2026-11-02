@@ -21,13 +21,9 @@ import { assertEquals, assertThrows } from "@std/assert";
 import { collapseEnvVars, expandEnvVars } from "./env_path.ts";
 import { withMockedEnv } from "./path_test_helpers.ts";
 
-// ============================================================================
-// expandEnvVars
-// ============================================================================
-
 Deno.test("expandEnvVars - expands ~ to HOME", () => {
   const home = Deno.env.get("HOME");
-  if (!home) return; // Skip if HOME not set
+  if (!home) return;
   assertEquals(expandEnvVars("~/data/store"), `${home}/data/store`);
 });
 
@@ -102,10 +98,6 @@ Deno.test("expandEnvVars - relative path passes through unchanged", () => {
 Deno.test("expandEnvVars - tilde mid-path is not expanded", () => {
   assertEquals(expandEnvVars("/foo~bar/baz"), "/foo~bar/baz");
 });
-
-// ============================================================================
-// collapseEnvVars
-// ============================================================================
 
 Deno.test("collapseEnvVars - collapses HOME prefix", () => {
   const home = Deno.env.get("HOME");

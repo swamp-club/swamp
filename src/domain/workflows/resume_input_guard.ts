@@ -18,19 +18,8 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * Whether a resume's `--input` may change the run's inputs (swamp-club#3583).
- *
- * A run's inputs are write-once. A key the run does not have may be added:
- * a value that did not exist at start, such as the vault key name of a
- * credential issued during a gate, arrives this way. A key the run has keeps
- * its value: a step that ran read it as it was, and the steps after it must
- * not act on a value nothing before them saw. The check reads the run record
- * and the supplied keys, nothing else: not the workflow, not the behavior
- * definitions, not the evaluated caches, not what any step read. A finished
- * step that tested for a key the run did not have saw its absence, and the
- * key may still be added; the design accepts that limit and documents the
- * pattern that makes a late input safe (design/enablers/input-pinning.md,
- * Late inputs).
+ * run inputs are write-once: a new key may be added, an existing key keeps its
+ * value so later steps never act on a value earlier steps did not see
  */
 
 import { UserError } from "../errors.ts";
@@ -41,11 +30,6 @@ import { suspendedWayOut } from "./resume_reset.ts";
 import type { Workflow } from "./workflow.ts";
 import type { WorkflowRun } from "./workflow_run.ts";
 
-/**
- * Refuses a resume whose inputs change a value the run has. Throws a
- * UserError coded `resume_input_immutable` before anything changes; returns
- * when every supplied key is new to the run or carries the value it has.
- */
 export function checkResumeInputOverrides(
   workflow: Workflow,
   run: WorkflowRun,
@@ -60,11 +44,6 @@ export function checkResumeInputOverrides(
   );
 }
 
-/**
- * The supplied top-level keys the run has whose value, merged over the
- * stored inputs, differs from the stored one. A key the run does not have
- * is not a change: it is added.
- */
 function changedKeys(
   stored: Readonly<Record<string, unknown>>,
   resumeInputs: Record<string, unknown>,
@@ -77,12 +56,8 @@ function changedKeys(
 }
 
 /**
- * The keys an earlier resume supplied without recording a value: a
- * run resumed by an older swamp listed the key names but kept its inputs as
- * started. A resume that died between saving the key names and recording the
- * merged inputs looks the same. The run has such a key, with a value nothing
- * can compare. Resuming without supplying it also changes that value to
- * absence, so every resume is refused. The way out is a new run.
+ * a key listed as supplied but with no recorded value cannot be compared, so
+ * every resume is refused; the way out is a new run
  */
 function unrecordedKeys(
   run: WorkflowRun,
@@ -91,10 +66,8 @@ function unrecordedKeys(
 }
 
 /**
- * Names each refused key, never a value: inputs may hold secrets. A
- * suspended run is left suspended, so the way out names the cancel command
- * first; a failed run can only be started again. The run id comes first:
- * serve cuts an error at 512 characters.
+ * names keys, never values, since inputs may hold secrets; the run id comes
+ * first because serve cuts an error at 512 characters
  */
 function refusalMessage(
   workflow: Workflow,
@@ -108,8 +81,8 @@ function refusalMessage(
   const newRun =
     `a new run with all its inputs (swamp workflow run ${name} --input ...)`;
   const wayOut = run.status === "suspended"
-    // Left suspended, the run would wait for a resume that cannot come. A
-    // run serve started is cancelled through serve.
+    // left suspended, the run would wait for a resume that cannot come; a run
+    // serve started is cancelled through serve
     ? `${suspendedWayOut(workflow, run)} Then start ${newRun}.`
     : `Start ${newRun}.`;
   const parts = [

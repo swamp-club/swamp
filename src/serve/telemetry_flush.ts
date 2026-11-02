@@ -18,12 +18,8 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * Periodic telemetry flushing for `swamp serve`.
- *
- * The CLI records and flushes in its teardown, after `cli.parse` returns.
- * For a daemon that instant is process exit, so a `swamp serve` that runs
- * for weeks never flushes anything it spooled. This service gives the daemon
- * its own flush cadence, modelled on InstanceHeartbeatService.
+ * the CLI flushes at teardown, which for a daemon is process exit, so a
+ * long-running serve would never flush its spool; this gives it its own cadence
  */
 
 import { runDetached } from "../infrastructure/tracing/mod.ts";
@@ -36,7 +32,6 @@ import { getSwampLogger } from "../infrastructure/logging/logger.ts";
 
 const logger = getSwampLogger(["serve", "telemetry"]);
 
-/** How often the daemon attempts a flush. */
 export const DEFAULT_TELEMETRY_FLUSH_INTERVAL_MS = 60_000;
 
 /**
@@ -46,14 +41,12 @@ export const DEFAULT_TELEMETRY_FLUSH_INTERVAL_MS = 60_000;
  */
 const MAX_BATCHES_PER_TICK = 20;
 
-/** Ticks between prunes of already-flushed entries (~1 hour at the default). */
 const PRUNE_EVERY_N_TICKS = 60;
 
 /**
- * Consecutive failures of the same batch before its entries are retried
- * individually to find the one the endpoint refuses. High enough that an
- * ordinary outage — a laptop asleep, an endpoint restart — never triggers
- * isolation.
+ * consecutive failures of the same batch before entries are retried
+ * individually to find the one the endpoint refuses; high enough that an
+ * ordinary outage never triggers isolation
  */
 const FAILURES_BEFORE_ISOLATION = 5;
 
@@ -63,7 +56,6 @@ const FAILURES_BEFORE_ISOLATION = 5;
  */
 const FAILURES_BEFORE_QUARANTINE = 3;
 
-/** Timeout for a single flush attempt. */
 const FLUSH_TIMEOUT_MS = 10_000;
 
 export interface TelemetryFlushCredentials {
@@ -74,9 +66,6 @@ export interface TelemetryFlushCredentials {
   keepFlushed: boolean;
 }
 
-/**
- * Flushes the telemetry spool on a timer for the lifetime of a daemon.
- */
 export class DaemonTelemetryFlushService {
   readonly #service: TelemetryService;
   readonly #credentials: TelemetryFlushCredentials;
@@ -104,10 +93,6 @@ export class DaemonTelemetryFlushService {
       DEFAULT_TELEMETRY_FLUSH_INTERVAL_MS;
   }
 
-  /**
-   * Starts the flush loop. The timer is unref'd so it never holds the
-   * process open on its own.
-   */
   start(): void {
     if (this.#timer !== null || this.#stopped) return;
     this.#timer = runDetached(() =>
@@ -145,12 +130,6 @@ export class DaemonTelemetryFlushService {
     }
   }
 
-  /**
-   * Sends batches until the spool is empty, a send fails, or the per-tick cap
-   * is reached. Only one drain runs at a time — concurrent callers return
-   * immediately. {@link stop} awaits {@link #drainPromise} so it never misses
-   * an in-flight drain started by the timer.
-   */
   async #drain(): Promise<void> {
     if (this.#drainPromise) return;
 
@@ -211,14 +190,9 @@ export class DaemonTelemetryFlushService {
   }
 
   /**
-   * Retries a persistently-failing batch one entry at a time and quarantines
-   * the ones that fail on their own.
-   *
-   * `findUnflushed` returns the oldest entries first and a batch is only
-   * marked after the whole batch sends, so a single entry the endpoint always
-   * rejects blocks every newer entry behind it indefinitely — the daemon
-   * would keep flushing on schedule and still deliver nothing. Isolating lets
-   * the queue advance at the cost of the one entry that cannot go.
+   * retries a failing batch one entry at a time and quarantines those that fail
+   * alone: oldest go first and a batch is marked only whole, so one
+   * always-rejected entry would block every newer one
    */
   async #isolateStuckBatch(): Promise<void> {
     const entries = await this.#service.findUnflushedForIsolation(

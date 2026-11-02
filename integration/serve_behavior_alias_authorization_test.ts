@@ -17,14 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * The behavior spelling of workflow steps and grant selectors is translated
- * before serve authorizes a workflow edit (swamp-club#3334): a deny in either
- * spelling blocks a step in either spelling, re-spelling a stored step adds
- * nothing to authorize, and a step moved, copied or retargeted under the
- * behavior spelling is judged as it would be under the model spelling.
- */
-
 import { assert, assertEquals } from "@std/assert";
 import { stringify as stringifyYaml } from "@std/yaml";
 import "../src/domain/models/models.ts";
@@ -54,7 +46,6 @@ const BASE_GRANTS: Grant[] = [
   grant({ actions: ["read"], resource: { kind: "data", pattern: "*" } }),
 ];
 
-/** A run deny on `selector`, read the way a grant file reads it. */
 function denyFromGrantFile(selector: string): Grant {
   const parsed = parseGrantFile(
     "deny.yaml",
@@ -68,7 +59,6 @@ function denyFromGrantFile(selector: string): Grant {
   });
 }
 
-/** A run deny on `selector`, as `access grant create --on` parses it. */
 function denyFromFlag(selector: string): Grant {
   return grant({
     effect: "deny",
@@ -155,8 +145,6 @@ async function withFlow(
 Deno.test("serve behavior spelling: a type deny in either spelling blocks a direct step in either spelling", async () => {
   await withFlow(async (repo, flow) => {
     const type = repo.modelType.normalized;
-    // The baseline: without the deny, both spellings save. Each names its
-    // own definition, so the steps checked below are new targets.
     for (const spelling of ["model", "behavior"] as const) {
       assertAllowed(
         await edit(
@@ -216,7 +204,6 @@ Deno.test("serve behavior spelling: re-spelling a stored step adds nothing to au
       ...BASE_GRANTS,
       denyFromGrantFile("behavior:locked-*"),
     ]);
-    // Stored by an admin: a step the caller may not run.
     const flow = await saveWorkflow(repo, "stored", locked);
     const respell = (ref: string) => (data: WorkflowJson) => {
       data.jobs[0].steps[0].task = existingTask("behavior", ref);
@@ -254,8 +241,8 @@ Deno.test("serve behavior spelling: a stored step copied or moved under the beha
         task: existingTask(spelling, "stored-db"),
       });
     };
-    // A changed step on a restricted type needs admin (swamp-club#3131): a
-    // copy or move is a changed step, in either spelling.
+    // a changed step on a restricted type needs admin, and a copy or move is a
+    // changed step in either spelling
     const restricted = createServeCtx(repo, BASE_GRANTS, {
       restrictedModelTypes: [repo.modelType.normalized],
     });
@@ -269,8 +256,6 @@ Deno.test("serve behavior spelling: a stored step copied or moved under the beha
         `${spelling} move`,
       );
     }
-    // Under a plain deny, whatever the model spelling gets, the behavior
-    // spelling gets.
     const denied = createServeCtx(repo, [
       ...BASE_GRANTS,
       denyFromFlag("behavior:stored-*"),

@@ -27,20 +27,8 @@ import {
 import { ExtensionAutoResolver } from "../src/domain/extensions/extension_auto_resolver.ts";
 import type { DenoRuntime } from "../src/domain/runtime/deno_runtime.ts";
 
-// Regression guard for swamp-club issue 133: when a pulled extension's
-// on-disk tree is present but incomplete (one or more lockfile-declared
-// files are missing), auto-resolve must emit the new
-// `alreadyInstalledTruncated` event naming the missing files — NOT the
-// misleading "Unknown <kind> type" fallback the old code produced, and
-// NOT a silent reinstall. The fix is read-only: the pulled tree on disk
-// must be byte-identical before and after the resolve attempt.
-//
-// This is a collaborator-style integration test: it wires the real
-// adapter into the real domain service against a hand-written scratch
-// repo, rather than shelling through the CLI. The end-to-end CLI path
-// is covered by the CLI UAT suite; here we exercise the full domain →
-// port → adapter → filesystem path with a hermetic fixture so there is
-// no registry dependency.
+// a truncated pulled tree emits alreadyInstalledTruncated naming the missing
+// files, with no silent reinstall; the tree on disk must stay byte-identical
 
 const stubDenoRuntime: DenoRuntime = {
   ensureDeno: () => Promise.resolve("/usr/bin/false"),
@@ -51,9 +39,8 @@ async function snapshotTree(root: string): Promise<Map<string, string>> {
   const snapshot = new Map<string, string>();
   for await (const entry of walk(root, { includeDirs: false })) {
     const bytes = await Deno.readFile(entry.path);
-    // A zero-mutation assertion needs byte-level equality. Base64 is
-    // stable for Map<string, string> comparison via assertEquals and
-    // doesn't require extra deps like @std/encoding/hex.
+    // base64 gives byte-level equality that assertEquals can compare in a Map
+    // without extra deps
     snapshot.set(
       relative(root, entry.path),
       btoa(String.fromCharCode(...bytes)),
@@ -74,9 +61,6 @@ Deno.test("integration: auto-resolver surfaces truncated error and leaves the tr
     );
     await ensureDir(join(extRoot, "models"));
 
-    // Two declared files. One survives; one is deleted below to produce
-    // the truncated state. The lockfile lists both, so the inspection
-    // sees "one missing" and returns { state: "truncated", missing: [..]}.
     const keptRel = join(
       ".swamp/pulled-extensions",
       extensionName,
@@ -119,18 +103,10 @@ Deno.test("integration: auto-resolver surfaces truncated error and leaves the tr
       ),
     );
 
-    // Produce the truncation: remove one of the declared files. The
-    // directory stays — this is the exact state the issue describes.
     await Deno.remove(gonePath);
 
-    // Snapshot the pulled tree so we can assert zero-mutation after the
-    // resolve attempt. The fix is read-only; a regression that
-    // reintroduced filesystem mutation (e.g. auto-repair) would show up
-    // as a snapshot diff.
     const before = await snapshotTree(extRoot);
 
-    // Capture json output so we can assert the new `truncated` event
-    // fires with the expected shape.
     const emitted: string[] = [];
     const originalLog = console.log;
     console.log = (line: unknown) => {
@@ -183,16 +159,11 @@ Deno.test("integration: auto-resolver surfaces truncated error and leaves the tr
       console.log = originalLog;
     }
 
-    // Resolve reports failure — the type couldn't be registered.
     assertEquals(result, false);
 
-    // JSON event for the truncated state fires, names the extension and
-    // path, and includes the missing file. Shape must stay compatible
-    // with scripting consumers that key off `reason: "truncated"`.
-    //
-    // Asserting on a parsed object (not a substring of the raw line)
-    // means path values flow through host-native separators without
-    // tripping the test on backslash-encoded JSON literals on Windows.
+    // the event shape must stay compatible with scripting consumers keying off
+    // reason: truncated; a parsed object avoids Windows backslash-encoded JSON
+    // in substring checks
     const truncatedEvent = emitted
       .map((line) => {
         try {
@@ -217,8 +188,6 @@ Deno.test("integration: auto-resolver surfaces truncated error and leaves the tr
     );
     assertEquals(normalizedMissing, [goneRel.replaceAll("\\", "/")]);
 
-    // The pulled tree on disk must be byte-identical to before — no
-    // auto-repair, no overwrite, no side effects.
     const after = await snapshotTree(extRoot);
     assertEquals(after, before);
   } finally {

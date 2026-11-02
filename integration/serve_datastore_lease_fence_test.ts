@@ -17,14 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Fenced model leases at serve (swamp-club#4121) end to end: an in-process
- * client against a port-0 server over a real v3 repository. A fenced lease
- * carries a fence and a version floor; serve stamps the fence on each
- * commit that names the lease, and refuses a commit to a partition a live
- * fenced lease covers unless it names that lease.
- */
-
 import "../src/domain/models/models.ts";
 import { assert, assertEquals, assertRejects } from "@std/assert";
 import { Commit } from "../src/domain/datastore_v3/commit.ts";
@@ -84,7 +76,6 @@ async function leaseFence(server: Server): Promise<number | undefined> {
   )).leaseFence;
 }
 
-/** Members alice (`user:caller`) and bob, each with run on every behavior. */
 const twoMembers = () => [
   ...member(),
   grant({
@@ -116,7 +107,6 @@ Deno.test({
       ]);
       assertEquals(await leaseFence(server), 1);
 
-      // Another caller, with no lease or naming the holder's.
       for (const named of [undefined, lease.leaseId]) {
         const refused = await save(server, "bob-token", 2, 1, {
           ...(named === undefined ? {} : { lease: named }),
@@ -125,10 +115,8 @@ Deno.test({
           [refused.status, refused.json.code],
           [409, "commit_lease-lost"],
         );
-        // Never says whose lease holds it.
         assert(!JSON.stringify(refused.json).includes("user:caller"));
       }
-      // The holder itself must name the lease, and a forged id is refused.
       for (const named of [undefined, crypto.randomUUID()]) {
         const refused = await save(server, "alice-token", 2, 1, {
           ...(named === undefined ? {} : { lease: named }),
@@ -233,7 +221,6 @@ Deno.test({
         [refused.status, refused.json.code],
         [409, "commit_lease-lost"],
       );
-      // The partition no lease covers keeps today's rules.
       assertEquals((await save(server, "alice-token", 1, 0)).status, 200);
       assertEquals(await leaseFence(server), undefined);
     });
@@ -263,7 +250,6 @@ Deno.test({
       }
       const lease = await fencedLease(server, "bob-token");
       assertEquals(lease.floor, [{ name: "vpc", highWater: 3 }]);
-      // Names and numbers only.
       assert(!JSON.stringify(lease.floor).includes("content of version"));
     });
   },
@@ -282,7 +268,6 @@ Deno.test({
       assertEquals(taken.status, 201);
       assertEquals(taken.json.fence, undefined);
       assertEquals(taken.json.floor, undefined);
-      // Nothing is covered: an unleased commit lands, as before leases.
       assertEquals((await save(server, "bob-token", 1, 0)).status, 200);
       assertEquals(await leaseFence(server), undefined);
     });
@@ -312,7 +297,6 @@ Deno.test({
       assertEquals(listed.lockKey, modelKey(server));
       assertEquals(listed.heldBy, "caller");
       assertEquals(typeof listed.expiresAt, "string");
-      // Nothing but the key, the holder kind and the expiry.
       assertEquals(Object.keys(listed).sort(), [
         "expiresAt",
         "heldBy",
@@ -387,8 +371,7 @@ Deno.test({
       );
       assertEquals([renewed.status, renewed.json.ttlMs], [200, 1_800_000]);
 
-      // Up to a day, so a lease can be checked out to work offline
-      // (swamp-club#4195).
+      // up to a day, so a lease can be checked out to work offline
       const day = await call(server, "POST", "locks", "bob-token", {
         lockKey: modelKey(server, crypto.randomUUID()),
         fenced: true,
@@ -448,8 +431,6 @@ Deno.test({
         "user:caller",
       ]);
 
-      // Its holder's commit naming it is refused as lost, and its renewal
-      // finds no lease; nothing raised the partition's fence.
       const late = await save(server, "alice-token", 1, 0, {
         lease: taken.json.leaseId as string,
       });
@@ -464,7 +445,6 @@ Deno.test({
       assertEquals(renewed.status, 404);
       assertEquals(await leaseFence(server), undefined);
 
-      // Nothing left to release.
       const again = await call(server, "DELETE", "locks", "bob-token", {
         lockKey: modelKey(server),
       });
@@ -546,7 +526,6 @@ Deno.test({
         emit: (event: AuditEvent) => events.push(event),
         durableStalled: false,
       } as unknown as ConnectionContext["auditEmitter"];
-      // The lease ends, but its record stays in the control plane.
       server.locks.forceRelease = () =>
         Promise.reject(
           new LeaseRecordNotRemovedError(
@@ -596,7 +575,6 @@ Deno.test({
 
 const RUN_WORKFLOW = "55555555-6666-4777-8888-999999999999";
 
-/** Forwards run `runId`'s record with `status`, as a run's owner saves it. */
 async function forwardRun(
   server: Server,
   runId: string,
@@ -656,7 +634,6 @@ Deno.test({
       const runId = crypto.randomUUID();
       const created = await forwardRun(server, runId, "run.create", "running");
       assertEquals(created.status, 200, JSON.stringify(created.json));
-      // Another command holds the run's claim for a moment (an approve).
       const claim = await fencedLease(
         server,
         "alice-token",
@@ -715,8 +692,8 @@ Deno.test({
   sanitizeResources: false,
   fn: async () => {
     await withServer(twoMembers(), async (server) => {
-      // Long names put the floor past 1 MiB with few catalog rows, which are
-      // slow to write under the parallel suite (swamp-club#4182).
+      // long names put the floor past 1 MiB with few catalog rows, which are
+      // slow to write under the parallel suite
       const names = Array.from(
         { length: 400 },
         (_, i) => `instance-${String(i).padStart(6, "0")}-${"x".repeat(3_000)}`,
@@ -749,8 +726,8 @@ Deno.test({
         )).names,
       ).length;
       assert(floorBytes > SERVE_REPLY_MAX_BYTES, `${floorBytes} bytes`);
-      // These commits bypassed serve: projecting them here keeps that work
-      // out of the first request's deadline.
+      // these commits bypassed serve: projecting them here keeps that work out
+      // of the first request's deadline
       await server.v3.catchUp();
       const client = new ServeDatastoreClient({
         baseUrl: new URL(server.url).origin,

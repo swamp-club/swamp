@@ -54,7 +54,6 @@ const resourceArb: fc.Arbitrary<Resource> = fc.record({
   tagged: fc.boolean(),
 });
 
-/** Resources with distinct names, as one step's output records them. */
 const resourcesArb = fc.uniqueArray(resourceArb, {
   selector: (r) => r.name,
   minLength: 1,
@@ -136,7 +135,6 @@ Deno.test("liveStepOutputs and StepOutputResolver: for any records, the sources 
         assertEquals(live.outputs, merged);
         assertEquals(live.sources, expected);
 
-        // The same output stripped for the run record, read back.
         const workflow = Workflow.create({
           name: "wf",
           jobs: [Job.create({

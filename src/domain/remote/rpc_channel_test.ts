@@ -21,13 +21,7 @@ import { assertEquals, assertRejects } from "@std/assert";
 import { RpcChannel, RpcError } from "./rpc_channel.ts";
 import type { RpcStreamEvent } from "./protocol.ts";
 
-/**
- * Wire two channels together in memory: everything A sends is fed to B and
- * vice versa, mimicking the two ends of a control socket.
- */
 function channelPair(): { a: RpcChannel; b: RpcChannel } {
-  // Messages are delivered through a microtask to mimic async transport
-  // without ordering surprises.
   const a: RpcChannel = new RpcChannel({
     send: (data) => void Promise.resolve().then(() => b.handleRaw(data)),
   });
@@ -97,7 +91,6 @@ Deno.test("RpcChannel: caller abort cancels the in-flight handler", async () => 
   await handlerStarted.promise;
   controller.abort();
   await assertRejects(() => call, DOMException);
-  // Give the cancel frame a microtask to reach the handler.
   await new Promise((r) => setTimeout(r, 10));
   assertEquals(handlerAborted, true);
 });
@@ -174,7 +167,6 @@ Deno.test("RpcChannel: duplicate inbound request id is rejected", async () => {
   };
   b.handleParsed(frame);
   b.handleParsed(frame);
-  // First request is in flight; the second must be rejected as duplicate.
   await new Promise((r) => setTimeout(r, 5));
   const errors = received
     .map((raw) => JSON.parse(raw))
@@ -191,7 +183,6 @@ Deno.test("RpcChannel: waitForPeerOnCancel stays pending until the handler unwin
   b.register("slow", (_params, ctx) =>
     new Promise((_resolve, reject) => {
       ctx.signal.addEventListener("abort", () => {
-        // Simulate cleanup work before the handler settles.
         setTimeout(() => {
           events.push("handler-unwound");
           reject(new DOMException("aborted", "AbortError"));
@@ -209,7 +200,6 @@ Deno.test("RpcChannel: waitForPeerOnCancel stays pending until the handler unwin
   controller.abort();
   const error = await assertRejects(() => call, RpcError);
   events.push("caller-settled");
-  // The caller settled only AFTER the peer's handler finished unwinding.
   assertEquals(events, ["handler-unwound", "caller-settled"]);
   assertEquals(error.code, "cancelled");
 });

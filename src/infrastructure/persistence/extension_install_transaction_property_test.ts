@@ -33,12 +33,9 @@ import {
   SimulatedInstallCrash,
 } from "./test_helpers/install_crash.ts";
 
-// For random old and new file sets (each root present or not, a nested
-// child or not), a failure or crash at any point of the swap, and the
-// lockfile write landing or not: after settle or crash recovery, the
-// tree is exactly the old tree or exactly the new tree, never a mix.
-// Trees are compared by their files plus which roots exist: a rolled-back
-// first install may leave the empty scope dir begin() created.
+// after any swap failure or crash and recovery, the tree is exactly the old or
+// the new, never a mix; trees compare by files and roots because a rolled-back
+// first install may leave an empty scope dir
 
 const NAME = "@acme/thing";
 
@@ -98,7 +95,6 @@ async function readTree(dir: string): Promise<Record<string, string>> {
   return out;
 }
 
-/** The tree a plain install of the new version produces. */
 async function newTreeOf(s: {
   oldExt: Record<string, string> | null;
   newExt: Record<string, string>;
@@ -212,8 +208,6 @@ Deno.test("ExtensionInstallTransaction: settle and recovery leave exactly the ol
         } catch (error) {
           failure = error;
         }
-        // A failure after the swap (the lockfile write or a dependency)
-        // when the swap itself went through.
         const lockfileChecksum = swapped && s.lockfileLanded
           ? "sum-new"
           : "sum-old";
@@ -258,12 +252,9 @@ Deno.test("ExtensionInstallTransaction: settle and recovery leave exactly the ol
   );
 });
 
-// swamp-club#2724: for the same random old and new file sets, after a
-// completed swap, a loader optionally writing into the live bundle roots
-// (one of them a root neither version has), and a failure or crash at
-// any rollback rename (or none): rollback plus crash recovery with the
-// lockfile entry restored leaves exactly the old tree and no staging.
-// With no fault, rollback alone finishes and leaves no journal.
+// after a swap and loader writes into live bundle roots, a fault at any
+// rollback rename plus recovery with the lockfile entry restored leaves exactly
+// the old tree and no staging
 
 const rollbackScenario = fc.record({
   oldExt: fc.option(fileSet, { nil: null }),
@@ -374,7 +365,6 @@ Deno.test("ExtensionInstallTransaction.rollback: rollback and recovery leave exa
           assertEquals(await readTree(repoDir), oldTree);
         }
 
-        // The caller restored the lockfile entry before rolling back.
         const report = await recoverInstallStaging({
           bounds: {
             repoDir,

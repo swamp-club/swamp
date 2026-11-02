@@ -17,20 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// Architectural fitness test: telemetry redaction over the real command tree
-// (swamp-club#2817).
-//
-// Every command in the tree is invoked with a unique canary in each positional
-// and option value, and the resolved telemetry invocation is checked:
-//
-// 1. Every command word is recorded, and `subcommand` is only ever a command
-//    word — never a positional such as a path.
-// 2. Canaries for sent arguments (names, ids, queries, types) appear; canaries
-//    for redacted arguments (paths, values, the `data query` predicate) and for
-//    every option value, known or mistyped, do not.
-// 3. Every declared argument name is classified. A new argument name fails
-//    here until it is added to SENT_ARGUMENTS or REDACTED_ARGUMENTS.
-
 import "../src/domain/models/models.ts";
 import { assert, assertEquals } from "@std/assert";
 import { Command } from "@cliffy/command";
@@ -44,7 +30,6 @@ import {
   SENT_ARGUMENTS,
 } from "../src/cli/telemetry_invocation.ts";
 
-/** The root as runCli configures it, minus invocation state. */
 function buildRoot(): AnyCommand {
   const root = new Command()
     .name("swamp")
@@ -65,7 +50,6 @@ interface CommandCase {
   command: AnyCommand;
 }
 
-/** Every command that can take positionals, or that has no children. */
 function collectCases(
   command: AnyCommand,
   path: string[],

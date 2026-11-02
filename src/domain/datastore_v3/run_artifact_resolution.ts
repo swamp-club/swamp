@@ -18,73 +18,43 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * How a run record's data artifact resolves once history compaction
- * (swamp-club#3258) may have removed the version it named. Dormant: the v3
- * opt-in calls it where run records resolve their artifacts.
- *
- * A ref names `dataId`, `name` and `version`. Since swamp-club#3250 a version
- * removed by `delete`, `data gc` or `prune` can be recorded again, and a
- * re-save of a top version keeps the `dataId` (`Data.withNewVersion`), so a
- * live `name@version` is not necessarily the content the run produced, and
- * compaction removes the commits that held the original. The resolver
- * returns the live version only when it is evidently the one the ref's
- * producer wrote, and otherwise "content no longer available": never another
- * writer's content.
- *
- * @module
+ * a re-saved top version keeps its dataId, so the resolver returns the live
+ * version only when evidently the one the producer wrote; otherwise content is
+ * unavailable, never another writer's content
  */
 
 import type { DataMetadata } from "../data/data_metadata.ts";
 
-/** A run record's reference to a data version it produced. */
 export interface RunArtifactRef {
   readonly dataId: string;
   readonly name: string;
   readonly version: number;
   /**
-   * The SHA-256 of the version's content, when the ref records it. Refs
-   * written today do not; the opt-in adds it, and then it decides alone.
+   * the SHA-256 of the version's content, when the ref records it; when present
+   * it decides alone
    */
   readonly sha256?: string;
 }
 
-/** The run or method output whose record holds the ref. */
 export interface ArtifactProducer {
-  /** The workflow run's id, for a workflow step's output; absent otherwise. */
   readonly workflowRunId?: string;
   readonly startedAt: Date;
-  /** Absent for an output that never finished. */
   readonly completedAt?: Date;
 }
 
-/** The live version a ref names, as the read model holds it. */
 export interface LiveArtifactVersion {
   readonly metadata: DataMetadata;
-  /** The SHA-256 of its content. */
   readonly sha256: string;
 }
 
-/** How a ref resolved. */
 export type RunArtifactResolution =
   | { readonly kind: "available"; readonly metadata: DataMetadata }
   | { readonly kind: "unavailable"; readonly reason: string };
 
 /**
- * Resolves `ref` against the version now live at its name and version, if
- * any:
- *
- * 1. No live version, or one with another `dataId`: unavailable.
- * 2. A ref carrying `sha256`: available exactly when the content matches.
- * 3. A version that records a workflow run (`ownerDefinition.workflowRunId`):
- *    available exactly when it is the producer's run.
- * 4. Otherwise (a method run's output, or data that records no run): available
- *    exactly when it was created within the producer's start and finish. An
- *    output that never finished resolves nothing.
- *
- * The one case rule 4 cannot tell apart: another writer removing and
- * re-saving the same top version inside the producer's own window. A ref
- * carrying `sha256` closes it. The window compares timestamps from one
- * clock, which holds while one process writes both.
+ * rule 4 cannot tell apart another writer removing and re-saving the same top
+ * version inside the producer's window; a ref with sha256 closes it. Timestamps
+ * assume one clock.
  */
 export function resolveRunArtifact(
   ref: RunArtifactRef,

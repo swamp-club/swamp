@@ -18,21 +18,9 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * The interrupt stage of `swamp serve` shutdown: the workflow runs the drain
- * aborted are marked `interrupted("server_shutdown")` and, on a remote
- * datastore, pushed (swamp-club#3252). Without the push the interrupted
- * record stayed in the local cache, and a restart against the datastore read
- * whatever the run had last pushed.
- *
- * The push is bounded by one short deadline, so it can miss. Each run's
- * tracker row is settled whatever happens, so the next boot's reaper does
- * not skip the run as still running, and the runs not pushed are reported
- * and recorded for the next start (swamp-club#3958).
- *
- * Before the runs are loaded, serve's run write fence is closed for them.
- * An executor that outlived the drain's abort grace can then no longer save
- * its own `running` copy of a run over the interrupted record, which would
- * otherwise be what the push uploads (swamp-club#4101).
+ * pushed under a short bound that can miss: tracker rows settle regardless and
+ * unpushed runs are recorded for the next start. The run write fence closes
+ * first so a late executor cannot save over the interrupt
  */
 
 import type { DatastoreSyncService } from "../domain/datastore/datastore_sync_service.ts";
@@ -59,10 +47,8 @@ import {
 const logger = getSwampLogger(["serve", "shutdown"]);
 
 /**
- * How long shutdown waits for the shared sync gate and the push of the
- * interrupted runs together. It fits the headroom serve's design asks for
- * above the drain timeout, so an unreachable datastore cannot hold the
- * process past its termination grace period.
+ * fits the headroom above the drain timeout, so an unreachable datastore cannot
+ * hold the process past its termination grace period
  */
 export const SHUTDOWN_PUSH_TIMEOUT_MS = 5_000;
 
@@ -76,52 +62,38 @@ export interface ShutdownInterruptDeps {
       >;
     };
   /**
-   * Serve's run write fence. Closed for the runs about to be interrupted
-   * before they are loaded, so an executor that outlived the abort grace
-   * cannot save its running copy over the interrupt (swamp-club#4101).
+   * closed for the runs about to be interrupted before they load, so an
+   * executor that outlived the abort grace cannot save its running copy over
+   * the interrupt
    */
   readonly runWriteFence?: Pick<ServeRunWriteFence, "close">;
-  /** The datastore sync service; absent on a filesystem datastore. */
   readonly syncService?: Pick<DatastoreSyncService, "pushChanged">;
   readonly namespace?: string;
   readonly syncGate?: SyncGate;
-  /**
-   * Bounds the push on a synced datastore, and the commit on a v3 one.
-   * Defaults to {@link SHUTDOWN_PUSH_TIMEOUT_MS}.
-   */
   readonly pushTimeoutMs?: number;
-  /** Called once for each run marked interrupted. */
   readonly onInterrupted?: (runId: string) => void;
   /**
    * The run tracker whose rows the aborted runs settle as interrupted. A
    * row left running makes the next boot's reaper skip the run.
    */
   readonly runTracker?: Pick<RunTrackerRepository, "complete">;
-  /**
-   * Where the runs not pushed are recorded for the next start
-   * ({@link recordUnpushedInterrupts}); unset records nothing.
-   */
   readonly unpushedMarkerPath?: string;
 }
 
 export interface ShutdownInterruptResult {
   readonly interrupted: readonly string[];
-  /** Why the push of the interrupted runs failed, when it did. */
   readonly pushError?: string;
   /**
-   * The aborted workflow runs whose interrupted record is not known to have
-   * reached the datastore: every interrupted run when the push failed, and
-   * each run that could not be loaded or saved. On a v3 datastore, every
-   * aborted workflow run when the commit missed its bound. Set only on a
-   * synced or v3 datastore, and only when not empty.
+   * runs whose interrupted record may not have reached the datastore: all when
+   * the push failed or the v3 commit missed its bound, plus any that could not
+   * be loaded or saved
    */
   readonly unpushed?: readonly string[];
 }
 
 /**
- * Marks the aborted workflow runs in `remaining` interrupted, settles their
- * tracker rows and pushes them. A failed load, save, push or marker write is
- * logged and never thrown, so the rest of shutdown still runs.
+ * a failed load, save, push or marker write is logged and never thrown, so the
+ * rest of shutdown still runs
  */
 export async function interruptShutdownRuns(
   remaining: ReadonlyArray<
@@ -264,10 +236,9 @@ export async function interruptShutdownRuns(
   if (!commitsLocally) {
     await root;
   } else {
-    // A v3 commit stores its content in the bucket before it commits
-    // locally, so a slow bucket holds it: it is bounded as the push is
-    // (swamp-club#3961). One that misses is left to land or fail on its own
-    // until the datastore closes; the runs are recorded for the next start.
+    // a v3 commit stores content in the bucket first, so a slow bucket holds
+    // it: bounded like the push. One that misses is left to land or fail until
+    // the datastore closes; the runs are recorded for the next start
     pushError = await commitWithin(root, pushTimeoutMs);
     if (pushError !== undefined) {
       logger.warn(
@@ -290,9 +261,8 @@ export async function interruptShutdownRuns(
 }
 
 /**
- * Waits up to `timeoutMs` for the v3 root `root` to commit. Resolves with
- * why it did not, or undefined once it did. A root that misses is not
- * awaited further; its later outcome is only logged.
+ * a root that misses the bound is not awaited further; its later outcome is
+ * only logged
  */
 async function commitWithin(
   root: Promise<void>,
@@ -324,10 +294,6 @@ async function commitWithin(
   }
 }
 
-/**
- * Adds `unpushed` to `result` on a synced datastore, or on a v3 one when
- * `commitsLocally`, and records it at the marker path, when there is any.
- */
 async function reported(
   result: ShutdownInterruptResult,
   unpushed: readonly string[],
@@ -369,12 +335,9 @@ async function reported(
 }
 
 /**
- * The heartbeat stage of shutdown. With no run left unpushed the heartbeat
- * is deleted. Otherwise the unpushed runs' active-run records are written
- * back first, since a run that ended in the abort grace deleted its own and
- * a peer finds the runs it must settle only through them, and then a stopped
- * heartbeat takes the heartbeat's place so a peer reconciles this instance
- * (swamp-club#3958). Each write is bounded by `writeTimeoutMs`.
+ * with unpushed runs, their active-run records are written back (a run ended in
+ * the abort grace deleted its own) so a peer can find and settle them, then a
+ * stopped heartbeat replaces the heartbeat
  */
 export async function stopHeartbeatAtShutdown(
   heartbeat: Pick<InstanceHeartbeatService, "stop">,

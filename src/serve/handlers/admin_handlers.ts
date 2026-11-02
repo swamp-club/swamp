@@ -17,10 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Platform-admin request handlers (worker, datastore, extension, doctor, run-tracker, and audit-timeline verbs).
- */
-
 import { runGeneratorWithoutVaultAccess } from "../../domain/vaults/run_vault_access.ts";
 import { isAbsolute, join, relative, resolve } from "@std/path";
 import { runProgressSnapshots } from "../../domain/remote/run_progress.ts";
@@ -281,15 +277,8 @@ import { normalizeOwnerAddress } from "../../domain/datastore_v3/datastore_owner
 import type { DatastoreClaimPayload } from "../protocol.ts";
 import { UserError } from "../../domain/errors.ts";
 
-/** The most accepted quarantined changes `datastore status --server` lists. */
 const MAX_LISTED_ACCEPTED_QUARANTINE = 50;
 
-/**
- * Derives the extension lockfile path from the connection context's
- * datastore resolver. When managedConfig is true the lockfile lives at the
- * datastore-resolved config path (cache path for S3, local for filesystem).
- * Pulled extension sources always live under the in-repo pulled root.
- */
 function resolveManagedPathsFromContext(
   ctx: ConnectionContext,
   marker:
@@ -312,19 +301,9 @@ function resolveManagedPathsFromContext(
 }
 
 /**
- * The transaction an extension handler runs its lockfile changes in. Under
- * managedConfig on an extension-backed datastore the lockfile is shared
- * with other instances and checkouts: each change is made against the
- * datastore's copy under the datastore global lock and published as it
- * lands (swamp-club#2838). Extension sources stay in the repo-local
- * pulled-extensions root (swamp-club#2612). Otherwise undefined, and the
- * handler writes the lockfile directly.
- *
- * Each outermost run opens its own root unit of work over
- * `repoContext.markDirty` itself (the extension handlers run outside any
- * root), with no flush and the namespace push as its checkpoint: the
- * publish stages the lockfile into it and pushes at the checkpoint, inside
- * the sync gate and before the global lock is released (swamp-club#3192).
+ * under managedConfig on an extension-backed datastore the lockfile is shared,
+ * so each change runs on the datastore copy under the global lock and is
+ * published as it lands; otherwise undefined
  */
 function extensionLockfileTransaction(
   ctx: ConnectionContext,
@@ -336,8 +315,8 @@ function extensionLockfileTransaction(
   const { syncService, datastoreConfig } = ctx;
   const markDirty = ctx.repoContext.markDirty;
   const logger = getSwampLogger(["serve", "extension", "lockfile"]);
-  // A v3 repo commits its managed lockfile through the commit log
-  // (swamp-club#3279); serve holds the writer lock for its lifetime.
+  // a v3 repo commits its managed lockfile through the commit log; serve holds
+  // the writer lock for its lifetime
   if (
     markDirty && ctx.repoContext.commitLog !== undefined &&
     marker?.datastore?.managedConfig === true
@@ -350,8 +329,8 @@ function extensionLockfileTransaction(
           { flush: undefined, checkpoint: () => Promise.resolve() },
           () => fn(),
         ),
-      // The global lock serialises concurrent extension changes in serve,
-      // as on v2.
+      // the global lock serialises concurrent extension changes in serve, as on
+      // v2
       lock: datastoreGlobalLock(datastoreConfig),
       sync: createV3LockfileSync({
         markDirty,
@@ -376,8 +355,8 @@ function extensionLockfileTransaction(
     : undefined;
   return new ManagedLockfileTransaction({
     lockfilePath,
-    // The hook itself, captured once, for both the root and the publish:
-    // the publish finds the root by hook identity.
+    // the hook itself, captured once for both the root and the publish: the
+    // publish finds the root by hook identity
     inRoot: (fn) =>
       runInRootUnitOfWork(
         { markDirty },
@@ -388,8 +367,8 @@ function extensionLockfileTransaction(
         },
         () => fn(),
       ),
-    // Taken inside the handler's exclusive sync gate: the gate always comes
-    // before the global lock in serve (see sync_gate.ts).
+    // taken inside the handler's exclusive sync gate: the gate always comes
+    // before the global lock in serve
     lock: datastoreGlobalLock(datastoreConfig),
     sync: createRootLockfileSync({
       syncService,
@@ -399,8 +378,8 @@ function extensionLockfileTransaction(
       markDirty,
     }),
     pending: createRepoPendingLockfileStore(ctx.repoDir),
-    // The change has applied on this instance, so the request succeeds; a
-    // failed publish stays pending and the next extension change retries it.
+    // the change has applied on this instance, so the request succeeds; a
+    // failed publish stays pending and the next extension change retries it
     publishFailure: "defer",
     onWarning: (message, error) =>
       error === undefined ? logger.warn(message) : logger.warn(
@@ -671,7 +650,6 @@ export async function handleDatastoreStatus(
     const explicitLeases = ctx.explicitLeases;
     const quarantine = ctx.quarantine;
     const deps = await createDatastoreStatusDeps(ctx.datastoreResolver, {
-      // The changes serve keeps for an admin to accept (swamp-club#4195).
       ...(quarantine !== undefined
         ? {
           listQuarantine: async () => {
@@ -682,8 +660,7 @@ export async function handleDatastoreStatus(
           },
         }
         : {}),
-      // The explicit leases this node holds (swamp-club#4195); the caller
-      // is an admin, so each names its holder.
+      // the caller is an admin, so each lease names its holder
       ...(explicitLeases !== undefined
         ? {
           listExplicitLeases: () =>
@@ -734,11 +711,6 @@ export async function handleDatastoreStatus(
   }
 }
 
-/**
- * The claim log of serve's own v3 datastore, under serve's lifetime hold:
- * a claim through serve commits under serve's fence and is confirmed
- * replicated before the reply (swamp-club#4063). Undefined on v2.
- */
 async function serveClaimCommitLog(ctx: ConnectionContext) {
   if (resolverEngine(ctx.datastoreResolver) !== "v3") return undefined;
   const config = await v3DatastoreConfigOf(
@@ -748,25 +720,17 @@ async function serveClaimCommitLog(ctx: ConnectionContext) {
   return v3ClaimCommitLog(ctx.repoDir, config, { confirmReplicated: true });
 }
 
-/** {@link serveClaimCommitLog} as the claim's and release's deps. */
 async function serveClaimDeps(ctx: ConnectionContext) {
   const commitLog = await serveClaimCommitLog(ctx);
   return commitLog === undefined ? {} : { commitLog };
 }
 
-/** The code a claim or release that failed is answered with. */
 function claimErrorCode(error: unknown, fallback: string): string {
   return error instanceof UserError && error.code !== undefined
     ? error.code
     : fallback;
 }
 
-/**
- * `swamp datastore claim --server` (swamp-club#4063): makes this serve the
- * owner of its v3 datastore. Admin only. The owner is the address serve was
- * started with (`--address`), so a claim naming another, or one to a serve
- * started without it, is refused.
- */
 export async function handleDatastoreClaim(
   socket: WebSocket,
   ctx: ConnectionContext,
@@ -835,10 +799,6 @@ export async function handleDatastoreClaim(
   }
 }
 
-/**
- * `swamp datastore release --server` (swamp-club#4063): removes the claim
- * on serve's v3 datastore, so direct writers write it again. Admin only.
- */
 export async function handleDatastoreRelease(
   socket: WebSocket,
   ctx: ConnectionContext,
@@ -1106,11 +1066,9 @@ export async function handleExtensionInfo(
 }
 
 /**
- * Reloads a --hot-reload serve after an extension change it ran
- * (swamp-club#3594), so the next run uses the new code. Runs once the
- * change is on disk, even when the request was cancelled after it. A
- * failed reload never fails the request: the change itself succeeded.
- * Undefined without --hot-reload.
+ * runs once the change is on disk, even when the request was cancelled after
+ * it; a failed reload never fails the request, since the change itself
+ * succeeded
  */
 async function reloadAfterExtensionChange(
   ctx: ConnectionContext,
@@ -1168,8 +1126,8 @@ export async function handleExtensionInstall(
     const marker = await new RepoMarkerRepository().read(
       RepoPath.create(ctx.repoDir),
     );
-    // Serve's datastore resolver is always resolved; use its lockfile
-    // rather than the process-wide registry (swamp-club#2483).
+    // serve's datastore resolver is always resolved; use its lockfile rather
+    // than the process-wide registry
     const { lockfilePath } = resolveManagedPathsFromContext(ctx, marker);
     const deps = await createExtensionInstallDeps(ctx.repoDir, logger, {
       lockfilePath,
@@ -1265,10 +1223,9 @@ export async function handleExtensionPull(
       lockfileRepository: deps.lockfileRepository,
       repoRoot: repoDir,
       localManifestIdentity: readLocalManifestIdentity(repoDir),
-      // An unreadable .swamp-sources.yaml fails the request, as it fails
-      // CLI startup, rather than counting as no mounts: that would prune
-      // the mounted rows (swamp-club#2563). Hot-reload falls back instead
-      // because it has no caller to report to.
+      // an unreadable .swamp-sources.yaml fails the request rather than
+      // counting as no mounts, which would prune the mounted rows; hot-reload
+      // falls back instead because it has no caller to report to
       mountedSourceDirs: await resolveMountedSourceDirs(repoDir),
     });
 
@@ -1602,10 +1559,9 @@ export async function handleExtensionUpdate(
 }
 
 /**
- * Datastore setup deps for serve. Serve holds the catalog open, so setup
- * marks it for a rebuild instead of deleting its files: a delete fails on
- * Windows after `.swamp.yaml` is already written, and on POSIX the open
- * connection would later unlink the WAL a rebuilt catalog uses.
+ * serve holds the catalog open, so setup marks it for a rebuild instead of
+ * deleting files: a delete fails on Windows after .swamp.yaml is written, and
+ * on POSIX the open connection would unlink the rebuilt WAL
  */
 export function serveDatastoreSetupDeps(
   repoDir: string,
@@ -1648,8 +1604,8 @@ export async function handleDatastoreSetupExtension(
       repoDir,
       ctx.repoContext.catalogStore,
     );
-    // A filesystem datastore outside the repo is what setup moves from
-    // (swamp-club#3238). An unresolvable one leaves setup on .swamp/.
+    // a filesystem datastore outside the repo is what setup moves from; an
+    // unresolvable one leaves setup on .swamp/
     const outgoingDatastorePath = await resolveDatastoreConfig(
       marker,
       undefined,
@@ -1739,9 +1695,8 @@ export async function handleVaultMigrate(
     return;
   }
 
-  // Today's check (admin on the model kind) is kept; admin on vault:<name>
-  // also allows, and a deny on any of the vault's names refuses
-  // (swamp-club#2676).
+  // today's check (admin on the model kind) is kept; admin on vault:<name> also
+  // allows, and a deny on any of the vault's names refuses
   if (
     !authorizeVaultOrReject(socket, requestId, principal, {
       vaultName: payload.vaultName,
@@ -1750,7 +1705,7 @@ export async function handleVaultMigrate(
     }, ctx).allowed
   ) return;
 
-  // The root pushes only once the success reply was sent (swamp-club#3035).
+  // the root pushes only once the success reply was sent
   let replied = false;
   await runInRootUnitOfWork(
     ctx.repoContext,
@@ -1770,15 +1725,14 @@ export async function handleVaultMigrate(
       try {
         const libCtx = handlerLibSwampContext(ctx);
         const repoDir = ctx.repoDir;
-        // The shared repository's mark hook signals the config it writes and
-        // the one it removes, which the scoped push then deletes remotely.
+        // the shared repository's mark hook signals the config it writes and
+        // the one it removes, which the scoped push then deletes remotely
         const deps = await createVaultMigrateDeps(repoDir, {
           repo: ctx.repoContext.vaultConfigRepo,
         });
 
-        // No trustKeySource: the client does not own this host, so a
+        // no trustKeySource: the client does not own this host, so a
         // local_encryption target gets the server's key source
-        // (swamp-club#2690).
         await vaultMigratePreview(libCtx, deps, {
           vaultName: payload.vaultName,
           targetType: payload.targetType,
@@ -1938,8 +1892,8 @@ export async function handleDoctorDatastores(
           return [];
         }
       },
-      // Read through serve's own repository context: its data repository,
-      // and the watermarks its retention timer writes.
+      // read through serve's own repository context: its data repository, and
+      // the watermarks its retention timer writes
       checkRetention: async () =>
         await scanRetention(
           retentionScanSourcesFor({
@@ -1955,15 +1909,13 @@ export async function handleDoctorDatastores(
           ),
           new Date(),
         ),
-      // Checkout-local state and chunk stats only (swamp-club#3617).
+      // checkout-local state and chunk stats only
       ...(resolverEngine(ctx.datastoreResolver) === "v3"
         ? {
           checkV3Content: (config: DatastoreConfig) =>
             inspectV3Content({ repoDir, datastoreConfig: config }),
-          // The datastore's lineage records only (swamp-club#3801).
           checkV3KeptLineages: (config: DatastoreConfig) =>
             inspectV3KeptLineages({ repoDir, datastoreConfig: config }),
-          // The checkout's own copy only (swamp-club#3935).
           checkV3ReplicaRestorable: (config: DatastoreConfig) =>
             inspectV3ReplicaRestorable({ repoDir, datastoreConfig: config }),
         }
@@ -2067,8 +2019,8 @@ export async function handleDoctorWorkflows(
   ) return;
 
   try {
-    // The live repository context, so remote doctor checks the dirs this
-    // server loads workflows from, including any refreshed by a reload.
+    // the live repository context, so remote doctor checks the dirs this server
+    // loads workflows from, including any refreshed by a reload
     const deps: DoctorWorkflowsDeps = {
       ...doctorWorkflowDirs(ctx.repoContext),
       abortSignal: controller.signal,
@@ -2147,9 +2099,8 @@ export async function handleDoctorExtensions(
       });
       rescanRepo.invalidateAll();
       const denoRuntime = new EmbeddedDenoRuntime();
-      // Same treatment of on-disk datastore extensions and the
-      // transitional in-repo auto-resolve lockfile as the CLI's startup and
-      // doctor reconcile (swamp-club#2483).
+      // same treatment of on-disk datastore extensions and the transitional
+      // in-repo auto-resolve lockfile as the CLI's startup and doctor reconcile
       const reconciler = new ReconcileFromDiskService({
         denoRuntime,
         repository: rescanRepo,
@@ -2354,20 +2305,20 @@ export async function handleRunDoctor(
     const controlPlaneStore = ctx.controlPlaneStore;
     const runTracker = ctx.runTracker;
     try {
-      // The fix's saves run in a root unit of work with no push, so they
-      // stage into it instead of reaching the hook through signalChange's
-      // fallback (swamp-club#3056). Nothing pushes, as before.
+      // the fix's saves run in a root unit of work with no push, so they stage
+      // into it instead of reaching the hook through signalChange's fallback;
+      // nothing pushes
       await runInRootUnitOfWork(
         ctx.repoContext,
         { flush: undefined },
         async () => {
-          // From the records, not the index as it stands: a stale entry would
-          // hide the very run being looked for (swamp-club#2518).
+          // from the records, not the index as it stands: a stale entry would
+          // hide the very run being looked for
           await ctx.repoContext.workflowRunRepo.verifyIndexes?.();
           const yamlRuns = await ctx.repoContext.workflowRunRepo
             .findGlobalByStatus("running");
 
-          // Each heartbeat is read once for the whole scan.
+          // each heartbeat is read once for the whole scan
           const heartbeats = new Map<string, Promise<Uint8Array | null>>();
           const ownerGone = ownerGoneDecider({
             activeRunRegistry: ctx.activeRunRegistry,
@@ -2387,9 +2338,9 @@ export async function handleRunDoctor(
           for (const { run, workflowId } of yamlRuns) {
             if (!run.instanceId || run.instanceId === ctx.instanceId) continue;
 
-            // As a cancel decides it. A missing heartbeat alone says nothing
-            // where serve records none, and going by it interrupted live
-            // runs of other instances (swamp-club#3059).
+            // as a cancel decides it: a missing heartbeat alone says nothing
+            // where serve records none, and going by it interrupted live runs
+            // of other instances
             if (!(await ownerGone(run)).gone) continue;
 
             orphanedWorkflowRuns++;
@@ -2411,9 +2362,8 @@ export async function handleRunDoctor(
   }
 
   if (payload?.fix) {
-    // Rows this or another reap left interrupted while their record is no
-    // longer running; serve-only deployments have no other sweep
-    // (swamp-club#2917).
+    // rows this or another reap left interrupted while their record is not
+    // running; serve-only deployments have no other sweep
     try {
       await settleInterruptedWorkflowRows(
         ctx.runTracker,
@@ -2603,8 +2553,9 @@ export async function handleServeReload(
       }
     }
 
-    // A local behavior failure does not make the separate audit configuration
-    // stale, and the reload finished every configuration stage before reporting it.
+    // a local behavior failure does not make the separate audit configuration
+    // stale, and the reload finished every configuration stage before reporting
+    // it
     if (result.success || result.localRefreshFailed) {
       if (ctx.auditEmitter && ctx.auditSinkRebuilder) {
         if (auditReloadInProgress) {
@@ -2681,12 +2632,9 @@ export async function handleWorkerTokenCreate(
           workerTokenCreate(libCtx, deps, {
             name: payload.name,
             durationMs: payload.durationMs,
-            // An explicit --vault wins: redeem reads the secret from the vault
-            // recorded on the token, so any configured vault works. Without
-            // one, use the control-plane vault, as the local CLI path does.
-            // Leaving it unset makes resolveVaultName count _token-secrets
-            // alongside any user vault and fail with "Multiple vaults are
-            // configured".
+            // an explicit --vault wins since redeem reads the token's recorded
+            // vault; otherwise use the control-plane vault, since unset makes
+            // resolveVaultName count _token-secrets with user vaults and fail
             vaultName: payload.vaultName ?? TOKEN_SECRETS_VAULT_NAME,
             maxEnrollments: payload.maxEnrollments,
           }),
@@ -2810,9 +2758,9 @@ export async function handleWorkerTokenRevoke(
           }),
         );
 
-        // The revoke is persisted even if the request was cancelled, and an
+        // the revoke is persisted even if the request was cancelled, and an
         // already-revoked token may still hold workers this instance missed, so
-        // every worker enrolled on any mint of the name is cut off now.
+        // every worker enrolled on any mint of the name is cut off now
         const disconnectedWorkers = await ctx.workerGateway?.revokeToken(
           payload.name,
           "revoked",
@@ -2933,8 +2881,7 @@ export async function handleWorkerPrune(
               force: true,
             }),
 
-          // Control-plane bookkeeping: never held to a run's vault scope
-          // (swamp-club#2676).
+          // control-plane bookkeeping is never held to a run's vault scope
           pruneBindings: (tokenName, machineIds) =>
             runGeneratorWithoutVaultAccess(() =>
               modelMethodRun(libCtx, runDeps, {
@@ -2964,7 +2911,7 @@ export async function handleWorkerPrune(
         let result: Record<string, unknown> | undefined;
         let preview: unknown[] | undefined;
         await consumeStream(
-          // The signal is observed only: a cancelled prune still finishes.
+          // the signal is observed only: a cancelled prune still finishes
           workerPrune(libCtx, pruneDeps, {
             gracePeriodMs,
             dryRun,
@@ -3088,8 +3035,8 @@ export async function collectClusterInstances(
       const age = Date.now() - new Date(record.heartbeatAt).getTime();
       let status: string;
       if (InstanceHeartbeatService.isStopped(record)) {
-        // Left by an instance that stopped with runs it could not push
-        // (swamp-club#3958), until a peer reconciles it.
+        // left by an instance that stopped with runs it could not push, until a
+        // peer reconciles it
         status = "stopped";
       } else if (isNaN(age)) {
         status = "unreachable";

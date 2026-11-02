@@ -58,7 +58,6 @@ Deno.test("parseWorkspaceName: refuses anything that is not one lowercase segmen
 
 const SUGGESTION_PATTERN = /^[a-z]+-[a-z]+(?:-[a-z]+)?(?:-\d+)?$/;
 
-/** A random source that returns `values` in turn, repeating the last. */
 function sequence(...values: number[]): () => number {
   let i = 0;
   return () => values[Math.min(i++, values.length - 1)];

@@ -17,11 +17,9 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// Extension-member precedence across the real catalog, loader and model
-// registry (swamp-club#2562). Two local extensions and one pulled extension
-// add the same method to one type. Whatever the catalog order or attach
-// path, the local extension with the smaller path wins, and a base-model
-// method always beats every extension.
+// two local extensions and one pulled extension add the same method to one
+// type: whatever the catalog order or attach path, the local one with the
+// smaller path wins, and a base-model method beats every extension
 
 import { assertEquals } from "@std/assert";
 import { dirname, join } from "@std/path";
@@ -91,17 +89,14 @@ async function withFixture(
   options: { baseHasProbe?: boolean },
   fn: (f: Fixture) => Promise<void>,
 ): Promise<void> {
-  // The loader resolves source paths to their real path, and macOS temp dirs
-  // sit under the /var symlink, so compare against the real path
-  // (swamp-club#2718).
+  // the loader resolves source paths to their real path and macOS temp dirs sit
+  // under the /var symlink, so compare against the real path
   const repoDir = await Deno.realPath(
     await Deno.makeTempDir({ prefix: "swamp_2562_prec_" }),
   );
   const type = `@test/prec-${crypto.randomUUID().slice(0, 8)}`;
   const bundleDir = join(repoDir, ".swamp", "bundles");
   await ensureDir(bundleDir);
-  // The loader reports members by resolved path; on macOS the temp dir is
-  // an alias (/var -> /private/var), so expected paths use the real root.
   const realRepoDir = await Deno.realPath(repoDir);
   const paths: Record<Source, string> = {
     aa: canonicalizePath(
@@ -135,8 +130,8 @@ async function withFixture(
   for (const s of ["aa", "zz", "pulled"] as const) {
     await Deno.writeTextFile(bundles[s], extBundle(type, s));
   }
-  // The loader drops rows whose source file is missing (swamp-club#2490),
-  // so every source a row names must exist; the bundles carry the code.
+  // the loader drops rows whose source file is missing, so every source a row
+  // names must exist; the bundles carry the code
   for (
     const source of [
       ...Object.values(paths),
@@ -256,7 +251,6 @@ Deno.test("attachPendingExtensionsForType: a local extension that arrives after 
       await loader.attachPendingExtensionsForType(f.type);
       assertEquals(probe(f.type), "probe from aa");
 
-      // Another pass changes nothing and warns about nothing new.
       const before = getExtensionLoadWarnings().length;
       await loader.attachPendingExtensionsForType(f.type);
       assertEquals(probe(f.type), "probe from aa");
@@ -318,14 +312,12 @@ export const extension = {
     assertEquals(probe(f.type), "probe from pulled");
     await loader.load(localDir, { skipAlreadyRegistered: true });
     assertEquals(probe(f.type), "probe from aa");
-    // A reload walks the same directories again.
     await loader.load(pulledDir, { skipAlreadyRegistered: true });
     await loader.load(localDir, { skipAlreadyRegistered: true });
     assertEquals(probe(f.type), "probe from aa");
 
     for (const w of getExtensionLoadWarnings()) {
       if (w.category !== "MemberCollision") continue;
-      // A file is never reported as colliding with itself.
       assertEquals(
         w.error.includes(`also provided by ${canonicalizePath(w.file)}`),
         false,
@@ -360,9 +352,9 @@ Deno.test({
             repoRoot: alias,
           }),
         );
-        // Rows are written under the resolved repo path; the loader only
-        // knows the alias. `.swamp/` sorts before `extensions/`, so only the
-        // pulled row's tier can make the local one win.
+        // rows are written under the resolved repo path while the loader knows
+        // only the alias; .swamp/ sorts before extensions/, so only the pulled
+        // row's tier can make the local one win
         const realRoot = Deno.realPathSync(f.repoDir);
         const pulledSource = join(
           realRoot,

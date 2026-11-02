@@ -38,9 +38,6 @@ import { carryModelWording } from "../../domain/behavior_wording.ts";
 import { renderInteractivePicker } from "./components/search_picker.tsx";
 import { formatMethodLines, formatSchemaType } from "./model_get.ts";
 
-/**
- * Filters types by a query string (case-insensitive match on raw or normalized).
- */
 function filterTypes(
   types: TypeSearchItem[],
   query: string,
@@ -54,9 +51,6 @@ function filterTypes(
   );
 }
 
-/**
- * Callback type for fetching type detail data for the preview pane.
- */
 export type TypePreviewFetcher = (
   item: TypeSearchItem,
 ) => Promise<TypeDescribeData>;
@@ -170,11 +164,6 @@ export function createTypeSearchRenderer(
   }
 }
 
-// ---------------------------------------------------------------------------
-// Rendering callbacks for the SearchPicker
-// ---------------------------------------------------------------------------
-
-/** Single-line result for the results list. */
 function renderTypeResultLine(item: TypeSearchItem): React.ReactElement {
   const rawLabel = item.raw !== item.normalized ? ` (${item.raw})` : undefined;
   return (
@@ -185,7 +174,6 @@ function renderTypeResultLine(item: TypeSearchItem): React.ReactElement {
   );
 }
 
-/** Renders preview content for a type. */
 function renderTypePreview(
   item: TypeSearchItem,
   detail: TypeDescribeData | undefined,
@@ -271,7 +259,6 @@ function renderTypePreview(
   );
 }
 
-/** Produces plain-text scrollback output for a selected type. */
 function renderTypeScrollback(
   item: TypeSearchItem,
   detail: TypeDescribeData | undefined,

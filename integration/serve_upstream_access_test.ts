@@ -17,14 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * A serve-mode checkout follows its member's read access (swamp-club#4089):
- * serve names it on every reply, and when it changes the next command
- * rebuilds the copy and the checkout's files from serve. Against a real
- * serve in a Worker, opened the production way; serve's grants change as a
- * reload of its access data changes them.
- */
-
 import "../src/domain/models/models.ts";
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import { waitFor } from "@swamp-club/swamp-testing";
@@ -66,28 +58,24 @@ const VPC_ID = "4c1f0b6e-2d6a-4a9b-8f3e-1b2c3d4e5f60";
 const KEY_ID = "4c1f0b6e-2d6a-4a9b-8f3e-1b2c3d4e5f61";
 const API_ID = "4c1f0b6e-2d6a-4a9b-8f3e-1b2c3d4e5f62" as DefinitionId;
 
-/** Alice is a member; bob may read behavior web and its data. */
 const BOB_WEB: readonly GrantSpec[] = [
   ...MEMBER,
   { user: "bob", actions: ["read"], kind: "model", pattern: "web" },
   { user: "bob", actions: ["read"], kind: "data", pattern: "web" },
 ];
 
-/** As {@link BOB_WEB}, and bob may read behavior secret and its data too. */
 const BOB_BOTH: readonly GrantSpec[] = [
   ...BOB_WEB,
   { user: "bob", actions: ["read"], kind: "model", pattern: "secret" },
   { user: "bob", actions: ["read"], kind: "data", pattern: "secret" },
 ];
 
-/** As {@link BOB_WEB}, and bob may save web's data. */
 const BOB_WRITES_WEB: readonly GrantSpec[] = [
   ...BOB_WEB,
   { user: "bob", actions: ["run"], kind: "model", pattern: "web" },
   { user: "bob", actions: ["write"], kind: "data", pattern: "web" },
 ];
 
-/** The id and read access of the copy `client` holds of `serve`. */
 function copyState(
   client: Client,
   serve: Pick<Serve, "origin">,
@@ -105,14 +93,12 @@ function copyState(
   }
 }
 
-/** The checkout files of `client` that belong to behavior `modelId`. */
 async function filesOf(client: Client, modelId: string): Promise<string[]> {
   return [...(await datastoreRecords(client.repoDir)).keys()].filter((path) =>
     path.includes(modelId)
   );
 }
 
-/** Alice saves version 1 of vpc on web and of key on secret. */
 async function seed(
   scratch: Scratch,
   serve: Serve,
@@ -138,7 +124,6 @@ async function seed(
   return { type, web, secret };
 }
 
-/** Runs `fn`, returning what it returns and the warnings serve mode logged. */
 async function withWarnings<T>(
   fn: () => Promise<T>,
 ): Promise<{ result: T; warnings: string[] }> {
@@ -207,7 +192,6 @@ Deno.test({
       assertStringIncludes(seen.warnings[0], "the next command rebuilds");
       assertEquals(copyState(bob, serve).copyId, built.copyId);
 
-      // The next one rebuilds the copy and holds the record it now allows.
       assertEquals(await read(), {
         vpc: { version: 1, content: "1" },
         key: { version: 1, content: "1" },
@@ -330,7 +314,6 @@ Deno.test({
         writeCommand(scratch, bob, bobEnv, async (repos) => {
           const before = await latestOf(repos, type, web, "vpc");
           await serve.setGrants(BOB_WRITES_WEB);
-          // Each save asks serve, which answers under the new access.
           for (const content of [2, 3]) {
             await repos.unifiedDataRepo.save(
               type,
@@ -398,7 +381,6 @@ Deno.test({
           await key();
           return await key();
         });
-        // As before this change: the copy keeps what it read.
         assertEquals(after.result, { version: 1, content: "1" });
         assertEquals(after.warnings, []);
         assertEquals(copyState(bob, proxy), before);
@@ -410,7 +392,6 @@ Deno.test({
   },
 });
 
-/** Holds the writer lease of `root` from a Worker until `release` is called. */
 async function holdLease(root: string): Promise<{ release(): Promise<void> }> {
   const worker = new Worker(
     new URL("./serve_upstream_lease_holder_worker.ts", import.meta.url).href,
@@ -497,7 +478,6 @@ Deno.test({
       );
       assertEquals(copyState(bob, serve).copyId, built.copyId);
 
-      // Once it has finished, the next command rebuilds the copy.
       assertEquals(await read(), {
         vpc: { version: 1, content: "1" },
         key: { version: 1, content: "1" },
@@ -538,7 +518,6 @@ Deno.test({
 
       const bob = await scratch.client("b", { bucket, managedConfig: true });
       const bobEnv = serveEnv(serve, "bob-token");
-      // Only an admin may read the definitions of a restricted type.
       const api = () =>
         readCommand(
           scratch,
@@ -550,7 +529,6 @@ Deno.test({
       assertEquals(await api(), "api");
       const built = copyState(bob, serve);
 
-      // Bob's grants are unchanged: only serve's restricted list moves.
       await serve.restrict([type.normalized]);
       await api();
       assertEquals(await api(), null);

@@ -116,7 +116,6 @@ Deno.test("SignalWait.validatePayload: accepts a payload the schema allows, exac
   const result = wait.validatePayload(sent);
 
   assert(result.valid);
-  // Nothing is added for the absent `note`, and nothing is coerced.
   assertEquals(result.payload, sent);
   assert(result.payload !== sent);
 });
@@ -240,7 +239,6 @@ Deno.test("SignalWait.validatePayload: refuses a payload over the size limit and
   const result = open.validatePayload(overLimit);
   assert(!result.valid);
   assert(result.errors[0].includes("byte limit"));
-  // Multi-byte text is measured in bytes, not characters.
   assertEquals(
     open.validatePayload({ text: "é".repeat(SIGNAL_PAYLOAD_MAX_BYTES / 2) })
       .valid,
@@ -273,7 +271,6 @@ Deno.test("SignalWait.settledWith: records the receipt and leaves the open wait 
   assertEquals(settled.isSettled, true);
   assertEquals(settled.id, wait.id);
   assertEquals(settled.receipt, receipt);
-  // The wait keeps its own copy.
   receipt.submittedBy = "eve";
   assertEquals(settled.receipt?.submittedBy, "ada");
 });
@@ -515,7 +512,6 @@ Deno.test("SignalWait.validatePayload: additionalProperties false closes an obje
     assert(!result.valid, JSON.stringify(payload));
     assertEquals(result.errors, [expected]);
   }
-  // Validating does not change the schema the wait captured.
   assertEquals(
     "properties" in (wait.schema.properties!.meta as Record<string, unknown>),
     false,
@@ -631,7 +627,6 @@ Deno.test("SignalWait.withEarly: a keyed wait keeps where its pending signal is,
     }).early,
     early,
   );
-  // A wait without it stores no such field.
   assertEquals(
     "early" in SignalWait.open({ type: "object" }, 60, NOW).toData(),
     false,
@@ -703,7 +698,6 @@ Deno.test("receiptForCaller: leaves heldAsPending out and keeps everything else"
   };
   assertEquals(receiptForCaller({ ...receipt, heldAsPending: true }), receipt);
   assertEquals(receiptForCaller(receipt), receipt);
-  // A stored receipt keeps the marker; any other value is refused.
   assertEquals(
     SignalReceiptSchema.parse({ ...receipt, heldAsPending: true }),
     { ...receipt, heldAsPending: true },

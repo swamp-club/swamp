@@ -49,7 +49,6 @@ const arbLabelling = fc.constantFrom(...CallLabelSchema.options).chain((
     : fc.record({ label: fc.constant(label), category: arbName, rule: arbName })
 );
 
-// A subagent link only on a subagent call, as the schema requires.
 const arbTool = fc.constantFrom(...ToolKindSchema.options).chain((
   toolKind,
 ): fc.Arbitrary<Record<string, string | undefined>> =>

@@ -28,9 +28,8 @@ const IO_ERROR_CODES = new Set([
 ]);
 
 /**
- * Distinguishes I/O and resource-exhaustion errors from YAML parse/validation
- * errors. Only parse errors belong in the "skip this file and keep going" path;
- * I/O errors must propagate so callers can surface an actionable message.
+ * only parse errors belong in the skip-this-file path; I/O errors must
+ * propagate so callers can surface an actionable message
  */
 export function isIoError(error: unknown): boolean {
   if (error == null || typeof error !== "object") return false;
@@ -53,11 +52,6 @@ export function isIoError(error: unknown): boolean {
 
 const SQLITE_TRANSIENT_RE = /database is (locked|busy)/i;
 
-/**
- * Matches SQLite transient contention errors — "database is locked" or
- * "database is busy" — that arise when another process holds a write lock
- * past the busy_timeout.
- */
 export function isSqliteTransientError(error: unknown): boolean {
   if (error == null || typeof error !== "object") return false;
   const e = error as Record<string, unknown>;
@@ -67,10 +61,6 @@ export function isSqliteTransientError(error: unknown): boolean {
   return false;
 }
 
-/**
- * Combined check for any transient error that should not be silently
- * swallowed: I/O resource-exhaustion errors OR SQLite lock contention.
- */
 export function isTransientError(error: unknown): boolean {
   return isIoError(error) || isSqliteTransientError(error);
 }

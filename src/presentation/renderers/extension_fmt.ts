@@ -32,10 +32,6 @@ import {
 import { getSwampLogger } from "../../infrastructure/logging/logger.ts";
 import { logTextBlock } from "./log_text_block.ts";
 
-/**
- * The JSON form of the stale lockfiles a run went past, with the command
- * that brings each up to date; absent when there are none.
- */
 function staleLockfilesJson(
   locks: StaleLockfile[],
 ): { staleLockfiles?: Array<StaleLockfile & { command: string }> } {
@@ -48,7 +44,6 @@ function staleLockfilesJson(
   };
 }
 
-/** Renderer interface that also exposes pass/fail state for the CLI. */
 export interface ExtensionFmtRenderer extends Renderer<ExtensionFmtEvent> {
   passed(): boolean;
   failureMessage(): string;
@@ -95,7 +90,6 @@ class LogExtensionFmtRenderer implements ExtensionFmtRenderer {
             }
           }
         } else {
-          // fix mode
           logger.info`Formatted ${data.fileCount} TypeScript files.`;
           if (data.fmtOutput) logTextBlock(logger, "info", data.fmtOutput, "");
           if (data.lintOutput) {

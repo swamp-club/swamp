@@ -28,10 +28,9 @@ import {
 import { RunSensitiveValues } from "./run_sensitive_values.ts";
 
 /**
- * A secret to issue: its value, its reference, its origin and encoding. The
- * value's alphabet never occurs in reference text or JSON punctuation, so
- * its absence from the persisted form is checkable; quotes and backslashes
- * exercise the json encoding.
+ * the value alphabet never occurs in reference text or JSON punctuation, so its
+ * absence from the persisted form is checkable; quotes and backslashes exercise
+ * the json encoding
  */
 const arbSecret = fc.record({
   value: fc.stringMatching(/^[A-Z"\\]{3,10}$/),
@@ -46,11 +45,9 @@ Deno.test("toPersistedForm: every sentinel of the run persists as its entry's re
       fc.array(arbSecret, { minLength: 1, maxLength: 4 }),
       fc.jsonValue(),
       (secrets, noise) => {
-        // Entries, never recorded values: the value search has nothing.
         const values = new RunSensitiveValues();
         const bag = new VaultSecretBag(values.sentinels);
         const vault = new Map<string, string>();
-        // What a load at delivery reads for each vault.get sentinel.
         const loads = new Map<string, string>();
         const sentinels = secrets.map((secret, i) => {
           const key = `${secret.key}${i}`;
@@ -92,9 +89,6 @@ Deno.test("toPersistedForm: every sentinel of the run persists as its entry's re
           assertEquals(persisted.includes(JSON.stringify(secret.value)), false);
           assertEquals(persisted.includes(secret.value), false);
         }
-        // Each occurrence of a sentinel yields its entry's reference: one in
-        // `whole`, one per sentinel plus one more in `text`, one per sentinel
-        // in `list`.
         assertEquals(form.writtenReferences.length, 2 * sentinels.length + 2);
         const byKey = new Map(
           sentinels.map((s) => {
@@ -131,7 +125,6 @@ Deno.test("rehydrateReferences: a typed run restores any persisted form to senti
       fc.jsonValue(),
       fc.array(fc.boolean(), { minLength: 4, maxLength: 4 }),
       (secrets, noise, jsonValues) => {
-        // Written by a fresh typed run from its sentinels.
         const writer = new RunSensitiveValues(
           undefined,
           new SecretBagRegistry(),
@@ -157,7 +150,6 @@ Deno.test("rehydrateReferences: a typed run restores any persisted form to senti
         };
         const form = toPersistedForm(data, writer);
 
-        // Read back by another typed run: references again, in a new bag.
         const reader = new RunSensitiveValues(
           undefined,
           new SecretBagRegistry(),
@@ -176,7 +168,6 @@ Deno.test("rehydrateReferences: a typed run restores any persisted form to senti
           again.writtenReferences.length,
           form.writtenReferences.length,
         );
-        // A JSON-value mark survives the round trip (swamp-club#3967).
         const marks = (references: readonly { jsonValue?: true }[]) =>
           references.filter((reference) => reference.jsonValue).length;
         assertEquals(
@@ -187,8 +178,6 @@ Deno.test("rehydrateReferences: a typed run restores any persisted form to senti
           marks(form.writtenReferences) > 0,
           secrets.some((secret, i) => secret.dataOrigin && jsonValues[i]),
         );
-        // Every restored sentinel carries the written entry's identity, and
-        // none holds a value.
         for (const entry of readerBag.registry.all()) {
           assertEquals("value" in entry, false);
         }

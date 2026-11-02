@@ -23,11 +23,7 @@ import { parseKeyValueInputs } from "../input_parser.ts";
 import { UserError } from "../../domain/errors.ts";
 import { z } from "zod";
 
-// Initialize logging for tests
 await initializeLogging({});
-
-// Note: Full CLI integration tests are in integration/echo_model_test.ts
-// These tests verify the command module loads correctly
 
 Deno.test("modelCommand module loads", async () => {
   const { modelCommand } = await import("./model_create.ts");
@@ -54,8 +50,6 @@ Deno.test("modelCreateCommand has --global-arg option", async () => {
   const globalArgOpt = options.find((o) => o.name === "global-arg");
   assertEquals(globalArgOpt !== undefined, true);
 });
-
-// Tests for --global-arg parsing (uses parseKeyValueInputs from input_parser)
 
 Deno.test("--global-arg key=value populates globalArguments", async () => {
   const result = await parseKeyValueInputs(["message=hello"]);
@@ -98,8 +92,6 @@ Deno.test("--global-arg empty key produces clear error", async () => {
     "empty key",
   );
 });
-
-// Tests for globalArguments schema validation (mirrors model_create.ts logic)
 
 Deno.test("global arguments validated against model type schema - pass", () => {
   const schema = z.object({

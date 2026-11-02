@@ -80,7 +80,7 @@ export class JUnitWorkflowRunRenderer implements WorkflowRunRenderer {
       evaluating_workflow: () => {},
       started: (e) => {
         this.workflowName = e.workflowName;
-        // Commentary, so -q silences it (swamp-club#2257).
+        // commentary, so `-q` silences it
         if (!this.outFile && !this.quiet) {
           this.writeStderr(
             `JUnit XML will be written to stdout on completion.`,
@@ -171,7 +171,6 @@ export class JUnitWorkflowRunRenderer implements WorkflowRunRenderer {
       .length;
     const totalErrors = this.asserts.filter((a) => !!a.error).length;
 
-    // Group by job
     const byJob = new Map<string, AssertRecord[]>();
     for (const a of this.asserts) {
       let group = byJob.get(a.jobId);

@@ -17,15 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * What a v3 writer reports, and what the next recovery does, when a commit's
- * outbox entry meets a fault (swamp-club#3586): a reported failure never
- * lands, a commit a successor landed is reported committed, a failing check
- * after the append never fails a landed commit, and a landed entry settles
- * rather than being dropped as lost. Real stores on a v3 filesystem
- * datastore; faults are injected by replacing a store method on the handle.
- */
-
 import { assert, assertEquals, assertRejects } from "@std/assert";
 import { join } from "@std/path";
 import { initializeLogging } from "../src/infrastructure/logging/logger.ts";
@@ -52,7 +43,6 @@ await initializeLogging({});
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
-/** Past the inline limit, so the content is stored as chunks. */
 const CHUNKED = 200 * 1024;
 
 /** Another process's writer: a recovery lands what it prepared. */
@@ -61,7 +51,6 @@ const OTHER: CommitWriter = { host: "other", pid: 1, instance: "other" };
 interface Datastore {
   readonly dir: string;
   readonly datastorePath: string;
-  /** A handle for a checkout, writing under `fence` when given. */
   open(
     name: string,
     options?: {
@@ -110,7 +99,6 @@ async function withDatastore(
   }
 }
 
-/** Commits one auto-definition per id through `handle`'s engine. */
 async function write(
   handle: V3Datastore,
   ids: readonly string[],
@@ -142,7 +130,6 @@ async function commitsOf(handle: V3Datastore, id: string): Promise<number> {
   )).length;
 }
 
-/** Replaces `object[method]` on the instance, as a fault. */
 function fault<T extends object, K extends keyof T>(
   object: T,
   method: K,
@@ -158,7 +145,6 @@ function fault<T extends object, K extends keyof T>(
   };
 }
 
-/** Holds `handle`'s writer between its prepare and its append. */
 function pauseAfterPrepare(handle: V3Datastore): {
   readonly prepared: Promise<void>;
   resume(): void;
@@ -186,7 +172,6 @@ Deno.test("v3 outbox reports: an append that fails with a discard that fails too
     fault(writer.commitStore, "append", diskFull);
     fault(writer.outbox, "discard", diskFull);
     await assertRejects(() => write(writer, [id]), Error, "disk is full");
-    // The close's retry fails again.
     await writer.close();
 
     const next = await datastore.open("b", { fence: 2 });
@@ -224,7 +209,6 @@ Deno.test("v3 outbox reports: an entry left for its live writer, whose refused d
     const writing = write(writer, [id]).then(() => undefined, (e) => e);
     await paused.prepared;
 
-    // R1 runs under a newer lease, finds the writer alive and leaves it.
     const recoverer = await datastore.open("b", { fence: 2 });
     const first = await recoverCommitOutbox(recoverer, {
       fence: 2,
@@ -233,15 +217,12 @@ Deno.test("v3 outbox reports: an entry left for its live writer, whose refused d
     });
     assertEquals(first.skipped, 1);
 
-    // The writer resumes, is refused by the store's fence, and its
-    // discard fails.
     fault(writer.outbox, "discard", diskFull);
     paused.resume();
     const failure = await writing;
     assert(failure instanceof WriterFencedError, String(failure));
     await writer.close();
 
-    // A later recovery, the writer gone, lands nothing.
     await recoverer.raiseWriterFence(3);
     const later = await recoverCommitOutbox(recoverer, {
       fence: 3,
@@ -420,7 +401,6 @@ Deno.test("v3 outbox reports: an operation that fails, then cannot record giving
           ),
         ]);
         await unit.commit();
-        // The checkpoint prepares the commit, and its append fails.
         await root.checkpoint().catch(() => {});
         throw operationFailed;
       })

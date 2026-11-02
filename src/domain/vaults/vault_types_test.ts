@@ -24,9 +24,7 @@ import { getVaultType, getVaultTypes, listVaultTypes } from "./vault_types.ts";
 Deno.test("getVaultTypes contains expected built-in types", () => {
   const types = getVaultTypes().map((v) => v.type);
   assertEquals(types.includes("local_encryption"), true);
-  // mock vault is excluded from public listing (internal testing only)
   assertEquals(types.includes("mock"), false);
-  // aws-sm, azure-kv, and 1password are now extensions, not built-in
   assertEquals(types.includes("aws-sm"), false);
   assertEquals(types.includes("azure-kv"), false);
   assertEquals(types.includes("1password"), false);

@@ -17,13 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Runs the @swamp-club/swamp-testing vault conformance suite against
- * MockVaultProvider. Other tests rely on the mock standing in for a
- * real provider, so it must satisfy the same behavioral contract
- * extension vault authors are held to.
- */
-
 import {
   assertVaultConformance,
   assertVaultExistenceConformance,

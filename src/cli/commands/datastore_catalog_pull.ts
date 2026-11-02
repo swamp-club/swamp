@@ -62,8 +62,8 @@ function exportRowToCatalogRow(row: CatalogExportRow): CatalogRow {
     id: row.id,
     version: row.version,
     is_latest: row.is_latest,
-    // Exports from before swamp-club#2520 have no is_step_latest, and their
-    // is_latest already means latest-per-step.
+    // older exports have no is_step_latest, and their is_latest already means
+    // latest-per-step.
     is_step_latest: row.is_step_latest ?? row.is_latest,
     model_name: row.model_name,
     spec_name: row.spec_name,
@@ -89,11 +89,9 @@ function exportRowToCatalogRow(row: CatalogExportRow): CatalogRow {
 }
 
 /**
- * Converts a foreign namespace's catalog export into catalog rows and
- * recomputes both latest flags over the rows the export flagged, so an
- * export from an older swamp version — one is_latest per workflow step —
- * imports with a single is_latest per data name (swamp-club#2520). Rows the
- * export left unflagged stay unflagged.
+ * recomputes both latest flags over the rows the export flagged, so an older
+ * export with one is_latest per workflow step imports with one per data name;
+ * unflagged rows stay unflagged.
  */
 export function exportRowsToCatalogRows(
   rows: readonly CatalogExportRow[],
@@ -105,31 +103,22 @@ export function exportRowsToCatalogRows(
   return catalogRows;
 }
 
-/** What {@link storeForeignCatalogEntries} stored from one namespace's export. */
 export interface StoredForeignCatalog {
   namespace: Namespace;
-  /** Rows written to the catalog. */
   stored: number;
-  /** Rows the export attributed to another namespace, which were dropped. */
   rejected: number;
 }
 
-/** The outcome of storing the exports a foreign catalog pull returned. */
 export interface StoreForeignCatalogsResult {
   stored: StoredForeignCatalog[];
-  /** Namespaces the provider returned an export for that were not requested. */
   unrequested: string[];
-  /** Requested namespaces the provider returned no export for. */
   missing: Namespace[];
 }
 
 /**
- * Stores the exports a foreign catalog pull returned. Only exports of the
- * requested namespaces are stored, and of each only the rows that belong to
- * it, so one namespace's export cannot write rows under the reader's
- * namespace or any other (swamp-club#3636). `requested` must come from
- * {@link parseForeignNamespaces}, which never yields the reader's own
- * namespace.
+ * stores only exports of requested namespaces and only the rows belonging to
+ * each, so one export cannot write rows under the reader's or another
+ * namespace. `requested` must come from parseForeignNamespaces.
  */
 export function storeForeignCatalogEntries(
   entries: readonly CatalogExportEntry[],
@@ -196,8 +185,6 @@ export const datastoreCatalogPullCommand = new Command()
 
     const { datastoreConfig, engine } = await resolveDatastoreForRepo(repoDir);
 
-    // A v3 checkout reads every namespace from its commit log
-    // (swamp-club#3534).
     if (isCustomDatastoreConfig(datastoreConfig) && engine === "v3") {
       throw new UserError(
         "Catalog pull is only for format 2 datastores. This is a format 3 " +

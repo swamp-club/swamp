@@ -33,7 +33,6 @@ const CEL_NON_MEMBER_WORDS = new Set(["in", "true", "false", "null"]);
 const dotAccessibleName = modelName.filter((n) => !CEL_NON_MEMBER_WORDS.has(n));
 const accessor = fc.constantFrom(...MODEL_SCOPED_DATA_ACCESSORS);
 
-/** Expressions that compute a string from something other than a literal. */
 const computed = fc.oneof(
   fc.constantFrom(
     "inputs.target",

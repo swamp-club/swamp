@@ -38,10 +38,6 @@ import { getLogger } from "@logtape/logtape";
 
 const logger = getLogger(["doctor-workflows"]);
 
-/**
- * Per-file result: pass means the file loaded cleanly; warn means it is not
- * broken but no workflow loader reads it.
- */
 export interface DoctorWorkflowResult {
   file: string;
   name: string | null;
@@ -50,10 +46,6 @@ export interface DoctorWorkflowResult {
   warning?: string;
 }
 
-/**
- * Final report shape. Overall status is fail if any file failed, else warn
- * if any file warned, else pass.
- */
 export interface DoctorWorkflowsReport {
   overallStatus: "pass" | "warn" | "fail";
   workflows: DoctorWorkflowResult[];
@@ -67,13 +59,11 @@ export type DoctorWorkflowsEvent =
   | { kind: "completed"; report: DoctorWorkflowsReport }
   | { kind: "error"; error: SwampError };
 
-/** Dependencies injected by the CLI command. */
 export interface DoctorWorkflowsDeps {
   /**
-   * Repo-owned workflow dirs, read like `YamlWorkflowRepository`: top level
-   * only. `workflow-*.yaml` files must load as workflows. Any other `*.yaml`
-   * or `*.yml` file there is never loaded and is reported as a warning, unless
-   * it is a `*.yaml` file that fails to load, which fails as it always has.
+   * repo-owned dirs, read like YamlWorkflowRepository (top level only):
+   * workflow-*.yaml must load; any other YAML there is never loaded and warns,
+   * unless it is a *.yaml that fails to load, which fails
    */
   workflowDirs: string[];
   /**
@@ -86,7 +76,6 @@ export interface DoctorWorkflowsDeps {
   abortSignal: AbortSignal;
 }
 
-/** The workflow repositories doctor takes its directories from. */
 export interface DoctorWorkflowRepos {
   yamlWorkflowRepo: Pick<YamlWorkflowRepository, "getWorkflowsDir">;
   extensionWorkflowRepo:
@@ -94,10 +83,6 @@ export interface DoctorWorkflowRepos {
     | null;
 }
 
-/**
- * Returns the directories the workflow loader reads, split by how each is
- * read, so doctor checks exactly what the repositories load.
- */
 export function doctorWorkflowDirs(
   repos: DoctorWorkflowRepos,
 ): Pick<DoctorWorkflowsDeps, "workflowDirs" | "extensionWorkflowDirs"> {
@@ -109,7 +94,6 @@ export function doctorWorkflowDirs(
   };
 }
 
-/** How a file is checked: the loader rule that reads it, or none. */
 type CheckMode = "repo" | "extension" | "not-loaded";
 
 function fallbackName(filePath: string): string | null {
@@ -119,11 +103,9 @@ function fallbackName(filePath: string): string | null {
 }
 
 /**
- * Lists the YAML files in one directory: every top-level `*.yaml` / `*.yml`
- * file for a repo dir, or the extension loader's file set for an extension
- * dir. A missing dir yields nothing. An unreadable dir or subdir is warned
- * about and the files found before it are still returned — unlike the
- * extension loader, which fails on it, so the report covers what is readable.
+ * an unreadable dir or subdir is warned about and the files found before it are
+ * still returned, unlike the extension loader which fails, so the report covers
+ * what is readable
  */
 async function listYamlFiles(
   dir: string,
@@ -157,17 +139,11 @@ async function listYamlFiles(
   return files.sort((a, b) => a.localeCompare(b));
 }
 
-/** The outcome of loading one file, with its parsed YAML when it parsed. */
 interface LoadedWorkflowFile {
   result: DoctorWorkflowResult;
   parsed?: unknown;
 }
 
-/**
- * Loads one file the way the loader would and reports the outcome, parsing
- * its YAML once, or returns null for an extension file that is not a
- * workflow.
- */
 async function loadWorkflowFile(
   filePath: string,
   extension: boolean,
@@ -207,13 +183,9 @@ async function loadWorkflowFile(
 }
 
 /**
- * Checks one file under its mode, or returns null for an extension file that
- * is not a workflow.
- *
- * A file no loader reads must not get a worse outcome than doctor gave it
- * before it knew the loader's rule: a `*.yaml` file in a repo dir was always
- * loaded strictly, so one that fails still fails; one that loads, and any
- * `*.yml` file, which was never checked, only warn that it is not loaded.
+ * a file no loader reads must not get a worse outcome than a warning: a failing
+ * *.yaml in a repo dir still fails; one that loads, and any *.yml, only warns
+ * that it is not loaded
  */
 async function checkWorkflowFile(
   filePath: string,
@@ -246,16 +218,6 @@ async function checkWorkflowFile(
   };
 }
 
-/**
- * Checks every file the workflow loader reads from the supplied directories,
- * attempting to load each through the same YAML + Workflow.fromData() path,
- * and reports parse and construction errors instead of silently skipping
- * them. Each file is checked under the rule of the loader that reads it: the
- * repo rule for `workflow-*.yaml` in a repo dir, the extension rule for files
- * an extension dir yields. A YAML file in a repo dir that no loader reads
- * warns, or fails if it is a `*.yaml` file that fails to load. A file
- * reached through more than one dir is reported once.
- */
 export async function* doctorWorkflows(
   deps: DoctorWorkflowsDeps,
 ): AsyncIterable<DoctorWorkflowsEvent> {

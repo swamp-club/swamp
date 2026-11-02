@@ -420,8 +420,6 @@ Deno.test("homeDirectoryIsSet: false when no env var is set", () => {
 });
 
 Deno.test("bundleNamespace: same relative relationship produces same hash", () => {
-  // Simulates /var/... vs /private/var/... — different absolute prefixes,
-  // same relative relationship
   const hash1 = bundleNamespace(
     "/var/tmp/repo/.swamp/pulled-extensions/models",
     "/var/tmp/repo",
@@ -447,8 +445,6 @@ Deno.test("bundleNamespace: returns 8-char hex string", () => {
   assertEquals(hash.length, 8);
   assertEquals(/^[0-9a-f]{8}$/.test(hash), true);
 });
-
-// --- registerManagedConfig / isManagedConfig ---
 
 Deno.test("registerManagedConfig: throws on active with no configBasePath", () => {
   assertThrows(
@@ -484,8 +480,6 @@ Deno.test("isManagedConfig: returns true when registered as active", () => {
   assertEquals(isManagedConfig("/repo/active-test-1"), true);
 });
 
-// --- activePulledExtensionsRoot (swamp-club#2490) ---
-
 Deno.test("activePulledExtensionsRoot: undefined when no managed status is recorded", () => {
   const repo = `/repo/active-root-${crypto.randomUUID()}`;
   assertEquals(activePulledExtensionsRoot(repo), undefined);
@@ -508,8 +502,6 @@ Deno.test("activePulledExtensionsRoot: managed root when registered as managed",
     swampPath(repo, "config", "pulled-extensions"),
   );
 });
-
-// --- managed config provenance (swamp-club#2483) ---
 
 Deno.test("registerManagedConfig: defaults to a resolved base", () => {
   const repo = `/repo/provenance-${crypto.randomUUID()}`;
@@ -610,8 +602,6 @@ Deno.test("resetManagedConfigRegistry: clears registrations and the memo", async
   assertEquals(calls, 2);
 });
 
-// --- resolvePulledExtensionsRoot / managedConfigLockfilePath ---
-
 Deno.test("resolvePulledExtensionsRoot: unregistered returns .swamp/pulled-extensions", () => {
   assertPathEquals(
     resolvePulledExtensionsRoot("/repo/unregistered-test-2"),
@@ -639,9 +629,8 @@ Deno.test("resolvePulledExtensionsRoot: active returns .swamp/config/pulled-exte
   );
 });
 
-// Pulled sources are not synced to the datastore tier (swamp-club#2612), so
-// unlike definitions, workflows and vaults they never follow a managed config
-// base that points outside the repo (swamp-club#2530).
+// pulled sources are not synced to the datastore tier, so they never follow a
+// managed config base that points outside the repo
 Deno.test("resolvePulledExtensionsRoot: stays in the repo when the base is a datastore cache", () => {
   const repo = `/repo/cache-base-${crypto.randomUUID()}`;
   registerManagedConfig(repo, true, "/cache/ns/config");

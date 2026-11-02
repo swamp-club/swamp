@@ -27,11 +27,6 @@ const SignalRefusalLastWaitSchema = z.object({
   receipt: SignalReceiptSchema.optional(),
 });
 
-/**
- * The wait that last held a key, as a refused signal's error carries it: how
- * it was settled and when, and the signal that settled it when the caller
- * may be told.
- */
 export type SignalRefusalLastWait = z.infer<typeof SignalRefusalLastWaitSchema>;
 
 const SignalRefusalPendingSchema = z.object({
@@ -43,11 +38,6 @@ const SignalRefusalPendingSchema = z.object({
   }).optional().catch(undefined),
 });
 
-/**
- * The signal already pending for a key, as an `already_pending` refusal
- * carries it: until when it is held, and its receipt when the caller may be
- * told.
- */
 export type SignalRefusalPending = z.infer<typeof SignalRefusalPendingSchema>;
 
 // The use case puts `heldUntil` and `receipt` beside the refusal; a server
@@ -60,14 +50,6 @@ const SignalRefusalDetailsSchema = z.object({
   receipt: SignalRefusalPendingSchema.shape.receipt,
 });
 
-/**
- * A signal the wait refused, as the command reports it. It keeps what the
- * message cannot be relied on for: `--json` output carries `refusal` and,
- * for a key no open wait holds, `lastWait`, so a sender can set the time the
- * key's last wait was settled against its own attempt. For a key that
- * already holds a pending signal it carries `pending`, so a sender knows
- * when it can send again.
- */
 export class SignalRefusedUserError extends UserError {
   readonly refusal: string;
   readonly lastWait?: SignalRefusalLastWait;
@@ -89,9 +71,8 @@ export class SignalRefusedUserError extends UserError {
 }
 
 /**
- * The refusal an error's details describe, if they describe one. The details
- * may come from a server, so nothing in them is taken on trust: a `lastWait`
- * or a `pending` that is not in the form of one is dropped.
+ * details may come from a server, so nothing is taken on trust: a lastWait or
+ * pending not in the expected form is dropped
  */
 export function signalRefusalFromDetails(
   details: unknown,

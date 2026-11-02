@@ -119,11 +119,6 @@ function buildGetDeps(repoContext: RepositoryContext): ReportGetDeps {
   };
 }
 
-/**
- * Creates a fetchPreview closure that fetches full report detail data.
- * This bridges the presentation layer to the libswamp reportGet application
- * service, capturing the repository context dependency.
- */
 function createReportFetchPreview(
   repoContext: RepositoryContext,
 ): (item: StoredReportSummary) => Promise<StoredReportDetail> {
@@ -162,8 +157,8 @@ export async function reportSearchAction(
     "report",
     "search",
   ]);
-  // The behavior spellings (swamp-club#3410) in the stored model form, so the
-  // local search and a serve filter on the same value.
+  // the behavior spellings in the stored model form, so the local search and a
+  // serve filter on the same value.
   const model = options.behavior as string | undefined;
   const scope = options.scope === undefined
     ? undefined
@@ -189,8 +184,7 @@ export async function reportSearchAction(
         },
       },
     );
-    // A remote search prints a plain list and never starts the picker
-    // (swamp-club#3917).
+    // a remote search prints a plain list and never starts the picker.
     const renderer = createReportSearchRenderer(
       interactiveOutputMode(ctx),
       query ?? "",

@@ -19,26 +19,14 @@
 
 import { dirname, extname, normalize, resolve } from "@std/path";
 
-/** Result of resolving local imports from entry points. */
 export interface ImportResolverResult {
-  /** All .ts files (entry points + dependencies), absolute paths. */
   resolvedFiles: string[];
-  /** Non-local imports that were skipped (informational). */
   skippedImports: string[];
 }
 
-/** Pattern matching import/export from relative paths. */
 const IMPORT_PATTERN =
   /(?:import|export)\s+[\s\S]*?from\s+["'](\.\.?\/[^"']+)["']/g;
 
-/**
- * Scans .ts entry points for relative import/export statements and
- * recursively resolves local .ts dependencies within the boundary directory.
- *
- * @param entryPoints - Absolute paths to entry point .ts files
- * @param boundaryDir - Boundary directory; only files within this dir are included
- * @returns Resolved files and skipped non-local imports
- */
 export async function resolveLocalImports(
   entryPoints: string[],
   boundaryDir: string,
@@ -52,17 +40,15 @@ export async function resolveLocalImports(
     if (visited.has(normalized)) return;
     visited.add(normalized);
 
-    // Only process files within the boundary directory
     if (!normalized.startsWith(normalizedBoundaryDir)) return;
 
     let content: string;
     try {
       content = await Deno.readTextFile(normalized);
     } catch {
-      return; // File doesn't exist or can't be read
+      return;
     }
 
-    // Find all relative imports
     for (const match of content.matchAll(IMPORT_PATTERN)) {
       const importPath = match[1];
       const resolved = resolveImportPath(normalized, importPath);
@@ -86,10 +72,6 @@ export async function resolveLocalImports(
   };
 }
 
-/**
- * Resolves a relative import path to an absolute path.
- * Appends `.ts` if no extension is present.
- */
 function resolveImportPath(fromFile: string, importPath: string): string {
   const dir = dirname(fromFile);
   let resolved = resolve(dir, importPath);

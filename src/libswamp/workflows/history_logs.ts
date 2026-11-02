@@ -44,19 +44,16 @@ import {
   setActiveSpanAttributes,
   withGeneratorSpan,
 } from "../../infrastructure/tracing/mod.ts";
-/** Log file data. */
 export interface LogData {
   lines: string[];
   path: string;
 }
 
-/** No log file data (pre-logFile runs). */
 export interface NoLogFileData {
   runId: string;
   workflowName: string;
 }
 
-/** Empty log file data. */
 export interface EmptyLogData {
   runId: string;
   workflowName: string;
@@ -84,29 +81,23 @@ export interface WorkflowHistoryLogsInput {
   reference?: RunReference;
 }
 
-/** Dependencies for the workflow history logs operation. */
 export interface WorkflowHistoryLogsDeps extends RunReferenceDeps {
   readLogFile: (
     path: string,
     options?: { tail?: number },
   ) => Promise<LogData>;
   toRelativePath: (repoDir: string, path: string) => string;
-  /**
-   * Where retention records how far it has reaped. With it a run that is not
-   * found says that runs before the cutoff have been reaped (swamp-club#3473).
-   */
   retentionWatermarks?: RetentionWatermarkRepository;
 }
 
-/** Wires real infrastructure into WorkflowHistoryLogsDeps. */
 export function createWorkflowHistoryLogsDeps(
   repoDir: string,
   datastoreResolver?: DatastorePathResolver,
   injectedWorkflowRepo?: WorkflowRepository,
   /**
-   * The repository context's lookup, so a run record the v3 read model could
-   * not materialise fails a lookup loudly and is named by a listing that
-   * leaves it out (swamp-club#3617).
+   * the repository context's lookup, so a run record the v3 read model could
+   * not materialise fails a lookup loudly and is named by a listing that leaves
+   * it out
    */
   unreadableContent?: UnreadableContentLookup,
 ): WorkflowHistoryLogsDeps {
@@ -134,7 +125,6 @@ export function createWorkflowHistoryLogsDeps(
   };
 }
 
-/** Yields log content for a workflow run. */
 export async function* workflowHistoryLogs(
   _ctx: LibSwampContext,
   deps: WorkflowHistoryLogsDeps,
@@ -207,7 +197,6 @@ export async function* workflowHistoryLogs(
         "workflow.run_id": run.id,
       });
 
-      // Read log file
       if (!run.logFile) {
         yield {
           kind: "completed",

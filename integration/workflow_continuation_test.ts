@@ -17,17 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Serve continuing a suspended run by itself (swamp-club#3108), against a
- * real repository on disk whose wait records, continuation claims and
- * heartbeats live in the filesystem control-plane store.
- *
- * Two serve instances are two connection contexts over that one
- * repository, each with its own active-run registry and its own holder
- * name, as two `swamp serve` processes on one datastore have. Every test
- * orders its own writes and polls for what it expects; none sleeps.
- */
-
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import { z } from "zod";
 import { createRecordingSyncService, waitFor } from "@swamp-club/swamp-testing";
@@ -95,25 +84,17 @@ const opts = { sanitizeOps: false, sanitizeResources: false };
 interface Fixture {
   repo: ServeRepo;
   control: FileSystemControlPlaneStore;
-  /** How many times the step after the wait has executed. */
   executions: () => number;
-  /**
-   * Saves a workflow that waits for a signal, then runs the counted step.
-   * With `onFailure`, a second counted step, `notify`, runs when the wait
-   * fails instead.
-   */
   saveWaiting(
     options?: {
       autoResume?: boolean;
       onFailure?: boolean;
       key?: string;
-      /** With `key`: the seconds an early signal is held for the wait. */
       acceptEarly?: number;
     },
   ): Promise<Workflow>;
 }
 
-/** A repository with a model whose one method counts its executions. */
 async function withFixture(fn: (f: Fixture) => Promise<void>): Promise<void> {
   await withServeRepo(async (repo) => {
     const modelType = ModelType.create(
@@ -200,7 +181,6 @@ interface Instance {
   audit: AuditEvent[];
 }
 
-/** One serve instance on the fixture's repository, holding claims as `id`. */
 function instance(
   f: Fixture,
   id: string,
@@ -225,7 +205,6 @@ function instance(
   return { ctx, registry, audit };
 }
 
-/** Writes a heartbeat for instance `id`, as a live serve instance does. */
 async function beat(f: Fixture, id: string): Promise<void> {
   await f.control.put(
     `heartbeats/${id}`,
@@ -239,7 +218,6 @@ async function beat(f: Fixture, id: string): Promise<void> {
   );
 }
 
-/** Runs `workflow` through serve until it suspends on its wait. */
 async function suspend(
   f: Fixture,
   workflow: Workflow,
@@ -272,7 +250,6 @@ async function loadRun(
   return run;
 }
 
-/** Settles the run's wait as the local `swamp workflow signal` does. */
 async function settleLocally(f: Fixture, run: WorkflowRun): Promise<void> {
   const support = f.repo.repoContext.signalWaits;
   assert(support?.supported, "the datastore holds wait records");
@@ -378,8 +355,6 @@ Deno.test({
       assertEquals((await loadRun(f, workflow, run.id)).status, "succeeded");
       assertEquals(f.executions(), 1);
       assert(swept.launched + alsoSwept.launched >= 1);
-      // Whatever the loser saw, it ran nothing and the run is as the
-      // winner left it. A third pass finds nothing to do.
       assertEquals(
         await sweepContinuations(a.ctx, { takeover: true }),
         { examined: 0, launched: 0 },
@@ -439,8 +414,6 @@ Deno.test({
       );
       const staleCopy = await Deno.readFile(path);
 
-      // A peer cancels the run: it is saved as cancelled, and its wait is
-      // closed in the store every instance reads.
       const support = f.repo.repoContext.signalWaits;
       assert(support?.supported, "the datastore holds wait records");
       await closeRunWaits(support.store, run, new Date());
@@ -474,8 +447,6 @@ Deno.test({
       const workflow = await f.saveWaiting();
       const { run } = await suspend(f, workflow);
       await settleLocally(f, run);
-      // Instance "dead" claimed the suspension and went away before it ran
-      // anything: no heartbeat names it.
       const b = instance(f, "b");
       const claims = b.ctx.repoContext.continuationClaims!;
       const suspensionKey = await suspensionKeyOf(run);
@@ -514,7 +485,6 @@ Deno.test({
       await settleLocally(f, run);
       const registry = new ActiveRunRegistry({ maxConcurrent: 1 });
       const a = instance(f, "a", registry);
-      // Another run fills the registry.
       const busy = crypto.randomUUID();
       let finish!: () => void;
       registry.register({
@@ -621,7 +591,6 @@ Deno.test({
       const childRun = await loadRun(f, child, childSummary.id);
       const a = instance(f, "a");
 
-      // Nothing to continue yet, and the sweep never takes the parent.
       assertEquals(
         (await sweepContinuations(a.ctx, { takeover: true })).launched,
         0,
@@ -652,11 +621,6 @@ Deno.test({
   },
 });
 
-/**
- * Gives `target` a synced datastore's view of its run records: each is
- * compared with what `remote` answers for its cache-relative path, through
- * the same wiring serve uses over a sync service with `fetchContent`.
- */
 function withRemoteRunRecords(
   f: Fixture,
   target: Instance,
@@ -687,7 +651,6 @@ function withRemoteRunRecords(
   return { fetched };
 }
 
-/** The run's record as this host stores it. */
 function storedRecord(f: Fixture, run: WorkflowRun): Promise<Uint8Array> {
   return Deno.readFile(
     f.repo.repoContext.workflowRunRepo.getPath(
@@ -697,7 +660,6 @@ function storedRecord(f: Fixture, run: WorkflowRun): Promise<Uint8Array> {
   );
 }
 
-/** The record a peer left in the datastore when it cancelled the run. */
 function cancelledByPeer(record: Uint8Array): Uint8Array {
   const text = new TextDecoder().decode(record);
   assertStringIncludes(text, "status: suspended");
@@ -723,7 +685,6 @@ Deno.test({
       const a = instance(f, "a");
       const { fetched } = withRemoteRunRecords(f, a, () => remote);
 
-      // A pass after boot, when this instance's records may be behind.
       assertEquals(
         await sweepContinuations(a.ctx, { takeover: false }),
         { examined: 1, launched: 0 },
@@ -737,11 +698,9 @@ Deno.test({
         (await loadRun(f, workflow, run.id)).status,
         "suspended",
       );
-      // The comparison left this host's record as it was.
       assertEquals(await storedRecord(f, run), local);
       assertEquals(actions(a), []);
 
-      // The next pass does not read the datastore for it again.
       assertEquals(
         (await sweepContinuations(a.ctx, { takeover: false })).launched,
         0,
@@ -775,7 +734,6 @@ Deno.test({
         (await loadRun(f, workflow, run.id)).status,
         "succeeded",
       );
-      // Once before the launch, and once under the run's claim.
       assertEquals(fetched.length, 2);
       assertEquals(fetched[0], fetched[1]);
     });
@@ -821,7 +779,6 @@ Deno.test({
   },
 });
 
-/** Runs `workflow` to its end through a sweep, which leaves a claim behind. */
 async function finishBySweep(
   f: Fixture,
   a: Instance,
@@ -918,9 +875,8 @@ for (const waits of ["with", "without"] as const) {
   });
 }
 
-// Deadlines noticed by the sweep (swamp-club#3109). The sweep reads the
-// clock each test hands it; the executor reads the real one, and the stored
-// outcome is what carries the sweep's decision into the resume.
+// the sweep reads the clock each test hands it while the executor reads the
+// real one; the stored outcome carries the sweep's decision into the resume
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -930,7 +886,6 @@ function waitStore(f: Fixture): SignalWaitStore {
   return support.store;
 }
 
-/** A clock `ms` past the deadline of the run's wait. */
 function pastDeadline(run: WorkflowRun, ms = 1): () => number {
   const deadline = run.findSignalWaits()[0].wait!.deadline.getTime();
   return () => deadline + ms;
@@ -952,7 +907,6 @@ Deno.test({
       const { run, waitId } = await suspend(f, workflow);
       const a = instance(f, "a");
 
-      // Before the deadline the wait is open and the pass changes nothing.
       assertEquals(
         await sweepContinuations(a.ctx, {
           takeover: true,
@@ -1001,7 +955,6 @@ Deno.test({
       const workflow = await f.saveWaiting({ onFailure: true });
       const { run } = await suspend(f, workflow);
 
-      // An instance that starts thirty days after the deadline.
       const restarted = instance(f, "restarted");
       assertEquals(
         await sweepContinuations(restarted.ctx, {
@@ -1155,7 +1108,6 @@ Deno.test({
     await withFixture(async (f) => {
       const workflow = await f.saveWaiting({ onFailure: true });
       const { run, waitId } = await suspend(f, workflow);
-      // What a peer that ended or deleted the run leaves behind.
       await waitStore(f).removeRegistration(waitId);
       const a = instance(f, "a");
 
@@ -1241,7 +1193,6 @@ Deno.test({
   ...opts,
   fn: async () => {
     await withFixture(async (f) => {
-      // Opened with a timeout of an hour, before the maximum applied.
       const open = await f.saveWaiting();
       const { run, waitId } = await suspend(f, open);
       const deadline = run.findSignalWaits()[0].wait!.deadline;
@@ -1273,7 +1224,6 @@ Deno.test({
         "more than the 60 seconds this server allows",
       );
 
-      // The open wait keeps its deadline and is still signalled.
       await sweepContinuations(capped.ctx, { takeover: true });
       assertEquals(
         (await loadRun(f, open, run.id)).findSignalWaits()[0].wait!.deadline,
@@ -1293,17 +1243,10 @@ Deno.test({
   },
 });
 
-// An early signal that lands as its wait opens on another instance
-// (swamp-club#3213). The signaller reads the key, finds no wait and stores
-// its signal; between the two, the other instance's step claims the key,
-// reads the slot while it is still empty and suspends. Each test orders
-// those writes with a gate on the signaller's create.
+// an early signal can land as its wait opens on another instance: the signaller
+// finds no wait while the other step reads an empty slot and suspends; a gate
+// on the signaller's create orders those writes
 
-/**
- * `instance` with a wait store that stops at the create of a pending signal
- * until `release` is called, and, with `stopAfterStoring`, fails every call
- * after that create, as a signaller that stopped there makes none.
- */
 function gatedAtPendingCreate(
   f: Fixture,
   signaller: Instance,
@@ -1365,7 +1308,6 @@ Deno.test({
 
       const signalling = signalEarly(a, workflow);
       await gate.reached;
-      // The other instance's step opens its wait over an empty slot.
       const { run } = await suspend(f, workflow);
       gate.release();
       const frames = await signalling;
@@ -1398,12 +1340,10 @@ Deno.test({
       await gate.reached;
       const { run } = await suspend(f, workflow);
       gate.release();
-      // The signaller stored its signal and never read the key again.
       assert(errorFrame(await signalling), "the signaller's request failed");
       assertEquals((await loadRun(f, workflow, run.id)).status, "suspended");
       assertEquals(f.executions(), 0);
 
-      // No client acts. Two instances sweep; the signal is taken once.
       const b = instance(f, "b");
       const c = instance(f, "c");
       const taken: string[] = [];

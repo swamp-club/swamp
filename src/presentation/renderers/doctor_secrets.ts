@@ -33,13 +33,7 @@ import type { OutputMode } from "../output/output.ts";
  */
 export type DoctorSecretsStatus = "pass" | "fail";
 
-/**
- * Renderer for `swamp doctor secrets`. Reports definitions holding cleartext
- * sensitive global arguments with value-free remediation guidance. Never
- * renders the offending secret value in any mode.
- *
- * Exposes `overallStatus` so the CLI can exit non-zero when a leak is found.
- */
+/** never renders the offending secret value in any mode */
 export interface DoctorSecretsRenderer {
   handlers(): EventHandlers<DoctorSecretsEvent>;
   readonly overallStatus: DoctorSecretsStatus;

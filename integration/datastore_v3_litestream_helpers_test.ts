@@ -21,7 +21,6 @@ import { assertEquals, assertThrows } from "@std/assert";
 import { hostLitestreamProcesses } from "../src/infrastructure/datastore_v3/litestream/litestream_processes.ts";
 import { killSidecarAtTeardown } from "./datastore_v3_litestream_helpers.ts";
 
-/** Runs `fn` with the host's group signal replaced by `signalGroup`. */
 function withSignalGroup(
   signalGroup: typeof hostLitestreamProcesses.signalGroup,
   fn: (sent: string[]) => void,

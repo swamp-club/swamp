@@ -17,14 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Normalize a server URL for use as a credential map key.
- *
- * Lowercases the hostname, strips trailing slashes from the path,
- * and removes default ports (80 for http, 443 for https).
- *
- * @throws {TypeError} if the input is not a valid URL
- */
 export function normalizeServerUrl(url: string): string {
   const parsed = new URL(url);
 
@@ -52,23 +44,15 @@ export function normalizeServerUrl(url: string): string {
     }
   }
 
-  // Strip trailing slashes from the pathname, but preserve non-root paths.
   const pathname = parsed.pathname.replace(/\/+$/, "") || "";
 
   return `${parsed.protocol}//${host}${pathname}`;
 }
 
 /**
- * Render a server URL for display: stderr lines, log messages and error
- * text. Keeps the scheme, host, port and path as given, and drops the
- * userinfo, query string and fragment, which can carry credentials such
- * as `?token=`.
- *
- * This is the display form only. Credential lookup and connections use
- * {@link normalizeServerUrl} or the original value.
- *
- * @returns the display form, or `undefined` when the value does not parse
- *   as a URL with a host — callers must not fall back to the raw value.
+ * drops userinfo, query and fragment, which can carry credentials; display
+ * only, lookups use the normalized form; returns undefined for an unparseable
+ * value and callers must not fall back to the raw one
  */
 export function redactServerUrl(url: string): string | undefined {
   let parsed: URL;

@@ -20,7 +20,6 @@
 import { assertEquals, assertRejects, assertThrows } from "@std/assert";
 import { RunSyncLanes } from "./run_sync_lanes.ts";
 
-/** Whether `promise` has settled after the microtask queue drains. */
 async function settled(promise: Promise<unknown>): Promise<boolean> {
   let done = false;
   promise.then(() => done = true, () => done = true);
@@ -62,7 +61,6 @@ Deno.test("RunSyncLanes: a queued lane is not starved by later arrivals of the a
   const lanes = new RunSyncLanes();
   await lanes.acquire("push");
   const pull = lanes.acquire("pull");
-  // Arrives after the queued pull, so it waits behind it.
   const latePush = lanes.acquire("push");
   lanes.release();
   assertEquals(await settled(pull), true);

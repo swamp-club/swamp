@@ -18,27 +18,15 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * Whether serve's token-secrets key sits beside the secrets in a v3
- * datastore's control plane (swamp-club#4096). Team mode moves serve's
- * control plane, token secrets and their co-located key included, from the
- * checkout into the datastore: from then on anyone who can read the
- * datastore can decrypt every server token secret. Serve says so at start
- * until the key is held in a vault (a `token-secrets` block in serve.yaml,
- * which leaves only a marker in the datastore).
- *
- * @module
+ * team mode moves the control plane, token secrets and their co-located key
+ * into the datastore, so anyone who can read it can decrypt every token secret.
+ * Serve says so at start until the key is held in a vault
  */
 
 import { classifyTokenKeyRecord } from "../domain/vaults/token_secrets_key.ts";
 
-/** The control-plane key the token-secrets key record lives at. */
 export const TOKEN_SECRETS_KEY_RECORD = "token-secrets/encryption-key";
 
-/**
- * The warning serve logs at start on a v3 datastore for the token-secrets
- * key record `data`, or undefined when there is nothing to warn about: no
- * key yet, or a marker naming a key held in a vault.
- */
 export function coLocatedTokenKeyWarning(
   data: Uint8Array | null,
   team = false,
@@ -47,8 +35,8 @@ export function coLocatedTokenKeyWarning(
   return "Server token secrets and the key that encrypts them are stored " +
     "together in the datastore's control plane, so anyone who can read the " +
     "datastore can decrypt every token secret. " +
-    // In team mode the same key protects the team's peer key, and with it
-    // the leader record's proof (swamp-club#4120).
+    // in team mode the same key protects the team's peer key, and with it the
+    // leader record's proof
     (team
       ? "In team mode the same key protects the team's peer key, which " +
         "signs the leader record: anyone who can read and write the " +

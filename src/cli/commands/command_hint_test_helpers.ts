@@ -20,7 +20,6 @@
 import { getSwampLogger } from "../../infrastructure/logging/logger.ts";
 import type { CommandContext } from "../context.ts";
 
-/** A log-mode command context for rendering tests, with `overrides` applied. */
 export function hintTestContext(
   overrides: Partial<CommandContext> = {},
 ): CommandContext {
@@ -33,7 +32,6 @@ export function hintTestContext(
   };
 }
 
-/** Runs `fn` and returns what it wrote to stdout through console.log. */
 export function captureStdout(fn: () => void): string[] {
   const lines: string[] = [];
   const originalLog = console.log;

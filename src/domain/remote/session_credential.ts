@@ -18,37 +18,22 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * Session credentials for the remote-execution data plane.
- *
- * At enrollment the orchestrator issues a short-lived bearer credential; the
- * worker presents it on every data-plane HTTP request and refreshes it over
- * the control socket before expiry, so the window slides forward (see
- * design/enablers/remote-execution.md, "Authenticating the data plane").
- *
- * Per-dispatch credentials are auto-refreshed internally by the service for
- * the lifetime of the dispatch — the credential string stays the same but
- * its expiry slides forward every 2/3 TTL until explicitly revoked.
+ * per-dispatch credentials keep the same string while the service slides their
+ * expiry forward every 2/3 TTL until revoked; control-channel ones are
+ * refreshed by the worker over the socket
  */
 
 export interface SessionCredentialRecord {
   credential: string;
   workerId: string;
-  /** Epoch ms after which the credential no longer verifies. */
   expiresAtMs: number;
-  /** When set, this credential is scoped to a specific dispatch. */
   dispatchId?: string;
 }
 
-/** Default credential lifetime: 15 minutes, refreshed well before expiry. */
 export const DEFAULT_SESSION_TTL_MS = 15 * 60 * 1000;
 
-/** Refresh at 2/3 of the TTL — matches the worker-side refresh fraction. */
 const REFRESH_FRACTION = 2 / 3;
 
-/**
- * Generate a 256-bit opaque bearer token, hex-encoded. Used for both
- * data-plane session credentials and enrollment-token secrets.
- */
 export function generateOpaqueToken(): string {
   const bytes = new Uint8Array(32);
   crypto.getRandomValues(bytes);
@@ -63,10 +48,8 @@ export interface SessionCredentialServiceOptions {
 }
 
 /**
- * Issues, verifies, refreshes, and revokes data-plane session credentials.
- * Purely in-memory: credentials are meaningless across an orchestrator
- * restart, which matches the worker lifecycle — a restarted orchestrator
- * drops all control sockets, and reconnecting workers re-enroll.
+ * purely in-memory: credentials mean nothing across an orchestrator restart,
+ * which drops all control sockets so reconnecting workers re-enroll
  */
 export class SessionCredentialService {
   #byCredential = new Map<string, SessionCredentialRecord>();
@@ -90,9 +73,8 @@ export class SessionCredentialService {
   }
 
   /**
-   * Issue a fresh control-channel credential for a worker, revoking any
-   * prior control-channel credential. Per-dispatch credentials are not
-   * affected by this call.
+   * revokes any prior control-channel credential for the worker; per-dispatch
+   * credentials are unaffected
    */
   issue(workerId: string): SessionCredentialRecord {
     this.revokeForWorker(workerId);
@@ -113,10 +95,8 @@ export class SessionCredentialService {
   }
 
   /**
-   * Issue a per-dispatch credential with auto-refresh. The credential's
-   * expiry slides forward every 2/3 TTL until explicitly revoked via
-   * revokeDispatch() or revokeAllForWorker(). The credential string stays
-   * the same — the runner process does not need to be notified.
+   * auto-refreshes until revoked via revokeDispatch or revokeAllForWorker; the
+   * credential string stays the same, so the runner is never notified
    */
   issueForDispatch(
     workerId: string,
@@ -140,10 +120,6 @@ export class SessionCredentialService {
     return record;
   }
 
-  /**
-   * Verify a presented credential. Returns the worker id and optional
-   * dispatch id it authenticates, or null when unknown or expired.
-   */
   verify(
     credential: string,
   ): { workerId: string; dispatchId?: string } | null {
@@ -161,11 +137,6 @@ export class SessionCredentialService {
     };
   }
 
-  /**
-   * Slide the window forward: re-issue against a currently valid
-   * control-channel credential. Does not affect dispatch credentials
-   * (those are auto-refreshed internally).
-   */
   refresh(credential: string): SessionCredentialRecord | null {
     const result = this.verify(credential);
     if (result === null) {
@@ -177,7 +148,6 @@ export class SessionCredentialService {
     return this.issue(result.workerId);
   }
 
-  /** Clean up all refresh timers. Call on orchestrator shutdown. */
   dispose(): void {
     for (const timerId of this.#refreshTimers.values()) {
       this.#clearInterval(timerId);
@@ -220,7 +190,6 @@ export class SessionCredentialService {
     this.#credentialsByWorker.get(record.workerId)?.delete(record.credential);
   }
 
-  /** Revoke the worker's control-channel credential, if any. */
   revokeForWorker(workerId: string): void {
     const credential = this.#byWorker.get(workerId);
     if (credential !== undefined) {
@@ -230,7 +199,6 @@ export class SessionCredentialService {
     }
   }
 
-  /** Revoke all credentials for a worker (control + dispatch). */
   revokeAllForWorker(workerId: string): void {
     this.#byWorker.delete(workerId);
     const creds = this.#credentialsByWorker.get(workerId);
@@ -247,7 +215,6 @@ export class SessionCredentialService {
     }
   }
 
-  /** Revoke a specific dispatch credential by dispatch id. */
   revokeDispatch(workerId: string, dispatchId: string): void {
     const credential = this.#byDispatch.get(dispatchId);
     if (credential === undefined) return;

@@ -35,27 +35,18 @@ import {
   type WorkflowRunSearchItem,
 } from "./run_search.ts";
 
-/** Runs kept per workflow in `recent` when the caller names no limit. */
 export const WORKFLOW_RUN_SUMMARY_DEFAULT_RECENT = 20;
-/** The most runs a caller may ask to keep per workflow in `recent`. */
 export const WORKFLOW_RUN_SUMMARY_MAX_RECENT = 100;
 
-/** Run counts by outcome bucket. */
 export interface WorkflowRunStatusCounts {
   runs: number;
-  /** Runs that succeeded. */
   succeeded: number;
-  /** Runs that failed, or were interrupted (ended without settling). */
   failed: number;
-  /** Runs that were cancelled. */
   cancelled: number;
-  /** Runs in flight: running, or pending a start. */
   running: number;
-  /** Runs paused on an approval, a signal or a nested run. */
   suspended: number;
 }
 
-/** One run in a workflow's `recent` list. */
 export interface WorkflowRunSummaryRecentRun {
   runId: string;
   status: string;
@@ -64,21 +55,15 @@ export interface WorkflowRunSummaryRecentRun {
   triggerSource?: string;
 }
 
-/** The runs of one workflow, counted. */
 export interface WorkflowRunSummaryWorkflow extends WorkflowRunStatusCounts {
   workflowId: string;
-  /** The name the workflow's newest run recorded. */
   workflowName: string;
-  /** Total duration of the finished runs (succeeded, failed, cancelled). */
   durationMs: number;
   lastStartedAt?: string;
-  /** The newest runs, newest first, at most `recentLimit`. */
   recent: WorkflowRunSummaryRecentRun[];
 }
 
-/** The runs started within one UTC hour. */
 export interface WorkflowRunSummaryBucket {
-  /** Top of the UTC hour, as an ISO timestamp. */
   start: string;
   runs: number;
   succeeded: number;
@@ -95,27 +80,14 @@ export interface WorkflowRunSummaryData {
   since?: string;
   until?: string;
   totals: WorkflowRunStatusCounts & {
-    /** Workflows with at least one counted run. */
     workflows: number;
-    /** Total duration of the finished runs. */
     durationMs: number;
   };
-  /** One entry per workflow with a counted run, ordered by name. */
   workflows: WorkflowRunSummaryWorkflow[];
-  /**
-   * The start time of the oldest counted run, absent when no counted run
-   * has one. With `since`, it tells a caller when that run leaves a moving
-   * window, on this clock.
-   */
   oldestStartedAt?: string;
-  /**
-   * Hourly buckets, ascending, only for hours with runs. Runs without a
-   * start time are left out. Present only when asked for.
-   */
   timeline?: WorkflowRunSummaryBucket[];
 }
 
-/** The fields of a run the summary reads. */
 export type WorkflowRunSummaryRun = Pick<
   WorkflowRunSearchItem,
   | "runId"
@@ -127,13 +99,9 @@ export type WorkflowRunSummaryRun = Pick<
   | "triggerSource"
 >;
 
-/** How `summarizeWorkflowRuns` shapes its result. */
 export interface WorkflowRunSummaryOptions {
-  /** Runs kept per workflow in `recent`; clamped to 0..100, default 20. */
   recentLimit?: number;
-  /** Include hourly buckets. */
   timeline?: boolean;
-  /** Echoed back as the summary's window. */
   since?: string;
   until?: string;
 }
@@ -146,7 +114,6 @@ const FINISHED_BUCKETS: ReadonlySet<StatusBucket> = new Set([
   "cancelled",
 ]);
 
-/** Clamps a requested recent limit to 0..100; default 20. */
 export function clampRecentLimit(limit: number | undefined): number {
   if (limit === undefined || !Number.isFinite(limit)) {
     return WORKFLOW_RUN_SUMMARY_DEFAULT_RECENT;
@@ -176,11 +143,6 @@ function startMs(run: WorkflowRunSummaryRun): number | undefined {
 
 const HOUR_MS = 60 * 60 * 1000;
 
-/**
- * Counts runs per workflow, in total and (when asked) per UTC hour. Pure:
- * the caller decides which runs count, so authorization and time filters
- * happen before this runs.
- */
 export function summarizeWorkflowRuns(
   runs: readonly WorkflowRunSummaryRun[],
   options: WorkflowRunSummaryOptions = {},
@@ -304,32 +266,16 @@ export type WorkflowRunSummaryEvent =
  */
 export type WorkflowRunSummaryDeps = WorkflowRunSearchDeps;
 
-/**
- * Input for the workflow run summary generator. Every field is optional.
- */
 export interface WorkflowRunSummaryInput {
-  /** Counts runs started at or after this time (ISO, or a duration back). */
   since?: string;
-  /** Counts runs started before this time (exclusive). */
   until?: string;
-  /** Counts only runs of these workflows, by exact name. */
   workflows?: string[];
-  /** Counts only runs with this trigger source, ignoring case. */
   triggerSource?: string;
-  /** Counts only runs with any of these trigger sources, ignoring case. */
   triggerSources?: string[];
-  /** Runs kept per workflow in `recent`; clamped to 0..100, default 20. */
   recentLimit?: number;
-  /** Include hourly buckets. */
   timeline?: boolean;
 }
 
-/**
- * Summarises workflow runs: counts per workflow and in total, each
- * workflow's newest runs, and optionally an hourly timeline. Selects the
- * readable runs in the window from each workflow's run index snapshot, then
- * counts them.
- */
 export async function* workflowRunSummary(
   _ctx: LibSwampContext,
   deps: WorkflowRunSummaryDeps,

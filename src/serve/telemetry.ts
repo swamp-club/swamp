@@ -17,15 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Telemetry for runs that `swamp serve` executes — scheduled fires, verified
- * webhooks, and API/WebSocket requests for both workflow and model method runs.
- *
- * The interactive CLI commands bind the active TelemetryService as a sink so
- * each invocation is recorded. Serve never did, so every run it executed was
- * invisible. This is the serve-side counterpart of that binding.
- */
-
 import type { WorkflowTelemetrySink } from "../libswamp/workflows/run.ts";
 import type {
   CommandInvocationData,
@@ -33,28 +24,12 @@ import type {
 } from "../domain/telemetry/mod.ts";
 import { getActiveTelemetryService } from "../cli/telemetry_integration.ts";
 
-/**
- * Telemetry scoped to a single serve-executed workflow run.
- */
 export interface RunTelemetry {
-  /** Passed to libswamp so per-method child invocations are recorded. */
   readonly sink: WorkflowTelemetrySink;
-  /**
-   * Records the run's own parent entry. Call exactly once, when the run
-   * settles.
-   *
-   * @param error - The error that ended the run, or null if it succeeded
-   */
   finish(error: Error | null): Promise<void>;
 }
 
-/**
- * The parent entry for a serve-executed run, shaped like the interactive
- * `swamp workflow run` invocation it stands in for.
- *
- * The workflow name is sent as-is: names are not sensitive (swamp-club#2817),
- * and the interactive CLI sends it the same way.
- */
+/** the workflow name is sent as-is, as the interactive CLI does */
 function buildRunInvocation(workflowName: string): CommandInvocationData {
   return {
     command: "workflow",
@@ -66,18 +41,11 @@ function buildRunInvocation(workflowName: string): CommandInvocationData {
   };
 }
 
-/**
- * Telemetry scoped to a single serve-executed command (model method run).
- */
 export interface CommandTelemetry {
   finish(error: Error | null): Promise<void>;
 }
 
-/**
- * The entry for a serve-executed model method run. Model and method names are
- * sent as-is (swamp-club#2817). `subcommand` keeps its historical
- * `"method run"` value so server-side keys do not move.
- */
+/** subcommand keeps the value "method run" so server-side keys do not move */
 function buildMethodRunInvocation(
   modelName: string,
   methodName: string,
@@ -92,14 +60,6 @@ function buildMethodRunInvocation(
   };
 }
 
-/**
- * Creates telemetry for one serve-executed model method run, or `undefined`
- * when telemetry is disabled.
- *
- * @param target - The model and method being run
- * @param initiatedBy - The principal who triggered this run
- * @param startedAt - When the run began; defaults to now
- */
 export function createCommandTelemetry(
   target: { modelName: string; methodName: string },
   initiatedBy?: string,
@@ -129,20 +89,9 @@ export function createCommandTelemetry(
 }
 
 /**
- * Creates telemetry for one serve-executed workflow run, or `undefined` when
- * telemetry is disabled for this process — `--no-telemetry`, the repo
- * marker's `telemetryDisabled`, the user-level opt-out, or an initialization
- * failure all leave no active service, and serve must then stay exactly as
- * silent as it was before.
- *
- * Each run gets its own forked service so it can parent its child method
- * invocations to a per-run identity. Hanging them off the daemon's own
- * process invocation instead would leave every child pointing at an entry
- * that is not written until serve exits — possibly weeks later.
- *
- * @param triggerSource - What caused this run (schedule, webhook, or api)
- * @param workflowName - The workflow being run
- * @param options - Optional initiatedBy and startedAt overrides
+ * each run gets its own forked service so child invocations parent to a per-run
+ * identity; the daemon's process invocation is not written until serve exits.
+ * With telemetry disabled serve stays silent
  */
 export function createRunTelemetry(
   triggerSource: WorkflowTriggerSource,

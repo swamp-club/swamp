@@ -30,12 +30,9 @@ import {
 import { MAX_SOURCE_MODULES } from "../../domain/extensions/bundle_freshness.ts";
 
 /**
- * Returns a dbPath at `<tmpRepo>/.swamp/_extension_catalog.db` so the
- * catalog's `inferRepoRootFromDbPath()` (which expects a real swamp
- * layout) produces `<tmpRepo>` — letting tests seed rows whose
- * source_paths actually match the W1a migration's path heuristic
- * (`<repoRoot>/extensions/<kind>/...` or
- * `<repoRoot>/.swamp/pulled-extensions/<name>/<kind>/...`).
+ * dbPath is <tmpRepo>/.swamp/_extension_catalog.db so inferRepoRootFromDbPath
+ * yields <tmpRepo> and seeded source_paths match the extension path layout
+ * heuristic
  */
 function makeTempDb(): Disposable & { path: string } {
   const repoRoot = Deno.makeTempDirSync({
@@ -194,14 +191,12 @@ Deno.test("ExtensionCatalogStore: findExtensionsForType returns targeting extens
   const dbPath = tempDb.path;
   const store = new ExtensionCatalogStore(dbPath);
 
-  // Base model
   store.upsert(makeRow({
     type_normalized: "@swamp/aws/ec2/instance",
     kind: "model",
     source_path: "/repo/models/instance.ts",
   }));
 
-  // Extension targeting the base model
   store.upsert(makeRow({
     type_normalized: "@swamp/aws/ec2/instance",
     kind: "extension",
@@ -209,7 +204,6 @@ Deno.test("ExtensionCatalogStore: findExtensionsForType returns targeting extens
     source_path: "/repo/models/instance_terminate.ts",
   }));
 
-  // Extension targeting a different model
   store.upsert(makeRow({
     type_normalized: "@swamp/aws/ec2/vpc",
     kind: "extension",
@@ -453,7 +447,6 @@ Deno.test("ExtensionCatalogStore: same type different kinds are separate entries
   const dbPath = tempDb.path;
   const store = new ExtensionCatalogStore(dbPath);
 
-  // Hypothetical: same name used as both model and vault (different source files)
   store.upsert(makeRow({
     type_normalized: "@org/thing",
     kind: "model",
@@ -483,11 +476,9 @@ Deno.test("ExtensionCatalogStore: concurrent opens do not throw database is lock
   using tempDb = makeTempDb();
   const dbPath = tempDb.path;
 
-  // Simulate two processes opening the same DB simultaneously
   const store1 = new ExtensionCatalogStore(dbPath);
   const store2 = new ExtensionCatalogStore(dbPath);
 
-  // Write from both — WAL + busy_timeout should handle contention
   store1.upsert(makeRow({
     type_normalized: "@org/from-store1",
     source_path: "/repo/s1.ts",
@@ -497,7 +488,6 @@ Deno.test("ExtensionCatalogStore: concurrent opens do not throw database is lock
     source_path: "/repo/s2.ts",
   }));
 
-  // Both writes visible from either handle
   assertEquals(
     store1.findByType("@org/from-store2", "model")?.type_normalized,
     "@org/from-store2",
@@ -516,14 +506,12 @@ Deno.test("ExtensionCatalogStore: multiple extensions targeting same base type c
   const dbPath = tempDb.path;
   const store = new ExtensionCatalogStore(dbPath);
 
-  // Base model
   store.upsert(makeRow({
     type_normalized: "@myorg/server",
     kind: "model",
     source_path: "/repo/models/server.ts",
   }));
 
-  // Two extensions targeting the same base type
   store.upsert(makeRow({
     type_normalized: "@myorg/server",
     kind: "extension",
@@ -537,7 +525,6 @@ Deno.test("ExtensionCatalogStore: multiple extensions targeting same base type c
     source_path: "/repo/models/server_backup.ts",
   }));
 
-  // Both extensions survive — not overwritten
   const exts = store.findExtensionsForType("@myorg/server");
   assertEquals(exts.length, 2);
   const paths = exts.map((e) => e.source_path).sort();
@@ -546,7 +533,6 @@ Deno.test("ExtensionCatalogStore: multiple extensions targeting same base type c
     "/repo/models/server_terminate.ts",
   ]);
 
-  // Total: 1 model + 2 extensions
   assertEquals(store.count(), 3);
   store.close();
 });
@@ -566,7 +552,6 @@ Deno.test("ExtensionCatalogStore: setLayoutVersion and getLayoutVersion round-tr
   assertEquals(store.getLayoutVersion(), "namespaced-v1");
   store.close();
 
-  // Verify it persists across reopen
   const store2 = new ExtensionCatalogStore(dbPath);
   assertEquals(store2.getLayoutVersion(), "namespaced-v1");
   store2.close();
@@ -597,8 +582,6 @@ Deno.test("ExtensionCatalogStore: source_fingerprint defaults to empty string wh
   const dbPath = tempDb.path;
   const store = new ExtensionCatalogStore(dbPath);
 
-  // Row built without source_fingerprint — sibling loaders (reports,
-  // datastores, vaults) still omit it today.
   store.upsert(makeRow());
   const found = store.findByType("@myorg/echo", "model");
   assertEquals(found?.source_fingerprint, "");
@@ -610,12 +593,9 @@ Deno.test("ExtensionCatalogStore: migrates pre-#125 schema by adding source_fing
   const dbPath = tempDb.path;
   ensureDirSync(dirname(dbPath));
 
-  // Seed a DB with the pre-#125 schema — no source_fingerprint column.
-  // Source path lives under <repoRoot>/.swamp/pulled-extensions/... so
-  // the W1a data-migration backfills extension_name and the row
-  // survives the post-condition verify. Without a layout-matching path
-  // the row would be dropped (correct W1a behaviour, but defeats this
-  // test's purpose of checking source_fingerprint is added).
+  // source path under <repoRoot>/.swamp/pulled-extensions/... so the backfill
+  // yields an extension_name and the row survives; a path outside the layout
+  // would be dropped
   const repoRoot = dirname(dirname(dbPath));
   const sourcePath = join(
     repoRoot,
@@ -657,7 +637,6 @@ Deno.test("ExtensionCatalogStore: migrates pre-#125 schema by adding source_fing
   );
   seed.close();
 
-  // Opening through ExtensionCatalogStore must run the migration.
   const store = new ExtensionCatalogStore(dbPath);
 
   // Legacy row survives with empty source_fingerprint — forces a
@@ -665,7 +644,6 @@ Deno.test("ExtensionCatalogStore: migrates pre-#125 schema by adding source_fing
   const legacy = store.findByType("@legacy/row", "model");
   assertEquals(legacy?.source_fingerprint, "");
 
-  // Re-opening is a no-op — migration is idempotent.
   store.close();
   const store2 = new ExtensionCatalogStore(dbPath);
   const again = store2.findByType("@legacy/row", "model");
@@ -673,15 +651,9 @@ Deno.test("ExtensionCatalogStore: migrates pre-#125 schema by adding source_fing
   store2.close();
 });
 
-// --- per-kind migration tests (#128) ---
-//
-// The sibling loaders (report/datastore/vault) ported to the
-// shared freshness helper in #128. Legacy catalog rows written by the
-// pre-port binary have `source_fingerprint = ""`; they must survive the
-// migration so the next findStaleFiles pass sees fingerprint mismatch
-// and rebundles exactly once. This matches the PR #1188 precedent for
-// the models loader above — accept+document one-time rebundle on
-// upgrade rather than silently backfill.
+// legacy rows have an empty source_fingerprint; they must survive migration so
+// the next findStaleFiles pass rebundles them once, rather than being silently
+// backfilled
 
 for (
   const kind of ["report", "datastore", "vault"] as const
@@ -693,9 +665,8 @@ for (
       const dbPath = tempDb.path;
       ensureDirSync(dirname(dbPath));
 
-      // Source path under <repoRoot>/.swamp/pulled-extensions/... so the
-      // W1a backfill produces a non-empty extension_name and the row
-      // survives.
+      // source path under <repoRoot>/.swamp/pulled-extensions/... so the
+      // backfill produces an extension_name and the row survives
       const repoRoot = dirname(dirname(dbPath));
       const sourcePath = join(
         repoRoot,
@@ -707,8 +678,6 @@ for (
         `${kind}.ts`,
       );
 
-      // Seed a DB with the pre-#125 schema — no source_fingerprint
-      // column — carrying a row of the target kind.
       const seed = new DatabaseSync(dbPath);
       seed.exec(`
         CREATE TABLE bundle_types (
@@ -740,18 +709,12 @@ for (
       );
       seed.close();
 
-      // Opening through ExtensionCatalogStore must run the migration.
       const store = new ExtensionCatalogStore(dbPath);
 
-      // Legacy row of the target kind survives with empty
-      // source_fingerprint — forces a rebundle on the next
-      // findStaleFiles pass when this kind's loader delegates to the
-      // shared helper.
       const legacy = store.findByType(`@legacy/${kind}-row`, kind);
       assertEquals(legacy?.source_fingerprint, "");
       assertEquals(legacy?.kind, kind);
 
-      // Re-opening is a no-op — migration is idempotent.
       store.close();
       const store2 = new ExtensionCatalogStore(dbPath);
       const again = store2.findByType(`@legacy/${kind}-row`, kind);
@@ -761,18 +724,13 @@ for (
   );
 }
 
-// --- extends_type backfill migration tests (swamp-club#903) ---
-//
-// Pre-fix catalogs persisted extension rows with an empty extends_type via
-// the aggregate writer, so findExtensionsForType never matched them and the
-// extension's methods were silently dropped ("Unknown method"). Opening
-// through ExtensionCatalogStore must backfill extends_type from
-// type_normalized for Indexed extension rows, once, on catalog open.
+// opening must backfill extends_type from type_normalized for Indexed extension
+// rows, once; empty values made findExtensionsForType miss them and drop their
+// methods
 
 /**
- * Seeds a DB carrying the full current schema plus the other migrations'
- * markers, so opening it runs ONLY the swamp-club#903 extends_type
- * backfill. Inserts the given extension row rows verbatim.
+ * seeds the full current schema plus the other migration markers, so opening
+ * runs only the extends_type backfill
  */
 function seedCatalogAwaitingExtendsBackfill(
   dbPath: string,
@@ -803,7 +761,6 @@ function seedCatalogAwaitingExtendsBackfill(
     );
     CREATE TABLE bundle_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
   `);
-  // Mark the earlier migrations applied so only the #903 backfill runs.
   const meta = seed.prepare(
     "INSERT INTO bundle_meta (key, value) VALUES (?, 'true')",
   );
@@ -848,7 +805,6 @@ Deno.test("ExtensionCatalogStore: backfills empty extends_type on Indexed extens
     state: "Indexed",
   }]);
 
-  // Opening runs the backfill: the row now matches the merge query.
   const store = new ExtensionCatalogStore(dbPath);
   const matches = store.findExtensionsForType("@keeb/docker/compose");
   assertEquals(matches.length, 1);
@@ -861,7 +817,6 @@ Deno.test("ExtensionCatalogStore: extends_type backfill leaves primary and non-I
   const dbPath = tempDb.path;
   const base = join(dirname(dirname(dbPath)), ".swamp", "pulled-extensions");
   seedCatalogAwaitingExtendsBackfill(dbPath, [
-    // Primary model — must stay empty.
     {
       sourcePath: join(base, "@scope", "base", "models", "thing.ts"),
       typeNormalized: "@scope/base/thing",
@@ -909,7 +864,6 @@ Deno.test("ExtensionCatalogStore: extends_type backfill runs at most once (swamp
     state: "Indexed",
   }]);
 
-  // First open heals the seeded row and records the marker.
   const store = new ExtensionCatalogStore(dbPath);
   assertEquals(
     store.findExtensionsForType("@keeb/docker/compose").length,
@@ -917,11 +871,8 @@ Deno.test("ExtensionCatalogStore: extends_type backfill runs at most once (swamp
   );
   store.close();
 
-  // Inject a second broken row directly, then reopen. Because the marker is
-  // set, the backfill does not run again and the new row stays empty —
-  // proving the once-only contract. (New rows written through the fixed
-  // aggregate writer already carry a correct extends_type, so this is a
-  // deliberately-broken injection, not a realistic post-fix state.)
+  // with the marker set the backfill does not run again, so an injected broken
+  // row stays empty; this proves the once-only contract
   const inject = new DatabaseSync(dbPath);
   inject.prepare(
     `INSERT INTO bundle_types (
@@ -934,14 +885,6 @@ Deno.test("ExtensionCatalogStore: extends_type backfill runs at most once (swamp
   assertEquals(store2.findExtensionsForType("@keeb/docker/engine").length, 0);
   store2.close();
 });
-
-// --- RowState column tests (swamp-club#211, W1a) ---
-//
-// The state column subsumes the legacy validation_failed boolean and
-// will eventually carry the full 7-tag RowState discriminant from W1b.
-// W1a writes 'Indexed' (default for healthy rows) and 'ValidationFailed'
-// (set by markCatalogValidationFailed). Registration paths filter on
-// state === 'ValidationFailed'.
 
 Deno.test("ExtensionCatalogStore: upsert and findByType round-trip state", () => {
   using tempDb = makeTempDb();
@@ -1090,10 +1033,9 @@ Deno.test("ExtensionCatalogStore: upsert with explicit state overwrites both sta
 });
 
 Deno.test("ExtensionCatalogStore: findByKind returns rows regardless of state", () => {
-  // ADV-1 invariant guard: findStaleFiles relies on findByKind seeing
-  // ValidationFailed rows so the stable broken fingerprint terminates
-  // the rebundle loop (swamp-club#209). Filtering must NOT happen at
-  // the store layer — only at registration call sites.
+  // findStaleFiles relies on findByKind seeing ValidationFailed rows so their
+  // stable broken fingerprint ends the rebundle loop; filter at registration
+  // call sites, never in the store
   using tempDb = makeTempDb();
   const dbPath = tempDb.path;
   const store = new ExtensionCatalogStore(dbPath);
@@ -1131,12 +1073,6 @@ Deno.test("ExtensionCatalogStore: migrates pre-#209 schema by adding validation_
   const dbPath = tempDb.path;
   ensureDirSync(dirname(dbPath));
 
-  // Source path under <repoRoot>/.swamp/pulled-extensions/... so the
-  // W1a data-migration backfill produces a non-empty extension_name
-  // and the row survives. Pre-#209 schema has source_fingerprint but
-  // no validation_failed column; the migration adds both validation_failed
-  // (vestigial after W1a) and the W1a state/extension_name/extension_version
-  // columns.
   const repoRoot = dirname(dirname(dbPath));
   const sourcePath = join(
     repoRoot,
@@ -1180,18 +1116,12 @@ Deno.test("ExtensionCatalogStore: migrates pre-#209 schema by adding validation_
   );
   seed.close();
 
-  // Opening through ExtensionCatalogStore must run the migration.
   const store = new ExtensionCatalogStore(dbPath);
 
   const legacy = store.findByType("@legacy/row", "model");
-  // Pre-#209 row didn't have validation_failed; W1a's ALTER TABLE
-  // added the column with DEFAULT 0, then W1b's recreate-table dance
-  // dropped it again. The state column survives at its 'Indexed'
-  // default for rows that weren't validation_failed=1.
   assertEquals(legacy?.source_fingerprint, "deadbeef");
   assertEquals(legacy?.state, "Indexed");
 
-  // Re-opening is a no-op — migration is idempotent.
   store.close();
   const store2 = new ExtensionCatalogStore(dbPath);
   const again = store2.findByType("@legacy/row", "model");
@@ -1199,21 +1129,13 @@ Deno.test("ExtensionCatalogStore: migrates pre-#209 schema by adding validation_
   store2.close();
 });
 
-// --- per-extension-aggregate-v3 migration tests (swamp-club#211, W1a) ---
-//
-// Cover the W1a data-migration: state backfill from validation_failed,
-// extension_name backfill via deriveExtensionIdentity, post-condition
-// verify with cold-start rebuild fallback, ON CONFLICT preservation
-// canary (the load-bearing test the architect specified for the v6
-// post-bump rescan story).
-
 Deno.test("ExtensionCatalogStore: migrates post-#1286 schema by backfilling state from validation_failed", () => {
   using tempDb = makeTempDb();
   const dbPath = tempDb.path;
   ensureDirSync(dirname(dbPath));
 
-  // Source paths under <repoRoot>/.swamp/pulled-extensions/... so the
-  // W1a backfill produces non-empty extension_name and the rows survive.
+  // source paths under <repoRoot>/.swamp/pulled-extensions/... so the backfill
+  // produces an extension_name and the rows survive
   const repoRoot = dirname(dirname(dbPath));
   const healthyPath = join(
     repoRoot,
@@ -1234,9 +1156,6 @@ Deno.test("ExtensionCatalogStore: migrates post-#1286 schema by backfilling stat
     "broken.ts",
   );
 
-  // Seed a DB with the post-#1286 schema (has source_fingerprint AND
-  // validation_failed) carrying one healthy row + one row marked broken
-  // by the legacy markCatalogValidationFailed flow.
   const seed = new DatabaseSync(dbPath);
   seed.exec(`
     CREATE TABLE bundle_types (
@@ -1289,10 +1208,8 @@ Deno.test("ExtensionCatalogStore: migrates post-#1286 schema by backfilling stat
   const store = new ExtensionCatalogStore(dbPath);
   const rows = store.findByKind("model");
   assertEquals(rows.length, 2);
-  // Match against the canonical form — the W1a migration's sub-step 4
-  // canonicalized every row's source_path. On Windows the seeded
-  // healthy/brokenPath are backslash-form; the stored row is
-  // lowercase + forward-slash.
+  // compare the canonical form: migration canonicalized every source_path,
+  // which on Windows means lowercase with forward slashes
   const healthy = rows.find((r) =>
     r.source_path === canonicalizePath(healthyPath)
   );
@@ -1343,13 +1260,9 @@ Deno.test("ExtensionCatalogStore: W1a migration backfills extension_name for pul
   seed.close();
 
   const store = new ExtensionCatalogStore(dbPath);
-  // Read identity columns directly via SQL — the catalog deliberately
-  // does not surface extension_name/extension_version on
-  // ExtensionTypeRow per W1a Option A; W1b's ExtensionRepository owns
-  // the read path. Look up by canonical source_path because the W1a
-  // migration's sub-step 4 canonicalized every row's path; on Windows
-  // the seeded `sourcePath` is backslash-form and won't match the
-  // stored canonical (lowercase + forward-slash) form.
+  // reads identity columns via SQL because the catalog does not expose
+  // extension_name/version; looks up the canonical source_path, which differs
+  // from the seeded form on Windows
   const probe = (store as unknown as {
     db: DatabaseSync;
   }).db.prepare(
@@ -1402,9 +1315,8 @@ Deno.test("ExtensionCatalogStore: W1a migration backfills @local/<repo> for rows
     extension_name: string;
     extension_version: string;
   };
-  // basename(repoRoot) is the temp dir's basename — we only assert the
-  // @local/ prefix and the literal "0.0.0" version since the dir name
-  // varies across runs.
+  // basename(repoRoot) varies by run, so assert only the @local/ prefix and the
+  // 0.0.0 version
   assertEquals(probe.extension_name.startsWith("@local/"), true);
   assertEquals(probe.extension_version, "0.0.0");
   store.close();
@@ -1432,7 +1344,6 @@ Deno.test("ExtensionCatalogStore: W1a migration drops rows whose path doesn't ma
     CREATE TABLE bundle_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
     INSERT INTO bundle_meta (key, value) VALUES ('populated:model', 'true');
   `);
-  // Seed with an unrecognized path layout — neither pulled nor local.
   seed.prepare(
     `INSERT INTO bundle_types (
       source_path, type_normalized, kind, bundle_path
@@ -1441,12 +1352,8 @@ Deno.test("ExtensionCatalogStore: W1a migration drops rows whose path doesn't ma
   seed.close();
 
   const store = new ExtensionCatalogStore(dbPath);
-  // Migration's data-phase: row had unrecognized layout → backfill
-  // returns null → row left with empty extension_name → DELETE step
-  // drops it → post-condition passes (no rows with empty
-  // extension_name remain). The cold-start rebuild path (which
-  // would also clear bundle_meta `populated:*` keys) does NOT fire
-  // here because the post-condition succeeds.
+  // an unrecognized layout yields no extension_name and the row is dropped; the
+  // post-condition passes, so the cold-start rebuild does not fire
   assertEquals(store.count(), 0);
   // populated:model survives — only the cold-start rebuild path
   // clears it, and the post-condition succeeded.
@@ -1455,13 +1362,9 @@ Deno.test("ExtensionCatalogStore: W1a migration drops rows whose path doesn't ma
 });
 
 Deno.test("ExtensionCatalogStore: W1a migration backfills mixed pulled + local + unmatched rows in a single pass", () => {
-  // The whole-pipeline test: a pre-#1286 catalog containing every
-  // origin type the W1a heuristic must classify simultaneously. Pulled
-  // rows get extension_name backfilled with version='' (Option A);
-  // local rows get @local/<repo>/0.0.0; unmatched rows are dropped at
-  // the DELETE step. validation_failed=1 → state='ValidationFailed' on
-  // the broken pulled row. Verifies all branches of
-  // deriveExtensionIdentity compose correctly inside one transaction.
+  // whole-pipeline test: pulled rows get an extension_name with empty version,
+  // local rows get @local/<repo>/0.0.0, unmatched rows are dropped,
+  // validation_failed rows become ValidationFailed
   using tempDb = makeTempDb();
   const dbPath = tempDb.path;
   ensureDirSync(dirname(dbPath));
@@ -1535,8 +1438,6 @@ Deno.test("ExtensionCatalogStore: W1a migration backfills mixed pulled + local +
   seed.close();
 
   const store = new ExtensionCatalogStore(dbPath);
-  // Read identity columns directly via SQL — ExtensionTypeRow doesn't
-  // surface extension_name/extension_version per W1a Option A.
   const rows = (store as unknown as { db: DatabaseSync }).db.prepare(
     `SELECT source_path, extension_name, extension_version, state
        FROM bundle_types ORDER BY source_path`,
@@ -1547,10 +1448,8 @@ Deno.test("ExtensionCatalogStore: W1a migration backfills mixed pulled + local +
     state: string;
   }>;
 
-  // The W1a migration's sub-step 4 canonicalized every row's
-  // source_path. On Windows the seeded paths above are backslash-form;
-  // the stored rows are lowercase + forward-slash. Look up against the
-  // canonical form so this test passes on both platforms.
+  // migration canonicalized every source_path; on Windows the seeded paths are
+  // backslash form, so look up the canonical form to pass on both platforms
   const cPulledHealthy = canonicalizePath(pulledHealthy);
   const cPulledBroken = canonicalizePath(pulledBroken);
   const cPulledOtherExt = canonicalizePath(pulledOtherExt);
@@ -1558,7 +1457,6 @@ Deno.test("ExtensionCatalogStore: W1a migration backfills mixed pulled + local +
   const cSourceMountedPath = canonicalizePath(sourceMountedPath);
   const cUnmatchedPath = canonicalizePath(unmatchedPath);
 
-  // Unmatched row was dropped at sub-step 7. Five remain.
   assertEquals(rows.length, 5);
   assertEquals(
     rows.find((r) => r.source_path === cUnmatchedPath),
@@ -1568,24 +1466,18 @@ Deno.test("ExtensionCatalogStore: W1a migration backfills mixed pulled + local +
 
   const byPath = new Map(rows.map((r) => [r.source_path, r]));
 
-  // Pulled rows: extension_name parsed from path, version intentionally ''.
   assertEquals(byPath.get(cPulledHealthy)?.extension_name, "@scope/alpha");
   assertEquals(byPath.get(cPulledHealthy)?.extension_version, "");
   assertEquals(byPath.get(cPulledHealthy)?.state, "Indexed");
 
   assertEquals(byPath.get(cPulledBroken)?.extension_name, "@scope/alpha");
   assertEquals(byPath.get(cPulledBroken)?.extension_version, "");
-  // validation_failed=1 backfilled to state='ValidationFailed'.
   assertEquals(byPath.get(cPulledBroken)?.state, "ValidationFailed");
 
   assertEquals(byPath.get(cPulledOtherExt)?.extension_name, "@scope/beta");
   assertEquals(byPath.get(cPulledOtherExt)?.extension_version, "");
   assertEquals(byPath.get(cPulledOtherExt)?.state, "Indexed");
 
-  // Local row: @local/<basename(repoRoot)> at 0.0.0. Use @std/path
-  // basename so this works on both POSIX and Windows native repoRoot
-  // values. The migration's deriveExtensionIdentity uses basename on
-  // a canonicalized repoRoot internally — same semantic.
   const expectedLocalName = `@local/${
     canonicalizePath(repoRoot).split("/").filter((s) => s.length > 0).pop()
   }`;
@@ -1593,10 +1485,8 @@ Deno.test("ExtensionCatalogStore: W1a migration backfills mixed pulled + local +
   assertEquals(byPath.get(cLocalPath)?.extension_version, "0.0.0");
   assertEquals(byPath.get(cLocalPath)?.state, "Indexed");
 
-  // Source-mounted row: same @local/<repoRoot> aggregate as locals
-  // (per the design doc — "@local/<repo-name> covers every Source
-  // under every extensions/<kind>/ tree" regardless of where the
-  // source dir lives).
+  // source-mounted rows roll up into the same @local/<repo> aggregate as local
+  // rows, wherever the source dir lives
   assertEquals(
     byPath.get(cSourceMountedPath)?.extension_name,
     expectedLocalName,
@@ -1607,19 +1497,9 @@ Deno.test("ExtensionCatalogStore: W1a migration backfills mixed pulled + local +
   store.close();
 });
 
-// --- Cold-start rebuild path ---
-//
-// The recovery path that fires when the data-migration's post-condition
-// verify throws (e.g. a backfill heuristic gap that leaves rows with
-// empty extension_name AFTER sub-step 7's DELETE — a bug class the
-// current heuristic doesn't produce, but which a future migration
-// change could). The path is the only line of defense against a silent
-// backfill bug; we test the rebuild's own contract directly via the
-// private-method cast pattern already used elsewhere in this file.
-// The catch-handler in `runDataMigrationTransaction` that triggers the
-// rebuild is three trivial lines (try/catch around verify; log; call
-// runColdStartRebuild) — testing the rebuild itself + reading the
-// catch handler is sufficient.
+// the cold-start rebuild is the only defense when the migration post-condition
+// throws on a silent backfill bug, so its contract is tested directly through a
+// private-method cast
 
 Deno.test("ExtensionCatalogStore: runColdStartRebuild empties bundle_types, clears populated:* keys, marks migration applied", () => {
   using tempDb = makeTempDb();
@@ -1627,9 +1507,6 @@ Deno.test("ExtensionCatalogStore: runColdStartRebuild empties bundle_types, clea
   const store = new ExtensionCatalogStore(dbPath);
   const repoRoot = dirname(dirname(dbPath));
 
-  // Seed the catalog with rows + populated flags so the rebuild has
-  // something to clear. Use realistic paths so the construction-time
-  // migration accepted them; this is the post-W1a steady state.
   const sourcePath = join(
     repoRoot,
     ".swamp",
@@ -1655,20 +1532,12 @@ Deno.test("ExtensionCatalogStore: runColdStartRebuild empties bundle_types, clea
   assertEquals(store.isPopulated("model"), true);
   assertEquals(store.isPopulated("vault"), true);
 
-  // Drive the rebuild directly. The catch-handler in
-  // runDataMigrationTransaction wraps this in
-  //   try { ... } catch (error) { ROLLBACK; logger.warn; rebuild(); }
-  // — a trivial three-liner. Testing the rebuild's own contract is
-  // what catches a regression in the recovery semantics.
   (store as unknown as { runColdStartRebuild: () => void })
     .runColdStartRebuild();
 
-  // Post-rebuild invariants:
-  //   1. bundle_types is empty (DELETE FROM bundle_types).
-  //   2. populated:* keys cleared (so loaders re-discover from disk).
-  //   3. migration_applied marker set (so subsequent restarts skip
-  //      the data-migration phase — the catalog is at v3 even though
-  //      it's empty).
+  // after rebuild: bundle_types is empty, populated:* keys are cleared so
+  // loaders re-discover from disk, and the migration marker is set so restarts
+  // skip the data migration
   assertEquals(store.count(), 0);
   assertEquals(store.isPopulated("model"), false);
   assertEquals(store.isPopulated("vault"), false);
@@ -1680,22 +1549,17 @@ Deno.test("ExtensionCatalogStore: runColdStartRebuild empties bundle_types, clea
 
   store.close();
 
-  // Re-opening must be a no-op: marker is set, data-phase is skipped,
-  // catalog stays empty. Loaders re-populate from disk on first access
-  // (out of scope for this unit test).
+  // reopening is a no-op: the marker is set, so the data phase is skipped and
+  // the catalog stays empty
   const store2 = new ExtensionCatalogStore(dbPath);
   assertEquals(store2.count(), 0);
   assertEquals(store2.isPopulated("model"), false);
   store2.close();
 });
 
-// --- Data-migration lock handling (swamp-club#2671) ---
-//
-// Concurrent first runs raced the data-migration transaction: a lock
-// error inside it was treated as a failed migration, logged as a
-// warning and answered with a cold-start rebuild that wipes the
-// catalog. Lock errors must instead roll back and propagate so
-// initializeWithRetry retries; only real migration failures rebuild.
+// a lock error in the data-migration transaction must roll back and propagate
+// so initializeWithRetry retries; only real migration failures rebuild, because
+// a rebuild wipes the catalog
 
 type MigrationInternals = {
   db: DatabaseSync;
@@ -1704,11 +1568,6 @@ type MigrationInternals = {
   backfillExtensionIdentity: () => void;
 };
 
-/**
- * Opens a store holding one pulled-extension row and the populated:model
- * flag, then clears the v3 migration marker so the next migrateSchema
- * call runs the data-migration transaction again.
- */
 function openStoreWithPendingMigration(dbPath: string): {
   store: ExtensionCatalogStore;
   internals: MigrationInternals;
@@ -1803,26 +1662,15 @@ Deno.test("ExtensionCatalogStore: data migration skips work another process appl
   }
 });
 
-// --- ON CONFLICT preservation canary (resolves ADV-V3-1) ---
-//
-// The load-bearing test the architect called out: after the W1a
-// migration backfills extension_name/extension_version, the model
-// loader's BUNDLE_LAYOUT_VERSION-bump-triggered rescan upserts every
-// row. Under the previous INSERT OR REPLACE pattern, the upsert reset
-// extension_name/extension_version to DEFAULT '' on every row,
-// silently undoing the migration on first run after deploy. The new
-// ON CONFLICT(source_path) DO UPDATE SET pattern intentionally
-// excludes the identity columns from the SET list. This test fails
-// loudly if a future change reverts to INSERT OR REPLACE or adds the
-// identity columns to the SET list.
+// canary: a rescan upsert must not reset migration-backfilled
+// extension_name/version; ON CONFLICT DO UPDATE leaves identity columns out of
+// SET, where INSERT OR REPLACE would clear them
 
 Deno.test("ExtensionCatalogStore: upsert preserves migration-backfilled extension_name/extension_version on UPDATE (ADV-V3-1 canary)", () => {
   using tempDb = makeTempDb();
   const dbPath = tempDb.path;
   const store = new ExtensionCatalogStore(dbPath);
 
-  // Manually INSERT a row with backfilled identity, simulating the
-  // post-W1a-migration state.
   const sourcePath = "/test/repo/extensions/models/echo.ts";
   (store as unknown as { db: DatabaseSync }).db.prepare(
     `INSERT INTO bundle_types (
@@ -1839,9 +1687,6 @@ Deno.test("ExtensionCatalogStore: upsert preserves migration-backfilled extensio
     "Indexed",
   );
 
-  // Simulate a loader rescan upserting the same source_path with new
-  // bundle_path, version, etc. (the model loader re-bundles after a
-  // BUNDLE_LAYOUT_VERSION bump and upserts every row).
   store.upsert(makeRow({
     source_path: sourcePath,
     type_normalized: "@myorg/echo",
@@ -1864,7 +1709,6 @@ Deno.test("ExtensionCatalogStore: upsert preserves migration-backfilled extensio
   };
   assertEquals(probe.extension_name, "@scope/echo");
   assertEquals(probe.extension_version, "1.2.3");
-  // Legacy columns DO change on UPDATE — these are in the SET list.
   assertEquals(probe.bundle_path, "/bundle/echo-v2.js");
   assertEquals(probe.version, "2026.05.04.1");
   // state is in the SET list and defaults to 'Indexed' when callers
@@ -1874,12 +1718,7 @@ Deno.test("ExtensionCatalogStore: upsert preserves migration-backfilled extensio
   store.close();
 });
 
-// --- W1b drop-validation_failed migration tests (issue #223) ---
-
 Deno.test("ExtensionCatalogStore: W1b drop-validation_failed migration removes the column and preserves all rows + indexes", () => {
-  // Set up a pre-W1b shape on disk: bundle_types includes the
-  // validation_failed column, has a real row with a value, and the W1a
-  // marker keys are absent so the data migration also runs.
   using tempDb = makeTempDb();
   const dbPath = tempDb.path;
   const seed = new DatabaseSync(dbPath);
@@ -1904,9 +1743,6 @@ Deno.test("ExtensionCatalogStore: W1b drop-validation_failed migration removes t
     CREATE INDEX idx_bundle_types_type ON bundle_types(type_normalized, kind);
     CREATE TABLE bundle_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
   `);
-  // Seed some rows with the validation_failed column populated. After
-  // migration: rows with vf=1 are surfaced as state='ValidationFailed'
-  // by the W1a phase; the W1b phase drops the column itself.
   const repoRoot = canonicalizePath(dirname(dirname(dbPath)));
   const insert = seed.prepare(
     `INSERT INTO bundle_types (source_path, type_normalized, kind, bundle_path, validation_failed, state, extension_name, extension_version) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -1926,17 +1762,15 @@ Deno.test("ExtensionCatalogStore: W1b drop-validation_failed migration removes t
     "",
     "model",
     "/bundle/broken.js",
-    1, // validation_failed=1
+    1,
     "ValidationFailed",
     "@local/" + dirname(dbPath).split("/").pop(),
     "0.0.0",
   );
   seed.close();
 
-  // Open the catalog — migrateSchema runs (data migration + W1b drop).
   const store = new ExtensionCatalogStore(dbPath);
 
-  // Post-condition (a): pragma_table_info no longer reports the column.
   const pragmaProbe = new DatabaseSync(dbPath);
   const cols = pragmaProbe.prepare(
     "SELECT name FROM pragma_table_info('bundle_types')",
@@ -1947,7 +1781,6 @@ Deno.test("ExtensionCatalogStore: W1b drop-validation_failed migration removes t
     "validation_failed column must be dropped",
   );
 
-  // Post-condition (b): all 3 indexes survive the recreate-table dance.
   const indexes = pragmaProbe.prepare(
     "SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='bundle_types' AND name NOT LIKE 'sqlite_%'",
   ).all() as Array<{ name: string }>;
@@ -1961,7 +1794,6 @@ Deno.test("ExtensionCatalogStore: W1b drop-validation_failed migration removes t
     ],
   );
 
-  // Post-condition (c): rows preserved (count + content match).
   const rowCount =
     (pragmaProbe.prepare("SELECT COUNT(*) AS cnt FROM bundle_types").get() as
       | { cnt: number }
@@ -1969,14 +1801,11 @@ Deno.test("ExtensionCatalogStore: W1b drop-validation_failed migration removes t
   assertEquals(rowCount, 2);
   const healthy = store.findByType("@local/healthy", "model");
   assertEquals(healthy?.state, "Indexed");
-  // The broken row was migrated by W1a to state='ValidationFailed' and
-  // its type_normalized is empty (loader filters those at registration).
   const broken = store.findAll().find((r) =>
     r.source_path.endsWith("broken.ts")
   );
   assertEquals(broken?.state, "ValidationFailed");
 
-  // Post-condition (d): bundle_meta marker for the drop is set.
   const marker = pragmaProbe.prepare(
     "SELECT value FROM bundle_meta WHERE key = ?",
   ).get("migration_applied:validation-failed-dropped-v1") as
@@ -1989,19 +1818,12 @@ Deno.test("ExtensionCatalogStore: W1b drop-validation_failed migration removes t
 });
 
 Deno.test("ExtensionCatalogStore: W1b drop-validation_failed migration is idempotent (second run is a no-op)", () => {
-  // Run migrateSchema twice; second run finds the marker and short-
-  // circuits without touching the schema.
   using tempDb = makeTempDb();
   const dbPath = tempDb.path;
-  // First open: creates fresh schema (no validation_failed column),
-  // then migrateSchema marks the migration as applied.
   const store1 = new ExtensionCatalogStore(dbPath);
   store1.close();
 
-  // Second open: same db. migrateSchema runs again. The drop helper
-  // sees the marker is set and returns immediately.
   const store2 = new ExtensionCatalogStore(dbPath);
-  // The column is still absent.
   const probe = new DatabaseSync(dbPath);
   const cols = probe.prepare(
     "SELECT name FROM pragma_table_info('bundle_types')",
@@ -2010,7 +1832,6 @@ Deno.test("ExtensionCatalogStore: W1b drop-validation_failed migration is idempo
     cols.some((c) => c.name === "validation_failed"),
     false,
   );
-  // Marker is still set.
   const marker = probe.prepare(
     "SELECT value FROM bundle_meta WHERE key = ?",
   ).get("migration_applied:validation-failed-dropped-v1") as
@@ -2022,33 +1843,21 @@ Deno.test("ExtensionCatalogStore: W1b drop-validation_failed migration is idempo
 });
 
 Deno.test("ExtensionCatalogStore: W1b drop-validation_failed migration ROLLBACKs cleanly on mid-dance failure", () => {
-  // Architecture-review ask: prove the recreate-table dance's atomicity
-  // contract against Deno's node:sqlite. Seed a catalog into the
-  // pre-W1b shape (validation_failed column + rows + marker absent),
-  // monkey-patch the db.exec to throw on the second CREATE INDEX, then
-  // call the drop migration via reflection. Post-condition: the
-  // ROLLBACK fired, the original schema and rows survive, the
-  // bundle_meta marker was NOT set (so the next migrateSchema run
-  // retries cleanly).
+  // proves the recreate-table migration is atomic: a failure on the second
+  // CREATE INDEX must ROLLBACK, keeping schema and rows and leaving the marker
+  // unset so the next run retries
   using tempDb = makeTempDb();
   const dbPath = tempDb.path;
 
-  // Step 1: open a fresh catalog so the schema is created and the
-  // drop-migration marker is set (for a fresh DB the column is already
-  // absent — the migration short-circuits via the pragma probe and
-  // marks itself applied). We then reset to a pre-W1b shape.
   const store = new ExtensionCatalogStore(dbPath);
   // deno-lint-ignore no-explicit-any
   const internal = store as any;
-  // Reset state: re-add the validation_failed column, seed rows, clear
-  // the dropped marker so the migration would actually run again.
   internal.db.exec(
     "ALTER TABLE bundle_types ADD COLUMN validation_failed INTEGER NOT NULL DEFAULT 0",
   );
   internal.db.exec(
     "DELETE FROM bundle_meta WHERE key = 'migration_applied:validation-failed-dropped-v1'",
   );
-  // Seed two rows so we can verify they survive the rollback.
   const seedRow = (suffix: string, vf: number) =>
     internal.db.exec(
       `INSERT INTO bundle_types (
@@ -2064,7 +1873,6 @@ Deno.test("ExtensionCatalogStore: W1b drop-validation_failed migration ROLLBACKs
   seedRow("alpha", 0);
   seedRow("beta", 1);
 
-  // Pre-condition snapshot.
   const colsBefore = (internal.db.prepare(
     "SELECT name FROM pragma_table_info('bundle_types')",
   ).all() as Array<{ name: string }>).map((r) => r.name).sort();
@@ -2072,11 +1880,6 @@ Deno.test("ExtensionCatalogStore: W1b drop-validation_failed migration ROLLBACKs
     "SELECT COUNT(*) AS cnt FROM bundle_types",
   ).get() as { cnt: number }).cnt;
 
-  // Step 2: monkey-patch db.exec to throw on the second CREATE INDEX
-  // (idx_bundle_types_extends — the second index recreated inside the
-  // dance). The dance has already DROPped + RENAMEd by that point, so
-  // a successful ROLLBACK must restore the original bundle_types table
-  // along with its three indexes.
   const realExec = internal.db.exec.bind(internal.db);
   let createIndexCount = 0;
   internal.db.exec = (sql: string) => {
@@ -2089,8 +1892,6 @@ Deno.test("ExtensionCatalogStore: W1b drop-validation_failed migration ROLLBACKs
     return realExec(sql);
   };
 
-  // Step 3: invoke the drop migration. The exception inside the dance
-  // should ROLLBACK and re-throw.
   let thrown: unknown;
   try {
     internal.dropValidationFailedColumn();
@@ -2103,16 +1904,13 @@ Deno.test("ExtensionCatalogStore: W1b drop-validation_failed migration ROLLBACKs
     "expected the injected fault to propagate after ROLLBACK",
   );
 
-  // Step 4: restore the real exec and verify post-conditions.
   internal.db.exec = realExec;
 
-  // (a) The schema is intact (validation_failed column survives).
   const colsAfter = (internal.db.prepare(
     "SELECT name FROM pragma_table_info('bundle_types')",
   ).all() as Array<{ name: string }>).map((r) => r.name).sort();
   assertEquals(colsAfter, colsBefore);
 
-  // (b) Rows are unchanged (count + content).
   const rowCountAfter = (internal.db.prepare(
     "SELECT COUNT(*) AS cnt FROM bundle_types",
   ).get() as { cnt: number }).cnt;
@@ -2157,7 +1955,6 @@ Deno.test({
     using tempDb = makeTempDb();
     const dbPath = tempDb.path;
 
-    // Seed an old-schema catalog missing the 'last_error' column.
     const seed = new DatabaseSync(dbPath);
     seed.exec("PRAGMA journal_mode=WAL");
     seed.exec(`
@@ -2188,13 +1985,10 @@ Deno.test({
     );
     seed.close();
 
-    // Make the file read-only so schema migration fails.
     Deno.chmodSync(dbPath, 0o444);
 
-    // Construction should recover: delete the stale file, recreate.
     const store = new ExtensionCatalogStore(dbPath);
 
-    // The recovered store should be fully functional.
     store.upsert(makeRow({ source_path: "/test/echo.ts" }));
     const rows = store.findByKind("model");
     assertEquals(rows.length, 1);
@@ -2202,7 +1996,6 @@ Deno.test({
 
     store.close();
 
-    // Restore permissions for cleanup.
     try {
       Deno.removeSync(dbPath);
     } catch { /* withTempDir handles cleanup */ }
@@ -2443,8 +2236,6 @@ Deno.test("pruneUnreachableSources: keeps rows of live sources under a mounted d
   store.close();
 });
 
-// ── settleMountedTypeConflicts ──────────────────────────────────────
-
 Deno.test("settleMountedTypeConflicts: a local row wins over a mounted row", () => {
   using tempDb = makeTempDb();
   const dbPath = tempDb.path;
@@ -2529,8 +2320,6 @@ Deno.test("settleMountedTypeConflicts: leaves pulled rows, local-vs-local and re
 
   store.close();
 });
-
-// ── resolveOriginConflicts ──────────────────────────────────────────
 
 Deno.test("resolveOriginConflicts: no-op when no pulled rows exist", () => {
   using tempDb = makeTempDb();
@@ -2759,13 +2548,9 @@ Deno.test("resolveOriginConflicts: different kinds do not conflict", () => {
   store.close();
 });
 
-// -- deduplicateNonCanonicalPaths ----------------------------------------
-
 Deno.test("deduplicateNonCanonicalPaths: heals ghost row during startup migration", () => {
-  // Simulates the production scenario: a corrupted catalog (ghost rows
-  // from pre-fix warm-path) is opened by a fixed build. The constructor's
-  // migrateSchema → deduplicateNonCanonicalPaths heals the ghost.
-  // On POSIX canonicalizePath is a no-op — ghost rows can't exist.
+  // the constructor's migration heals ghost rows left by the old warm path; on
+  // POSIX canonicalizePath is a no-op so none can exist, hence Windows only
   if (Deno.build.os !== "windows") return;
 
   using tempDb = makeTempDb();
@@ -2774,8 +2559,6 @@ Deno.test("deduplicateNonCanonicalPaths: heals ghost row during startup migratio
   const canonicalPath = "c:/project/extensions/models/foo.ts";
   const ghostPath = "C:\\Project\\extensions\\models\\foo.ts";
 
-  // Seed the DB: canonical row + ghost row, then clear the dedup marker
-  // so the next open re-runs the migration.
   {
     const seed = new ExtensionCatalogStore(dbPath);
     seed.upsertWithIdentity({
@@ -2814,7 +2597,6 @@ Deno.test("deduplicateNonCanonicalPaths: heals ghost row during startup migratio
     seed.close();
   }
 
-  // Re-open: migrateSchema → deduplicateNonCanonicalPaths heals the ghost
   const store = new ExtensionCatalogStore(dbPath);
   assertEquals(store.count(), 1);
 
@@ -2874,9 +2656,9 @@ Deno.test("removeByRawSourcePath: deletes by exact stored PK without canonicaliz
   const dbPath = tempDb.path;
   const store = new ExtensionCatalogStore(dbPath);
 
-  // Insert a row with a non-canonical path directly via SQL, simulating
-  // a WSL-written row (POSIX canonicalizePath is identity → mixed case
-  // stored as-is). upsert() would canonicalize it, hiding the bug.
+  // inserts a non-canonical path via SQL, as a WSL-written row is stored (POSIX
+  // canonicalizePath is identity); upsert() would canonicalize it and hide the
+  // bug
   const db = new DatabaseSync(dbPath);
   const mixedCasePath =
     "/mnt/c/Project/Repos/my-repo/extensions/models/MyModel.ts";
@@ -2907,8 +2689,6 @@ Deno.test("removeByRawSourcePath: deletes by exact stored PK without canonicaliz
   );
   store.close();
 });
-
-// ── swamp-club#2490: stale-source prune, pulled settle, typeless heal ──
 
 const LEGACY = "/repo/.swamp/pulled-extensions";
 const MANAGED = "/repo/.swamp/config/pulled-extensions";
@@ -3210,12 +2990,6 @@ Deno.test("hasRowWithBundlePath: exact bundle path match", () => {
   });
 });
 
-// -- swamp-club#2876: prune type claims read out of string fixtures -------
-
-/**
- * Seeds `rows` the way a pre-fix loader's legacy upsert wrote them (no
- * extension identity unless one is given), so the next open prunes.
- */
 function seedRows(
   dbPath: string,
   rows: Array<{
@@ -3411,15 +3185,12 @@ Deno.test("ExtensionCatalogStore: isKnownNoExport matches only the recorded kind
     assertEquals(store.isKnownNoExport("model", path, "fp1"), true);
     assertEquals(store.isKnownNoExport("model", path, "fp2"), false);
     assertEquals(store.isKnownNoExport("vault", path, "fp1"), false);
-    // An unknown fingerprint never matches.
     store.recordNoExport("model", path, "");
     assertEquals(store.isKnownNoExport("model", path, ""), false);
   } finally {
     store.close();
   }
 });
-
-// -- Recorded source modules (swamp-club#3385) ---------------------------
 
 Deno.test("ExtensionCatalogStore: recorded source modules round-trip, survive reopening, and can be deleted", () => {
   using tempDb = makeTempDb();
@@ -3496,8 +3267,6 @@ Deno.test("ExtensionCatalogStore: a malformed recorded module list reads as none
   }
 });
 
-// -- Graph-pending source modules (swamp-club#3487) ----------------------
-
 Deno.test("ExtensionCatalogStore: a graph-pending mark is set by a record, cleared by a re-record, and taken once", () => {
   using tempDb = makeTempDb();
   const dbPath = tempDb.path;
@@ -3533,7 +3302,6 @@ Deno.test("ExtensionCatalogStore: a catalog whose source_modules has no graph_pe
   const entry = join(dirname(dirname(dbPath)), "models", "echo.ts");
   const store = new ExtensionCatalogStore(dbPath);
   store.close();
-  // The table as the swamp-club#3385 binary created it.
   const db = new DatabaseSync(dbPath);
   try {
     db.exec("DROP TABLE source_modules");

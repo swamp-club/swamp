@@ -21,14 +21,9 @@ import { CalVer } from "../models/calver.ts";
 import { ReleaseChannel } from "./release_channel.ts";
 
 /**
- * One side of a replacement: a version and the two channels it relates to.
- *
- * `channel` is the channel the install follows — what the lockfile records
- * and what `extension update` and `extension outdated` look for newer
- * versions on. `publishedChannel` is the channel the registry lists the
- * version on. They differ when an exact version is pulled from another
- * channel, or when the version was promoted after it was pulled. Either is
- * null when it is not known.
+ * channel is the channel the install follows; publishedChannel is where the
+ * registry lists the version. They differ on an exact pull from another channel
+ * or a later promotion.
  */
 export interface ExtensionIdentity {
   readonly version: string;
@@ -36,25 +31,14 @@ export interface ExtensionIdentity {
   readonly publishedChannel: string | null;
 }
 
-/** How the incoming version relates to the installed one. */
 export type ReplacementChange = "upgrade" | "downgrade" | "same" | "unknown";
 
-/**
- * What an install is about to replace: the extension's current install and
- * the incoming version. A value object: it is never stored, and `change` and
- * `channelChanged` are derived from the two sides.
- */
 export class ExtensionReplacement {
   private constructor(
     readonly name: string,
-    /** The installed identity, or null when it cannot be determined. */
     readonly current: ExtensionIdentity | null,
     readonly incoming: ExtensionIdentity,
     readonly change: ReplacementChange,
-    /**
-     * True when both published channels are known and differ, so a pull
-     * from stable to beta reads as a channel change.
-     */
     readonly channelChanged: boolean,
   ) {}
 
@@ -83,7 +67,6 @@ export class ExtensionReplacement {
   }
 }
 
-/** Drops a channel that is not a release channel name: it is never shown. */
 function normalize(identity: ExtensionIdentity): ExtensionIdentity {
   return {
     version: identity.version,

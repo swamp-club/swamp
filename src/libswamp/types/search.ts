@@ -21,17 +21,11 @@ import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
 
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
-/**
- * A single type search result item.
- */
 export interface TypeSearchItem {
   raw: string;
   normalized: string;
 }
 
-/**
- * Data payload for the completed event.
- */
 export interface TypeSearchData {
   query: string;
   results: TypeSearchItem[];
@@ -43,26 +37,15 @@ export type TypeSearchEvent =
   | { kind: "completed"; data: TypeSearchData }
   | { kind: "error"; error: SwampError };
 
-/**
- * Dependencies for the type search generator.
- */
 export interface TypeSearchDeps {
   getRegisteredTypes(): Array<{ raw: string; normalized: string }>;
 }
 
-/**
- * Input for the type search generator.
- */
 export interface TypeSearchInput {
   query?: string;
 }
 
-/**
- * Searches registered model types.
- *
- * Returns all types — filtering for JSON mode is handled by the renderer.
- * The Ink renderer uses fzf for interactive fuzzy matching.
- */
+/** returns all types; filtering for JSON mode is done by the renderer */
 export async function* typeSearch(
   _ctx: LibSwampContext,
   deps: TypeSearchDeps,

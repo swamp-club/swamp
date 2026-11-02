@@ -29,10 +29,8 @@ import {
 import { keyPath, ProvenanceMap, sentinelStandInOf } from "./provenance_map.ts";
 
 /**
- * Whether a path in a definition's data holds an argument that reaches the
- * method: `globalArguments...` or `methods.<name>.arguments...`. Only these
- * are restored to raw values by `resolveDeep` before a method runs, so only
- * these may carry sentinels.
+ * only these paths are restored to raw values by resolveDeep before a method
+ * runs, so only they may carry sentinels
  */
 export function isDefinitionArgumentPath(path: string): boolean {
   return path === "globalArguments" ||
@@ -42,12 +40,9 @@ export function isDefinitionArgumentPath(path: string): boolean {
 }
 
 /**
- * Whether a path in a definition's data is delivered with method
- * `methodName`: anything outside `methods`, and that method's own subtree.
- * Another method's subtree is not. A delivery resolves, checks and fails on
- * the runtime expressions at these paths only, as it asserts the failed
- * definition-pass expressions of this method only: another method's
- * reference is no more this delivery's to read than its inputs are.
+ * a delivery resolves, checks and fails on runtime expressions at these paths
+ * only; another method's reference is no more this delivery's to read than its
+ * inputs are
  */
 export function isDeliveredWithMethod(
   path: string,
@@ -59,12 +54,9 @@ export function isDeliveredWithMethod(
 }
 
 /**
- * Whether a subtree at `path` in a definition's data holds nothing that is
- * delivered with method `methodName`: another method's subtree. A runtime
- * pass scoped to a method neither resolves nor substitutes into one, so a
- * raw text it shares with the delivered method keeps its authored form
- * there. The `methods` container holds the delivered method, so it is not
- * outside.
+ * a runtime pass scoped to a method neither resolves nor substitutes into
+ * another method's subtree, so a raw text shared with the delivered method
+ * keeps its authored form there
  */
 export function isOutsideMethodDelivery(
   path: string,
@@ -74,13 +66,11 @@ export function isOutsideMethodDelivery(
     !isDeliveredWithMethod(path, methodName);
 }
 
-/** Whether `path` is `root` or lies under it. */
 function isUnder(path: string, root: string): boolean {
   return path === root || path.startsWith(root + ".") ||
     path.startsWith(root + "[");
 }
 
-/** Keeps reference sentinels intact and supplies their provenance stand-ins. */
 export function sensitiveSpliceSanitizer(
   bag: VaultSecretBag,
 ): SpliceSanitizer {
@@ -105,15 +95,14 @@ export function sensitiveSpliceSanitizer(
 }
 
 /**
- * A pass's two coordinate views and their provenance. Typed evaluation puts
- * reference sentinels in both; identifier substitutions and pre-existing bases
- * can still differ. Each expression is evaluated once and spliced into both.
+ * typed evaluation puts reference sentinels in both copies, but identifier
+ * substitutions and pre-existing bases can still differ; each expression is
+ * evaluated once and spliced into both
  */
 export class SplicePair<T = unknown> {
   constructor(
     readonly raw: T,
     readonly sanitized: T,
-    /** Where data sits in `raw` (swamp-club#3205). */
     readonly rawProvenance: ProvenanceMap = ProvenanceMap.authored(),
     /**
      * Where data sits in `sanitized`. Kept separately because sentinels
@@ -122,7 +111,6 @@ export class SplicePair<T = unknown> {
     readonly sanitizedProvenance: ProvenanceMap = rawProvenance,
   ) {}
 
-  /** A pair whose copies start identical. */
   static of<T>(
     data: T,
     provenance: ProvenanceMap = ProvenanceMap.authored(),
@@ -188,7 +176,6 @@ export class SplicePair<T = unknown> {
     );
   }
 
-  /** This pair with new maps for its copies. */
   withProvenance(
     raw: ProvenanceMap,
     sanitized: ProvenanceMap = raw,

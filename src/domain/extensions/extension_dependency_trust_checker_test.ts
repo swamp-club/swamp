@@ -42,8 +42,6 @@ import type {
   LockedDependencyVersions,
 } from "@swamp-club/extension-scoring/dependency-audit";
 
-// ── Integration tests with mocked fetcher ───────────────────────────────
-
 function createMockFetcher(
   responses: Record<string, { status: number; body: unknown }>,
 ): Fetcher {
@@ -157,10 +155,6 @@ const OSV_URL = "api.osv.dev";
 const NPM_URL = "registry.npmjs.org/";
 const DOWNLOADS_URL = "api.npmjs.org/downloads";
 
-/**
- * Answers each service from `routes` by URL substring; a route of "throw"
- * rejects like an unreachable host. Records every URL it was asked for.
- */
 function routedFetcher(
   routes: Record<string, { status: number; body: unknown } | "throw">,
   calls: string[] = [],
@@ -382,9 +376,8 @@ Deno.test("checkDependencyTrust: empty specifiers passes", async () => {
   assertEquals(result.warnings.length, 0);
 });
 
-// ── Audited version resolution ──────────────────────────────────────────
-// Vectors mirror swamp-club tests/domain/dependency_trust_test.ts, so push
-// and the registry scorecard ask OSV about the same version.
+// vectors mirror the swamp-club dependency trust tests so push and the registry
+// scorecard ask OSV about the same version
 
 const PUBLISHED = [
   "3.9.0",
@@ -447,7 +440,6 @@ const RANGE_NPM_BODY = {
   time: { "4.21.1": new Date().toISOString() },
 };
 
-/** Like `routedFetcher`, also recording each OSV request body. */
 function osvRecordingFetcher(
   routes: Record<string, { status: number; body: unknown } | "throw">,
   osvBodies: unknown[],
@@ -580,8 +572,6 @@ Deno.test("checkDependencyTrust: a malformed packument leaves a range not audite
   );
 });
 
-// ── The shipped version (swamp-club#3352) ───────────────────────────────
-
 function lockOf(
   versions: Record<string, string[]>,
 ): LockedDependencyVersions {
@@ -632,7 +622,6 @@ Deno.test("checkDependencyTrust: a deprecated pin warns when latest is not depre
       remediation: "Move to 2.0.0, the newest version that isn't deprecated.",
     },
   );
-  // License and maintainers come from the pinned version too.
   assertEquals(result.audited[0].license, "GPL-3.0");
   assertEquals(
     result.warnings.some((w) => w.message === "no maintainers listed"),
@@ -835,7 +824,6 @@ Deno.test("checkDependencyTrust: the lock decides a range's version, and a locke
     package: { name: "express", ecosystem: "npm" },
     version: "4.18.2",
   }]);
-  // A valid lock fixed the version, so the range costs nothing (swamp-club#3970).
   assertEquals(result.warnings, []);
   assertEquals(result.audited[0].resolvedFrom, "lockfile");
 });
@@ -888,8 +876,6 @@ Deno.test("checkDependencyTrust: an invalid npm name is not audited and never fe
   }]);
 });
 
-// ── JSR ──────────────────────────────────────────────────────────────────
-
 function jsrSpec(name: string, version: string | null): DependencySpecifier {
   return { name, version, registry: "jsr", sourceFile: "model.ts" };
 }
@@ -907,7 +893,6 @@ const JSR_META = {
   },
 };
 
-/** Answers jsr.io like the real registry: JSON with its content type. */
 function jsrFetcher(
   route: { status: number; body: unknown; contentType?: string } | "throw",
   calls: string[] = [],
@@ -1212,8 +1197,6 @@ Deno.test("checkDependencyTrust: a deprecation notice loses bidi and zero-width 
   );
 });
 
-// ── Imports the import map resolved ──────────────────────────────────────
-
 function mapped(
   spec: DependencySpecifier,
   importedAs: string,
@@ -1268,7 +1251,6 @@ Deno.test("checkDependencyTrust: a mapped range resolves from the lock, and a lo
   );
   assertEquals(result.audited[0].version, "4.18.2");
   assertEquals(result.audited[0].resolvedFrom, "lockfile");
-  // A valid lock fixed the version, so the range costs nothing (swamp-club#3970).
   assertEquals(result.warnings, []);
 });
 
@@ -1462,8 +1444,6 @@ Deno.test("onlyOutagesNotAudited: true only when every fix is an outage", () => 
   assertEquals(onlyOutagesNotAudited(["name"]), false);
   assertEquals(onlyOutagesNotAudited([]), false);
 });
-
-// ── The shipped versions the archive records (swamp-club#3662) ──────────
 
 Deno.test("checkDependencyTrust: returns the version that ships for each specifier, with where it came from", async () => {
   const installed: DependencySpecifier = {

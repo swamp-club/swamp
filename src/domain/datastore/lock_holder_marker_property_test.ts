@@ -136,7 +136,6 @@ Deno.test("withRemoteLockHolder property: the holder pid never joins the chain w
           assertEquals(env, {});
           return;
         }
-        // One entry, for this pid, holding at least one well-formed nonce.
         assertEquals(/^[1-9][0-9]*:[A-Za-z0-9+-]+$/.test(tokens), true);
         assertEquals(tokens.startsWith(`${pid}:`), true);
         assertEquals(chain.includes(String(pid)), hostname === HOST);
@@ -220,7 +219,6 @@ function envWith(tokens?: string): LockHolderEnvStore {
   };
 }
 
-/** A well-formed list naming this process and others. */
 const listArb = fc.array(
   fc.tuple(
     fc.oneof(fc.constant(OWN_PID), pidArb),
@@ -231,10 +229,6 @@ const listArb = fc.array(
   entries.map(([pid, nonces]) => `${pid}:${nonces.join("+")}`).join(",")
 );
 
-/**
- * The nonces a request handler's child would be told this process holds for
- * it, when the handler adopts `forwarded`.
- */
 async function adopted(forwarded: string): Promise<string[]> {
   const server = new LockHolderMarker(envWith(), OWN_PID);
   const tokens = await server.runAdopting(
@@ -291,7 +285,6 @@ Deno.test("LockHolderMarker.forwardedLockTokens: never returns a list over the l
   );
 });
 
-// One step of a run that nests lock scopes and starts hops in them.
 type HandOffOp =
   | { kind: "open" }
   | { kind: "close" }
@@ -311,8 +304,6 @@ Deno.test("LockHolderMarker property: a scope reclaims exactly when its live han
       fc.array(handOffOpArb, { maxLength: 40 }),
       async (ops) => {
         const marker = new LockHolderMarker(envStore({}), CHILD_PID);
-        // Per scope: the hand-offs live in it or under it, and how often
-        // it has reclaimed against how often its count returned to zero.
         const live: number[] = [];
         const reclaimed: number[] = [];
         const expected: number[] = [];

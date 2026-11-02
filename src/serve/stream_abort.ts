@@ -18,16 +18,9 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * Ending a forwarded response body when the forwarder shuts down.
- *
- * @module
- */
-
-/**
- * Passes a forwarded body through, ending it when `signal` aborts.
- * Aborting the upstream fetch alone does not end a body already handed to
- * a response: the browser's stream (the health SSE) would run on and the
- * server's shutdown would wait for it forever.
+ * aborting the upstream fetch alone does not end a body already handed to a
+ * response: the browser's stream (the health SSE) would run on and server
+ * shutdown would wait for it forever
  */
 export function endOnAbort(
   body: ReadableStream<Uint8Array>,

@@ -47,10 +47,8 @@ Deno.test("YamlVaultConfigRepository - normal vault types resolve correctly", as
   const dir = await Deno.makeTempDir();
   try {
     const repo = new YamlVaultConfigRepository(dir);
-    // These should not throw - normal vault types
     const resultAws = await repo.findAllByType("aws-sm");
     const resultLocal = await repo.findAllByType("local_encryption");
-    // Both return empty arrays since the vault dir doesn't exist yet
     if (
       !Array.isArray(resultAws) || !Array.isArray(resultLocal)
     ) {
@@ -190,7 +188,6 @@ Deno.test("YamlVaultConfigRepository - rejects malformed YAML config", async (t)
     try {
       const vaultDir = join(dir, "vaults", "mock");
       await ensureDir(vaultDir);
-      // Write YAML missing the 'id' field
       await Deno.writeTextFile(
         join(vaultDir, "bad.yaml"),
         "name: bad-vault\ntype: mock\nconfig: {}\ncreatedAt: '2025-01-01T00:00:00Z'\n",
@@ -260,7 +257,6 @@ Deno.test("YamlVaultConfigRepository - rejects malformed YAML config", async (t)
     try {
       const vaultDir = join(dir, "vaults", "mock");
       await ensureDir(vaultDir);
-      // Config field omitted - should default to {}
       await Deno.writeTextFile(
         join(vaultDir, "ok.yaml"),
         "id: test-id\nname: ok-vault\ntype: mock\ncreatedAt: '2025-01-01T00:00:00Z'\n",
@@ -378,7 +374,6 @@ Deno.test("YamlVaultConfigRepository: findByName finds a valid vault whatever br
   await withVaultDir(async (repoDir, vaultsDir) => {
     const repo = new YamlVaultConfigRepository(repoDir);
     await repo.save(validVault("vault-b", "good-vault"));
-    // Broken files that sort before and after the valid one.
     await writeVaultFile(vaultsDir, "local_encryption", "vault-a", BROKEN_YAML);
     await writeVaultFile(vaultsDir, "local_encryption", "vault-c", BROKEN_YAML);
 
@@ -465,7 +460,6 @@ Deno.test("YamlVaultConfigRepository.save: stages a write of the config file", a
 
     await runInUnitOfWork(uow, () => repo.save(config));
 
-    // Signalled before the write and again after it (swamp-club#2421).
     assertEquals(uow.staged(), [{ kind: "write", path }, {
       kind: "write",
       path,
@@ -490,8 +484,6 @@ Deno.test("YamlVaultConfigRepository.save: marks the config before writing it an
 
     await repo.save(localVault("vault-1", "v1"));
 
-    // Absent before the write; present at the mark after it
-    // (swamp-club#2421).
     assertEquals(existedAtMark, [false, true]);
   });
 });
@@ -511,7 +503,6 @@ Deno.test("YamlVaultConfigRepository.delete: stages a remove of the config file"
 
     await runInUnitOfWork(uow, () => repo.delete(config));
 
-    // Signalled before the write and again after it (swamp-club#2421).
     assertEquals(uow.staged(), [{ kind: "remove", path }, {
       kind: "remove",
       path,
@@ -538,8 +529,6 @@ Deno.test("YamlVaultConfigRepository.delete: marks the config before removing it
 
     await repo.delete(config);
 
-    // Present before the removal; gone at the mark after it
-    // (swamp-club#2421).
     assertEquals(existedAtMark, [true, false]);
   });
 });
@@ -557,7 +546,6 @@ Deno.test("YamlVaultConfigRepository.delete: stages a remove for a config alread
 
     await repo.delete(config);
 
-    // Marked before the removal and after it (swamp-club#2421).
     const path = repo.getPath(config.type, config.id);
     assertEquals(marks, [path, path]);
   });
@@ -588,7 +576,6 @@ Deno.test("YamlVaultConfigRepository.findAll: returns vaults in type then id ord
     await repo.save(VaultConfig.create("id-z", "zebra", "mock", {}));
     await repo.save(VaultConfig.create("id-a", "apple", "mock", {}));
 
-    // "mock" sorts before "mock1" as a path segment on every platform.
     assertEquals(
       (await repo.findAll()).map((v) => `${v.type}:${v.id}`),
       ["mock:id-a", "mock:id-m", "mock:id-z", "mock1:id-b"],
@@ -612,7 +599,6 @@ Deno.test("YamlVaultConfigRepository.findByName: a duplicated name resolves to t
     const repo = new YamlVaultConfigRepository(dir);
     const typeDir = join(dir, "vaults", "mock");
     await repo.save(VaultConfig.create("id-m", "shared", "mock", {}));
-    // Copies of the saved file under other ids give three files with one name.
     const saved = await Deno.readTextFile(join(typeDir, "id-m.yaml"));
     for (const id of ["id-z", "id-a"]) {
       await Deno.writeTextFile(
@@ -631,7 +617,6 @@ Deno.test("YamlVaultConfigRepository.findByName: a duplicated name resolves to t
   }
 });
 
-/** Each typed change as [partition, kind, intent kind, key, expect]. */
 function typedRows(batches: (readonly TypedChange[])[]): unknown[][][] {
   return batches.map((batch) =>
     batch.map((change) => {
@@ -673,7 +658,6 @@ Deno.test("YamlVaultConfigRepository: on v3 under managed config, stages a creat
     const created = localVault(id, "v1");
     await runInUnitOfWork(uow, async () => {
       await repo.save(created);
-      // The same bytes again: nothing to stage.
       await repo.save(created);
     });
     assertEquals(typedRows(batches), [[[

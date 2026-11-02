@@ -19,18 +19,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Refreshes or checks the pinned Litestream release (swamp-club#3358).
- *
- *   deno run litestream-pin --version 0.5.18   rewrite the pin and Dockerfile
- *   deno run litestream-pin --check            re-derive and fail on drift
- *
- * For each of the five targets it downloads upstream's archive, checks it
- * against upstream's `checksums.txt`, extracts the binary and hashes it. The
- * results are written to `litestream_pin.ts` and to the Dockerfile's two
- * linux `ADD --checksum` lines, which `toolchain_pins_rules_test.ts` keeps in
- * step with the pin.
- */
 
 import { parseArgs } from "@std/cli/parse-args";
 import { join } from "@std/path";
@@ -77,13 +65,11 @@ const LICENSE_HEADER = `// Swamp, an Automation Framework
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 `;
 
-/** The Docker image's targets, keyed by Docker's TARGETARCH. */
 export const DOCKER_TARGETS: Readonly<Record<string, LitestreamTarget>> = {
   amd64: "linux-x86_64",
   arm64: "linux-arm64",
 };
 
-/** Parses upstream's `checksums.txt` (`<sha256>  <file name>` per line). */
 export function parseChecksumsTxt(text: string): Map<string, string> {
   const checksums = new Map<string, string>();
   for (const line of text.split("\n")) {
@@ -98,7 +84,6 @@ export function parseChecksumsTxt(text: string): Map<string, string> {
   return checksums;
 }
 
-/** Renders `litestream_pin.ts`, already in `deno fmt` style. */
 export function renderPinFile(
   version: string,
   targets: Readonly<Record<LitestreamTarget, LitestreamTargetDigests>>,
@@ -133,10 +118,6 @@ ${entries}
 const DOCKER_ADD =
   /^ADD --checksum=sha256:[0-9a-f]{64} https:\/\/github\.com\/\S+ \/litestream\.tar\.gz$/;
 
-/**
- * Rewrites the Dockerfile's per-arch `ADD --checksum` lines. Each one follows
- * a `FROM scratch AS litestream-<arch>` line. Throws unless both are found.
- */
 export function rewriteDockerfilePins(
   dockerfile: string,
   version: string,
@@ -176,7 +157,6 @@ async function download(url: string): Promise<Uint8Array> {
   return new Uint8Array(await response.arrayBuffer());
 }
 
-/** Reads one file out of a `.tar.gz`, in memory. */
 async function readFromTarGz(
   archive: Uint8Array,
   name: string,
@@ -202,7 +182,6 @@ async function readFromTarGz(
   return found;
 }
 
-/** Reads one file out of a `.zip` with the system `unzip`. */
 async function readFromZip(
   archive: Uint8Array,
   name: string,
@@ -227,10 +206,6 @@ async function readFromZip(
   }
 }
 
-/**
- * Downloads every target's archive for `version`, checks it against
- * upstream's `checksums.txt`, and hashes the binary inside.
- */
 export async function deriveDigests(
   version: string,
 ): Promise<Record<LitestreamTarget, LitestreamTargetDigests>> {
@@ -269,17 +244,12 @@ export async function deriveDigests(
   return targets as Record<LitestreamTarget, LitestreamTargetDigests>;
 }
 
-/** The version the checked-in pin file names. */
 export function pinnedVersionOf(pinFile: string): string {
   const match = pinFile.match(/^ {2}version: "(\d+\.\d+\.\d+)",$/m);
   if (match === null) throw new Error("No version line in the pin file");
   return match[1];
 }
 
-/**
- * Re-derives the pin for `version` and returns the files that differ from
- * what it would render, empty when everything matches upstream.
- */
 export async function findDrift(version: string): Promise<string[]> {
   const targets = await deriveDigests(version);
   const drift: string[] = [];

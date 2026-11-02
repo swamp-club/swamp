@@ -17,14 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * The scan behind `swamp doctor datastores`'s unreadable_versions check
- * (swamp-club#3955): every published data version of a v2 filesystem
- * datastore whose stored content cannot be read.
- *
- * @module
- */
-
 import { ModelType } from "../../domain/models/model_type.ts";
 import type { Namespace } from "../../domain/data/namespace.ts";
 import type { UnreadableDataVersion } from "../../domain/data/unreadable_data_version.ts";
@@ -34,29 +26,15 @@ import type {
   FileSystemUnifiedDataRepository,
 } from "./unified_data_repository.ts";
 
-/** What the scan knows of one published version before reading it. */
 interface PublishedVersion {
   latest: boolean;
   modelName: string;
 }
 
 /**
- * Every published version of the datastore that cannot be read, and every
- * data name whose latest marker names no version, ordered by model type,
- * model id, data name and version.
- *
- * Walks every data name on disk together with every catalog row of
- * `namespace` that is not pending; rows of other namespaces describe data
- * that is not in this layout and are never read. Only published versions
- * are checked (see `src/domain/data/unreadable_data_version.ts`), so a write
- * in flight is never reported. Read-only: neither the files nor the catalog
- * are changed, and no data query runs, so no catalog backfill hides what
- * the scan measures. The one state it touches is the process's record of
- * read warnings: each version it reports is noted, so a read later in the
- * same process does not warn about it again.
- *
- * For a repository whose files are all local (the filesystem datastore):
- * with lazy hydration a missing file is not damage.
+ * read-only, and no data query runs, so no catalog backfill hides what the scan
+ * measures; each reported version is noted so a later read in this process does
+ * not warn again
  */
 export async function scanUnreadableVersions(
   dataRepo: FileSystemUnifiedDataRepository,

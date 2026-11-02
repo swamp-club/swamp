@@ -68,10 +68,6 @@ async function stampGitSha(): Promise<string> {
   return sha;
 }
 
-/**
- * Downloads the deno binary for the given target platform.
- * Runs scripts/download_deno.ts to fetch from GitHub releases.
- */
 async function downloadDeno(target?: string): Promise<void> {
   const downloadArgs = ["run", "-A", "scripts/download_deno.ts"];
   if (target) {
@@ -91,10 +87,6 @@ async function downloadDeno(target?: string): Promise<void> {
   }
 }
 
-/**
- * Cleans up the resources/deno/ directory after compilation.
- * Removes platform-specific binary to avoid leaving it in the repo.
- */
 async function cleanupDenoResources(): Promise<void> {
   const denoDir = join(
     import.meta.dirname ?? ".",
@@ -129,12 +121,10 @@ async function main() {
     version: args.version,
   };
 
-  // Only stamp version when explicitly provided (CI passes --version).
-  // Local dev builds keep the source-default VERSION (with empty sha).
-  // Save original version file content so we can restore after compile
+  // stamp the version only when given (CI passes --version); dev builds keep
+  // the source default, so the original is saved to restore after compile
   const preStampContent = await Deno.readTextFile(VERSION_FILE);
 
-  // Always stamp the git sha (even dev builds)
   const sha = await stampGitSha();
   if (sha) {
     console.log(`Git SHA: ${sha}`);
@@ -151,14 +141,11 @@ async function main() {
   }
 
   try {
-    // Download deno binary for embedding
     await downloadDeno(options.target);
 
-    // Individual flags instead of --allow-all: least-privilege, and prevents
-    // auto-granting future Deno permission categories.  Trade-off: Deno.open()
-    // on device nodes (e.g. /dev/ttyUSB0) requires --allow-all in compiled
-    // binaries, so extensions must use Deno.Command for hardware I/O.
-    // See design/primitives/extensions.md "Runtime Permissions".
+    // individual flags, not --allow-all, to avoid auto-granting future
+    // permission categories; Deno.open on device nodes then fails, so
+    // extensions use Deno.Command for hardware I/O
     const dashboardDistExists = await Deno.stat("packages/dashboard/dist")
       .then(() => true).catch(() => false);
     const baseCommand = [
@@ -171,25 +158,17 @@ async function main() {
       "--allow-run",
       "--allow-sys",
       "--allow-net",
-      // libc getrlimit/setrlimit for fd-limit raising at serve startup,
-      // libc/libproc for the auth gate's nested-run ancestry check
-      // (src/infrastructure/runtime/process_ancestry.ts), and libc for the
-      // /proc reads that find a deferred write whose process died
-      // (src/infrastructure/runtime/process.ts), and libc /proc reads and
-      // the macOS kern.proc sysctl that judge whether a v3 writer still
-      // runs (processStateOf in process_ancestry.ts). Without it every
-      // nested swamp in a shell step is blocked.
+      // ffi is for libc/libproc calls: raising the fd limit, the auth gate's
+      // ancestry check, and /proc and sysctl reads for writer liveness.
       "--allow-ffi",
       "--include",
       ".claude/skills",
       "--include",
       "resources/deno",
-      // Dashboard dist is included only when pre-built (CI runs
-      // `npm run build` in packages/dashboard before compile).
+      // included only when pre-built; CI builds it before compile
       ...(dashboardDistExists
         ? ["--include", "packages/dashboard/dist"]
         : []),
-      // Exclude development-only directories from the binary
       "--exclude",
       "agent-constraints",
       "--exclude",
@@ -244,12 +223,10 @@ async function main() {
       Deno.exit(1);
     }
   } finally {
-    // Restore original version file if we stamped it
     if (originalContent !== null) {
       await Deno.writeTextFile(VERSION_FILE, originalContent);
     }
 
-    // Clean up downloaded deno binary
     await cleanupDenoResources();
   }
 }

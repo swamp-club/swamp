@@ -108,16 +108,12 @@ Deno.test("pending record: any record survives its stored form and is found only
 const WAIT_ID = "11111111-1111-4111-8111-111111111111";
 const RUN_ID = "22222222-2222-4222-8222-222222222222";
 
-/** A wait, a pending signal in its slot, and the times that decide between them. */
 const settlingArb = fc.record({
   claimedAt: fc.integer({ min: 0, max: 3_600_000 }),
   acceptEarly: fc.integer({ min: 1, max: 3600 }),
   timeout: fc.integer({ min: 1, max: 3600 }),
-  // Relative to the claim, from well before the limit to well after the
-  // deadline.
   receivedOffset: fc.integer({ min: -4_000_000, max: 4_000_000 }),
   lookOffset: fc.integer({ min: 0, max: 8_000_000 }),
-  // What settled the wait before anyone looked, if anything.
   earlier: fc.constantFrom("none", "timed_out", "cancelled"),
 });
 
@@ -186,7 +182,6 @@ Deno.test("isReceivedForWait: a signal the claim's facts refuse is never taken b
           payload,
           ...(authorizedFor !== undefined ? { authorizedFor } : {}),
         };
-        // What the claim keeps of the wait.
         const claim = { early: ref.early, deadline: ref.deadline };
         if (!isReceivedForWait(signal, claim)) {
           assertEquals(pendingOutcome(signal, ref), undefined);
@@ -217,10 +212,9 @@ Deno.test("outcomeAt: the settling decision over the claim, the pending signal, 
       }
       const stored = await outcomeAt(store, ref, now);
       const kind = stored.kind === "found" ? stored.record.kind : stored.kind;
-      // An outcome is written once: what settled the wait first stands.
-      // Otherwise an applicable pending signal is taken whenever the reader
-      // looks, before or after the deadline; and only a wait with neither
-      // times out, and only past its deadline.
+      // an outcome is written once, so what settled the wait first stands;
+      // otherwise an applicable pending signal is taken whenever read, and only
+      // a wait with neither times out, past its deadline
       const expired = now.getTime() > new Date(ref.deadline).getTime();
       const expected = s.earlier !== "none"
         ? s.earlier
@@ -230,19 +224,13 @@ Deno.test("outcomeAt: the settling decision over the claim, the pending signal, 
         ? "timed_out"
         : "absent";
       assertEquals(kind, expected);
-      // Every later reader agrees, whenever it looks.
       const later = await outcomeAt(store, ref, new Date(now.getTime() + 1e9));
       if (expected !== "absent") assertEquals(later, stored);
-      // And taking again changes nothing.
       const again = await takePendingSignal(store, ref);
       if (expected === "accepted") assertEquals(again, stored);
     }),
   );
 });
-
-// The read-only check and the take built on it (swamp-club#3309). The slot
-// states are generated apart from `settlingArb`, which the properties above
-// keep as they were.
 
 const STRICT_SCHEMA = {
   type: "object" as const,
@@ -252,26 +240,21 @@ const STRICT_SCHEMA = {
 const OWN_RECEIPT = "33333333-3333-4333-8333-333333333333";
 const BELOW_RECEIPT = "44444444-4444-4444-8444-444444444444";
 
-/** A wait claimed at generation 2 and what its two slots may hold. */
 const slotsArb = fc.record({
   claimedAt: fc.integer({ min: 0, max: 3_600_000 }),
   acceptEarly: fc.integer({ min: 1, max: 3600 }),
   timeout: fc.integer({ min: 1, max: 3600 }),
   receivedOffset: fc.integer({ min: -4_000_000, max: 4_000_000 }),
-  // The highest record of the wait's own slot.
   head: fc.constantFrom("none", "pending", "lapse", "unreadable"),
-  // Whether the schema the wait captured allows the own slot's payload.
   payloadAllowed: fc.boolean(),
   // The slot below, which only a claim created over a release reads.
   overRelease: fc.boolean(),
   below: fc.constantFrom("none", "pending"),
   earlier: fc.constantFrom("none", "timed_out", "cancelled"),
-  // When a reader looks, in thousandths of the way from claim to deadline.
   lookPermille: fc.integer({ min: 0, max: 1000 }),
 });
 type Slots = typeof slotsArb extends fc.Arbitrary<infer T> ? T : never;
 
-/** The wait of `s` as a step of a suspended run holds it. */
 function waitingAt(s: Slots): { run: WorkflowRun; ref: EarlyWaitRef } {
   const workflow = Workflow.create({
     name: "kitchen",
@@ -311,11 +294,6 @@ function waitingAt(s: Slots): { run: WorkflowRun; ref: EarlyWaitRef } {
   return { run, ref };
 }
 
-/**
- * A store holding what `s` describes, and the receipt of the signal the
- * wait is given, if any: its own slot's when that applies, else the slot
- * below's for a claim created over a release.
- */
 async function storeOf(
   s: Slots,
   ref: EarlyWaitRef,
@@ -382,7 +360,6 @@ async function storeOf(
   return { store, receipt };
 }
 
-/** Everything a store holds, for telling whether a call wrote to it. */
 function contentsOf(store: InMemorySignalWaitStore) {
   return [
     store.registrations,
@@ -401,13 +378,11 @@ Deno.test("applicablePendingOutcome: finds the signal the slots give the wait an
 
       const peeked = await applicablePendingOutcome(store, ref);
       assertEquals(peeked?.receipt.id, receipt);
-      // Asking again answers the same, and the store is as it was.
       assertEquals(await applicablePendingOutcome(store, ref), peeked);
       assertEquals(contentsOf(store), before);
 
       const taken = await takePendingSignal(store, ref);
       if (!peeked) {
-        // Nothing applies: nothing is settled, whatever was there before.
         assertEquals(taken, { kind: "absent" });
         assertEquals(contentsOf(store), before);
       } else if (s.earlier === "none") {
@@ -437,7 +412,6 @@ Deno.test("findUnsettledWait: up to the deadline, reports a wait as waiting exac
         (await findUnsettledWait(checked.store, run, now)) !== undefined;
       assertEquals(contentsOf(checked.store), before);
 
-      // The resume asks the same of an identical store, and may settle.
       const resumed = await storeOf(s, ref);
       const stored = await outcomeAt(resumed.store, ref, now);
       assertEquals(waiting, stored.kind === "absent");

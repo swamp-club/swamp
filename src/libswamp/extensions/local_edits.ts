@@ -25,23 +25,15 @@ import { nestedEntryRelDirs } from "../../domain/extensions/install_journal.ts";
 import { LockfileRepository } from "../../infrastructure/persistence/lockfile_repository.ts";
 
 /**
- * Tri-state outcome of the local-edits check.
- *
- * - `match` — on-disk digest equals the stored filesChecksum anchor;
- *   safe to overwrite.
- * - `mismatch` — on-disk digest diverges from the anchor; user has edited
- *   something since install and the caller must refuse silent overwrite.
- * - `no-anchor` — no stored anchor (pre-filesChecksum lockfile entry, or
- *   extension not installed at all). Grandfather path — caller proceeds
- *   as before the check existed.
+ * no-anchor is the grandfather path: no stored filesChecksum (older lockfile
+ * entry, or extension not installed), so the caller proceeds as before the
+ * check existed; mismatch means the caller must refuse a silent overwrite
  */
 export type LocalEditsStatus = "match" | "mismatch" | "no-anchor";
 
 /**
- * Compares the lockfile-stored filesChecksum for `name` against a fresh
- * digest of the on-disk per-extension subtree. Any infrastructure error
- * (lockfile unreadable, per-extension dir unwalkable) degrades to
- * `no-anchor` so callers never wedge a user command on a safety-check bug.
+ * any infrastructure error degrades to no-anchor, so callers never wedge a user
+ * command on a safety-check bug
  */
 export async function detectLocalEditsForExtension(
   repoDir: string,
@@ -69,11 +61,8 @@ export async function detectLocalEditsForExtension(
 }
 
 /**
- * Thrown synchronously by callers that refuse a force-overwrite when
- * local edits are detected. Message names the extension and points the
- * user at the explicit opt-in command. Extends UserError so CLI layers
- * render it without a stack trace; distinct class so HTTP layers can map
- * it to a dedicated status code (409 Conflict).
+ * distinct class so HTTP layers can map it to 409 Conflict; extends UserError
+ * so CLI layers render it without a stack trace
  */
 export class LocalEditsError extends UserError {
   readonly extensionName: string;

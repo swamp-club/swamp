@@ -55,13 +55,11 @@ import type { ModelValidateResponse } from "../../serve/protocol.ts";
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
 
-/** The preferred spelling: `swamp behavior validate`. */
 export const BEHAVIOR_VALIDATE_SYNTAX: CommandSyntax = {
   invocation: "swamp behavior validate",
   surface: "behavior",
 };
 
-/** The legacy spelling: `swamp model validate`. */
 export const MODEL_VALIDATE_SYNTAX: CommandSyntax = {
   invocation: "swamp model validate",
   surface: "model",
@@ -152,8 +150,6 @@ export function createModelValidateCommand(syntax: CommandSyntax) {
           outputMode: cliCtx.outputMode,
         });
 
-      // Pushes and releases the global lock when the command ends, as the
-      // teardown flush did (swamp-club#3055).
       await runInCoordinatorRoot(repoContext, async () => {
         await modelRegistry.ensureLoaded();
         const ctx = createLibSwampContext({ logger: cliCtx.logger });

@@ -46,20 +46,17 @@ import {
 } from "./output_reference.ts";
 
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
-/** Log file data. */
 export interface LogData {
   lines: string[];
   path: string;
 }
 
-/** No log file data (pre-logFile runs). */
 export interface NoLogFileData {
   outputId: string;
   modelName: string;
   methodName: string;
 }
 
-/** Empty log file data. */
 export interface EmptyLogData {
   outputId: string;
   methodName: string;
@@ -87,7 +84,6 @@ export interface ModelMethodHistoryLogsInput {
   reference?: OutputReference<ModelOutput>;
 }
 
-/** Dependencies for the model method history logs operation. */
 export interface ModelMethodHistoryLogsDeps
   extends OutputReferenceDeps<ModelOutput> {
   getModelName: (
@@ -100,15 +96,14 @@ export interface ModelMethodHistoryLogsDeps
   toRelativePath: (repoDir: string, path: string) => string;
 }
 
-/** Wires real infrastructure into ModelMethodHistoryLogsDeps. */
 export async function createModelMethodHistoryLogsDeps(
   repoDir: string,
   datastoreResolver?: DatastorePathResolver,
   injectedDefinitionRepo?: YamlDefinitionRepository,
   /**
-   * The repository context's lookup, so an output record the v3 read model
-   * could not materialise fails a lookup loudly and is named by a listing
-   * that leaves it out (swamp-club#3617).
+   * the repository context's lookup, so an output record the v3 read model
+   * could not materialise fails a lookup loudly and is named by a listing that
+   * leaves it out
    */
   unreadableContent?: UnreadableContentLookup,
 ): Promise<ModelMethodHistoryLogsDeps> {
@@ -166,7 +161,6 @@ export async function createModelMethodHistoryLogsDeps(
   };
 }
 
-/** Yields log content for a model method run. */
 export async function* modelMethodHistoryLogs(
   _ctx: LibSwampContext,
   deps: ModelMethodHistoryLogsDeps,
@@ -230,7 +224,6 @@ export async function* modelMethodHistoryLogs(
           output = reference.latest;
       }
 
-      // Read log file
       if (!output.logFile) {
         const modelName = await deps.getModelName(output.definitionId);
         yield {

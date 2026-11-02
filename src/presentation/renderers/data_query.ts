@@ -40,10 +40,6 @@ function formatSize(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)}MB`;
 }
 
-/**
- * Formats a cell value for a markdown table. Complex values become
- * inline JSON code spans.
- */
 function formatCell(value: unknown): string {
   if (value === null || value === undefined) return "";
   if (typeof value === "object") {
@@ -52,9 +48,6 @@ function formatCell(value: unknown): string {
   return String(value);
 }
 
-/**
- * Builds a markdown table string from column headers and rows.
- */
 function markdownTable(
   headers: string[],
   rows: string[][],
@@ -69,13 +62,8 @@ function markdownTable(
 }
 
 /**
- * Renders the default DataRecord table (no --select).
- *
- * Builds the table directly with Cliffy's Table primitive and returns
- * already-rendered terminal text. The earlier implementation returned
- * markdown that was then parsed by `marked` + `marked-terminal`, which
- * scaled at ~3ms per row — fine for the TUI's bounded result set, fatal
- * for `--limit 100000` on a real catalog.
+ * builds the table directly with Cliffy's Table: rendering markdown through
+ * marked scales too poorly per row for a large --limit.
  */
 function renderDefaultTable(
   data: DataQueryData,
@@ -127,9 +115,6 @@ function renderDefaultTable(
   return out;
 }
 
-/**
- * Renders projected scalar values.
- */
 function renderScalars(
   projected: Extract<ProjectedData, { shape: "scalar" }>,
 ): string {
@@ -142,9 +127,6 @@ function renderScalars(
   }).join("\n");
 }
 
-/**
- * Renders projected map values as a markdown table.
- */
 function renderMapTable(
   projected: Extract<ProjectedData, { shape: "map" }>,
 ): string {
@@ -159,9 +141,6 @@ function renderMapTable(
   return markdownTable(projected.columns, rows);
 }
 
-/**
- * Renders projected list values as a markdown table (no headers).
- */
 function renderListTable(
   projected: Extract<ProjectedData, { shape: "list" }>,
 ): string {
@@ -176,9 +155,6 @@ function renderListTable(
   return markdownTable(headers, rows);
 }
 
-/**
- * Renders projected data as markdown based on shape.
- */
 function renderProjected(data: DataQueryData): string {
   if (!data.projected) {
     return "No matching data found.";
@@ -203,11 +179,6 @@ function renderProjected(data: DataQueryData): string {
   return md;
 }
 
-/**
- * Transforms a DataRecord for JSON output: moves the payload from
- * `attributes` to `content` (matching `data get --json`) and strips
- * the internal `attributes` key.
- */
 function recordToJsonOutput(
   record: DataRecord,
 ): Record<string, unknown> {
@@ -218,11 +189,6 @@ function recordToJsonOutput(
   };
 }
 
-/**
- * Renders a single-result query's one match as a bare JSON value: the record
- * (the same object the envelope carries as `results[0]`) or, with `--select`,
- * its projected value.
- */
 function renderSingleJson(data: DataQueryData): void {
   let value: unknown;
   if (data.projected) {
@@ -235,9 +201,6 @@ function renderSingleJson(data: DataQueryData): void {
   writeOutput(JSON.stringify(value ?? null, null, 2));
 }
 
-/**
- * Renders JSON output for the completed event.
- */
 function renderJson(data: DataQueryData, single: boolean): void {
   if (single) {
     renderSingleJson(data);
@@ -274,11 +237,6 @@ function renderJson(data: DataQueryData, single: boolean): void {
   }
 }
 
-/**
- * Renders query results as a markdown string. Only used for the projected
- * (`--select`) path; the default table path bypasses markdown entirely and
- * builds ANSI output directly via {@link renderQueryResultsTerminal}.
- */
 export function renderQueryResultsMarkdown(
   data: DataQueryData,
   showNamespace = false,
@@ -289,10 +247,8 @@ export function renderQueryResultsMarkdown(
 }
 
 /**
- * Renders projected scalar values as plain text, one value per line,
- * exactly as stored. Scalars are data, not markdown: `marked` would
- * restyle markdown syntax in the content and overflows its stack on a
- * multi-megabyte line (swamp-club#3253).
+ * scalars are data, not markdown: marked would restyle markdown syntax in the
+ * content and overflows its stack on a multi-megabyte line
  */
 function renderScalarsPlain(
   projected: Extract<ProjectedData, { shape: "scalar" }>,
@@ -310,15 +266,8 @@ function renderScalarsPlain(
 }
 
 /**
- * Renders query results as pre-formatted terminal text. The default
- * (non-projected) path uses Cliffy's Table primitive directly, and
- * projected scalars are written verbatim; projected map/list tables still
- * flow through `marked`.
- *
- * Used by both the non-interactive CLI renderer and the interactive TUI.
- * The default-table branch scales linearly in row count; the map/list
- * branch is bounded by the markdown parser and should only be used for
- * small result sets.
+ * the default table scales linearly in rows; the map/list branch is bounded by
+ * the markdown parser, so it suits only small result sets
  */
 export function renderQueryResultsTerminal(
   data: DataQueryData,
@@ -335,10 +284,6 @@ export function renderQueryResultsTerminal(
   return renderDefaultTable(data, showNamespace);
 }
 
-/**
- * Renders the follow-up for a query that matched no instance name but
- * whose spec-name counterpart matches: the reason, then the command to run.
- */
 function renderSpecNameHint(hint: SpecNameHint): string {
   const lines = [
     "",

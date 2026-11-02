@@ -172,7 +172,6 @@ than the server's defaults. Leave them out and the server's defaults are used.`,
   const markerRepo = new RepoMarkerRepository();
   const marker = await markerRepo.read(RepoPath.create(repoDir));
 
-  // Parse --config JSON if provided
   let targetConfig: Record<string, unknown> | undefined;
   if (options.config) {
     try {
@@ -187,7 +186,6 @@ than the server's defaults. Leave them out and the server's defaults are used.`,
   const ctx = createLibSwampContext({ logger: cliCtx.logger });
   const deps = await createVaultMigrateDeps(repoDir, { vaultsDir });
 
-  // Resolve --to-type: use the provided value or prompt interactively
   let toType: string = options.toType;
   if (!toType) {
     if (cliCtx.outputMode === "json") {
@@ -196,7 +194,6 @@ than the server's defaults. Leave them out and the server's defaults are used.`,
       );
     }
 
-    // Look up the vault to show current type
     const vaultConfig = await deps.findVaultConfig(vaultName);
     if (!vaultConfig) {
       throw new UserError(
@@ -239,7 +236,6 @@ than the server's defaults. Leave them out and the server's defaults are used.`,
         targetConfig = { op_vault: vault };
       }
     } else {
-      // Other: search for a vault extension by keyword
       const query = await promptLine(
         "Search for a vault extension (e.g. hashicorp, doppler): ",
       );
@@ -317,8 +313,6 @@ than the server's defaults. Leave them out and the server's defaults are used.`,
     }
   }
 
-  // Ask for required config fields the target type needs and the command
-  // line did not supply, rather than failing (swamp-club#3003).
   if (
     canPromptForConfig(cliCtx.outputMode, {
       yes: Boolean(options.yes || options.force),
@@ -337,7 +331,6 @@ than the server's defaults. Leave them out and the server's defaults are used.`,
     }
   }
 
-  // Phase 1: Preview
   let preview;
   try {
     preview = await vaultMigratePreview(ctx, deps, {
@@ -345,8 +338,8 @@ than the server's defaults. Leave them out and the server's defaults are used.`,
       targetType: toType,
       targetConfig,
       repoDir,
-      // A local user owns this host, so the target may name its own key
-      // source; over --server the server chooses it (swamp-club#2690).
+      // a local user owns this host, so the target may name its own key source;
+      // over --server the server chooses it
       trustKeySource: true,
     });
   } catch (error) {
@@ -365,7 +358,6 @@ than the server's defaults. Leave them out and the server's defaults are used.`,
       .info`Target: ${preview.targetTypeName} (${preview.targetType})`;
   }
 
-  // Phase 2: Dry run or confirmation
   if (options.dryRun) {
     if (cliCtx.outputMode === "json") {
       console.log(JSON.stringify(
@@ -397,7 +389,6 @@ than the server's defaults. Leave them out and the server's defaults are used.`,
     }
   }
 
-  // Phase 3: Execute migration
   const renderer = createVaultMigrateRenderer(cliCtx.outputMode);
   await runManagedConfigMutation(
     repoContext,

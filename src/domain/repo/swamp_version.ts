@@ -19,11 +19,6 @@
 
 import { UserError } from "../errors.ts";
 
-/**
- * SwampVersion is a value object representing a semantic version string.
- *
- * Used to track the version of swamp that initialized or upgraded a repository.
- */
 export class SwampVersion {
   private constructor(
     readonly major: number,
@@ -32,22 +27,14 @@ export class SwampVersion {
     private readonly rawVersion: string,
   ) {}
 
-  /**
-   * Creates a SwampVersion from a version string.
-   *
-   * @param version - The version string (e.g., "0.1.0", "1.2.3")
-   * @returns A new SwampVersion instance
-   * @throws Error if the version string is invalid
-   */
   static create(version: string): SwampVersion {
     const trimmed = version.trim();
     if (trimmed.length === 0) {
       throw new UserError("Version cannot be empty");
     }
 
-    // Match calver format: YYYYMMDD.HHMMSS.patch with optional suffix
-    // Also matches dev format: 0.0.0-dev
-    // Examples: "20260204.202125.0", "20260204.202125.0-sha.abc123", "0.0.0-dev"
+    // calver YYYYMMDD.HHMMSS.patch with an optional suffix; also matches the
+    // dev format 0.0.0-dev
     const match = trimmed.match(/^(\d+)\.(\d+)\.(\d+)(?:-[\w.]+)?$/);
     if (!match) {
       throw new UserError(
@@ -63,9 +50,6 @@ export class SwampVersion {
     return new SwampVersion(major, minor, patch, rawVersion);
   }
 
-  /**
-   * Checks equality with another SwampVersion.
-   */
   equals(other: SwampVersion): boolean {
     return (
       this.major === other.major &&
@@ -74,10 +58,6 @@ export class SwampVersion {
     );
   }
 
-  /**
-   * Compares this version to another.
-   * Returns negative if this < other, zero if equal, positive if this > other.
-   */
   compareTo(other: SwampVersion): number {
     if (this.major !== other.major) {
       return this.major - other.major;
@@ -88,23 +68,14 @@ export class SwampVersion {
     return this.patch - other.patch;
   }
 
-  /**
-   * Returns true if this version is newer than the other.
-   */
   isNewerThan(other: SwampVersion): boolean {
     return this.compareTo(other) > 0;
   }
 
-  /**
-   * Returns true if this version is older than the other.
-   */
   isOlderThan(other: SwampVersion): boolean {
     return this.compareTo(other) < 0;
   }
 
-  /**
-   * Returns the version as a string (e.g., "1.0.0").
-   */
   toString(): string {
     return this.rawVersion;
   }

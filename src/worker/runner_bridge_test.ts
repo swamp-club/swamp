@@ -141,7 +141,6 @@ Deno.test("bridgeCapabilityVerbs: cancel signal aborts bridged call", async () =
     predicate: "true",
   });
 
-  // Give the call time to propagate, then abort
   await new Promise((r) => setTimeout(r, 10));
   controller.abort();
 
@@ -213,7 +212,6 @@ Deno.test("bridgeCapabilityVerbs: bridge timeout rejects when orchestrator never
   const runnerPair = channelPair();
   const orchPair = channelPair();
 
-  // Orchestrator handler never resolves — simulates a lost response.
   orchPair.b.register(
     RemoteMethod.queryData,
     () => new Promise(() => {}),

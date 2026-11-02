@@ -19,22 +19,15 @@
 
 import type { RepoMarkerData } from "../infrastructure/persistence/repo_marker_repository.ts";
 
-/**
- * Resolves the reports directory path.
- * Priority: SWAMP_REPORTS_DIR env var > .swamp.yaml config > default "extensions/reports"
- */
 export function resolveReportsDir(marker: RepoMarkerData | null): string {
-  // Environment variable takes highest priority
   const envReportsDir = Deno.env.get("SWAMP_REPORTS_DIR");
   if (envReportsDir) {
     return envReportsDir;
   }
 
-  // Then .swamp.yaml config
   if (marker?.reportsDir) {
     return marker.reportsDir;
   }
 
-  // Default
   return "extensions/reports";
 }

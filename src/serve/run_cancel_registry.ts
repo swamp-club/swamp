@@ -59,7 +59,6 @@ export class RunCancelRegistry {
     }
   }
 
-  /** `reason` becomes the cancelled run's `cancel_reason`. */
   cancel(
     executionType: ExecutionType,
     executionId: string,

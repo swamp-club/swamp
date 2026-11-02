@@ -21,14 +21,9 @@ import { assertEquals } from "@std/assert";
 import { Command } from "@cliffy/command";
 import { initializeLogging } from "../../infrastructure/logging/logger.ts";
 
-// Import models barrel to trigger self-registration
 import "../../domain/models/models.ts";
 
-// Initialize logging for tests
 await initializeLogging({});
-
-// Note: Full CLI integration tests are in integration/model_validate_test.ts
-// These tests verify the command module loads correctly
 
 Deno.test("modelValidateCommand module loads", async () => {
   const { modelValidateCommand } = await import("./model_validate.ts");
@@ -43,11 +38,6 @@ Deno.test("modelValidateCommand has correct description", async () => {
   );
 });
 
-/**
- * In-process serve endpoint answering every request frame with the given
- * payload — enough to drive the command's request/response --server path
- * without a subprocess.
- */
 function payloadServer(
   payload: Record<string, unknown>,
 ): { url: string; shutdown: () => Promise<void> } {
@@ -73,7 +63,6 @@ function payloadServer(
   };
 }
 
-/** Runs `model validate` against a scripted validation result; returns Deno.exitCode. */
 async function runModelValidateAgainst(
   data: Record<string, unknown>,
 ): Promise<number> {

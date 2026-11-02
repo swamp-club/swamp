@@ -105,17 +105,15 @@ import {
 const logger = getLogger(["swamp", "persistence", "workflow-run-index"]);
 
 /**
- * How long a repo-local run log with no run record must have gone unwritten
- * before run GC treats it as orphaned. A run writes its log before it first
- * saves its record, and the log's mtime moves with every line written, so
- * only a run silent this long could lose its log. Matches the floor output
- * GC uses for orphaned method run logs.
+ * a run writes its log before first saving its record and the mtime moves per
+ * line, so only a run silent this long could lose its log; matches the output
+ * GC floor
  */
 const ORPHAN_LOG_MIN_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 
 /**
- * Whether a run record may exist at `path`. Only a definite NotFound counts
- * as absent, so an error reading it keeps the run's log.
+ * only a definite NotFound counts as absent, so an error reading the record
+ * keeps the run's log
  */
 async function recordMayExist(path: string): Promise<boolean> {
   try {
@@ -126,10 +124,6 @@ async function recordMayExist(path: string): Promise<boolean> {
   }
 }
 
-/**
- * A run file {@link YamlWorkflowRunRepository.findAllGlobalSince} may read,
- * and whether its mtime must be checked against the cutoff first.
- */
 interface SinceCandidate {
   workflowId: WorkflowId;
   path: string;
@@ -137,10 +131,9 @@ interface SinceCandidate {
 }
 
 /**
- * A workflow's run index entries, and whether the index file on disk holds
- * exactly these entries with one per run record. A run index snapshot is
- * kept between reads only when it is, so entries repaired in memory that
- * could not be written back are never cached (swamp-club#3467).
+ * a snapshot is cached only when the index file on disk holds exactly these
+ * entries, one per run record, so entries repaired in memory but not written
+ * back are never cached
  */
 interface ValidatedIndex {
   entries: WorkflowRunIndex;
@@ -148,14 +141,9 @@ interface ValidatedIndex {
 }
 
 /**
- * Repairs that have not yet acquired their index queue, with the queue tail
- * each follows. An intervening queued writer closes the cohort. Once a pass
- * starts, its cohort is closed: a later reader may have seen an invalidation
- * that the pass already missed. Later readers share the next queued pass instead.
- * Both paths identify the data, including when two repository instances use
- * different record stores with the same repo-local index (swamp-club#3857).
- * Repair must depend only on these paths, not per-instance configuration:
- * repository instances with the same paths share the first instance's work.
+ * a started pass closes its cohort, since a later reader may have seen an
+ * invalidation it missed; keyed by paths only, so instances with the same paths
+ * share the first one's work
  */
 const pendingIndexRepairs = new Map<
   string,
@@ -166,11 +154,9 @@ const pendingIndexRepairs = new Map<
 >();
 
 /**
- * The run records a traced read has read so far: how many, and the length
- * of their text. The length is counted in UTF-16 code units of the text
- * already read, not re-encoded, so tallying costs nothing; for the ASCII
- * YAML run records are written as it is their size in bytes. Each read is
- * counted on the one span that made it, never on an enclosing one too.
+ * bytesRead counts UTF-16 code units of text already read, not re-encoded
+ * (bytes for ASCII YAML); each read counts on the one span that made it, never
+ * an enclosing one
  */
 interface RecordReadTally {
   records: number;
@@ -183,11 +169,6 @@ function tallyRead(tally: RecordReadTally | undefined, content: string): void {
   tally.bytesRead += content.length;
 }
 
-/**
- * Runs `fn` in a span named `name` that records what `fn` tallies as
- * `workflow_runs.records_read` and `workflow_runs.bytes_read`, however it
- * settles.
- */
 function withRecordReadSpan<T>(
   name: string,
   attributes: Record<string, string>,
@@ -206,10 +187,6 @@ function withRecordReadSpan<T>(
   });
 }
 
-/**
- * Runs `fn` in the index queue of `indexDir`, recording on `span` how long
- * it waited there behind the workflow's other index work, in milliseconds.
- */
 function withTimedIndexQueue<T>(
   span: Span,
   indexDir: string,
@@ -226,10 +203,8 @@ function withTimedIndexQueue<T>(
 }
 
 /**
- * Runs one listing, stat or read for a caller: a scan passes
- * {@link openUnderSearchPermit} so the open counts against the scan permits
- * every repository shares (swamp-club#4076), and every other caller opens
- * directly.
+ * a scan passes openUnderSearchPermit so its opens count against the scan
+ * permits every repository shares; every other caller opens directly
  */
 type OpenFile = <T>(open: () => Promise<T>) => Promise<T>;
 
@@ -238,46 +213,27 @@ const openDirectly: OpenFile = (open) => open();
 const openUnderSearchPermit: OpenFile = (open) =>
   withScanPermit("search", open);
 
-/** The workflow a runs directory holds the records of, for a span. */
 function workflowOfRunsDir(runsDir: string): Record<string, string> {
-  // getRunsDir is join(baseDir, workflowId).
   return { "workflow.id": basename(runsDir) };
 }
 
-/**
- * YAML-based implementation of WorkflowRunRepository.
- *
- * Stores workflow runs as YAML files in the directory structure:
- * {repoDir}/.swamp/workflow-runs/{workflowId}/workflow-run-{runId}.yaml
- */
 export class YamlWorkflowRunRepository implements WorkflowRunRepository {
   private readonly baseDir: string;
 
-  /** Whether a member can forward these records (swamp-club#4245). */
   recordsAreForwarded?: boolean;
 
   /**
-   * Runs before a run is written, whoever saves it. Used for what must
-   * hold of every saved run but lives outside its record: a run saved as
-   * ended first closes its signal waits (swamp-club#3093). A failure stops
-   * the save, so a hook that must never block one catches its own errors,
-   * as the wait hook does (`attachSignalWaits`).
+   * runs before every save, for what must hold of every saved run but lives
+   * outside its record; a failure stops the save, so a hook that must never
+   * block one catches its own errors
    */
   beforeSave?: (run: WorkflowRun) => Promise<void>;
 
-  /** Run index snapshots kept between reads (swamp-club#3443). */
   private readonly runIndexCache: RunIndexCache;
 
   /**
-   * `runIndexClock` is the clock the run index cache judges how recent a
-   * file time is by. A test seam: production passes nothing and gets
-   * `Date.now`. `Deno.utime` can set a file's mtime back but moves its
-   * ctime to now, so a test that settles files with it runs this clock
-   * ahead instead.
-   *
-   * `unreadableContent` tells a run record a v3 read model could not
-   * materialise from an absent one (swamp-club#3617), so a read of that run
-   * fails loudly instead of finding no run.
+   * runIndexClock is a test seam (production gets Date.now): Deno.utime moves
+   * ctime to now, so a test settling files with it runs this clock ahead
    */
   constructor(
     private readonly repoDir: string,
@@ -301,15 +257,13 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
     return this.readById(workflowId, runId, openDirectly);
   }
 
-  /** {@link findById}, its read made through `open`. */
   private async readById(
     workflowId: WorkflowId,
     runId: WorkflowRunId,
     open: OpenFile,
   ): Promise<WorkflowRun | null> {
-    // Every run id is a UUID (WorkflowRunSchema), so anything else cannot
-    // name a run. Checking before the path is built keeps a caller-supplied
-    // id such as `../x` from reaching outside the runs directory.
+    // every run id is a UUID, so checking before the path is built keeps a
+    // caller-supplied id such as ../x from reaching outside the runs directory
     if (!isUuid(runId)) return null;
 
     // save() always writes getPath(workflowId, runId), so the run is read
@@ -327,7 +281,6 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
     }
     const data = parseYaml(content) as WorkflowRunData | null;
     if (!data || data.id !== runId) return null;
-    // Convert logFile back to absolute path
     if (data.logFile) {
       data.logFile = toAbsolutePath(this.repoDir, data.logFile);
     }
@@ -340,10 +293,6 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
     return runs;
   }
 
-  /**
-   * {@link findAllByWorkflowId} without the unreadable-record warning,
-   * counting each record it reads into `tally`.
-   */
   private async readAllByWorkflowId(
     workflowId: WorkflowId,
     tally?: RecordReadTally,
@@ -361,10 +310,9 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
         }
         const path = join(dir, entry.name);
 
-        // Per-file try/catch closes the TOCTOU window: a concurrent
-        // delete (e.g. deleteAllByWorkflowId, GC) can remove the file
-        // between readDir and readTextFile. NotFound on a single file
-        // means "skip it" — never "abandon the rest of the workflow."
+        // per-file try/catch: a concurrent delete can remove the file after
+        // listing; NotFound skips it rather than abandoning the rest of the
+        // workflow
         try {
           const content = await Deno.readTextFile(path);
           tallyRead(tally, content);
@@ -380,15 +328,12 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
         }
       }
     } catch (error) {
-      // Outer catch handles "directory itself doesn't exist" (no runs yet
-      // for this workflow). Per-file NotFound is handled above.
       if (error instanceof Deno.errors.NotFound) {
         return [];
       }
       throw error;
     }
 
-    // Sort by startedAt descending (most recent first)
     return runs.sort((a, b) => {
       const aTime = a.startedAt?.getTime() ?? 0;
       const bTime = b.startedAt?.getTime() ?? 0;
@@ -397,21 +342,9 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
   }
 
   /**
-   * Lists lightweight {@link WorkflowRunSummary} projections for a workflow's
-   * runs, for listing/search paths that only display summary fields.
-   *
-   * Unlike {@link findAllByWorkflowId}, this never reconstructs the full
-   * WorkflowRun aggregate: each file is read and parsed one at a time, projected
-   * to a small summary via `parseWorkflowRunSummary`, and the parsed YAML tree
-   * (including the unbounded inline step `output` blobs) is released before the
-   * next file. Peak memory is therefore O(one file) + O(N small summaries)
-   * rather than O(total on-disk run size), which is what OOMs the full read on
-   * workflows with a large accumulated run history.
-   *
-   * This is a projection method on the concrete repository, deliberately NOT on
-   * the `WorkflowRunRepository` port: only the run/history search command paths
-   * (which reference the concrete class) need it, so keeping it here avoids
-   * forcing every implementer and test double to grow.
+   * reads and parses one file at a time and releases each parsed tree, so
+   * memory is one file plus small summaries, not total run size; deliberately
+   * on the concrete class, not the port
    */
   async findAllSummariesByWorkflowId(
     workflowId: WorkflowId,
@@ -421,11 +354,6 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
     return summaries;
   }
 
-  /**
-   * {@link findAllSummariesByWorkflowId} without the unreadable-record
-   * warning, traced: every caller reaches it when the index cannot answer,
-   * and it reads every record.
-   */
   private readSummariesByWorkflowId(
     workflowId: WorkflowId,
     open: OpenFile = openDirectly,
@@ -455,10 +383,6 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
         }
         const path = join(dir, entry.name);
 
-        // Per-file try/catch closes the TOCTOU window: a concurrent delete
-        // (deleteAllByWorkflowId, GC) can remove the file between readDir and
-        // readTextFile. NotFound on a single file means "skip it" — never
-        // "abandon the rest of the workflow." Mirrors findAllByWorkflowId.
         try {
           const content = await open(() => Deno.readTextFile(path));
           tallyRead(tally, content);
@@ -473,8 +397,6 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
         }
       }
     } catch (error) {
-      // Outer catch handles "directory itself doesn't exist" (no runs yet
-      // for this workflow). Per-file NotFound is handled above.
       if (error instanceof Deno.errors.NotFound) {
         return [];
       }
@@ -496,9 +418,9 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
     const runsDir = this.getRunsDir(workflowId);
     const indexDir = this.getLocalIndexDir(workflowId);
     const index = await this.getValidatedIndex(runsDir, indexDir);
-    // A run id is random, so whether an unreadable run is later than the
-    // latest readable one cannot be told: the latest readable run is the
-    // answer, with a warning naming the unreadable ones (swamp-club#3617).
+    // a run id is random, so whether an unreadable run is later than the latest
+    // readable one cannot be told: the latest readable run is the answer, with
+    // a warning naming the unreadable ones
     await this.warnLeftOut(runsDir);
 
     if (index) {
@@ -509,8 +431,6 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
       return null;
     }
 
-    // Fallback: scan as lightweight summaries to find the latest, then
-    // load only that one as a full aggregate.
     const summaries = await this.readSummariesByWorkflowId(workflowId);
     if (summaries.length === 0) return null;
     return this.findById(
@@ -535,21 +455,9 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
   }
 
   /**
-   * Finds a single run by ID without knowing its owning workflow, by probing
-   * the deterministic run path in each workflow directory.
-   *
-   * `save()` always writes to `getPath(workflowId, runId)`, so the owner can be
-   * located with one `stat` per workflow directory — no directory enumeration,
-   * and only the winning run file is read and parsed. Callers that already know
-   * the workflow should use {@link findById}; this exists for identity lookups
-   * that would otherwise go through {@link findAllGlobal} and parse every
-   * retained run to return one.
-   *
-   * This is an identity-lookup method on the concrete repository, deliberately
-   * NOT on the `WorkflowRunRepository` port — the same reasoning as
-   * {@link findAllSummariesByWorkflowId}: only the history command paths (which
-   * reference the concrete class) need it, so keeping it here avoids forcing
-   * every implementer and test double to grow.
+   * save() writes to a deterministic path, so the owner is found with one stat
+   * per workflow directory and only the winning file is parsed; deliberately on
+   * the concrete class, not the port
    */
   async findGlobalById(
     runId: WorkflowRunId,
@@ -564,7 +472,6 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
         try {
           await Deno.stat(this.getPath(workflowId, runId));
         } catch (error) {
-          // The ordinary miss: this workflow doesn't own the run.
           if (error instanceof Deno.errors.NotFound) continue;
           throw error;
         }
@@ -587,17 +494,13 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
   }
 
   /**
-   * Throws when the datastore holds the run `runId`, which no workflow
-   * directory has a file of, as unreadable (swamp-club#3617), so a lookup
-   * by id alone fails loudly instead of finding no run. One query over the
-   * runs directory: a workflow whose every run is unreadable has no
-   * directory to probe. Without a listing lookup, one lookup per workflow
-   * directory.
+   * throws when the datastore holds the run as unreadable, so a lookup by id
+   * alone fails loudly instead of finding no run; one query over the runs
+   * directory, since such a workflow may have no directory to probe
    */
   private async throwIfUnreadableRun(runId: WorkflowRunId): Promise<void> {
     if (this.unreadableContent === undefined) return;
     if (this.unreadableContent.under !== undefined) {
-      // The file name getPath gives the run in every workflow directory.
       const fileName = `workflow-run-${runId}.yaml`;
       for (
         const entry of await unreadableRecordsUnder(
@@ -624,27 +527,19 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
     }
   }
 
-  /**
-   * Warns that a listing of `dir` leaves out the run records under it the
-   * datastore could not materialise (swamp-club#3617).
-   */
   private async warnLeftOut(dir: string): Promise<void> {
     await warnUnreadableLeftOut(this.unreadableContent, dir);
   }
 
   /**
-   * Throws when the datastore recorded the run record missing at `path` as
-   * unreadable (swamp-club#3617), so the read fails loudly instead of
-   * finding no run. A record that is simply absent returns.
+   * throws when the datastore recorded the missing run record as unreadable, so
+   * the read fails loudly; a record that is simply absent returns
    */
   private async throwIfUnreadable(path: string): Promise<void> {
     const error = await this.unreadableContent?.(path);
     if (error !== undefined) throw error;
   }
 
-  /**
-   * Finds all workflow runs across all workflows.
-   */
   findAllGlobal(): Promise<
     { run: WorkflowRun; workflowId: WorkflowId }[]
   > {
@@ -664,7 +559,6 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
     try {
       for (const entry of await readDirSorted(workflowRunsDir)) {
         if (entry.isDirectory) {
-          // Directory name is the workflow ID
           const workflowIdStr = entry.name;
           const workflowId = workflowIdStr as WorkflowId;
           const runs = await this.readAllByWorkflowId(workflowId, tally);
@@ -678,7 +572,6 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
     }
     await this.warnLeftOut(workflowRunsDir);
 
-    // Sort by startedAt descending (most recent first)
     return results.sort((a, b) => {
       const aTime = a.run.startedAt?.getTime() ?? 0;
       const bTime = b.run.startedAt?.getTime() ?? 0;
@@ -687,42 +580,9 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
   }
 
   /**
-   * Finds all workflow runs across all workflows whose startedAt is at or
-   * after the cutoff, reading only the runs that may have started then.
-   *
-   * Stage A — choose candidates from each workflow's listing. A run its
-   * workflow's run index records as started before the cutoff is skipped
-   * without a stat or read: a run's `startedAt` is set once, when it first
-   * starts, and a resume keeps it, so an entry written at any save either
-   * has no `startedAt` or has the record's (swamp-club#4076). The index is
-   * used only when its schema version is current and it holds an entry per
-   * run file, and it is read, never repaired; a listed file it has no entry
-   * for, or with no `startedAt`, and every file of a workflow whose index is
-   * missing or out of step, gets the mtime pre-filter instead.
-   * `save()` rewrites the YAML on every status transition (pending →
-   * running → succeeded/failed), so a file with mtime < cutoff cannot have
-   * startedAt >= cutoff: any startedAt on or after the cutoff would have
-   * triggered a save on or after the cutoff. Candidates come from the
-   * listing, not the index, because the index is checked against the
-   * records' count only: one another process wrote can lack a run it holds
-   * (swamp-club#3452).
-   *
-   * Stage B — parse and verify: parse each candidate and re-check
-   * `startedAt >= cutoff`. This rejects long-running workflows that started
-   * before the cutoff but were still being saved into after it (mtime > cutoff
-   * but startedAt < cutoff).
-   *
-   * Backup-restore scenarios that scramble mtime cannot cause incorrect
-   * inclusion — Stage B is the source of truth for inclusion. They can only
-   * defeat the optimization (degrading to current `findAllGlobal()` cost),
-   * which is acceptable.
-   *
-   * Directories are listed, and files stat'ed and read,
-   * {@link SCAN_CONCURRENCY} at a time under the scan permits every
-   * repository shares: every awaited listing or read waits for a turn of
-   * the event loop, so on a busy serve a scan that awaited them one by one
-   * took as long as the turns added up. The result is in the order a
-   * sequential walk returns it all the same.
+   * stage A picks candidates by the index's startedAt or, failing that, an
+   * mtime pre-filter (every status save rewrites the file); stage B re-checks
+   * startedAt, so scrambled mtimes only cost speed
    */
   async findAllGlobalSince(
     cutoff: Date,
@@ -747,7 +607,6 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
     tally: RecordReadTally,
   ): Promise<{ run: WorkflowRun; workflowId: WorkflowId }[]> {
     const workflowIds = await this.scanWorkflowIds();
-    // Each stage keeps its items in walk order (swamp-club#3067).
     const candidates = (await mapBounded(
       workflowIds,
       SCAN_CONCURRENCY,
@@ -761,9 +620,6 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
     return found.filter((result) => result !== undefined);
   }
 
-  /**
-   * {@link listWorkflowIds}, its listing made under a scan permit.
-   */
   private async scanWorkflowIds(): Promise<WorkflowId[]> {
     let entries: Deno.DirEntry[];
     try {
@@ -777,7 +633,6 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
       .map((entry) => entry.name as WorkflowId);
   }
 
-  /** Stage A of {@link findAllGlobalSince} for one workflow. */
   private async sinceCandidates(
     workflowId: WorkflowId,
     cutoffMs: number,
@@ -815,16 +670,14 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
     return candidates;
   }
 
-  /** Stage B of {@link findAllGlobalSince} for one candidate. */
   private async readSinceCandidate(
     { workflowId, path, needsStat }: SinceCandidate,
     cutoffMs: number,
     tally: RecordReadTally,
   ): Promise<{ run: WorkflowRun; workflowId: WorkflowId } | undefined> {
-    // Per-file try/catch closes the TOCTOU window: a concurrent delete can
-    // remove the file between readDir and stat or between stat and
-    // readTextFile. NotFound on a single file means "skip it" — never
-    // "abandon the rest of the scan."
+    // per-file try/catch: a concurrent delete can remove the file before the
+    // stat or read; NotFound skips it rather than abandoning the rest of the
+    // scan
     try {
       if (needsStat) {
         const stat = await openUnderSearchPermit(() => Deno.stat(path));
@@ -851,11 +704,6 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
     }
   }
 
-  /**
-   * Workflow directories are listed, and runs read, {@link SCAN_CONCURRENCY}
-   * at a time under the scan permits every repository shares, as in
-   * {@link findAllGlobalSince}, in the order a sequential walk returns them.
-   */
   async findGlobalByStatus(
     status: string | string[],
     since?: Date,
@@ -949,7 +797,6 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
       return ids;
     }
 
-    // Fallback: lightweight summary scan
     const summaries = await this.readSummariesByWorkflowId(workflowId, open);
     return summaries
       .filter((s) => {
@@ -976,7 +823,6 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
       const created = typedStagingActive(this.markDirty) &&
         !(await fileExists(path));
 
-      // Get the previous status to detect state changes
       let previousStatus: string | undefined;
       if (this.eventBus) {
         const existingRun = await this.findById(workflowId, run.id);
@@ -986,11 +832,9 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
       // The persisted form: sensitive values the run read through expressions
       // are written as the vault references they came from.
       const data = run.toPersistedData();
-      // Convert logFile to relative path for storage
       if (data.logFile) {
         data.logFile = toRelativePath(this.repoDir, data.logFile);
       }
-      // Remove undefined values since YAML can't stringify them
       const cleanData = JSON.parse(JSON.stringify(data));
       const content = stringifyYaml(cleanData as Record<string, unknown>);
       await atomicWriteTextFile(path, content);
@@ -1006,13 +850,10 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
 
       await this.updateIndexEntry(workflowId, run, path, content);
 
-      // Emit events based on status changes
       if (this.eventBus) {
         const currentStatus = run.status;
 
         if (previousStatus !== currentStatus) {
-          // Emit WorkflowRunStarted for new runs (previousStatus undefined) or
-          // transitions from pending to running
           if (
             currentStatus === "running" &&
             (previousStatus === "pending" || previousStatus === undefined)
@@ -1062,16 +903,14 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
     return swampPath(this.repoDir, SWAMP_SUBDIRS.workflowRuns);
   }
 
-  /** The record key of a run file: its path under the namespace root. */
   private keyOf(path: string) {
     return keyUnder(SWAMP_SUBDIRS.workflowRuns, this.baseDir, path);
   }
 
   /**
-   * On v3, the tombstone of a run record removed from `dir`, one batch per
-   * run. Removals find runs by directory and file name, so a workflow or
-   * run id that is not a UUID stages nothing (no repository put it) rather
-   * than abort the removal.
+   * removals find runs by directory and file name, so a workflow or run id that
+   * is not a UUID stages nothing (no repository put it) rather than abort the
+   * removal
    */
   private async stageRunRemoval(
     workflowId: string,
@@ -1096,7 +935,6 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
     const dir = this.getRunsDir(workflowId);
     this.runIndexCache.delete(workflowId);
 
-    // Count the runs before deleting
     const runs = await this.readAllByWorkflowId(workflowId);
     const count = runs.length;
 
@@ -1132,9 +970,8 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
     const localDir = this.getLocalIndexDir(workflowId);
     await deleteRunIndex(localDir);
 
-    // Run logs are written repo-local whichever datastore holds the records,
-    // so remove them here too when the records live elsewhere
-    // (swamp-club#3266).
+    // run logs are written repo-local whichever datastore holds the records, so
+    // remove them here too when the records live elsewhere
     if (localDir !== dir) {
       for (const entry of await listDirEntries(localDir)) {
         if (
@@ -1170,11 +1007,9 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
     }
   > {
     const TERMINAL_STATUSES = new Set(["succeeded", "failed", "cancelled"]);
-    // A finished nested run is kept while its parent still exists and has not
-    // finished (interrupted counts as unfinished: it can be recovered), since
-    // the parent's resume reads the child's outcome (swamp-club#2736). A
-    // parent that no longer exists leaves the child collectible; one that
-    // cannot be read keeps it, since the deletion cannot be undone.
+    // a finished nested run is kept while its parent exists and is unfinished
+    // (interrupted counts: it can be recovered), since resume reads the child's
+    // outcome; an unreadable parent keeps it, as deletion is final
     const parentStatuses = new Map<string, string | null>();
     const keepForParent = async (data: unknown): Promise<boolean> => {
       const link = ParentRunRefSchema.safeParse(
@@ -1193,11 +1028,9 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
       }
       return status !== null && !TERMINAL_STATUSES.has(status);
     };
-    // A finished run is also kept while a nested run one of its steps
-    // started has not finished: that child reads this record to learn
-    // nothing waits on it, and refuses to continue once the record is gone
-    // (swamp-club#2867). A child that cannot be read keeps it too. A child
-    // whose parentRun names another run is not this run's to wait for.
+    // a finished run is kept while a nested run started by one of its steps is
+    // unfinished or unreadable: that child reads this record and refuses to
+    // continue once it is gone
     const keepForChild = async (data: WorkflowRunData): Promise<boolean> => {
       for (const job of data.jobs ?? []) {
         for (const step of job.steps ?? []) {
@@ -1228,8 +1061,8 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
     let deleted = 0;
     let bytesReclaimed = 0;
     const deletedRunIds: string[] = [];
-    // The run ids removed from each records directory, whose index entries
-    // are dropped once the scan is done (swamp-club#3856).
+    // the run ids removed from each records directory, whose index entries are
+    // dropped once the scan is done
     const removedRuns = new Map<
       string,
       { workflowId: WorkflowId; runIds: string[] }
@@ -1257,9 +1090,9 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
     };
 
     try {
-      // Both listings are read in full before anything is deleted: a delete
-      // tries to remove its directory, and on macOS a failed remove of a
-      // directory makes a walk open on it skip entries (swamp-club#3535).
+      // both listings are read in full before anything is deleted: a delete
+      // tries to remove its directory, and on macOS a failed directory remove
+      // makes a walk open on it skip entries
       scan: for (const entry of await listDirEntries(this.baseDir)) {
         if (!entry.isDirectory) continue;
         const workflowId = entry.name as WorkflowId;
@@ -1366,10 +1199,9 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
                 options?.dryRun ?? false,
                 localLogDirs,
               );
-              // Report the ID of the file actually deleted — its name, which
-              // save() writes via getPath — not the body's `id`, which could
-              // name a different (live) run. Only a single safe path segment
-              // may name a snapshot directory.
+              // report the id of the file actually deleted (its name, as save()
+              // writes it), not the body's id, which could name a live run;
+              // only a single safe path segment may name a snapshot directory
               const runId = runIdFromFileName(fileEntry.name);
               if (!options?.dryRun) {
                 await cleanupEmptyParentDirs(yamlPath, this.baseDir);
@@ -1407,15 +1239,13 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
       );
     }
 
-    // The index is kept and only the removed runs' entries are dropped: a
-    // discarded index makes the next read parse every surviving record
-    // (swamp-club#3856). A scan that threw above updates no index; the
-    // count check then sees the removed records and drops their entries
-    // with a stat per record.
+    // keep the index and drop only the removed runs' entries, since a discarded
+    // index makes the next read parse every survivor; a scan that threw updates
+    // none, and the count check then drops them
     for (const [dir, { workflowId, runIds }] of removedRuns) {
       const indexDir = this.getLocalIndexDir(workflowId);
-      // An index beside records kept outside the repo predates the
-      // repo-local index (#1926); in the default layout it is this one.
+      // an index beside records kept outside the repo predates the repo-local
+      // index; in the default layout it is this one
       if (resolve(dir) !== resolve(indexDir)) await deleteRunIndex(dir);
       await this.dropRemovedIndexEntries(workflowId, dir, runIds);
     }
@@ -1428,13 +1258,9 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
   }
 
   /**
-   * Removes the run log of a deleted run record, returning its bytes. The
-   * executor always writes the log under the repo-local workflow-runs dir,
-   * whichever datastore holds the record (swamp-club#3266); a log beside the
-   * record covers the default datastore and logs a datastore migration moved.
-   * Both paths come from directory entry names, never the record's logFile,
-   * which a peer on a shared datastore could point anywhere. On a dry run
-   * nothing is touched and only bytes are counted.
+   * the executor writes the log repo-local whichever datastore holds the record;
+   * a log beside the record covers the default datastore and migrated logs. Paths
+   * come from entry names, never logFile, which a peer could point anywhere
    */
   private async removeRunLogs(
     workflowId: WorkflowId,
@@ -1468,11 +1294,9 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
   }
 
   /**
-   * Removes repo-local run logs whose run record no longer exists: logs that
-   * run GC and workflow delete left behind before they removed the log the
-   * run wrote (swamp-club#3266). A log must be older than both the cutoff
-   * and ORPHAN_LOG_MIN_AGE_MS, since a run writes its log before it first
-   * saves its record. A record that cannot be checked keeps its log.
+   * a log must be older than both the cutoff and ORPHAN_LOG_MIN_AGE_MS, since a
+   * run writes its log before first saving its record; a record that cannot be
+   * checked keeps its log
    */
   private async sweepOrphanLogs(
     cutoffMs: number,
@@ -1524,10 +1348,6 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
     return bytes;
   }
 
-  /**
-   * Returns the IDs of every stored run across all workflows, read from the
-   * `workflow-run-{runId}.yaml` filenames without parsing any YAML.
-   */
   async listRunIds(): Promise<Set<string>> {
     const ids = new Set<string>();
     try {
@@ -1547,10 +1367,6 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
     return ids;
   }
 
-  /**
-   * Returns the IDs of the workflows that have a runs directory, whether or
-   * not a workflow definition still exists for them. No run file is read.
-   */
   async listWorkflowIds(): Promise<WorkflowId[]> {
     const ids: WorkflowId[] = [];
     try {
@@ -1564,9 +1380,8 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
   }
 
   /**
-   * Returns the IDs of a workflow's stored runs, read from the
-   * `workflow-run-{runId}.yaml` filenames without parsing any YAML. Empty or
-   * unparseable run files are included; a record body's `id` is never used.
+   * read from filenames without parsing YAML, so empty or unparseable run files
+   * are included and a record body's id is never used
    */
   async listRunIdsForWorkflow(workflowId: WorkflowId): Promise<string[]> {
     return await this.listRunIdsInDir(this.getRunsDir(workflowId));
@@ -1605,22 +1420,9 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
   }
 
   /**
-   * The workflow's runs as an immutable, newest-first snapshot of its run
-   * index (swamp-club#3443). The snapshot is kept in memory and reused while
-   * a stat of the index file and of the records directory shows neither has
-   * changed, so a repeated read costs two stats, not a directory listing and
-   * a parse of the whole index. A workflow with no usable index gets a
-   * snapshot of its records, which is not kept. Run records a v3 read model
-   * could not materialise are warned about when a snapshot is built
-   * (swamp-club#3617), not on a reuse.
-   *
-   * With `signal`, the caller stops waiting once it aborts. A shared load
-   * continues for its other readers; once none remain, a rebuild or repair
-   * stops between records without publishing a partial index. Serve's warm-up
-   * passes its own signal so shutdown is not held up by the read.
-   *
-   * On the concrete repository only, for the same reason as
-   * {@link findGlobalById}: only the run search and run summary paths use it.
+   * reused while a stat of the index file and records directory shows no
+   * change; an abort stops only this caller's wait, and a shared load stops
+   * once no reader remains, without publishing a partial index
    */
   async runIndexSnapshot(
     workflowId: WorkflowId,
@@ -1647,11 +1449,9 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
   }
 
   /**
-   * How many run records the workflow has: a listing of its records
-   * directory, with no record or index read. 0 when it has none. Serve's
-   * warm-up uses it to skip a workflow whose snapshot is too large to keep
-   * (swamp-club#3468). With `signal`, the listing stops once it aborts,
-   * and the count rejects with the signal's reason.
+   * a listing of the records directory with no record or index read; with
+   * signal, the listing stops once it aborts and the count rejects with its
+   * reason
    */
   async countRunRecords(
     workflowId: WorkflowId,
@@ -1671,7 +1471,6 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
     return count;
   }
 
-  /** What a cached run index snapshot of the workflow is checked against. */
   private async stampRunIndex(
     workflowId: WorkflowId,
   ): Promise<RunIndexStamp | undefined> {
@@ -1691,12 +1490,6 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
     return { index, dirMtimeMs };
   }
 
-  /**
-   * The workflow's runs with `status`, read through its index. With `signal`,
-   * a caller waiting on a repair rejects when it aborts. The shared repair
-   * stops between records only once no caller needs it. Serve's continuation
-   * sweep passes its own signal so shutdown is not held up (swamp-club#3472).
-   */
   findSummariesByStatus(
     workflowId: WorkflowId,
     status: string,
@@ -1705,7 +1498,6 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
     return this.listByStatus(workflowId, status, signal, openDirectly);
   }
 
-  /** {@link findSummariesByStatus}, its listing and reads made through `open`. */
   private async listByStatus(
     workflowId: WorkflowId,
     status: string,
@@ -1724,14 +1516,9 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
   }
 
   /**
-   * The workflow's runs with `status`, in the order
-   * {@link findSummariesByStatus} lists them. The listing, and the record
-   * reads {@link SCAN_CONCURRENCY} at a time, are made under the search share
-   * of the scan permits every repository shares, as in
-   * {@link findGlobalByStatus} (swamp-club#4077). The status is the index's
-   * when listed: a run resumed before its record is read comes back with its
-   * new status, so callers check it again. A run deleted before it is read is
-   * left out.
+   * the status is the index's when listed, so a run resumed before its record
+   * is read comes back with its new status and callers check it again; a run
+   * deleted before it is read is left out
    */
   async findByStatus(
     workflowId: WorkflowId,
@@ -1759,11 +1546,6 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
     return validated?.entries ?? null;
   }
 
-  /**
-   * The workflow's index entries, repaired first when they disagree with
-   * the records' count, and whether the index file now holds them. The
-   * listing and the index read are made through `open`; a repair is not.
-   */
   private async validateIndex(
     runsDir: string,
     indexDir: string,
@@ -1784,38 +1566,9 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
   }
 
   /**
-   * Brings an index that disagrees with its records' count back in line,
-   * queued with the index updates of the same workflow. Every record is
-   * stat'ed against the fingerprint its entry was built from, and only the
-   * records the index does not list, or that changed since their entry was
-   * written, are read; the entries of records that are gone are dropped. A
-   * new run costs a stat per record, not a read of every record
-   * (swamp-club#3443, swamp-club#3407), and a record another writer
-   * replaced is still corrected, as the rebuild this replaces corrected it.
-   * An index of another schema version, or none, is rebuilt whole.
-   *
-   * The stats are made even when the count agrees by the time the queue is
-   * reached, as it usually does: a save writes its record before its index
-   * entry, so a reader that counted in between finds the entry landed. Index
-   * updates are queued only within one process, so a save in another one
-   * can overwrite an entry this one wrote, leaving it with the status and
-   * fingerprint of an earlier write of its record and the count unchanged;
-   * a reader that has seen a mismatch is what corrects it (swamp-club#3452).
-   *
-   * Readers queued behind the same work share one pass until it starts or
-   * another index operation is queued. That pass starts after every member
-   * observed its mismatch and after the work it was waiting on. A reader
-   * arriving later joins the next pass, never an earlier scan that could
-   * predate its invalidation. This works with external writers and coarse
-   * file clocks without caching a completed repair (swamp-club#3857).
-   *
-   * The entries are in step only when the index file holds them and lists
-   * one per record: a repair that could not be written, or a record that
-   * cannot be indexed (an empty one), leaves them out of step.
-   *
-   * Traced as `swamp.workflow_runs.index.repair`. A repair that rebuilds
-   * the index has the rebuild's reads on its child rebuild span, not on
-   * its own.
+   * stats are made even if the count agrees: a save writes its record before
+   * its entry and other processes can overwrite an entry unqueued. Readers
+   * share one pass until it starts; a later reader joins the next
    */
   private repairIndex(
     runsDir: string,
@@ -1901,15 +1654,9 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
   }
 
   /**
-   * Brings every workflow's run index in line with its run records. The index
-   * is otherwise trusted while it lists as many runs as there are records, so
-   * an entry left behind by a record another process or a datastore pull
-   * replaced stays wrong until that run is read; this corrects them all.
-   *
-   * Each record is stat'ed and compared with the fingerprint its entry was
-   * built from, and only records that differ, or have no entry, are read. An
-   * index with nothing wrong is not written (swamp-club#3051). A workflow
-   * whose changed records cannot all be read keeps the index it had.
+   * the index is trusted while it lists as many runs as there are records, so
+   * an entry left stale by another process or a datastore pull stays wrong
+   * until read; this stats every record and fixes them all
    */
   async verifyIndexes(): Promise<void> {
     let workflowIds: WorkflowId[];
@@ -1970,11 +1717,8 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
   }
 
   /**
-   * Brings the entries of `suspects` in line with their records, in place:
-   * a record whose stat now matches its entry is left alone, a record that
-   * is gone or empty loses its entry, and any other is read and indexed by
-   * the id in its body. Whether any entry changed. Run inside the index
-   * queue, so an entry a save writes meanwhile is not overwritten.
+   * runs inside the index queue, so an entry a save writes meanwhile is not
+   * overwritten; a record whose stat matches its entry is left alone
    */
   private async reconcileSuspects(
     runsDir: string,
@@ -2024,11 +1768,6 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
     return changed;
   }
 
-  /**
-   * The run ids whose index entry may not match their record: a record with
-   * no entry, no fingerprint or another fingerprint, and an entry whose
-   * record is gone. Stats every record; reads none.
-   */
   private async findSuspectRecords(
     runsDir: string,
     entries: WorkflowRunIndex,
@@ -2065,10 +1804,8 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
   }
 
   /**
-   * Queued with the index updates of the same workflow, so an entry a save
-   * writes while the records are being read is applied after the rebuild
-   * rather than overwritten by it. Its span records the time spent waiting
-   * in that queue.
+   * queued with the workflow's index updates, so an entry a save writes while
+   * records are read is applied after the rebuild rather than overwritten by it
    */
   private rebuildIndex(
     runsDir: string,
@@ -2086,10 +1823,6 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
     );
   }
 
-  /**
-   * A rebuild run inside an index queue its caller already holds. Its span
-   * has no queue wait: the caller's span, its parent, records that.
-   */
   private rebuildIndexUnqueued(
     runsDir: string,
     indexDir: string,
@@ -2150,10 +1883,9 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
   }
 
   /**
-   * Writes the run's entry into its workflow's index. Queued per index file:
-   * the index is read, changed and written back whole, so two saves of
-   * different runs of one workflow would otherwise each write back the
-   * other's old entry (swamp-club#2518).
+   * queued per index file: the index is read, changed and written back whole,
+   * so two saves of different runs would otherwise each write back the other's
+   * old entry
    */
   private async updateIndexEntry(
     workflowId: WorkflowId,
@@ -2190,22 +1922,9 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
   }
 
   /**
-   * Drops the index entries of runs whose records retention removed, in the
-   * index queue, so the next read finds an index in step with the records
-   * instead of parsing every survivor to rebuild it (swamp-club#3856). An
-   * entry is dropped only while its record is still gone: a save or pull
-   * that put the record back keeps it. With no records left the index goes
-   * too, entries the pass did not remove included, so the emptied workflow
-   * directory can be removed. A missing index is left for the next read to
-   * build; one of another schema version, or that cannot be updated, is
-   * deleted for a rebuild, as {@link updateIndexEntry} does.
-   *
-   * Entries are looked up by the run id in each removed file's name, while
-   * a rebuild keys them by the id in the record's body. Where a hand-edited
-   * or corrupted record makes the two differ, an entry can be left behind
-   * or dropped for a record that remains; either way the index then lists
-   * a different number of runs than there are records, and the next read's
-   * repair corrects it with a stat per record (see {@link reconcileSuspects}).
+   * entries are looked up by the file name's run id while a rebuild keys by
+   * body id; where a corrupt record makes them differ, the count mismatch makes
+   * the next read's repair correct it
    */
   private async dropRemovedIndexEntries(
     workflowId: WorkflowId,
@@ -2243,15 +1962,9 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
   }
 
   /**
-   * Corrects the index entry of a run just read from its record when the two
-   * disagree on status or on awaiting a resume: the record was replaced
-   * without a save here, by another process or a datastore pull. Best effort;
-   * a run the index does not list is left to the count check and rebuild.
-   *
-   * `run` only decides whether to look closer. The entry is written from the
-   * record as read again inside the index queue, never from `run`: a save
-   * that landed after the caller's read has already written its own entry,
-   * and the caller's older copy must not replace it.
+   * the entry is written from the record read again inside the index queue,
+   * never from run: a save that landed after the caller's read has written its
+   * own entry, which an older copy must not replace
    */
   private async repairIndexEntry(
     workflowId: WorkflowId,
@@ -2283,10 +1996,6 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
   }
 }
 
-/**
- * Whether a current-schema index lists `run` under another status, or
- * disagrees on whether it awaits a resume. False for a run it does not list.
- */
 function indexEntryDiffers(index: ReadIndexResult, run: WorkflowRun): boolean {
   const entry = index.entries[run.id];
   if (!entry || index.version !== INDEX_SCHEMA_VERSION) return false;
@@ -2295,9 +2004,9 @@ function indexEntryDiffers(index: ReadIndexResult, run: WorkflowRun): boolean {
 }
 
 /**
- * Reads a run record for its index entry, with the fingerprint of the
- * version read when the file did not change while it was read. Null for a
- * record that is gone or empty; a record that does not parse throws.
+ * fingerprints the version read only when the file did not change while it was
+ * read; null for a record that is gone or empty, and a record that does not
+ * parse throws
  */
 async function readIndexedRecord(
   path: string,
@@ -2322,10 +2031,6 @@ async function readIndexedRecord(
   };
 }
 
-/**
- * The fingerprint of the file at `path` when it holds exactly `expected`
- * and did not change while it was read, else none. Never throws.
- */
 async function fingerprintIfContent(
   path: string,
   expected: string,
@@ -2340,7 +2045,6 @@ async function fingerprintIfContent(
   }
 }
 
-/** The fingerprint when two stats of one file agree, else none. */
 function sameFingerprint(
   before: RecordFingerprint | undefined | null,
   after: RecordFingerprint | undefined | null,
@@ -2381,7 +2085,6 @@ function summaryToIndexEntry(
   };
 }
 
-/** Reads an index entry's nested workflow links, dropping malformed ones. */
 function indexEntryLinks(
   entry: WorkflowRunIndexEntry,
 ): Pick<
@@ -2433,7 +2136,6 @@ function indexToSummaries(index: WorkflowRunIndex): WorkflowRunSummary[] {
   });
 }
 
-/** Extracts the run ID from a `workflow-run-{runId}.yaml` filename. */
 function runIdFromFileName(fileName: string): string {
   return fileName.slice("workflow-run-".length, -".yaml".length);
 }

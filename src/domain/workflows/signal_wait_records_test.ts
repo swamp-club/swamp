@@ -155,7 +155,6 @@ Deno.test("wait records: absent reads absent, and anything that is not the wait'
     encode({ ...reg, workflowId: "a/b" }),
     encode({ ...reg, workflowId: ".." }),
     encode({ ...reg, runId: "../x" }),
-    // A valid record stored under another wait's key.
     encodeWaitRecord(other),
     new Uint8Array(WAIT_RECORD_MAX_BYTES + 1).fill(32),
   ];
@@ -201,7 +200,6 @@ Deno.test("decideSignal: an unexpired wait accepts a payload its schema allows, 
   assertEquals(decision.outcome.receipt.submittedBy, "ada");
   assertEquals(decision.outcome.receipt.receivedAt, IN_TIME.toISOString());
   assert(decision.outcome.receipt.id !== reg.waitId);
-  // Each decision is its own signal.
   const again = decideSignal(reg, { verdict: "ship" }, "ada", IN_TIME);
   assert(again.accepted);
   assert(again.outcome.receipt.id !== decision.outcome.receipt.id);

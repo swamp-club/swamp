@@ -35,7 +35,6 @@ export async function verifyProof(
   signatureB64: string,
   publicKeys: PublicKeyEntry[],
   apiKey: string,
-  /** Unix seconds; defaults to the wall clock. */
   now: number = Math.floor(Date.now() / 1000),
 ): Promise<ProofVerificationResult> {
   const payload = parseProofPayload(proofJson);
@@ -56,9 +55,7 @@ export async function verifyProof(
 }
 
 export interface ProofSignatureOptions {
-  /** Unix seconds; defaults to the wall clock. */
   readonly now?: number;
-  /** Accept a proof past its `exp`. */
   readonly ignoreExpiry?: boolean;
 }
 
@@ -67,11 +64,9 @@ export type ProofSignatureResult =
   | { readonly valid: false; readonly reason: string };
 
 /**
- * Verify that swamp-club signed a proof, without the API key it was issued
- * for: the payload shape, its `exp` (unless `ignoreExpiry`) and the Ed25519
- * signature. The fingerprint is not checked, so a valid result shows only
- * that swamp-club issued the proof to an account, not that the caller holds
- * its key. {@link verifyProof} adds that check.
+ * the fingerprint is not checked, so a valid result shows only that swamp-club
+ * issued the proof to an account, not that the caller holds its key;
+ * verifyProof adds that check
  */
 export async function verifyProofSignature(
   proofJson: string,

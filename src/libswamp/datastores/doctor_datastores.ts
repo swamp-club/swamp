@@ -53,20 +53,17 @@ import {
 } from "./retention_check.ts";
 import type { UnreadableDataVersion } from "../../domain/data/unreadable_data_version.ts";
 
-/** Result of a single health check within the datastore doctor scan. */
 export interface DatastoreHealthFinding {
   check: string;
   passed: boolean;
   message: string;
 }
 
-/** A vault whose type is incompatible with a remote datastore. */
 export interface VaultMismatchFinding {
   vaultName: string;
   vaultType: string;
 }
 
-/** A model type whose on-disk data is not fully represented in the catalog. */
 export interface CatalogShortfall {
   typeNormalized: string;
   diskRecords: number;
@@ -74,11 +71,8 @@ export interface CatalogShortfall {
 }
 
 /**
- * Comparison of the local catalog index against the on-disk data walk.
- *
- * The catalog is a local index of data on disk. When the walk can see records
- * the index does not have, queries silently under-report.
- * See design/enablers/data-query.md.
+ * the catalog is a local index of data on disk; when the walk sees records the
+ * index lacks, queries silently under-report
  */
 export interface CatalogCompletenessSummary {
   diskRecords: number;
@@ -86,24 +80,15 @@ export interface CatalogCompletenessSummary {
   shortfalls: ReadonlyArray<CatalogShortfall>;
 }
 
-/** How many unreadable versions the check's finding lists. */
 export const UNREADABLE_VERSIONS_LISTED = 20;
 
-/**
- * Published data versions of a v2 filesystem datastore whose stored content
- * cannot be read (swamp-club#3955). `findings` holds the first
- * {@link UNREADABLE_VERSIONS_LISTED}; the counts hold them all.
- */
 export interface UnreadableVersionsSummary {
   unreadableVersions: number;
-  /** Records with at least one finding. */
   records: number;
-  /** Records whose latest version cannot be read: they read as empty. */
   darkRecords: number;
   findings: ReadonlyArray<UnreadableDataVersion>;
 }
 
-/** The summary of a scan's findings. */
 export function summarizeUnreadableVersions(
   findings: ReadonlyArray<UnreadableDataVersion>,
 ): UnreadableVersionsSummary {
@@ -122,7 +107,6 @@ export function summarizeUnreadableVersions(
   };
 }
 
-/** The one-line message of the unreadable_versions check. */
 export function unreadableVersionsFindingMessage(
   summary: UnreadableVersionsSummary,
 ): string {
@@ -148,37 +132,23 @@ export function unreadableVersionsFindingMessage(
     `back to its last readable version.`;
 }
 
-/** The key of the record a finding belongs to. */
 function recordKeyOf(
   finding: Pick<UnreadableDataVersion, "modelType" | "modelId" | "dataName">,
 ): string {
   return `${finding.modelType}\0${finding.modelId}\0${finding.dataName}`;
 }
 
-/** Foreign namespace objects detected under the repo's own namespace. */
 export interface NamespaceContaminationFinding {
   foreignNamespaces: ReadonlyArray<{ namespace: string; objectCount: number }>;
   totalForeignObjects: number;
 }
 
-/**
- * Cache files the remote has never received, which no push sends
- * (swamp-club#4112). Advisory: it never fails the scan.
- */
 export interface UnpushedFilesFinding {
   unpushed: number;
-  /** The first few, cache-relative with forward slashes. */
   samplePaths: readonly string[];
-  /** Why the check could not run; the counts are then 0. */
   error?: string;
 }
 
-/**
- * What a v3 checkout's read model holds that it could not materialise or
- * moved aside, and the torn chunks its live records name
- * (swamp-club#3617). Each list holds the first few entries; the counts
- * hold them all.
- */
 export interface V3ContentSummary {
   unreadableRecords: number;
   unreadable: ReadonlyArray<{
@@ -208,10 +178,6 @@ export interface V3ContentSummary {
   }>;
 }
 
-/**
- * A replication lineage that collection keeps because it may hold commits
- * the current lineage lacks (swamp-club#3801).
- */
 export interface V3KeptLineageFinding {
   fence: number;
   replicaRoot: string;
@@ -219,11 +185,9 @@ export interface V3KeptLineageFinding {
   startedAt: string;
 }
 
-/** Where the manual recovery of kept lineages is written down. */
 export const KEPT_LINEAGES_RECOVERY_DOC =
   'design/enablers/datastore-litestream.md, "Recovering kept replication lineages"';
 
-/** The finding for kept lineages, or the pass when there are none. */
 export function keptLineagesFindingMessage(
   kept: ReadonlyArray<V3KeptLineageFinding>,
 ): string {
@@ -245,10 +209,6 @@ export function keptLineagesFindingMessage(
     `as ${KEPT_LINEAGES_RECOVERY_DOC} describes.`;
 }
 
-/**
- * Whether this checkout's replication lineage can be restored, as its
- * sidecar last found (swamp-club#3935).
- */
 export interface V3ReplicaRestorableFinding {
   status: "verified" | "unverified" | "broken" | "broken-copy-damaged";
   lineageFence?: number;
@@ -258,14 +218,12 @@ export interface V3ReplicaRestorableFinding {
   copyCheck?: string;
 }
 
-/** Whether the replica check passes: anything but a broken lineage. */
 export function replicaRestorablePassed(
   finding: V3ReplicaRestorableFinding,
 ): boolean {
   return finding.status === "verified" || finding.status === "unverified";
 }
 
-/** The one-line message of the replica check. */
 export function replicaRestorableFindingMessage(
   finding: V3ReplicaRestorableFinding,
 ): string {
@@ -294,34 +252,22 @@ export function replicaRestorableFindingMessage(
   }
 }
 
-/** Outcome of a `doctor datastores` scan. */
 export interface DoctorDatastoresData {
   datastoreType: string;
   isCustom: boolean;
   healthFindings: DatastoreHealthFinding[];
   vaultMismatchFindings: VaultMismatchFinding[];
   contaminationFinding?: NamespaceContaminationFinding;
-  /** Present when unpushed cache files were found (swamp-club#4112). */
   unpushedFilesFinding?: UnpushedFilesFinding;
   catalogCompletenessFinding?: CatalogCompletenessSummary;
-  /** Present when the unreadable-version check found some (swamp-club#3955). */
   unreadableVersionsFinding?: UnreadableVersionsSummary;
-  /** Present when the scan ran with `retention` (swamp-club#3473). */
   retentionFinding?: RetentionCheckSummary;
-  /** Present when the v3 content check found something (swamp-club#3617). */
   v3ContentFinding?: V3ContentSummary;
-  /** Present when lineages are kept for recovery (swamp-club#3801). */
   v3KeptLineagesFinding?: V3KeptLineageFinding[];
-  /** Present when the replica check failed (swamp-club#3935). */
   v3ReplicaRestorableFinding?: V3ReplicaRestorableFinding;
 }
 
-/** Options for a `doctor datastores` scan. */
 export interface DoctorDatastoresOptions {
-  /**
-   * Also scan storage for items older than each kind's retention
-   * (`--retention`).
-   */
   retention?: boolean;
 }
 
@@ -330,7 +276,6 @@ export type DoctorDatastoresEvent =
   | { kind: "completed"; data: DoctorDatastoresData }
   | { kind: "error"; error: SwampError };
 
-/** Dependencies for the `doctor datastores` scan. */
 export interface DoctorDatastoresDeps {
   getDatastoreConfig: () => Promise<DatastoreConfig>;
   checkHealth: (
@@ -343,72 +288,37 @@ export interface DoctorDatastoresDeps {
   checkNamespaceContamination?: (
     config: DatastoreConfig,
   ) => Promise<NamespaceContaminationSummary | null>;
-  /**
-   * A dry run of the datastore's `repairUnpushedFiles` that compares size
-   * and mtime only, or null when the datastore cannot run it. Read-only.
-   */
   checkUnpushedFiles?: (
     config: DatastoreConfig,
   ) => Promise<UnpushedFilesSummary | null>;
   /**
-   * Compares the local catalog index against the on-disk walk.
-   *
-   * Implementations must read the catalog directly and never issue a data
-   * query — querying triggers backfill, and a diagnostic that repairs what it
-   * measures always reports health.
+   * must read the catalog directly and never issue a data query: querying
+   * triggers backfill, and a diagnostic that repairs what it measures always
+   * reports health
    */
   checkCatalogCompleteness?: () => Promise<CatalogCompletenessSummary | null>;
   /**
-   * Every published data version whose stored content cannot be read
-   * (swamp-club#3955); given only on a format 2 filesystem datastore, whose
-   * files are all local (a v3 checkout is covered by `checkV3Content`).
-   * Read-only, and like `checkCatalogCompleteness` it never issues a data
-   * query.
+   * given only on a format 2 filesystem datastore, whose files are all local (a
+   * v3 checkout is covered by checkV3Content). Read-only; like
+   * checkCatalogCompleteness it never issues a data query.
    */
   checkUnreadableVersions?: () => Promise<UnreadableDataVersion[]>;
-  /**
-   * Scans storage for items older than each kind's retention; run only with
-   * the `retention` option. Read-only.
-   */
   checkRetention?: () => Promise<RetentionCheckSummary>;
-  /**
-   * Reads a v3 checkout's read model state for records it could not
-   * materialise, checkout files it moved aside, and torn chunks; given only
-   * on a v3 datastore. Read-only, from checkout-local state and chunk stats.
-   */
   checkV3Content?: (config: DatastoreConfig) => Promise<V3ContentSummary>;
-  /**
-   * Why a v3 checkout refuses to open with the repo's current directories
-   * and exclude patterns, or undefined when it opens (swamp-club#3691);
-   * given only on a v3 datastore. Read-only, from checkout-local state.
-   */
   checkV3Filter?: (config: DatastoreConfig) => Promise<string | undefined>;
-  /**
-   * The replication lineages collection keeps for recovery
-   * (swamp-club#3801); given only on a v3 datastore. Read-only, from the
-   * datastore's lineage records.
-   */
   checkV3KeptLineages?: (
     config: DatastoreConfig,
   ) => Promise<V3KeptLineageFinding[]>;
-  /**
-   * Whether this checkout's replication lineage can be restored, as its
-   * sidecar last found (swamp-club#3935), or undefined while the datastore
-   * does not replicate; given only on a v3 datastore. Read-only, from the
-   * checkout's own copy.
-   */
   checkV3ReplicaRestorable?: (
     config: DatastoreConfig,
   ) => Promise<V3ReplicaRestorableFinding | undefined>;
 }
 
-/** Whether the v3 content check found nothing. */
 export function v3ContentPassed(summary: V3ContentSummary): boolean {
   return summary.unreadableRecords === 0 && summary.atRiskCopies === 0 &&
     summary.tornChunks === 0;
 }
 
-/** The one-line message of the v3 content check. */
 export function v3ContentFindingMessage(summary: V3ContentSummary): string {
   if (v3ContentPassed(summary)) {
     return "Every record of this v3 checkout is readable, and no content is held aside";
@@ -444,14 +354,12 @@ export function v3ContentFindingMessage(summary: V3ContentSummary): string {
   return `${parts.join("; ")}.`;
 }
 
-/** The first keys of a list and how many more there are. */
 function firstOf(keys: readonly string[], total: number): string {
   const shown = keys.slice(0, 3);
   const more = total - shown.length;
   return more > 0 ? `${shown.join(", ")} and ${more} more` : shown.join(", ");
 }
 
-/** The one-line message of the retention check. */
 export function retentionFindingMessage(
   summary: RetentionCheckSummary,
 ): string {
@@ -480,14 +388,6 @@ export function retentionFindingMessage(
       : "Retention is not automatic: set garbageCollection.automatic: true, or run 'swamp run gc' and 'swamp data gc' (audit logs are pruned only automatically).");
 }
 
-/**
- * Diagnostic scan that checks:
- * 1. The configured datastore is reachable (health check).
- * 2. When a namespace is set, data has been migrated under it.
- * 3. When a namespace is set, no foreign namespace data is nested under it.
- * 4. When a custom (remote) datastore is in use, any `local_encryption`
- *    vaults are flagged as an advisory mismatch.
- */
 export async function* doctorDatastores(
   _ctx: LibSwampContext,
   deps: DoctorDatastoresDeps,
@@ -512,7 +412,6 @@ export async function* doctorDatastores(
       let v3KeptLineagesFinding: V3KeptLineageFinding[] | undefined;
       let v3ReplicaRestorableFinding: V3ReplicaRestorableFinding | undefined;
 
-      // Health check
       const { healthy, message } = await deps.checkHealth(config);
       healthFindings.push({
         check: "health",
@@ -520,11 +419,9 @@ export async function* doctorDatastores(
         message,
       });
 
-      // A namespace named after a layout directory shares that directory
-      // with the solo layout, so the un-migrated data check below cannot
-      // tell the two apart and is skipped.
-      // On v3 every reserved name collides: the checkout materialises the
-      // namespace at .swamp/<name> (swamp-club#3691).
+      // a namespace named after a layout directory shares it with the solo
+      // layout, so the un-migrated data check is skipped; on v3 all reserved
+      // names collide, the checkout materialising it at .swamp/<name>
       const namespaceCollides = config.namespace !== undefined &&
         (namespaceCollidesWithLayout(
           config.namespace,
@@ -535,8 +432,8 @@ export async function* doctorDatastores(
         healthFindings.push({
           check: "reserved_namespace",
           passed: false,
-          // A v3 checkout refuses to open on a reserved name, and the v2
-          // steps to move off it are refused on v3 (swamp-club#3691).
+          // a v3 checkout refuses to open on a reserved name, and the v2 steps
+          // to move off it are refused on v3
           message: config.format === 3 &&
               isReservedNamespaceName(config.namespace)
             ? reservedV3NamespaceMessage(config.namespace)
@@ -544,7 +441,6 @@ export async function* doctorDatastores(
         });
       }
 
-      // Un-migrated namespace data check
       if (
         config.namespace && !namespaceCollides && deps.checkUnmigratedData
       ) {
@@ -569,7 +465,6 @@ export async function* doctorDatastores(
         }
       }
 
-      // Namespace contamination check
       if (config.namespace && isCustom && deps.checkNamespaceContamination) {
         const summary = await deps.checkNamespaceContamination(config);
         if (summary && summary.totalForeignObjects > 0) {
@@ -594,10 +489,9 @@ export async function* doctorDatastores(
         }
       }
 
-      // Unreadable data versions (swamp-club#3955). A scan that fails fails
-      // this check on its own; the other checks still report. It runs before
-      // the completeness walk, so the versions it reports are not warned
-      // about again when that walk reads them.
+      // a scan that fails fails this check on its own while the others still
+      // report; it runs before the completeness walk so the versions it reports
+      // are not warned about again
       if (deps.checkUnreadableVersions) {
         let summary: UnreadableVersionsSummary | undefined;
         let failure: string | undefined;
@@ -620,8 +514,7 @@ export async function* doctorDatastores(
         });
       }
 
-      // Unpushed cache files check (swamp-club#4112) — advisory, so a
-      // failure is reported in the finding and the scan goes on.
+      // advisory: a failure is reported in the finding and the scan goes on
       if (isCustom && deps.checkUnpushedFiles) {
         try {
           const summary = await deps.checkUnpushedFiles(config);
@@ -670,9 +563,8 @@ export async function* doctorDatastores(
         }
       }
 
-      // A v3 checkout whose directories changed refuses to open
-      // (swamp-club#3691): reported here, and the checks below that open
-      // it are skipped.
+      // a v3 checkout whose directories changed refuses to open: reported here,
+      // and the checks below that open it are skipped
       let v3FilterRefused = false;
       if (deps.checkV3Filter) {
         // A state it cannot read (a read-only state directory) fails this
@@ -704,9 +596,9 @@ export async function* doctorDatastores(
             "Skipped: this v3 checkout does not open until its directories are restored (see v3_directories)",
         });
       } else if (options.retention && deps.checkRetention) {
-        // The scan opens the repository, which a checkout swamp refuses to
-        // open (a v3 one on a reserved namespace, swamp-club#3691) cannot:
-        // that refusal is this check's finding, and the others still report.
+        // the scan opens the repository, which a checkout swamp refuses to open
+        // (a v3 one on a reserved namespace) cannot: that refusal is this
+        // check's finding, and the others still report
         let refusal: string | undefined;
         try {
           retentionFinding = await deps.checkRetention();
@@ -729,10 +621,9 @@ export async function* doctorDatastores(
         );
       }
 
-      // v3 content check — checkout-local state only (swamp-club#3617).
-      // A check that cannot read the state (a read-only state directory,
-      // where SQLite cannot create the WAL's shared-memory file) fails on
-      // its own; the other checks still report.
+      // checkout-local state only. A check that cannot read the state (a
+      // read-only directory, where SQLite cannot create the WAL shared-memory
+      // file) fails on its own; the other checks still report.
       if (deps.checkV3Content) {
         let summary: V3ContentSummary | undefined;
         let failure: string | undefined;
@@ -758,8 +649,8 @@ export async function* doctorDatastores(
         }
       }
 
-      // Kept replication lineages (swamp-club#3801): reported on every run,
-      // since chunk collection waits on them until an operator acts.
+      // reported on every run, since chunk collection waits on kept lineages
+      // until an operator acts
       if (deps.checkV3KeptLineages && !v3FilterRefused) {
         let kept: V3KeptLineageFinding[] | undefined;
         let failure: string | undefined;
@@ -780,7 +671,6 @@ export async function* doctorDatastores(
         });
       }
 
-      // The writer's check of its own replica (swamp-club#3935).
       if (deps.checkV3ReplicaRestorable && !v3FilterRefused) {
         let finding: V3ReplicaRestorableFinding | undefined;
         let failure: string | undefined;
@@ -807,7 +697,6 @@ export async function* doctorDatastores(
         }
       }
 
-      // Vault mismatch check — only relevant for custom (remote) datastores
       if (isCustom) {
         const vaults = await deps.getVaultConfigs();
         for (const vault of vaults) {
@@ -841,11 +730,6 @@ export async function* doctorDatastores(
   );
 }
 
-// ============================================================================
-// Repair: namespace contamination cleanup
-// ============================================================================
-
-/** Outcome of a completed repair operation. */
 export interface RepairDatastoresResult {
   foreignNamespaces: ReadonlyArray<{ namespace: string; objectCount: number }>;
   deletedObjects: number;
@@ -870,7 +754,6 @@ export type RepairDatastoresEvent =
   | { kind: "not_needed" }
   | { kind: "error"; error: SwampError };
 
-/** Dependencies for the repair flow. */
 export interface RepairDatastoresDeps {
   getDatastoreConfig: () => Promise<DatastoreConfig>;
   detectContamination: () => Promise<NamespaceContaminationSummary>;
@@ -880,26 +763,14 @@ export interface RepairDatastoresDeps {
   invalidateWorkflowRunIndexes: () => Promise<number>;
   invalidateCatalog: () => Promise<void>;
   /**
-   * Why wiping the local cache would lose data or pending work, or
-   * undefined when it is safe (swamp-club#4112). Checked after the
-   * preview, before anything changes.
+   * why wiping the local cache would lose data or pending work, or undefined
+   * when it is safe; checked after the preview, before anything changes
    */
   checkCacheSafeToWipe?: () => Promise<string | undefined>;
 }
 
 const REPAIR_STEPS = 5;
 
-/**
- * Detect and repair namespace contamination in a datastore.
- *
- * Without `confirm`, yields a preview of what would be cleaned up.
- * With `confirm`, executes the repair sequence:
- *   1. Delete foreign objects and rebuild the remote namespace index
- *   2. Wipe the local cache
- *   3. Re-pull with namespace scoping
- *   4. Invalidate workflow run indexes
- *   5. Invalidate the data catalog
- */
 export async function* repairDatastoreContamination(
   _ctx: LibSwampContext,
   deps: RepairDatastoresDeps,
@@ -961,7 +832,6 @@ export async function* repairDatastoreContamination(
 
       let lastCompletedStep = 0;
       try {
-        // Step 1: Delete foreign objects + rebuild remote index
         yield {
           kind: "step",
           step: 1,
@@ -972,7 +842,6 @@ export async function* repairDatastoreContamination(
         const result = await deps.deleteContamination();
         lastCompletedStep = 1;
 
-        // Step 2: Wipe local cache
         yield {
           kind: "step",
           step: 2,
@@ -982,7 +851,6 @@ export async function* repairDatastoreContamination(
         await deps.wipeLocalCache();
         lastCompletedStep = 2;
 
-        // Step 3: Re-pull scoped
         yield {
           kind: "step",
           step: 3,
@@ -992,7 +860,6 @@ export async function* repairDatastoreContamination(
         const filesPulled = await deps.pullScoped();
         lastCompletedStep = 3;
 
-        // Step 4: Invalidate workflow run indexes
         yield {
           kind: "step",
           step: 4,
@@ -1002,7 +869,6 @@ export async function* repairDatastoreContamination(
         const indexesInvalidated = await deps.invalidateWorkflowRunIndexes();
         lastCompletedStep = 4;
 
-        // Step 5: Invalidate data catalog
         yield {
           kind: "step",
           step: 5,
@@ -1069,10 +935,6 @@ export async function* repairDatastoreContamination(
   );
 }
 
-// ============================================================================
-// Repair: cache files the remote never received (swamp-club#4112)
-// ============================================================================
-
 export type RepairUnpushedFilesEvent =
   | { kind: "scanning" }
   | { kind: "preview"; summary: UnpushedFilesSummary }
@@ -1082,21 +944,15 @@ export type RepairUnpushedFilesEvent =
   | { kind: "not_supported"; message: string }
   | { kind: "error"; error: SwampError };
 
-/** Dependencies for the unpushed cache files repair. */
 export interface RepairUnpushedFilesDeps {
-  /** Why the datastore cannot run this repair, or undefined when it can. */
   unsupported?: string;
-  /** A dry run that compares content exactly. */
   detect: () => Promise<UnpushedFilesSummary>;
-  /** Uploads the unpushed files. */
   repair: () => Promise<UnpushedFilesSummary>;
 }
 
 /**
- * An extension's error message as it can be printed, ending a sentence: its
- * batch failures name files, and a file name can hold an escape sequence. A
- * message that spans lines, such as a timeout's remedies, ends its last line,
- * so what follows starts a new one.
+ * a batch failure names files and a file name can hold an escape sequence; a
+ * multi-line message ends its last line so what follows starts a new one
  */
 function errorText(err: unknown): string {
   const text = escapeControlCharactersInMessage(
@@ -1105,12 +961,6 @@ function errorText(err: unknown): string {
   return text.includes("\n") ? `${text}\n` : `${text.replace(/\.+$/, "")}. `;
 }
 
-/**
- * Why a datastore cannot run the unpushed cache files repair: an s3 or gcs
- * extension is too old, and any other extension does not implement it.
- *
- * @param extension - the extension named in the update command
- */
 export function unpushedRepairUnsupportedMessage(
   datastoreType: string,
   extension: string,
@@ -1120,10 +970,6 @@ export function unpushedRepairUnsupportedMessage(
     : `The ${datastoreType} datastore extension does not implement repairUnpushedFiles, so it cannot find cache files the remote never received. Ask its author to add it.`;
 }
 
-/**
- * Whether a summary leaves nothing to upload and nothing to report about
- * local files the remote lacks.
- */
 export function unpushedFilesClear(summary: UnpushedFilesSummary): boolean {
   return summary.unpushed === 0 && summary.alreadyPresent === 0 &&
     summary.locallyModified === 0 && summary.unknown === 0 &&
@@ -1131,20 +977,16 @@ export function unpushedFilesClear(summary: UnpushedFilesSummary): boolean {
 }
 
 /**
- * Why wiping the local cache at `cacheDir` would lose data or pending work,
- * judged from a dry run taken just before, or undefined when it would not.
- * A copy the remote moved on from is stale, so it does not count. Nor does a
- * copy a peer deleted: older releases left many behind, and blocking on them
- * would stall the repair, so the stage's output names them instead.
+ * a copy the remote moved on from is stale, and a copy a peer deleted does not
+ * block: older releases left many, so the stage's output names them instead
  */
 export function cacheWipeRefusal(
   summary: UnpushedFilesSummary,
   cacheDir: string,
 ): string | undefined {
   const reasons: string[] = [];
-  // First, because it must happen first: a push deletes from the remote a
-  // marked file that is gone, so removing one as the advice below says would
-  // delete it for everyone.
+  // first, because a push deletes a marked file that is gone from the remote,
+  // so removing one as the advice says would delete it for everyone
   if (summary.pendingChanges) {
     reasons.push(
       "changes recorded locally that no push has sent; run 'swamp datastore sync --push' first, and remove nothing from the cache before it: that push deletes from the remote, for everyone, a changed file that is gone",
@@ -1180,10 +1022,9 @@ export function cacheWipeRefusal(
 }
 
 /**
- * Finds cache files the remote never received, and with `confirm` uploads
- * them through the datastore's `repairUnpushedFiles`, which deletes nothing
- * and leaves pending pushes alone. Local versions the remote lacks are
- * reported, never uploaded.
+ * uploads through the datastore's repairUnpushedFiles, which deletes nothing
+ * and leaves pending pushes alone; local versions the remote lacks are
+ * reported, never uploaded
  */
 export async function* repairUnpushedCacheFiles(
   _ctx: LibSwampContext,
@@ -1243,10 +1084,6 @@ export async function* repairUnpushedCacheFiles(
   );
 }
 
-// ============================================================================
-// Repair: root-level unmigrated data cleanup
-// ============================================================================
-
 export interface UnmigratedDataRepairResult {
   removedDirectories: string[];
   removedFiles: number;
@@ -1271,7 +1108,6 @@ export type RepairUnmigratedDataEvent =
 export interface RepairUnmigratedDataDeps {
   getBasePath: () => string;
   getNamespace: () => string;
-  /** The repo's configured datastore-tier directories. */
   getDatastoreDirectories: () => readonly string[];
   listFiles: (dir: string) => Promise<string[]>;
   compareFiles: (a: string, b: string) => Promise<boolean>;
@@ -1386,45 +1222,25 @@ export async function* repairUnmigratedData(
   );
 }
 
-// ============================================================================
-// Repair: unreadable data versions (swamp-club#3955)
-// ============================================================================
-
-/** One record the repair rolls back to its last readable version. */
 export interface UnreadableRecordRepair {
   modelType: string;
   modelId: string;
   modelName: string;
   dataName: string;
-  /** The unreadable versions removed, highest first. */
   removeVersions: number[];
-  /** Whether the record's latest marker names no version. */
   markerUnreadable: boolean;
-  /**
-   * The version left as latest, or null when no readable version is left
-   * and the record is removed (or, when only its marker is unreadable,
-   * left as it is).
-   */
   becomesLatest: number | null;
   /**
-   * After the repair: whether the record is gone from disk. False when
-   * no readable version is left but a crashed write that was never
-   * published still is; the record then reads as absent. Absent in a
-   * preview.
+   * false when no readable version is left but a crashed, never-published write
+   * remains; the record then reads as absent
    */
   removed?: boolean;
 }
 
-/** What the unreadable-version repair did. */
 export interface UnreadableVersionsRepairResult {
   records: UnreadableRecordRepair[];
   versionsRemoved: number;
-  /** Records left with no readable version, removed with their versions. */
   recordsRemoved: number;
-  /**
-   * Versions the preview listed that were readable again by the time the
-   * repair held the lock, and were kept.
-   */
   versionsKept: number;
 }
 
@@ -1436,25 +1252,17 @@ export type RepairUnreadableVersionsEvent =
   | { kind: "not_needed" }
   | { kind: "error"; error: SwampError };
 
-/** A record, as the repair's operations name it. */
 export interface UnreadableRecordKey {
   modelType: string;
   modelId: string;
   dataName: string;
 }
 
-/** What the repair does under the affected models' locks. */
 export interface UnreadableVersionsRepairOps {
-  /** The same scan as the check, read again under the locks. */
   scan: () => Promise<UnreadableDataVersion[]>;
   /**
-   * Rolls one record back to its last readable version: removes
-   * `versions` (unreadable, published) through the repository's
-   * single-version delete, keeps the catalog from gaining a row for a
-   * crashed write that was never published, and points the latest marker
-   * at the highest readable version. With no versions it only resets the
-   * marker. Resolves with the version left latest (null when none can be
-   * read), and whether the record is gone from disk.
+   * keeps the catalog from gaining a row for a crashed write that was never
+   * published; with no versions it only resets the latest marker
    */
   rollBack: (
     record: UnreadableRecordKey,
@@ -1463,12 +1271,10 @@ export interface UnreadableVersionsRepairOps {
 }
 
 export interface RepairUnreadableVersionsDeps {
-  /** The check's scan: read-only, no locks. */
   scan: () => Promise<UnreadableDataVersion[]>;
   /**
-   * Opens the repository for writing, takes the per-model locks of
-   * `models`, runs `fn`, and releases the locks in a `finally`, so a repair
-   * that fails never leaves a model locked against a running serve.
+   * releases the locks in a finally, so a failed repair never leaves a model
+   * locked against a running serve
    */
   underModelLocks: <T>(
     models: ReadonlyArray<{ modelType: string; modelId: string }>,
@@ -1476,7 +1282,6 @@ export interface RepairUnreadableVersionsDeps {
   ) => Promise<T>;
 }
 
-/** The records a scan's findings roll back, in the findings' order. */
 export function planUnreadableVersionRepairs(
   findings: ReadonlyArray<UnreadableDataVersion>,
 ): UnreadableRecordRepair[] {
@@ -1505,19 +1310,6 @@ export function planUnreadableVersionRepairs(
   return [...records.values()];
 }
 
-/**
- * Detect and repair published data versions whose stored content cannot be
- * read, by rolling each affected record back to its last readable version.
- *
- * Without `confirm`, yields a preview: per record, the versions removed and
- * the version left as latest. With `confirm`, takes the affected models'
- * locks, scans again under them, and for each record the preview listed
- * rolls back: its unreadable versions are removed highest first through
- * the repository's single-version delete, the catalog gains no row for a
- * crashed write that was never published, and the latest marker names the
- * highest readable version. A version readable again by then is kept. Only
- * content that is already unreadable is removed.
- */
 export async function* repairUnreadableVersions(
   _ctx: LibSwampContext,
   deps: RepairUnreadableVersionsDeps,
@@ -1622,10 +1414,6 @@ export async function* repairUnreadableVersions(
   );
 }
 
-// ============================================================================
-// Repair: local catalog index rebuild
-// ============================================================================
-
 export interface CatalogIndexRepairResult {
   shortfalls: ReadonlyArray<CatalogShortfall>;
   missingRecords: number;
@@ -1641,18 +1429,13 @@ export type RepairCatalogIndexEvent =
 
 export interface RepairCatalogIndexDeps {
   checkCompleteness: () => Promise<CatalogCompletenessSummary | null>;
-  /** Removes the catalog database so the next query rebuilds it from disk. */
   invalidateCatalog: () => Promise<void>;
 }
 
 /**
- * Detect and repair a local catalog index that under-reports what is on disk.
- *
- * Repair is a deletion, not a rebuild: the catalog database is removed and the
- * next data query backfills it from the on-disk walk. That keeps the repair
- * honest — it cannot paper over a walk that is still wrong — but it also drops
- * foreign-namespace rows, which only `swamp datastore catalog pull` can
- * restore, so the caller is told.
+ * repair deletes the catalog database and the next data query backfills it from
+ * disk, so it cannot hide a wrong walk; foreign-namespace rows are dropped and
+ * only catalog pull restores them
  */
 export async function* repairCatalogIndex(
   _ctx: LibSwampContext,
@@ -1708,12 +1491,7 @@ export async function* repairCatalogIndex(
   );
 }
 
-// ============================================================================
-// Repair: duplicate is_latest rows
-// ============================================================================
-
 export interface CatalogDuplicateLatestResult {
-  /** Catalog rows whose latest flags were corrected. */
   demotedRows: number;
 }
 
@@ -1780,14 +1558,8 @@ export async function* repairCatalogDuplicateLatest(
   );
 }
 
-// ============================================================================
-// Repair: a v3 datastore's lost format marker (swamp-club#3617)
-// ============================================================================
-
-/** How a v3 datastore's format marker was lost: missing, or left blank. */
 export type LostFormatMarkerState = "absent" | "blank";
 
-/** What {@link repairDatastoreFormatMarker} found, or restored. */
 export interface DatastoreFormatMarkerRepairData {
   datastorePath: string;
   markerPath: string;
@@ -1802,24 +1574,13 @@ export type RepairDatastoreFormatMarkerEvent =
   | { kind: "error"; error: SwampError };
 
 export interface RepairDatastoreFormatMarkerDeps {
-  /** The filesystem v3 datastore whose marker is restored. */
   datastorePath: string;
   markerPath: string;
-  /**
-   * How its marker is lost, or undefined when it is not. Stats the commit
-   * log and never opens it.
-   */
+  /** stats the commit log and never opens it */
   inspect: () => Promise<LostFormatMarkerState | undefined>;
-  /** Restores the marker; resolves with its path. */
   restore: () => Promise<string>;
 }
 
-/**
- * Restores the format marker a crash lost from a filesystem v3 datastore
- * (swamp-club#3617), for `swamp doctor datastores --repair` in a repository
- * whose config says format 3. Without `confirm` it previews what it found,
- * having opened nothing in the datastore; with it, it restores the marker.
- */
 export async function* repairDatastoreFormatMarker(
   _ctx: LibSwampContext,
   deps: RepairDatastoreFormatMarkerDeps,
@@ -1865,18 +1626,10 @@ export async function* repairDatastoreFormatMarker(
   );
 }
 
-/** What {@link repairPreV3Records} found, or moved. */
 export interface PreV3RecordsRepairData {
-  /** The checkout's `.swamp/`. */
   swampDir: string;
-  /** The record directories found or moved, relative to `swampDir`. */
   recordDirs: string[];
-  /**
-   * Where they were moved: a new directory under `.swamp/pre-v3-records/`.
-   * Absent in a preview, which only names the parent.
-   */
   destination?: string;
-  /** The parent of every run's destination. */
   preV3RecordsDir: string;
 }
 
@@ -1888,27 +1641,16 @@ export type RepairPreV3RecordsEvent =
   | { kind: "error"; error: SwampError };
 
 export interface RepairPreV3RecordsDeps {
-  /** The checkout's `.swamp/`. */
   swampDir: string;
-  /** Where a run's records go: `.swamp/pre-v3-records/`. */
   preV3RecordsDir: string;
-  /**
-   * The record directories a checkout that has never opened its v3
-   * datastore holds, relative to `swampDir`; empty when it has v3 state or
-   * holds none.
-   */
   inspect: () => Promise<string[]>;
-  /** Moves them aside; resolves with where to and what was moved. */
   moveAside: () => Promise<{ destination: string; moved: readonly string[] }>;
 }
 
 /**
- * Moves aside the records of a checkout that joined a v3 datastore through
- * `.swamp.yaml` while its `.swamp/` held them (swamp-club#3690), for
- * `swamp doctor datastores --repair`. A v3 datastore starts empty, so the
- * first v3 open refuses such a checkout; once its records are under
- * `.swamp/pre-v3-records/`, the next command catches up from the datastore.
- * Without `confirm` it previews what it found, having moved nothing.
+ * a v3 datastore starts empty, so its first open refuses a checkout whose
+ * .swamp held records; moving them aside lets the next command catch up from
+ * the datastore
  */
 export async function* repairPreV3Records(
   _ctx: LibSwampContext,

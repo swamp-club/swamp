@@ -22,8 +22,8 @@ import type { OutputMode } from "../output/output.ts";
 import { writeOutput } from "../../infrastructure/logging/logger.ts";
 
 /**
- * The run-time decision a server reports for a concrete vault read or write
- * (swamp-club#2676): what a serve run triggered by the principal may do.
+ * the run-time decision a server reports for a concrete vault read or write:
+ * what a serve run triggered by the principal may do
  */
 export interface RunVaultAccessReport {
   vault: string;
@@ -33,7 +33,6 @@ export interface RunVaultAccessReport {
   rule: string;
   reason: string;
   grantId?: string;
-  /** Set for a trigger principal, whose scope covers all its runs. */
   triggerScope?: string;
 }
 
@@ -48,25 +47,12 @@ export interface AccessCheckResult {
    * that predates the setting.
    */
   approveRequiresExplicitGrant?: boolean;
-  /**
-   * The server's signal policy. Undefined for a local check, or a server
-   * that predates the setting.
-   */
   signalRequiresExplicitGrant?: boolean;
-  /**
-   * The server's tag policy. Undefined for a local check, or a server that
-   * predates the setting.
-   */
   tagRequiresExplicitGrant?: boolean;
   /** Undefined for a local check, or a server that predates it. */
   runVaultAccess?: RunVaultAccessReport;
 }
 
-/**
- * The log line's short tag for a run-time vault decision: the rule for a
- * refusal that is not about scoping (an explicit vault deny, or a reserved
- * vault), else whether the principal's runs are vault-scoped.
- */
 function runVaultScopeTag(report: RunVaultAccessReport): string {
   if (!report.allowed && !report.restricted) {
     if (report.rule === "vault-deny") return "vault deny";
@@ -76,10 +62,9 @@ function runVaultScopeTag(report: RunVaultAccessReport): string {
 }
 
 /**
- * The lines explaining a run-time vault decision, or none without one. Run
- * reads are allowed until a vault grant scopes the principal, unlike vault
- * requests, which need an allow — so both are shown. The log line carries a
- * short scope tag; the reason and rule are in the JSON output.
+ * run reads are allowed until a vault grant scopes the principal, unlike vault
+ * requests, which need an allow, so both are shown; the reason and rule are in
+ * the JSON output
  */
 export function runVaultAccessLines(
   report: RunVaultAccessReport | undefined,
@@ -101,14 +86,9 @@ export function runVaultAccessLines(
 interface ApprovalDecision {
   readonly effect: string;
   readonly impliedBy?: "run" | "write";
-  /** The action of a listing row; absent on a check of one action. */
   readonly action?: string;
 }
 
-/**
- * Marks a decision that covers its action only through another action's
- * grant: `run` for approve and signal, `write` for tag.
- */
 export function impliedMarker(decision: ApprovalDecision): string {
   return decision.impliedBy ? ` [implied by ${decision.impliedBy}]` : "";
 }
@@ -179,11 +159,6 @@ function impliedListingNote(
   }`;
 }
 
-/**
- * Explains how an approve check was decided, or returns null when there is
- * nothing to add: approve is allowed only through run grants, or the server
- * does not count run grants for approve.
- */
 export function approvalPolicyNote(
   action: string,
   decisions: readonly ApprovalDecision[],
@@ -197,10 +172,6 @@ export function approvalPolicyNote(
   );
 }
 
-/**
- * Explains how a signal check was decided, as {@link approvalPolicyNote}
- * does for approve.
- */
 export function signalPolicyNote(
   action: string,
   decisions: readonly ApprovalDecision[],
@@ -214,10 +185,6 @@ export function signalPolicyNote(
   );
 }
 
-/**
- * Explains how a tag check was decided, as {@link approvalPolicyNote} does
- * for approve, with `write` in place of `run` (swamp-club#3085).
- */
 export function tagPolicyNote(
   action: string,
   decisions: readonly ApprovalDecision[],
@@ -226,10 +193,6 @@ export function tagPolicyNote(
   return impliedPolicyNote("tag", action, decisions, tagRequiresExplicitGrant);
 }
 
-/**
- * Explains implied approve rows in a permission listing, or returns null when
- * the listing has none that allow.
- */
 export function impliedApproveListingNote(
   decisions: readonly ApprovalDecision[],
   approveRequiresExplicitGrant: boolean | undefined,
@@ -237,10 +200,6 @@ export function impliedApproveListingNote(
   return impliedListingNote("approve", decisions, approveRequiresExplicitGrant);
 }
 
-/**
- * Explains implied signal rows in a permission listing, or returns null when
- * the listing has none that allow.
- */
 export function impliedSignalListingNote(
   decisions: readonly ApprovalDecision[],
   signalRequiresExplicitGrant: boolean | undefined,
@@ -248,10 +207,6 @@ export function impliedSignalListingNote(
   return impliedListingNote("signal", decisions, signalRequiresExplicitGrant);
 }
 
-/**
- * Explains implied tag rows in a permission listing, or returns null when
- * the listing has none that allow.
- */
 export function impliedTagListingNote(
   decisions: readonly ApprovalDecision[],
   tagRequiresExplicitGrant: boolean | undefined,

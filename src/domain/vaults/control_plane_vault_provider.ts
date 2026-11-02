@@ -50,10 +50,8 @@ const ENCRYPTION_KEY_PATH = "token-secrets/encryption-key";
 const SECRET_PREFIX = "token-secrets/values/";
 
 /**
- * Whether a set of control-plane records (keyed by path) still holds a
- * co-located token encryption key. Used to warn about root-level records a
- * namespace move copied but left behind: they still decrypt every token
- * secret that existed before the move.
+ * warns about root-level records a namespace move copied but left behind: they
+ * still decrypt every token secret from before the move
  */
 export function hasCoLocatedTokenKey(
   records: ReadonlyMap<string, Uint8Array>,
@@ -67,10 +65,6 @@ export function hasCoLocatedTokenKey(
   }
 }
 
-/**
- * An operator-supplied key that replaces the co-located one, with the vault
- * reference it was read from (recorded in the control-plane marker).
- */
 export interface ExternalTokenKey {
   readonly ref: TokenSecretsKeyRef;
   readonly key: Uint8Array;
@@ -78,32 +72,22 @@ export interface ExternalTokenKey {
 
 export interface ControlPlaneVaultProviderOptions {
   /**
-   * Opt in to an external key. The provider then never generates or stores
-   * key bytes in the control plane, and migrates secrets encrypted under a
-   * co-located key the first time it starts.
+   * the provider then never generates or stores key bytes in the control plane,
+   * and migrates secrets under a co-located key the first time it starts
    */
   readonly externalKey?: ExternalTokenKey;
   /**
-   * Whether finding the co-located key may start the migration to the
-   * external key. Serve migrates; the token commands pass false, because
-   * migrating from a CLI process would change the key under running serve
-   * instances that still hold the old one. Defaults to true.
+   * serve migrates; token commands pass false because migrating from a CLI
+   * process would change the key under running serve instances still holding
+   * the old one
    */
   readonly migrate?: boolean;
 }
 
 /**
- * The reserved `_token-secrets` vault: token secrets encrypted at rest in the
- * control plane.
- *
- * It does not implement `VaultExistenceProvider`. `ControlPlaneStore` offers
- * only `get`, `put`, `putIfAbsent`, `delete` and `list`, so the only answer
- * that reads no record would come from a listing, which the `has` contract
- * rejects, and a `get` of the record is the read the contract forbids. The
- * typed-secrets existence check authorizes each reference as a load would
- * (design/enablers/typed-secrets.md Section 3.4), and a load refuses this
- * reserved vault (Section 3.3), so nothing is expected to ask.
- * `control_plane_vault_provider_test.ts` pins the decision.
+ * does not implement VaultExistenceProvider: the store offers no read-free
+ * answer, a listing is rejected by the has contract, and a load refuses this
+ * reserved vault, so nothing is expected to ask
  */
 export class ControlPlaneVaultProvider
   implements VaultProvider, VaultDeleteProvider {
@@ -230,9 +214,8 @@ export class ControlPlaneVaultProvider
   }
 
   /**
-   * Imports the co-located key record. A marker means the control plane was
-   * moved to an external key, so running without one fails closed rather
-   * than falling back to a key in the datastore.
+   * a marker means the control plane moved to an external key, so running
+   * without one fails closed rather than falling back to a key in the datastore
    */
   async #importCoLocatedKey(data: Uint8Array): Promise<CryptoKey> {
     const bytes = new Uint8Array(data);
@@ -320,12 +303,9 @@ export class ControlPlaneVaultProvider
   }
 
   /**
-   * Re-encrypts every secret under the external key, then overwrites the
-   * co-located key with the marker. The marker is written last so a crash
-   * leaves the co-located key in place and the next start resumes; entries
-   * already under the external key are skipped. Overwriting rather than
-   * deleting matters: a swamp version without external-key support that
-   * finds no key would generate a new co-located one.
+   * the marker is written last so a crash leaves the co-located key and the
+   * next start resumes; overwrite rather than delete, since an older swamp
+   * finding no key would generate a new one
    */
   async #migrateFromCoLocatedKey(
     legacyKey: CryptoKey,
@@ -358,10 +338,9 @@ export class ControlPlaneVaultProvider
         continue;
       }
       const reencryptedBlob = await aesGcmEncrypt(plaintext, externalKey);
-      // A peer that already migrated may have rotated or deleted this entry
-      // since it was read; writing the stale copy back would undo that.
-      // The store has no compare-and-swap, so re-read just before writing to
-      // shrink that window to one round-trip.
+      // a peer that migrated may have rotated or deleted this entry; the store
+      // has no compare-and-swap, so re-read just before writing to shrink that
+      // window to one round-trip
       if (!sameBytes(await this.#store.get(path), data)) continue;
       await this.#store.put(
         path,
@@ -404,9 +383,8 @@ async function canDecrypt(
 }
 
 /**
- * Raised when the control plane holds an external-key marker but this process
- * has no key configured. Names the recorded vault reference so the operator
- * knows what to configure; the reference is never used to fetch a key.
+ * names the recorded vault reference so the operator knows what to configure;
+ * the reference is never used to fetch a key
  */
 export function externalKeyRequiredError(
   marker: TokenKeyMarker,

@@ -48,7 +48,6 @@ Deno.test("JsonlAuditRepository.append creates directory and file", async () => 
     const dirInfo = await Deno.stat(auditDir);
     assertEquals(dirInfo.isDirectory, true);
 
-    // Check that a JSONL file was created
     const files: string[] = [];
     for await (const f of Deno.readDir(auditDir)) {
       files.push(f.name);
@@ -69,7 +68,6 @@ Deno.test("JsonlAuditRepository.append writes valid JSONL lines", async () => {
     await repo.append(entry1);
     await repo.append(entry2);
 
-    // Read the file and verify two JSONL lines
     const auditDir = join(dir, ".swamp", "audit");
     let filename = "";
     for await (const f of Deno.readDir(auditDir)) {
@@ -91,7 +89,6 @@ Deno.test("JsonlAuditRepository.findByTimeRange returns entries in range", async
   await withTempDir(async (dir) => {
     const repo = new JsonlAuditRepository(dir);
 
-    // Manually write a JSONL file for a known date
     const auditDir = join(dir, ".swamp", "audit");
     await Deno.mkdir(auditDir, { recursive: true });
 
@@ -121,23 +118,19 @@ Deno.test("JsonlAuditRepository.findByTimeRange returns entries in range", async
 
     const result = await repo.findByTimeRange(startTime, endTime);
 
-    // Only the first entry should be in range
     assertEquals(result.length, 1);
     assertEquals(result[0].command, "aws s3 ls");
   });
 });
 
 Deno.test("JsonlAuditRepository.findByTimeRange reads correct UTC-dated file for same-day queries", async () => {
-  // Regression test for https://github.com/swamp-club/swamp/issues/659
-  // Ensures date iteration uses UTC dates to match filenames written by append().
-  // The bug: setHours(0,0,0,0) uses local time, so in UTC+ timezones,
-  // toISOString() would produce the previous day's date, missing today's file.
+  // date iteration must use UTC dates to match append() filenames; local
+  // midnight in UTC+ zones yields the previous day and misses today's file
   await withTempDir(async (dir) => {
     const repo = new JsonlAuditRepository(dir);
     const auditDir = join(dir, ".swamp", "audit");
     await Deno.mkdir(auditDir, { recursive: true });
 
-    // Write an entry to a file dated 2025-03-09 (UTC)
     const entry = {
       timestamp: "2025-03-09T00:30:00.000Z",
       sessionId: "s1",
@@ -149,9 +142,6 @@ Deno.test("JsonlAuditRepository.findByTimeRange reads correct UTC-dated file for
       JSON.stringify(entry) + "\n",
     );
 
-    // Query a range that starts and ends on March 9 UTC.
-    // Before the fix, in UTC+1, the date iteration would generate
-    // "2025-03-08" instead of "2025-03-09" and miss this file.
     const startTime = new Date("2025-03-09T00:00:00.000Z");
     const endTime = new Date("2025-03-09T23:59:59.999Z");
 
@@ -168,7 +158,6 @@ Deno.test("JsonlAuditRepository.findByTimeRange spans multiple UTC dates correct
     const auditDir = join(dir, ".swamp", "audit");
     await Deno.mkdir(auditDir, { recursive: true });
 
-    // Write entries across two UTC dates
     await Deno.writeTextFile(
       join(auditDir, "commands-2025-03-09.jsonl"),
       JSON.stringify({
@@ -219,7 +208,6 @@ Deno.test("JsonlAuditRepository.deleteOlderThan removes old files", async () => 
     const auditDir = join(dir, ".swamp", "audit");
     await Deno.mkdir(auditDir, { recursive: true });
 
-    // Create files for different dates
     await Deno.writeTextFile(
       join(auditDir, "commands-2025-01-10.jsonl"),
       '{"timestamp":"2025-01-10T10:00:00.000Z","sessionId":"s1","command":"old","cwd":"."}\n',
@@ -234,7 +222,6 @@ Deno.test("JsonlAuditRepository.deleteOlderThan removes old files", async () => 
 
     assertEquals(deleted, 1);
 
-    // Verify only the newer file remains
     const files: string[] = [];
     for await (const f of Deno.readDir(auditDir)) {
       files.push(f.name);
@@ -258,6 +245,5 @@ Deno.test("JsonlAuditRepository.append silently handles non-existent repo dir", 
   );
   const entry = createBashCommandEntry("s1", "test", ".");
 
-  // Should not throw
   await repo.append(entry);
 });

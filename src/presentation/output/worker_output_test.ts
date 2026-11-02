@@ -125,7 +125,6 @@ Deno.test("renderWorkerTokenList: log mode renders the table with display state"
   assertStringIncludes(output, "ci-runner-3");
   assertStringIncludes(output, "enrolled");
   assertStringIncludes(output, "machine-42");
-  // Display-level expiry overlay
   assertStringIncludes(output, "expired");
 });
 
@@ -461,8 +460,6 @@ Deno.test("renderWorkerStatus: dispatch events serialize whole in json mode", ()
   assertEquals(parsed.dispatchId, "d-1");
 });
 
-// ── renderWorkerQueue ──────────────────────────────────────────────
-
 const queueData: WorkerQueueListData = {
   items: [
     {
@@ -538,8 +535,6 @@ Deno.test("renderWorkerQueue: step column falls back to modelType.methodName whe
   );
   assertStringIncludes(output, "command/shell.execute");
 });
-
-// ── renderWorkerVerify ────────────────────────────────────────────────
 
 const verifyDataAllPass: WorkerVerifyData = {
   workers: [

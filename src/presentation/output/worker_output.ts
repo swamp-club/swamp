@@ -17,12 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Render functions for the `swamp worker` command group. Each supports both
- * "log" (human-readable) and "json" (structured) output modes per the
- * terminal-output design system.
- */
-
 import { bold, cyan, dim, green, red, yellow } from "@std/fmt/colors";
 import { writeOutput } from "../../infrastructure/logging/logger.ts";
 import type {
@@ -40,7 +34,7 @@ import type { WorkerStatusEvent } from "../../worker/connect.ts";
 import type { WorkerVerifyData } from "../../serve/protocol.ts";
 import type { OutputMode } from "./output.ts";
 
-const checkmark = "\u2713"; // ✓
+const checkmark = "\u2713";
 
 function humanStopReason(reason: string): string {
   switch (reason) {
@@ -55,7 +49,6 @@ function humanStopReason(reason: string): string {
   }
 }
 
-/** Pads each cell to its column width and joins with two spaces. */
 function tableLines(
   headers: string[],
   rows: string[][],
@@ -112,8 +105,8 @@ function colorWorkerStatus(status: string): string {
 }
 
 /**
- * Renders the result of minting an enrollment token. The plaintext is
- * printed exactly once — it lives only in the vault afterwards.
+ * the plaintext token prints exactly once; afterwards it lives only in the
+ * vault
  */
 export function renderWorkerTokenCreate(
   data: WorkerTokenCreateData,
@@ -142,9 +135,6 @@ export function renderWorkerTokenCreate(
   writeOutput(lines.join("\n"));
 }
 
-/**
- * Renders the enrollment token list. JSON mode emits the array of records.
- */
 export function renderWorkerTokenList(
   data: WorkerTokenListData,
   mode: OutputMode,
@@ -187,9 +177,6 @@ export function renderWorkerTokenList(
   writeOutput(lines.join("\n"));
 }
 
-/**
- * Renders the result of revoking an enrollment token.
- */
 export function renderWorkerTokenRevoke(
   data: WorkerTokenRevokeData,
   mode: OutputMode,
@@ -226,16 +213,12 @@ export function renderWorkerTokenRevoke(
   writeOutput(lines.join("\n"));
 }
 
-/** Formats worker labels as comma-joined key=value pairs. */
 function formatLabels(labels: Record<string, string>): string {
   const entries = Object.entries(labels);
   if (entries.length === 0) return "-";
   return entries.map(([key, value]) => `${key}=${value}`).join(",");
 }
 
-/**
- * Renders the worker pool list. JSON mode emits the array of records.
- */
 export function renderWorkerList(
   data: WorkerListData,
   mode: OutputMode,
@@ -345,11 +328,6 @@ export function renderWorkerQueue(
   writeOutput(lines.join("\n"));
 }
 
-/**
- * Renders worker dial-home status events as they happen. Log mode is a
- * line-per-event stream (the command runs until shutdown); json mode emits
- * one JSON object per line for machine consumption.
- */
 export function renderWorkerStatus(
   event: WorkerStatusEvent,
   mode: OutputMode,
@@ -425,10 +403,6 @@ export function renderWorkerStatus(
   }
 }
 
-/**
- * Renders fleet probe verification results. JSON mode emits the full
- * structured response; log mode shows a per-worker pass/fail table.
- */
 export function renderWorkerVerify(
   data: WorkerVerifyData,
   mode: OutputMode,
@@ -484,9 +458,6 @@ export function renderWorkerVerify(
   }
 }
 
-/**
- * Renders the worker prune preview (dry-run or before confirmation).
- */
 export function renderWorkerPrunePreview(
   workers: PrunableWorker[],
   dryRun: boolean,
@@ -512,9 +483,6 @@ export function renderWorkerPrunePreview(
   writeOutput("");
 }
 
-/**
- * Renders the worker prune result. JSON mode emits the structured counts.
- */
 export function renderWorkerPruneResult(
   result: WorkerPruneResult,
   mode: OutputMode,

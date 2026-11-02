@@ -27,7 +27,6 @@ import type { WritableDatastoreControlPlaneStore } from "../../domain/datastore/
 import { markErrorPaths, UserError } from "../../domain/errors.ts";
 import { syncDirectory } from "./sync_directory.ts";
 
-/** A format marker as it is written, on a filesystem or a control plane. */
 export function datastoreFormatMarkerText(
   marker: DatastoreFormatMarker,
 ): string {
@@ -35,12 +34,9 @@ export function datastoreFormatMarkerText(
 }
 
 /**
- * Writes an extension datastore's format marker as the control-plane
- * record `datastore-format` at its datastore-wide root (swamp-club#3534),
- * only if no marker is there: of two concurrent setups exactly one writes
- * it. Resolves true when this call created it, false when a marker was
- * already there, which the caller reads to tell a lost race from another
- * datastore.
+ * writes only if no marker is there, so of two concurrent setups exactly one
+ * writes; true when this call created it, false when one existed, which tells a
+ * lost race from another datastore
  */
 export async function writeControlPlaneFormatMarker(
   store: Pick<WritableDatastoreControlPlaneStore, "putIfAbsent">,
@@ -53,30 +49,16 @@ export async function writeControlPlaneFormatMarker(
 }
 
 /**
- * Writes a filesystem datastore's format marker at
- * `<datastorePath>/datastore-format.json` (swamp-club#3279). Setup writes it
- * before any file of the format it names, so a crash part-way leaves a
- * directory that is either empty or fully marked.
- *
- * It refuses to replace anything already at that path, atomically: a
- * datastore's format changes only by migration, never by a second setup.
- *
- * The marker is durable when this returns (swamp-club#3617): its content
- * is synced and its file closed before it is linked into place, and the
- * directory is synced after, so a power cut leaves no marker or a whole
- * one, never an empty one beside the files it names.
- *
- * @throws UserError when something already exists at the marker path
+ * written before any file of its format so a crash leaves the directory empty
+ * or marked; never replaces anything, atomically; synced before linking and
+ * directory after, so power loss never leaves an empty marker
  */
 export async function writeDatastoreFormatMarker(
   datastorePath: string,
   marker: DatastoreFormatMarker,
   options: {
-    /** The hard-link call; injectable so a test can stand in a filesystem without links. */
     readonly link?: (from: string, to: string) => Promise<void>;
-    /** How the written file is synced; `file.sync()` by default (tests). */
     readonly syncFile?: (file: Deno.FsFile) => Promise<void>;
-    /** How the datastore directory is synced (tests). */
     readonly syncDirectory?: (dir: string) => Promise<void>;
   } = {},
 ): Promise<string> {
@@ -93,12 +75,12 @@ export async function writeDatastoreFormatMarker(
       ),
       [path],
     );
-  // Written whole to a temp file, then linked into place: the link fails if
-  // anything is already at the path, so of two concurrent setups exactly
-  // one writes the marker, and a reader never sees a partial one.
+  // written to a temp file then hard-linked into place: the link fails if the
+  // path exists, so one of two concurrent setups wins and a reader never sees a
+  // partial marker
   const tmpPath = join(datastorePath, `.${crypto.randomUUID()}.tmp`);
-  // Synced and closed before the link: the link must never name content
-  // that is not on disk yet, and Windows prefers a closed file.
+  // synced and closed before the link so the link never names content that is
+  // not on disk yet; Windows prefers a closed file
   const tmp = await Deno.open(tmpPath, { write: true, createNew: true });
   try {
     await writeAll(tmp, bytes);

@@ -30,8 +30,6 @@ import type { WorkflowRunRepository } from "../workflows/repositories.ts";
 import type { DataRepositoryReader } from "./summary_types.ts";
 import { Data } from "../data/data.ts";
 
-// ── Helpers ─────────────────────────────────────────────────────────
-
 function makeOutput(
   opts: {
     definitionId?: string;
@@ -121,8 +119,6 @@ function makeData(
   });
 }
 
-// ── Mock repos ──────────────────────────────────────────────────────
-
 function createMockOutputRepo(
   items: { output: ModelOutput; type: ModelType; method: string }[],
 ): OutputRepository {
@@ -197,8 +193,6 @@ function createMockDataRepo(
       Promise.resolve(items.filter(({ data }) => data.createdAt >= cutoff)),
   };
 }
-
-// ── Tests ───────────────────────────────────────────────────────────
 
 Deno.test("summarise - empty repos return zero counts", async () => {
   const service = new SummaryService(
@@ -289,7 +283,6 @@ Deno.test("summarise - groups method executions by model", async () => {
 
   const result = await service.summarise(new Date(0));
 
-  // Two models (by definitionId), first has most runs
   assertEquals(result.methodExecutions.length, 2);
   assertEquals(result.methodExecutions[0].total, 2);
   assertEquals(result.methodExecutions[0].succeeded, 1);
@@ -478,7 +471,6 @@ Deno.test("summarise - counts data items, versions, and unique models", async ()
     createMockOutputRepo([]),
     createMockWorkflowRunRepo([]),
     createMockDataRepo([
-      // version 3 means 3 versions exist for this item
       { data: makeData({ version: 3 }), modelType: type1, modelId: "m1" },
       { data: makeData({ version: 1 }), modelType: type1, modelId: "m1" },
       { data: makeData({ version: 5 }), modelType: type2, modelId: "m2" },
@@ -488,14 +480,13 @@ Deno.test("summarise - counts data items, versions, and unique models", async ()
   const result = await service.summarise(new Date(0));
 
   assertEquals(result.data.totalItems, 3);
-  assertEquals(result.data.totalVersions, 9); // 3 + 1 + 5
+  assertEquals(result.data.totalVersions, 9);
   assertEquals(result.data.uniqueModels, 2);
 
-  // Model type breakdown
   assertEquals(result.data.byModelType.length, 2);
   assertEquals(result.data.byModelType[0].modelType, "aws/s3-bucket");
   assertEquals(result.data.byModelType[0].items, 2);
-  assertEquals(result.data.byModelType[0].versions, 4); // 3 + 1
+  assertEquals(result.data.byModelType[0].versions, 4);
   assertEquals(result.data.byModelType[1].modelType, "aws/ec2-instance");
   assertEquals(result.data.byModelType[1].items, 1);
   assertEquals(result.data.byModelType[1].versions, 5);
@@ -532,7 +523,6 @@ Deno.test("summarise - limit truncates per-group runs but counts reflect all mat
 
   const result = await service.summarise(new Date(0), { limit: 3 });
 
-  // Method group: counts reflect all 10, runs[] is capped at 3, truncated set
   assertEquals(result.methodExecutions.length, 1);
   const methodGroup = result.methodExecutions[0].methods[0];
   assertEquals(methodGroup.total, 10);
@@ -541,7 +531,6 @@ Deno.test("summarise - limit truncates per-group runs but counts reflect all mat
   assertEquals(methodGroup.runs.length, 3);
   assertEquals(methodGroup.truncated, true);
 
-  // Workflow group: counts reflect all 8, runs[] is capped at 3, truncated set
   assertEquals(result.workflows.length, 1);
   const wfGroup = result.workflows[0];
   assertEquals(wfGroup.total, 8);

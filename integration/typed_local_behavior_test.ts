@@ -17,16 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Typed secrets on the local behavior path, end to end
- * (design/enablers/typed-secrets.md Section 11, Phase 3.5), through real
- * components in process: the libswamp entry points `swamp behavior evaluate`,
- * `swamp behavior validate` and `swamp behavior run`, `context.runModel` and
- * `model.method`, wired to real repositories on a temp repository and a
- * counting vault serving every canary class. The internal option is turned on
- * through the entry points' sensitive-values factories, as only tests may.
- */
-
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import { ensureDir, walk } from "@std/fs";
 import { join } from "@std/path";
@@ -94,7 +84,6 @@ const VAULT = "prod";
 const METHOD = "run";
 const keyOf = (i: number) => `canary-${i}`;
 
-/** What the trusted method and check received, in order. */
 interface Received {
   args: Record<string, unknown>;
   globalArgs: Record<string, unknown>;
@@ -119,14 +108,12 @@ interface Fixture {
   evaluatedDefRepo: YamlEvaluatedDefinitionRepository;
   outputRepo: YamlOutputRepository;
   evaluationService: ExpressionEvaluationService;
-  /** The tagged record's stored password reference text and its vault key, and a plain vault secret. */
   stored: { reference: string; key: string; password: string; token: string };
   received: Received[];
   checked: Checked[];
   runDeps: () => ModelMethodRunDeps;
   save: (definition: Definition) => Promise<Definition>;
   access: <T>(fn: () => Promise<T>, vaults?: string[]) => Promise<T>;
-  /** Every unique canary value, the password and the token: nothing on disk may hold one. */
   forbidden: string[];
 }
 
@@ -162,8 +149,8 @@ async function withFixture(fn: (f: Fixture) => Promise<void>): Promise<void> {
         lifetime: "infinite",
         garbageCollection: 10,
       },
-      // Sensitive values that are not strings, inside array elements: the
-      // places _swamp.sensitiveFieldJson lists (swamp-club#3967).
+      // sensitive values that are not strings, inside array elements: the
+      // places _swamp.sensitiveFieldJson lists
       app: {
         schema: z.object({
           services: z.array(z.object({
@@ -194,7 +181,7 @@ async function withFixture(fn: (f: Fixture) => Promise<void>): Promise<void> {
             globalArgs: { ...context.globalArgs },
             unresolved: context.unresolvedMethodArgs,
           });
-          // As a method would log what it received (swamp-club#3967).
+          // as a method would log what it received
           const service = (args as { service?: { env: unknown } }).service;
           if (service) {
             context.logger.info("env {e}", { e: service.env });
@@ -398,7 +385,6 @@ async function withFixture(fn: (f: Fixture) => Promise<void>): Promise<void> {
   }
 }
 
-/** Fails when any file under the repository holds a forbidden value or a sentinel. */
 async function assertNoPlaintextOnDisk(f: Fixture): Promise<void> {
   for await (const entry of walk(f.repoDir, { includeDirs: false })) {
     if (entry.path.endsWith(".db") || entry.path.includes("_catalog")) continue;
@@ -519,7 +505,6 @@ Deno.test("typed local behavior: run delivers the exact value of every canary cl
       assertEquals(last.args.password, canary.value, canary.class);
       assertEquals(last.args.note, f.stored.password, canary.class);
       assertEquals(last.globalArgs.token, f.stored.token, canary.class);
-      // The method's merge keeps the sentinels, as the checks see them.
       assertStringIncludes(String(last.unresolved?.password), "__SWAMP_VSEC_");
       // One probe for the reference, then one load for the attempt.
       assertEquals(f.counting.readsOf(keyOf(i)) - before, 2, canary.class);
@@ -572,7 +557,6 @@ Deno.test("typed local behavior: --last-evaluated replays the cache as reference
           lastEvaluated,
         }),
       );
-    // A fresh typed run writes the cache: references, never values.
     const fresh = await replay(false);
     assertEquals(fresh.some((e) => e.kind === "error"), false);
     assertEquals(f.received.at(-1)!.args.note, `n-${f.stored.password}`);
@@ -584,7 +568,6 @@ Deno.test("typed local behavior: --last-evaluated replays the cache as reference
     assertEquals((cached.writtenReferences ?? []).length, 2);
     assert(cached.persistedProvenance instanceof ProvenanceMap);
 
-    // The vault rotates between the run and its replay.
     const vault = /vault\.get\('([^']+)'/.exec(f.stored.reference)![1];
     const rotated = `pw-rotated-${crypto.randomUUID()}`;
     await f.access(() => f.vaultService.put(vault, f.stored.key, rotated));
@@ -675,10 +658,8 @@ Deno.test("typed local behavior: context.runModel rechecks under its own registr
     const second = await f.access(invoke);
     assertEquals(second.ok, true);
     assertEquals(f.counting.readsOf(keyOf(1)) - before, 4);
-    // The caller's registry shared nothing with the nested runs.
     assertEquals([...callerRegistry.all()].length, 1);
     assertEquals(callerRegistry.entryOf(callerSentinel) !== undefined, true);
-    // Revoked access fails the nested check before any load.
     const refused = await f.access(invoke, ["other-vault"]);
     assertEquals(refused.ok, false);
     assertEquals(f.counting.readsOf(keyOf(1)) - before, 4);
@@ -812,10 +793,9 @@ Deno.test("typed local behavior: validate reports value-free diagnostics, delive
     assertEquals(f.counting.readsOf(keyOf(4)) - before4, 1);
     assertValueFree(f, JSON.stringify(refused), "the refusal");
 
-    // What validate cannot evaluate, an input with no default, is left as
-    // its stored text for the check; nothing
-    // is read. Another method's expressions are outside this validation and
-    // never evaluated.
+    // what validate cannot evaluate, an input with no default, is left as its
+    // stored text for the check and nothing is read; another method's
+    // expressions are outside this validation and never evaluated
     const before6 = f.counting.readsOf(keyOf(6));
     const before7 = f.counting.readsOf(keyOf(7));
     const contextual = await deps.validateModel(contextualDef, f.model, f.type);
@@ -844,7 +824,6 @@ Deno.test("typed local behavior: validate reports value-free diagnostics, delive
     assertEquals(f.checked.at(-1)!.globalArgs.token, f.canaries[8].value);
     assertEquals(f.counting.readsOf(keyOf(8)) - before8, 2);
 
-    // An environment variable unset where validate runs degrades the same way.
     const envless = await deps.validateModel(envlessDef, f.model, f.type);
     assertEquals(
       envless.results.find((r) => r.name === "Check: see-args")?.passed,
@@ -855,7 +834,6 @@ Deno.test("typed local behavior: validate reports value-free diagnostics, delive
       `\${{ env.${unsetVariable} }}`,
     );
 
-    // A reference the run would fail to find fails the checks here too.
     const checksBeforeMissing = f.checked.length;
     const missing = await deps.validateModel(missingDef, f.model, f.type);
     const missingCheck = missing.results.find((r) =>
@@ -876,10 +854,9 @@ Deno.test("typed local behavior: validate reports value-free diagnostics, delive
     assertEquals(f.checked.length, checksBeforeMissing);
     assertEquals(f.counting.readsOf(keyOf(9)) - before9, 0);
 
-    // What validate cannot evaluate degrades expression by expression, in
-    // any key order: the unset variable's argument is left as its stored
-    // text, while the reference beside it is still checked, refused or
-    // delivered as the run would.
+    // what validate cannot evaluate degrades expression by expression, in any
+    // key order: the unset variable's argument stays stored text while the
+    // reference beside it is still checked as the run would
     const partialDef = await f.save(Definition.create({
       name: "partial",
       type: f.type.normalized,
@@ -941,12 +918,9 @@ Deno.test("typed local behavior: validate reports value-free diagnostics, delive
       assertValueFree(f, JSON.stringify(outcome), `the refusal (${name})`);
     }
     assertEquals(f.checked.length, checksBeforeOrdered);
-    // Each probed once at evaluation, and refused before any load.
     assertEquals(f.counting.readsOf(keyOf(10)) - before10, 1);
     assertEquals(f.counting.readsOf(keyOf(11)) - before11, 1);
 
-    // A missing key beside an unset variable fails the checks as the run
-    // would fail.
     const unsetBesideMissing = await f.save(Definition.create({
       name: "unset-beside-missing",
       type: f.type.normalized,
@@ -1085,7 +1059,6 @@ Deno.test("typed local behavior: model.method inputs arrive at the trusted metho
                 warn() {},
                 error() {},
               } as unknown as MethodContext["logger"],
-              // The synthetic step's bag: a view of the run's registry.
               vaultSecrets: new VaultSecretBag(registry),
             }),
             {
@@ -1106,7 +1079,6 @@ Deno.test("typed local behavior: model.method inputs arrive at the trusted metho
       )
     );
     assertEquals(result, true);
-    // The delegate saw a sentinel, never the value; the method saw the value.
     assertStringIncludes(
       String((deliveredInputs[0] as Record<string, unknown>).password),
       "__SWAMP_VSEC_",
@@ -1225,8 +1197,6 @@ Deno.test("default validation: a global that reads a model with no data yet stay
     assertEquals(f.checked.at(-1)!.globalArgs.token, expression);
     assertEquals(f.checked.at(-1)!.globalArgs.region, "us-east-1");
 
-    // The recommended data.latest form of the same gap degrades the same
-    // way: the lookup finds no record, and the select on it stays as text.
     const viaData = "${{ data.latest('upstream', 'main').attributes.id }}";
     const latest = await f.save(Definition.create({
       name: "downstream-latest",
@@ -1435,7 +1405,6 @@ Deno.test("typed local behavior: description prose documenting vault, env or dat
       JSON.stringify(defaultedResult.results),
     );
 
-    // The same text in a delivered argument is checked there.
     const container = "Example: ${{ data.latest('db', 'main').attributes }}";
     const delivered = await f.save(Definition.create({
       name: "documented-and-delivered",
@@ -1628,9 +1597,8 @@ Deno.test("typed local behavior: a sensitive number in an array element reaches 
     assertEquals(last.args.label, "p-8080");
     assertEquals(last.globalArgs.port, 8080);
     assertValueFree(f, JSON.stringify(events), "run events");
-    // A method_output event carries the line as the method rendered it,
-    // unmasked, for any secret text a method logs (pre-existing); every other
-    // event is free of the key.
+    // a method_output event carries the line as rendered, unmasked, for any
+    // secret text a method logs; every other event is free of the key
     assertEquals(
       JSON.stringify(events.filter((e) => e.kind !== "method_output"))
         .includes(apiKey),

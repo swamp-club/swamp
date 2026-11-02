@@ -17,14 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Expired approval gates listed through `swamp serve` (swamp-club#3045):
- * `workflow.approvals` returns an `expired` list beside `approvals`, and
- * each list is filtered on the complete fields of every row's workflow.
- * Requests go through `handleMessage`, the real dispatch path, against a
- * real repository.
- */
-
 import { assertEquals } from "@std/assert";
 import "../src/domain/models/models.ts";
 import { initializeLogging } from "../src/infrastructure/logging/logger.ts";
@@ -56,11 +48,6 @@ interface ParentLink {
   runId: string;
 }
 
-/**
- * Saves a workflow whose one step is a gate with a one-hour timeout and runs
- * it through serve, with authorization off, until it suspends. With
- * `expired`, the gate's start is then moved two hours into the past.
- */
 async function suspendAtGate(
   repo: ServeRepo,
   options: {

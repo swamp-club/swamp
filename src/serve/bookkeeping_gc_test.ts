@@ -110,16 +110,13 @@ function harness(opts: {
   leases?: DataRecord[];
   dispatches?: DataRecord[];
   tokens?: DataRecord[];
-  /** Wires `listWorkerTokenNames`; an Error makes it reject. */
   workerTokenNames?: string[] | Error;
   sync?: boolean;
   batchSize?: number;
   failDelete?: Set<string>;
   failPush?: boolean;
   missingOnDisk?: Set<string>;
-  /** Records whose body read throws. */
   unreadableBody?: Set<string>;
-  /** Records whose body is not JSON. */
   corruptBody?: Set<string>;
 }): Harness {
   const events: string[] = [];
@@ -326,7 +323,6 @@ Deno.test("reapEndedBookkeepingRecords: a record already gone from disk is not c
     missingOnDisk: new Set(["lease-ghost"]),
   });
   const result = await reapEndedBookkeepingRecords(h.deps, GRACE);
-  // Still deleted, so a stale catalog row is dropped.
   assertEquals(h.events, ["delete:lease-ghost", "push"]);
   assertEquals(result.leasesDeleted, 0);
 });
@@ -405,7 +401,6 @@ Deno.test("reapEndedBookkeepingRecords: reaps revoked and expired tokens past gr
         revokedAt: OLD,
       }),
       tokenRecord("expired-old", { state: "expired", expiresAt: OLD }),
-      // Never marked expired, but its lifetime ended long ago.
       tokenRecord("lapsed-old", { state: "enrolled", expiresAt: OLD }),
       tokenRecord("active", { state: "enrolled", expiresAt: FUTURE }),
       tokenRecord("unused", { state: "unused", expiresAt: FUTURE }),

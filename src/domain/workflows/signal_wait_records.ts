@@ -18,17 +18,9 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * The two records a wait for a signal keeps outside its run record
- * (swamp-club#3093).
- *
- * A _registration_ is written once by the executor when a step starts
- * waiting. An _outcome_ is written once by whoever settles the wait first: a
- * signal, a timeout or a cancel. The run record is changed only by a resume,
- * which applies the stored outcome to the step, so delivering a signal never
- * races a save of the run.
- *
- * Both records are plaintext in a store other writers can reach, so each is
- * validated on every read.
+ * the run record is changed only by a resume applying the stored outcome, so
+ * delivering a signal never races a save of the run; both records are
+ * plaintext, so each is validated on every read
  */
 
 import { z } from "zod";
@@ -42,25 +34,21 @@ import {
   WaitEarlySchema,
 } from "./signal_wait.ts";
 
-/** Key family of registrations: `waits/<waitId>`. */
 export const WAIT_REGISTRATION_PREFIX = "waits/";
 
-/** Key family of outcomes: `wait-outcomes/<waitId>`. */
 export const WAIT_OUTCOME_PREFIX = "wait-outcomes/";
 
 /**
- * The largest wait record read back, in bytes. A registration holds a
- * schema and an outcome a payload of at most 16 KiB, so a larger record was
- * not written by swamp.
+ * a registration holds a schema and an outcome a payload of at most 16 KiB, so
+ * a larger record was not written by swamp
  */
 export const WAIT_RECORD_MAX_BYTES = 256 * 1024;
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
 /**
- * A wait id as typed, in the one form keys are built from: trimmed and
- * lowercase. Undefined for anything that is not a UUID, so no typed value
- * ever becomes part of a key.
+ * returns undefined for anything not a UUID, so no typed value ever becomes
+ * part of a key
  */
 export function normalizeWaitId(raw: string): string | undefined {
   const id = raw.trim().toLowerCase();
@@ -73,17 +61,14 @@ function requireWaitId(waitId: string): string {
   return id;
 }
 
-/** The key of the registration of `waitId`. Throws for a non-UUID. */
 export function waitRegistrationKey(waitId: string): string {
   return `${WAIT_REGISTRATION_PREFIX}${requireWaitId(waitId)}`;
 }
 
-/** The key of the outcome of `waitId`. Throws for a non-UUID. */
 export function waitOutcomeKey(waitId: string): string {
   return `${WAIT_OUTCOME_PREFIX}${requireWaitId(waitId)}`;
 }
 
-/** The wait id a key of either family names, or undefined. */
 export function waitIdFromKey(key: string): string | undefined {
   for (const prefix of [WAIT_REGISTRATION_PREFIX, WAIT_OUTCOME_PREFIX]) {
     if (key.startsWith(prefix)) {
@@ -93,23 +78,17 @@ export function waitIdFromKey(key: string): string | undefined {
   return undefined;
 }
 
-/** A wait id as swamp writes it: a UUID in lowercase, the form keys use. */
 const LowercaseUuid = z.string().regex(UUID, "must be a lowercase UUID");
 
 /**
- * A workflow id as a record may name it: one path segment. The id is used
- * to find the run, and a record is read from a store other writers can
- * reach, so it must not be able to name a path outside the runs directory.
+ * the id is used to find the run and a record comes from a store other writers
+ * can reach, so it must not name a path outside the runs directory
  */
 const WorkflowIdInRecord = z.string().min(1).refine(
   (id) => !/[\\/]/.test(id) && id !== "." && id !== "..",
   "must be a single path segment",
 );
 
-/**
- * What the executor records when a step starts waiting: where the wait
- * lives and what it accepts. `kind` leaves room for other kinds of wait.
- */
 export const WaitRegistrationSchema = z.object({
   kind: z.literal("signal"),
   waitId: LowercaseUuid,
@@ -121,10 +100,7 @@ export const WaitRegistrationSchema = z.object({
   deadline: z.string().datetime(),
   schema: RequiredInputsSchemaSchema,
   registeredAt: z.string().datetime(),
-  // The key the wait holds, if its step declared one (swamp-club#3209).
   key: z.string().refine(isWaitKey).optional(),
-  // What a reader needs to give the wait its key's pending signal, if its
-  // step declared `acceptEarly` (swamp-club#3212).
   early: WaitEarlySchema.optional(),
 });
 
@@ -154,15 +130,11 @@ export const WaitOutcomeSchema = z.discriminatedUnion("kind", [
 
 export type WaitOutcome = z.infer<typeof WaitOutcomeSchema>;
 
-/** An outcome that carries a signal. */
 export type AcceptedWaitOutcome = Extract<WaitOutcome, { kind: "accepted" }>;
 
 /**
- * The facts of a wait an outcome is built from. `key`, `early` and `schema`
- * are carried for a wait whose step set `acceptEarly`, so whoever settles it
- * can give it its key's pending signal first (swamp-club#3212); no outcome
- * stores them. `workflowName` is the name the wait's run recorded, which a
- * pending signal held for an authorized caller is matched against.
+ * key, early and schema are carried for acceptEarly waits so the settler can
+ * give the key's pending signal first, and no outcome stores them
  */
 export interface WaitRef {
   waitId: string;
@@ -175,13 +147,11 @@ export interface WaitRef {
   schema?: WaitRegistration["schema"];
 }
 
-/** A record as read back: present and valid, absent, or not readable. */
 export type StoredWaitRecord<T> =
   | { readonly kind: "found"; readonly record: T }
   | { readonly kind: "absent" }
   | { readonly kind: "unreadable" };
 
-/** Serialises a registration or an outcome for storage. */
 export function encodeWaitRecord(
   record: WaitRegistration | WaitOutcome,
 ): Uint8Array {
@@ -211,7 +181,6 @@ function decode<T>(
   return { kind: "found", record: parsed.data };
 }
 
-/** Reads the registration stored for `waitId`. */
 export function decodeWaitRegistration(
   bytes: Uint8Array | null,
   waitId: string,
@@ -220,9 +189,9 @@ export function decodeWaitRegistration(
 }
 
 /**
- * Reads the outcome stored for `waitId`. A payload that does not survive
- * parsing unchanged is unreadable: parsing drops a key such as `__proto__`,
- * and a payload a signal could never have sent must not be applied in part.
+ * a payload that does not survive parsing unchanged (a dropped __proto__ key)
+ * is unreadable, since a payload a signal could never have sent must not be
+ * applied in part
  */
 export function decodeWaitOutcome(
   bytes: Uint8Array | null,
@@ -240,7 +209,6 @@ export function decodeWaitOutcome(
     : { kind: "unreadable" };
 }
 
-/** The registration of `wait`, held by a step of a run. */
 export function registrationOf(
   at: {
     workflowId: string;
@@ -268,12 +236,10 @@ export function registrationOf(
   };
 }
 
-/** The outcome that records `ref` passed its deadline unsignalled. */
 export function timedOutOutcome(ref: WaitRef, now: Date): WaitOutcome {
   return { kind: "timed_out", ...pick(ref), settledAt: now.toISOString() };
 }
 
-/** The outcome that records the run of `ref` ended before a signal came. */
 export function cancelledOutcome(ref: WaitRef, now: Date): WaitOutcome {
   return { kind: "cancelled", ...pick(ref), settledAt: now.toISOString() };
 }
@@ -287,22 +253,18 @@ function pick(ref: WaitRef): WaitRef {
   };
 }
 
-/** True when `now` is past the deadline of `ref`. */
 export function isWaitExpired(ref: { deadline: string }, now: Date): boolean {
   return now.getTime() > new Date(ref.deadline).getTime();
 }
 
-/** Why a registered wait refuses a signal before any outcome is created. */
 export type SignalDecisionRefusal =
   | { readonly kind: "expired"; readonly deadline: Date }
   | { readonly kind: "invalid_payload"; readonly errors: string[] };
 
-/** The outcome a signal would create, or why the wait refuses it. */
 export type SignalDecision =
   | { readonly accepted: true; readonly outcome: AcceptedWaitOutcome }
   | { readonly accepted: false; readonly refusal: SignalDecisionRefusal };
 
-/** The wait a registration describes, for checking a payload against it. */
 function waitOf(registration: {
   waitId: string;
   schema: WaitRegistration["schema"];
@@ -317,9 +279,8 @@ function waitOf(registration: {
 }
 
 /**
- * Decides a signal against a registered wait: an unexpired wait accepts a
- * payload its captured schema allows. Nothing is stored here; the returned
- * outcome holds the wait only once it has been created in the store.
+ * nothing is stored here; the returned outcome holds the wait only once it has
+ * been created in the store
  */
 export function decideSignal(
   registration: WaitRegistration,

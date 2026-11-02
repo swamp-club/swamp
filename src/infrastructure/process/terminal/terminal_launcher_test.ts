@@ -55,7 +55,6 @@ interface Harness {
   unrefs: number;
 }
 
-/** A process whose exit status is fixed, or that never exits. */
 function fakeProcess(
   outcome: "success" | "failure" | "reject" | "running",
   counter: { unrefs: number },

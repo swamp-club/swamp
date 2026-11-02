@@ -63,7 +63,6 @@ const DENY_PROD = grant({
   resource: { kind: "data", pattern: "prod-*" },
 });
 
-/** A context whose repositories record calls and hold no definitions. */
 function makeCtx(
   grants: Grant[],
   options: { listingFails?: boolean } = {},

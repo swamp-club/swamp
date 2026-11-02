@@ -172,14 +172,14 @@ Deno.test("PartitionKey.parse: rejects keys partitionOf never produces", () => {
   const invalid = [
     "",
     "grant--x",
-    `model--swamp/grant--${ID}`, // unencoded '/'
-    `model--swamp%2fgrant--${ID}`, // lowercase escape
-    `model--swamp%2Dgrant--${ID}`, // '-' needlessly encoded
-    `model--%40swamp%2Fgrant--${ID}`, // '@' encoded
-    `model--Swamp%2Fgrant--${ID}`, // not normalized
+    `model--swamp/grant--${ID}`,
+    `model--swamp%2fgrant--${ID}`,
+    `model--swamp%2Dgrant--${ID}`,
+    `model--%40swamp%2Fgrant--${ID}`,
+    `model--Swamp%2Fgrant--${ID}`,
     `model--swamp%2Fgrant--nope`,
     `model----${ID}`,
-    `model--%E0%A4%A--${ID}`, // malformed escape
+    `model--%E0%A4%A--${ID}`,
     `run--${ID}-${RUN}`,
     `run--${ID}--${RUN}x`,
     "config--secret--x",

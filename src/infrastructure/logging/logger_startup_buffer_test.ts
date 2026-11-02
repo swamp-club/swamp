@@ -17,10 +17,8 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// Runs in its own module so no other test's logging configuration is in
-// play. The startup buffer only installs before the first initializeLogging
-// call, so the test resets that guard first to stay correct under
-// `deno test --repeats`.
+// runs in its own module so no other logging config is in play; resets the
+// install-once guard first to stay correct under --repeats
 
 import { assertEquals } from "@std/assert";
 import { getLogger } from "@logtape/logtape";
@@ -68,7 +66,6 @@ Deno.test("bufferStartupWarnings: replays startup warnings once logging starts, 
       0,
     );
 
-    // Once logging is initialised the buffer is not reinstalled.
     await bufferStartupWarnings();
     logger.warn("direct warning after init");
     assertEquals(

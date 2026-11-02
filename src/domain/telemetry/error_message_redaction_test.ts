@@ -182,8 +182,8 @@ Deno.test("redactErrorMessage: redacts a path glued to a colon", () => {
 });
 
 Deno.test("redactErrorMessage: a long run of :N segments redacts without backtracking", () => {
-  // A backtracking suffix grammar made this exponential in the run length;
-  // at this size an ambiguous pattern would never finish.
+  // an ambiguous pattern backtracks exponentially in the run length, so at this
+  // size it would never finish
   const message = "Failed: /a" + ":1".repeat(5000) + "x";
   assertEquals(redactErrorMessage(message), "Failed: <PATH>");
 });

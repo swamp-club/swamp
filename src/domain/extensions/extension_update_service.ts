@@ -19,7 +19,6 @@
 
 import { CalVer } from "../models/calver.ts";
 
-/** Extension is already at or ahead of the latest registry version. */
 export interface UpToDateStatus {
   status: "up_to_date";
   name: string;
@@ -28,7 +27,6 @@ export interface UpToDateStatus {
   channel?: string;
 }
 
-/** A newer version is available in the registry. */
 export interface UpdateAvailableStatus {
   status: "update_available";
   name: string;
@@ -37,7 +35,6 @@ export interface UpdateAvailableStatus {
   channel?: string;
 }
 
-/** Extension was successfully updated. */
 export interface UpdatedStatus {
   status: "updated";
   name: string;
@@ -60,7 +57,6 @@ export interface KeptWithCollisionStatus {
   channel?: string;
 }
 
-/** Extension was not found in the registry. */
 export interface NotFoundStatus {
   status: "not_found";
   name: string;
@@ -69,7 +65,6 @@ export interface NotFoundStatus {
   channel?: string;
 }
 
-/** Extension install failed during update (network, safety, integrity, etc.). */
 export interface FailedStatus {
   status: "failed";
   name: string;
@@ -78,7 +73,6 @@ export interface FailedStatus {
   channel?: string;
 }
 
-/** Extension is deprecated in the registry. */
 export interface DeprecatedStatus {
   status: "deprecated";
   name: string;
@@ -88,7 +82,6 @@ export interface DeprecatedStatus {
   channel?: string;
 }
 
-/** Discriminated union of all possible update statuses. */
 export type ExtensionUpdateStatus =
   | UpToDateStatus
   | UpdateAvailableStatus
@@ -98,30 +91,19 @@ export type ExtensionUpdateStatus =
   | KeptWithCollisionStatus
   | DeprecatedStatus;
 
-/** Summary counts for the update operation. */
 export interface UpdateSummary {
   total: number;
   upToDate: number;
   updated: number;
   failed: number;
-  /** Updates kept on the new version despite a type collision. */
   keptWithCollision: number;
 }
 
-/** Aggregated result of checking/updating extensions. */
 export interface ExtensionUpdateResult {
   extensions: ExtensionUpdateStatus[];
   summary: UpdateSummary;
 }
 
-/**
- * Compares the installed version against the latest registry version
- * and returns the appropriate status.
- *
- * Returns `up_to_date` if installed >= latest, `update_available` if
- * installed < latest, or `not_found` if latestVersion is null (extension
- * missing from registry).
- */
 export function checkExtensionVersion(
   name: string,
   installedVersion: string,
@@ -147,10 +129,9 @@ export function checkExtensionVersion(
   const latest = CalVer.create(latestVersion);
   const cmp = CalVer.compare(installed, latest);
 
-  // Version comparison takes precedence over deprecation so that
-  // security patches and updates are never silently skipped.
-  // Deprecation is only surfaced when the extension is already
-  // up-to-date — the pull warning covers the deprecated+update case.
+  // version comparison outranks deprecation so security patches are never
+  // silently skipped; deprecation surfaces only when up to date, as the pull
+  // warning covers deprecated plus update
   if (cmp < 0) {
     return {
       status: "update_available",
@@ -181,9 +162,6 @@ export function checkExtensionVersion(
   };
 }
 
-/**
- * Aggregates an array of statuses into a result with summary counts.
- */
 export function buildUpdateResult(
   statuses: ExtensionUpdateStatus[],
 ): ExtensionUpdateResult {

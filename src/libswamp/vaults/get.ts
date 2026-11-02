@@ -22,7 +22,6 @@ import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
 import { notFound, validationFailed } from "../errors.ts";
 
-/** Interface for vault config repositories accepted by createVaultGetDeps. */
 export interface VaultConfigRepository {
   findByName: (name: string) => Promise<VaultConfigInfo | null>;
   findById: (
@@ -33,9 +32,6 @@ export interface VaultConfigRepository {
 }
 
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
-/**
- * Data structure for the vault get output.
- */
 export interface VaultGetData {
   id: string;
   name: string;
@@ -45,7 +41,6 @@ export interface VaultGetData {
   storagePath: string;
 }
 
-/** Minimal vault config shape needed by the generator. */
 export interface VaultConfigInfo {
   id: string;
   name: string;
@@ -59,7 +54,6 @@ export type VaultGetEvent =
   | { kind: "completed"; data: VaultGetData }
   | { kind: "error"; error: SwampError };
 
-/** Dependencies for the vault get operation. */
 export interface VaultGetDeps {
   findByName: (name: string) => Promise<VaultConfigInfo | null>;
   findById: (type: string, id: string) => Promise<VaultConfigInfo | null>;
@@ -67,7 +61,6 @@ export interface VaultGetDeps {
   storagePath: (config: VaultConfigInfo) => string;
 }
 
-/** Wires real infrastructure into VaultGetDeps. */
 export function createVaultGetDeps(
   repoDir: string,
   injectedVaultConfigRepo?: VaultConfigRepository,
@@ -82,7 +75,6 @@ export function createVaultGetDeps(
   };
 }
 
-/** Retrieves vault configuration details. */
 export async function* vaultGet(
   _ctx: LibSwampContext,
   deps: VaultGetDeps,
@@ -95,10 +87,8 @@ export async function* vaultGet(
     (async function* () {
       yield { kind: "resolving" };
 
-      // Try to find by name first
       let config = await deps.findByName(vaultNameOrId);
 
-      // If not found by name, try to find by ID
       if (!config) {
         if (vaultType) {
           config = await deps.findById(vaultType, vaultNameOrId);
@@ -108,7 +98,6 @@ export async function* vaultGet(
         }
       }
 
-      // If type was specified, verify it matches
       if (config && vaultType && config.type !== vaultType) {
         yield {
           kind: "error",

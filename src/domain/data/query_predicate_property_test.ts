@@ -36,13 +36,11 @@ function ast(expr: string): ASTNode {
   return env.parse(expr).ast as ASTNode;
 }
 
-/** A model() call on any string, written as a CEL literal (JSON escapes). */
 const arbCall = fc.string({ minLength: 1, maxLength: 12 }).map((ref) => ({
   ref,
   expr: `model(${JSON.stringify(ref)})`,
 }));
 
-/** Joins calls with random operators, negations and other terms. */
 const arbPredicate = fc.array(
   fc.tuple(
     arbCall,

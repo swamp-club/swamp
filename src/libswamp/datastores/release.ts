@@ -22,13 +22,9 @@ import type { SwampError } from "../errors.ts";
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
 import { type DatastoreClaimDeps, notV3Error } from "./claim.ts";
 
-/** The result of `swamp datastore release`. */
 export interface DatastoreReleaseData {
-  /** False when the datastore was not claimed: nothing was changed. */
   released: boolean;
-  /** The address of the owner the release removed. */
   address?: string;
-  /** When the removed claim was written. */
   claimedAt?: string;
 }
 
@@ -36,12 +32,6 @@ export type DatastoreReleaseEvent =
   | { kind: "completed"; data: DatastoreReleaseData }
   | { kind: "error"; error: SwampError };
 
-/**
- * Removes the claim on a v3 datastore (swamp-club#4063), so direct writers
- * write it again. Releasing an unclaimed datastore changes nothing.
- *
- * @throws UserError on a v2 datastore
- */
 export async function* datastoreRelease(
   _ctx: LibSwampContext,
   deps: Pick<DatastoreClaimDeps, "commitLog">,

@@ -71,7 +71,6 @@ function withTracker(
   };
 }
 
-/** A run left `running` by a force exit: one step done, one in flight. */
 function strandedRun(pid: number): WorkflowRun {
   const startedAt = new Date().toISOString();
   return WorkflowRun.fromData({
@@ -119,11 +118,6 @@ type DoctorRunRepository = WorkflowRunRepository & {
   listWorkflowIds(): Promise<WorkflowId[]>;
 };
 
-/**
- * A run repository over `runs`, stored under workflow "wf", and `renamed`,
- * stored under a workflow no longer named so. `scanned` limits what the
- * recent-record scan returns, as its window does for a run started long ago.
- */
 function runRepoOf(
   runs: WorkflowRun[],
   scanned = runs,
@@ -158,13 +152,11 @@ function runRepoOf(
   return { runRepo, saved };
 }
 
-/** An output repository holding no method-run records. */
 const noOutputs: MethodRunOutputs = {
   findByIds: () => Promise.resolve(new Map()),
   save: () => Promise.reject(new Error("unexpected output save")),
 };
 
-/** Saves a step's method-run output `running` under `pid`, as a step does. */
 async function saveRunningOutput(
   outputRepo: YamlOutputRepository,
   pid: number,
@@ -183,7 +175,6 @@ async function saveRunningOutput(
   return output;
 }
 
-/** Workflow lookup that knows only workflow "wf". */
 const workflowRepo = {
   findByName: (name: string) =>
     Promise.resolve(
@@ -331,7 +322,6 @@ Deno.test(
   }),
 );
 
-/** Records every markSettled call on `tracker` as [id, reason]. */
 function recordSettles(tracker: RunTrackerStore): [string, string][] {
   const marked: [string, string][] = [];
   const markSettled = tracker.markSettled.bind(tracker);

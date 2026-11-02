@@ -17,20 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Remote-secrets baseline, path 1: the per-dispatch secret allowlist
- * (swamp-club#3512).
- *
- * Serve registers each dispatch with `allowedSecrets`: the references the
- * step's secret bag holds, passed on the dispatch request because the
- * dispatched args carry resolved values, plus any `vault.get()` expression
- * still written in those args (swamp-club#3529). `resolveSecret` from the
- * worker is held to it, after the reserved-vault and key-prefix denylists,
- * unless it carries a resource claim serve verifies against the record (see
- * the readResource baseline, path 2). These tests pin how the allowlist is
- * derived on the production path and what each check admits or refuses.
- */
-
 import { assertEquals, assertNotEquals, assertRejects } from "@std/assert";
 import { z } from "zod";
 
@@ -83,18 +69,9 @@ const SUCCESS: DispatchResult = {
   durationMs: 1,
 };
 
-/** The resource spec of a vaulting type: `password` is schema-sensitive. */
 const VAULTING_SPEC = "secret";
-/** The resource spec of a vaulting type whose every field is sensitive. */
 const VAULTING_ALL_SPEC = "all";
 
-/**
- * Registers a per-run model type whose `read` method takes one string. With
- * `withResource`, the type also declares a `secret` resource whose
- * `password` field is schema-sensitive and an `all` resource with
- * `sensitiveOutput`, so a dispatch of it can write those resources over the
- * data plane.
- */
 function registerReaderType(
   withResource = false,
   globalOnly = false,
@@ -148,16 +125,11 @@ function registerReaderType(
   return type;
 }
 
-/** What the in-memory worker saw while a dispatch was active on serve. */
 interface Observed {
   params: DispatchParams;
   active: ActiveDispatch;
 }
 
-/**
- * Makes `workerName` answer every dispatch by running `inside` while the
- * dispatch is still registered on serve, then reporting success.
- */
 function answerDispatches(
   o: BaselineOrchestrator,
   worker: Awaited<ReturnType<typeof connectInMemoryWorker>>,
@@ -175,10 +147,6 @@ function answerDispatches(
   });
 }
 
-/**
- * Calls the worker-facing `resolveSecret` verb, with a resource claim when
- * given; returns the value or the refusal.
- */
 async function tryResolve(
   o: BaselineOrchestrator,
   workerName: string,
@@ -200,7 +168,6 @@ async function tryResolve(
   }
 }
 
-/** A direct remote step request for `type`, as a workflow step would build it. */
 function remoteRequest(
   type: ModelType,
   methodArgs: Record<string, unknown>,
@@ -286,9 +253,9 @@ for (const argumentSource of ["method", "global"] as const) {
           await o.repoContext.definitionRepo.save(type, definition);
 
           const workerName = `w-${crypto.randomUUID().slice(0, 8)}`;
-          // A version 5 worker, whose frame carries the resolved arguments
-          // this test pins; the reference-only frame a version 6 worker
-          // receives is pinned in remote_secrets_mixed_fleet_test.ts.
+          // a version 5 worker gets the resolved arguments this test pins; the
+          // reference-only frame a version 6 worker gets is pinned in
+          // remote_secrets_mixed_fleet_test.ts
           const worker = await connectInMemoryWorker(
             o,
             workerName,
@@ -346,7 +313,6 @@ for (const argumentSource of ["method", "global"] as const) {
           assertEquals(status, "succeeded", errors.join("\n"));
           assertEquals(seen.length, 1);
 
-          // The dispatched args hold the plaintext, not the expression ...
           assertEquals(
             seen[0].methodArgs,
             argumentSource === "method" ? { value: secret } : {},
@@ -355,13 +321,10 @@ for (const argumentSource of ["method", "global"] as const) {
             seen[0].globalArgs,
             argumentSource === "global" ? { value: secret } : {},
           );
-          // ... so the allowlist comes from the step's secret bag, exact and
-          // not dynamic (swamp-club#3529) ...
           assertEquals(seen[0].allowedSecrets, {
             staticRefs: [{ vaultName: BASELINE_VAULT, secretKey: key }],
             hasDynamicRefs: false,
           });
-          // ... and the worker reads that secret and no other.
           assertEquals(seen[0].resolved, { value: secret });
           assertEquals(seen[0].unreferenced, {
             refused:
@@ -527,7 +490,6 @@ Deno.test({
       try {
         const workerName = `w-${crypto.randomUUID().slice(0, 8)}`;
         const worker = await connectInMemoryWorker(o, workerName);
-        // The worker's own enrollment-token secret sits in the ordinary vault.
         const tokenKey = tokenSecretKey(workerName);
         const results: Array<{ value?: unknown; refused?: string }> = [];
         answerDispatches(o, worker, workerName, async ({ params, active }) => {
@@ -575,7 +537,6 @@ Deno.test({
               `resolveSecret: access denied — reserved vault '${TOKEN_SECRETS_VAULT_NAME}' is not accessible from dispatched methods`,
           },
           { refused: infra },
-          // The prefix match is case-insensitive.
           { refused: infra },
         ]);
       } finally {
@@ -623,7 +584,6 @@ Deno.test({
           }
         });
 
-        // No vault reference at all: an empty static allowlist.
         await o.dispatchService.executeRemote(
           remoteRequest(registerReaderType(), { value: "plain" }),
         );
@@ -655,9 +615,8 @@ Deno.test({
 
         const type = registerReaderType(true);
         const workerName = `w-${crypto.randomUUID().slice(0, 8)}`;
-        // Claims reach resolveSecret from a version 5 worker; a version 6
-        // one claims through the load route, which verifies them alike
-        // (remote_secrets_load_route_test.ts).
+        // claims reach resolveSecret from a version 5 worker; a version 6
+        // worker claims through the load route, which verifies them alike
         const worker = await connectInMemoryWorker(
           o,
           workerName,
@@ -701,9 +660,6 @@ Deno.test({
             ),
             null,
           );
-          // The worker writes the crafted text as a sensitive value: a
-          // schema-sensitive field, and under sensitiveOutput a top-level
-          // key holding a dot, which the writer must address by its name.
           const writes = [
             {
               specName: VAULTING_SPEC,
@@ -735,7 +691,6 @@ Deno.test({
             observed[write.name] = {
               tags: record.tags,
               content,
-              // A claim for the secret the crafted text names ...
               targetClaim: await tryResolve(
                 o,
                 workerName,
@@ -744,7 +699,6 @@ Deno.test({
                 target,
                 claim,
               ),
-              // ... and one for each reference the writer stored instead.
               storedClaims: [],
             };
             for (
@@ -770,14 +724,10 @@ Deno.test({
         await o.dispatchService.executeRemote(
           {
             ...remoteRequest(type, { value: "plain" }),
-            // Masked by serve's dispatch redactor, as a sensitive literal
-            // the step's arguments hold is.
             redactorSeeds: ["known-secret"],
           },
         );
 
-        // The writer vaulted the crafted text under keys of its own and
-        // tagged the fields, which never hold the crafted reference ...
         const schema = observed["crafted"];
         const all = observed["crafted-all"];
         assertEquals(parseSensitiveFieldsTag(schema.tags), ["password"]);
@@ -785,9 +735,6 @@ Deno.test({
         assertEquals(parseSensitiveFieldsTag(all.tags), "*");
         assertNotEquals(all.content["a.b"], crafted);
         assertNotEquals(all.content.note, "n");
-        // ... so the claim for the named secret is refused, and the claims
-        // for the stored references yield the crafted text and the note,
-        // never the secret the text names.
         for (const name of ["crafted", "crafted-all"]) {
           assertEquals(observed[name].targetClaim, {
             refused:

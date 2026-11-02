@@ -34,7 +34,6 @@ const ID = "6f1c2a3b-4d5e-4f60-8a7b-9c0d1e2f3a4b";
 const RUN = "0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d";
 const MODEL = modelRef(ModelType.create("@swamp/aws-ec2"), ID);
 
-/** A valid intent of every kind, built from its required fields. */
 function sampleOf(kind: string): Record<string, unknown> {
   const required = CONTROL_PLANE_INTENT_TYPES[
     kind as keyof typeof CONTROL_PLANE_INTENT_TYPES

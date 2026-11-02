@@ -27,7 +27,6 @@ import {
   partitionOf,
 } from "./partition_key.ts";
 
-/** Letters, digits and every character the key format must survive. */
 const CHARS = [
   ..."abcdefghijklmnopqrstuvwxyzABCDEF0123456789",
   "-",

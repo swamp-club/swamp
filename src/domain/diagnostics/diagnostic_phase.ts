@@ -27,9 +27,8 @@ import {
 } from "../remote/observability.ts";
 
 /**
- * The serve paths whose cost is broken into exported phases
- * (design/enablers/serve-phase-telemetry.md). A closed vocabulary: it is the
- * `swamp.diagnostic.area` attribute, never a dynamic span name.
+ * a closed vocabulary: it is the swamp.diagnostic.area attribute, never a
+ * dynamic span name
  */
 export const DIAGNOSTIC_AREAS = [
   "enrollment",
@@ -41,7 +40,6 @@ export const DIAGNOSTIC_AREAS = [
 ] as const;
 export type DiagnosticArea = typeof DIAGNOSTIC_AREAS[number];
 
-/** Phases of shared code that any area may run; the area tells them apart. */
 const SHARED_PHASES = [
   "definition_lookup",
   "definition_scan",
@@ -51,10 +49,8 @@ const SHARED_PHASES = [
 ] as const;
 
 /**
- * The phases each area exports besides the shared ones. A phase started in an
- * area that does not list it stays silent, so an area carried by accident
- * into unrelated work cannot mislabel it. Areas with no phases yet export
- * only the shared ones.
+ * a phase started in an area that does not list it stays silent, so an area
+ * carried by accident into unrelated work cannot mislabel it
  */
 const AREA_PHASES = {
   enrollment: [
@@ -122,7 +118,6 @@ function exportsPhase(area: DiagnosticArea, phase: DiagnosticPhase): boolean {
   return sharedPhases.has(phase) || areaPhases.get(area)!.has(phase);
 }
 
-/** A running {@link PhaseTally} measurement, and the one it runs inside. */
 interface TallyFrame {
   readonly tally: PhaseTally;
   nested: number;
@@ -132,19 +127,9 @@ interface TallyFrame {
 const tallyFrames = new AsyncLocalStorage<TallyFrame>();
 
 /**
- * Bounded counters and cumulative work for a phase that loops over items.
- * Counts export as `swamp.diagnostic.<key>`, work as
- * `swamp.diagnostic.<key>_work_ms`.
- *
- * Work is summed across items, so it is not elapsed time: measurements that
- * run concurrently (reads in parallel batches) each add their own time. A
- * measurement nested inside another in the same async path is exclusive:
- * the outer one excludes it. Concurrent measurements under one outer
- * measurement are all excluded from it, so its work can be understated, never
- * negative.
- *
- * A tally whose phase is not recording does nothing, so callers may gate
- * costly inputs (a byte count) on {@link PhaseTally.recording}.
+ * work is summed across items, so it is not elapsed time; a nested measurement
+ * is excluded from its outer one, so concurrent ones can understate it, never
+ * make it negative
  */
 export class PhaseTally {
   readonly #counts = new Map<string, number>();
@@ -167,7 +152,6 @@ export class PhaseTally {
     }
   }
 
-  /** {@link measure} for synchronous work, such as a parse. */
   measureSync<T>(key: string, fn: () => T): T {
     if (!this.recording) return fn();
     const { frame, finish } = this.#begin(key);
@@ -197,10 +181,6 @@ export class PhaseTally {
     return { frame, finish };
   }
 
-  /**
-   * Adds `other`'s counts and work to this tally's: work counted apart (a
-   * scan shared between requests) reported into the phase that owns it.
-   */
   merge(other: PhaseTally): void {
     if (!this.recording) return;
     for (const [key, count] of other.#counts) this.add(key, count);
@@ -222,8 +202,8 @@ export class PhaseTally {
 }
 
 /**
- * What a phase achieved, beside `swamp.outcome` (which says only whether it
- * raised): a poll that found nothing to apply still ends `ok`.
+ * swamp.outcome says only whether a phase raised; a poll that found nothing to
+ * apply still ends ok
  */
 export type DiagnosticResult =
   | "completed"
@@ -232,17 +212,13 @@ export type DiagnosticResult =
   | "no_change"
   | "skipped";
 
-/** A started phase. A phase started outside any area is a silent no-op. */
 export interface DiagnosticPhaseHandle {
   readonly recording: boolean;
   readonly tally: PhaseTally;
   attributes(values: ObservationAttributes): void;
   result(value: DiagnosticResult): void;
-  /** Runs `fn` as this phase: spans and tallies it starts are its children. */
   run<T>(fn: () => T): T;
-  /** Exports the tally and ends the phase. Later calls do nothing. */
   end(outcome?: ObservationOutcome): void;
-  /** Ends the phase with the outcome `error` classifies to. */
   fail(error: unknown): void;
 }
 
@@ -250,7 +226,6 @@ interface DiagnosticScope {
   readonly area: DiagnosticArea;
   readonly tally?: PhaseTally;
   readonly attributes?: ObservationAttributes;
-  /** The operation's cancellation, recorded on each phase as it ends. */
   readonly signal?: AbortSignal;
 }
 
@@ -266,15 +241,13 @@ const silentPhase: DiagnosticPhaseHandle = {
   fail: () => {},
 };
 
-/** The area the current async context runs in, if any. */
 export function currentDiagnosticArea(): DiagnosticArea | undefined {
   return scope.getStore()?.area;
 }
 
 /**
- * The area and phase attributes a span started outside this module carries
- * to count as `phase`: lets an existing span (a sync gate wait) be selected
- * with the phases instead of duplicating it. Empty outside any area.
+ * lets an existing span (a sync gate wait) be selected with the phases instead
+ * of duplicating it; empty outside any area
  */
 export function diagnosticSpanAttributes(
   phase: DiagnosticPhase,
@@ -288,22 +261,10 @@ export function diagnosticSpanAttributes(
   };
 }
 
-/**
- * The tally of the innermost running phase, or a silent one. Lets code in
- * another layer, reached through a closure the phase passed down, measure
- * into that phase.
- */
 export function currentDiagnosticTally(): PhaseTally {
   return scope.getStore()?.tally ?? silentTally;
 }
 
-/**
- * Runs `fn` with `tally` as the current phase's tally in `area`, so code
- * that counts into the current phase (through
- * {@link currentDiagnosticTally}) counts into `tally` instead. For work
- * counted apart from any one phase, then {@link PhaseTally.merge}d into the
- * phase it is reported to.
- */
 export function withDiagnosticTally<T>(
   area: DiagnosticArea,
   tally: PhaseTally,
@@ -313,14 +274,9 @@ export function withDiagnosticTally<T>(
 }
 
 /**
- * Runs `fn` in `area`, so phases it starts are exported. AsyncLocalStorage
- * carries the area into every timer, callback and task `fn` starts, so wrap
- * only the awaited work being measured, never a call that starts background
- * work.
- *
- * With `signal`, every phase in the area ends with
- * `swamp.diagnostic.cancel_observed`: whether this process had seen the
- * operation cancelled by then. It only observes; nothing stops.
+ * AsyncLocalStorage carries the area into every timer, callback and task fn
+ * starts, so wrap only the awaited work being measured, never a call that
+ * starts background work
  */
 export function withDiagnosticArea<T>(
   area: DiagnosticArea,
@@ -330,20 +286,10 @@ export function withDiagnosticArea<T>(
   return scope.run({ area, signal }, fn);
 }
 
-/**
- * Runs `fn` outside any area: for work scheduled from an area that is not
- * part of it, such as a debounced rebuild a change event set off.
- */
 export function outsideDiagnosticArea<T>(fn: () => T): T {
   return scope.exit(fn);
 }
 
-/**
- * Runs `fn` with `attributes` added to every phase it starts, nested ones
- * included: a caller can label a lookup it cannot see inside (an initial
- * lookup versus the re-check under a lock). Outside any area it just runs
- * `fn`.
- */
 export function withDiagnosticAttributes<T>(
   attributes: ObservationAttributes,
   fn: () => Promise<T>,
@@ -357,9 +303,8 @@ export function withDiagnosticAttributes<T>(
 }
 
 /**
- * Runs a generator in `area`. Each `next()` runs inside the area, since a
- * generator body runs in the context of whoever advances it; the consumer's
- * code between steps does not. `signal` is as for {@link withDiagnosticArea}.
+ * a generator body runs in the context of whoever advances it, so each next()
+ * is run inside the area; the consumer's code between steps is not
  */
 export function bindGeneratorToDiagnosticArea<T, TReturn>(
   area: DiagnosticArea,
@@ -400,12 +345,6 @@ async function* runEachStep<T, TReturn>(
   }
 }
 
-/**
- * Starts `phase` as a `swamp.diagnostic.<phase>` span in the current area,
- * parented on the active span. Outside any area it returns a silent handle,
- * so shared code (a repository, a lock) is exported only when a diagnostic
- * path runs it.
- */
 export function startDiagnosticPhase(
   phase: DiagnosticPhase,
   attributes: ObservationAttributes = {},
@@ -474,10 +413,6 @@ export function startDiagnosticPhase(
   };
 }
 
-/**
- * Runs `fn` as `phase`, ending it `ok` on return or with the error's outcome
- * on throw.
- */
 export async function observeDiagnosticPhase<T>(
   phase: DiagnosticPhase,
   attributes: ObservationAttributes,
@@ -494,13 +429,6 @@ export async function observeDiagnosticPhase<T>(
   }
 }
 
-/**
- * Runs the generator `make` returns as `phase`, each step inside it. The
- * phase ends `ok` when the generator finishes, with the error's outcome when
- * it throws, and `cancelled` when the consumer stops it early. The body may
- * end the phase itself first (a refusal reported as an event); the later end
- * does nothing.
- */
 export async function* withGeneratorDiagnosticPhase<T, TReturn>(
   phase: DiagnosticPhase,
   attributes: ObservationAttributes,
@@ -520,7 +448,6 @@ export async function* withGeneratorDiagnosticPhase<T, TReturn>(
   }
 }
 
-/** UTF-8 length of `text` without encoding it. */
 export function utf8ByteLength(text: string): number {
   let bytes = 0;
   for (let i = 0; i < text.length; i++) {

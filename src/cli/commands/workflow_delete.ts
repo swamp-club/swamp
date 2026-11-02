@@ -103,10 +103,8 @@ export const workflowDeleteCommand = withRemoteOptions(
         outputMode: cliCtx.outputMode,
       });
 
-    // Pushes and releases the global lock when the command ends, as the
-    // teardown flush did (swamp-club#3055).
-    // The delete stages and commits as a user's config edit
-    // (swamp-club#4097).
+    // pushes and releases the global lock when the command ends; the delete
+    // stages and commits as a user's config edit
     await runAsUserConfigEdit(
       () =>
         runInCoordinatorRoot(repoContext, async () => {
@@ -122,7 +120,6 @@ export const workflowDeleteCommand = withRemoteOptions(
             repoContext.continuationClaims?.store,
           );
 
-          // Phase 1: Preview
           let preview;
           try {
             preview = await workflowDeletePreview(ctx, deps, {
@@ -135,10 +132,8 @@ export const workflowDeleteCommand = withRemoteOptions(
             throw error;
           }
 
-          // Before its runs are touched (swamp-club#4097).
           await assertConfigEditCurrent(repoContext, "workflow", preview.name);
 
-          // Phase 2: Prompt
           if (cliCtx.outputMode === "log" && !options.yes && !options.force) {
             const runWarning = preview.runCount > 0
               ? ` This will also delete ${preview.runCount} run${
@@ -154,7 +149,6 @@ export const workflowDeleteCommand = withRemoteOptions(
             }
           }
 
-          // Phase 3: Execute mutation
           const renderer = createWorkflowDeleteRenderer(cliCtx.outputMode);
           await consumeStream(
             workflowDelete(ctx, deps, { workflowIdOrName }),

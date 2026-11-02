@@ -30,7 +30,6 @@ import {
 
 const noop = () => {};
 
-/** A small tree shaped like the real one, covering each resolution rule. */
 function buildTree() {
   const history = new Command()
     .command(
@@ -60,9 +59,8 @@ function buildTree() {
     )
     .command("method", method);
 
-  // `swamp behavior run` (alias `behaviour`) declares the run leaf's
-  // positionals directly under a two-word path (swamp-club#3265). Its
-  // argument names follow the spelling (swamp-club#3409).
+  // behavior run (alias behaviour) declares the run leaf's positionals directly
+  // under a two-word path; its argument names follow the spelling
   const behavior = new Command()
     .alias("behaviour")
     .command(

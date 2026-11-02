@@ -74,8 +74,6 @@ function createTestWorkflow(): Workflow {
   });
 }
 
-// StepRun tests
-
 Deno.test("StepRun.pending creates pending step run", () => {
   const stepRun = StepRun.pending("step1");
   assertEquals(stepRun.stepName, "step1");
@@ -198,8 +196,6 @@ Deno.test("StepRun.fromData reconstructs step run correctly", () => {
   assertEquals(stepRun.output, { value: 42 });
 });
 
-// StepRun allowedFailure tests
-
 Deno.test("StepRun.allowedFailure defaults to false", () => {
   const stepRun = StepRun.pending("step1");
   assertEquals(stepRun.allowedFailure, false);
@@ -258,8 +254,6 @@ Deno.test("StepRun.fromData defaults allowedFailure to false when missing", () =
   assertEquals(stepRun.allowedFailure, false);
 });
 
-// JobRun tests
-
 Deno.test("JobRun.pending creates pending job run with steps", () => {
   const jobRun = JobRun.pending("job1", ["step1", "step2"]);
   assertEquals(jobRun.jobName, "job1");
@@ -312,8 +306,8 @@ Deno.test("JobRun.skip marks job and pending steps as skipped", () => {
   jobRun.skip();
 
   assertEquals(jobRun.status, "skipped");
-  assertEquals(jobRun.getStep("step1")?.status, "succeeded"); // Already completed, not changed
-  assertEquals(jobRun.getStep("step2")?.status, "skipped"); // Was pending, now skipped
+  assertEquals(jobRun.getStep("step1")?.status, "succeeded");
+  assertEquals(jobRun.getStep("step2")?.status, "skipped");
 });
 
 Deno.test("JobRun.skip attributes cascaded step skips to the job", () => {
@@ -348,8 +342,6 @@ Deno.test("JobRun.fromData reconstructs job run correctly", () => {
   assertEquals(jobRun.status, "running");
   assertEquals(jobRun.steps.length, 1);
 });
-
-// WorkflowRun tests
 
 Deno.test("WorkflowRun.create initializes from workflow", () => {
   const workflow = createTestWorkflow();
@@ -442,7 +434,6 @@ Deno.test("WorkflowRun.complete marks run as failed when a job is still pending"
   run.start();
   run.getJob("job1")?.start();
   run.getJob("job1")?.succeed();
-  // job2 stays "pending"
   run.complete();
 
   assertEquals(run.status, "failed");
@@ -513,8 +504,6 @@ Deno.test("WorkflowRun.fromData and toData roundtrip correctly", () => {
   assertEquals(restored.status, original.status);
   assertEquals(restored.jobs.length, original.jobs.length);
 });
-
-// WorkflowRun tags tests
 
 Deno.test("WorkflowRun.create with tags stores them", () => {
   const workflow = createTestWorkflow();
@@ -679,8 +668,6 @@ Deno.test("WorkflowRun roundtrip preserves workflowDataArtifacts", () => {
   );
 });
 
-// Manual approval state transition tests
-
 Deno.test("StepRun: waitForApproval transitions from running to waiting_approval", () => {
   const step = StepRun.pending("approval-step");
   step.start();
@@ -796,8 +783,6 @@ Deno.test("WorkflowRun: findWaitingApprovalStep returns undefined when none wait
   assertEquals(run.findWaitingApprovalStep(), undefined);
 });
 
-// WorkflowRun inputs / resumeInputs tests
-
 Deno.test("WorkflowRun: a fresh run has empty inputs and resumeInputs", () => {
   const run = WorkflowRun.create(createTestWorkflow());
   assertEquals(run.inputs, {});
@@ -875,7 +860,6 @@ Deno.test("WorkflowRun: inheritedExpressions round-trip through toData/fromData 
 });
 
 Deno.test("WorkflowRun.fromData tolerates legacy records lacking inputs/resumeInputs", () => {
-  // A run persisted before these fields existed.
   const legacy = {
     id: "550e8400-e29b-41d4-a716-446655440099",
     workflowId: "550e8400-e29b-41d4-a716-446655440000",
@@ -895,8 +879,6 @@ Deno.test("WorkflowRun.fromData tolerates legacy records lacking inputs/resumeIn
   assertEquals(run.inputs, {});
   assertEquals(run.resumeInputs, []);
 });
-
-// WorkflowRun cancel tests
 
 Deno.test("WorkflowRun.isCancellable: true only while pending, running or suspended", () => {
   const workflow = createTestWorkflow();
@@ -1096,8 +1078,6 @@ Deno.test("StepRun: assertResult is undefined when not recorded", () => {
   assertEquals(step.toData().assertResult, undefined);
 });
 
-// ── resetToPending / resumeFromFailed / resetForResumeFrom ──────────
-
 Deno.test("StepRun.resetToPending: clears all execution state", () => {
   const step = StepRun.pending("s1");
   step.start();
@@ -1152,7 +1132,6 @@ Deno.test("WorkflowRun.resumeFromFailed: transitions from failed to running", ()
 
   assertEquals(run.status, "running");
   assertEquals(run.completedAt, undefined);
-  // startedAt preserved (same as resumeFromSuspended)
   assertEquals(run.startedAt !== undefined, true);
 });
 
@@ -1206,7 +1185,6 @@ Deno.test("WorkflowRun.resumeFromFailed: the new owner round-trips through toDat
   assertEquals(restored.instanceId, "serve-b");
 });
 
-/** A run started by serve-a's process 1111, then resumed by process 2222. */
 function resumedRun(): WorkflowRun {
   const run = WorkflowRun.create(createTestWorkflow());
   run.start(1111, "serve-a");
@@ -1238,7 +1216,6 @@ const leaveRunning: [string, (run: WorkflowRun) => void][] = [
 
 for (const [transition, leave] of leaveRunning) {
   Deno.test(`WorkflowRun.${transition}: hands a resumed run back to its owner`, () => {
-    // Reloaded, as another process ending the run would see it.
     const run = WorkflowRun.fromData(resumedRun().toData());
 
     leave(run);
@@ -1280,7 +1257,6 @@ Deno.test("WorkflowRun.resetForResumeFrom: resets target steps and their contain
   const run = WorkflowRun.create(wf);
   run.start();
 
-  // Simulate a run where step1 succeeded, step2 failed
   const job = run.jobs[0];
   job.start();
   job.steps[0].start();
@@ -1294,17 +1270,13 @@ Deno.test("WorkflowRun.resetForResumeFrom: resets target steps and their contain
   assertEquals(job.steps[0].status, "succeeded");
   assertEquals(job.steps[1].status, "failed");
 
-  // Reset step2 only
   run.resetForResumeFrom([{ jobName: "job1", stepName: "step2" }]);
 
-  // step1 untouched
   assertEquals(job.steps[0].status, "succeeded");
-  // step2 reset
   assertEquals(job.steps[1].status, "pending");
   assertEquals(job.steps[1].startedAt, undefined);
   assertEquals(job.steps[1].completedAt, undefined);
   assertEquals(job.steps[1].error, undefined);
-  // Job reset because it contained a reset step
   assertEquals(job.status, "pending");
 });
 
@@ -1337,32 +1309,25 @@ Deno.test("WorkflowRun.resetForResumeFrom: does not reset jobs without target st
   const run = WorkflowRun.create(wf);
   run.start();
 
-  // jobA succeeded
   run.jobs[0].start();
   run.jobs[0].steps[0].start();
   run.jobs[0].steps[0].succeed();
   run.jobs[0].succeed();
 
-  // jobB failed
   run.jobs[1].start();
   run.jobs[1].steps[0].start();
   run.jobs[1].steps[0].fail("error");
   run.jobs[1].fail();
   run.complete();
 
-  // Only reset stepB
   run.resetForResumeFrom([{ jobName: "jobB", stepName: "stepB" }]);
 
-  // jobA untouched
   assertEquals(run.jobs[0].status, "succeeded");
   assertEquals(run.jobs[0].steps[0].status, "succeeded");
 
-  // jobB reset
   assertEquals(run.jobs[1].status, "pending");
   assertEquals(run.jobs[1].steps[0].status, "pending");
 });
-
-// interrupt() tests
 
 Deno.test("WorkflowRun.interrupt: marks running run as interrupted with interrupt tag", () => {
   const wf = createTestWorkflow();
@@ -1719,7 +1684,6 @@ Deno.test("WorkflowRun: runPlan without definitionFingerprint still parses", () 
   const wf = createTestWorkflow();
   const run = WorkflowRun.create(wf);
   const data = run.toData();
-  // A run recorded before runs stored a definition fingerprint.
   data.runPlan = { fingerprint: "evaluated-fp", evaluatedWorkflowId: run.id };
 
   const restored = WorkflowRun.fromData(data);
@@ -1788,8 +1752,6 @@ Deno.test("WorkflowRun: absent initiatedBy deserializes as undefined", () => {
   assertEquals(restored.initiatedBy, undefined);
 });
 
-// triggerSource tests
-
 Deno.test("WorkflowRun.create: accepts triggerSource", () => {
   const wf = createTestWorkflow();
   const run = WorkflowRun.create(wf, {}, undefined, "schedule");
@@ -1815,8 +1777,6 @@ Deno.test("WorkflowRun: triggerSource round-trips through serialization", () => 
   const restored = WorkflowRun.fromData(data);
   assertEquals(restored.triggerSource, "webhook");
 });
-
-// failedStep / failureReason tests
 
 Deno.test("WorkflowRun.toData: includes failedStep and failureReason when a step fails", () => {
   const wf = createTestWorkflow();
@@ -1895,8 +1855,6 @@ Deno.test("WorkflowRun.toData: omits failedStep when all steps succeed", () => {
   assertEquals(data.failureReason, undefined);
 });
 
-// stepProgress tests
-
 Deno.test("WorkflowRun.toData: includes stepProgress reflecting completion state", () => {
   const wf = createTestWorkflow();
   const run = WorkflowRun.create(wf);
@@ -1949,8 +1907,6 @@ Deno.test("WorkflowRun.toData: stepProgress counts failed steps as completed", (
   const data = run.toData();
   assertEquals(data.stepProgress, { completed: 2, total: 3 });
 });
-
-// --- forEach getStatus aggregation (swamp-club#1780) ---
 
 Deno.test("JobRun.getStatus: aggregates forEach expanded steps — all succeeded", () => {
   const jobRun = JobRun.pending("main", ["deploy"]);
@@ -2008,7 +1964,6 @@ Deno.test("JobRun.getStatus: aggregates forEach expanded steps — any still run
 
   jobRun.getStep("deploy-dev")!.start();
   jobRun.getStep("deploy-dev")!.succeed();
-  // deploy-qa still pending
 
   assertEquals(jobRun.getStatus("deploy"), "running");
 });
@@ -2029,7 +1984,6 @@ Deno.test("JobRun.getStatus: aggregates forEach expanded steps — failed with s
   jobRun.getStep("deploy-dev")!.start();
   jobRun.getStep("deploy-dev")!.fail("timeout");
   jobRun.getStep("deploy-qa")!.start();
-  // deploy-staging still pending
 
   assertEquals(jobRun.getStatus("deploy"), "running");
 });
@@ -2105,7 +2059,6 @@ Deno.test("JobRun.getStatus: registerForEachExpansion is idempotent on re-regist
   const jobRun = JobRun.pending("main", ["deploy"]);
   jobRun.replaceExpandedSteps("deploy", ["deploy-dev", "deploy-qa"]);
   jobRun.registerForEachExpansion("deploy", ["deploy-dev", "deploy-qa"]);
-  // Re-register (simulates resume path)
   jobRun.registerForEachExpansion("deploy", ["deploy-dev", "deploy-qa"]);
 
   jobRun.getStep("deploy-dev")!.start();
@@ -2117,10 +2070,8 @@ Deno.test("JobRun.getStatus: registerForEachExpansion is idempotent on re-regist
 });
 
 Deno.test("StepSkipReasonSchema: an expression is only representable on a guard", () => {
-  // The shape used to be one object with an optional `expression`, which
-  // validated `{ kind: "dependency", expression: "..." }` — a reason that
-  // describes nothing that can happen. A reader of a run record could not
-  // tell whether such a field meant anything.
+  // the skip reason is a discriminated union, so an expression is only
+  // representable on a guard
   assertEquals(
     StepSkipReasonSchema.safeParse({
       kind: "guarded",
@@ -2132,12 +2083,9 @@ Deno.test("StepSkipReasonSchema: an expression is only representable on a guard"
     StepSkipReasonSchema.safeParse({ kind: "dependency" }).success,
     true,
   );
-  // An expression on a non-guard is dropped rather than rejected. Stripping
-  // is deliberate: these schemas parse run records written by older versions,
-  // and a strict shape would fail every record the day a field is added. The
-  // guarantee wanted here is that no consumer can read such a value back, and
-  // stripping gives that as firmly as refusing does — the type has no
-  // `expression` on this member either way.
+  // an expression on a non-guard is stripped, not rejected: these schemas parse
+  // older run records and a strict shape would fail them when a field is added;
+  // no consumer can read the value back
   const parsed = StepSkipReasonSchema.safeParse({
     kind: "dependency",
     expression: "oops",
@@ -2201,8 +2149,6 @@ Deno.test("WorkflowRun: isAwaitingResume is false for a run that is not suspende
   assertEquals(run.toData().awaitingResume, undefined);
 });
 
-// ── failedSteps ─────────────────────────────────────────────────────
-
 Deno.test("WorkflowRun.failedSteps: lists failed steps in stored order with their job", () => {
   const run = WorkflowRun.create(createTestWorkflow());
   run.getJob("job1")!.getStep("step1")!.succeed();
@@ -2263,11 +2209,6 @@ Deno.test("WorkflowRun.failedSteps: does not mutate the run", () => {
   assertEquals(run.toData(), before);
 });
 
-// ---------------------------------------------------------------------------
-// Reset marker and stranded steps (swamp-club#2433)
-// ---------------------------------------------------------------------------
-
-/** Jobs a and b both hold a step named x; a also holds y. All failed. */
 function createSharedNameRun(): WorkflowRun {
   const run = WorkflowRun.create(
     Workflow.create({
@@ -2403,8 +2344,8 @@ Deno.test("StepRun: the reset marker and failure kind survive persistence", () =
 });
 
 Deno.test("JobRun.replaceExpandedSteps: expands more steps than fit in a spread call", () => {
-  // splice(i, 1, ...insertions) threw RangeError above ~125k expanded steps
-  // (swamp-club#2565).
+  // spreading insertions into splice throws RangeError for very large
+  // expansions
   const count = 150_000;
   const jobRun = JobRun.pending("main", ["before", "deploy", "after"]);
   const steps = jobRun.steps;
@@ -2545,7 +2486,6 @@ Deno.test("JobRun.hasForEachExpansion: true once an expansion is registered", ()
   assertEquals(job.hasForEachExpansion("build"), true);
 });
 
-/** A job a resume inherited as running, its gate approved before the abort. */
 function inheritedJob(steps: string[]): JobRun {
   const job = JobRun.pending("main", ["gate", ...steps]);
   job.start();
@@ -2698,7 +2638,6 @@ Deno.test("WorkflowRun.reopenAbortedWork: resets settled steps and re-enters the
   running.start();
   running.getStep("x")!.succeed();
   running.cancelPendingSteps(["y"]);
-  // Never started: one step cancelled, one guarded step left undecided.
   run.getJob("pending")!.cancelPendingSteps(["x"]);
   const clean = run.getJob("clean")!;
   clean.start();
@@ -2713,7 +2652,6 @@ Deno.test("WorkflowRun.reopenAbortedWork: resets settled steps and re-enters the
   assertEquals(done.getStep("x")!.status, "succeeded");
   assertEquals(done.getStep("y")!.status, "pending");
   assertEquals(failed.status, "pending");
-  // The in-flight step ran, so it keeps its failure.
   assertEquals(failed.getStep("x")!.status, "failed");
   assertEquals(failed.getStep("y")!.status, "pending");
   assertEquals(running.status, "running");
@@ -2742,12 +2680,10 @@ Deno.test("WorkflowRun.reopenAbortedWork: re-enters a job the abort ended unknow
   });
   const run = WorkflowRun.create(workflow);
   run.start();
-  // x succeeded; y's guard never decided, so it stays pending.
   const undecided = run.getJob("undecided")!;
   undecided.start();
   undecided.getStep("x")!.succeed();
   undecided.markUnknown();
-  // An unknown job with no pending step holds no aborted work.
   const interrupted = run.getJob("interrupted")!;
   interrupted.start();
   interrupted.getStep("x")!.succeed();
@@ -2829,7 +2765,6 @@ Deno.test("WorkflowRun.toPersistedData: writes references at value positions onl
     "Bearer ${{ vault.get('v', 'tok') }}",
   );
   assertEquals(persisted.inputs?.enabled, true);
-  // Structural fields are never rewritten, even when they equal a secret.
   assertEquals(persisted.id, run.id);
   assertEquals(persisted.sensitiveFormat, SENSITIVE_FORMAT_VERSION);
   assertEquals(
@@ -2861,8 +2796,6 @@ Deno.test("WorkflowRun.toPersistedData: without a record the stored references a
   const reloaded = WorkflowRun.fromData(stored);
   assertEquals(reloaded.toPersistedData(), stored);
 });
-
-// --- Nested run links (swamp-club#2736) -------------------------------------
 
 const CHILD_REF = {
   workflowId: "11111111-1111-4111-8111-111111111111",
@@ -2938,7 +2871,6 @@ Deno.test("WorkflowRun.complete: a reject detaches the nested wait, settles its 
   const data = run.toData();
   assertEquals(data.failedStep, "gate");
   assertEquals(data.failureReason, "Approval rejected");
-  // The detached step is reopened, link dropped, for a later --from.
   run.reopenAbortedWork();
   assertEquals(step.status, "pending");
   assertEquals(step.nestedRun, undefined);
@@ -2980,7 +2912,6 @@ const VERDICT_SCHEMA = {
   properties: { verdict: { type: "string" as const, enum: ["ship", "fix"] } },
 };
 
-/** A step waiting for a signal on a wait opened at WAIT_NOW for 60 seconds. */
 function waitingStep(): { step: StepRun; wait: SignalWait } {
   const step = StepRun.pending("review");
   step.start();
@@ -2994,7 +2925,6 @@ const RUN_OF_WAIT = {
   runId: "00000000-0000-4000-8000-000000000001",
 };
 
-/** The outcome a signal accepted at `at` leaves for `wait`. */
 function acceptedOutcome(
   wait: SignalWait,
   payload: Record<string, unknown>,
@@ -3049,7 +2979,6 @@ Deno.test("StepRun: a step stored as waiting by an earlier build is a signal wai
 
   assertEquals(earlier.status, "waiting");
   assertEquals(earlier.isSignalWait, true);
-  // It is written back as it was read, and settles like any other wait.
   assertEquals(earlier.toData().status, "waiting");
   assertEquals(
     earlier.applyWaitOutcome(acceptedOutcome(wait, { verdict: "ship" })),
@@ -3093,8 +3022,6 @@ Deno.test("StepRun.applyWaitOutcome: a signal held as pending keeps the mark on 
 
   assertEquals(step.applyWaitOutcome(held), true);
 
-  // The output has the documented shape (swamp-club#3214); the run view
-  // reads the wait.
   assertEquals(step.output, {
     type: "wait_for_signal",
     payload: { verdict: "ship" },
@@ -3122,7 +3049,6 @@ Deno.test("StepRun.applyWaitOutcome: an outcome whose payload the captured schem
     assertEquals(step.applyWaitOutcome(acceptedOutcome(wait, payload)), false);
     assertEquals(step.toData(), before);
   }
-  // The same wait still takes an outcome it accepts.
   assertEquals(
     step.applyWaitOutcome(acceptedOutcome(wait, { verdict: "fix" })),
     true,
@@ -3205,9 +3131,7 @@ Deno.test("StepRun: a waiting step whose stored wait cannot be read fails as unr
 
   assertEquals(broken.status, "waiting_signal");
   assertEquals(broken.signalWait, undefined);
-  // The unreadable value is written back as read.
   assertEquals(broken.toData().wait, { kind: "?" });
-  // No outcome can be matched to it: it has no id.
   assertEquals(
     broken.applyWaitOutcome(acceptedOutcome(wait, { verdict: "ship" })),
     false,
@@ -3420,8 +3344,6 @@ Deno.test("WorkflowRun.recordAllowedVaults: survives a save and load, and is abs
   assertEquals(WorkflowRun.fromData(none.toData()).allowedVaults, []);
 });
 
-// ── failStepsNamingRefusedData (swamp-club#3257) ──────────
-
 function succeededRun(): WorkflowRun {
   const run = WorkflowRun.create(createTestWorkflow());
   run.start();
@@ -3524,8 +3446,6 @@ Deno.test("WorkflowRun.toPersistedData: a typed run writes its inputs map in the
   run.attachSensitiveValues(values);
   const token = `x ${a} y ${b} ${"${{ env.X }}"}`;
   run.captureInputs({ token, plain: "data" });
-  // The sentinels and the plain input are data; the trailing expression is
-  // not.
   run.captureInputsProvenance(
     ProvenanceMap.authored().withRanges("token", [
       [2, 2 + a.length],
@@ -3550,16 +3470,13 @@ Deno.test("WorkflowRun.toPersistedData: a typed run writes its inputs map in the
     map.overlapsData("token", written.lastIndexOf("${{"), written.length),
     false,
   );
-  // The in-memory map is written too, as before.
   assertEquals(
     ProvenanceMap.fromData(persisted.inputsProvenance!).rangesAt("token"),
     [[2, 2 + a.length], [5 + a.length, 5 + a.length + b.length]],
   );
-  // A later process without a record writes both maps back unchanged.
   const reloaded = WorkflowRun.fromData(persisted);
   assertEquals(reloaded.persistedInputsProvenance?.toData(), map.toData());
   assertEquals(reloaded.toPersistedData(), persisted);
-  // A run without an inputs map writes none.
   const unmapped = WorkflowRun.create(workflow);
   unmapped.attachSensitiveValues(values);
   unmapped.captureInputs({ token });

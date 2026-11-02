@@ -215,9 +215,8 @@ Deno.test(
         const result = await service.execute();
         assertEquals(result.applied, true);
 
-        // The reconcile path (saveAll → sourceToRow) is the sole writer here.
-        // Before the fix it wrote extends_type "", so the extension's methods
-        // were dropped. The row must now be findable by its target type.
+        // the reconcile path (saveAll to sourceToRow) is the sole writer here;
+        // the row must be findable by its target type
         const matches = catalog.findExtensionsForType(baseType);
         assertEquals(matches.length, 1, "extension must target the base type");
         assertEquals(matches[0].extends_type, baseType);
@@ -311,7 +310,6 @@ Deno.test({
         });
         assertEquals((await service.execute()).applied, true);
 
-        // Simulate a catalog built before the webhook kind existed.
         catalog.invalidate("webhook");
         assertEquals(repository.anyKindNeedsInvalidation(), true);
 
@@ -373,9 +371,8 @@ Deno.test(
   async () => {
     await withFixtureRepo(
       async ({ repoDir, repository, catalog, lockfileRepository }) => {
-        // Seed the catalog with 10 fake rows directly. Then run
-        // reconcile with an empty disk — all 10 would tombstone,
-        // exceeding the 50% guardrail (10/10 = 100%).
+        // with an empty disk all 10 seeded rows would tombstone, exceeding the
+        // 50% guardrail
         for (let i = 0; i < 10; i++) {
           catalog.upsertWithIdentity({
             source_path: join(
@@ -450,8 +447,6 @@ Deno.test(
   },
 );
 
-// -- Regression tests for the three bug classes W3 structurally fixes -----
-
 Deno.test({
   name:
     "ReconcileFromDisk regression #208: broken transitive dep → stable state, no rebundle loop",
@@ -472,23 +467,16 @@ Deno.test({
           repoDir,
         });
 
-        // First reconcile: everything works.
         const first = await service.execute();
         assertEquals(first.applied, true);
 
-        // Now corrupt the file — make it import a nonexistent dep.
-        // This changes the fingerprint, and bundleAndIndexOne will
-        // either fail or skip it.
         await Deno.writeTextFile(
           entry,
           `import { x } from './nonexistent.ts';\nexport const broken = x;\n`,
         );
 
-        // Second reconcile: detects fingerprint change, tries to
-        // rebundle. Either BundleBuildFailed or skipped (null return).
         await service.execute();
 
-        // Third reconcile: whatever state we're in, it must be STABLE.
         const third = await service.execute();
         assertEquals(
           third.transitions.length,
@@ -508,8 +496,6 @@ Deno.test({
     await withFixtureRepo(
       async ({ repoDir, repository, lockfileRepository }) => {
         const modelsDir = join(repoDir, "extensions", "models");
-        // This file exports something that isn't a valid model schema.
-        // bundleAndIndexOne will fail (either during bundle or validation).
         const file = join(modelsDir, "broken_schema.ts");
         await Deno.writeTextFile(
           file,
@@ -523,13 +509,8 @@ Deno.test({
           repoDir,
         });
 
-        // First reconcile: bundleAndIndexOne fails → ValidationFailed.
         await service.execute();
-        // The file might be skipped entirely (bundleAndIndexOne returns
-        // null for non-model exports) or fail. Either way, subsequent
-        // reconciles must not loop.
 
-        // Second reconcile: stable state → zero transitions.
         const result = await service.execute();
         assertEquals(
           result.transitions.length,
@@ -565,11 +546,9 @@ Deno.test({
           repoDir,
         });
 
-        // First reconcile: indexes the model.
         const first = await service.execute();
         assertEquals(first.applied, true);
 
-        // Find the bundle path from the catalog and delete it.
         const rows = catalog.findAll();
         const row = rows.find((r) =>
           r.source_path.includes("missing_bundle.ts")
@@ -583,12 +562,8 @@ Deno.test({
           }
         }
 
-        // Second reconcile: detects issue, re-indexes.
         await service.execute();
-        // May or may not produce transitions depending on whether
-        // fingerprint changed. The key assertion is the THIRD run.
 
-        // Third reconcile: must be stable — zero transitions.
         const third = await service.execute();
         assertEquals(
           third.transitions.length,
@@ -599,8 +574,6 @@ Deno.test({
     );
   },
 });
-
-// -- Pulled extension reconcile matrix ------------------------------------
 
 async function withPulledFixtureRepo(
   fn: (args: {
@@ -653,7 +626,6 @@ Deno.test(
     const typeId = `@test/pulled-model-${ts}`;
     await withPulledFixtureRepo(
       async ({ repoDir, repository, lockfileRepository }) => {
-        // Stage a model in the pulled-extensions directory.
         const extRoot = join(
           swampPath(repoDir, "pulled-extensions"),
           extName,
@@ -724,8 +696,6 @@ Deno.test(
         const result = await service.execute();
         assertEquals(result.applied, true);
 
-        // Before the fix the aggregate kept only the lexicographically
-        // smallest extension file per target type and tombstoned the rest.
         const matches = catalog.findExtensionsForType(baseType);
         assertEquals(
           matches.map((r) => pathBasename(r.source_path)).sort(),
@@ -779,7 +749,6 @@ Deno.test(
         const result = await service.execute();
         assertEquals(result.applied, true);
 
-        // The old path drops out; the renamed file and its sibling stay.
         const matches = catalog.findExtensionsForType(baseType);
         assertEquals(
           matches.map((r) => pathBasename(r.source_path)).sort(),
@@ -798,9 +767,6 @@ Deno.test(
     const extName = `@test/pulled-orphan-${ts}`;
     await withPulledFixtureRepo(
       async ({ repoDir, repository, catalog, lockfileRepository }) => {
-        // Seed a catalog row for a pulled extension that has NO
-        // lockfile entry and NO on-disk files. This simulates an
-        // orphan from a failed rm.
         const extRoot = join(
           swampPath(repoDir, "pulled-extensions"),
           extName,
@@ -851,7 +817,6 @@ Deno.test(
     const typeId = `@test/pulled-missing-model-${ts}`;
     await withPulledFixtureRepo(
       async ({ repoDir, repository, lockfileRepository }) => {
-        // Stage, reconcile to index, then delete the source file.
         const extRoot = join(
           swampPath(repoDir, "pulled-extensions"),
           extName,
@@ -870,14 +835,10 @@ Deno.test(
           repoDir,
         });
 
-        // First reconcile: indexes it.
         await service.execute();
 
-        // Delete the source file (but lockfile entry remains).
         await Deno.remove(join(extRoot, "noop.ts"));
 
-        // Second reconcile: source missing + lockfile present →
-        // EntryPointUnreadable.
         const result = await service.execute();
         const unreadable = result.transitions.find(
           (t) => t.toState === "EntryPointUnreadable",
@@ -916,7 +877,6 @@ Deno.test(
         const indexed = catalog.findBySourcePath(canonicalizePath(sourcePath));
         assertEquals(indexed?.state, "Indexed");
 
-        // An install's phase 1 has moved the live root aside.
         const aside = join(repoDir, "aside");
         await Deno.rename(extRoot, aside);
         const during = await service.execute();
@@ -931,7 +891,6 @@ Deno.test(
         );
         assertEquals(lockfileRepository.getEntry(extName) !== null, true);
 
-        // Phase 2 puts a root back in place.
         await Deno.rename(aside, extRoot);
         await service.execute();
         const healed = catalog.findBySourcePath(canonicalizePath(sourcePath));
@@ -943,8 +902,6 @@ Deno.test(
     );
   },
 );
-
-// -- Manifest version migration tests (#284) --------------------------------
 
 async function withManifestFixtureRepo(
   fn: (args: {
@@ -1205,8 +1162,6 @@ Deno.test({
   },
 });
 
-// -- Per-subdirectory manifest tests (#784) ----------------------------------
-
 Deno.test({
   name:
     "ReconcileFromDisk #784: sibling subdirs with own manifests produce separate aggregates",
@@ -1446,8 +1401,6 @@ Deno.test({
           MINIMAL_MODEL_CODE(`@test/bar-mig-${ts}`),
         );
 
-        // Phase 1: reconcile WITHOUT per-subdir manifests (simulates old
-        // binary). Both files end up under @local/<repo>.
         const oldService = new ReconcileFromDiskService({
           denoRuntime: testDenoRuntime,
           repository,
@@ -1467,9 +1420,6 @@ Deno.test({
           );
         }
 
-        // Phase 2: add per-subdir manifests and reconcile again (simulates
-        // upgrading to the new binary). Old aggregate must be tombstoned,
-        // new per-manifest aggregates must be created.
         await Deno.writeTextFile(
           join(fooDir, "manifest.yaml"),
           stringifyYaml({
@@ -1558,8 +1508,6 @@ Deno.test({
           );
         }
 
-        // Phase 1: reconcile without manifests — all 12 files under
-        // @local/<repo>. Exceeds GUARDRAIL_MIN_ROWS (10).
         const oldService = new ReconcileFromDiskService({
           denoRuntime: testDenoRuntime,
           repository,
@@ -1655,7 +1603,6 @@ Deno.test({
             MINIMAL_MODEL_CODE(`@test/bar-p-${ts}-${i}`),
           );
         }
-        // 2 loose files that stay in @local/<repo>
         for (let i = 0; i < 2; i++) {
           await Deno.writeTextFile(
             join(repoDir, "extensions", "models", `loose${i}.ts`),
@@ -1663,7 +1610,6 @@ Deno.test({
           );
         }
 
-        // Phase 1: all 12 files under @local/<repo>.
         const oldService = new ReconcileFromDiskService({
           denoRuntime: testDenoRuntime,
           repository,
@@ -1674,8 +1620,6 @@ Deno.test({
         assertEquals(first.applied, true);
         assertEquals(catalog.findAll().length, 12);
 
-        // Phase 2: add manifests to foo/ and bar/ only — loose files
-        // remain in the default partition (partial adoption).
         await Deno.writeTextFile(
           join(fooDir, "manifest.yaml"),
           stringifyYaml({
@@ -1743,8 +1687,6 @@ Deno.test({
     );
   },
 });
-
-// -- managedConfig on an extension-backed datastore (swamp-club#2483) -------
 
 const MINIMAL_DATASTORE_CODE = (typeId: string) => `
 export const datastore = {
@@ -1864,8 +1806,8 @@ Deno.test(
             scanOnDiskDatastores,
           });
           const result = await service.execute({ dryRun: true });
-          // Without the scan the legacy-root row sits outside every dir
-          // walked for the entry, so it is tombstoned (swamp-club#2490).
+          // without the scan the legacy-root row sits outside every dir walked
+          // for the entry, so it is tombstoned
           unreadable =
             result.transitions.filter((t) =>
               t.toState === "EntryPointUnreadable" ||
@@ -1962,13 +1904,6 @@ Deno.test(
   },
 );
 
-// -- reconcileUncataloguedPulled (swamp-club#2355) --------------------------
-
-/**
- * Stages a pulled model source plus its pre-built bundle, so reconcile's
- * bundleAndIndexOne takes the trusted-pulled cache path instead of
- * spawning `deno bundle`.
- */
 async function stagePulledModel(
   repoDir: string,
   extName: string,
@@ -2270,7 +2205,6 @@ Deno.test(
     try {
       await withPulledFixtureRepo(
         async ({ repoDir, repository, catalog, lockfileRepository }) => {
-          // Mounted through .swamp-sources.yaml from outside the repo root.
           const mountedPath = join(mountDir, "mounted.ts");
           await Deno.writeTextFile(
             mountedPath,
@@ -2408,12 +2342,6 @@ Deno.test(
   },
 );
 
-// -- Pulled sources outside the walked dirs (swamp-club#2490) --------------
-
-/**
- * Stages a pulled model under `pulledRoot` and seeds an Indexed row whose
- * fingerprint matches, so reconcile's Phase 1 skips it without bundling.
- */
 async function stageIndexedPulledModel(
   catalog: ExtensionCatalogStore,
   args: {
@@ -2462,7 +2390,6 @@ Deno.test(
           fileBase: "live",
           typeId: `${extName}/live`,
         });
-        // The pre-migration copy's row, with no file behind it.
         const legacySource = join(
           swampPath(repoDir, "pulled-extensions"),
           extName,
@@ -2553,9 +2480,6 @@ Deno.test(
   },
 );
 
-// -- Pulled-vs-pulled type conflicts (swamp-club#2702) -----------------------
-
-/** Runs `fn` with swamp warnings captured, returning their text. */
 async function captureWarnings(fn: () => Promise<void>): Promise<string[]> {
   const records: LogRecord[] = [];
   await configure({

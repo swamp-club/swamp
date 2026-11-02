@@ -17,21 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * How long a fresh checkout's read model takes to catch up (swamp-club#3337):
- * 1,000 data items saved in one commit, as a first clone of a populated
- * datastore sees them, and 500 single-item commits, as a checkout behind
- * other writers sees them. Each run starts from an empty checkout, so every
- * file is written, unsynced as the catch-up writes them. The recovery cases
- * replay 1,000 and 10,000 items over a checkout that already holds their
- * files, with a fresh state each run, as a recovery does: every key is
- * unowned over its file, which is where the aliased-spelling guard looks
- * (swamp-club#3939). Run with:
- *
- * ```
- * deno bench -A scripts/bench_read_model_catch_up.ts
- * ```
- */
 
 import { join } from "@std/path";
 import { ChunkStore } from "../src/domain/datastore_v3/chunk_store.ts";
@@ -55,7 +40,6 @@ const ITEMS = 1_000;
 const SMALL_COMMITS = 500;
 const RECOVERY_ITEMS = [1_000, 10_000];
 
-/** A save of item `i`: about 110 bytes inline and its data-version op. */
 async function itemOps(i: number): Promise<Op[]> {
   return [
     await savePut(`item-${i}`, 1, `payload ${i} `.repeat(10)),
@@ -65,7 +49,6 @@ async function itemOps(i: number): Promise<Op[]> {
 
 const dir = await Deno.makeTempDir({ prefix: "swamp-read-model-bench-" });
 
-/** A commit store holding `commits`, built once per case. */
 async function storeOf(name: string, commits: Commit[]): Promise<string> {
   const path = join(dir, `${name}.db`);
   const store = SqliteCommitStore.open(path);
@@ -93,7 +76,6 @@ const smallCommits = await storeOf(
   ),
 );
 
-/** Catches a fresh checkout up with the store at `storePath`. */
 async function catchUp(b: Deno.BenchContext, storePath: string): Promise<void> {
   const repoDir = join(dir, `repo-${crypto.randomUUID()}`);
   const store = SqliteCommitStore.open(storePath);
@@ -129,7 +111,6 @@ Deno.bench(
   async (b) => await catchUp(b, smallCommits),
 );
 
-/** A read model of the checkout at `repoDir`, its state at `stateDir`. */
 function openReadModel(
   store: SqliteCommitStore,
   repoDir: string,
@@ -148,7 +129,6 @@ function openReadModel(
   });
 }
 
-/** A checkout holding every file of the store at `storePath`. */
 async function populated(storePath: string): Promise<string> {
   const repoDir = join(dir, `repo-${crypto.randomUUID()}`);
   const store = SqliteCommitStore.open(storePath);
@@ -162,7 +142,6 @@ async function populated(storePath: string): Promise<string> {
   return repoDir;
 }
 
-/** Replays the store at `storePath` in full over `repoDir`'s files. */
 async function recover(
   b: Deno.BenchContext,
   storePath: string,

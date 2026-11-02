@@ -28,33 +28,14 @@ import { JsonLogsSerializer } from "@opentelemetry/otlp-transformer";
 const DEFAULT_TIMEOUT_MS = 10_000;
 
 export interface FetchOtlpLogExporterConfig {
-  /** Full URL to the OTLP logs endpoint (e.g. "https://api.honeycomb.io/v1/logs"). */
   url: string;
-  /** Additional headers (e.g. auth tokens). */
   headers?: Record<string, string>;
-  /** Request timeout in milliseconds. Defaults to 10 000. */
   timeoutMs?: number;
 }
 
 /**
- * OTLP log-record exporter that uses the native `fetch` API instead of Node.js
- * `http`/`https` modules — the same approach as {@link FetchOtlpExporter} for
- * spans, which avoids Deno compiled-binary TLS issues with the Node.js
- * compatibility layer.
- *
- * All export errors are silently swallowed — telemetry must never interfere
- * with the CLI, and this exporter must never emit through swamp's logger (that
- * would recurse back into the bridge sink that feeds it).
- *
- * Unlike the span exporter, in-flight `fetch` promises are tracked so that
- * {@link forceFlush} and {@link shutdown} genuinely await them. `swamp`'s
- * shutdown path calls `LoggerProvider.shutdown()`, which awaits the
- * processor's `shutdown()`, which awaits this exporter's `shutdown()` — so the
- * last log records of a short CLI invocation are drained before `Deno.exit`,
- * rather than being cut mid-flight. (Note: `LoggerProvider.forceFlush()` does
- * not propagate to `SimpleLogRecordProcessor`'s exporter, which is why the
- * drain must live in `shutdown()` and swamp must shut the provider down, not
- * merely flush it.)
+ * native fetch like the span exporter; errors are swallowed and never logged
+ * through swamp's logger, which would recurse into the bridge sink feeding it
  */
 export class FetchOtlpLogExporter implements LogRecordExporter {
   readonly #url: string;
@@ -85,23 +66,20 @@ export class FetchOtlpLogExporter implements LogRecordExporter {
       () => resultCallback({ code: ExportResultCode.SUCCESS }),
       () => resultCallback({ code: ExportResultCode.FAILED }),
     );
-    // Track the in-flight send so forceFlush()/shutdown() can drain it, and
-    // remove it once settled to bound the set's size.
     const tracked = pending.finally(() => {
       this.#inFlight.delete(tracked);
     });
     this.#inFlight.add(tracked);
   }
 
-  /** Awaits every in-flight send so no records are lost on flush. */
   forceFlush(): Promise<void> {
     return Promise.all([...this.#inFlight]).then(() => {});
   }
 
   async shutdown(): Promise<void> {
     this.#shutdown = true;
-    // Drain in-flight sends before resolving — this is the path swamp relies
-    // on (LoggerProvider.shutdown -> processor.shutdown -> here).
+    // drain in-flight sends here: LoggerProvider.forceFlush does not reach the
+    // processor's exporter, only shutdown does
     await this.forceFlush();
   }
 
@@ -121,7 +99,6 @@ export class FetchOtlpLogExporter implements LogRecordExporter {
       });
 
       if (!response.ok) {
-        // Drain the body to avoid resource leaks, but don't throw.
         await response.arrayBuffer();
       } else {
         await response.body?.cancel();

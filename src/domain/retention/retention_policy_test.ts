@@ -121,13 +121,11 @@ Deno.test("checkRetentionConfig: ignores snapshots kept longer than their runs",
   });
   assertEquals(explicit.errors, []);
   assertEquals(explicit.ignored.map((e) => e.field), ["evaluatedSnapshots"]);
-  // The run retention can come from the default.
   const inherited = checkRetentionConfig({
     retention: "7d",
     evaluatedSnapshots: "14d",
   });
   assertEquals(inherited.ignored.map((e) => e.field), ["evaluatedSnapshots"]);
-  // With no run retention at all, runs are kept forever.
   assertEquals(
     checkRetentionConfig({ evaluatedSnapshots: "14d" }).ignored,
     [],

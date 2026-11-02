@@ -81,10 +81,6 @@ const MAX_INVOCATION_BREADTH = 100;
 
 const logger = getLogger(["swamp", "model", "invocation"]);
 
-/**
- * A runModel failure whose message reads in behavior words, carrying its
- * model spelling for `swamp model …` (swamp-club#3437).
- */
 function wordedFailure(
   build: (words: BehaviorWords) => string,
 ): RunModelResult {
@@ -98,10 +94,6 @@ function wordedFailure(
 export interface ModelInvocationServiceDeps {
   executionService: MethodExecutionService;
   commonDeps: CommonMethodContextDeps;
-  /**
-   * Evaluates the target definition's expressions before the nested run, as
-   * a standalone run of that definition would.
-   */
   evaluationService: Pick<
     ExpressionEvaluationService,
     | "hasDefinitionExpressions"
@@ -203,16 +195,9 @@ function isRoutedArgs(
 }
 
 /**
- * runModel arguments come from extension code at run time, never from the
- * definition's author, so they are applied as literal values and never
- * evaluated. Global arguments holding `${{ ... }}` text that swamp would own
- * are refused: they would reach the method unresolved. Only another
- * templating system's text passes, such as `${{ github.sha }}` or
- * `${{ toJSON(matrix) }}` (see {@link storedTextRefusal}).
- *
- * A call that saves the definition passes the paths of its sensitive fields
- * (`sensitivePaths`): expression text in one is refused, since saving it
- * would write any constant inside it in cleartext.
+ * runModel arguments come from extension code at run time, so they are applied
+ * literally, never evaluated; global args holding ${{ }} text swamp would own
+ * are refused, other templating text passes
  */
 function refuseEvaluableGlobalArgs(
   definitionName: string,
@@ -361,10 +346,9 @@ export class ModelInvocationService {
         routedGlobalArgs,
         routedMethodArgs,
         redactor,
-        // The nested run's own registry: it inherits the caller's
-        // typed-secrets option and nothing else, so every reference is
-        // checked anew and no sentinel of the caller's run is shared
-        // (design/enablers/typed-secrets.md Sections 3.2 and 3.4).
+        // the nested run gets its own registry inheriting only the
+        // typed-secrets option, so every reference is checked anew and no
+        // caller sentinel is shared
         callerContext.vaultSecrets?.registry.independent(),
       );
       childDefinition = resolved.definition;
@@ -447,13 +431,9 @@ export class ModelInvocationService {
   }
 
   /**
-   * Evaluates the target definition in memory as `swamp model method run`
-   * would: the definition pass, then the runtime pass for vault and env
-   * expressions, within the caller's vault access scope. Expressions are
-   * collected from the stored definition before any caller value is set, so
-   * runModel arguments are applied literally — template-free global
-   * arguments before evaluation (so `self.globalArguments` sees them), the
-   * rest after both passes. Nothing is persisted.
+   * evaluates the definition in memory, in the caller's vault scope, persisting
+   * nothing. Expressions are collected before any caller value is set, so
+   * runModel arguments apply literally.
    */
   async #resolveExpressions(
     definition: Definition,
@@ -478,9 +458,9 @@ export class ModelInvocationService {
 
     let evaluatedDefinition = Definition.fromData(definition.toData());
     const templatedGlobalArgs: Record<string, unknown> = {};
-    // Caller values are data: a template-free one set here is spliced by
-    // the definition pass like any other data, so it can never complete an
-    // expression that reads as authored (swamp-club#3205).
+    // caller values are data: a template-free one set here is spliced by the
+    // definition pass like any data, so it can never complete an expression
+    // that reads as authored
     let definitionMap = ProvenanceMap.authored();
     for (const [key, value] of Object.entries(routedGlobalArgs)) {
       if (extractExpressions(value).length === 0) {
@@ -529,7 +509,6 @@ export class ModelInvocationService {
         rawProvenance.subtree("globalArguments"),
       ),
     });
-    // Scoped to the invoked method, as every delivery's runtime pass is.
     const runtimeResult = await evaluationService
       .resolveRuntimeExpressionsInDefinition(
         executedDefinition,
@@ -554,11 +533,9 @@ export class ModelInvocationService {
     for (const [key, value] of Object.entries(templatedGlobalArgs)) {
       resolvedDefinition.setGlobalArgument(key, value);
     }
-    // An argument the calling behavior's code routes in is that code's own
-    // text, as trusted as a process it could start itself, so it reads as
-    // authored where it replaces what the passes evaluated (swamp-club#3868).
-    // Neither kind of routed global holds a runtime splice: a templated one
-    // is set after the passes, a template-free one is whole data to them.
+    // an argument the calling behavior's code routes in is that code's own
+    // trusted text, so it reads as authored where it replaces what the passes
+    // evaluated; routed globals hold no runtime splice
     let argumentProvenance = Object.keys(routedGlobalArgs).reduce(
       (map, key) =>
         map.graft(keyPath("globalArguments", key), ProvenanceMap.authored()),
@@ -580,8 +557,6 @@ export class ModelInvocationService {
       failedExpressions,
     );
 
-    // Register sensitive argument values with the redactor so the nested
-    // run's logs and data are scrubbed of them.
     if (redactor) {
       const schemas = [
         [modelDef.globalArguments, resolvedDefinition.globalArguments],

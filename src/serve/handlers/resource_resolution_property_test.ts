@@ -17,13 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * The invariant swamp-club#2674 rests on: whatever string a client sends,
- * the resource serve authorizes is the resource the operation then acts on.
- * Names may collide with other resources' ids, and the request may be any
- * name, any id, or neither.
- */
-
 import { assertEquals } from "@std/assert";
 import fc from "fast-check";
 import {
@@ -60,11 +53,6 @@ import { resolveOutputReference } from "../../libswamp/models/output_reference.t
 
 const IDS = Array.from({ length: 6 }, () => crypto.randomUUID());
 
-/**
- * A workflow set whose names are drawn from plain names and the other
- * workflows' ids, so collisions are common. Ids may repeat too, as a copied
- * workflow file keeps its id.
- */
 const workflowSet = fc.uniqueArray(
   fc.record({
     id: fc.constantFrom(...IDS),
@@ -103,7 +91,6 @@ Deno.test("resolveWorkflowTarget property: the workflow authorized is the workfl
           resolution,
           requested,
         );
-        // What an operation handed that argument looks up.
         const actedOn = byId
           ? await findWorkflowById(repo, idOrName, expectedName)
           : await findWorkflowByIdOrName(repo, idOrName);
@@ -112,7 +99,6 @@ Deno.test("resolveWorkflowTarget property: the workflow authorized is the workfl
           assertEquals(actedOn?.name, resolution.resource.name);
           assertEquals(actedOn?.id, resolution.id);
         } else {
-          // Authorized as the raw string: nothing may be acted on.
           assertEquals(actedOn, null);
         }
       },
@@ -120,13 +106,8 @@ Deno.test("resolveWorkflowTarget property: the workflow authorized is the workfl
   );
 });
 
-// swamp-club#2673: an output read names an output id prefix, a model name or
-// a model id. Model names may look like output id prefixes, and model ids
-// may repeat (a copied definition keeps its id, and shares its outputs).
-
 const MODEL_TYPE = ModelType.create("test/output-property");
 const MODEL_IDS = Array.from({ length: 3 }, () => crypto.randomUUID());
-// Output ids share leading characters, so short prefixes are ambiguous.
 const OUTPUT_IDS = [
   "abc00000-0000-4000-8000-000000000001",
   "abc11111-0000-4000-8000-000000000001",
@@ -268,8 +249,6 @@ Deno.test("resolveOutputAccess property: every model owning the output read is a
           if (event.kind === "completed") read = event.data;
         }
         if (!read) {
-          // Nothing read: only the raw string or a resolved model needed
-          // authorizing, and one of them was.
           assertEquals(authorized.length > 0, true);
           return;
         }

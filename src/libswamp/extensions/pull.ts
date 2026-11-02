@@ -125,19 +125,16 @@ const SCOPED_NAME_PATTERN = /^@[a-z0-9_-]+\/[a-z0-9_-]+(\/[a-z0-9_-]+)*$/;
 const MAX_DEPENDENCY_DEPTH = 10;
 const VERSION_CONSTRAINT_PREFIX = /^[><=^~!]/;
 
-/** Parsed extension reference from CLI argument. */
 export interface ExtensionRef {
   name: string;
   version: string | null;
 }
 
-/** Safety warning from extension analysis. */
 export interface ExtensionSafetyWarning {
   file: string;
   message: string;
 }
 
-/** Extension metadata returned by the registry. */
 export interface ExtensionRegistryInfo {
   name: string;
   description: string;
@@ -155,7 +152,6 @@ export interface ShadowedTypeInfo {
   readonly localSourcePath: string;
 }
 
-/** Result of installing a single extension (no rendering). */
 export interface InstallResult {
   name: string;
   version: string;
@@ -173,87 +169,29 @@ export interface InstallResult {
   skillFiles: string[];
   dependencies: string[];
   dependencyResults: InstallResult[];
-  /**
-   * Foreign types this extension grafts methods onto via
-   * `export const extension`. Each entry names the target type and
-   * the methods added to it. Empty when the extension defines only
-   * its own types or when source files are unavailable.
-   */
   extendsTypes: Array<{ type: string; methods: string[] }>;
-  /**
-   * Repo-relative paths that were declared in the prior version's
-   * lockfile entry but absent from the current version's
-   * `extractedFiles`, and which were actually removed from disk by this
-   * install: skill paths when it commits, the rest with the previous
-   * root. Empty for first-installs
-   * (no prior entry) and re-installs of the same version (no diff).
-   * Reflects ground truth — paths skipped due to NotFound are NOT
-   * included.
-   */
   pruned: string[];
-  /**
-   * Types whose pulled catalog entry was cleared by
-   * {@link resolveOriginConflicts} because a local source claims the
-   * same `(kind, type_normalized)` pair. Populated by
-   * {@link InstallExtensionService} after the catalog save. Absent or
-   * empty when no local source shadows the pulled extension's types.
-   */
   shadowedTypes?: ShadowedTypeInfo[];
-  /**
-   * The archive's bundles, staged with this install, are the ones to run:
-   * {@link InstallExtensionService} indexes them instead of rebuilding them
-   * from source (swamp-club#3972). False when the archive's bundle format
-   * is not one this swamp runs; absent reads as false.
-   */
   keepArchiveBundles?: boolean;
-  /**
-   * Repo-relative paths this install created. Equals `extractedFiles`
-   * except for skills: a skill dir that already existed before
-   * extraction is never listed, only the files this install newly wrote
-   * inside it. Files it overwrote there are not listed either. A
-   * rollback deletes the skill ones; the rest are under the swapped
-   * roots, which it moves back whole.
-   */
   createdPaths: string[];
-  /** The channel the install follows, as the lockfile records it. */
   channel?: string;
-  /**
-   * The channel the registry lists this version on, or null when it could
-   * not be determined.
-   */
   publishedChannel?: string | null;
-  /**
-   * What this install replaced. Null on a first install, and when an
-   * install was replaced whose version could not be determined (then
-   * `change` is "unknown").
-   */
   previous?: ExtensionIdentity | null;
-  /** How this version relates to the one it replaced; absent on a first install. */
   change?: ReplacementChange;
-  /** True when the replaced version was published on another channel. */
   channelChanged?: boolean;
 }
 
-/** A beta or rc release installed while the extension follows stable. */
 export interface UnoptedPrereleaseNotice {
   name: string;
   version: string;
   publishedChannel: string;
-  /** The extension that pins it, when it was installed as a dependency. */
   parent: string | null;
 }
 
 /**
- * Context for the headless install function (internal, used by
- * extension_update, extensionInstall, and extensionPull).
- *
- * Per-type destination dirs (models/workflows/vaults/
- * datastores/reports/webhooks) are deliberately NOT fields on this context —
- * `installExtension` derives them itself as
- * `.swamp/pulled-extensions/<ref.name>/<type>/` so filesystem state is
- * strictly per-extension (issue 120). Only `skillsDirs` remains because
- * skills land in tool-specific dirs (`.claude/skills/`, `.kiro/skills/`,
- * etc.) that the caller owns — one per enrolled tool.
+ * per-type destination dirs are derived per extension under
+ * .swamp/pulled-extensions/<name>/; only skillsDirs is passed, since tool skill
+ * dirs belong to the caller.
  */
 export interface InstallContext {
   getExtension: (name: string) => Promise<ExtensionRegistryInfo | null>;
@@ -269,36 +207,15 @@ export interface InstallContext {
   ) => Promise<string | null>;
   logger?: Logger;
   /**
-   * Lockfile repository owning read+write of upstream_extensions.json.
-   *
-   * **Single-use semantics.** The repository captures a snapshot at
-   * construction time (per its own JSDoc); reads serve from that snapshot.
-   * A given InstallContext therefore embeds a snapshot taken at the moment
-   * the context was constructed. DO NOT reuse the same context across
-   * multiple install operations — a sibling process or a prior
-   * installExtension() call may have written between constructions, and
-   * the snapshot would be stale relative to disk. Construct a fresh
-   * context per install via `createInstallContext` /
-   * `createExtensionPullDeps`. installExtension() refreshes the
-   * snapshot from disk under the pulled-extensions lock just before
-   * applyInstall() reads it (swamp-club#2709), so the prior entry apply
-   * prunes against is the one on disk.
+   * the repository serves reads from a snapshot taken at construction; build a
+   * fresh context per install, since another process may have written since.
    */
   lockfileRepository: LockfileRepository;
-  /**
-   * Tool-aware skills destinations — one per unique enrolled tool
-   * (e.g. `["/repo/.claude/skills", "/repo/.kiro/skills"]`). Skills are
-   * extracted to every directory in this array; all paths are tracked in
-   * the lockfile so orphan pruning and extension rm handle multi-tool
-   * repos correctly.
-   */
   skillsDirs: string[];
   /**
-   * Skills destinations for the dependencies this install pulls in, when
-   * they differ from `skillsDirs`. Dependencies never raise skill
-   * conflicts, so the auto-resolver keeps them in the swamp-owned pulled
-   * skills dir while the extension itself goes back to the tool dirs its
-   * lockfile entry records (swamp-club#3727). Defaults to `skillsDirs`.
+   * dependencies never raise skill conflicts, so they may go to the swamp-owned
+   * pulled skills dir while the extension itself goes to its lockfile tool
+   * dirs; defaults to skillsDirs.
    */
   dependencySkillsDirs?: string[];
   repoDir: string;
@@ -306,56 +223,28 @@ export interface InstallContext {
   alreadyPulled: Set<string>;
   depth: number;
   /**
-   * Optional lockfile-anchored integrity check. When set, installExtension
-   * verifies the downloaded archive's SHA-256 matches this value BEFORE
-   * extraction and throws a UserError on mismatch. Scoped strictly to the
-   * lockfile-restore path (extensionInstall, migration re-pull) — explicit
-   * `swamp extension pull` leaves this unset so the user opts into
-   * whatever bytes the registry currently serves. It anchors the top-level
-   * ref only; dependency installs never inherit it.
+   * checked against the archive SHA-256 before extraction; set only on the
+   * lockfile-restore path, so an explicit pull accepts what the registry
+   * serves, and dependencies never inherit it.
    */
   expectedChecksum?: string;
-  /** Release channel to record in the lockfile entry. */
   channel?: string;
-  /**
-   * Looks up which release channel the registry lists each version on, in
-   * one scan. A version no channel carries is absent from the map. Lets an
-   * exact-version pull say which channel it installs from; installs
-   * without it (lockfile restore, update, auto-resolve) only know the
-   * channel when the version is the registry's latest on one.
-   */
   getVersionChannels?: (
     name: string,
     versions: string[],
   ) => Promise<Map<string, string>>;
-  /**
-   * Called once an install that replaces an existing one is going ahead,
-   * before any file is written. Not called on a first install.
-   */
   onReplacing?: (replacement: ExtensionReplacement) => void;
-  /**
-   * Called before files are written when a beta or rc release is
-   * installed while the extension follows stable.
-   */
   onUnoptedPrerelease?: (notice: UnoptedPrereleaseNotice) => void;
-  /** The extension whose dependency this install is; unset at the top. */
   parentName?: string;
 }
 
-/** Thrown when file conflicts are detected and force is false. */
 export class ConflictError extends UserError {
-  /** Every conflicting path, skill dirs included. */
   conflicts: string[];
   /**
-   * The subset of `conflicts` that are existing skill dirs. The install
-   * writes its files into them rather than replacing them: same-named
-   * files are overwritten, other files are kept.
+   * existing skill dirs the install writes into rather than replaces:
+   * same-named files are overwritten, others kept.
    */
   skillDirs: string[];
-  /**
-   * What the install would have replaced, when known: the extension, its
-   * installed and incoming identity.
-   */
   replacement: ExtensionReplacement | undefined;
   constructor(
     conflicts: string[],
@@ -404,14 +293,12 @@ export type ExtensionPullEvent =
   | { kind: "completed"; data: InstallResult }
   | { kind: "error"; error: SwampError };
 
-/** Input for the extension pull operation. */
 export interface ExtensionPullInput {
   ref: ExtensionRef;
   force: boolean;
   channel?: string;
 }
 
-/** Dependencies for the extension pull operation. */
 export interface ExtensionPullDeps {
   getExtension: (name: string) => Promise<ExtensionRegistryInfo | null>;
   getLatestVersion?: (
@@ -428,58 +315,28 @@ export interface ExtensionPullDeps {
     version: string,
     channel?: string,
   ) => Promise<string | null>;
-  /**
-   * Lockfile repository owning read+write of upstream_extensions.json.
-   * See {@link InstallContext.lockfileRepository} for snapshot semantics
-   * and the single-use rule.
-   */
   lockfileRepository: LockfileRepository;
-  /**
-   * Tool-aware skills destinations — one per unique enrolled tool.
-   * See {@link InstallContext.skillsDirs}.
-   */
   skillsDirs: string[];
   repoDir: string;
   alreadyPulled: Set<string>;
   depth: number;
   /**
-   * Test seam (W2 Pin 2). Defaults to the real {@link installExtension}
-   * from this module; tests inject a stub so the
-   * {@link ExtensionPullEvent} stream can be exercised without a real
-   * registry, tarball, or filesystem write. Production callers always
-   * leave this unset — `extensionPull` falls back to the real
-   * `installExtension` automatically.
+   * test seam: tests inject a stub; production leaves it unset and gets the
+   * real installExtension.
    */
   installExtensionFn?: InstallExtensionFn;
-  /** See {@link InstallContext.getVersionChannels}. */
   getVersionChannels?: InstallContext["getVersionChannels"];
-  /** See {@link InstallContext.onReplacing}. */
   onReplacing?: InstallContext["onReplacing"];
-  /** See {@link InstallContext.onUnoptedPrerelease}. */
   onUnoptedPrerelease?: InstallContext["onUnoptedPrerelease"];
   /**
-   * W2 service deps. When BOTH are provided, `extensionPull` routes
-   * through {@link InstallExtensionService} — phase 8 fires (synchronous
-   * type extraction + `repository.save` + rollback on
-   * `DuplicateTypeError`). When either is missing, falls back to the
-   * pre-W2 free-function path (catalog rows populated lazily by the
-   * loader's next pass — same behavior as W1b shipped).
-   *
-   * Production paths that want the W2 contract (I-Repo-1 fires at install
-   * time) MUST pass both. Migrating callers is plan v4 commit 3 (CONVERT
-   * callsites) and the wrapper-internal swap for KEEP callsites.
+   * when both are set, pull routes through InstallExtensionService (catalog
+   * save, rollback on DuplicateTypeError); otherwise the catalog is populated
+   * lazily by the loader.
    */
   denoRuntime?: DenoRuntime;
   repository?: ExtensionRepository;
 }
 
-/**
- * Parses an extension reference string into name and optional version.
- *
- * Examples:
- * - `@ns/name` → `{ name: "@ns/name", version: null }`
- * - `@ns/name@2026.02.26.1` → `{ name: "@ns/name", version: "2026.02.26.1" }`
- */
 export function parseExtensionRef(ref: string): ExtensionRef {
   if (!ref.startsWith("@")) {
     throw new UserError(
@@ -504,14 +361,10 @@ export function parseExtensionRef(ref: string): ExtensionRef {
   return { name, version };
 }
 
-/** Whether a string is a scoped extension name (`@collective/name`). */
 export function isScopedExtensionName(name: string): boolean {
   return SCOPED_NAME_PATTERN.test(name);
 }
 
-/**
- * Validates a scoped extension name matches the expected pattern.
- */
 export function validateExtensionName(name: string): void {
   if (!isScopedExtensionName(name)) {
     throw new UserError(
@@ -520,30 +373,18 @@ export function validateExtensionName(name: string): void {
   }
 }
 
-/**
- * Returns true if a version string is a semver constraint rather than
- * an exact version. Constraints start with >=, <=, >, <, ^, ~, !, or =.
- */
 export function isVersionConstraint(version: string): boolean {
   return VERSION_CONSTRAINT_PREFIX.test(version);
 }
 
-/**
- * Resolves the registry server URL.
- * Priority: SWAMP_CLUB_URL env var > DEFAULT_SWAMP_CLUB_URL
- */
 export function resolveServerUrl(): string {
   return Deno.env.get("SWAMP_CLUB_URL") ?? DEFAULT_SWAMP_CLUB_URL;
 }
 
-/** Returns true if the filename is a macOS resource fork (AppleDouble) file. */
 function isMacOsResourceFork(name: string): boolean {
   return name.startsWith("._");
 }
 
-/**
- * Checks if a file exists at the given path.
- */
 async function fileExists(path: string): Promise<boolean> {
   try {
     await Deno.stat(path);
@@ -553,12 +394,6 @@ async function fileExists(path: string): Promise<boolean> {
   }
 }
 
-/**
- * Recursively copies a directory's contents, returning the repo-relative
- * path of each file copied. `recordDir` is where `destDir` will end up
- * (a staging dir's live location); the paths are reported under it.
- * Defaults to `destDir`.
- */
 async function copyDir(
   srcDir: string,
   destDir: string,
@@ -591,9 +426,6 @@ async function copyDir(
   return extracted;
 }
 
-/**
- * Lists all files recursively under a directory, each level in name order.
- */
 async function listFiles(dir: string): Promise<string[]> {
   const files: string[] = [];
   try {
@@ -616,10 +448,9 @@ async function listFiles(dir: string): Promise<string[]> {
 }
 
 /**
- * Lists files and symlinks under a directory without descending into
- * symlinked directories. Used to snapshot a skill dir before merging
- * into it: `copyFile` writes through a symlink at the destination, so a
- * user's symlink must count as pre-existing or rollback would unlink it.
+ * does not descend into symlinked dirs; copyFile writes through a destination
+ * symlink, so a user's symlink must count as pre-existing or rollback would
+ * unlink it.
  */
 async function listFilesAndLinks(dir: string): Promise<string[]> {
   const out: string[] = [];
@@ -640,11 +471,8 @@ async function listFilesAndLinks(dir: string): Promise<string[]> {
 }
 
 /**
- * The error pull raises for an archive it refuses because of one entry:
- * names the extension, the version and the entry, and says the version
- * cannot be installed. The entry path is the archive author's text, so its
- * control characters are printed as escapes, and the path is marked as
- * printed.
+ * the entry path is the archive author's text, so control characters are
+ * printed as escapes.
  */
 function archiveRefusalError(
   name: string,
@@ -662,14 +490,6 @@ function archiveRefusalError(
   );
 }
 
-/**
- * Detects files that already exist at target paths.
- *
- * Under the extension-first layout, every dir passed in is per-extension,
- * so a non-empty return means this extension is being re-installed on top
- * of itself (resolved by --force) — it never means a collision with a
- * different extension.
- */
 export async function detectConflicts(
   extractDir: string,
   modelsDir: string,
@@ -816,11 +636,6 @@ export async function detectConflicts(
   return conflicts;
 }
 
-/**
- * The archive-root shared sources (swamp-club#3384) that already exist
- * under the extension root, as repo-relative paths: like
- * {@link detectConflicts}, a re-install of the same extension.
- */
 async function detectRootSourceConflicts(
   rootSources: readonly string[],
   extensionRoot: string,
@@ -836,10 +651,7 @@ async function detectRootSourceConflicts(
   return conflicts;
 }
 
-/**
- * Checks whether anything exists at `path` without following a
- * symlink, so a dangling or directory symlink still counts as present.
- */
+/** lstat, so a dangling or directory symlink still counts as present. */
 async function pathExistsNoFollow(path: string): Promise<boolean> {
   try {
     await Deno.lstat(path);
@@ -851,14 +663,9 @@ async function pathExistsNoFollow(path: string): Promise<boolean> {
 }
 
 /**
- * Detects skill directories the archive would merge into that the
- * extension does not own. Skills land in shared tool dirs
- * (`.claude/skills/<name>`, ...), the one place the extension-first
- * layout does not isolate extensions, so a same-named dir may belong to
- * the user or to another extension. A dir is owned when the prior
- * lockfile entry (`oldFiles`) lists it or a path under it.
- *
- * Returns repo-relative skill roots.
+ * skills land in shared tool dirs, so a same-named dir may belong to the user
+ * or another extension; a dir is owned only if the prior lockfile entry lists
+ * it or a path under it.
  */
 export async function detectSkillConflicts(
   extractDir: string,
@@ -892,10 +699,6 @@ export async function detectSkillConflicts(
   return conflicts;
 }
 
-/**
- * Validates that all source files referenced by imports are present.
- * Returns paths of missing files (relative to the base directory).
- */
 async function validateSourceCompleteness(
   ...dirs: string[]
 ): Promise<string[]> {
@@ -931,7 +734,6 @@ async function validateSourceCompleteness(
   return missing;
 }
 
-/** Recursively collects .ts files from a directory, skipping _-prefixed dirs. */
 async function collectTsFiles(dir: string): Promise<string[]> {
   const files: string[] = [];
   try {
@@ -949,25 +751,8 @@ async function collectTsFiles(dir: string): Promise<string[]> {
 }
 
 /**
- * Computes which paths from a prior version's lockfile entry are
- * orphans relative to a new version's extracted file set — i.e. paths
- * declared by the old version but absent from the new one. Pure
- * function; the caller hands the result to `pruneOrphanFiles` to
- * remove them from disk.
- *
- * Both lists are repo-relative paths. Exact matches go through a Set;
- * only paths absent from it are checked for the containment cases
- * below.
- *
- * A skill can be recorded as its root (`.claude/skills/foo`) or, when
- * it was merged into a dir the extension does not own, as the files it
- * wrote there. An old path is not an orphan when it lies under a path
- * the new version records (files → root), or when a new path lies
- * under it (root → files): pruning it would recursively delete what
- * this install just wrote.
- *
- * Exported for direct unit testing — production callers go through
- * `installExtension`.
+ * an old path is not an orphan when it lies under a new path or a new path lies
+ * under it, since pruning it would delete what this install just wrote.
  */
 export function computeOrphanDiff(
   oldFiles: ReadonlyArray<string>,
@@ -989,21 +774,14 @@ export function computeOrphanDiff(
   });
 }
 
-/** Options for {@link installExtension}. */
 export interface InstallOptions {
   /**
-   * Runs after a successful apply, in the same pulled-extensions lock
-   * section, so a caller can extend that section (e.g. the catalog save
-   * in InstallExtensionService) without holding the lock across
-   * prepare. It receives the install uncommitted, with the previous
-   * version still kept, and ends it: {@link PendingInstall.commit} or
-   * {@link PendingInstall.rollback}. One it leaves pending, by throwing
-   * or otherwise, is committed. Not passed to dependency installs.
+   * runs after apply in the same lock section; receives the install uncommitted
+   * and must commit or roll it back, and one left pending is committed.
    */
   underLock?: (pending: PendingInstall) => Promise<void>;
 }
 
-/** Signature of {@link installExtension}, for callers' test seams. */
 export type InstallExtensionFn = (
   ref: ExtensionRef,
   ctx: InstallContext,
@@ -1011,22 +789,9 @@ export type InstallExtensionFn = (
 ) => Promise<InstallResult | undefined>;
 
 /**
- * Core install logic: download, verify, extract, copy, track.
- * No rendering — returns structured data for callers to present.
- * Throws ConflictError when !force and conflicts exist.
- * Recursively installs dependencies.
- *
- * Runs {@link prepareInstall} (network I/O and a private temp dir only),
- * then, holding the checkout's pulled-extensions lock, refreshes the
- * lockfile snapshot and runs {@link applyInstall} (changes to the repo
- * and lockfile) and `options.underLock`. Always disposes the prepared
- * install afterwards. A ConflictError leaves the locked section before
- * it reaches the caller, so the lock is never held across the CLI's
- * conflict prompt (swamp-club#2709).
- *
- * The install is committed before the lock is released: by
- * `options.underLock` (which may roll it back instead), or here when
- * there is none or it left the install pending.
+ * a ConflictError leaves the locked section before reaching the caller, so the
+ * lock is never held across the CLI's conflict prompt; the install is committed
+ * before the lock is released.
  */
 export async function installExtension(
   ref: ExtensionRef,
@@ -1044,9 +809,8 @@ export async function installExtension(
 }
 
 /**
- * Installs a dependency from inside its parent's apply, leaving it
- * uncommitted: the parent's {@link PendingInstall} owns the handle, so a
- * rollback of the parent also removes the dependency.
+ * the parent's PendingInstall owns the handle, so rolling back the parent also
+ * removes the dependency.
  */
 async function installDependencyPending(
   ref: ExtensionRef,
@@ -1055,12 +819,6 @@ async function installDependencyPending(
   return await installLocked(ref, ctx, (pending) => Promise.resolve(pending));
 }
 
-/**
- * The shared install sequence: the dependency-cycle and depth checks,
- * {@link prepareInstall} outside the lock, then {@link applyInstall} and
- * `withPending` in one pulled-extensions lock section. Returns undefined
- * when `ref` is already being installed in this operation.
- */
 async function installLocked<T>(
   ref: ExtensionRef,
   ctx: InstallContext,
@@ -1080,10 +838,9 @@ async function installLocked<T>(
 
   const prepared = await prepareInstall(ref, ctx);
   try {
-    // A managed lockfile's transaction takes the datastore global lock and
+    // a managed lockfile's transaction takes the datastore global lock and
     // fetches the shared lockfile before the pulled-extensions lock, and
-    // publishes the change after it (swamp-club#2838). Without one this
-    // runs the section directly.
+    // publishes after it; without one the section runs directly.
     return await inManagedLockfileTransaction(
       ctx.lockfileRepository.lockfilePath,
       () =>
@@ -1097,7 +854,6 @@ async function installLocked<T>(
   }
 }
 
-/** Fields a {@link PreparedInstall} is built from. */
 interface PreparedInstallFields {
   ref: ExtensionRef;
   version: string;
@@ -1116,14 +872,9 @@ interface PreparedInstallFields {
 }
 
 /**
- * An extension archive that {@link prepareInstall} downloaded, verified,
- * extracted into a private temp dir and safety-checked, ready for
- * {@link applyInstall}. Owns the temp dir: callers must await
- * {@link PreparedInstall.dispose} once they are done with it.
- *
- * Only exported as a type, and its private fields keep structurally
- * similar objects from type-checking as one, so applyInstall only ever
- * receives an archive that went through prepare's checks.
+ * owns the temp dir, so callers must await dispose. Private fields stop
+ * look-alike objects type-checking, so applyInstall only receives an archive
+ * that passed prepare's checks.
  */
 class PreparedInstall {
   readonly ref: ExtensionRef;
@@ -1133,28 +884,11 @@ class PreparedInstall {
   readonly integrityStatus: "verified" | "unverified";
   readonly manifest: ExtensionManifest;
   readonly manifestContent: string;
-  /** The extracted `extension/` dir inside the temp dir. */
   readonly extractDir: string;
   readonly safetyWarnings: ExtensionSafetyWarning[];
-  /**
-   * The channel the registry lists `version` on, or null when it could
-   * not be determined.
-   */
   readonly publishedChannel: string | null;
-  /**
-   * Published channels resolved while preparing, by version: the incoming
-   * one and, on a replacement, the installed one.
-   */
   readonly knownChannels: ReadonlyMap<string, string>;
-  /**
-   * The archive-root shared sources to install, as forward-slash paths
-   * below `extension/` (swamp-club#3384), already safety-checked.
-   */
   readonly rootSources: string[];
-  /**
-   * Run the archive's bundles, already scanned and checked against its
-   * record, rather than rebuilding them from source (swamp-club#3972).
-   */
   readonly keepArchiveBundles: boolean;
   readonly #tmpDir: string;
   #disposed = false;
@@ -1176,7 +910,6 @@ class PreparedInstall {
     this.keepArchiveBundles = fields.keepArchiveBundles;
   }
 
-  /** Removes the temp dir. Idempotent and best-effort. */
   async dispose(): Promise<void> {
     if (this.#disposed) return;
     this.#disposed = true;
@@ -1188,12 +921,9 @@ class PreparedInstall {
   }
 
   /**
-   * Throws when this install was disposed or its extract dir is gone.
-   * copyDir treats a missing source as empty, so applying a vanished
-   * archive would record a hollow install and prune every file of the
-   * prior version. The stat leaves a window before the copies; this
-   * guards against a stale or disposed handle, not a dir removed
-   * mid-apply.
+   * copyDir treats a missing source as empty, so applying a vanished archive
+   * would record a hollow install and prune the prior version's files. Guards a
+   * stale or disposed handle, not a dir removed mid-apply.
    */
   async assertUsable(): Promise<void> {
     if (this.#disposed) {
@@ -1220,10 +950,8 @@ class PreparedInstall {
 export type { PreparedInstall };
 
 /**
- * Whether an extension is installed on this checkout: its extension root
- * exists. A lockfile entry alone is not enough, since a managed lockfile
- * can list an extension whose files another checkout holds. Prepare and
- * apply both decide "this pull replaces an install" here.
+ * a lockfile entry alone is not enough: a managed lockfile can list an
+ * extension whose files another checkout holds.
  */
 async function isInstalledOnDisk(
   repoDir: string,
@@ -1235,16 +963,9 @@ async function isInstalledOnDisk(
 }
 
 /**
- * Resolves which channel the registry lists the incoming version on, and,
- * when an install already exists, the installed version too, so a version
- * promoted since it was pulled is reported where it is now.
- *
- * A version that is the registry's latest on a channel needs no request.
- * Any other is looked up through `ctx.getVersionChannels`, in one scan for
- * both. When the lookup fails or cannot place the incoming version, a
- * replacement fails, since what it would replace cannot be stated; a
- * first install warns and goes ahead with the channel unknown. Without
- * `getVersionChannels` an unresolved channel is unknown, never guessed.
+ * when the lookup cannot place the incoming version, a replacement fails (what
+ * it replaces cannot be stated) and a first install warns and proceeds with the
+ * channel unknown; an unresolved channel is never guessed.
  */
 async function resolvePublishedChannels(
   ref: ExtensionRef,
@@ -1260,10 +981,8 @@ async function resolvePublishedChannels(
     return null;
   };
 
-  // Whether this replaces an install decides whether a lookup failure is
-  // fatal; applyInstall decides it the same way under the lock. The
-  // lockfile snapshot names the installed version to look up, when it
-  // pins one.
+  // whether this replaces an install decides if a lookup failure is fatal;
+  // applyInstall decides it the same way under the lock.
   const replacing = await isInstalledOnDisk(ctx.repoDir, ref.name);
   const entry = ctx.lockfileRepository.getEntry(ref.name);
   const installedVersion = replacing && entry?.version &&
@@ -1306,18 +1025,6 @@ async function resolvePublishedChannels(
   return known;
 }
 
-/**
- * Resolves, downloads, verifies, extracts and safety-checks an extension
- * without touching the repo: nothing is written outside a private temp
- * dir, which the returned {@link PreparedInstall} owns. On failure the
- * temp dir is removed before the error propagates.
- *
- * Does not apply the alreadyPulled or dependency-depth guards — those
- * live in {@link installExtension}.
- *
- * @param opts.tempRoot Parent dir for the temp dir. For tests only;
- *   production callers leave it unset to use the system temp dir.
- */
 export async function prepareInstall(
   ref: ExtensionRef,
   ctx: InstallContext,
@@ -1384,12 +1091,8 @@ export async function prepareInstall(
     integrityStatus = "unverified";
   }
 
-  // Lockfile-anchored integrity check. When expectedChecksum is provided
-  // (lockfile-restore flows: extensionInstall, migration re-pull), verify
-  // the freshly-downloaded bytes match what was recorded when the user
-  // originally installed this version. This catches registry content drift
-  // between the user's original install and their upgrade/reinstall and
-  // lets us restore authentic per-extension content during migration.
+  // lockfile-restore flows only: catches registry content drift since the user
+  // originally installed this version.
   if (ctx.expectedChecksum !== undefined) {
     if (ctx.expectedChecksum !== localChecksum) {
       throw new UserError(
@@ -1406,9 +1109,8 @@ export async function prepareInstall(
       logger.debug`Lockfile integrity verified for ${ref.name}@${version}`;
     }
   } else if (logger) {
-    // Pre-checksum-tracking lockfile entries (pre-f4dfc083) have no stored
-    // checksum; verification is skipped. Subsequent installs write a fresh
-    // checksum so future restores gain full integrity coverage.
+    // entries without a stored checksum skip verification; the next install
+    // writes one.
     logger
       .debug`No stored checksum for ${ref.name}@${version}; skipping lockfile-anchored verification`;
   }
@@ -1466,10 +1168,6 @@ export async function prepareInstall(
     let refused: UserError | undefined;
     try {
       const extractFile = await Deno.open(archivePath, { read: true });
-      // The Deno-native extractor doesn't shell out to BSD tar, so the macOS
-      // `COPYFILE_DISABLE=1` env var that suppressed AppleDouble files in
-      // the previous implementation is no longer needed: AppleDouble entries
-      // are filtered out at extraction time as a defensive measure.
       await extractTarGz(
         extractFile.readable,
         tmpDir,
@@ -1501,8 +1199,8 @@ export async function prepareInstall(
       }
     }
 
-    // The header check refused every link before it was written; this is
-    // the same last check push makes on its staged tree (swamp-club#3421).
+    // the header check refused every link before it was written; this repeats
+    // the last check push makes on its staged tree.
     const extractedLink = await firstSymlinkUnder(extractDir);
     if (extractedLink !== undefined) {
       const refusal = archiveEntryRefusal({
@@ -1540,8 +1238,8 @@ export async function prepareInstall(
     const webhookTsFiles = (
       await listFiles(join(extractDir, "webhooks"))
     ).filter((f) => f.endsWith(".ts"));
-    // Shared sources at the archive root are scanned whole, data modules
-    // included, as push scans them (swamp-club#3384).
+    // archive-root shared sources are scanned whole, data modules included, as
+    // push scans them.
     const rootSourceFiles = rootSources.map((source) =>
       join(extractDir, ...source.split("/"))
     );
@@ -1572,8 +1270,8 @@ export async function prepareInstall(
       safetyWarnings.push(...safetyResult.warnings);
     }
 
-    // The bundles are what runs: scan them as well as the source copy,
-    // which may lack modules a bundle holds (swamp-club#3383).
+    // the bundles are what runs, so scan them as well as the source copy, which
+    // may lack modules a bundle holds.
     const bundleScan = await scanExtractedBundles(extractDir, listFiles);
     if (bundleScan.errors.length > 0) {
       throw markErrorPaths(
@@ -1591,8 +1289,8 @@ export async function prepareInstall(
       safetyWarnings.push(warning);
     }
 
-    // The bundles kept are the ones just scanned: check them against the
-    // hashes push recorded with them (swamp-club#3972).
+    // the bundles kept are the ones just scanned: check them against the hashes
+    // push recorded with them.
     const recordCheck = checkBundleRecord(
       bundleScan.hashes,
       await Deno.readTextFile(
@@ -1636,46 +1334,30 @@ export async function prepareInstall(
   }
 }
 
-/**
- * What {@link applyInstall} returns: the install's result, with the new
- * version swapped in and the previous one kept in staging until it is
- * committed or rolled back. It covers the extension and every dependency
- * installed with it. Exactly one of commit and rollback takes effect;
- * calling either again, or the other afterwards, does nothing.
- */
 export interface PendingInstall {
   readonly result: InstallResult;
   /**
-   * Deletes the install's staging, and with it the previous versions,
-   * then prunes the skill files the previous version shipped and this
-   * one does not. Never throws: whatever it cannot delete, the next
-   * install or removal cleans up.
+   * never throws: whatever it cannot delete, the next install or removal cleans
+   * up.
    */
   commit(): Promise<void>;
   /**
-   * Puts the previous versions back: first every lockfile entry this
-   * install wrote, in one write, then every root, dependencies first;
-   * then deletes the skill files this install created. Never throws;
-   * the outcome says whether the previous versions are back.
+   * restores every lockfile entry in one write, then every root with
+   * dependencies first; never throws, and the outcome says whether the previous
+   * versions are back.
    */
   rollback(): Promise<InstallRollbackOutcome>;
 }
 
-/** One extension of a {@link PendingInstall} and its dependencies. */
 class PendingInstallNode implements PendingInstall {
   readonly result: InstallResult;
   readonly #tx: ExtensionInstallTransaction;
   readonly #ctx: InstallContext;
-  /** The lockfile entry before apply; null when there was none. */
   readonly #priorEntry: UpstreamExtensionEntry | null;
-  /** The entry apply wrote. */
   readonly #writtenEntry: UpstreamExtensionEntry | null;
-  /** Skill paths apply created, which a rollback deletes. */
   readonly #skillCreatedPaths: string[];
-  /** Skill paths the previous version shipped and this one does not. */
   readonly #orphanCandidates: string[];
   readonly #children: PendingInstallNode[];
-  /** Reports what the install changed, once it can no longer roll back. */
   readonly #onCommit: () => void;
   #state: "pending" | "committed" | "rolled-back" = "pending";
   #outcome: InstallRollbackOutcome | undefined;
@@ -1704,7 +1386,6 @@ class PendingInstallNode implements PendingInstall {
     this.#onCommit = args.onCommit;
   }
 
-  /** This node and its pending dependencies, in install order. */
   #pendingNodes(): PendingInstallNode[] {
     if (this.#state !== "pending") return [];
     return [this, ...this.#children.flatMap((c) => c.#pendingNodes())];
@@ -1744,14 +1425,12 @@ class PendingInstallNode implements PendingInstall {
     if (this.#outcome) return this.#outcome;
     const nodes = this.#pendingNodes();
     if (nodes.length === 0) {
-      // Already committed: everything in it stays on the new version.
       return { status: "kept", kept: this.#allNodes().map((n) => n.#change()) };
     }
     this.#outcome = await this.#rollbackNodes(nodes);
     return this.#outcome;
   }
 
-  /** This node and every dependency under it, in install order. */
   #allNodes(): PendingInstallNode[] {
     return [this, ...this.#children.flatMap((c) => c.#allNodes())];
   }
@@ -1817,11 +1496,6 @@ class PendingInstallNode implements PendingInstall {
       : { status: "unsettled", lockfilePath: lockfile.lockfilePath };
   }
 
-  /**
-   * After a restore that threw: `all` when the lockfile on disk holds
-   * every restored entry, `none` when it still holds every entry apply
-   * wrote, `unknown` when it cannot be read or holds neither.
-   */
   static async #readRestoreState(
     lockfilePath: string,
     nodes: PendingInstallNode[],
@@ -1846,9 +1520,8 @@ class PendingInstallNode implements PendingInstall {
 }
 
 /**
- * Deletes paths an install created, unlinking a symlink rather than
- * following it. Best-effort: a path already gone is skipped, and any
- * other failure is logged, since the caller is undoing an install.
+ * unlinks a symlink rather than following it; best-effort, since the caller is
+ * undoing an install.
  */
 async function deleteCreatedPaths(
   paths: ReadonlyArray<string>,
@@ -1870,20 +1543,9 @@ async function deleteCreatedPaths(
 }
 
 /**
- * Prunes the skill paths an install's previous version shipped and this
- * one does not, once the install commits. The claims are the other
- * entries' as the lockfile holds them now, so a dependency installed in
- * the same call that merged files into a dropped skill dir keeps them:
- *
- * - a candidate no entry lists, or lists anything under, goes whole (a
- *   symlink as the link itself);
- * - one an entry lists, or lists a dir above, is kept;
- * - a dir an entry lists only files under is walked, and only the files,
- *   links and wholly unclaimed dirs under it go. The walk descends plain
- *   dirs only, never a symlink, so it cannot reach outside the repo.
- *
- * Returns the paths removed. Files the user added to a pruned dir go
- * with it, as they always have.
+ * claims are the other entries' as the lockfile holds them now, so a dependency
+ * that merged files into a dropped skill dir keeps them. The walk never
+ * descends a symlink, so it cannot leave the repo.
  */
 async function pruneSkillOrphans(
   candidates: ReadonlyArray<string>,
@@ -1906,7 +1568,6 @@ async function pruneSkillOrphans(
     if (!stat?.isDirectory) return [];
     const out: string[] = [];
     for await (const entry of Deno.readDir(absolute)) {
-      // The lockfile's form, like the candidates the walk starts from.
       const path = posixJoin(dir, entry.name);
       if (claimedWhole(path)) continue;
       if (!claimedUnder(path)) {
@@ -1930,13 +1591,6 @@ async function pruneSkillOrphans(
   return await pruneOrphanFiles(toPrune, ctx.repoDir);
 }
 
-/**
- * The identity of the install being replaced. The lockfile entry gives the
- * version and followed channel, and the published channel comes from the
- * registry when prepare resolved it, else from the entry. With no entry,
- * a manifest under the extension root that names this extension gives the
- * version alone. Null when neither says.
- */
 function installedIdentity(
   name: string,
   entry: UpstreamExtensionEntry | null,
@@ -1958,7 +1612,6 @@ function installedIdentity(
   return null;
 }
 
-/** Top-level names in an extension root that a nested entry cannot use. */
 const EXTENSION_ROOT_ENTRIES = new Set([
   "models",
   "workflows",
@@ -1971,28 +1624,9 @@ const EXTENSION_ROOT_ENTRIES = new Set([
 ]);
 
 /**
- * Installs a {@link PreparedInstall} into the repo: conflict detection
- * against the live tree (throws ConflictError when !force), then a
- * stage-and-swap of the extension root and its bundle namespace dirs,
- * the merge copy into the skills dirs, skill orphan pruning, the
- * lockfile entry, and dependency installs. Does not dispose `prepared`.
- *
- * The new version is built in staging, the live roots are moved aside
- * and the new ones moved in (see {@link ExtensionInstallTransaction}); a
- * journal written first lets a crash at any point be put right. The
- * swap replaces the roots whole: a file the prior version shipped and
- * this one does not is gone afterwards, while a file the user added
- * under the extension root is copied into the new root (see
- * {@link carryForwardUserFiles}). Entries nested under this one
- * (`@a/b/c` inside `@a/b`) are copied into the new root unchanged.
- *
- * Any failure after staging starts is settled before it propagates: the
- * swap is rolled back unless its lockfile entry already landed. The
- * caller commits the returned handle once it no longer needs the prior
- * version.
- *
- * Runs crash recovery first, under the pulled-extensions lock the caller
- * holds.
+ * a journal written first lets a crash at any point be put right. The swap
+ * replaces roots whole, carrying user-added files forward; a failure after
+ * staging is rolled back unless its lockfile entry landed.
  */
 export async function applyInstall(
   prepared: PreparedInstall,
@@ -2025,21 +1659,12 @@ export async function applyInstall(
   });
   assertNoBlockingJournal(recovery, repoDir, ref.name, "install");
 
-  // Snapshot the prior lockfile entry's `files[]` BEFORE the swap.
-  // Used afterwards to compute the orphan diff (paths declared by the
-  // prior version but absent from the new version). Empty when this is
-  // a first-install (no prior entry). installExtension refreshed the
-  // snapshot from disk under the lock just before calling apply.
   const oldEntry = ctx.lockfileRepository.getEntry(ref.name);
   const oldFiles = oldEntry?.files ?? [];
 
-  // Extension-first on-disk layout: each installed extension owns a
-  // dedicated subtree under .swamp/pulled-extensions/<ext-name>/. Prevents
-  // cross-extension filename collisions (e.g. _lib/aws.ts shared between
-  // @swamp/aws/ec2 and @swamp/aws/eks, or README.md across unrelated
-  // extensions). Skills fan out to ctx.skillsDirs — one per enrolled tool.
-  // Bundle cache is namespaced by source dir path, so each extension gets
-  // its own bundle namespace dirs automatically.
+  // each extension owns a subtree under .swamp/pulled-extensions/<name>/, which
+  // prevents cross-extension filename collisions; skills fan out to
+  // ctx.skillsDirs.
   const installRoots = extensionInstallRoots(repoDir, ref.name);
   const absoluteExtRoot = installRoots.extensionRoot;
   const absoluteModelsDir = join(absoluteExtRoot, "models");
@@ -2087,11 +1712,9 @@ export async function applyInstall(
   ) {
     conflicts.push(conflict);
   }
-  // Skill dirs are shared across extensions and with the user. Only
-  // the top-level extension raises them as conflicts: a dependency
-  // installs after its parent's lockfile entry is written, so failing
-  // there would leave the operation half done. Dependencies merge
-  // with the overwrite warning below instead.
+  // only the top-level extension raises skill conflicts: a dependency installs
+  // after its parent's lockfile entry is written, so failing there would leave
+  // the operation half done.
   const skillConflicts = ctx.depth === 0
     ? await detectSkillConflicts(
       extractDir,
@@ -2102,7 +1725,6 @@ export async function applyInstall(
     : [];
   conflicts.push(...skillConflicts);
 
-  // The channel the lockfile will record: the one this install follows.
   const followedChannel = ctx.channel ?? "stable";
   // Conflicts alone (a user's skill dir, stray files) do not make this a
   // replacement: nothing of this extension is installed to describe.
@@ -2176,7 +1798,6 @@ export async function applyInstall(
       );
     }
   }
-  // Directories this version's archive-root shared sources take.
   const rootSourceDirs = new Set(archiveRootSourceDirs(prepared.rootSources));
   for (const relDir of nestedRelDirs) {
     const first = relDir.split("/")[0];
@@ -2196,7 +1817,6 @@ export async function applyInstall(
           `\`swamp extension rm ${ref.name}/${relDir}\` first.`,
       );
     }
-    // A nested entry inside another one is copied with it.
     if (nestedToCopy.some((outer) => relDir.startsWith(`${outer}/`))) {
       continue;
     }
@@ -2240,18 +1860,14 @@ export async function applyInstall(
     })),
   });
 
-  // Set once this install's own lockfile write completes. A same-version
-  // reinstall finds the prior entry already carrying its checksum, so
-  // only this flag says the entry landed for a failure after the swap.
+  // set once this install's own lockfile write completes: a same-version
+  // reinstall finds the prior entry already carrying its checksum, so only this
+  // flag says the entry landed.
   let lockfileWritten = false;
-  // Dependencies applied inside this install, still uncommitted.
   const dependencies: PendingInstall[] = [];
   try {
     const stagedExtRoot = tx.newPathOf(absoluteExtRoot);
     const extractedFiles: string[] = [];
-    // Copies one archive dir into staging, recording the paths it will
-    // have once swapped in. Kind dirs are created even when empty, as
-    // before; a bundle root the archive has nothing for is not staged.
     const stage = async (archiveDir: string, liveDir: string) => {
       const stagedDir = liveDir.startsWith(absoluteExtRoot + SEPARATOR)
         ? join(stagedExtRoot, relative(absoluteExtRoot, liveDir))
@@ -2268,8 +1884,8 @@ export async function applyInstall(
       );
       for (const path of copied) extractedFiles.push(path);
     };
-    // Sources before their bundles, as before, so staged bundles are
-    // never older than the sources they were built from.
+    // sources before their bundles, so staged bundles are never older than the
+    // sources they were built from.
     await stage("models", absoluteModelsDir);
     await stage("workflows", absoluteWorkflowsDir);
     await stage("bundles", bundlesDir);
@@ -2282,9 +1898,9 @@ export async function applyInstall(
     await stage("webhooks", absoluteWebhooksDir);
     await stage("webhook-bundles", webhookBundlesDir);
     await stage("files", absoluteFilesDir);
-    // Shared sources push placed at the archive root go to the same path
-    // under the extension root, so the installed sources' relative
-    // imports resolve as they do in the archive (swamp-club#3384).
+    // shared sources push placed at the archive root go to the same path under
+    // the extension root, so relative imports resolve as they do in the
+    // archive.
     for (const source of prepared.rootSources) {
       // The plan refuses `..`, hidden segments and backslashes; check the
       // destination and source lexically as well before copying.
@@ -2299,7 +1915,6 @@ export async function applyInstall(
       );
     }
 
-    // Restore executable bits for declared binaries
     if (Deno.build.os !== "windows" && manifest.binaries.length > 0) {
       for (const bin of manifest.binaries) {
         const binPath = join(stagedExtRoot, "files", bin);
@@ -2321,9 +1936,8 @@ export async function applyInstall(
       );
     }
 
-    // Files the user added under the root are not in the archive, so
-    // the swap would drop them. Copy them into the new root, as the
-    // merge copy kept them.
+    // files the user added under the root are not in the archive, so the swap
+    // would drop them; copy them into the new root.
     const extraFiles = await carryForwardUserFiles({
       liveRoot: absoluteExtRoot,
       stagedRoot: stagedExtRoot,
@@ -2331,11 +1945,9 @@ export async function applyInstall(
       priorEntry: oldEntry,
       excludeRelDirs: nestedRelDirs,
     });
-    // manifest.yaml is staged on its own and moved in last, into the
-    // new per-extension root, as a read-only copy. Makes each installed
-    // extension self-describing on disk so downstream consumers (e.g.
-    // findDependents in extension rm) can resolve the manifest without
-    // re-parsing the archive.
+    // manifest.yaml is staged on its own and moved in last as a read-only copy,
+    // so an installed extension describes itself on disk (extension rm reads it
+    // to find dependents).
     await Deno.writeTextFile(tx.stagedManifestPath, manifestWithHeader);
     try {
       await Deno.chmod(tx.stagedManifestPath, 0o444);
@@ -2346,14 +1958,9 @@ export async function applyInstall(
 
     await tx.swap();
 
-    // Extract skills to every enrolled tool's skill directory.
-    // The lockfile tracks a skill as its root when this extension owns
-    // the dir (created it now, or its prior entry recorded the root), so
-    // extension rm can delete it in one shot. A skill merged into a dir
-    // that already existed and is not owned is tracked file by file, so
-    // rm and orphan prune never delete the user's or another
-    // extension's files. `skillCreatedPaths` is what a rollback may
-    // undo: a created root whole, or only the new files in a merged one.
+    // a skill is tracked as its root when this extension owns the dir, else
+    // file by file, so rm and orphan prune never delete the user's or another
+    // extension's files. skillCreatedPaths is what a rollback may undo.
     let hasSkills = false;
     let hasSkillScripts = false;
     const skillFiles: string[] = [];
@@ -2411,7 +2018,6 @@ export async function applyInstall(
                 .warn`Skill directory ${skillDirRelative} already existed; ${ref.name} wrote its files into it and may have overwritten some`;
             }
 
-            // Check for scripts/ directory (once per skill, not per tool)
             if (!hasSkillScripts) {
               try {
                 const scriptsDir = join(srcSkillDir, "scripts");
@@ -2444,27 +2050,22 @@ export async function applyInstall(
       lockfileRelative(repoDir, join(absoluteExtRoot, "manifest.yaml")),
     );
 
-    // Record include files from manifest for loader skip logic
     const includeFiles = manifest.include.length > 0
       ? manifest.include.map((inc) =>
         relative(repoDir, resolve(absoluteModelsDir, inc))
       )
       : undefined;
 
-    // Per-extension on-disk digest anchor, over exactly what the install
-    // produced and leaving out nested entries' roots. Computed BEFORE the
-    // lockfile write. Auto-update consults this on the next version bump
-    // to refuse overwrites when the user has local edits (issue #126).
+    // digest of exactly what the install produced, leaving out nested entries'
+    // roots, computed before the lockfile write; auto-update uses it to refuse
+    // overwriting local edits.
     const filesChecksum = await readInstalledExtensionDigest(absoluteExtRoot, {
       excludeRelDirs: nestedRelDirs,
     });
 
-    // Orphans: paths declared by the prior version's lockfile entry that
-    // are NOT in the new version's extractedFiles[]. Those under a
-    // swapped root are already out of the live tree (the swap replaced
-    // the root whole) and are only reported. The rest (skills) are
-    // pruned when the install commits (see pruneSkillOrphans). A path
-    // another lockfile entry also claims (a shared skill dir) is kept.
+    // orphans under a swapped root are already gone and only reported; the rest
+    // (skills) are pruned at commit. A path another lockfile entry also claims
+    // is kept.
     const otherEntries = ctx.lockfileRepository.getAllEntries();
     const orphanDiff = computeOrphanDiff(oldFiles, extractedFiles).filter(
       (f) => findClaimants(f, ref.name, otherEntries).length === 0,
@@ -2558,15 +2159,9 @@ export async function applyInstall(
     // here too so a caller running prepare and apply directly is covered.
     ctx.alreadyPulled.add(ref.name);
 
-    // Dependency installs do network I/O from inside apply, at two
-    // points: the ctx.getExtension() call that resolves an unpinned
-    // dependency's version and channel, and the nested installExtension()
-    // call, whose prepareInstall() fetches registry info, the archive and
-    // its checksum. Both run under this install's pulled-extensions lease,
-    // and the nested apply runs inline in it. Whether a dependency needs
-    // installing is only known from the lockfile read under the lock, so
-    // preparing dependencies before taking it would download speculatively
-    // (swamp-club#2709).
+    // dependency installs do network I/O inside apply, under this install's
+    // lease: whether a dependency is needed is only known from the lockfile
+    // read under the lock, so preparing earlier would download speculatively.
     const dependencyResults: InstallResult[] = [];
     if (manifest.dependencies.length > 0) {
       for (const dep of manifest.dependencies) {
@@ -2575,15 +2170,9 @@ export async function applyInstall(
           continue;
         }
 
-        // ctx.lockfileRepository reflects writes the parent install has
-        // made — writeEntry updates the cache on every commit, and child
-        // installs in this loop reuse the same repository instance, so
-        // their writes are visible too. A managed lockfile fetched from
-        // the datastore can also list a dependency another checkout
-        // installed, whose files are not on this one (swamp-club#2838);
-        // that dependency is installed at the version it pins. Other
-        // lockfiles only list what this checkout installed, so an entry
-        // still means installed there.
+        // the repository reflects earlier writes in this loop. A managed
+        // lockfile can list a dependency another checkout installed, so install
+        // it at its pinned version; other lockfiles only list local installs.
         const lockedEntry = ctx.lockfileRepository.getEntry(depRef.name);
         const isInstalled = lockedEntry !== null &&
           (!isManagedLockfile(ctx.lockfileRepository.lockfilePath) ||
@@ -2608,10 +2197,9 @@ export async function applyInstall(
             dependencyResults.push(depPending.result);
           }
         } else if (!isInstalled) {
-          // Strip version constraints (>=, ^, ~, etc.) — pass version: null
-          // so installExtension resolves to the registry's latest version.
-          // When the dep has no stable version, resolve from beta/rc channels
-          // so beta-only extensions can satisfy dependency requirements.
+          // strip version constraints and pass null so the registry's latest
+          // resolves; with no stable version, resolve from beta/rc so beta-only
+          // extensions can satisfy a dependency.
           const hasConstraint = depRef.version != null &&
             isVersionConstraint(depRef.version);
           let depVersion: string | null = hasConstraint ? null : depRef.version;
@@ -2636,12 +2224,9 @@ export async function applyInstall(
             name: depRef.name,
             version: depVersion,
           };
-          // expectedChecksum anchors the parent's archive, not this one. A
-          // dependency reached here has no lockfile entry, so it has no
-          // anchor of its own: it installs like a fresh pull, still checked
-          // against the registry's server checksum.
-          // The dependency stays uncommitted, owned by this install, so
-          // rolling this install back removes it too.
+          // expectedChecksum anchors the parent's archive only; a dependency
+          // has no lockfile entry, so it is checked against the registry
+          // checksum.
           const depPending = await installDependencyPending(resolvedRef, {
             ...ctx,
             skillsDirs: ctx.dependencySkillsDirs ?? ctx.skillsDirs,
@@ -2712,11 +2297,9 @@ export async function applyInstall(
     // forward below once its entry has landed; a dependency whose own
     // apply failed has settled itself.
     for (const dependency of dependencies) await dependency.commit();
-    // Roll the swap back, or forward when the lockfile entry already
-    // landed (e.g. a dependency failed after it). Read from disk, so a
-    // write that failed after reaching the file still counts, except
-    // when the prior entry had the same checksum: then only this
-    // install's completed write says it landed.
+    // roll the swap back, or forward when the lockfile entry already landed.
+    // Read from disk, except when the prior entry has the same checksum: then
+    // only this install's completed write says it landed.
     await tx.settle(error, async () => {
       if (!lockfileWritten && oldEntry?.checksum === localChecksum) {
         return null;
@@ -2729,12 +2312,7 @@ export async function applyInstall(
   }
 }
 
-/**
- * Whether every file a lockfile entry tracks exists on this checkout. A
- * path outside the repo is never read: such an entry predates the
- * repo-relative layout (a pre-.swamp SWAMP_MODELS_DIR outside the repo),
- * and is treated as present, as any entry was before swamp-club#2838.
- */
+/** a path outside the repo is never read; such an entry is treated as present. */
 async function lockedFilesPresent(
   files: readonly string[],
   repoDir: string,
@@ -2751,11 +2329,6 @@ async function lockedFilesPresent(
   return true;
 }
 
-/**
- * Installed extensions whose root contains `name`'s: lockfile entries,
- * and dirs on disk holding a manifest.yaml, whose name is a prefix of
- * `name` at a segment boundary.
- */
 async function installedAncestors(
   name: string,
   ctx: InstallContext,
@@ -2777,10 +2350,8 @@ async function installedAncestors(
 }
 
 /**
- * Copies a nested entry's root into a staged parent root, keeping each
- * file's and dir's access and modification times so the nested
- * entry's sources stay no newer than its pre-built bundles. Symlinks are
- * skipped, as an install never writes one.
+ * keeps access and modification times so the nested entry's sources stay no
+ * newer than its pre-built bundles; symlinks are skipped.
  */
 async function copyTreePreservingTimes(
   srcDir: string,
@@ -2801,25 +2372,9 @@ async function copyTreePreservingTimes(
 }
 
 /**
- * Copies the files a user added under a live extension root into its
- * staged replacement, keeping their times. A file is the user's when
- * the new archive does not ship it (nothing is staged at its path) and
- * the prior lockfile entry does not list it; a file the entry lists is
- * one the prior version shipped and the new one dropped, and goes with
- * the old root.
- *
- * The entry's list only describes the tree when the installed
- * manifest.yaml is the entry's version. When it is not (a lockfile
- * restored from git after an upgrade), or the entry has no list, or
- * there is no entry, the files cannot be told apart from ones an older
- * version shipped. Nothing is copied then, and each such file is
- * returned in `unattributed` for the caller to name. A symlink, or a
- * path under one where the new archive ships a file, cannot be copied
- * and is returned in `unkept`.
- *
- * `excludeRelDirs` are nested entries' roots (forward-slash, relative
- * to `liveRoot`), which the install copies itself. Paths returned are
- * repo-relative.
+ * a file is the user's when the new archive does not ship it and the prior
+ * entry does not list it. When the entry cannot describe the tree, nothing is
+ * copied and such files are returned in unattributed.
  */
 async function carryForwardUserFiles(opts: {
   liveRoot: string;
@@ -2876,7 +2431,6 @@ async function carryForwardUserFiles(opts: {
   return result;
 }
 
-/** The target of the symlink at `path`, or null when it is not one. */
 async function readLinkOrNull(path: string): Promise<string | null> {
   const stat = await lstatOrNull(path);
   return stat?.isSymlink ? await Deno.readLink(path) : null;
@@ -2917,14 +2471,9 @@ async function copyTimes(src: string, dest: string): Promise<void> {
   }
 }
 
-/** True when `path` is a directory itself, not a symlink to one. */
 /**
- * Whether the installed extension `ancestor` keeps files at `first/` in
- * its root, where an extension nested under it at `first` would be
- * installed: archive-root shared sources (swamp-club#3384), which its
- * lockfile entry lists. Without an entry only the tree can say: a
- * directory there that is not an extension root (no manifest.yaml) and
- * holds no other entry is the ancestor's.
+ * without a lockfile entry only the tree can say: a dir there with no
+ * manifest.yaml and no other entry under it is the ancestor's.
  */
 async function ancestorKeepsSourcesAt(
   ancestor: string,
@@ -2936,7 +2485,6 @@ async function ancestorKeepsSourcesAt(
   if (entry) {
     return claimsPath(entry.files ?? [], relative(ctx.repoDir, dir));
   }
-  // Another entry rooted at or below `first/` accounts for the directory.
   const nested = `${ancestor}/${first}`;
   if (
     Object.keys(ctx.lockfileRepository.getAllEntries()).some((name) =>
@@ -2958,7 +2506,6 @@ async function isPlainDir(path: string): Promise<boolean> {
     throw error;
   }
 }
-/** Async generator wrapping installExtension for the stream pattern. */
 export async function* extensionPull(
   ctx: LibSwampContext,
   deps: ExtensionPullDeps,
@@ -2980,10 +2527,8 @@ export async function* extensionPull(
         };
       }
 
-      // Resolve channel-specific version when --channel is set and
-      // no explicit version is pinned. The resolved ref always carries
-      // an explicit version so installExtension doesn't need channel
-      // awareness — it just installs the pinned version.
+      // the resolved ref always carries an explicit version, so
+      // installExtension needs no channel awareness.
       let resolvedRef = input.ref;
       if (input.channel && !input.ref.version) {
         if (!deps.getLatestVersion) {
@@ -3023,14 +2568,9 @@ export async function* extensionPull(
         onUnoptedPrerelease: deps.onUnoptedPrerelease,
       };
 
-      // Let ConflictError propagate — CLI catches it for the two-phase prompt
-      // flow. Routing precedence:
-      //   1. deps.installExtensionFn (test seam — Pin 2 stubs)
-      //   2. InstallExtensionService when deps.denoRuntime + deps.repository
-      //      are both provided (W2 contract: phase 8 fires, I-Repo-1 fires
-      //      at install time, rollback on DuplicateTypeError)
-      //   3. Free-function installExtension (pre-W2 fallback — catalog rows
-      //      populated lazily on next loader pass)
+      // ConflictError propagates for the CLI's two-phase prompt. Routing: the
+      // installExtensionFn test seam, then InstallExtensionService when
+      // denoRuntime and repository are both set, else the free function.
       const denoRt = deps.denoRuntime;
       const repo = deps.repository;
       const install = deps.installExtensionFn ??
@@ -3097,19 +2637,9 @@ async function scanForExtensionGrafts(
 }
 
 /**
- * Wires real infrastructure into ExtensionPullDeps. Constructs a fresh
- * {@link LockfileRepository} that captures a snapshot at this moment —
- * the returned deps object is therefore single-use per the
- * {@link InstallContext.lockfileRepository} JSDoc. Construct fresh deps
- * per install operation; do not reuse across multiple installs.
- *
- * **W2 service deps.** Optional `denoRuntime` and `repository` activate
- * the {@link InstallExtensionService} routing inside `extensionPull`.
- * When BOTH are passed, phase 8 fires (catalog populated synchronously,
- * I-Repo-1 fires on `(kind, type)` collision, rollback on conflict).
- * When either is missing, the deps fall back to the pre-W2 free-function
- * path (catalog populated lazily on next loader pass) — same behavior
- * as before W2.
+ * captures a fresh lockfile snapshot, so use the returned deps for one install
+ * only. denoRuntime and repository together activate InstallExtensionService
+ * routing.
  */
 export async function createExtensionPullDeps(
   serverUrl: string,
@@ -3149,13 +2679,7 @@ export async function createExtensionPullDeps(
   };
 }
 
-/**
- * Creates an InstallContext from an ExtensionApiClient (for
- * extension_update compatibility). Like {@link createExtensionPullDeps},
- * constructs a fresh snapshot-captured {@link LockfileRepository}; the
- * returned context is single-use per the
- * {@link InstallContext.lockfileRepository} JSDoc.
- */
+/** captures a fresh lockfile snapshot, so the returned context is single-use. */
 export async function createInstallContext(
   serverUrl: string,
   opts: {

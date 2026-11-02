@@ -17,23 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * What serve's datastore API costs the commit store (swamp-club#3915):
- *
- * - a burst of {@link BURST} concurrent appends to one partition, with group
- *   commit (one fsync for the burst) and without (one per append);
- * - one solo append, which group commit leaves as it was;
- * - the txnIds a busy cached partition holds after {@link BUSY_COMMITS}
- *   appends, with the bound (re-restored from each snapshot) and without,
- *   printed once.
- *
- * Each A/A pair runs the same case on its own store twice, so a gap between
- * them is noise. Run with:
- *
- * ```
- * deno bench -A scripts/bench_v3_serve_datastore_api.ts
- * ```
- */
 
 import { join } from "@std/path";
 import type { Commit } from "../src/domain/datastore_v3/commit.ts";
@@ -49,20 +32,16 @@ import {
   type SqliteCommitStoreOptions,
 } from "../src/infrastructure/datastore_v3/sqlite_commit_store.ts";
 
-/** Appends per burst. */
 const BURST = 32;
-/** Appends to the busy partition whose txnIds are counted. */
 const BUSY_COMMITS = 5_000;
 
 const dir = await Deno.makeTempDir({ prefix: "swamp-v3-serve-api-bench-" });
 
-/** A store on its own file, appending to one partition in seq order. */
 function writer(name: string, options: SqliteCommitStoreOptions = {}) {
   const store = SqliteCommitStore.open(join(dir, `${name}.db`), options);
   let seq = 0;
   return {
     store,
-    /** The next `count` commits, built outside the timed part. */
     async next(count: number): Promise<Commit[]> {
       const commits: Commit[] = [];
       for (let i = 0; i < count; i++) {
@@ -132,7 +111,6 @@ Deno.bench("solo append (A/A control)", { group: "solo" }, async (b) => {
   await solo(soloControl, b);
 });
 
-/** The txnIds the busy partition holds after {@link BUSY_COMMITS} appends. */
 async function busyTxnIds(boundTxnIds: boolean): Promise<number | undefined> {
   const busy = writer(`busy-${boundTxnIds}`, { boundTxnIds });
   for (let done = 0; done < BUSY_COMMITS; done += BURST) {

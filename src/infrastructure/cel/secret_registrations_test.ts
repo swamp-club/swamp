@@ -118,7 +118,6 @@ Deno.test("registerSecretRefusals: codeFor chooses the code a function refusal r
     (value: string) => value,
     { async: false },
   );
-  // Both are read from the environment as secret-capable functions.
   registerSecretRefusals(env, {
     codeFor: (signature) =>
       signature.startsWith("route(") ? SECRET_DESTINATION_REFUSED : undefined,

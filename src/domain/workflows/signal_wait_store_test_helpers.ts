@@ -54,18 +54,10 @@ import {
   pendingWorkflowPrefix,
 } from "./pending_signal.ts";
 
-/**
- * A {@link SignalWaitStore} held in memory, for tests. Records are kept as
- * the bytes a real store holds, so every read is parsed as in production,
- * and `registrations`, `outcomes`, `keyRecords` and `pendingRecords` can be
- * edited to stage a damaged one.
- */
 export class InMemorySignalWaitStore implements SignalWaitStore {
   readonly registrations = new Map<string, Uint8Array>();
   readonly outcomes = new Map<string, Uint8Array>();
-  /** Key records by their store key. */
   readonly keyRecords = new Map<string, Uint8Array>();
-  /** Pending records by their store key. */
   readonly pendingRecords = new Map<string, Uint8Array>();
   pendingTaken?: PendingSignalTakenListener;
 
@@ -254,7 +246,6 @@ export class InMemorySignalWaitStore implements SignalWaitStore {
   }
 }
 
-/** Wait support backed by a fresh {@link InMemorySignalWaitStore}. */
 export function inMemorySignalWaits(): {
   supported: true;
   store: InMemorySignalWaitStore;
@@ -262,7 +253,6 @@ export function inMemorySignalWaits(): {
   return { supported: true, store: new InMemorySignalWaitStore() };
 }
 
-/** The outcome a signal accepted at `at` leaves for `wait`, for tests. */
 export function acceptedOutcomeFor(
   wait: { id: string; deadline: Date },
   payload: Record<string, unknown>,
@@ -286,7 +276,6 @@ export function acceptedOutcomeFor(
   };
 }
 
-/** The outcome a timeout or a cancel leaves for `wait`, for tests. */
 export function unsignalledOutcomeFor(
   wait: { id: string; deadline: Date },
   kind: "timed_out" | "cancelled",

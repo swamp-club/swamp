@@ -76,8 +76,6 @@ async function renderCompleted(
   }
 }
 
-// ─── Log renderer ─────────────────────────────────────────────────────
-
 Deno.test("LogAuthLoginRenderer: shows next steps on first interactive login", async () => {
   const output = await renderCompleted("log", {
     isFirstLogin: true,
@@ -139,8 +137,6 @@ Deno.test("LogAuthLoginRenderer: error throws UserError", () => {
     "Device authorization timed out",
   );
 });
-
-// ─── JSON renderer ────────────────────────────────────────────────────
 
 Deno.test("JsonAuthLoginRenderer: includes nextSteps on first login", async () => {
   const output = await renderCompleted("json", {

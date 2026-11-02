@@ -49,10 +49,6 @@ import { UserError } from "../../domain/errors.ts";
 import { withMockedEnv } from "../../infrastructure/persistence/path_test_helpers.ts";
 import { initializeLogging } from "../../infrastructure/logging/logger.ts";
 
-/**
- * Writes a data item to disk the way the repository lays it out:
- * `{type-segments}/{model-id}/{data-name}/{version}/metadata.yaml`.
- */
 function writeDataItem(
   repoDir: string,
   typeSegments: string[],
@@ -116,12 +112,11 @@ function withFixture(
 Deno.test(
   "compareCatalogToDisk: reports the shortfall for a model missing from the index",
   withFixture(async (repoDir, catalog) => {
-    // The exact shape from swamp-club#1580: a scoped type whose data names are
-    // bare integers, present on disk, absent from the catalog.
+    // a scoped type whose data names are bare integers, present on disk, absent
+    // from the catalog
     for (const [i, name] of ["207333", "124364", "289324"].entries()) {
       writeDataItem(repoDir, ["@scope", "shows"], "model-001", name, i);
     }
-    // Catalog claims to be fully built and holds nothing.
     catalog.markPopulated();
 
     const dataRepo = new FileSystemUnifiedDataRepository(
@@ -169,7 +164,6 @@ Deno.test(
     assertEquals(catalog.count(), rowsBefore);
     assertEquals(catalog.isPopulated(), populatedBefore);
 
-    // And it is still detectable on a second run.
     const second = await compareCatalogToDisk(
       catalog,
       dataRepo,
@@ -188,8 +182,6 @@ Deno.test(
       catalog,
     );
 
-    // Saving through the repository writes disk and catalog together, which is
-    // what a healthy repo looks like.
     for (const name of ["207333", "recommendations"]) {
       writeDataItem(repoDir, ["@scope", "shows"], "model-001", name, 0);
     }
@@ -376,8 +368,6 @@ Deno.test(
   }),
 );
 
-// --- swamp-club#3617: --repair restores a v3 datastore's lost marker ---
-
 async function captureLogs(fn: () => Promise<unknown>): Promise<string> {
   const originalLog = console.log;
   const lines: string[] = [];
@@ -402,7 +392,6 @@ async function snapshot(dir: string): Promise<Record<string, string>> {
   return files;
 }
 
-/** A repo whose .swamp.yaml says `format` over a v3 datastore it holds. */
 async function withV3Repo(
   format: 2 | 3 | undefined,
   fn: (repoDir: string, datastorePath: string) => Promise<void>,
@@ -489,7 +478,6 @@ Deno.test("repairLostV3FormatMarker: previews a lost marker opening nothing, the
 });
 
 Deno.test("repairLostV3FormatMarker: leaves every other refusal to be rethrown unchanged (swamp-club#3617)", async () => {
-  // A config that does not say format 3: the marker is not restored here.
   await withV3Repo(undefined, async (repoDir, datastorePath) => {
     await Deno.remove(join(datastorePath, "datastore-format.json"));
     const refusal = await assertRejects(() =>
@@ -507,7 +495,6 @@ Deno.test("repairLostV3FormatMarker: leaves every other refusal to be rethrown u
       undefined,
     );
   });
-  // A healthy v3 datastore, and errors that are not format refusals.
   await withV3Repo(3, async (repoDir) => {
     for (
       const error of [
@@ -544,7 +531,6 @@ Deno.test("doctor datastores --repair: a v3 datastore whose marker was lost is r
             ])
         );
 
-      // Without --repair the guard's refusal stands.
       await assertRejects(() => doctor(), UserError);
 
       const before = await snapshot(datastorePath);
@@ -584,9 +570,6 @@ Deno.test("doctor datastores --repair: a v3 datastore whose marker was lost is r
   }
 });
 
-// --- swamp-club#4011: --repair --json prints one document ---
-
-/** A format 2 repo on a filesystem datastore, namespaced when given one. */
 async function withV2Repo(
   namespace: string | undefined,
   fn: (repoDir: string, datastorePath: string) => Promise<void>,
@@ -676,13 +659,12 @@ Deno.test("doctor datastores --repair --json: a stage that fails still leaves th
       path: datastorePath,
       namespace: "team",
     });
-    // A directory where SQLite expects the catalog's rollback journal makes
-    // the first stage that opens the catalog (the unreadable-version stage,
-    // swamp-club#3955) throw after the unmigrated stage has reported.
+    // a directory where SQLite expects the catalog's rollback journal makes the
+    // first stage that opens the catalog (the unreadable-version stage) throw
+    // after the unmigrated stage has reported
     const journal = `${catalogDbPath(repoDir, resolver)}-journal`;
     await Deno.mkdir(join(journal, "held"), { recursive: true });
 
-    // Capture what the command printed before it threw.
     const originalLog = console.log;
     const lines: string[] = [];
     console.log = (...args: unknown[]) => {
@@ -719,13 +701,6 @@ Deno.test("doctor datastores --repair --json: a stage that fails still leaves th
   });
 });
 
-// --- swamp-club#3955: unreadable data versions ---
-
-/**
- * Saves three versions of `state` into a format 2 filesystem repo's
- * datastore, through the repository and catalog every command uses, and
- * empties the newest version's files as an unclean shutdown leaves them.
- */
 async function writeUnreadableLatest(
   repoDir: string,
   datastorePath: string,
@@ -798,7 +773,6 @@ Deno.test("doctor datastores --repair -y: rolls an unreadable latest version bac
     assertEquals(planned.status, "unreadable_versions_preview");
     assertEquals(planned.records[0].removeVersions, [3]);
     assertEquals(planned.records[0].becomesLatest, 2);
-    // A preview changes nothing.
     assertEquals(await Deno.readTextFile(join(nameDir, "latest")), "3");
 
     const out = await repair(repoDir, "-y");

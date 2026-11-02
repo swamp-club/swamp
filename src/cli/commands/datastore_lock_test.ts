@@ -43,8 +43,6 @@ async function withRepo(fn: (dir: string) => Promise<void>): Promise<void> {
     await fn(dir);
   } finally {
     if (Deno.build.os === "windows") {
-      // Best-effort: EBUSY can fire when V8 hasn't GC'd native
-      // sqlite handles yet. Temp dir is ephemeral, OS reclaims.
       await Deno.remove(dir, { recursive: true }).catch(() => {});
     } else {
       await Deno.remove(dir, { recursive: true });
@@ -74,8 +72,8 @@ async function release(dir: string, args: string[]): Promise<void> {
   }
 }
 
-// --behavior and its alias --model fill one option (swamp-club#3410). A read
-// of the old key would find nothing and release the global lock instead.
+// --behavior and its alias --model fill one option; a read of the old key would
+// find nothing and release the global lock instead
 for (const flag of ["--behavior", "--model"]) {
   Deno.test({
     name:

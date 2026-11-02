@@ -17,14 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Integration test for `swamp workflow run --server --detach`
- * (swamp-club#1090): the CLI's run client against serve's connection
- * dispatch and detached `workflow.run` handler, over a real WebSocket and a
- * real repository on disk. The workflow's one step waits on a gate the test
- * holds, so each assertion is made while the run is known to be running.
- */
-
 import { join } from "@std/path";
 import { assert, assertEquals, assertRejects } from "@std/assert";
 import { z } from "zod";
@@ -51,7 +43,6 @@ import {
 import { ActiveRunRegistry } from "../src/serve/active_run_registry.ts";
 import type { ConnectionContext } from "../src/serve/handlers/shared.ts";
 
-// Import models barrel to trigger built-in registration.
 import "../src/domain/models/models.ts";
 import { initializeLogging } from "../src/infrastructure/logging/logger.ts";
 
@@ -74,7 +65,6 @@ async function withRepo(fn: (repoDir: string) => Promise<void>): Promise<void> {
   }
 }
 
-/** Serves `ctx` over WebSocket on a free port, as serve's connection does. */
 function serveConnections(ctx: ConnectionContext) {
   const server = Deno.serve(
     { port: 0, hostname: "127.0.0.1", onListen: () => {} },
@@ -100,7 +90,6 @@ function serveConnections(ctx: ConnectionContext) {
   };
 }
 
-/** Submits a detached run and returns the id the server started it under. */
 async function submitDetached(
   server: string,
   workflowName: string,
@@ -119,11 +108,6 @@ async function submitDetached(
   return runId;
 }
 
-/**
- * Follows a run by id over `run.attach` and returns its event kinds.
- * `onAttached` runs once serve has accepted the attach, so a caller holding
- * the run open can release it knowing the run cannot finish first.
- */
 function attachUntilDone(
   server: string,
   runId: string,
@@ -227,29 +211,24 @@ Deno.test({
           ))?.status;
 
         try {
-          // The client returns while the step is still waiting, and the id it
-          // returns already names a recorded run.
           const first = await submitDetached(server.url, workflow.name);
           assertEquals(await recordedStatus(first), "running");
           await waitFor(() => methodStarts === 1, "the first run's step");
           assert(registry.get(first) !== undefined);
 
-          // A second run of the same workflow overlaps the first.
           const second = await submitDetached(server.url, workflow.name);
           assert(second !== first);
           assertEquals(await recordedStatus(second), "running");
           assertEquals(registry.size, 2);
 
-          // Serve's run limit is the only backpressure a detached caller has.
           await assertRejects(
             () => submitDetached(server.url, workflow.name),
             UserError,
             "Too many concurrent runs",
           );
 
-          // The returned id reattaches to the run, from its first event. The
-          // step is released only once serve has accepted the attach, so
-          // the run is still active when it does (swamp-club#3638).
+          // the step is released only once serve has accepted the attach, so
+          // the run is still active when it does
           const kinds = await attachUntilDone(server.url, first, openGate);
           assertEquals(kinds[0], "validating_inputs");
           assert(kinds.includes("started"));

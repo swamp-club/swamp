@@ -17,13 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// Vault and datastore type search list an extension type as it declares
-// itself (swamp-club#3365). A cold index registers the type lazily, with no
-// declared name and an empty catalog description; the type search commands
-// read both out of the entry's source text and import no bundle. This wires
-// the real loader, catalog and registries together, on a first index and on
-// a second, catalog-backed one.
-
 import { assertEquals } from "@std/assert";
 import { join } from "@std/path";
 import { ensureDir } from "@std/fs";
@@ -195,16 +188,13 @@ for (const k of Object.values(KINDS)) {
 
     try {
       await index();
-      // The bug: a lazy type is listed under its type id with no description.
       assertEquals(pick(k.placeholders()), { name: type, description: "" });
       assertEquals(pick(await k.list()), k.declared);
 
-      // A later process starts from the populated catalog and is lazy again.
       k.registry.invalidateType(type);
       await index();
       assertEquals(pick(await k.list()), k.declared);
 
-      // Listing imported nothing: the type is still lazy.
       assertEquals(typeLoads, 0);
       assertEquals(k.registry.isLazy(type), true);
     } finally {

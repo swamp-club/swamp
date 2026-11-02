@@ -26,13 +26,6 @@ import type { UnifiedDataRepository } from "./repositories.ts";
 import type { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
 import { createDefinitionId } from "../definitions/definition.ts";
 
-/**
- * Represents a data item resolved from a workflow run.
- *
- * `jobName` and `stepName` are absent for workflow-scope artifacts (e.g.
- * data produced by workflow-scope reports), which belong to the run as a
- * whole rather than to any single step.
- */
 export interface WorkflowDataItem {
   data: Data;
   modelType: ModelType;
@@ -45,21 +38,12 @@ export interface WorkflowDataItem {
 
 const logger = getLogger(["data", "workflow"]);
 
-/**
- * A model that owns data, identified by model type and model id. `name` is
- * set for an owner that is not a model definition — a workflow, for
- * workflow-scope data — so the item is named after it rather than its id.
- */
 interface DataOwner {
   modelType: ModelType;
   modelId: string;
   name?: string;
 }
 
-/**
- * Picks the item with the requested version, or the highest version when no
- * version is requested.
- */
 function selectVersion(
   items: WorkflowDataItem[],
   version: number | undefined,
@@ -74,17 +58,11 @@ function selectVersion(
   return best;
 }
 
-/** The item a workflow-run lookup selected, and what else matched. */
 export interface WorkflowDataMatch {
   item: WorkflowDataItem;
-  /**
-   * One item per other producer whose data matched, in run order, each at
-   * the version the lookup would have selected for it.
-   */
   otherProducers: WorkflowDataItem[];
 }
 
-/** Identifies the job, step and owning model that produced an item. */
 function producerKey(item: WorkflowDataItem): string {
   return JSON.stringify([
     item.modelType.normalized,
@@ -94,10 +72,6 @@ function producerKey(item: WorkflowDataItem): string {
   ]);
 }
 
-/**
- * Selects the version among `items` and collects one item for every other
- * producer that has a match at that version choice.
- */
 function matchAmong(
   items: WorkflowDataItem[],
   version: number | undefined,
@@ -122,10 +96,8 @@ function matchAmong(
 }
 
 /**
- * Whether the version a run's artifact names is still the content that run
- * produced. On a v3 datastore (swamp-club#3279) history compaction can leave
- * a later re-save of the same version live; v2 never writes a version again
- * and passes none.
+ * on a v3 datastore history compaction can leave a later re-save of the same
+ * version live; v2 never rewrites a version and passes none
  */
 export type RunArtifactCheck = (
   artifact: DataArtifactRef,
@@ -134,12 +106,6 @@ export type RunArtifactCheck = (
   run: WorkflowRun,
 ) => Promise<boolean>;
 
-/**
- * Service for resolving data produced by workflow runs.
- *
- * Walks the workflow run's job/step/artifact structure and resolves
- * each data artifact back to its stored Data entity.
- */
 export class WorkflowDataService {
   constructor(
     private readonly definitionRepo: YamlDefinitionRepository,
@@ -148,12 +114,8 @@ export class WorkflowDataService {
   ) {}
 
   /**
-   * Finds all data produced by a workflow run.
-   *
-   * Walks the run's jobs → steps → dataArtifacts and resolves each
-   * artifact to the exact version the run recorded. Gracefully skips GC'd
-   * or missing data — never substitutes a newer version or another model's
-   * data.
+   * GC'd or missing data is skipped; never substitutes a newer version or
+   * another model's data
    */
   async findAllForWorkflowRun(
     run: WorkflowRun,
@@ -190,12 +152,9 @@ export class WorkflowDataService {
       }
     }
 
-    // Workflow-scope artifacts (e.g. workflow-scope report output) are
-    // tracked on the run aggregate rather than under any single step, and
-    // are stored under the workflow itself.
-    // Named by its workflow, so the item has one identity wherever it is
-    // read: search and list authorize it as the workflow too
-    // (swamp-club#2603).
+    // workflow-scope artifacts are tracked on the run aggregate and stored
+    // under the workflow, named by it so search and list authorize the item as
+    // the workflow
     const workflowOwner: DataOwner = {
       modelType: ModelType.create("workflow"),
       modelId: run.workflowId,
@@ -214,14 +173,9 @@ export class WorkflowDataService {
   }
 
   /**
-   * Resolves a run artifact to the version the run recorded.
-   *
-   * Each candidate owner is read at `artifact.version`, and the stored data
-   * is accepted only when it belongs to this run: its id matches the
-   * artifact's `dataId`, or — for exactly one candidate — its owner
-   * provenance names this run. Data ids
-   * can be shared across versions, so the version — not the id — selects
-   * what is read. An id match is preferred over a run-id-only match.
+   * data ids can be shared across versions, so the version, not the id, selects
+   * what is read; data is accepted only if it belongs to this run, and an id
+   * match is preferred over a run-id-only match
    */
   private async resolveArtifact(
     artifact: DataArtifactRef,
@@ -292,12 +246,6 @@ export class WorkflowDataService {
     };
   }
 
-  /**
-   * Finds data by name within a workflow run.
-   *
-   * Searches the run's artifacts for a match on the given name and optional
-   * version. Without a version, the highest version the run recorded wins.
-   */
   async findByNameInWorkflowRun(
     run: WorkflowRun,
     dataName: string,
@@ -308,12 +256,8 @@ export class WorkflowDataService {
   }
 
   /**
-   * Finds data by name within a workflow run, as
-   * {@link findByNameInWorkflowRun} does, and also reports the other
-   * producers — a distinct job, step and owning model — whose data matched
-   * the name, so a caller can tell the selected item was one of several.
-   * Several versions from one producer are a version choice, not another
-   * producer.
+   * several versions from one producer are a version choice, not another
+   * producer
    */
   async matchByNameInWorkflowRun(
     run: WorkflowRun,
@@ -322,7 +266,6 @@ export class WorkflowDataService {
   ): Promise<WorkflowDataMatch | null> {
     const allItems = await this.findAllForWorkflowRun(run);
 
-    // Primary: match by exact data instance name.
     const byName = allItems.filter((item) => item.data.name === dataName);
     const byNameMatch = matchAmong(byName, version);
     if (byNameMatch) return byNameMatch;

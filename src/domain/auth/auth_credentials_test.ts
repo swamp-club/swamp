@@ -21,7 +21,7 @@ import { assertEquals, assertMatch, assertNotEquals } from "@std/assert";
 import { keyFingerprint } from "./auth_credentials.ts";
 
 Deno.test("keyFingerprint: matches the swamp-club derivation for a known key", async () => {
-  // Test vector from swamp-club lab #2485; not a real credential.
+  // test vector from swamp-club; not a real credential
   const key =
     "swamp_TESTKEYabcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijkl";
   assertEquals(await keyFingerprint(key), "7cba95208c56e033");

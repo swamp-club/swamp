@@ -92,8 +92,6 @@ Deno.test("listBrokenWorkflows: skips valid files and reports schema-rejected on
       join(dir, "workflow-74ae52ba-5f3f-4937-a4fd-c1de950572e7.yaml"),
       BROKEN_UNKNOWN_KEY_WORKFLOW,
     );
-    // Files without the workflow- prefix are not loaded by the repository
-    // and must not be scanned.
     await Deno.writeTextFile(join(dir, "notes.yaml"), "labels: nope");
 
     const broken = await listBrokenWorkflows(dir);
@@ -168,9 +166,6 @@ Deno.test("listBrokenWorkflows: reports a schema failure as one readable line", 
     );
   });
 });
-
-// A well-formed file whose name the loader skips explains a not-found
-// lookup (swamp-club#3839).
 
 Deno.test("findMisnamedWorkflow: matches a misnamed file by raw name and by raw id", async () => {
   await withTempDir(async (dir) => {

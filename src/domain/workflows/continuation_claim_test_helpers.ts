@@ -24,7 +24,6 @@ import type {
   HolderLiveness,
 } from "./continuation_claim.ts";
 
-/** A {@link ContinuationClaimStore} held in memory, for tests. */
 export class InMemoryContinuationClaimStore implements ContinuationClaimStore {
   readonly claims: ContinuationClaim[] = [];
 
@@ -64,10 +63,6 @@ export class InMemoryContinuationClaimStore implements ContinuationClaimStore {
   }
 }
 
-/**
- * Claims for `holder` over `store`. `liveness` says what is known of each
- * other holder; one it does not name is unknown.
- */
 export function claimsFor(
   store: ContinuationClaimStore,
   holder: string,

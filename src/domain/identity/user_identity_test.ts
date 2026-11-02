@@ -22,7 +22,6 @@ import { createUserIdentity } from "./user_identity.ts";
 
 Deno.test("createUserIdentity returns a valid UUID userId", () => {
   const identity = createUserIdentity();
-  // UUID v4 format: 8-4-4-4-12 hex characters
   const uuidRegex =
     /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
   assertEquals(uuidRegex.test(identity.userId), true);
@@ -33,7 +32,6 @@ Deno.test("createUserIdentity returns an ISO 8601 createdAt", () => {
   const identity = createUserIdentity();
   const after = new Date().toISOString();
 
-  // createdAt should be between before and after
   assertEquals(identity.createdAt >= before, true);
   assertEquals(identity.createdAt <= after, true);
 });

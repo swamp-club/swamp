@@ -192,8 +192,6 @@ export const workerTokenCreateCommand = withRemoteOptions(
     { vaultsDir },
   );
 
-  // Per-model lock: only relevant when a definition with this name already
-  // exists (a re-mint attempt) — mirrors `swamp model method run`.
   const preResult = await findDefinitionByIdOrName(
     repoContext.definitionRepo,
     name,
@@ -264,9 +262,9 @@ export const workerTokenCreateCommand = withRemoteOptions(
 
       if (syncService) {
         await root.stage({ kind: "bulk", reason: "worker token create" });
-        // Published here, before the read-back below, through the root's
-        // checkpoint (swamp-club#3053). When a model lock is held, the root's
-        // lock push publishes again when the command ends.
+        // published here through the root's checkpoint, before the read-back;
+        // with a model lock held the root's lock push publishes again at
+        // command end
         await root.checkpoint();
 
         repoContext.catalogStore.invalidate();

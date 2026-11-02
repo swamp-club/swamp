@@ -17,14 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * A v3 checkout whose datastore is written through serve (swamp-club#3985),
- * opened the production way (`requireInitializedRepo*`) with serve's
- * address in the environment, against a real serve in a Worker. The
- * client's `.swamp.yaml` names the same v3 datastore as serve's on a bucket
- * it cannot reach, whose provider throws on any use.
- */
-
 import "../src/domain/models/models.ts";
 import { AsyncResource } from "node:async_hooks";
 import { assert, assertEquals, assertRejects } from "@std/assert";
@@ -87,26 +79,17 @@ type DefinitionId = Parameters<
   RepositoryContext["definitionRepo"]["delete"]
 >[1];
 
-/** The ids the parity script writes under, fixed so two runs agree. */
 const API_ID = "0b6c4bb4-9d61-4f0c-9a43-6f0c1f7b2a01" as DefinitionId;
 const GONE_ID = "0b6c4bb4-9d61-4f0c-9a43-6f0c1f7b2a02" as DefinitionId;
 const VPC_ID = "0b6c4bb4-9d61-4f0c-9a43-6f0c1f7b2a03";
 const DB_ID = "0b6c4bb4-9d61-4f0c-9a43-6f0c1f7b2a04";
 
-/**
- * Runs `fn` outside the root unit of work current where this was called:
- * another client's command never runs inside this one's root.
- */
 function outsideRoot(): <T>(fn: () => Promise<T>) => Promise<T> {
   return AsyncResource.bind(
     <T>(fn: () => Promise<T>): Promise<T> => fn(),
   ) as <T>(fn: () => Promise<T>) => Promise<T>;
 }
 
-/**
- * The parity script: definition creates and a delete, two data saves of
- * one name, a save and a delete of another. Each step is its own command.
- */
 async function runScript(
   scratch: Scratch,
   client: Client,
@@ -141,7 +124,6 @@ async function runScript(
   await write((repos) => repos.definitionRepo.delete(type, GONE_ID));
 }
 
-/** What the parity script's records read back as in `client`. */
 async function readBack(
   scratch: Scratch,
   client: Client,
@@ -159,11 +141,6 @@ async function readBack(
   }));
 }
 
-/**
- * The data records a checkout holds (`data/...`), by path, with their
- * content; the save time a metadata file records is left out, since two
- * runs save at different times.
- */
 async function dataRecords(repoDir: string): Promise<Map<string, string>> {
   const records = new Map<string, string>();
   for (const path of (await datastoreRecords(repoDir)).keys()) {
@@ -174,7 +151,6 @@ async function dataRecords(repoDir: string): Promise<Map<string, string>> {
   return records;
 }
 
-/** Asserts nothing about a serve-mode client reached the datastore's storage. */
 async function assertStorageUntouched(
   serve: Serve,
   client: Client,
@@ -189,7 +165,6 @@ async function assertStorageUntouched(
       `the bucket's ${dir} was created`,
     );
   }
-  // Its local root is no replicated copy: no Litestream.
   const root = serveUpstreamLocalRoot(client.repoDir, serve.origin, "");
   assert(await exists(join(root, "commits.db")), "the follower copy exists");
   assertEquals(v3ReplicatesAt(root), false, "the serve root replicates");
@@ -213,8 +188,6 @@ Deno.test({
       const before = await serve.log();
       await runScript(scratch, client, env, serve.modelType, web);
 
-      // Serve's log holds the client's seven commits, each stamped with the
-      // caller's principal.
       const added = (await serve.log()).slice(before.length);
       assertEquals(added.length, 7, JSON.stringify(added, null, 2));
       for (const entry of added) {
@@ -236,7 +209,6 @@ Deno.test({
         );
       }
 
-      // A solo checkout running the same script reads back the same.
       const solo = await scratch.client("solo", {
         solo: true,
         managedConfig: true,
@@ -408,7 +380,6 @@ Deno.test({
           (repos) =>
             repos.unifiedDataRepo.save(type, web, dataOf("from-a"), json("a")),
         );
-        // A's copy holds both.
         assertEquals(
           await readCommand(scratch, a, envA, async (repos) => [
             await latestOf(repos, type, web, "from-a"),
@@ -504,7 +475,6 @@ Deno.test({
           .length,
         2,
       );
-      // Alice, who may read both, sees Bob's writes too.
       assertEquals(
         await readCommand(
           scratch,
@@ -524,7 +494,6 @@ Deno.test({
   sanitizeOps: false,
   sanitizeResources: false,
   fn: async () => {
-    // Alice may read everything; Bob only behavior `bobs` and its data.
     const grants = [
       ...MEMBER,
       { user: "bob", actions: ["read"], kind: "model", pattern: "bobs" },
@@ -544,7 +513,6 @@ Deno.test({
           open: await latestOf(repos, type, bobs, "open"),
         }));
 
-      // Alice writes a record only she may read and one Bob may read too.
       await writeCommand(scratch, shared, aliceEnv, async (repos) => {
         await repos.unifiedDataRepo.save(type, web, dataOf("secret"), json(1));
         await repos.unifiedDataRepo.save(type, bobs, dataOf("open"), json(1));
@@ -574,7 +542,6 @@ Deno.test({
         "a file of Alice's behavior is still in the checkout",
       );
 
-      // Nothing is stale: a later write Bob may read reaches the checkout.
       const alice = await scratch.client("alice", { bucket });
       await writeCommand(
         scratch,
@@ -593,7 +560,6 @@ Deno.test({
         await datastoreRecords(freshBob.repoDir),
       );
 
-      // Switched back to Alice's token, it reads everything again.
       const aliceView = {
         secret: { version: 1, content: "1" },
         open: { version: 2, content: "2" },
@@ -653,7 +619,6 @@ Deno.test({
           ),
       );
 
-      // Moved to serve B, it reads B's datastore only, file for file.
       const bView = { a: null, b: { version: 1, content: "1" } };
       assertEquals(await read(moved, envB), bView);
       assertEquals(await read(freshB, envB), bView);
@@ -662,7 +627,6 @@ Deno.test({
         await datastoreRecords(freshB.repoDir),
       );
 
-      // Nothing is stale: B's next write reaches it.
       await writeCommand(
         scratch,
         freshB,
@@ -680,7 +644,6 @@ Deno.test({
         b: { version: 2, content: "2" },
       });
 
-      // Moved back to A, whose copy it still holds, it reads A's only.
       const freshA = await scratch.client("fresh-a", { bucket });
       const aView = { a: { version: 1, content: "1" }, b: null };
       assertEquals(await read(moved, envA), aView);
@@ -705,7 +668,6 @@ Deno.test({
       const web = serve.models.web;
       const env = serveEnv(serve, "alice-token");
       const switched = await scratch.client("switched", { solo: true });
-      // A second solo checkout of the same filesystem datastore.
       const freshSolo = await scratch.client("fresh-solo");
       const marker = join(freshSolo.repoDir, ".swamp.yaml");
       await Deno.writeTextFile(
@@ -738,7 +700,6 @@ Deno.test({
       await save(switched, NO_SERVE, "solo", 1);
       await save(freshServe, env, "served", 1);
 
-      // Solo → serve: serve's records only.
       const serveView = { solo: null, served: { version: 1, content: "1" } };
       assertEquals(await read(switched, env), serveView);
       assertEquals(await read(freshServe, env), serveView);
@@ -747,8 +708,6 @@ Deno.test({
         await datastoreRecords(freshServe.repoDir),
       );
 
-      // Serve → solo: the solo datastore's records only, with a write made
-      // there meanwhile.
       await save(freshSolo, NO_SERVE, "solo", 2);
       const soloView = { solo: { version: 2, content: "2" }, served: null };
       assertEquals(await read(switched, NO_SERVE), soloView);
@@ -790,8 +749,6 @@ Deno.test({
         "http://127.0.0.1:9",
       );
 
-      // A serve-mode command says, at debug, that it runs here with serve
-      // as the upstream; an excluded one says nothing.
       const said = async (path: readonly string[]) =>
         (await captureLogs(async () => {
           await upstreamOf(path);
@@ -823,8 +780,6 @@ Deno.test({
       const type = serve.modelType;
       const { web, other } = serve.models;
 
-      // A method run's data under the behavior's lock, as `model method run`
-      // saves it: lands at serve, stamped with the member.
       await writeCommand(
         scratch,
         client,
@@ -849,7 +804,6 @@ Deno.test({
         { version: 1, content: "1" },
       );
 
-      // The same member on a behavior it holds no grant on: serve refuses.
       let refused: unknown;
       try {
         await writeCommand(
@@ -918,7 +872,6 @@ for (
           }));
         const aView = { vpc: { version: 3, content: "3" }, db: null };
         try {
-          // Behind the address, serve A takes three saves of vpc.
           for (let version = 1; version <= 3; version++) {
             await writeCommand(
               scratch,
@@ -935,8 +888,6 @@ for (
           }
           assertEquals(await read(), aView);
 
-          // The address moves to serve B, with its own datastore, which takes
-          // two saves of db.
           target = serveB.origin;
           const other = await scratch.client("other", { bucket });
           for (let version = 1; version <= 2; version++) {
@@ -985,12 +936,9 @@ for (
           assertEquals(writeError.code, SERVE_UPSTREAM_DIVERGED_CODE);
           assertEquals((await serveB.log()).length, logB, "B took the write");
 
-          // Moved back to A, the copy holds A's log only.
           target = serveA.origin;
           assertEquals(await read(), aView);
 
-          // At B again, the copy moved aside as the refusal says: a fresh copy
-          // and the checkout's records hold B's log only.
           target = serveB.origin;
           await assertRejects(read, ServeUpstreamDivergedError);
           await Deno.rename(readError.copyDir, `${readError.copyDir}.moved`);
@@ -1075,7 +1023,6 @@ Deno.test({
         );
         assertEquals(error.commit?.seq, 2);
         assertEquals(error.divergence, { kind: "behind", serveHead: 1 });
-        // The feed's anchor check read other's partition, and passed.
         assert(
           proxy.requests.some((request) =>
             request.method === "GET" &&
@@ -1109,7 +1056,6 @@ Deno.test({
         const response = await forward();
         logId = response.headers.get(SERVE_DATASTORE_LOG_HEADER) ?? logId;
         if (!strip) return response;
-        // A serve from before log ids: the same reply, naming none.
         const headers = new Headers(response.headers);
         headers.delete(SERVE_DATASTORE_LOG_HEADER);
         return new Response(response.body, {
@@ -1148,7 +1094,6 @@ Deno.test({
         assert(logId !== null, "serve named no log");
         assertEquals(recordedLog(), logId);
 
-        // As a swamp before log ids left the copy: none recorded.
         const db = new DatabaseSync(statePath);
         try {
           db.exec("UPDATE copy SET log_id = NULL");
@@ -1231,7 +1176,6 @@ Deno.test({
         );
         assert((await Deno.lstat(join(root, COMMITS_DB_FILE))).isFile);
 
-        // The copy works for the commands that follow.
         await writeCommand(
           scratch,
           client,
@@ -1274,7 +1218,6 @@ Deno.test({
           (await resolveDatastoreForRepo(client.repoDir)).datastoreConfig
             .namespace ?? "",
       );
-      // The other command has written the marker and nothing else yet.
       const root = serveUpstreamLocalRoot(
         client.repoDir,
         serve.origin,

@@ -51,7 +51,6 @@ Deno.test("tokenSessionVerdict: keeps a session exactly when its own mint is act
   fc.assert(
     fc.property(
       arbToken,
-      // Draw the session's mint either from the token (same mint) or freely.
       fc.boolean(),
       arbInstant,
       arbInstant,

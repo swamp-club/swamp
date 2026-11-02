@@ -71,7 +71,6 @@ function workflowNamed(name: string, steps: string[] = ["review"]): Workflow {
   });
 }
 
-/** A run suspended with each named step waiting on a wait opened at `at`. */
 function waitingRun(
   workflow: Workflow,
   opened: Record<string, Date>,
@@ -306,7 +305,6 @@ Deno.test("workflowWaits: sweeps ended runs and authoritative orphans after the 
   const unsynced = waitingRun(workflowNamed("unsynced"), { review: T0 });
   const unsyncedWait = await register(unsynced);
 
-  // Just past the deadline: the missing run is still inside the grace period.
   const soon = new Date("2026-01-01T00:02:00.000Z");
   const sure = depsOf([ended], soon, waits);
   sure.signalWaits = {
@@ -317,7 +315,6 @@ Deno.test("workflowWaits: sweeps ended runs and authoritative orphans after the 
   const listed = await list(sure);
   assertEquals(listed.map((w) => w.waitId), [unsyncedWait]);
   assertEquals((await waits.findRegistration(endedWait)).kind, "absent");
-  // The ended run's wait was closed, so a late signal is answered closed.
   const closed = await waits.findOutcome(endedWait);
   assert(closed.kind === "found");
   assertEquals(closed.record.kind, "cancelled");
@@ -336,7 +333,6 @@ Deno.test("workflowWaits: sweeps ended runs and authoritative orphans after the 
   assertEquals(await list(authoritative), []);
   assertEquals((await waits.findRegistration(unsyncedWait)).kind, "absent");
   assertEquals((await waits.findOutcome(unsyncedWait)).kind, "absent");
-  // The outcome of the run that exists lives as long as the run.
   assertEquals((await waits.findOutcome(endedWait)).kind, "found");
 });
 
@@ -417,7 +413,6 @@ async function listAll(deps: WorkflowWaitsDeps, includeSignalled?: boolean) {
   return last.data;
 }
 
-/** A run suspended only on one wait for a signal, with no gate. */
 function runWaitingOnlyForSignal(name: string, at: Date): WorkflowRun {
   const workflow = Workflow.create({
     name,
@@ -476,7 +471,6 @@ Deno.test("workflowWaits: includeSignalled lists a signalled wait with its recei
     awaitingResume: true,
     nextCommand: `swamp workflow resume release --run ${run.id}`,
   }]);
-  // The listing never writes the run.
   assertEquals(step.status, "waiting_signal");
 });
 
@@ -580,7 +574,6 @@ Deno.test("workflowWaits: a signal a resume already applied is not listed as sig
   assertEquals(before.signalled, []);
   assertEquals(before.waits.map((w) => w.stepName), ["second"]);
 
-  // Once the second wait is signalled, it alone is listed.
   await waits.settle(
     acceptedOutcomeFor(second.signalWait!, { verdict: "ship" }, {
       runId: run.id,
@@ -658,7 +651,6 @@ Deno.test("workflowWaits: an open keyed wait carries the by-key command beside t
   );
   assertEquals("signalByKeyCommand" in open[1], false);
 
-  // Past its deadline only a resume moves the wait on.
   const expired = await list(
     depsOf([run], new Date(T0.getTime() + 61_000)),
   );
@@ -716,7 +708,6 @@ async function listPending(
   return last.data;
 }
 
-/** Workflow lookups by ID, counting how often each is asked. */
 function workflowsWithIds(
   entries: Array<[string, string]>,
   options: { byId?: boolean } = {},
@@ -788,7 +779,6 @@ Deno.test("workflowWaits: includePending lists held signals by receipt under the
       submittedBy: "camera",
     },
   ]);
-  // Past its age limit a signal is no longer listed.
   const afterLimit = new Date("2026-01-01T00:01:00.001Z");
   assertEquals(
     (await listPending(depsOf([], afterLimit, store))).pending?.map((p) =>
@@ -820,13 +810,11 @@ Deno.test("workflowWaits: a held signal sent without a workflow name is listed o
     data.pending?.map((p) => [p.key, p.workflowName]).sort(),
     [["one", "kitchen"], ["two", "kitchen"]],
   );
-  // Each ID is looked up once, however many signals it holds.
   assertEquals(
     [...workflows.asked].sort(),
     [KITCHEN_ID, COPIED_ID, GONE_ID],
   );
 
-  // A repository that cannot look up by ID is filtered by it instead.
   const fallback = workflowsWithIds([[KITCHEN_ID, "kitchen"]], {
     byId: false,
   });
@@ -836,7 +824,6 @@ Deno.test("workflowWaits: a held signal sent without a workflow name is listed o
   });
   assertEquals(listed.pending?.map((p) => p.key).sort(), ["one", "two"]);
 
-  // With no way to name the workflow, such a signal is not listed.
   assertEquals((await listPending(depsOf([], T1, store))).pending, []);
 });
 

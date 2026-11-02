@@ -33,24 +33,13 @@ import { isV2CustomDatastore } from "../../infrastructure/persistence/datastore_
 import type { RepositoryContext } from "../../infrastructure/persistence/repository_factory.ts";
 
 /**
- * How a model method run holds its model's lock (swamp-club#3934).
- *
- * - `"run"`: for the whole run. The lock's pull comes first and its push
- *   publishes what the run wrote.
- * - `"publish"`: a read or list run on a v2 extension datastore. It pulls
- *   without the lock, runs without it, and tries the lock only to publish
- *   what it wrote, leaving it to the next lock holder on this host when the
- *   lock is busy, so it never waits on a writer (swamp-club#1992).
- * - `"none"`: a read or list run on a filesystem or v3 datastore, which
- *   needs no lock to publish, or with no sync service to publish through.
+ * run holds the lock for the whole run; publish (read or list on a v2 extension
+ * datastore) pulls and runs unlocked and only tries the lock to publish,
+ * deferring if busy; none needs no lock or has no sync service
  */
 export type MethodRunLockMode = "run" | "publish" | "none";
 
-/**
- * Whether a method mutates its model, by its declared or name-inferred kind
- * (swamp-club#1992). A type or method that cannot be resolved counts as
- * mutating.
- */
+/** a type or method that cannot be resolved counts as mutating */
 export async function isMethodMutating(
   modelType: string,
   methodName: string,
@@ -58,10 +47,6 @@ export async function isMethodMutating(
   return isMutatingKind(await methodKindOf(modelType, methodName));
 }
 
-/**
- * A method's declared or name-inferred kind (swamp-club#1992); undefined
- * when its type cannot be resolved, which counts as one that mutates.
- */
 export async function methodKindOf(
   modelType: string,
   methodName: string,
@@ -75,7 +60,6 @@ export async function methodKindOf(
   }
 }
 
-/** The lock mode of a run of `methodName` on `modelType`; see {@link MethodRunLockMode}. */
 export async function methodRunLockMode(options: {
   modelType: string;
   methodName: string;
@@ -96,7 +80,7 @@ export async function methodRunLockMode(options: {
   ) {
     return "none";
   }
-  // Without a sync service there is nothing to pull or publish through, so
-  // a lock would only make the read wait behind a writer (swamp-club#1992).
+  // without a sync service there is nothing to pull or publish through, so a
+  // lock would only make the read wait behind a writer
   return options.syncService ? "publish" : "none";
 }

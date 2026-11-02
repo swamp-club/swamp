@@ -18,26 +18,9 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * Chunk storage for a v3 checkout whose upstream is serve
- * (swamp-club#3985).
- *
- * - {@link ServeChunkStorage} is serve's chunk endpoints as a `storage/1`
- *   storage: `has` is `POST chunks/has`, `get` is `GET chunks/{sha256}`,
- *   `put` is `PUT chunks/{sha256}`. It offers neither `list` nor `delete`:
- *   serve has no route for them, since chunk collection belongs to the
- *   process that owns the storage, which is serve. Nor `touch`: serve
- *   touches what `has` finds. A `put` names no partition, so serve takes it
- *   only from `admin`; a checkout's own commits never use it (the sink
- *   carries their chunks with their partition).
- * - {@link CachedServeStorage} is what a serve-mode checkout opens: its
- *   local chunk cache, a filesystem storage under the checkout, with serve
- *   behind it for chunks the cache lacks. Every put lands in the cache, with
- *   the cache's staging and barrier, so a unit's commit group works as on a
- *   filesystem datastore; the sink then sends serve the ones it lacks. A
- *   chunk read from serve is kept in the cache. `list` and `delete` are the
- *   cache's, so the checkout's own sweep keeps the cache bounded.
- *
- * @module
+ * serve's chunk endpoints offer no list, delete or touch, since chunk
+ * collection belongs to serve; a put names no partition so serve takes it only
+ * from admin, and commits carry their chunks. A cache sits in front
  */
 
 import {
@@ -54,11 +37,9 @@ import {
 } from "../persistence/fs_datastore_storage.ts";
 import type { ServeDatastoreClient } from "./serve_datastore_client.ts";
 
-/** Error code for a storage method serve's chunk endpoints cannot offer. */
 export const SERVE_STORAGE_UNSUPPORTED_CODE =
   "datastore_v3_serve_storage_unsupported";
 
-/** Thrown for `list` and `delete` on {@link ServeChunkStorage}. */
 export class ServeStorageUnsupportedError extends UserError {
   constructor(readonly method: "list" | "delete") {
     super(
@@ -77,10 +58,6 @@ type ChunkClient = Pick<
   "hasChunks" | "getChunk" | "putChunk" | "namespace"
 >;
 
-/**
- * Serve's chunk endpoints as a `storage/1` storage, bound to the namespace
- * the client is. A chunk of another namespace is one serve does not hold.
- */
 export class ServeChunkStorage implements DatastoreStorage {
   readonly contract = STORAGE_CONTRACT;
   readonly #client: ChunkClient;
@@ -146,7 +123,6 @@ export class ServeChunkStorage implements DatastoreStorage {
     return Promise.reject(new ServeStorageUnsupportedError("delete"));
   }
 
-  /** Whether `namespace` is the one serve's API is bound to. */
   #bound(namespace: string): boolean {
     return storageNamespaceOf(namespace) === this.#client.namespace;
   }
@@ -161,15 +137,10 @@ export class ServeChunkStorage implements DatastoreStorage {
   }
 }
 
-/** The namespace serve's API path names: `_default` for the solo one. */
 export function storageNamespaceOf(namespace: string): string {
   return namespace === "" ? "_default" : namespace;
 }
 
-/**
- * A serve-mode checkout's chunk storage: its local cache, with serve behind
- * it for the chunks the cache lacks. See the module doc.
- */
 export class CachedServeStorage extends FileSystemStorage {
   readonly #remote: DatastoreStorage;
   readonly #offline: () => boolean;
@@ -179,8 +150,8 @@ export class CachedServeStorage extends FileSystemStorage {
     remote: DatastoreStorage,
     options: FileSystemStorageOptions & {
       /**
-       * Whether the checkout works offline (swamp-club#4195): the cache
-       * alone answers then, so storing content never waits on serve.
+       * whether the checkout works offline: the cache alone answers then, so
+       * storing content never waits on serve
        */
       readonly offline?: () => boolean;
     } = {},

@@ -23,20 +23,15 @@ import { parseDuration } from "./search.ts";
 import { parseDataDuration } from "../../domain/data/duration.ts";
 
 /**
- * The swamp duration grammar is implemented twice: `parseDataDuration` in the
- * data domain and `parseDuration` in the libswamp search generators. These
- * properties pin the two to the same grammar and the same arithmetic so the
- * copies cannot drift apart.
- *
- * A libswamp-internal test may import internal module paths, which is why the
- * cross-implementation comparison lives here rather than under src/domain.
+ * the duration grammar is implemented twice (parseDataDuration in the data
+ * domain, parseDuration in libswamp search); these properties pin the two to
+ * the same grammar and arithmetic
  */
 
 const UNITS = ["m", "h", "d", "w", "mo", "y"] as const;
 
 const arbUnit = fc.constantFrom(...UNITS);
 
-/** Bounded so `y` durations stay inside Number.MAX_SAFE_INTEGER. */
 const arbAmount = fc.integer({ min: 0, max: 100_000 });
 
 const MINUTE = 60 * 1000;
@@ -52,7 +47,6 @@ const EXPECTED_UNIT_MS: Record<typeof UNITS[number], number> = {
   y: 365 * DAY,
 };
 
-/** Suffixes outside the grammar. */
 const arbBadSuffix = fc.constantFrom(
   "x",
   "s",

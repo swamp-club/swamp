@@ -39,7 +39,6 @@ const SCHEMA = {
   properties: { verdict: { type: "string" as const, enum: ["ship", "fix"] } },
 };
 
-/** What one step of a generated run is doing when the run is read. */
 type StepState =
   | "wait_settled"
   | "wait_open"

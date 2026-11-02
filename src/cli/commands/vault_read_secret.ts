@@ -106,8 +106,8 @@ unless --force is set. In --json mode, outputs the value directly.`,
     return;
   }
 
-  // It only reads: it never takes the v3 writer lease, which would start a
-  // replication lineage on a bucket (swamp-club#3801).
+  // read-only: it never takes the v3 writer lease, which would start a
+  // replication lineage on a bucket
   const { repoDir, repoContext, datastoreResolver, vaultsDir } =
     await requireInitializedRepoReadOnly({
       repoDir: resolveRepoDir(options.repoDir),

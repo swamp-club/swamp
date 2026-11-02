@@ -17,14 +17,9 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// Adversarial batch-mode flush test (swamp-club#1158): with OTEL_BLRP_USE=1 the
-// BatchLogRecordProcessor queues records instead of exporting per-record — the
-// classic footgun is dropping the queue when the process exits. This drives the
-// real wiring and asserts that a record logged just before shutdownLogs() is
-// still delivered, because shutdownLogs() -> provider.shutdown() flushes the
-// batch (and the exporter drains its in-flight send).
-//
-// Runs in its own process so initializeLogging()'s guard is fresh.
+// with OTEL_BLRP_USE=1 the batch processor queues records, so one logged just
+// before shutdownLogs() must still be delivered: shutdown flushes the batch and
+// drains the in-flight send
 
 import { assert } from "@std/assert";
 import {
@@ -60,7 +55,6 @@ Deno.test("OTel logs (batch mode): a record logged right before shutdown is stil
     getSwampLogger(["model", "method", "run", "m", "execute"])
       .info`batched-line-xyz789`;
 
-    // Nothing may have been sent yet (batched). The shutdown must flush it.
     await shutdownLogs();
 
     const delivered = bodies.some((b) => b.includes("batched-line-xyz789"));

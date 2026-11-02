@@ -17,28 +17,11 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Pluggable webhook signature verification schemes (#716).
- *
- * Every supported provider authenticates with the same primitive — an
- * HMAC-SHA256 digest of a provider-specific message — and differs only in the
- * header it uses, how the digest is encoded in that header, and what bytes are
- * signed. This module hosts a closed, hardcoded set of schemes (github, jira,
- * linear, stripe, slack, generic) over shared HMAC and constant-time-comparison
- * primitives. Each verifier is a stateless function of (body, headers, secret).
- *
- * Providers outside this set are supported through webhook extensions
- * (#2204): a scheme of the form `@collective/name` resolves to a
- * {@link WebhookHandler} from the webhook type registry.
- */
-
 import type { WebhookHandler } from "../domain/webhooks/webhook_handler.ts";
 import { webhookTypeRegistry } from "../domain/webhooks/webhook_type_registry.ts";
 
-/** Replay window for timestamped schemes (stripe, slack). */
 const TIMESTAMP_TOLERANCE_SECONDS = 300;
 
-/** The closed set of supported verification schemes. */
 export type WebhookScheme =
   | "github"
   | "jira"
@@ -47,7 +30,6 @@ export type WebhookScheme =
   | "slack"
   | "generic";
 
-/** Schemes selectable on the --webhook flag, in stable order. */
 export const WEBHOOK_SCHEMES: readonly WebhookScheme[] = [
   "github",
   "jira",
@@ -57,16 +39,10 @@ export const WEBHOOK_SCHEMES: readonly WebhookScheme[] = [
   "generic",
 ];
 
-/** A webhook extension type identifier, e.g. `@swamp/telegram`. */
 export type ExtensionWebhookScheme = `@${string}/${string}`;
 
 const EXTENSION_WEBHOOK_SCHEME_PATTERN = /^@[a-z0-9_-]+\/[a-z0-9_-]+$/;
 
-/**
- * Immutable verification config for a built-in scheme. Only the `generic`
- * scheme carries extra parameters (the header to read and the value prefix to
- * strip); the named schemes are fully determined by their scheme tag.
- */
 export type BuiltinVerifierConfig =
   | { readonly scheme: "github" | "jira" | "linear" | "stripe" | "slack" }
   | {
@@ -75,10 +51,6 @@ export type BuiltinVerifierConfig =
     readonly prefix: string;
   };
 
-/**
- * Immutable verification config for a single endpoint: a built-in scheme, or
- * a webhook extension type (lowercased) with its extension-specific config.
- */
 export type VerifierConfig =
   | BuiltinVerifierConfig
   | {
@@ -86,11 +58,6 @@ export type VerifierConfig =
     readonly config: Readonly<Record<string, unknown>>;
   };
 
-/**
- * A stateless signature verifier. `signatureHeader` is always lowercased so it
- * can be used both for the pre-body presence check and for exclusion from the
- * exposed webhook payload without a case mismatch.
- */
 export interface WebhookVerifier {
   readonly signatureHeader: string;
   readonly requiredHeaders: readonly string[];
@@ -101,11 +68,6 @@ export interface WebhookVerifier {
   ): Promise<boolean>;
 }
 
-// ── Shared primitives ──────────────────────────────────────────────────
-
-/**
- * Compute the lowercase hex HMAC-SHA256 of `message` keyed by `secret`.
- */
 export async function hmacSha256Hex(
   message: Uint8Array,
   secret: string,
@@ -128,8 +90,8 @@ export async function hmacSha256Hex(
 }
 
 /**
- * Constant-time comparison of two hex strings. Always compares every character
- * so timing does not leak how much of the digest matched.
+ * compares every character so timing does not leak how much of the digest
+ * matched
  */
 export function constantTimeEqualHex(a: string, b: string): boolean {
   if (a.length !== b.length) {
@@ -142,7 +104,6 @@ export function constantTimeEqualHex(a: string, b: string): boolean {
   return mismatch === 0;
 }
 
-/** Concatenate a leading UTF-8 string with the raw body bytes. */
 function prefixedMessage(prefix: string, body: Uint8Array): Uint8Array {
   const head = new TextEncoder().encode(prefix);
   const out = new Uint8Array(head.length + body.length);
@@ -151,7 +112,6 @@ function prefixedMessage(prefix: string, body: Uint8Array): Uint8Array {
   return out;
 }
 
-/** True when `timestamp` (unix seconds) is within the replay tolerance. */
 function timestampFresh(timestamp: number): boolean {
   if (!Number.isFinite(timestamp)) {
     return false;
@@ -160,12 +120,6 @@ function timestampFresh(timestamp: number): boolean {
   return Math.abs(nowSeconds - timestamp) <= TIMESTAMP_TOLERANCE_SECONDS;
 }
 
-// ── Per-scheme verifiers ────────────────────────────────────────────────
-
-/**
- * HMAC-over-body schemes that read a single header and strip a fixed prefix.
- * Covers github (`sha256=`), linear (bare), and generic (configurable).
- */
 function prefixedBodyVerifier(
   signatureHeader: string,
   prefix: string,
@@ -186,9 +140,8 @@ function prefixedBodyVerifier(
 }
 
 /**
- * Stripe: header `Stripe-Signature` carries `t=<unix>,v1=<hex>[,v1=<hex>...]`.
- * The signed message is `<t>.<body>`. Multiple v1 values appear during secret
- * rotation — the request is valid if any v1 matches.
+ * stripe signs `<t>.<body>`; several v1 values appear during secret rotation,
+ * so any match is valid
  */
 function stripeVerifier(): WebhookVerifier {
   const signatureHeader = "stripe-signature";
@@ -236,10 +189,6 @@ function stripeVerifier(): WebhookVerifier {
   };
 }
 
-/**
- * Slack: header `X-Slack-Signature` carries `v0=<hex>`, with the timestamp in
- * `X-Slack-Request-Timestamp`. The signed message is `v0:<timestamp>:<body>`.
- */
 function slackVerifier(): WebhookVerifier {
   const signatureHeader = "x-slack-signature";
   const timestampHeader = "x-slack-request-timestamp";
@@ -265,10 +214,6 @@ function slackVerifier(): WebhookVerifier {
   };
 }
 
-/**
- * Build a verifier for the given config. The returned verifier's
- * `signatureHeader` is lowercased.
- */
 export function createVerifier(
   config: BuiltinVerifierConfig,
 ): WebhookVerifier {
@@ -291,15 +236,10 @@ export function createVerifier(
   }
 }
 
-/** Type guard: is `value` one of the known scheme keywords? */
 export function isWebhookScheme(value: string): value is WebhookScheme {
   return (WEBHOOK_SCHEMES as readonly string[]).includes(value);
 }
 
-/**
- * Type guard: is `value` a webhook extension type identifier
- * (`@collective/name`, lowercase)?
- */
 export function isExtensionWebhookScheme(
   value: string,
 ): value is ExtensionWebhookScheme {
@@ -307,11 +247,8 @@ export function isExtensionWebhookScheme(
 }
 
 /**
- * Resolve the handler for an endpoint. Built-in schemes use
- * {@link createVerifier}; extension schemes are looked up in the webhook type
- * registry on every call so a SIGHUP extension reload takes effect. Returns
- * undefined when the extension type is not (or no longer) loaded — callers
- * must fail closed.
+ * extension handlers are looked up on every call so a SIGHUP reload takes
+ * effect; undefined when the type is not loaded, so callers must fail closed
  */
 export function resolveWebhookHandler(
   config: VerifierConfig,

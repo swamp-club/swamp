@@ -330,11 +330,6 @@ Deno.test("dataPlaneUrlFromConnectUrl: maps ws→http and wss→https", () => {
   );
 });
 
-/**
- * A data plane that answers every request `answerAfterMs` after it arrives,
- * or rejects with the abort reason as soon as the request's signal aborts —
- * a serve that is slow or stalled, not down.
- */
 function slowClient(options: {
   answerAfterMs: number;
   timeoutMs: number;
@@ -372,8 +367,8 @@ function slowClient(options: {
 }
 
 Deno.test("DataPlaneClient: a write serve answers after the read timeout still succeeds", async () => {
-  // The read bound fires long before serve answers; writes must not use it,
-  // or a step whose data serve saved fails (swamp-club#3519).
+  // the read bound fires long before serve answers; writes must not use it, or
+  // a step whose data serve saved fails
   const client = slowClient({
     answerAfterMs: 50,
     timeoutMs: 5,
@@ -507,7 +502,6 @@ Deno.test("DataPlaneClient.loadSecrets: asks for each distinct reference once, i
       (_, i) => ({ vaultName: "v", key: `k${i}` }),
     ),
     { vaultName: "v", key: "k0" },
-    // More claimed resources than one request may name.
     ...Array.from({ length: MAX_DISPATCH_SECRET_CLAIMS + 1 }, (_, i) => ({
       vaultName: "w",
       key: `field${i}`,

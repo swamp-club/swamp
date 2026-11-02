@@ -52,8 +52,6 @@ function token(overrides: Partial<ServerToken> = {}): ServerToken {
   };
 }
 
-// ── tokenSessionVerdict ─────────────────────────────────────────────────
-
 Deno.test("tokenSessionVerdict: keeps a session on its active, unexpired mint", () => {
   assertEquals(tokenSessionVerdict(token(), MINT_1, NOW), { keep: true });
 });
@@ -119,8 +117,6 @@ Deno.test("tokenSessionVerdict: an expired state closes with 4002 before expires
   if (verdict.keep) return;
   assertEquals(verdict.cause, "expired");
 });
-
-// ── TokenSessionRevalidationService ─────────────────────────────────────
 
 interface Harness {
   deps: TokenSessionRevalidationDeps;

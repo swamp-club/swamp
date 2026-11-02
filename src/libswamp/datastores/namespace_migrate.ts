@@ -101,17 +101,14 @@ export interface MergeDirResult {
   skippedPaths: string[];
 }
 
-/** What a directory holds at its top level. */
 export interface DirContents {
-  /** Catalog database files, which are repo-local and never migrated. */
   catalogFiles: number;
   otherEntries: number;
 }
 
 /**
- * The catalog and its SQLite sidecars. The catalog is repo-local at the
- * un-namespaced `data` path whatever the namespace, so migration never
- * moves, compares or counts these as data (swamp-club#3316).
+ * the catalog is repo-local at the un-namespaced data path whatever the
+ * namespace, so migration never moves, compares or counts it as data
  */
 export const INFRASTRUCTURE_FILES: ReadonlySet<string> = new Set(
   CATALOG_FILE_NAMES,
@@ -124,9 +121,8 @@ const MERGEABLE_ON_REVERSE = new Set([
 ]);
 
 /**
- * Explains why a namespace named after a datastore layout directory cannot be
- * migrated or repaired automatically: `{base}/{namespace}` and the solo
- * layout's `{base}/{subdir}` are the same directory.
+ * {base}/{namespace} and the solo layout's {base}/{subdir} are the same
+ * directory, so the data cannot be told apart
  */
 export function layoutCollisionMessage(namespace: string): string {
   return `${namespaceNameClash(namespace)}, so its data cannot be told ` +
@@ -146,7 +142,6 @@ export function layoutCollisionMessage(namespace: string): string {
 export interface NamespaceMigrateDeps {
   getDatastorePath: () => string;
   getNamespace: () => string | undefined;
-  /** The repo's configured datastore-tier directories. */
   getDatastoreDirectories: () => readonly string[];
   dirExists: (path: string) => Promise<boolean>;
   dirHasDataFiles: (path: string) => Promise<boolean>;
@@ -164,11 +159,7 @@ export interface NamespaceMigrateDeps {
   compareFiles: (a: string, b: string) => Promise<boolean>;
   removeFile: (path: string) => Promise<void>;
   ensureDir: (path: string) => Promise<void>;
-  /**
-   * Deletes stale catalog copies an earlier migration moved into a
-   * namespace `data` directory, and the directory if that empties it.
-   * Returns the number of files deleted. Must never touch the live catalog.
-   */
+  /** must never touch the live catalog */
   removeOrphanedCatalogFiles: (namespaceDataDir: string) => Promise<number>;
   invalidateCatalog: () => void;
   markDirtyBulk: () => Promise<void>;

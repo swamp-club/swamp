@@ -176,7 +176,6 @@ Deno.test("buildSbom: assembles a deterministic CycloneDX 1.6 document", () => {
   );
   assertEquals(bom.components[1].purl, "pkg:npm/zod@4.4.3");
   assertEquals(bom.components[1].supplier, { name: "Colin McDonnell" });
-  // every component has a relationship entry (211/211-style coverage)
   assertEquals(bom.dependencies.length, 2);
 });
 
@@ -230,7 +229,6 @@ Deno.test("JsrLicenseCache: round-trips and only writes when dirty", async () =>
     const reloaded = await JsrLicenseCache.load(path);
     assertEquals(reloaded.get("@std/path@1.1.4"), "MIT");
 
-    // Missing file load yields an empty cache rather than throwing.
     const empty = await JsrLicenseCache.load(join(dir, "absent.json"));
     assertEquals(empty.get("anything"), undefined);
   } finally {

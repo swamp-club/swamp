@@ -51,12 +51,8 @@ import { Workflow, type WorkflowInput } from "./workflow.ts";
 import { WorkflowRun } from "./workflow_run.ts";
 
 /**
- * The evaluation inputs an evaluated cache records (swamp-club#3583): the
- * inputs themselves, or why they were withheld. They are withheld when any
- * value, nested included, is a known sensitive value: a parent can pass a
- * secret to a nested workflow as an input, and the cache file would carry it
- * in plaintext. A fresh run makes the same choice, so such a cache is not
- * made replayable by running fresh once.
+ * inputs are withheld when any nested value is sensitive: a parent can pass a
+ * secret to a nested workflow and the cache file would hold it in plaintext
  */
 export type RecordedEvaluationInputs =
   | {
@@ -79,7 +75,6 @@ export function recordableEvaluatedInputs(
     : { omitted: "sensitive" };
 }
 
-/** What a `--last-evaluated` run reads of its cache before it starts. */
 export interface ReplayableCache {
   workflow: { name: string };
   evaluatedInputs?: Record<string, unknown>;
@@ -88,13 +83,8 @@ export interface ReplayableCache {
 }
 
 /**
- * The inputs a `--last-evaluated` run runs and records with, or why it is
- * refused (swamp-club#3583). The cached steps were resolved with the inputs
- * the cache records, so the run takes those, and a supplied input must equal
- * its recorded value after coercion and merge. A cache that withheld its
- * inputs for a sensitive value is never replayed; one written before inputs
- * were recorded is replayed once the workflow has run fresh. A refusal names
- * keys only: values may be secrets.
+ * a cache that withheld its inputs as sensitive is never replayed; a refusal
+ * names keys only because values may be secrets
  */
 export function replayInputs(
   cache: ReplayableCache,
@@ -148,27 +138,18 @@ export function replayInputs(
   return { inputs: merged };
 }
 
-/** An evaluated workflow as it is written to the evaluated cache. */
 export interface PersistedEvaluatedWorkflow {
   sensitiveFormat: number;
   workflow: Workflow;
   deferredExpressions: DeferredExpression[];
   writtenReferences: WrittenReference[];
-  /**
-   * Where data sits in the written workflow, in its own coordinates, so a
-   * typed replay can restore references in place of the reference text and
-   * align exactly (typed-secrets 4.4). Set when the caller gave the raw
-   * copy's map.
-   */
   persistedProvenance?: ProvenanceMap;
 }
 
 /**
- * A forEach step name with every recorded sensitive value, and in a typed
- * run every sentinel the run issued, replaced by `sensitive-<index>`, the
- * item's position in the iteration: stable across resume, which expands from
- * source again, and never the secret. The sentinel is replaced first, so a
- * recorded value that is a fragment of one cannot break it apart.
+ * the index is stable across resume and never the secret; the sentinel is
+ * replaced first so a recorded value that is a fragment of one cannot break it
+ * apart
  */
 export function forEachNameWithoutSecrets(
   name: string,
@@ -185,12 +166,8 @@ export function forEachNameWithoutSecrets(
 }
 
 /**
- * Whether a path is one of the workflow's identifier maps: the workflow's
- * `tags` and `labels`, a job's `labels`, a step's `labels`, and a step's
- * data output override `tags`. Readers match these by exact string and
- * nothing restores them, so they hold placeholders, never secrets or
- * references. A task input that happens to be named `tags` or `labels` is a
- * value like any other and is not one of these.
+ * identifier maps are matched by exact string and never restored, so they hold
+ * placeholders, never secrets or references
  */
 export function isIdentifierMapPath(path: DataPath): boolean {
   if (path.length === 1) return path[0] === "tags" || path[0] === "labels";
@@ -202,7 +179,6 @@ export function isIdentifierMapPath(path: DataPath): boolean {
     typeof path[5] === "number" && path[6] === "tags";
 }
 
-/** Replaces recorded sensitive values in the identifier maps with placeholders. */
 function withTagPlaceholders(
   value: unknown,
   values: RunSensitiveValues,
@@ -233,17 +209,11 @@ function withTagPlaceholders(
   return value;
 }
 
-/**
- * Builds what to write for an evaluated workflow: sentinels in the overlay's
- * sanitized task fields and deferred bindings become vault references;
- * tags and labels carry placeholders.
- */
 export function persistEvaluatedWorkflow(
   evaluated: Workflow,
   overlay: SanitizedTaskOverlay | undefined,
   deferredExpressions: readonly DeferredExpression[],
   values: RunSensitiveValues,
-  /** Where data sits in `evaluated`, the raw copy (swamp-club#3205). */
   provenance?: ProvenanceMap,
 ): PersistedEvaluatedWorkflow {
   const base = overlay?.sanitizedData ?? evaluated.toData();
@@ -280,17 +250,8 @@ export function persistEvaluatedWorkflow(
 }
 
 /**
- * Restores a cached evaluated workflow for replay.
- *
- * In a typed run (the registry carries the option) the cache's written
- * references become sentinels a bag of the run's registry issues, reading
- * no vault: the workflow and the overlay's sanitized task fields are one
- * sentinel copy, the step bags rehome the sentinels with their encodings,
- * and each delivery loads the current value under the principal's current
- * grants (typed-secrets 4.4). The cache's `persistedProvenance` is aligned
- * exactly onto that copy and returned as `provenance`; a cache with
- * references and a value-coordinate map only is refused, and one with no
- * map replays as authored (see `replayProvenance`).
+ * a cache with references and only a value-coordinate map is refused; one with
+ * no map replays as authored
  */
 export function rehydrateEvaluatedWorkflow(
   cached: {
@@ -298,9 +259,7 @@ export function rehydrateEvaluatedWorkflow(
     workflow: Workflow;
     deferredExpressions: readonly DeferredExpression[];
     writtenReferences: readonly WrittenReference[];
-    /** See {@link PersistedEvaluatedWorkflow.persistedProvenance}. */
     persistedProvenance?: ProvenanceMap;
-    /** Where data sits in the raw copy, as the cache stores it. */
     provenance?: ProvenanceMap;
   },
   values: RunSensitiveValues,
@@ -308,7 +267,6 @@ export function rehydrateEvaluatedWorkflow(
   workflow: Workflow;
   sanitizedTasks?: SanitizedTaskOverlay;
   deferredExpressions: DeferredExpression[];
-  /** Set in a typed run: the map of the restored copy, aligned onto it. */
   provenance?: ProvenanceMap;
 } {
   if (cached.writtenReferences.length === 0) {
@@ -349,7 +307,6 @@ export function rehydrateEvaluatedWorkflow(
   }
 }
 
-/** A written entry's path below `depth`, spelled as provenance maps spell it. */
 function provenanceKeyBelow(path: DataPath, depth: number): string {
   return path.slice(depth).reduce<string>(
     (parent, segment) =>
@@ -361,21 +318,9 @@ function provenanceKeyBelow(path: DataPath, depth: number): string {
 }
 
 /**
- * Restores a stored run for a typed resume or retry, holding references
- * (typed-secrets 4.4, design Section 8.2): every written reference of the
- * record (inputs, deferred bindings, step errors, approval prompts, assert
- * text, the failure reason) becomes a sentinel a bag of the run's registry
- * issues, reading no vault and recording no value, so the run-start pass
- * binds a reference where the run held one and each remaining step loads
- * the current value at delivery. The record's maps follow the copy: the
- * inputs map is aligned exactly from `persistedInputsProvenance` through the
- * reference text each sentinel stands for; a record written before that map
- * existed fails closed, each input string holding a reference becoming whole
- * data, so the resume continues and no authored span is mistaken for data.
- * A deferred binding that holds a reference is whole data in its own map
- * for the same reason. The run's values are attached. The record's own
- * `writtenReferences` ride along, so {@link WorkflowRun.toPersistedData}
- * writes the run back as it was read.
+ * a record written before the inputs map existed fails closed: each input
+ * string holding a reference becomes whole data, so no authored span is
+ * mistaken for data
  */
 export function rehydrateRunReferences(
   run: WorkflowRun,

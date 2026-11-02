@@ -410,10 +410,6 @@ Deno.test("workflowEdit: yields not_found when workflow genuinely missing (UUID)
   assertEquals(last.error.code, "not_found");
 });
 
-/**
- * Deps whose stdin update parses to `candidate`, runs `beforeSave` like the
- * real repository-backed dep, and records whether it saved.
- */
 function makeAuthorizeDeps(candidate: Workflow) {
   const saved: Workflow[] = [];
   const current = {
@@ -804,8 +800,6 @@ Deno.test("workflowEdit: records no target on the span when the workflow is not 
   });
 });
 
-// --- editor edits saved through the repository (swamp-club#4107) ---
-
 const EDITED_ID = "00000000-0000-4000-8000-000000000001";
 const EDITED_YAML = `id: ${EDITED_ID}
 name: my-workflow
@@ -820,7 +814,6 @@ jobs:
           methodName: lookup
 `;
 
-/** Deps whose stdin update parses like the real one and records saves. */
 function makeEditorSaveDeps(overrides: Partial<WorkflowEditDeps> = {}) {
   const stored = Workflow.fromData(
     parseYaml(EDITED_YAML) as Parameters<typeof Workflow.fromData>[0],
@@ -854,7 +847,6 @@ Deno.test("workflowEdit: an editor edit equal to the stored workflow saves nothi
   const events = await collect<WorkflowEditEvent>(
     workflowEdit(createLibSwampContext(), deps, {
       workflowIdOrName: "my-workflow",
-      // Same data, different layout: key order and quoting.
       stdinContent: EDITED_YAML.replace(
         "name: my-workflow",
         "name: 'my-workflow'",
@@ -1054,7 +1046,6 @@ Deno.test("workflowEdit: an editor repair never replaces another workflow's file
   const brokenPath = "/repo/workflows/workflow-1.yaml";
   const { deps, repaired } = makeEditorSaveDeps({
     ...brokenAt(brokenPath),
-    // Another broken workflow's file already sits where the save would write.
     writePathFor: () => "/repo/workflows/workflow-foo.yaml",
     fileExists: (path) =>
       Promise.resolve(
@@ -1133,7 +1124,6 @@ Deno.test("workflowEdit: an editor repair may write over its own file", async ()
 Deno.test("resolveWorkflowEditFile: a broken file stored under its name is a stored workflow to repair", async () => {
   const { deps } = makeEditorSaveDeps({
     ...brokenAt("/repo/workflows/workflow-my-workflow.yaml"),
-    // The repository's id path for an unloaded workflow is the legacy one.
     getPath: () => `/repo/workflows/workflow-${EDITED_ID}.yaml`,
   });
 

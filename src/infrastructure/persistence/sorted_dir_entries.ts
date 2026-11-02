@@ -24,12 +24,9 @@ function compareCodeUnits(a: string, b: string): number {
 }
 
 /**
- * The entries sorted by name in UTF-16 code-unit order (the default string
- * sort, which no locale can change).
- *
- * readdir order is sorted on APFS and NTFS but hash order on ext4, so a
- * repository that returns entries in the order it read them lists the same
- * repo differently per machine (swamp-club#3067).
+ * readdir order is sorted on APFS and NTFS but hash order on ext4, so listing
+ * in read order differs per machine; sort by UTF-16 code unit, which no locale
+ * can change
  */
 export function sortDirEntriesByName<T extends { name: string }>(
   entries: Iterable<T>,
@@ -37,7 +34,6 @@ export function sortDirEntriesByName<T extends { name: string }>(
   return [...entries].sort((a, b) => compareCodeUnits(a.name, b.name));
 }
 
-/** {@link sortDirEntriesByName} of `dir`; NotFound propagates. */
 export async function readDirSorted(dir: string): Promise<Deno.DirEntry[]> {
   const entries: Deno.DirEntry[] = [];
   for await (const entry of Deno.readDir(dir)) entries.push(entry);
@@ -45,10 +41,8 @@ export async function readDirSorted(dir: string): Promise<Deno.DirEntry[]> {
 }
 
 /**
- * Compares two paths segment by segment in UTF-16 code-unit order, a parent
- * before its children. Sorting whole path strings would let the platform
- * separator decide the order of `a/x` and `a1/x`; comparing segments gives
- * the order a walk sorted at every level visits them in.
+ * compares segment by segment because sorting whole path strings lets the
+ * platform separator decide the order of a/x and a1/x
  */
 export function comparePathsBySegment(a: string, b: string): number {
   const aSegments = a.split(SEPARATOR_PATTERN);

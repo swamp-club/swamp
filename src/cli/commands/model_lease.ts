@@ -71,13 +71,11 @@ import {
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
 
-/** The preferred spelling: `swamp behavior lease`. */
 export const BEHAVIOR_LEASE_SYNTAX: CommandSyntax = {
   invocation: "swamp behavior lease",
   surface: "behavior",
 };
 
-/** The legacy spelling: `swamp model lease`. */
 export const MODEL_LEASE_SYNTAX: CommandSyntax = {
   invocation: "swamp model lease",
   surface: "model",
@@ -94,8 +92,7 @@ function viewOf(lease: ExplicitLease): ModelLeaseView {
 }
 
 /**
- * The lease commands' dependencies for the checkout at `repoDir`: team
- * mode only when its datastore is written through serve, whose binding
+ * team mode only when the datastore is written through serve, whose binding
  * names the local root the leases are recorded under.
  */
 async function leaseDeps(
@@ -314,12 +311,7 @@ function createStatusCommand(syntax: CommandSyntax) {
   );
 }
 
-/**
- * `swamp model lease` / `swamp behavior lease` (swamp-club#4121): hold a
- * behavior's lock at serve across commands.
- */
 export function createModelLeaseCommand(syntax: CommandSyntax) {
-  // A legacy leaf names its preferred spelling, as every model twin does.
   const sub = (word: string, example: string): CommandSyntax => ({
     ...subcommandSyntax(syntax, word),
     ...(syntax.surface === "model"

@@ -21,12 +21,6 @@ import { parse } from "@std/path";
 import type { ModuleGraphReader } from "../domain/extensions/extension_source_graph.ts";
 import { resolveLocalImports } from "../domain/models/local_import_resolver.ts";
 
-/**
- * An in-process stand-in for the `deno info` reader in resolver unit tests:
- * the files an entry point reaches through relative imports, without edges.
- * Real graphs are covered by deno_info_module_graph_reader_test.ts and the
- * integration tests.
- */
 export const regexModuleGraphReader: ModuleGraphReader = {
   async read(entryPoint) {
     const { resolvedFiles } = await resolveLocalImports(

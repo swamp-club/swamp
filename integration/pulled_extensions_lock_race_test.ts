@@ -38,11 +38,9 @@ import {
 } from "../src/libswamp/extensions/pull.ts";
 import { RemoveExtensionService } from "../src/libswamp/extensions/remove_extension_service.ts";
 
-// swamp-club#2709: installs and removals racing on one checkout. Each
-// "process" gets its own catalog connection and lockfile repository, as
-// separate swamp processes would. Whatever order the pulled-extensions
-// lock lets them run in, the pulled tree, the lockfile entry and the
-// catalog rows must agree afterwards.
+// installs and removals race on one checkout, each process with its own catalog
+// connection and lockfile repository; whatever order the lock lets them run in,
+// the tree, lockfile entry and catalog rows must agree
 
 const testDenoRuntime: DenoRuntime = {
   ensureDeno: () => Promise.resolve(Deno.execPath()),
@@ -65,7 +63,6 @@ export const model = {
 `;
 }
 
-/** v1 ships models a and b; v2 ships a and c, so upgrading prunes b. */
 async function buildArchive(
   name: string,
   version: string,
@@ -99,7 +96,6 @@ interface Fixture {
   name: string;
   lockfilePath: string;
   archives: Record<string, Uint8Array>;
-  /** Stand-in for one swamp process: its own catalog connection. */
   process(): Promise<Process>;
 }
 
@@ -112,9 +108,7 @@ interface Process {
 interface InstallHooks {
   onDownload?: () => void;
   underLock?: () => Promise<void>;
-  /** Installs this extension and archive instead of the fixture's. */
   other?: { name: string; archive: Uint8Array };
-  /** Runs when the install restores lockfile entries (its rollback). */
   onRestoreEntries?: () => Promise<void>;
 }
 
@@ -210,7 +204,6 @@ async function withFixture(fn: (f: Fixture) => Promise<void>): Promise<void> {
   }
 }
 
-/** Files under the extension's own subtree, repo-relative with "/". */
 async function filesUnder(repoDir: string, name: string): Promise<string[]> {
   const root = swampPath(repoDir, "pulled-extensions", name);
   const out: string[] = [];
@@ -224,10 +217,6 @@ async function filesUnder(repoDir: string, name: string): Promise<string[]> {
   return out.sort();
 }
 
-/**
- * The tree, the lockfile entry and the catalog agree: either the
- * extension is gone from all three, or all three describe one version.
- */
 async function assertConsistent(f: Fixture): Promise<string | null> {
   const entry = (await readUpstreamExtensions(f.lockfilePath))[f.name];
   const onDisk = await filesUnder(f.repoDir, f.name);

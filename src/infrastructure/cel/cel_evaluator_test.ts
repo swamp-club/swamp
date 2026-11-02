@@ -87,8 +87,6 @@ Deno.test("createExtensionCelEnvironment: arithmetic overloads work for double/i
 
 Deno.test("createExtensionCelEnvironment: unlistedVariablesAreDyn allows ad-hoc context keys", () => {
   const env = createExtensionCelEnvironment();
-  // No registerVariable call needed — the option lets unknown identifiers
-  // resolve from the evaluation context.
   assertEquals(env.evaluate("foo + bar", { foo: 1.0, bar: 2.0 }), 3);
 });
 
@@ -127,7 +125,6 @@ Deno.test("createExtensionCelEnvironment: each call returns a fresh, isolated En
   a.registerFunction("only_on_a(): bool", () => true);
   assertEquals(a.evaluate("only_on_a()"), true);
 
-  // Second factory call must NOT see the function registered on `a`.
   const b = createExtensionCelEnvironment();
   assertThrows(
     () => b.evaluate("only_on_a()"),
@@ -137,8 +134,6 @@ Deno.test("createExtensionCelEnvironment: each call returns a fresh, isolated En
 
 Deno.test("createExtensionCelEnvironment: does NOT pre-register swamp's internal namespace types", () => {
   const env = createExtensionCelEnvironment();
-  // file.contents(...) is a swamp-internal receiver method; extensions should
-  // see no such registration on a baseline Environment.
   assertThrows(
     () =>
       env.evaluate("file.contents('m', 's')", {
@@ -225,7 +220,6 @@ Deno.test("CelEvaluator validate returns valid for correct syntax", () => {
 
 Deno.test("CelEvaluator validate accepts hyphenated model refs that evaluation accepts", () => {
   const evaluator = new CelEvaluator();
-  // Raw `web-1a` does not parse; evaluation rewrites it to model["web-1a"].
   const result = evaluator.validate(
     "model.web-1a.resource.state.main.attributes.id",
   );
@@ -515,8 +509,6 @@ Deno.test("CelEvaluator evaluates env in string concatenation", () => {
   assertEquals(result, "prod-main");
 });
 
-// Tests for data versioning (Issue #128)
-
 Deno.test("CelEvaluator handles model.foo.data.bar.attributes.x pattern", () => {
   const evaluator = new CelEvaluator();
   const context = {
@@ -544,7 +536,6 @@ Deno.test("CelEvaluator handles model.foo.data.bar.attributes.x pattern", () => 
     },
   };
 
-  // Access data directly (single artifact is unwrapped)
   assertEquals(
     evaluator.evaluate(
       'model["my-vpc"].data.attributes.vpcId',
@@ -560,8 +551,6 @@ Deno.test("CelEvaluator handles model.foo.data.bar.attributes.x pattern", () => 
     2,
   );
 });
-
-// file.contents() and data.*() functions via Environment-registered receiver methods
 
 Deno.test("CelEvaluator evaluates file.contents() with mock file context", () => {
   const evaluator = new CelEvaluator();
@@ -651,7 +640,6 @@ Deno.test("CelEvaluator evaluates data.version() with mock data context", () => 
         dataName: string,
         version: unknown,
       ) => {
-        // cel-js passes int literals as bigint
         if (modelName === "vpc" && dataName === "info" && version == 1) {
           return {
             id: "data-1",
@@ -772,7 +760,6 @@ Deno.test("CelEvaluator data.findBySpec() returns empty array for no matches", (
 
 Deno.test("CelEvaluator receiver method returns null when receiver lacks method", () => {
   const evaluator = new CelEvaluator();
-  // Provide a file object that has no contents method
   const context = {
     file: { path: "/some/path" },
   };
@@ -783,8 +770,6 @@ Deno.test("CelEvaluator receiver method returns null when receiver lacks method"
   );
   assertEquals(result, null);
 });
-
-// Tests for vary dimensions (Issue #384)
 
 Deno.test("CelEvaluator data.latest() with single vary dimension", () => {
   const evaluator = new CelEvaluator();
@@ -912,8 +897,6 @@ Deno.test("CelEvaluator data.listVersions() with vary dimensions", () => {
   assertEquals(result, [1, 2, 3]);
 });
 
-// Tests for deprecation warnings
-
 Deno.test("CelEvaluator emits deprecation warning for model.X.resource pattern but still evaluates", () => {
   const evaluator = new CelEvaluator();
   const context = {
@@ -930,7 +913,6 @@ Deno.test("CelEvaluator emits deprecation warning for model.X.resource pattern b
     },
   };
 
-  // Should still evaluate correctly despite deprecation
   const result = evaluator.evaluate(
     "model.vpc.resource.result.result.attributes.vpcId",
     context,
@@ -972,7 +954,6 @@ Deno.test("CelEvaluator does not emit deprecation warning for data.latest() patt
     },
   };
 
-  // Should work without any deprecation concern
   const result = evaluator.evaluate(
     'data.latest("vpc", "info").attributes.vpcId',
     context,
@@ -981,12 +962,10 @@ Deno.test("CelEvaluator does not emit deprecation warning for data.latest() patt
 });
 
 Deno.test("CelEvaluator data.version() converts CEL int (bigint) to number for cache lookup", () => {
-  // Regression test: CEL represents integers as bigint, but the data
-  // functions use number keys. Map.get(1n) !== Map.get(1), so the
-  // CelDataNamespace must convert to Number() before delegating.
+  // CEL ints are bigint but data functions use number keys, and Map.get(1n) !==
+  // Map.get(1), so CelDataNamespace must convert with Number() first
   const evaluator = new CelEvaluator();
 
-  // Simulate a delegate that uses strict number equality
   const versionStore = new Map<number, Record<string, unknown>>();
   versionStore.set(1, { id: "d1", attributes: { value: "first" } });
   versionStore.set(2, { id: "d2", attributes: { value: "second" } });
@@ -998,13 +977,11 @@ Deno.test("CelEvaluator data.version() converts CEL int (bigint) to number for c
         _dataName: string,
         version: number,
       ) => {
-        // Uses Map.get with number keys — same pattern as sync disk reads
         return versionStore.get(version) ?? null;
       },
     },
   };
 
-  // 3-arg form: data.version(model, name, version)
   const v1 = evaluator.evaluate(
     'data.version("scanner", "result", 1).attributes.value',
     context,
@@ -1017,7 +994,6 @@ Deno.test("CelEvaluator data.version() converts CEL int (bigint) to number for c
   );
   assertEquals(v2, "second");
 
-  // 4-arg form with vary: data.version(model, name, [vary], version)
   const varyContext = {
     data: {
       version: (
@@ -1040,10 +1016,6 @@ Deno.test("CelEvaluator data.version() converts CEL int (bigint) to number for c
   assertEquals(v1Vary, "first");
 });
 
-// swamp-club#3816: a record's version reaches CEL as a double, so
-// data.version() must take a whole-number double as well as an int.
-
-/** A data context of versions 1–3 of scanner/result, and result-prod. */
 function versionedDataContext(requested: number[] = []) {
   const record = (version: number) => ({
     id: `d${version}`,
@@ -1140,9 +1112,6 @@ Deno.test("CelEvaluator.validate: accepts a version computed from data.latest().
   assertEquals(result.valid, true);
 });
 
-// Regression tests for issue #814: ternary expressions must short-circuit
-// so that a missing branch input does not cause evaluation to fail.
-
 Deno.test("CelEvaluator: ternary short-circuits — missing other-branch input does not throw", () => {
   const evaluator = new CelEvaluator();
   const result = evaluator.evaluate(
@@ -1159,11 +1128,6 @@ Deno.test("CelEvaluator: directly-missing input throws InvalidExpressionError", 
     InvalidExpressionError,
   );
 });
-
-// --- Optional select .? for null-safe data access (Issue #783) ---
-// data.latest() and data.version() return null when the instance doesn't exist.
-// Using .? (optional select) on null should return null instead of throwing.
-// Regular . still throws on null — .? is an explicit opt-in.
 
 Deno.test("CelEvaluator: .? on null returns null instead of throwing", () => {
   const evaluator = new CelEvaluator();
@@ -1315,8 +1279,6 @@ Deno.test("CelEvaluator: .? async returns value when exists", async () => {
   assertEquals(result, ["f1"]);
 });
 
-// --- Promise detection in sync evaluate (Issue #88) ---
-
 Deno.test("evaluate: throws InvalidExpressionError when data.latest returns a Promise", () => {
   const evaluator = new CelEvaluator();
   const context = {
@@ -1453,8 +1415,6 @@ Deno.test("evaluateAsync: mixed-type map literals with dyn and string values", a
   assertEquals(result, { name: "host1", address: "10.0.0.1", user: "ansible" });
 });
 
-// --- .content.<key> access for JSON resources (swamp-club#1445) ---
-
 Deno.test("CelEvaluator: data.latest().content.<key> works for JSON resources", () => {
   const evaluator = new CelEvaluator();
   const parsed = { exitCode: 0, stdout: "12929", stderr: "" };
@@ -1575,7 +1535,6 @@ Deno.test("coerceBigInts: preserves __proto__ key in objects", () => {
   assertEquals(result["normal"], 7);
 });
 
-/** Evaluates a model.method call and returns the inputs its delegate got. */
 function modelMethodInputs(
   expression: string,
   context: Record<string, unknown> = {},
@@ -1595,8 +1554,6 @@ function modelMethodInputs(
 
 {
   Deno.test(`CelEvaluator model.method: ints in the inputs reach the delegate as numbers`, () => {
-    // swamp-club#3708: a bigint here failed to serialize once the synthetic
-    // step ran.
     const inputs = modelMethodInputs(
       "model.method('m', 'run', {'n': 1, 'l': [1, 2], 'm': {'k': {'j': 3}}})",
     );
@@ -1623,8 +1580,8 @@ function modelMethodInputs(
   });
 
   Deno.test(`CelEvaluator model.method: a __proto__ key in the inputs stays an own key`, () => {
-    // A CEL map literal never yields an own __proto__ key, so the inputs
-    // come from the context, as a parsed workflow input would.
+    // a CEL map literal never yields an own __proto__ key, so the inputs come
+    // from the context, as a parsed workflow input would
     const payload = Object.create(null) as Record<string, unknown>;
     Object.defineProperty(payload, "__proto__", {
       value: 42n,
@@ -1784,7 +1741,6 @@ Deno.test("coerceBigInts: other class instances still rebuild from their own fie
   assertEquals({ ...(result as Record<string, unknown>) }, { x: 2, y: 3 });
 });
 
-/** Data delegate over a fixed record set; every other name resolves to null. */
 function missingRecordContext(
   records: Record<string, Record<string, unknown>> = {
     result: { id: "d1", name: "result", version: 1, attributes: { ok: 1 } },
@@ -1828,7 +1784,6 @@ Deno.test("CelEvaluator: explains 'No such key' when data.latest() found no reco
     'data.latest("echo-hi", "nope") found no data record',
   );
   assertStringIncludes(message, ".?attributes");
-  // cel-js's source snippet and caret must survive the appended hint.
   assertStringIncludes(
     message,
     'data.latest("echo-hi", "nope").attributes.exitCode',
@@ -1837,9 +1792,8 @@ Deno.test("CelEvaluator: explains 'No such key' when data.latest() found no reco
 });
 
 Deno.test("CelEvaluator: explains 'No such key' for every DataRecord field when data.latest() found no record", async () => {
-  // Typed against DataRecord's declared keys so a new field fails type
-  // checking until it is listed here, and then fails this test until
-  // DATA_RECORD_FIELDS lists it too.
+  // typed against DataRecord's declared keys so a new field fails type checking
+  // until listed here, then fails this test until DATA_RECORD_FIELDS lists it
   const fields: Record<DeclaredKeys<DataRecord>, true> = {
     id: true,
     name: true,
@@ -1937,8 +1891,8 @@ Deno.test("CelEvaluator: leaves 'No such key' alone for an unknown field on a re
 });
 
 Deno.test("CelEvaluator: does not blame a missed optional lookup for an unrelated bad field", async () => {
-  // The miss is recorded, but `typo` is not a DataRecord field, so the hint
-  // must stay off — otherwise it would suggest making the typo optional.
+  // the hint must stay off for a field that is not on DataRecord, otherwise it
+  // would suggest making the typo optional
   const message = await messageFrom(
     new CelEvaluator(),
     'data.latest("m", "nope").?attributes.orValue({}) == {} ' +
@@ -2053,7 +2007,6 @@ Deno.test("CelEvaluator: names the data written under a spec when data.latest() 
     message,
     'data.findBySpec("mirror", "syncRunSummary") to get every record of that spec.',
   );
-  // cel-js's source snippet and caret must survive the appended hint.
   assertStringIncludes(message, "^");
 });
 
@@ -2178,8 +2131,6 @@ Deno.test("createExtensionCelEnvironment: does NOT pre-register literal()", () =
   assertThrows(() => env.evaluate("literal('x')"), Error);
 });
 
-// Constants cel-js 7.6.1 registers ahead of context variables: the type
-// keywords plus the cel, google and optional namespaces (swamp-club#2851).
 const CEL_JS_CONSTANTS = [
   "bool",
   "bytes",
@@ -2214,17 +2165,15 @@ Deno.test("CelEvaluator.evaluate: cel-js constants shadow a context variable of 
   }
 });
 
-// The declared keys of T, without the string or number index signature.
 type DeclaredKeys<T> = keyof {
   [K in keyof T as string extends K ? never : number extends K ? never : K]:
     T[K];
 };
 
 Deno.test("CelEvaluator.evaluate: every top-level ExpressionContext key resolves to its context value", () => {
-  // Typed against ExpressionContext's declared keys (its index signature
-  // stripped) so a new field fails type checking until it is listed here.
-  // deferredExpressions is internal bookkeeping rather than a CEL-visible
-  // name, but is probed so the list stays exhaustive.
+  // typed against ExpressionContext's declared keys so a new field fails type
+  // checking until listed here; deferredExpressions is internal but probed to
+  // keep the list exhaustive
   const keys: Record<DeclaredKeys<ExpressionContext>, true> = {
     deferredExpressions: true,
     model: true,
@@ -2259,8 +2208,6 @@ Deno.test("CelEvaluator.evaluate: every top-level ExpressionContext key resolves
     );
   }
 });
-
-// --- Model name pre-resolution (swamp-club#3029) ---
 
 Deno.test("evaluateAsync: awaits data.prepare before evaluating", async () => {
   const evaluator = new CelEvaluator();

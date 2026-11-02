@@ -26,14 +26,6 @@ import {
 } from "../../../vaults/vault_secret_bag.ts";
 import type { ShellStrategy } from "./shell_strategy.ts";
 
-/**
- * POSIX `sh -c` shell strategy.
- *
- * Used on Linux, macOS, and WSL — the host OS is `linux` or `darwin`
- * inside any of those. Secret resolution delegates to the existing
- * `VaultSecretBag.resolveForShell()`, which emits POSIX `${VAR}`
- * references with quoting-context-aware double quoting.
- */
 export class PosixShellStrategy implements ShellStrategy {
   readonly normalizesCrlfOutput = false;
 

@@ -27,7 +27,6 @@ import {
   isGhCliAvailable,
 } from "./gh_cli.ts";
 
-/** Test runner that records calls and returns pre-programmed responses. */
 function fakeRunner(
   responses: Array<(args: string[], stdin?: string) => GhRunResult>,
 ): GhCliRunner & { calls: Array<{ args: string[]; stdin?: string }> } {
@@ -49,8 +48,6 @@ function fakeEnv(
 ): { get(key: string): string | undefined } {
   return { get: (key) => values[key] };
 }
-
-// ---- isGhCliAvailable ----
 
 Deno.test("isGhCliAvailable: GH_TOKEN fast path returns true without subprocess", async () => {
   const runner = fakeRunner([
@@ -106,8 +103,6 @@ Deno.test("isGhCliAvailable: returns false when gh auth status times out", async
   const result = await isGhCliAvailable(runner, fakeEnv());
   assertEquals(result, false);
 });
-
-// ---- checkGithubPvrEnabled ----
 
 Deno.test("checkGithubPvrEnabled: returns true when API reports enabled", async () => {
   const runner = fakeRunner([
@@ -170,8 +165,6 @@ Deno.test("checkGithubPvrEnabled: returns null when response lacks 'enabled' key
   const result = await checkGithubPvrEnabled("adam/cfgmgmt", runner);
   assertEquals(result, null);
 });
-
-// ---- createGithubIssueViaGh ----
 
 Deno.test("createGithubIssueViaGh: passes body via stdin, returns parsed result", async () => {
   const runner = fakeRunner([

@@ -18,23 +18,13 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * Which versions a keep-last-N `garbageCollection` policy removes.
- *
- * N counts observations only (swamp-club#4195): a restatement, the version
- * an offline flush appends to keep the current latest's content highest
- * (tagged {@link RESTATES_TAG}), does not count toward N. Walking down from
- * the highest version, every version is kept until N observations have been
- * kept; everything below the N-th observation is removed, restatements
- * included. So the highest version (latest, a restatement or not) is kept
- * whenever N is at least 1, and a rebased offline version is never removed
- * just because restatements were appended above it.
- *
- * @module
+ * N counts observations, not restatements; walking down from the highest,
+ * versions are kept until N observations are kept and the rest removed, so the
+ * highest is kept whenever N is at least 1
  */
 
 import { RESTATES_TAG } from "./data.ts";
 
-/** Whether `tags` mark a restatement. */
 export function isRestatement(
   tags: Readonly<Record<string, string>> | undefined,
 ): boolean {
@@ -42,10 +32,9 @@ export function isRestatement(
 }
 
 /**
- * The versions of one data name a policy keeping `keep` observations
- * removes, ascending. `restates` is asked only about versions above the cut,
- * newest first, so its cost is bounded by `keep` plus the restatements among
- * them, not by the name's history. A `keep` of 0 removes every version.
+ * restates is asked only about versions above the cut, newest first, so cost is
+ * bounded by keep plus the restatements among them; a keep of 0 removes every
+ * version
  */
 export async function versionsBeyondKeep(
   versions: readonly number[],
@@ -62,7 +51,6 @@ export async function versionsBeyondKeep(
   return descending.slice(cut).reverse();
 }
 
-/** {@link versionsBeyondKeep} for a store that answers `restates` at once. */
 export function versionsBeyondKeepSync(
   versions: readonly number[],
   keep: number,

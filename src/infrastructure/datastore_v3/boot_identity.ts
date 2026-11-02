@@ -18,33 +18,9 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * Which boot of the operating system this process runs in (swamp-club#3337).
- * A file written and not synced can be lost only to an OS crash or a power
- * loss, and either one ends the boot: within one boot, the page cache holds
- * what was written. The read model writes its files unsynced only where it
- * can name the boot exactly, and checks them on its first open in a later
- * boot.
- *
- * The identity must not depend on the wall clock: a clock step within one
- * boot would look like a reboot, and the check would read the files back
- * from the page cache, pass, and stop watching them. So it is the kernel's
- * own per-boot id: `/proc/sys/kernel/random/boot_id` on Linux, the
- * `kern.bootsessionuuid` sysctl on macOS. Elsewhere, or when it cannot be
- * read, there is no identity and the read model syncs its files instead.
- *
- * The released binary is compiled with granular `--allow-*` flags, and Deno
- * refuses any read under `/proc` without `--allow-all`, however narrow the
- * read grant. There the boot id is read by running `cat`, which
- * `--allow-run` permits, as the macOS id is read by running `sysctl`
- * (swamp-club#3418). Until then a Linux binary named no boot and synced
- * every file it caught up.
- *
- * The premise holds for local, fixed storage. A removable drive pulled
- * mid-write, a network filesystem whose server loses its cache, or a VM
- * restored from a snapshot can lose unsynced writes without ending the
- * boot: keep a checkout's cache on local disk.
- *
- * @module
+ * unsynced files are lost only to an OS crash or power loss, which end the
+ * boot, so the read model writes unsynced only where it can name the boot
+ * exactly and checks them on first open in a later boot
  */
 
 import { getSwampLogger } from "../logging/logger.ts";
@@ -63,10 +39,8 @@ const logger = getSwampLogger(["datastore", "v3", "boot-identity"]);
 let read: Promise<string | undefined> | undefined;
 
 /**
- * The current boot, `boot-id:<id>` on Linux or `boot-session:<uuid>` on
- * macOS; undefined where the boot cannot be named exactly. It is read once
- * per process, since a process never outlives its boot, and a boot that
- * cannot be named is not looked for again.
+ * read once per process, since a process never outlives its boot; a boot that
+ * cannot be named is not looked for again
  */
 export function currentBootIdentity(): Promise<string | undefined> {
   // A failed read is cached on purpose: retrying would run `cat` or
@@ -82,9 +56,8 @@ export function currentBootIdentity(): Promise<string | undefined> {
 }
 
 /**
- * Reads the boot identity on `os`, uncached; undefined when it cannot be
- * read. `bootIdFile` is the Linux boot id's path. A read of it the
- * permissions refuse goes through `cat`; its output counts only as a UUID.
+ * a read the permissions refuse goes through cat, and its output counts only if
+ * it is a UUID
  */
 export async function readBootIdentity(
   os: typeof Deno.build.os,
@@ -118,11 +91,6 @@ export async function readBootIdentity(
   return undefined;
 }
 
-/**
- * The boot id file as `cat` prints it, when it is a UUID; undefined when no
- * `cat` runs it, it fails or times out, or prints anything else. The next
- * path is tried only when one does not exist.
- */
 async function catBootId(file: string): Promise<string | undefined> {
   for (const cat of CAT_PATHS) {
     let output: Deno.CommandOutput;

@@ -23,33 +23,17 @@ import type { DownloadOptions } from "./download_progress.ts";
 import { validateRedirectUrl } from "./integrity.ts";
 import { markErrorPaths, UserError } from "../errors.ts";
 
-/**
- * Port for checking and performing updates.
- * Implemented by infrastructure adapters (e.g. HttpUpdateChecker).
- */
 export interface UpdateChecker {
-  /**
-   * Check the latest available version by inspecting the stable URL redirect.
-   * Returns the redirect URL containing the version, or null if no redirect.
-   * Aborting `signal` rejects with its reason.
-   */
   checkForUpdate(
     platform: Platform,
     signal?: AbortSignal,
   ): Promise<string | null>;
 
-  /**
-   * Fetch the expected SHA-256 checksum for a tarball.
-   * Derives the checksum URL from the tarball URL by appending ".sha256".
-   * Aborting `signal` rejects with its reason.
-   */
   fetchChecksum(tarballUrl: string, signal?: AbortSignal): Promise<string>;
 
   /**
-   * Download the tarball, verify its SHA-256 checksum, extract, and install.
-   * Throws UserError if checksum verification fails. Aborting
-   * `options.signal` before the binary is replaced rejects with its reason
-   * and leaves the installed binary untouched.
+   * aborting options.signal before the binary is replaced rejects with its
+   * reason and leaves the installed binary untouched
    */
   downloadAndInstall(
     url: string,
@@ -59,9 +43,6 @@ export interface UpdateChecker {
   ): Promise<void>;
 }
 
-/**
- * Discriminated union for update results.
- */
 export type UpdateResult =
   | { status: "up_to_date"; currentVersion: string; warning?: string }
   | {
@@ -77,10 +58,6 @@ export type UpdateResult =
     warning?: string;
   };
 
-/**
- * Returns true when the version is a development build.
- * Dev builds have an empty sha (e.g. "20260206.200442.0-sha.") or lack the "-sha." segment entirely.
- */
 export function isDevBuild(version: string): boolean {
   const shaIndex = version.indexOf("-sha.");
   if (shaIndex === -1) {
@@ -90,43 +67,31 @@ export function isDevBuild(version: string): boolean {
   return shaValue.length === 0;
 }
 
-/**
- * Extract a CalVer version string from a redirect URL.
- * Expected URL pattern: .../swamp/{version}/binary/...
- * Returns null if the pattern doesn't match.
- */
 export function parseVersionFromRedirectUrl(url: string): string | null {
   const match = url.match(/\/swamp\/([^/]+)\/binary\//);
   return match ? match[1] : null;
 }
 
-/** What decides the hint when an update cannot replace the binary. */
 export interface PermissionDeniedFacts {
   os: typeof Deno.build.os;
   binaryPath: string;
   /**
-   * Whether the binary's directory accepts new files. When it does, the
-   * binary itself is protected (an immutable flag, a sticky directory).
+   * when the directory accepts new files, the binary itself is protected (an
+   * immutable flag, a sticky directory)
    */
   dirWritable: boolean;
-  /** Whether the binary's directory has the sticky bit (mode 1000). */
   dirSticky?: boolean;
-  /** The user's home directory; undefined when HOME is unset. */
   homeDir?: string;
-  /** Owner of the binary's directory; null when it cannot be read. */
   dirOwnerUid: number | null;
-  /** Owner of the binary; null when it cannot be read or does not exist. */
   binaryOwnerUid?: number | null;
   currentUid: number | null;
-  /** The invoking user's login name (SUDO_USER, else USER). */
   userName?: string;
 }
 
 /**
- * Whether a sticky directory stops this user replacing the binary. In a
- * sticky directory only the file's owner, the directory's owner and root may
- * rename over a file (swamp-club#3822). A non-root process holding
- * CAP_FOWNER may too; it is treated as blocked, and the hint still applies.
+ * in a sticky directory only the file's owner, the directory's owner and root
+ * may rename over a file; a non-root CAP_FOWNER process may too but is treated
+ * as blocked
  */
 export function stickyDirectoryBlocksReplace(
   facts: PermissionDeniedFacts,
@@ -147,9 +112,8 @@ function isWithin(parent: string, child: string): boolean {
 }
 
 /**
- * The message for an update that cannot write the binary's directory.
- * Suggests sudo only for a root-owned directory outside the home directory;
- * sudo on a binary in a user's directory leaves it owned by root.
+ * suggests sudo only for a root-owned directory outside the home directory;
+ * sudo on a binary in a user's directory leaves it owned by root
  */
 export function permissionDeniedMessage(facts: PermissionDeniedFacts): string {
   const prefix = `Cannot update ${facts.binaryPath}: permission denied.`;
@@ -229,7 +193,6 @@ function currentUid(): number | null {
   }
 }
 
-/** The uid of the user who ran sudo; null outside sudo. */
 function sudoUid(): number | null {
   const value = Deno.env.get("SUDO_UID");
   if (value === undefined || !/^\d+$/.test(value)) return null;
@@ -244,7 +207,6 @@ async function directoryOwnerUid(binaryPath: string): Promise<number | null> {
   }
 }
 
-/** Whether a new file can be created beside `binaryPath`. */
 async function directoryAcceptsFiles(binaryPath: string): Promise<boolean> {
   const probeFile = join(
     dirname(binaryPath),
@@ -261,14 +223,12 @@ async function directoryAcceptsFiles(binaryPath: string): Promise<boolean> {
   return true;
 }
 
-/** Mode and owners of a binary and its directory; null when unreadable. */
 export interface BinaryOwnership {
   dirMode: number | null;
   dirOwnerUid: number | null;
   binaryOwnerUid: number | null;
 }
 
-/** Reads the {@link BinaryOwnership} of `binaryPath`. */
 export type ReadBinaryOwnership = (
   binaryPath: string,
 ) => Promise<BinaryOwnership>;
@@ -307,11 +267,6 @@ async function permissionDeniedFacts(
   };
 }
 
-/**
- * The permission-denied message for `binaryPath`, from the live directory
- * mode, owners, user and home directory. `dirWritable` skips the directory
- * probe when the caller has just run it.
- */
 export async function describePermissionDenied(
   binaryPath: string,
   dirWritable?: boolean,
@@ -322,9 +277,6 @@ export async function describePermissionDenied(
   );
 }
 
-/**
- * Domain service for self-update operations.
- */
 export class UpdateService {
   private readonly checker: UpdateChecker;
   private readonly currentVersion: string;
@@ -350,9 +302,6 @@ export class UpdateService {
     return undefined;
   }
 
-  /**
-   * Check whether an update is available without installing.
-   */
   async check(
     platform: Platform,
     signal?: AbortSignal,
@@ -386,14 +335,9 @@ export class UpdateService {
   }
 
   /**
-   * Check whether the process can replace the binary.
-   * Throws a UserError with remediation advice if not.
-   *
-   * Every OS installs by renaming a new file into the binary's directory, so
-   * only write access to that directory matters — not to the binary itself,
-   * which may be read-only or owned by another user (swamp-club#3817) —
-   * unless the directory is sticky, where another user's binary cannot be
-   * renamed over (swamp-club#3822).
+   * every OS installs by renaming a new file into the binary's directory, so
+   * only write access to that directory matters; a sticky directory blocks
+   * renaming over another user's binary
    */
   async checkWritePermission(): Promise<void> {
     const probeFile = join(
@@ -432,11 +376,7 @@ export class UpdateService {
     }
   }
 
-  /**
-   * Check for and install an update.
-   * Downloads from the resolved versioned URL, not the stable redirect pointer.
-   * `options` reports download progress and can cancel the update.
-   */
+  /** downloads from the resolved versioned URL, not the stable redirect pointer */
   async update(
     platform: Platform,
     options: DownloadOptions = {},

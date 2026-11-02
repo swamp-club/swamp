@@ -22,11 +22,6 @@ import fc from "fast-check";
 import { normalizeModelTypeName } from "./control_plane_types.ts";
 import { ModelType } from "./model_type.ts";
 
-/**
- * Letters in both cases, digits, '-', '_', '@' and every separator the
- * ModelType normalizer folds, so generated strings exercise leading '@' and
- * '/' runs mixed with whitespace.
- */
 const TYPE_CHARS = [
   ..."abcXYZ019",
   "-",

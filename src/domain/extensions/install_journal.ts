@@ -18,32 +18,9 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * The install journal: the record one extension install writes before it
- * changes anything, so a crash at any point can be put right.
- *
- * An install builds the new version of each root it swaps in a staging
- * dir, moves every live root aside (phase 1), moves every new root into
- * place (phase 2) and only then deletes the old roots. The roots are the
- * extension root (`<pulledRoot>/<name>/`) and each bundle namespace dir
- * (`.swamp/<kind>-bundles/<ns>/`). Each root's `old/` and `new/` live in
- * its own staging dir next to it, so every rename stays on one
- * filesystem:
- *
- * - extension root: `<pulledRoot>/.swamp-staging/<stagingId>/{old,new}/0`
- * - bundle root: `<kindDir>/.swamp-staging-<stagingId>/{old,new}/<i>`
- *
- * The journal sits at `<pulledRoot>/.swamp-staging/<stagingId>/journal.json`.
- *
- * {@link planRecovery} decides, from the journal and what is actually on
- * disk, whether to roll the install forward or back. In-process failure
- * handling and crash recovery both use it, so both follow one rule.
- *
- * Pure: no filesystem access. The journal is repo-controlled data (a
- * `.swamp` dir can be committed), so {@link parseInstallJournal} checks
- * every path against the layout derived from the extension name before
- * recovery acts on it. The journal records the repo dir it was written
- * under, and a journal read from a repo that has since moved is rebased
- * onto the current repo dir before those checks.
+ * written before an install changes anything so a crash can be put right;
+ * repo-controlled data, so parseInstallJournal checks every path against the
+ * layout derived from the extension name
  */
 
 import {
@@ -56,28 +33,19 @@ import {
 } from "@std/path";
 import { z } from "zod";
 
-/** Name of the per-install staging parent inside the pulled root. */
 export const STAGING_DIR_NAME = ".swamp-staging";
 
-/** Prefix of a bundle root's staging dir, next to its namespace dir. */
 export const BUNDLE_STAGING_PREFIX = ".swamp-staging-";
 
-/** File name of the journal inside the extension root's staging dir. */
 export const INSTALL_JOURNAL_FILE = "journal.json";
 
-/** Staged `manifest.yaml`, moved into the new extension root last. */
 export const STAGED_MANIFEST_FILE = "manifest.yaml";
 
-/** Name of a bundle root's staging dir for `stagingId`. */
 export function bundleStagingDirName(stagingId: string): string {
   return `${BUNDLE_STAGING_PREFIX}${stagingId}`;
 }
 
-/**
- * True for a staging entry: `.swamp-staging` in the pulled root, or a
- * `.swamp-staging-<id>` sibling in a bundle kind dir. Every reader that
- * lists the pulled root or a bundle kind dir skips these.
- */
+/** every reader that lists the pulled root or a bundle kind dir skips these */
 export function isStagingEntryName(name: string): boolean {
   return name === STAGING_DIR_NAME || name.startsWith(BUNDLE_STAGING_PREFIX);
 }
@@ -85,7 +53,6 @@ export function isStagingEntryName(name: string): boolean {
 const UUID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-/** True when `name` is a staging id (a lowercase or uppercase uuid). */
 export function isStagingId(name: string): boolean {
   return UUID_PATTERN.test(name);
 }
@@ -95,18 +62,12 @@ export function isStagingId(name: string): boolean {
 // name is a plain relative path with no dots.
 const EXTENSION_NAME_PATTERN = /^@[a-z0-9_-]+\/[a-z0-9_-]+(\/[a-z0-9_-]+)*$/;
 
-/**
- * True when `name` is a scoped extension name: a plain relative path with
- * no dots, safe to join onto the pulled root.
- */
 export function isExtensionName(name: string): boolean {
   return EXTENSION_NAME_PATTERN.test(name);
 }
 
-/** Which kind of root: the extension root or a bundle namespace dir. */
 export type InstallRootRole = "extension" | "bundle";
 
-/** Journal phase. `swapped` is written after the last rename. */
 export type InstallJournalPhase = "staged" | "swapped";
 
 const InstallRootSchema = z.object({
@@ -154,28 +115,22 @@ const InstallJournalSchema = z.object({
   nestedRoots: z.array(NestedRootSchema),
 }).strict();
 
-/** One root the install swaps. */
 export type InstallRoot = z.infer<typeof InstallRootSchema>;
 
-/** A nested entry root carried into the new extension root. */
 export type NestedRoot = z.infer<typeof NestedRootSchema>;
 
-/** The journal as written to disk. */
 export type InstallJournal = z.infer<typeof InstallJournalSchema>;
 
-/** Staging paths for one root, all derived from its live path. */
 export interface RootStagingPaths {
   stagingDir: string;
   old: string;
   new: string;
-  /** Where recovery moves a superseded root; deleted with staging. */
   discard: string;
 }
 
 /**
- * The staging paths for root `index` of `stagingId`. The single source
- * of the layout: installs build their journal from it, and
- * {@link parseInstallJournal} requires every path to match it.
+ * the single source of the layout: installs build their journal from it and
+ * parseInstallJournal requires every path to match it
  */
 export function rootStagingPaths(args: {
   pulledRoot: string;
@@ -196,12 +151,10 @@ export function rootStagingPaths(args: {
   };
 }
 
-/** Where recovery moves a superseded copy of `root`. */
 export function rootDiscardPath(root: InstallRoot): string {
   return join(root.stagingDir, "discard", String(root.index));
 }
 
-/** The journal's path for `stagingId`. */
 export function installJournalPath(
   pulledRoot: string,
   stagingId: string,
@@ -209,18 +162,14 @@ export function installJournalPath(
   return join(pulledRoot, STAGING_DIR_NAME, stagingId, INSTALL_JOURNAL_FILE);
 }
 
-/** The live roots an install of one extension may swap. */
 export interface ExpectedLivePaths {
   extensionRoot: string;
   bundleRoots: ReadonlyArray<string>;
 }
 
-/** What {@link parseInstallJournal} checks a journal against. */
 export interface InstallJournalBounds {
-  /** The absolute repo dir recovery runs in. */
   repoDir: string;
   pulledRoot: string;
-  /** Lockfile paths an install in this checkout can write. */
   allowedLockfilePaths: ReadonlyArray<string>;
   /**
    * The live roots of `extensionName`. Injected so this module does not
@@ -229,27 +178,14 @@ export interface InstallJournalBounds {
   expectedLivePaths: (extensionName: string) => ExpectedLivePaths;
 }
 
-/** Result of {@link parseInstallJournal}. */
 export type ParseInstallJournalResult =
   | { ok: true; journal: InstallJournal }
   | { ok: false; reason: string };
 
 /**
- * Validates a journal read from disk before recovery acts on it. Beyond
- * the schema, every path must be exactly the one derived from the
- * extension name and the staging id, so a hand-edited or planted journal
- * cannot point a rename anywhere else.
- *
- * A journal written under another repo dir (the repo was moved, copied,
- * restored at another path or reached by another spelling) is first
- * rebased onto `bounds.repoDir`: each path under the recorded repo dir is
- * moved under the current one, and any other path is kept. The checks
- * then run on the rebased journal unchanged, so the rebase can only
- * accept a journal that could have been written with the current paths.
- * The returned journal is the rebased one.
- *
- * @param journalDirName Name of the dir the journal was read from; must
- *   equal the journal's stagingId.
+ * every path must be the one derived from the extension name and staging id, so
+ * a planted journal cannot aim a rename elsewhere; a journal from a moved repo
+ * is rebased onto bounds.repoDir first
  */
 export function parseInstallJournal(
   raw: unknown,
@@ -325,10 +261,9 @@ export function parseInstallJournal(
           `bundle root ${root.live} is not a bundle dir of ${journal.extensionName}`,
       };
     }
-    // A bundle root may have had nothing before and get nothing from the
-    // archive: it is journaled so a roll-back also removes the bundles
-    // the catalog save's loaders write into it after the swap. The
-    // extension root always has a new version (checked above).
+    // a bundle root may have had nothing before and get nothing from the
+    // archive: it is journaled so a roll-back removes the bundles loaders write
+    // into it after the swap
     if (root.liveIsLink && (root.role !== "extension" || !root.liveExisted)) {
       return {
         ok: false,
@@ -388,8 +323,8 @@ export function parseInstallJournal(
 }
 
 /**
- * `journal` with every path under its recorded repo dir moved under `to`.
- * A path outside it (a lockfile kept outside the repo) is kept as is.
+ * a path outside the recorded repo dir (a lockfile kept outside the repo) is
+ * kept as is
  */
 function rebaseJournal(journal: InstallJournal, to: string): InstallJournal {
   const from = resolve(journal.repoDir);
@@ -417,10 +352,8 @@ function rebaseJournal(journal: InstallJournal, to: string): InstallJournal {
   };
 }
 
-/** What recovery observed at one path, via lstat (never following links). */
 export type ObservedPath = "absent" | "dir" | "file" | "symlink" | "other";
 
-/** What recovery observed for one root. */
 export interface ObservedRoot {
   old: ObservedPath;
   new: ObservedPath;
@@ -428,19 +361,15 @@ export interface ObservedRoot {
   discard: ObservedPath;
 }
 
-/** Everything {@link planRecovery} reads from disk. */
 export interface ObservedInstall {
-  /** Keyed by root index. */
   roots: ReadonlyMap<number, ObservedRoot>;
   stagedManifest: ObservedPath;
   liveManifest: ObservedPath;
-  /** Checksum of the live manifest.yaml, or null when it is absent. */
   liveManifestDigest: string | null;
   /**
-   * A staging dir, or a dir between a root's container and its live
-   * path, that is not a plain directory (a symlink could send a rename
-   * outside the repository). Null when every one is a plain dir or
-   * absent.
+   * a staging dir, or one between a root's container and its live path, that is
+   * not a plain directory, since a symlink could send a rename outside the
+   * repository
    */
   unsafeDir: string | null;
 }
@@ -449,20 +378,13 @@ export interface ObservedInstall {
 export interface RecoveryRename {
   from: string;
   to: string;
-  /** Set when the path moved is a symlink rather than a directory. */
   kind?: "symlink";
 }
 
 /**
- * The recovery decision.
- *
- * - `forward`: the install finished its renames and its lockfile entry
- *   landed. Nothing moves; the staging dirs (holding the old roots) are
- *   deleted.
- * - `back`: `renames` put every root back as it was before the install;
- *   then the staging dirs (holding the new roots) are deleted.
- * - `leave`: the disk does not match any state the install can produce.
- *   Nothing moves and the journal stays, so no root's only copy is lost.
+ * forward: nothing moves, staging is deleted; back: renames restore every root
+ * first; leave: disk matches no state an install produces, so nothing moves and
+ * no root's only copy is lost
  */
 export type RecoveryPlan =
   | { direction: "forward" }
@@ -470,42 +392,9 @@ export type RecoveryPlan =
   | { direction: "leave"; reason: string };
 
 /**
- * Decides how to put an interrupted install right, from the journal and
- * what is on disk. Each root is judged from where its original copy is,
- * never from the extension's manifest: in `old/<i>` once phase 1 moved
- * it aside, otherwise still live. Where the new copy is (`new/<i>`, live,
- * `discard/<i>`, or already deleted by a cleanup that crashed) does not
- * matter for a roll-back, so a crash anywhere, including in `begin` or
- * while deleting staging, stays recoverable.
- *
- * Roll forward only when the journal reached `swapped` and the lockfile
- * entry it names carries the new checksum; otherwise roll back.
- *
- * Rolling back, per root (o = `old/<i>` present, l = live present):
- *
- * | liveExisted | o | l | action                                        |
- * | ----------- | - | - | --------------------------------------------- |
- * | yes         | 0 | 1 | none: the original never left                 |
- * | yes         | 1 | 0 | old → live                                    |
- * | yes         | 1 | 1 | live → discard, old → live                    |
- * | no          | 0 | 1 | live → discard                                |
- * | no          | 0 | 0 | none                                          |
- *
- * An extension root that was a symlink (`liveIsLink`) is judged the
- * same way, with the link standing where the directory would: `old/<i>`
- * or live holds the link, and the link is what goes back.
- *
- * A live root found next to its moved-aside original is superseded
- * whatever it holds: the new version, or a bundle cache dir a loader
- * outside the lock recreated. Rolling forward, nothing may be left in
- * `new/<i>`, the extension root must be live and the live manifest must
- * be the one this install wrote. A bundle root's presence is not checked:
- * it is a cache that loaders outside the lock rebuild or evict.
- *
- * Anything else yields `leave`: an original that is gone (liveExisted,
- * neither copy present), an `old/<i>` for a root that did not exist, an
- * occupied `discard/<i>`, anything that is not a plain directory where a
- * directory belongs (a symlink included), or an unsafe staging dir.
+ * judges each root by where its original copy is, so a crash anywhere stays
+ * recoverable; rolls forward only if the journal reached swapped and the
+ * lockfile entry has the new checksum, else back
  */
 export function planRecovery(
   journal: InstallJournal,
@@ -608,10 +497,8 @@ export function planRecovery(
 }
 
 /**
- * The entry names nested under `name`, relative to its root: for
- * `@a/b` with an entry `@a/b/c`, returns `["c"]`. A nested entry's root
- * lives inside its parent's root, so the parent's digest and swap must
- * treat it as someone else's files.
+ * a nested entry's root lives inside its parent's, so the parent's digest and
+ * swap must treat it as someone else's files
  */
 export function nestedEntryRelDirs(
   name: string,

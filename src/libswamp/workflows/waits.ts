@@ -55,7 +55,6 @@ import {
   createWorkflowRunId,
 } from "../../domain/workflows/workflow_id.ts";
 
-/** A wait for a signal held by a step of a suspended run. */
 export interface SignalWaitInfo {
   waitId: string;
   workflowId: string;
@@ -63,43 +62,34 @@ export interface SignalWaitInfo {
   runId: string;
   jobName: string;
   stepName: string;
-  /** The key the wait holds, when its step declared one. */
   key?: string;
-  /** When the step started waiting. */
   waitingSince: string | undefined;
-  /** When the wait stops accepting a signal. */
   deadline: string;
   /**
    * True when the deadline has passed. The wait no longer accepts a signal:
    * resuming the run fails its step with `wait_timeout`.
    */
   expired: boolean;
-  /** The payload schema captured when the step started waiting. */
   schema: InputsSchema;
-  /** The command that moves the wait on: a signal, or a resume once expired. */
   nextCommand: string;
   /**
-   * The command that signals the wait by its workflow and key, beside
-   * {@link nextCommand}, which names it by ID (swamp-club#3214). Only on an
-   * open wait whose step declared a key.
+   * signals the wait by its workflow and key, beside `nextCommand`, which names
+   * it by id. Only on an open wait whose step declared a key.
    */
   signalByKeyCommand?: string;
 }
 
 /**
- * A signal by key held for the next wait of its key, because none was open
- * when it arrived (swamp-club#3214). Named by its receipt; the payload is
- * never listed.
+ * a signal by key held for the next wait of its key because none was open when
+ * it arrived; named by its receipt, and the payload is never listed
  */
 export interface PendingSignalInfo {
   workflowId: string;
   /** The workflow the signal is for, which a reader is authorized against. */
   workflowName: string;
   key: string;
-  /** The ID of the receipt the sender was given. */
   receiptId: string;
   receivedAt: string;
-  /** When its age limit ends: no wait takes it after that. */
   heldUntil: string;
   submittedBy: string;
 }
@@ -115,7 +105,6 @@ export interface UnreadableWaitInfo {
   runId: string;
   jobName: string;
   stepName: string;
-  /** The resume that fails the step, so the run can move on. */
   nextCommand: string;
 }
 
@@ -130,45 +119,27 @@ export interface SignalledWaitInfo {
   runId: string;
   jobName: string;
   stepName: string;
-  /** The key the wait holds, when its step declared one. */
   key?: string;
-  /** When the step started waiting. */
   waitingSince: string | undefined;
   deadline: string;
-  /** The receipt of the signal that settled the wait. */
   signal: SignalReceipt;
   /**
    * True when nothing else holds the run back, so a resume moves it on.
    * False when this host has no copy of the run.
    */
   awaitingResume: boolean;
-  /** The resume that applies the signal. */
   nextCommand: string;
 }
 
 export interface WorkflowWaitsData {
   waits: SignalWaitInfo[];
   unreadableWaits: UnreadableWaitInfo[];
-  /** Listed only when asked for with `includeSignalled`. */
   signalled?: SignalledWaitInfo[];
-  /**
-   * Listed only when asked for with `includePending`, soonest `heldUntil`
-   * first; empty when the datastore holds no wait records.
-   */
   pending?: PendingSignalInfo[];
 }
 
-/** Options for {@link workflowWaits}. */
 export interface WorkflowWaitsOptions {
-  /**
-   * Also list the waits a signal has settled whose run has not been resumed
-   * yet, under `signalled`.
-   */
   includeSignalled?: boolean;
-  /**
-   * Also list the signals by key held for the next wait of their key, under
-   * `pending` (swamp-club#3214).
-   */
   includePending?: boolean;
 }
 
@@ -179,14 +150,12 @@ export type WorkflowWaitsEvent =
 
 export interface WorkflowWaitsDeps {
   runRepo: Pick<WorkflowRunRepository, "findGlobalByStatus" | "findById">;
-  /** Where wait records are kept, or why this datastore cannot hold them. */
   signalWaits: SignalWaitSupport;
   /**
    * Names the workflow of a pending signal its sender was not authorized
    * for by name. Without it such a signal is not listed.
    */
   workflowRepo?: Pick<WorkflowRepository, "findAll" | "findAllById">;
-  /** The time deadlines are compared against. Defaults to the current time. */
   now?: () => Date;
 }
 
@@ -219,12 +188,9 @@ function unreadableAt(
 }
 
 /**
- * The held pending signals, each under the workflow name it is for. A
- * signal whose sender was authorized for a name is listed under that name.
- * One sent without (through the local CLI) is listed only when exactly one
- * workflow declares its ID: IDs are not unique, and no single name could
- * authorize a reader for it otherwise. One whose name cannot be found is
- * left out.
+ * each pending signal is listed under the name its sender was authorized for;
+ * one sent without (local CLI) only when exactly one workflow declares its id,
+ * as ids are not unique; otherwise it is left out
  */
 async function collectPending(
   ctx: LibSwampContext,
@@ -266,7 +232,6 @@ function pendingInfo(
   };
 }
 
-/** The name of the one workflow that declares `workflowId`, if exactly one does. */
 async function uniqueWorkflowName(
   ctx: LibSwampContext,
   deps: WorkflowWaitsDeps,
@@ -295,10 +260,9 @@ async function uniqueWorkflowName(
 }
 
 /**
- * The waits to list, by id: every registration, plus one made here for each
- * wait a suspended run holds without one, which is a run suspended before
- * waits were registered (swamp-club#3068). A waiting step whose stored wait
- * cannot be read has no id and goes to `unreadableWaits`.
+ * every registration, plus one made here for each wait a suspended run holds
+ * without one (a run suspended before waits were registered). A waiting step
+ * whose stored wait cannot be read has no id and goes to `unreadableWaits`.
  */
 async function collectRegistrations(
   deps: WorkflowWaitsDeps,
@@ -354,13 +318,9 @@ async function collectRegistrations(
 }
 
 /**
- * Lists the waits for a signal that nothing has answered, oldest deadline
- * first. A wait past its deadline is settled as timed out and listed too,
- * flagged `expired`, so the run that needs a resume can be found. A wait a
- * signal settled, or whose run ended, is not listed.
- *
- * Records nothing else removed are swept on the way (see
- * {@link sweepWaitRecords}).
+ * a wait past its deadline is settled as timed out and listed flagged
+ * `expired`, so runs needing a resume can be found; settled waits and ended
+ * runs are not listed. Orphaned records are swept on the way.
  */
 export async function* workflowWaits(
   ctx: LibSwampContext,
@@ -467,8 +427,8 @@ export async function* workflowWaits(
                 : {}),
               waitingSince: registration.registeredAt,
               deadline: registration.deadline,
-              // The shape every reply to a sender has: only the run view
-              // shows how the signal arrived (swamp-club#3214).
+              // the shape every reply to a sender has: only the run view shows
+              // how the signal arrived
               signal: receiptForCaller(outcome.record.receipt),
               awaitingResume,
               nextCommand: resumeCommandFor(

@@ -17,15 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * The `swamp behavior` and `swamp model` groups as the real root registers
- * them (swamp-club#3409): the preferred group is listed first, the legacy
- * group says it is the legacy spelling, the British `behaviour` alias reaches
- * the very same commands, telemetry records the canonical path, and the two
- * trees have the same commands — checked on the root src/cli/mod.ts builds,
- * not on a hand-made copy.
- */
-
 import "../src/domain/models/models.ts";
 import { assert, assertEquals, assertStrictEquals } from "@std/assert";
 import { buildCommandTree } from "../src/cli/mod.ts";
@@ -39,7 +30,6 @@ import type { CommandInvocationData } from "../src/domain/telemetry/mod.ts";
 
 const root = buildCommandTree();
 
-/** The command reached by typing `words` at the root. */
 function at(words: string[]): AnyCommand {
   let command = root;
   for (const word of words) {
@@ -50,7 +40,6 @@ function at(words: string[]): AnyCommand {
   return command;
 }
 
-/** Every command path under `group`, as words after the group. */
 function commandPaths(group: AnyCommand, prefix: string[] = []): string[][] {
   return group.getCommands(true).flatMap((child: AnyCommand) => {
     const path = [...prefix, child.getName()];
@@ -108,7 +97,6 @@ Deno.test("root: every model command has a behavior twin and every behavior comm
   assertEquals(fromModel.length, fromBehavior.length);
 });
 
-/** The recorded invocation for `args`, and the values it redacted. */
 function record(args: string[]): {
   recorded: CommandInvocationData;
   sensitive: string[];
@@ -120,7 +108,6 @@ function record(args: string[]): {
   return { recorded, sensitive };
 }
 
-/** `invocation` without its commandSpelling. */
 function withoutSpelling(
   invocation: CommandInvocationData,
 ): CommandInvocationData {
@@ -128,10 +115,6 @@ function withoutSpelling(
   return rest;
 }
 
-/**
- * Every way to type the command at `path` under `group`: the last word as its
- * name or as any of its aliases.
- */
 function typedSpellings(group: string, path: string[]): string[][] {
   if (path.length === 0) return [[]];
   const leaf = at([group, ...path]);
@@ -171,7 +154,6 @@ Deno.test("root: every behavior spelling records exactly what its swamp model sp
       }
     }
   }
-  // Every command, both root spellings, with and without positionals.
   assert(checked >= modelPaths.length * 4, `checked ${checked}`);
 });
 
@@ -182,8 +164,6 @@ Deno.test("root: every behavior path's twin resolves in the model tree (swamp-cl
       assertEquals(twin[0], "model");
       const command = at(twin);
       assertEquals(command.getName(), twin.at(-1), twin.join(" "));
-      // The group roots differ by the method level; below them, a twin has
-      // the same subcommands.
       if (path.length === 0) continue;
       assertEquals(
         command.getCommands(true).map((c: AnyCommand) => c.getName()).sort(),

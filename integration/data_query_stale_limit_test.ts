@@ -18,12 +18,9 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * A limited `data query` counts only records that survive the stale-row
- * check (swamp-club#2985). The repository, catalog and query service are
- * opened as repo_context opens them for the CLI, and the libswamp dataQuery
- * generator derives `limited` from the count the service returns, so a stale
- * catalog row (backing file deleted) must neither shorten the page nor make
- * a full page read as complete.
+ * a stale catalog row (backing file deleted) must neither shorten a limited
+ * page nor make a full page read as complete; limited derives from the count
+ * the service returns
  */
 
 import "../src/domain/models/models.ts";

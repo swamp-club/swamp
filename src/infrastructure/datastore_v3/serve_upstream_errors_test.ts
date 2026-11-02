@@ -80,7 +80,6 @@ Deno.test("ServeUnreachableError: says nothing changed when the request was neve
     ),
     true,
   );
-  // Read for a lock or a read as much as a write: it names no write.
   assertEquals(error.message.includes("refuses the write"), false);
   assertEquals(isNetworkFailure(error), true);
 });
@@ -135,7 +134,6 @@ Deno.test("serveErrorFromReply: 409 precondition_failed is an expect-failed Comm
     [error.recordKey, error.seq, error.changedBy, error.changedAt],
     ["data/x/raw", 7, "user:bob", "2026-10-25T00:00:00Z"],
   );
-  // A local expect-failed refusal carries no code; neither does this.
   assertEquals((error as { code?: unknown }).code, undefined);
   const bare = serveErrorFromReply(409, {
     code: "precondition_failed",
@@ -280,7 +278,6 @@ Deno.test("serveErrorFromReply: 409 commit_<reason> is a CommitRejectedError wit
   assertEquals(error.reason, "stale-fence");
   assertEquals(error.code, "commit_stale-fence");
   assertEquals(error.message, "fence 3 is below 4");
-  // A reason this client does not know stays serve's code, untyped.
   const unknown = serveErrorFromReply(409, {
     code: "commit_from-the-future",
     message: "new",

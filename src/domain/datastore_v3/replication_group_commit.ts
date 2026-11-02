@@ -17,24 +17,8 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Group commit for serve's write requests (swamp-club#3489, Phase 4D3):
- * concurrent requests share the syncs that confirm their commits are
- * replicated, instead of one sync each.
- *
- * Pure: the sync is passed in, and nothing here keeps time. See "Phase 4D3"
- * in `design/enablers/datastore-litestream.md`.
- *
- * @module
- */
-
 import { V3ReplicationError } from "./litestream_replication.ts";
 
-/**
- * Syncs the replica and publishes its head: resolves with the high-water
- * mark the published head covers, or undefined when no head was published.
- * Rejects when the sync was not confirmed.
- */
 export type GroupSync = () => Promise<number | undefined>;
 
 interface Waiter {
@@ -44,10 +28,8 @@ interface Waiter {
 }
 
 /**
- * Confirms marks with as few syncs as concurrent callers allow. A caller is
- * confirmed by a successful sync whose published head covers its mark. One
- * sync runs at a time; when it settles, the next starts at once for every
- * caller it did not confirm, covering everything committed meanwhile.
+ * one sync runs at a time; when it settles the next starts at once for every
+ * caller it did not confirm, covering everything committed meanwhile
  */
 export class ReplicationGroupCommit {
   readonly #sync: GroupSync;
@@ -58,11 +40,6 @@ export class ReplicationGroupCommit {
     this.#sync = sync;
   }
 
-  /**
-   * Resolves once a published head covers `mark`, the high-water mark read
-   * after the caller's commits landed. Rejects with the error of the sync
-   * that should have covered it.
-   */
   confirm(mark: number): Promise<void> {
     return new Promise<void>((resolve, reject) => {
       this.#waiting.push({ mark, resolve, reject });

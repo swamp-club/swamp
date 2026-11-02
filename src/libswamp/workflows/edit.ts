@@ -49,17 +49,9 @@ import {
 import { isUuid } from "../../domain/models/model_lookup.ts";
 import { findWorkflowById } from "../../domain/workflows/workflow_lookup.ts";
 
-/**
- * Data structure for the workflow edit output.
- */
 export interface WorkflowEditData {
   path: string;
   editor?: string;
-  /**
-   * `updated` when the edit was saved, `unchanged` when the editor closed
-   * with nothing to save, `opened` when a file that is not a stored workflow
-   * was edited in place.
-   */
   status: "opened" | "updated" | "unchanged";
   /**
    * With `unchanged`: where the copy was kept, because the editor is not
@@ -68,7 +60,6 @@ export interface WorkflowEditData {
   keptPath?: string;
   name: string;
   id: string;
-  /** Set when the edit replaced a workflow file that did not parse. */
   repaired?: boolean;
 }
 
@@ -81,36 +72,26 @@ export type WorkflowEditEvent =
   | { kind: "completed"; data: WorkflowEditData }
   | { kind: "error"; error: SwampError };
 
-/** What a grant can match on for a workflow being edited. */
 export interface WorkflowEditTarget {
   name: string;
   tags: Record<string, string>;
 }
 
-/** Input for the workflow edit operation. */
 export interface WorkflowEditInput {
   workflowIdOrName: string;
   /**
-   * The new YAML. Without it, only a file that is not a stored workflow (an
-   * extension's source, a legacy link) is opened in place; a stored workflow
-   * is edited through {@link resolveWorkflowEditFile} and a copy, then saved
-   * with this set (swamp-club#4107).
+   * without it, only a file that is not a stored workflow is opened in place; a
+   * stored workflow is edited on a copy and saved with this set
    */
   stdinContent?: string | null;
   /**
-   * Where `stdinContent` came from: the default `stdin`, or `editor` for a
-   * copy edited in the user's editor. An editor edit whose content is the
-   * stored workflow saves nothing and completes as `unchanged`, and only an
-   * editor edit may replace a stored workflow file that does not parse.
+   * where stdinContent came from; an editor edit equal to the stored workflow
+   * saves nothing and completes as unchanged, and only an editor edit may
+   * replace a stored file that does not parse
    */
   source?: "stdin" | "editor";
-  /** The editor that produced `stdinContent`, reported on completion. */
   editor?: string;
-  /**
-   * Treat `workflowIdOrName` as a workflow id the caller already resolved,
-   * and look it up by id only, so the edit acts on the workflow the caller
-   * authorized.
-   */
+  /** looks up by id only, so the edit acts on the workflow the caller authorized */
   byId?: boolean;
   /**
    * With `byId`, the name the caller authorized: ids are not guaranteed
@@ -123,11 +104,9 @@ export interface WorkflowEditInput {
    */
   principalId?: string;
   /**
-   * Lets a stdin update change the workflow's name. Without it an update
-   * whose `name` differs from the stored one is refused, so a content patch
-   * cannot rename its target as a side effect (swamp-club#3302). It states
-   * intent only: a rename onto a name another workflow holds is refused
-   * either way.
+   * lets a stdin update rename the workflow; without it a differing name is
+   * refused so a content patch cannot rename its target as a side effect. A
+   * rename onto a name another workflow holds is refused either way
    */
   allowRename?: boolean;
   /**
@@ -141,10 +120,9 @@ export interface WorkflowEditInput {
     after: WorkflowEditTarget,
   ) => Promise<boolean> | boolean;
   /**
-   * Called before every stdin update is saved, after `authorizeUpdate`, with
-   * the stored and the edited workflow. Returning false leaves the file
-   * untouched. Serve uses it to authorize the expressions and steps the edit
-   * adds against the writer (swamp-club#2755).
+   * called before every stdin update is saved, after authorizeUpdate; returning
+   * false leaves the file untouched. Serve uses it to authorize the expressions
+   * and steps the edit adds against the writer
    */
   authorizeContent?: (
     before: Workflow,
@@ -156,7 +134,6 @@ function editTarget(workflow: Workflow): WorkflowEditTarget {
   return { name: workflow.name, tags: { ...workflow.tags } };
 }
 
-/** Dependencies for the workflow edit operation. */
 export interface WorkflowEditDeps {
   findById: (id: WorkflowId) => Promise<Workflow | null>;
   findByName: (name: string) => Promise<Workflow | null>;
@@ -165,16 +142,13 @@ export interface WorkflowEditDeps {
   resolveSymlink: (name: string) => Promise<string | null>;
   fileExists: (path: string) => Promise<boolean>;
   prepareEditor: (path: string) => Promise<EditorLaunch>;
-  /** Saves a workflow whose stored file did not parse. */
   saveRepaired: (workflow: Workflow) => Promise<void>;
-  /** The file a save of `workflow` writes. */
   writePathFor: (workflow: Workflow) => string;
   /**
    * Every workflow that loads and declares `id`. Files that do not parse
    * are skipped, so a broken file being repaired is never among them.
    */
   findAllById: (id: WorkflowId) => Promise<Workflow[]>;
-  /** Whether `path` is a workflow file in the repository's workflows dir. */
   isStoredFile: (path: string) => boolean;
   /**
    * Parses the new YAML and saves it. `beforeSave` runs after parsing; when it
@@ -187,7 +161,6 @@ export interface WorkflowEditDeps {
   ) => Promise<Workflow | null>;
 }
 
-/** Wires real infrastructure into WorkflowEditDeps. */
 export function createWorkflowEditDeps(
   repoDir: string,
   workflowRepo: WorkflowRepository,
@@ -241,18 +214,11 @@ export function createWorkflowEditDeps(
   };
 }
 
-/**
- * The file a workflow edit acts on: a stored workflow, saved through the
- * repository; a stored workflow file that does not parse, which an editor
- * edit may replace; or a file that is not a stored workflow (an extension's
- * source, a legacy link), which can only be edited in place.
- */
 export type WorkflowEditFile =
   | { kind: "workflow"; path: string; workflow: Workflow }
   | { kind: "broken"; path: string; id: string | null; name: string | null }
   | { kind: "file"; path: string };
 
-/** Resolves the file a workflow edit acts on, or null when there is none. */
 export async function resolveWorkflowEditFile(
   ctx: LibSwampContext,
   deps: WorkflowEditDeps,
@@ -261,7 +227,6 @@ export async function resolveWorkflowEditFile(
   const { workflowIdOrName } = input;
   let workflow: Workflow | null = null;
 
-  // Name first, then exact id — or id only when the caller resolved it.
   if (!input.byId) {
     ctx.logger.debug`Looking up by name: ${workflowIdOrName}`;
     try {
@@ -336,7 +301,6 @@ function sameWorkflow(a: Workflow, b: Workflow): boolean {
   return JSON.stringify(a.toData()) === JSON.stringify(b.toData());
 }
 
-/** Edits a workflow file via stdin update or editor. */
 export async function* workflowEdit(
   ctx: LibSwampContext,
   deps: WorkflowEditDeps,
@@ -371,7 +335,6 @@ export async function* workflowEdit(
 
         ctx.logger.debug`Using file path: ${filePath}`;
 
-        // Stdin update mode
         if (stdinContent !== undefined && stdinContent !== null) {
           ctx.logger.debug`Reading workflow content from stdin`;
 
@@ -396,7 +359,6 @@ export async function* workflowEdit(
             // Set when the rename guard, rather than an authorization hook,
             // is what stopped the save.
             let renameRefusal: SwampError | undefined;
-            // Set when an editor closed on content equal to the stored one.
             let unchanged = false;
             const beforeSave = async (candidate: Workflow) => {
               if (fromEditor && sameWorkflow(candidate, stored)) {
@@ -484,10 +446,9 @@ export async function* workflowEdit(
           return;
         }
 
-        // Editor mode: only a file that is not a stored workflow opens in
-        // place. A stored workflow edited in place would never be saved
-        // through the repository, so it would never be committed
-        // (swamp-club#4107).
+        // only a file that is not a stored workflow opens in place; a stored
+        // workflow edited in place would never be saved through the repository,
+        // so never committed
         if (file.kind !== "file") {
           yield {
             kind: "error",
@@ -524,10 +485,9 @@ export async function* workflowEdit(
 }
 
 /**
- * Replaces a stored workflow file that does not parse with YAML edited in
- * the editor (swamp-club#4107). The id comes from the broken file; the new
- * YAML must parse, and must not take a name another workflow holds. Only a
- * file that still does not parse is replaced.
+ * the id comes from the broken file; the new YAML must parse and must not take
+ * a name another workflow holds. Only a file that still does not parse is
+ * replaced
  */
 async function* repairBrokenWorkflow(
   deps: WorkflowEditDeps,

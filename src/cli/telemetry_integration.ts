@@ -33,23 +33,12 @@ import { isBooleanFlag } from "./boolean_flags.ts";
 
 const BUILTIN_VAULT_TYPES = new Set(["local_encryption", "mock"]);
 
-/**
- * True when the repo marker declares a non-`filesystem` datastore. Local
- * `filesystem` datastores and absent configs both report false — the signal
- * is "data lives behind a custom datastore provider," not "the user has any
- * datastore block." Used to populate the telemetry invocation context.
- */
 export function isExternalDatastoreConfigured(
   datastore: DatastoreConfigData | undefined,
 ): boolean {
   return datastore !== undefined && datastore.type !== "filesystem";
 }
 
-/**
- * True when any vault in the repo uses a non-builtin provider. Builtin
- * types (`local_encryption`, `mock`) report false — the signal is "secrets
- * live behind an external vault provider."
- */
 export function isExternalVaultConfigured(
   vaults: VaultConfigData[],
 ): boolean {
@@ -57,34 +46,19 @@ export function isExternalVaultConfigured(
 }
 
 /**
- * Module-scoped accessor for the active TelemetryService. Set once at the
- * top of runCli (before Cliffy parse) and cleared in the surrounding
- * try/finally. Command actions that need to emit child telemetry (e.g.
- * workflow_run.ts wiring a sink into libswamp) read it via
- * `getActiveTelemetryService()`.
- *
- * Module-scoped state matches the lifecycle: a single CLI invocation has
- * a single TelemetryService for its entire duration. Tests that exercise
- * the bridge inject a stub directly rather than relying on this module.
+ * set once at the top of runCli and cleared in its finally; commands that emit
+ * child telemetry read it via `getActiveTelemetryService()`
  */
 let activeTelemetryService: TelemetryService | null = null;
 
 /**
- * Everything needed to flush the spool to the remote endpoint, resolved once
- * per invocation in `initTelemetryService`.
- *
- * Published alongside the service because `swamp serve` cannot rely on the
- * CLI teardown to flush — a daemon reaches teardown only at process exit, so
- * it needs to run its own flush loop, and that needs the same credentials.
+ * published alongside the service because serve, a daemon, cannot rely on CLI
+ * teardown to flush and runs its own flush loop with the same credentials
  */
 export interface TelemetryContext {
   service: TelemetryService;
   userId: string | null;
-  /**
-   * Repo-specific identifier, present only when the run happened inside a
-   * swamp repo. Undefined for repo-less runs — the event is then keyed solely
-   * by the user identity (userId).
-   */
+  /** undefined outside a swamp repo; the event is then keyed solely by userId */
   repoId: string | undefined;
   telemetryEndpoint: string;
   keepFlushed: boolean;
@@ -93,95 +67,65 @@ export interface TelemetryContext {
 
 let activeTelemetryContext: TelemetryContext | null = null;
 
-/**
- * Sets the active TelemetryService for the current CLI invocation.
- * Call from runCli only — not from individual commands.
- */
 export function setActiveTelemetryService(service: TelemetryService): void {
   activeTelemetryService = service;
 }
 
-/**
- * Clears the active TelemetryService. Call from runCli's finally block.
- */
 export function clearActiveTelemetryService(): void {
   activeTelemetryService = null;
 }
 
-/**
- * Returns the active TelemetryService, or null if telemetry is disabled
- * for this invocation (e.g. --no-telemetry, outside a swamp repo).
- */
 export function getActiveTelemetryService(): TelemetryService | null {
   return activeTelemetryService;
 }
 
-/**
- * Sets the active telemetry context for the current CLI invocation.
- * Call from runCli only.
- */
 export function setActiveTelemetryContext(context: TelemetryContext): void {
   activeTelemetryContext = context;
 }
 
-/**
- * Clears the active telemetry context. Call from runCli's finally block —
- * the context holds an auth token and must not outlive the invocation.
- */
+/** the context holds an auth token and must not outlive the invocation */
 export function clearActiveTelemetryContext(): void {
   activeTelemetryContext = null;
 }
 
-/**
- * Returns the active telemetry context, or null when telemetry is disabled
- * for this invocation.
- */
 export function getActiveTelemetryContext(): TelemetryContext | null {
   return activeTelemetryContext;
 }
 
 /**
- * Per-position sensitivity for positional arguments by command.
- * "categorical" = system-defined value, safe to record (e.g., model type, method name).
- * "redact" = user-identifiable value, must be redacted (e.g., name, path, query).
- * Commands not listed here default to all-redact. Positions beyond the schema length
- * also default to "redact".
+ * "categorical" is a system-defined value safe to record; "redact" is
+ * user-identifiable. Commands not listed, and positions beyond the schema,
+ * default to redact
  */
 const ARG_SCHEMAS: Record<string, readonly ("categorical" | "redact")[]> = {
-  "model create": ["categorical", "redact"], // type, name
-  "model method": ["categorical", "redact", "categorical"], // "run", name, method
-  // `swamp behavior run <model|@type> <method> [name]` (swamp-club#3265). This
-  // runs before the command tree exists, so the alias spelling cannot be
-  // canonicalised here and needs its own entry.
-  "model output": ["categorical", "redact"], // sub-subcmd, id/query
-  "vault create": ["categorical", "redact"], // type, name
-  "type describe": ["categorical"], // type
-  "workflow history": ["categorical", "redact"], // sub-subcmd, name
+  "model create": ["categorical", "redact"],
+  "model method": ["categorical", "redact", "categorical"],
+  // `behavior run` is classified before the command tree exists, so the alias
+  // spelling cannot be canonicalised here and needs its own entry
+  "model output": ["categorical", "redact"],
+  "vault create": ["categorical", "redact"],
+  "type describe": ["categorical"],
+  "workflow history": ["categorical", "redact"],
   ...behaviorArgSchemas(),
 };
 
 /**
- * The `swamp behavior …` paths (swamp-club#3265, swamp-club#3331), each
- * classified like its legacy `swamp model …` twin. This runs before the
- * command tree exists, so the `behaviour` alias cannot be canonicalised and
- * gets its own entries. The schema is keyed on two words, so the positions
- * after `behavior <sub>` mirror the positions after the legacy key's second
- * word: `behavior run` and `describe` take the slots after `model method
- * <word>`, `create` matches `model create`, and the rest, including the
- * `history` and `output` shorthands, are all-redact.
+ * each swamp behavior path is classified like its legacy swamp model twin; this
+ * runs before the command tree exists, so the behaviour alias gets its own
+ * entries
  */
 function behaviorArgSchemas(): Record<
   string,
   readonly ("categorical" | "redact")[]
 > {
   const schemas: Record<string, readonly ("categorical" | "redact")[]> = {
-    run: ["redact", "categorical", "redact"], // name or @type, method, name
-    create: ["categorical", "redact"], // type, name
-    describe: ["redact", "categorical"], // name, method
+    run: ["redact", "categorical", "redact"],
+    create: ["categorical", "redact"],
+    describe: ["redact", "categorical"],
     // `history <name>` and `output <name>` are shorthands that take a name
     // first, so neither slot can be categorical without recording it.
-    history: ["redact", "redact"], // sub-subcmd or name, id or name
-    output: ["redact", "redact"], // sub-subcmd or name, id/query
+    history: ["redact", "redact"],
+    output: ["redact", "redact"],
     get: ["redact"],
     edit: ["redact"],
     delete: ["redact"],
@@ -190,7 +134,7 @@ function behaviorArgSchemas(): Record<
     search: ["redact"],
     list: ["redact"],
     cancel: ["redact"],
-    type: ["redact", "redact"], // sub-subcmd, type
+    type: ["redact", "redact"],
   };
   const entries: Record<string, readonly ("categorical" | "redact")[]> = {};
   for (const group of ["behavior", "behaviour"]) {
@@ -201,7 +145,6 @@ function behaviorArgSchemas(): Record<
   return entries;
 }
 
-/** Global options that are tracked separately */
 export const GLOBAL_OPTIONS: ReadonlySet<string> = new Set([
   "--json",
   "-q",
@@ -214,13 +157,9 @@ export const GLOBAL_OPTIONS: ReadonlySet<string> = new Set([
 ]);
 
 /**
- * Extracts command information from CLI arguments before the command tree is
- * built. Drives hook detection, loader gating, stdout routing and span
- * attributes; recorded telemetry uses `resolveTelemetryInvocation` instead.
- * Option values are redacted - only keys are recorded.
- *
- * @param args - The raw CLI arguments
- * @returns Parsed command invocation data
+ * drives hook detection, loader gating, stdout routing and span attributes;
+ * recorded telemetry uses `resolveTelemetryInvocation` instead. Option values
+ * are redacted, only keys are recorded
  */
 export function extractCommandInfo(args: string[]): CommandInvocationData {
   const result: CommandInvocationData = {
@@ -232,55 +171,46 @@ export function extractCommandInfo(args: string[]): CommandInvocationData {
 
   let i = 0;
 
-  // Skip leading global options to find the command
   while (i < args.length) {
     const arg = args[i];
 
     if (arg.startsWith("-")) {
-      // This is an option
       if (GLOBAL_OPTIONS.has(arg)) {
         result.globalOptions.push(arg);
       }
-      // Skip value if this option takes one (next arg doesn't start with -)
       if (consumesNextArg(arg, args[i + 1])) {
-        i++; // Skip the value
+        i++;
       }
       i++;
       continue;
     }
 
-    // Found the command
     result.command = arg;
     i++;
     break;
   }
 
-  // Look for subcommand
   while (i < args.length) {
     const arg = args[i];
 
     if (arg.startsWith("-")) {
-      // Option before subcommand - record it
       if (GLOBAL_OPTIONS.has(arg)) {
         result.globalOptions.push(arg);
       } else {
-        result.optionKeys.push(arg.split("=")[0]); // Handle --option=value
+        result.optionKeys.push(arg.split("=")[0]);
       }
-      // Skip value if this option takes one
       if (consumesNextArg(arg, args[i + 1])) {
-        i++; // Skip the value
+        i++;
       }
       i++;
       continue;
     }
 
-    // Found the subcommand
     result.subcommand = arg;
     i++;
     break;
   }
 
-  // Process remaining args
   const schemaKey = result.subcommand
     ? `${result.command} ${result.subcommand}`
     : result.command;
@@ -291,8 +221,7 @@ export function extractCommandInfo(args: string[]): CommandInvocationData {
     const arg = args[i];
 
     if (arg.startsWith("-")) {
-      // This is an option
-      const optionKey = arg.split("=")[0]; // Handle --option=value
+      const optionKey = arg.split("=")[0];
 
       if (GLOBAL_OPTIONS.has(optionKey)) {
         if (!result.globalOptions.includes(optionKey)) {
@@ -304,12 +233,10 @@ export function extractCommandInfo(args: string[]): CommandInvocationData {
         }
       }
 
-      // Skip value if this option takes one (next arg doesn't start with -)
       if (consumesNextArg(arg, args[i + 1])) {
-        i++; // Skip the value
+        i++;
       }
     } else {
-      // Positional argument - record categorical values, redact user-identifiable ones
       const sensitivity = argSchema?.[positionalIndex] ?? "redact";
       result.args.push(sensitivity === "categorical" ? arg : "<REDACTED>");
       positionalIndex++;
@@ -322,15 +249,9 @@ export function extractCommandInfo(args: string[]): CommandInvocationData {
 }
 
 /**
- * Whether `arg` consumes the following argument as its value.
- *
- * An option written `--log-level=debug` carries its value already, so the next
- * argument is the command — not a value to skip. Missing that check made a
- * leading `=`-form option swallow the command word: `--log-level=debug invite
- * link` parsed as command "link", and `--log-level=debug first-rule` as no
- * command at all. That was invisible while this only fed telemetry (a
- * misattributed metric), but `isValueOnlyStdoutCommand` now routes output on
- * the result, where the same slip costs a corrupted pipe (swamp-club#2254).
+ * an option written `--log-level=debug` carries its value, so the next argument
+ * is the command; swallowing it would misparse `--log-level=debug invite link`
+ * and corrupt stdout routing
  */
 function consumesNextArg(arg: string, next: string | undefined): boolean {
   return next !== undefined &&
@@ -339,20 +260,14 @@ function consumesNextArg(arg: string, next: string | undefined): boolean {
     !arg.includes("=");
 }
 
-/**
- * Checks if telemetry is disabled via command line args.
- * This is a pre-parse check before Cliffy parses the full args.
- */
 export function isTelemetryDisabled(args: string[]): boolean {
   return args.includes("--no-telemetry");
 }
 
 /**
- * Project the live process env down to the whitelist the harness detector
- * needs. The full env contains secrets (AWS_SECRET_ACCESS_KEY, GITHUB_TOKEN,
- * vault tokens) — projecting through the whitelist keeps every other key out
- * of the telemetry pipeline regardless of what future code does with the
- * snapshot.
+ * the full env contains secrets (AWS_SECRET_ACCESS_KEY, GITHUB_TOKEN, vault
+ * tokens); projecting through the whitelist keeps every other key out of the
+ * telemetry pipeline
  */
 export function projectEnvSnapshot(): Record<string, string> {
   const snapshot: Record<string, string> = {};
@@ -366,14 +281,9 @@ export function projectEnvSnapshot(): Record<string, string> {
 }
 
 /**
- * Build the InvocationContext for one CLI invocation. Composes the harness
- * detector over the env snapshot, captures stdin tty state, and pulls the
- * configured tool list from the repo marker.
- *
- * `configuredAiTools` is undefined when no marker is available (telemetry
- * recorded outside a swamp repo — forward-compat reserve) and `[]` when the
- * marker has explicitly opted out via legacy `tool: none`. The two states
- * carry different meaning downstream and must round-trip distinctly.
+ * `configuredAiTools` is undefined with no marker (outside a swamp repo) and
+ * `[]` when the marker opted out via legacy `tool: none`; the two carry
+ * different meaning downstream and must stay distinct
  */
 export function buildInvocationContext(
   envSnapshot: Record<string, string>,

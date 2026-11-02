@@ -18,13 +18,10 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * The machine's own folder chooser, for importing a workspace. A web page
- * can't learn a folder's path, but the `swamp start` server runs on the
- * same machine and can ask the OS to show its dialog.
+ * a web page cannot learn a folder's path, but the swamp start server runs on
+ * the same machine and can ask the OS for its dialog
  */
 export interface FolderPicker {
-  /** False over SSH, without a display, or when no chooser is installed. */
   available(): Promise<boolean>;
-  /** The chosen folder's absolute path, or null when the user cancelled. */
   pick(prompt: string): Promise<string | null>;
 }

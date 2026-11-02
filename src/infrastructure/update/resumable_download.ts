@@ -27,44 +27,33 @@ import { abortableSleep, type Sleep } from "../http/rate_limit.ts";
 
 const logger = getLogger(["swamp", "update"]);
 
-/** How long a download may receive no bytes before the attempt is abandoned. */
 export const DOWNLOAD_STALL_TIMEOUT_MS = 30_000;
-/** How many attempts in a row may fail before the download gives up. */
 export const DOWNLOAD_MAX_ATTEMPTS = 5;
-/** Wait before each retry of a failed attempt: 2s, then 4s, 8s, 16s. */
 const DOWNLOAD_RETRY_BASE_DELAY_MS = 2000;
-/** The shortest gap between two progress reports. */
 const PROGRESS_INTERVAL_MS = 250;
 
-/** Options for {@link downloadToFile}. */
 export interface DownloadToFileOptions extends DownloadOptions {
-  /** Replaced in tests. */
   stallTimeoutMs?: number;
   maxAttempts?: number;
   sleep?: Sleep;
   now?: () => number;
-  /** Makes the HTTP client for one attempt; replaced in tests. */
   createClient?: () => Deno.HttpClient;
 }
 
-/** What one attempt achieved. */
 type AttemptOutcome =
   | { kind: "complete" }
   | { kind: "failed"; reason: string; progressed: boolean };
 
-/** The part of the download that survives from one attempt to the next. */
 interface DownloadState {
   readonly file: Deno.FsFile;
   receivedBytes: number;
   totalBytes: number | null;
-  /** The validator the first response carried, sent back as If-Range. */
   etag: string | null;
   /** A 416 restarts from zero only once, so a broken server cannot loop. */
   restartedAfter416: boolean;
   lastProgressAt: number;
 }
 
-/** Thrown by the stall watchdog so a stall is told apart from other aborts. */
 class StallError extends Error {
   constructor(ms: number) {
     super(`no data received for ${ms / 1000}s`);
@@ -72,7 +61,6 @@ class StallError extends Error {
   }
 }
 
-/** Parses `bytes <start>-<end>/<total>`; total is null when it is `*`. */
 function parseContentRange(
   header: string | null,
 ): { start: number; total: number | null } | null {
@@ -104,26 +92,9 @@ function describeFailure(error: unknown): string {
 }
 
 /**
- * Downloads `url` into `path`, reporting progress and surviving a slow or
- * flaky connection.
- *
- * - An attempt that receives no bytes for the stall timeout is abandoned.
- * - A stall, connection error, early end of body or HTTP 5xx is retried with
- *   backoff, resuming from the bytes already written with a `Range` request
- *   (guarded by `If-Range`). A server that ignores the range gets the file
- *   restarted from zero.
- * - Only attempts in a row that fail without receiving any bytes use up the
- *   retry budget. An attempt that receives bytes resets it, so a slow link
- *   that keeps moving keeps going. That includes one that trickles a few
- *   bytes inside every stall window, deliberately: progress stays visible
- *   and the caller can still cancel.
- * - Aborting `signal` stops at once with its reason, with no retry.
- * - Every attempt uses a new HTTP client and so a new connection. fetch's
- *   shared pool multiplexes HTTP/2 requests on one connection, so a retry
- *   through it would wait on the very connection that stalled.
- *
- * The caller verifies the file's checksum; a resumed download is only as
- * trustworthy as that check.
+ * retries resume via Range/If-Range; only attempts receiving no bytes use the
+ * retry budget; each attempt gets a new client since the shared HTTP/2 pool
+ * would wait on the stalled connection
  */
 export async function downloadToFile(
   url: string,
@@ -198,7 +169,6 @@ export async function downloadToFile(
   }
 }
 
-/** Sends one request and streams its body into the file. */
 async function attempt(
   url: string,
   state: DownloadState,
