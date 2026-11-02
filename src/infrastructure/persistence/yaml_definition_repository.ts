@@ -109,7 +109,6 @@ import {
 
 const logger = getLogger(["definition-repo"]);
 
-/** a point-in-time view over one scan of every definition file */
 export interface DefinitionByIdSnapshot {
   /** what findById returns on a fresh repository, its errors included */
   find(type: ModelType, id: DefinitionId): Definition | null;
@@ -996,7 +995,6 @@ export class YamlDefinitionRepository implements DefinitionRepository {
     };
   }
 
-  /** through the id index when one is attached, otherwise a walk */
   async declaresTypeById(id: DefinitionId, type: ModelType): Promise<boolean> {
     const found = this.idIndex
       ? await this.idIndex.findAllById(id)

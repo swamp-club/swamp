@@ -161,8 +161,8 @@ export function createDataPruneDeps(
     return defType.toDirectoryPath() === type.toDirectoryPath();
   };
 
-  // serve injects its indexed repository, whose lookups need no snapshot; a
-  // miss is live when some definition with the id declares the type, as below
+  // serve injects its indexed repository, whose lookups need no snapshot; on a
+  // miss, either path keeps data whose type a definition with the id declares
   const definitionLiveness = (): IsModelLive => {
     if (injectedDefinitionRepo) {
       return async (type, modelId) => {
