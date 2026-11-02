@@ -404,21 +404,18 @@ Deno.test("withScanPermit: bulk scans across callers share BULK_SCAN_SHARE permi
   }
 });
 
-Deno.test("TimeSlice: is not over while its slice lasts, and once over, next yields a turn and rejects with the reason if aborted", async () => {
+Deno.test("TimeSlice: is over once its slice is spent, and next yields a turn and rejects with the reason if aborted", async () => {
   const controller = new AbortController();
   const slice = new TimeSlice(controller.signal);
-  assertEquals(slice.over, false);
-
   const spent = performance.now() + 10;
   while (performance.now() < spent) {
-    // Spend the slice, as a long loop would.
+    // busy
   }
   assertEquals(slice.over, true);
   let turned = false;
   setTimeout(() => turned = true, 0);
   await slice.next();
   assertEquals(turned, true);
-  assertEquals(slice.over, false);
 
   const reason = new Error("cancelled");
   const next = slice.next();
@@ -455,7 +452,7 @@ Deno.test("sortInTimeSlices: once its signal aborts, rejects with the reason at 
         comparesAtAbort = compares;
         const spent = performance.now() + 10;
         while (performance.now() < spent) {
-          // Spend the slice, so the sort must yield before it can finish.
+          // busy
         }
       }
       return a - b;

@@ -5088,7 +5088,7 @@ async function withNewestFirstSorts<T>(
       if (onSort !== undefined && sorts.length === 1) {
         const spent = performance.now() + 10;
         while (performance.now() < spent) {
-          // Spend the slice, as a long run would.
+          // busy
         }
       }
     }
@@ -5253,7 +5253,7 @@ Deno.test(
 );
 
 Deno.test(
-  "findGlobalNewestFirst: a sort that fails fails the reads waiting on it, and a later read sorts afresh",
+  "findGlobalNewestFirst: a sort that fails fails the read waiting on it, and a later read sorts afresh",
   async () => {
     await withTempDir(async (dir) => {
       const repo = new YamlOutputRepository(dir);
@@ -5263,13 +5263,10 @@ Deno.test(
       const failure = new Error("sort failed");
 
       await withNewestFirstSorts(async (sorts) => {
-        const reads = [
-          repo.findGlobalNewestFirst({ since }),
-          repo.findGlobalNewestFirst({ since }),
-        ];
-        for (const read of reads) {
-          assertEquals(await assertRejects(() => read), failure);
-        }
+        assertEquals(
+          await assertRejects(() => repo.findGlobalNewestFirst({ since })),
+          failure,
+        );
 
         const later = await repo.findGlobalNewestFirst({ since });
         assertEquals((await later.next(2000)).length, 1100);

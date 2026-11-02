@@ -68,10 +68,10 @@ datastore, are stat'ed synchronously, because an awaited stat waits a turn of a 
 loop: on a contended loop 75,000 of them took 5 s awaited and 0.3 s synchronously.
 Records anywhere else, including through a symlink, are in a datastore that may be a
 network mount, so those are awaited on the scan permits, 6 at a time, the share
-long output scans take (lab #4146). There a slow
-or hung mount costs the scan, not the event loop, and a busy loop costs that read
-more. A checkout that is itself on a network mount still stats synchronously: there
-a slow mount slows the read, and a hung one holds the loop.
+long output scans take (lab #4146). There a slow or hung mount costs the scan, not
+the event loop, and a busy loop costs that read more. A checkout that is itself on
+a network mount still stats synchronously: there a slow mount slows the read, and
+a hung one holds the loop.
 
 So that a large read does not hold up the requests beside it, the stats, the shard
 parse and the join of rows to files all yield to the event loop every 4 ms, and

@@ -570,10 +570,9 @@ candidates from the data catalog (`_catalog.db`) by tag: rows in the
 repository's own namespace whose `type` tag is `report`, whose content type is
 `text/markdown`, latest and published, of one owner when `--behavior` or
 `--workflow` names it. Only those items' metadata is read, through the search
-share (12 of 16) of the scan permits, of which long output scans may hold only
-6
-(`src/infrastructure/persistence/scan_permits.ts`), so a method run's lookups
-keep their own (`src/infrastructure/persistence/catalog_report_adapter.ts`,
+share (12 of 16) of the scan permits, of which long output scans may hold
+only 6 (`src/infrastructure/persistence/scan_permits.ts`), so a method run's
+lookups keep their own (`src/infrastructure/persistence/catalog_report_adapter.ts`,
 swamp-club#4075). The cost grows with stored reports, not with all data. A
 missing catalog is rebuilt first, and one being rebuilt is waited for. A rename
 marker is skipped and each data name is listed once, as a walk of the data

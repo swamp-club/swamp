@@ -293,9 +293,6 @@ export function withDiagnosticArea<T>(
 
 const lagScope = new AsyncLocalStorage<DiagnosticLagReader>();
 
-/**
- * every phase `fn` starts, in any area, records the lag sampled while it ran
- */
 export function withDiagnosticLag<T>(
   lag: DiagnosticLagReader | undefined,
   fn: () => T,
