@@ -3335,7 +3335,11 @@ processes: a compaction replaces the file by rename, and without the lock a
 line another process appended after the compaction read would be lost, leaving
 a run's status stale with the count unchanged. Where the lock file cannot be
 made, as in a read-only checkout, the change runs unlocked, since the index
-cannot be replaced there either. When a workflow's last run is removed, the
+cannot be replaced there either; any other failure to lock runs it unlocked
+with a warning. A lock file another user made, which this process cannot
+write, is locked through a read handle. A datastore pull that drops entries
+skips a workflow with no index rather than make its directory and lock file.
+When a workflow's last run is removed, the
 lock's holder removes the lock file with the index, so the emptied directory
 can go; a process holds the lock only once the path still names the file it
 locked, and otherwise locks the new one. Readers take no lock. The file is

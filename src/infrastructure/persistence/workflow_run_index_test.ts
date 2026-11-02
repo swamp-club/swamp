@@ -17,7 +17,8 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals, assertRejects } from "@std/assert";
+import { configure, type LogRecord, reset } from "@logtape/logtape";
+import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
 import { exists } from "@std/fs";
 import { join, relative } from "@std/path";
 import {
@@ -45,6 +46,35 @@ import {
   type WorkflowRunIndex,
   writeRunIndex,
 } from "./workflow_run_index.ts";
+
+async function withIndexWarnings<T>(
+  run: () => Promise<T>,
+): Promise<{ result: T; warnings: string[] }> {
+  const records: LogRecord[] = [];
+  await configure({
+    sinks: { capture: (record: LogRecord) => records.push(record) },
+    loggers: [
+      {
+        category: ["workflow-runs", "index"],
+        lowestLevel: "warning",
+        sinks: ["capture"],
+      },
+      { category: ["logtape", "meta"], lowestLevel: "error", sinks: [] },
+    ],
+    reset: true,
+  });
+  try {
+    const result = await run();
+    return {
+      result,
+      warnings: records.map((r) =>
+        r.message.map((part) => String(part)).join("")
+      ),
+    };
+  } finally {
+    await reset();
+  }
+}
 
 async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
   const tempDir = await Deno.makeTempDir();
@@ -346,18 +376,57 @@ Deno.test("removeRunIndexFiles: removes the index and its lock file, and is a no
   });
 });
 
-Deno.test("withIndexQueue: runs the function unlocked where the lock file cannot be made", async () => {
+Deno.test("withIndexQueue: runs the function unlocked, without a warning, where the lock file cannot be made", async () => {
   await withTempDir(async (dir) => {
     const file = join(dir, "not-a-directory");
     await Deno.writeTextFile(file, "");
 
-    const result = await withIndexQueue(
-      join(file, "runs"),
-      () => Promise.resolve("ran"),
+    const { result, warnings } = await withIndexWarnings(() =>
+      withIndexQueue(join(file, "runs"), () => Promise.resolve("ran"))
     );
 
     assertEquals(result, "ran");
+    assertEquals(warnings, []);
   });
+});
+
+Deno.test("withIndexQueue: warns when it runs the function unlocked for any other reason", async () => {
+  await withTempDir(async (dir) => {
+    await Deno.mkdir(join(dir, RUNS_INDEX_LOCK_FILENAME));
+
+    const { result, warnings } = await withIndexWarnings(() =>
+      withIndexQueue(dir, () => Promise.resolve("ran"))
+    );
+
+    assertEquals(result, "ran");
+    assertEquals(warnings.length, 1);
+    assertStringIncludes(warnings[0], "without its lock");
+  });
+});
+
+Deno.test({
+  name:
+    "withIndexQueue: a lock file it cannot write is still locked through a read handle",
+  ignore: Deno.build.os === "windows",
+  fn: async () => {
+    await withTempDir(async (dir) => {
+      const lockPath = join(dir, RUNS_INDEX_LOCK_FILENAME);
+      await Deno.writeTextFile(lockPath, "");
+      await Deno.chmod(lockPath, 0o444);
+
+      const lockedByQueue = await withIndexQueue(dir, async () => {
+        // A second handle contends as another process would.
+        const probe = await Deno.open(lockPath, { read: true });
+        try {
+          return !await probe.tryLock(true);
+        } finally {
+          probe.close();
+        }
+      });
+
+      assertEquals(lockedByQueue, true);
+    });
+  },
 });
 
 Deno.test("indexQueueGeneration: identifies the queue tail across equivalent paths and clears it after failure", async () => {
@@ -490,6 +559,7 @@ Deno.test("dropRunIndexEntries: drops the entries of the run records named, keep
       oldIndex,
     );
     assertEquals(await readRunIndex(join(runs, "wf-none")), null);
+    assertEquals(await exists(join(runs, "wf-none")), false);
   });
 });
 

@@ -178,6 +178,8 @@ export async function dropRunIndexEntries(
   const root = swampPath(repoDir, SWAMP_SUBDIRS.workflowRuns);
   for (const [workflowId, runIds] of runsByWorkflow) {
     const indexDir = join(root, workflowId);
+    // queuing would make the directory and lock file of a workflow with no index
+    if (await readRunIndexHeader(indexDir) === null) continue;
     await withIndexQueue(indexDir, async () => {
       const appended = await appendRunIndexLines(
         indexDir,
@@ -535,14 +537,28 @@ async function withIndexFileLock<T>(
   try {
     lock = await acquireIndexFileLock(workflowRunsDir);
   } catch (error) {
-    getSwampLogger(["workflow-runs", "index"])
-      .debug`Changing the run index of ${workflowRunsDir} without its lock: ${error}`;
+    const logger = getSwampLogger(["workflow-runs", "index"]);
+    if (cannotWriteHere(error)) {
+      logger
+        .debug`Changing the run index of ${workflowRunsDir} without its lock: ${error}`;
+    } else {
+      logger
+        .warn`Changing the run index of ${workflowRunsDir} without its lock, so a change another process makes to it meanwhile may be lost until the index is next repaired: ${error}`;
+    }
   }
   try {
     return await fn();
   } finally {
     lock?.close();
   }
+}
+
+function cannotWriteHere(error: unknown): boolean {
+  return error instanceof Deno.errors.PermissionDenied ||
+    error instanceof Deno.errors.NotADirectory ||
+    error instanceof Deno.errors.NotCapable ||
+    (typeof error === "object" && error !== null && "code" in error &&
+      error.code === "EROFS");
 }
 
 const LOCK_ATTEMPTS = 5;
@@ -556,34 +572,56 @@ async function acquireIndexFileLock(
 ): Promise<Deno.FsFile> {
   const path = join(workflowRunsDir, RUNS_INDEX_LOCK_FILENAME);
   for (let attempt = 1;; attempt++) {
-    await Deno.mkdir(workflowRunsDir, { recursive: true });
-    const lock = await Deno.open(path, {
-      read: true,
-      write: true,
-      create: true,
-    });
-    try {
-      await lock.lock(true);
-      const held = await lock.stat();
-      const named = await Deno.stat(path).catch((error) => {
-        if (error instanceof Deno.errors.NotFound) return null;
+    const lock = await openLockFile(workflowRunsDir, path);
+    if (lock !== null) {
+      try {
+        await lock.lock(true);
+        if (await namesFile(path, lock)) return lock;
+      } catch (error) {
+        lock.close();
         throw error;
-      });
-      if (named !== null && (held.ino === null || named.ino === held.ino)) {
-        return lock;
       }
-    } catch (error) {
       lock.close();
-      throw error;
     }
-    lock.close();
     if (attempt === LOCK_ATTEMPTS) {
       throw markErrorPaths(
-        new Error(`the lock file ${path} kept being replaced`),
+        new Error(`the lock file ${path} kept being removed or replaced`),
         [path],
       );
     }
   }
+}
+
+/** null when the directory went between its creation and the open */
+async function openLockFile(
+  workflowRunsDir: string,
+  path: string,
+): Promise<Deno.FsFile | null> {
+  try {
+    await Deno.mkdir(workflowRunsDir, { recursive: true });
+    return await Deno.open(path, { read: true, write: true, create: true });
+  } catch (error) {
+    if (error instanceof Deno.errors.NotFound) return null;
+    if (!(error instanceof Deno.errors.PermissionDenied)) throw error;
+    // a lock file another user made can still be locked through a read handle
+    try {
+      return await Deno.open(path, { read: true });
+    } catch {
+      throw error;
+    }
+  }
+}
+
+async function namesFile(path: string, file: Deno.FsFile): Promise<boolean> {
+  const held = await file.stat();
+  let named: Deno.FileInfo;
+  try {
+    named = await Deno.stat(path);
+  } catch (error) {
+    if (error instanceof Deno.errors.NotFound) return false;
+    throw error;
+  }
+  return held.ino === null || named.ino === held.ino;
 }
 
 /**
