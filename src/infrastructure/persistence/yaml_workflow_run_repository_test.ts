@@ -5104,3 +5104,36 @@ Deno.test("findByStatus: an aborted signal stops reading records and rejects wit
     assert(recordReads < runs.length, `${recordReads} records read`);
   });
 });
+
+// Run-record probe, fleet fan-out baseline (swamp-club#4271): a stored run
+// whose job run carries a field this binary does not know is read from
+// disk, and the next save writes it back without that field.
+Deno.test("YamlWorkflowRunRepository: a stored job-run field it does not know is read, then dropped on the next save", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlWorkflowRunRepository(dir);
+    const workflow = createTestWorkflow();
+    const run = WorkflowRun.create(workflow);
+    run.start();
+    await repo.save(workflow.id, run);
+
+    const path = repo.getPath(workflow.id, run.id);
+    const stored = parseYaml(await Deno.readTextFile(path)) as {
+      jobs: Record<string, unknown>[];
+    };
+    stored.jobs[0].fanOut = {
+      planned: [{ worker: "host-a", disposition: "dispatch" }],
+    };
+    await Deno.writeTextFile(path, stringifyYaml(stored));
+
+    const loaded = await repo.findById(workflow.id, run.id);
+    assertNotEquals(loaded, null);
+    assertEquals(loaded!.status, "running");
+    assertEquals(loaded!.jobs.map((job) => job.jobName), ["job1"]);
+
+    await repo.save(workflow.id, loaded!);
+    const rewritten = parseYaml(await Deno.readTextFile(path)) as {
+      jobs: Record<string, unknown>[];
+    };
+    assertEquals("fanOut" in rewritten.jobs[0], false);
+  });
+});

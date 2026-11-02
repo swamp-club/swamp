@@ -386,3 +386,191 @@ Deno.test("unmetPlacement: ignores status, connection and affinity", () => {
     null,
   );
 });
+
+// --- Placement table (swamp-club#4271) ---
+//
+// Every worker status against every placement field, for one worker that
+// meets each field's requirement. The fleet fan-out work must leave every
+// cell as it is. Expected values are written out, never derived from the
+// scheduler's own rules.
+
+type TableStatus =
+  | "idle"
+  | "busy with a free slot"
+  | "busy at capacity"
+  | "unverified"
+  | "draining"
+  | "disconnected";
+
+function tableWorker(status: TableStatus): SchedulableWorker {
+  const base = {
+    name: "w1",
+    labels: { fleet: "web" },
+    platform: "linux",
+    arch: "x86_64",
+  };
+  switch (status) {
+    case "idle":
+      return worker(base);
+    case "busy with a free slot":
+      return worker({
+        ...base,
+        status: "busy",
+        capacity: 2,
+        activeDispatchIds: ["d1"],
+      });
+    case "busy at capacity":
+      return worker({ ...base, status: "busy", activeDispatchIds: ["d1"] });
+    case "unverified":
+      return worker({ ...base, status: "unverified" });
+    case "draining":
+      return worker({ ...base, status: "draining" });
+    case "disconnected":
+      return worker({ ...base, connected: false });
+  }
+}
+
+const TABLE_PLACEMENTS = {
+  "target by name": { target: "w1" },
+  "target by instance uuid": { target: "uuid-w1" },
+  "labels": { labels: { fleet: "web" } },
+  "platform": { platform: "linux" },
+  "platform/arch": { platform: "linux/x86_64" },
+  "no placement": {},
+} as const;
+
+type TablePlacement = keyof typeof TABLE_PLACEMENTS;
+type Cell = "dispatch" | "queue";
+
+// [eligible, decision] per placement, by status.
+const PLACEMENT_TABLE: Record<
+  TableStatus,
+  Record<TablePlacement, [boolean, Cell]>
+> = {
+  "idle": {
+    "target by name": [true, "dispatch"],
+    "target by instance uuid": [true, "dispatch"],
+    "labels": [true, "dispatch"],
+    "platform": [true, "dispatch"],
+    "platform/arch": [true, "dispatch"],
+    "no placement": [true, "dispatch"],
+  },
+  "busy with a free slot": {
+    "target by name": [true, "dispatch"],
+    "target by instance uuid": [true, "dispatch"],
+    "labels": [true, "dispatch"],
+    "platform": [true, "dispatch"],
+    "platform/arch": [true, "dispatch"],
+    "no placement": [true, "dispatch"],
+  },
+  "busy at capacity": {
+    "target by name": [true, "queue"],
+    "target by instance uuid": [true, "queue"],
+    "labels": [true, "queue"],
+    "platform": [true, "queue"],
+    "platform/arch": [true, "queue"],
+    "no placement": [true, "queue"],
+  },
+  // A target skips the unverified filter in eligibleWorkers, but
+  // scheduleStep still never dispatches to an unverified worker: a targeted
+  // step queues until queueTimeout.
+  "unverified": {
+    "target by name": [true, "queue"],
+    "target by instance uuid": [true, "queue"],
+    "labels": [false, "queue"],
+    "platform": [false, "queue"],
+    "platform/arch": [false, "queue"],
+    "no placement": [false, "queue"],
+  },
+  "draining": {
+    "target by name": [false, "queue"],
+    "target by instance uuid": [false, "queue"],
+    "labels": [false, "queue"],
+    "platform": [false, "queue"],
+    "platform/arch": [false, "queue"],
+    "no placement": [false, "queue"],
+  },
+  "disconnected": {
+    "target by name": [false, "queue"],
+    "target by instance uuid": [false, "queue"],
+    "labels": [false, "queue"],
+    "platform": [false, "queue"],
+    "platform/arch": [false, "queue"],
+    "no placement": [false, "queue"],
+  },
+};
+
+for (const [status, row] of Object.entries(PLACEMENT_TABLE)) {
+  for (const [placementName, [eligible, decision]] of Object.entries(row)) {
+    Deno.test(`placement table: ${status} worker, ${placementName} -> ${eligible ? "eligible" : "not eligible"}, ${decision}`, () => {
+      const placement = TABLE_PLACEMENTS[placementName as TablePlacement];
+      const pool = [tableWorker(status as TableStatus)];
+      assertEquals(
+        eligibleWorkers(placement, pool).map((w) => w.name),
+        eligible ? ["w1"] : [],
+      );
+      const result = scheduleStep(placement, pool);
+      assertEquals(result.kind, decision);
+      if (result.kind === "dispatch") assertEquals(result.worker.name, "w1");
+    });
+  }
+}
+
+// A worker that does not meet the placement is never eligible, whatever its
+// status: the requirement is checked before the status could matter.
+const UNMET_PLACEMENTS = {
+  "another target": { target: "w2" },
+  "a label it lacks": { labels: { fleet: "db" } },
+  "another platform": { platform: "darwin" },
+  "another arch": { platform: "linux/aarch64" },
+} as const;
+
+for (const [placementName, placement] of Object.entries(UNMET_PLACEMENTS)) {
+  Deno.test(`placement table: ${placementName} is never eligible, in any status`, () => {
+    for (const status of Object.keys(PLACEMENT_TABLE) as TableStatus[]) {
+      const pool = [tableWorker(status)];
+      assertEquals(eligibleWorkers(placement, pool), [], status);
+      assertEquals(scheduleStep(placement, pool).kind, "queue", status);
+    }
+  });
+}
+
+Deno.test("placement table: among eligible workers, most free slots wins, then name, for every placement field", () => {
+  const pool = [
+    worker({
+      name: "c",
+      labels: { fleet: "web" },
+      capacity: 3,
+      activeDispatchIds: ["d1"],
+    }),
+    worker({ name: "b", labels: { fleet: "web" }, capacity: 2 }),
+    worker({ name: "a", labels: { fleet: "web" }, capacity: 2 }),
+  ];
+  for (
+    const placement of [
+      { labels: { fleet: "web" } },
+      { platform: "linux" },
+      { platform: "linux/x86_64" },
+      {},
+    ]
+  ) {
+    const result = scheduleStep(placement, pool);
+    // a, b and c each have 2 free slots; the name breaks the tie.
+    assertEquals(
+      result.kind === "dispatch" ? result.worker.name : result.kind,
+      "a",
+      JSON.stringify(placement),
+    );
+  }
+  const busier = scheduleStep({ labels: { fleet: "web" } }, [
+    ...pool.slice(0, 2),
+    worker({
+      name: "a",
+      labels: { fleet: "web" },
+      capacity: 2,
+      activeDispatchIds: ["d2"],
+    }),
+  ]);
+  // a now has 1 free slot, b and c have 2: name order among the freest.
+  assertEquals(busier.kind === "dispatch" ? busier.worker.name : "", "b");
+});

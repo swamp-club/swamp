@@ -1992,3 +1992,69 @@ Deno.test("checkSuspendedRunResume: refuses a step added to an unknown job holdi
     `Step "lint" in job "pre" is not in the run.`,
   );
 });
+
+// --- forEach reset sets, fleet fan-out baseline (swamp-club#4271) ---
+//
+// Today's fleet pattern is one forEach template with an iteration per
+// worker. Fan-out adds its own reset rule for fan-out jobs; these pin the
+// forEach sets it must leave alone, for a plain retry and for --from.
+
+/**
+ * prep → scan (forEach: host-a passed, host-b failed, host-c passed) →
+ * report (skipped), in one job; a later job, notify, never ran.
+ */
+function fleetRun(): { wf: Workflow; run: WorkflowRun } {
+  const wf = workflow([
+    {
+      name: "fleet",
+      steps: [plain("prep"), each("scan", ["prep"]), plain("report", ["scan"])],
+    },
+    { name: "notify", steps: [plain("send")], dependsOn: ["fleet"] },
+  ]);
+  const run = WorkflowRun.create(wf);
+  run.start();
+  const job = run.getJob("fleet")!;
+  job.replaceExpandedSteps("scan", [
+    "scan-host-a",
+    "scan-host-b",
+    "scan-host-c",
+  ]);
+  job.getStep("prep")!.succeed();
+  job.getStep("scan-host-a")!.succeed();
+  job.getStep("scan-host-b")!.fail("host-b failed");
+  job.getStep("scan-host-c")!.succeed();
+  job.getStep("report")!.skip({ kind: "dependency" });
+  job.fail();
+  run.getJob("notify")!.skip();
+  run.complete();
+  return { wf, run };
+}
+
+const FLEET_RESET = [
+  "fleet/report",
+  "fleet/scan-host-a",
+  "fleet/scan-host-b",
+  "fleet/scan-host-c",
+  "notify/send",
+];
+
+Deno.test("planFailedRunResume: a plain retry of a failed forEach iteration resets every iteration of its template, passed ones included, and the template's dependents in its job and in later jobs, but not the steps before it", () => {
+  const { wf, run } = fleetRun();
+  const plan = planFailedRunResume(wf, run);
+  assertEquals(sortRefs(plan.steps), FLEET_RESET);
+  assertEquals(sortRefs(plan.tracked), FLEET_RESET);
+});
+
+Deno.test("planFailedRunResume: --from at the forEach template resets the same set as a plain retry", () => {
+  const { wf, run } = fleetRun();
+  const plan = planFailedRunResume(wf, run, { step: "scan" });
+  assertEquals(sortRefs(plan.steps), FLEET_RESET);
+  assertEquals(sortRefs(plan.tracked), FLEET_RESET);
+});
+
+Deno.test("planFailedRunResume: --from at the step before the forEach template also resets that step", () => {
+  const { wf, run } = fleetRun();
+  const plan = planFailedRunResume(wf, run, { step: "prep" });
+  assertEquals(sortRefs(plan.steps), ["fleet/prep", ...FLEET_RESET].sort());
+  assertEquals(sortRefs(plan.tracked), ["fleet/prep", ...FLEET_RESET].sort());
+});
