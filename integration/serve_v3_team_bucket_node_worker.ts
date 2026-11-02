@@ -19,7 +19,7 @@
 
 // a Worker with its own module state and host name, so the other node's lease
 // is a remote holder's; each node has its own checkout of one datastore
-// replicated through a real Litestream
+// replicated through a real Litestream when given a replica
 
 import "../src/domain/models/models.ts";
 import { join } from "@std/path";
@@ -69,6 +69,7 @@ import {
 } from "../src/serve/datastore_locks.ts";
 import type { FollowerGate } from "../src/serve/follower_requests.ts";
 import { awaitFirstFollowerCatchUp } from "../src/serve/follower_ready.ts";
+import { LeaderLink } from "../src/serve/leader_link.ts";
 import {
   type FollowerPolicyWiring,
   wireFollowerPolicy,
@@ -89,14 +90,15 @@ export type NodeRequest =
   | {
     readonly kind: "init";
     readonly hostname: string;
-    readonly replica: string;
+    // unset: the nodes share one commits.db, with no replication
+    readonly replica?: string;
     readonly privateRoot: string;
     readonly datastorePath: string;
     readonly repoDir: string;
     readonly modelType: string;
     readonly tokens: Readonly<Record<string, string>>;
   }
-  | { readonly kind: "open" }
+  | { readonly kind: "open"; readonly leaderOrigin?: string }
   | { readonly kind: "saveModel"; readonly name: string; readonly id?: string }
   | {
     readonly kind: "saveData";
@@ -157,6 +159,7 @@ let wiring: FollowerPolicyWiring | undefined;
 let upkeep: V3ReplicationUpkeep | undefined;
 let locks: DatastoreLockLeases | undefined;
 let http: Deno.HttpServer | undefined;
+let leaderLink: LeaderLink | undefined;
 let failReloads = false;
 let leaderHead: number | undefined;
 const launched = new Set<number>();
@@ -166,7 +169,10 @@ const launched = new Set<number>();
  * and Litestream sidecar run after any one request has returned, so a
  * scoped mock cannot cover them. Realm-local.
  */
-function setEnvironment(overrides: Record<string, string>): void {
+function setEnvironment(
+  overrides: Record<string, string | undefined>,
+): void {
+  // an undefined override reads as unset, hiding the host's own value
   const realGet = Deno.env.get.bind(Deno.env);
   const realHas = Deno.env.has.bind(Deno.env);
   const realToObject = Deno.env.toObject.bind(Deno.env);
@@ -177,11 +183,21 @@ function setEnvironment(overrides: Record<string, string>): void {
   });
   Object.defineProperty(Deno.env, "has", {
     configurable: true,
-    value: (key: string) => Object.hasOwn(overrides, key) || realHas(key),
+    value: (key: string) =>
+      Object.hasOwn(overrides, key)
+        ? overrides[key] !== undefined
+        : realHas(key),
   });
   Object.defineProperty(Deno.env, "toObject", {
     configurable: true,
-    value: () => ({ ...realToObject(), ...overrides }),
+    value: () => {
+      const merged: Record<string, string> = { ...realToObject() };
+      for (const [key, value] of Object.entries(overrides)) {
+        if (value === undefined) delete merged[key];
+        else merged[key] = value;
+      }
+      return merged;
+    },
   });
 }
 
@@ -208,7 +224,7 @@ async function initCheckout(
   );
 }
 
-async function open(): Promise<Opened> {
+async function open(leaderOrigin: string | undefined): Promise<Opened> {
   const request = init!;
   await initCheckout(request.repoDir, request.datastorePath);
   const opened = await requireInitializedRepoUnlocked({
@@ -260,12 +276,19 @@ async function open(): Promise<Opened> {
     });
     node.commitFeed = wiring.commitFeed;
     wiring.effects.start();
+    const leader = leaderOrigin === undefined
+      ? LEADER
+      : { ...LEADER, address: leaderOrigin };
     const leadership: FollowerGate = {
       role: "follower",
-      leader: () => LEADER,
+      leader: () => leader,
       isStale: () => false,
     };
     node.followerGate = wiring.gate(leadership);
+    if (leaderOrigin !== undefined) {
+      leaderLink = new LeaderLink({ leader: () => leader });
+      node.leaderLink = leaderLink;
+    }
     // caught up once the copy holds the head the leader named; never while the
     // feed has named none
     const copyHead = () =>
@@ -408,7 +431,7 @@ async function handle(request: NodeRequest): Promise<unknown> {
       return undefined;
     }
     case "open":
-      return await open();
+      return await open(request.leaderOrigin);
     case "saveModel": {
       const definition = Definition.create({
         ...(request.id !== undefined ? { id: request.id } : {}),
@@ -510,6 +533,7 @@ async function handle(request: NodeRequest): Promise<unknown> {
     case "close":
       try {
         await wiring?.effects.stop();
+        leaderLink?.close();
         await http?.shutdown();
         await locks?.dispose();
         await upkeep?.stop();
