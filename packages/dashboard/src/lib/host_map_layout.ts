@@ -17,11 +17,22 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+/**
+ * Pure geometry for the fleet host map: a squarified treemap of groups
+ * weighted by their workers' slot area, worker squares sized by area to
+ * capacity, each worker's slot grid, and the bounds a worker is held to
+ * inside its group card.
+ */
+
 import { hierarchy, treemap, treemapSquarify } from "d3-hierarchy";
 
+/** Card header height: group name, counts and the status-mix bar. */
 export const HEADER = 46;
+/** Inset between a card's edge and the workers inside it. */
 export const PAD = 12;
+/** Space between group cards. */
 export const GUTTER = 14;
+/** Breathing room between neighbouring workers. */
 export const GAP = 4;
 
 const BASE_SIZE = 15;
@@ -30,6 +41,7 @@ const GROUP_MINIMUM = 16_000;
 const MIN_HEIGHT = 380;
 const MAX_HEIGHT = 1400;
 
+/** Side length of a worker square; its area grows linearly with capacity. */
 export function nodeSize(capacity: number): number {
   return Math.round(BASE_SIZE * Math.sqrt(Math.max(1, capacity)));
 }
@@ -41,12 +53,14 @@ export interface SlotRect {
   h: number;
 }
 
+/** Columns of slot cells: two up to 8 slots (2×1 … 2×4), then a near-square grid. */
 export function slotColumns(capacity: number): number {
   if (capacity <= 1) return 1;
   if (capacity <= 8) return 2;
   return Math.ceil(Math.sqrt(capacity));
 }
 
+/** Slot cells inside a worker square centred on the origin. */
 export function slotGrid(capacity: number, size: number): SlotRect[] {
   const count = Math.max(1, capacity);
   const cols = slotColumns(count);
@@ -69,6 +83,7 @@ export function slotGrid(capacity: number, size: number): SlotRect[] {
 
 export interface GroupInput {
   key: string;
+  /** Capacity of each worker in the group. */
   capacities: readonly number[];
 }
 
@@ -85,8 +100,10 @@ export interface GroupCell {
   y: number;
   w: number;
   h: number;
+  /** Where the group's workers settle. */
   cx: number;
   cy: number;
+  /** Radius workers are first placed within. */
   r: number;
 }
 
@@ -95,6 +112,7 @@ export interface HostMapLayout {
   height: number;
 }
 
+/** The slot area a group's workers occupy, the treemap's weight. */
 export function groupArea(capacities: readonly number[]): number {
   let area = 0;
   for (const capacity of capacities) {
@@ -105,8 +123,9 @@ export function groupArea(capacities: readonly number[]): number {
 }
 
 /**
- * each group's area is its workers' area plus a fixed minimum, so small groups
- * stay readable
+ * Lays the groups out as a squarified treemap `width` wide. Each group's
+ * area is proportional to its workers' area plus a fixed minimum, so small
+ * groups stay readable; the canvas grows taller with total capacity.
  */
 export function layoutGroups(
   groups: readonly GroupInput[],
@@ -163,9 +182,9 @@ export function layoutGroups(
 }
 
 /**
- * keeps a worker's centre below the header and inset by its half-size so no
- * square crosses an edge; collapses to the centre line when the card is too
- * small
+ * Where a worker's centre may sit inside its card: below the header and
+ * inset by the worker's own half-size, so no square crosses an edge.
+ * Collapses to the centre line when the card is too small.
  */
 export function clampBounds(cell: GroupCell, size: number): CellBounds {
   const half = size / 2 + GAP;

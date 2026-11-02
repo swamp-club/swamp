@@ -54,7 +54,7 @@ const stats: Record<string, RunStats> = {
 };
 
 const items = [
-  { name: "zulu" },
+  { name: "zulu" }, // no summary at all
   { name: "idle" },
   { name: "alpha" },
   { name: "charlie" },

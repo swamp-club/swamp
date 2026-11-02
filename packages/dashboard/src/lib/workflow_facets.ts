@@ -17,6 +17,11 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+// How the dashboard slices workflows: by name prefix, by what triggers
+// them (a schedule, a webhook, or only manual/API runs) and by webhook
+// route. Workflows, Executions and Approvals share these so a filter means
+// the same thing on every page.
+
 import { fuzzyFilter } from "./fuzzy.ts";
 
 export type TriggerKind = "schedule" | "webhook" | "manual";
@@ -24,11 +29,14 @@ export type TriggerKind = "schedule" | "webhook" | "manual";
 export interface WorkflowRef {
   name: string;
   id?: string;
+  /** The schedule the workflow file declares. */
   trigger?: { schedule?: string };
 }
 
 export interface TriggerSources {
+  /** Workflows with an effective schedule, by name (from health). */
   scheduled?: ReadonlyArray<{ workflowName?: string; workflowId?: string }>;
+  /** Webhook routes; `workflow` is the configured id or name. */
   webhooks?: ReadonlyArray<{ route: string; workflow: string }>;
 }
 
@@ -39,6 +47,11 @@ export interface WorkflowFacets {
   kinds: TriggerKind[];
 }
 
+/**
+ * The group a name belongs to: the scope of a scoped name ("@acme/x" →
+ * "@acme"), else the text before the first "-", "_", "." or "/"
+ * ("deploy-api" → "deploy"). Names with no separator have no prefix.
+ */
 export function workflowPrefix(name: string): string | null {
   if (name.startsWith("@")) {
     const slash = name.indexOf("/");
@@ -48,6 +61,7 @@ export function workflowPrefix(name: string): string | null {
   return match ? match[1] : null;
 }
 
+/** Builds a lookup from workflow to its facets. */
 export function facetIndex(
   sources: TriggerSources,
 ): (workflow: WorkflowRef) => WorkflowFacets {
@@ -86,8 +100,9 @@ export function facetIndex(
 export type TriggerFilter = "all" | TriggerKind;
 
 /**
- * values within one facet combine with OR, facets combine with AND, and an
- * empty list does not narrow
+ * What the workflow pages filter by. Values within one facet combine with
+ * OR (prefix deploy or sync); facets combine with AND. An empty list
+ * doesn't narrow.
  */
 export interface WorkflowFilter {
   query: string;
@@ -108,6 +123,7 @@ export function isFilterActive(filter: WorkflowFilter): boolean {
     filter.triggers.length > 0 || filter.webhooks.length > 0;
 }
 
+/** True when the facets pass every facet filter (the query is separate). */
 export function matchesFacets(
   facets: WorkflowFacets,
   filter: WorkflowFilter,
@@ -127,6 +143,10 @@ export function matchesFacets(
   return true;
 }
 
+/**
+ * Applies a filter: facet filters first, then the fuzzy query over the
+ * name (and webhook routes), ranked by match quality when a query is set.
+ */
 export function applyWorkflowFilter<T>(
   items: readonly T[],
   filter: WorkflowFilter,
@@ -157,8 +177,10 @@ const TRIGGER_LABELS: Record<TriggerKind, string> = {
 };
 
 /**
- * a workflow with several webhooks (or both a schedule and a webhook) appears
- * in each of its groups; ungrouped items land in a trailing group
+ * Groups items, keeping each group's items in their incoming order. A
+ * workflow with several webhooks (or both a schedule and a webhook)
+ * appears in each of its groups; ungrouped items land in a trailing
+ * "Other" / "No webhook" group.
  */
 export function groupWorkflows<T>(
   items: readonly T[],
@@ -198,6 +220,7 @@ export function groupWorkflows<T>(
   );
 }
 
+/** Distinct prefixes with how many items carry each, most common first. */
 export function prefixOptions(
   names: readonly string[],
 ): Array<{ prefix: string; count: number }> {

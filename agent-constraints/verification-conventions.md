@@ -83,7 +83,7 @@ Reviews are guarded by file path — they skip when no relevant files changed:
 | adversarial-review | `src/cli/`, `src/domain/`, `src/infrastructure/`, `src/libswamp/`, `src/serve/`, `src/worker/` | claude-opus-5-5 |
 | ux-review | `src/cli/commands/`, `src/presentation/`, `src/domain/errors.ts`, `src/libswamp/` | claude-opus-5-5 |
 | ci-security-review | `.github/workflows/` | claude-opus-5-5 |
-| comment-review | `*.ts`, `*.tsx`, `AGENTS.md` | claude-sonnet-5-5 |
+| comment-review | `.ts` and `.tsx` under `src/`, `integration/`, `scripts/`; `AGENTS.md` | claude-sonnet-5-5 |
 
 The guards filter the changed-file list produced by the `detect-changes` job.
 Those `@swamp/git` steps **must** pass `repoPath` pointing at the verification

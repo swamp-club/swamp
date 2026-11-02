@@ -17,6 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+/** A recorded command execution for inspection. */
 export interface CapturedCommandCall {
   command: string;
   args: string[];
@@ -26,30 +27,74 @@ export interface CapturedCommandCall {
    * any secrets). Present only when the caller passed it.
    */
   env?: Record<string, string>;
+  /** The `cwd` option passed to `Deno.Command`. Present only when passed. */
   cwd?: string | URL;
+  /** The `clearEnv` option passed to `Deno.Command`. Present only when passed. */
   clearEnv?: boolean;
 }
 
+/** Result from withMockedCommand — includes the callback result and captured calls. */
 export interface MockCommandResult<T> {
   result: T;
   calls: CapturedCommandCall[];
 }
 
+/** The output shape returned by a command handler. */
 export interface CommandOutput {
   stdout: string | Uint8Array;
   stderr?: string | Uint8Array;
   code: number;
 }
 
+/**
+ * A command handler that receives the command name and args, returns output.
+ * Can be async.
+ */
 export type CommandHandler = (
   command: string,
   args: string[],
 ) => CommandOutput | Promise<CommandOutput>;
 
 /**
- * replaces Deno.Command with a mock, from a sequential CommandOutput array or a
- * handler; records every call, including env, cwd and clearEnv when passed, and
- * always restores the original, even if the callback throws.
+ * Runs a callback with `Deno.Command` replaced by a mock.
+ *
+ * The mock can be:
+ * - A **CommandOutput array** — outputs are returned sequentially, one per command
+ * - A **handler function** — receives the command and args, returns output
+ *
+ * All command executions are recorded and returned for inspection, including
+ * the `env`, `cwd` and `clearEnv` options when the caller passed them.
+ * The original `Deno.Command` is always restored, even if the callback throws.
+ *
+ * **Simple mode** — sequential responses:
+ * ```typescript
+ * import { withMockedCommand } from "@swamp-club/swamp-testing";
+ *
+ * const { result, calls } = await withMockedCommand([
+ *   { stdout: "sk-test-123", code: 0 },
+ * ], async () => {
+ *   const provider = vault.createProvider("test", { op_vault: "Eng" });
+ *   return await provider.get("api-key");
+ * });
+ *
+ * assertEquals(result, "sk-test-123");
+ * assertEquals(calls[0].command, "op");
+ * // For a provider that passes its token to `op` via the env option:
+ * assertEquals(calls[0].env?.OP_SERVICE_ACCOUNT_TOKEN, "test-token");
+ * ```
+ *
+ * **Handler mode** — dynamic responses:
+ * ```typescript
+ * const { calls } = await withMockedCommand((cmd, args) => {
+ *   if (cmd === "op" && args.includes("read")) {
+ *     return { stdout: "sk-test-123", code: 0 };
+ *   }
+ *   return { stderr: "not found", code: 1 };
+ * }, async () => {
+ *   const provider = vault.createProvider("test", { op_vault: "Eng" });
+ *   await assertVaultConformance(provider);
+ * });
+ * ```
  */
 export async function withMockedCommand<T>(
   handlerOrOutputs: CommandHandler | CommandOutput[],

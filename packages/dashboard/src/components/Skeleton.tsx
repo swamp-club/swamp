@@ -21,6 +21,12 @@
 /** @jsxImportSource react */
 import { type CSSProperties, Fragment, type ReactNode } from "react";
 
+// Loading placeholders shaped like the content they stand in for. Every
+// block shares one shimmer pinned to the viewport, so a page of
+// placeholders pulses as a single sheet instead of a hundred out-of-step
+// bars. Placeholders fade in after a short delay so a fast response never
+// flashes them, and the shimmer stops under prefers-reduced-motion.
+
 interface SkeletonProps {
   width?: number | string;
   height?: number | string;
@@ -29,6 +35,7 @@ interface SkeletonProps {
   className?: string;
 }
 
+/** One placeholder block. */
 export function Skeleton(
   { width = "100%", height = 12, radius, style, className }: SkeletonProps,
 ) {
@@ -41,6 +48,10 @@ export function Skeleton(
   );
 }
 
+/**
+ * Marks a region as loading for assistive tech and wraps its placeholders.
+ * `label` is announced ("Loading workflows").
+ */
 export function SkeletonRegion(
   { label, children, style, className }: {
     label: string;
@@ -71,6 +82,7 @@ export function widthAt(i: number): string {
   return WIDTHS[i % WIDTHS.length];
 }
 
+/** Lines of placeholder text. */
 export function SkeletonText(
   { lines = 3, lineHeight = 10, gap = 8 }: {
     lines?: number;
@@ -91,6 +103,7 @@ export function SkeletonText(
   );
 }
 
+/** The header's stat pills. */
 export function SkeletonPills({ count = 4 }: { count?: number }) {
   return (
     <span style={{ display: "inline-flex", gap: 8 }} aria-hidden="true">
@@ -104,6 +117,7 @@ export function SkeletonPills({ count = 4 }: { count?: number }) {
   );
 }
 
+/** The run-history strip of a card or row. */
 export function SkeletonRunHistory(
   { slots = 20, height = 6 }: { slots?: number; height?: number },
 ) {
@@ -119,6 +133,7 @@ export function SkeletonRunHistory(
   );
 }
 
+/** A grid of cards: title + status, a meta line, and optionally a strip. */
 export function SkeletonCardGrid(
   { count = 9, label, history = true }: {
     count?: number;
@@ -153,7 +168,9 @@ export function SkeletonCardGrid(
 }
 
 export interface SkeletonColumn {
+  /** Real header text, so the table frame is final from the first paint. */
   header: string;
+  /** Placeholder width: px, %, or "pill" / "strip" / "mono" presets. */
   cell?: number | string | "pill" | "strip" | "mono";
 }
 
@@ -172,6 +189,7 @@ function SkeletonCell(
   return <Skeleton width={cell ?? widthAt(row)} height={10} />;
 }
 
+/** A table with real headers and placeholder rows. */
 export function SkeletonTable(
   { columns, rows = 10, label }: {
     columns: SkeletonColumn[];
@@ -206,6 +224,7 @@ export function SkeletonTable(
   );
 }
 
+/** Rows of a list panel: a dot, a title and detail line, a trailing value. */
 export function SkeletonList(
   { rows = 6, label }: { rows?: number; label: string },
 ) {
@@ -235,6 +254,7 @@ export function SkeletonList(
   );
 }
 
+/** A panel with a header and list rows. */
 export function SkeletonPanel(
   { rows = 5, label, title }: { rows?: number; label: string; title?: string },
 ) {
@@ -250,6 +270,7 @@ export function SkeletonPanel(
   );
 }
 
+/** Stat cards across the top of a detail page. */
 export function SkeletonStats({ count = 4 }: { count?: number }) {
   return (
     <div
@@ -281,6 +302,13 @@ export function SkeletonStats({ count = 4 }: { count?: number }) {
 // chart rather than a bar code; fixed so it never reshuffles.
 const BAR_HEIGHTS = [46, 68, 54, 82, 62, 38, 74, 58, 88, 50, 70, 42];
 
+/**
+ * A bar chart's silhouette: gridlines with y-axis tick placeholders, a
+ * baseline, bars of varied height and x-axis label placeholders. Its
+ * insets match the Overview's canvas chart (top 8, right 12, bottom 28,
+ * left 36) so the real chart lands exactly where the placeholder was.
+ * Decorative only — wrap it in a `SkeletonRegion` to announce loading.
+ */
 export function SkeletonChart(
   { bars = 7, height = 180, gridLines = 4 }: {
     bars?: number;
@@ -378,6 +406,14 @@ export function SkeletonChart(
   );
 }
 
+/**
+ * Key/value rows — a settings or details panel — with a placeholder for
+ * each value. Pass `keys` when the labels are known up front so they show
+ * for real from the first paint; omit them for `rows` placeholder keys.
+ * Pass the loaded layout's row and key classes (`sys-row`/`sys-key`,
+ * `detail-row`/`detail-key`) so rows keep their final height. Decorative
+ * only — wrap it in a `SkeletonRegion` to announce loading.
+ */
 export function SkeletonKeyValues(
   {
     keys,

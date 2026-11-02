@@ -30,14 +30,19 @@ import {
 } from "react";
 import { type ActiveRunRef, activeRunsKey } from "./resume_state.ts";
 
-// a run summary is re-read when serve starts or finishes a run or the tab comes
-// back into view, not on a clock, so an idle open tab costs nothing; on a
-// preset range also once when the oldest counted run leaves the window
+// When a view's run summary is re-read. Not on a clock: only when serve
+// starts or finishes a run, or when the tab comes back into view, so an
+// open tab costs nothing while nothing happens (swamp-club#3444). On a
+// preset range, also once when the oldest counted run leaves the window
+// (swamp-club#3450).
 
+/** The least time between two activity refetches of one summary. */
 export const RUN_ACTIVITY_REFETCH_MS = 30_000;
 
 interface RunActivity {
+  /** Changes only when a run starts or stops being driven. */
   activityKey: string;
+  /** The tab is in view. */
   visible: boolean;
 }
 
@@ -60,6 +65,11 @@ function tabVisible(): boolean {
   return tabDocument()?.visibilityState !== "hidden";
 }
 
+/**
+ * Whether the document is in view, following `visibilitychange`; true
+ * without a document. For code above a `RunActivityProvider` (the health
+ * stream); views read `useTabVisible` instead.
+ */
 export function useDocumentVisible(): boolean {
   const [visible, setVisible] = useState(tabVisible);
   useEffect(() => {
@@ -72,6 +82,7 @@ export function useDocumentVisible(): boolean {
   return visible;
 }
 
+/** Shares the health snapshot's run activity and the tab's visibility. */
 export function RunActivityProvider(
   { activeRuns, children }: {
     activeRuns: readonly ActiveRunRef[] | undefined;
@@ -87,10 +98,15 @@ export function RunActivityProvider(
   return createElement(RunActivityContext.Provider, { value }, children);
 }
 
+/** Whether the tab is in view; true outside a `RunActivityProvider`. */
 export function useTabVisible(): boolean {
   return useContext(RunActivityContext).visible;
 }
 
+/**
+ * A clock or poll's interval while the tab is in view, and null (stopped)
+ * while it is hidden (swamp-club#3661).
+ */
 export function visibleIntervalMs(
   intervalMs: number | null,
   visible: boolean,
@@ -98,10 +114,15 @@ export function visibleIntervalMs(
   return visible ? intervalMs : null;
 }
 
+/** Whether the tab went from hidden to in view. */
 export function cameIntoView(previous: boolean, next: boolean): boolean {
   return !previous && next;
 }
 
+/**
+ * Whether going from `previous` to `next` calls for a refetch: a run
+ * started or stopped, or the tab came back into view.
+ */
 export function runActivityChanged(
   previous: RunActivity,
   next: RunActivity,
@@ -154,6 +175,11 @@ export const MAX_TIMER_MS = 2_147_483_647;
 
 export type AgeOutStep = { kind: "fire" } | { kind: "wait"; waitMs: number };
 
+/**
+ * Whether an age-out deadline has come, or how long to wait before
+ * looking again: never longer than a timer can hold, so a 30- or 90-day
+ * window waits in steps instead of firing at once.
+ */
 export function ageOutTimerStep(
   deadline: number,
   now: number,
@@ -163,15 +189,23 @@ export function ageOutTimerStep(
   return { kind: "wait", waitMs: Math.min(deadline - now, maxMs) };
 }
 
+/**
+ * When an answer's oldest counted run leaves the window. `answer` is the
+ * response it came from: each new answer arms the timer again, even with
+ * the same delay. A null `delayMs` arms nothing.
+ */
 export interface AgeOut {
   answer: unknown;
   delayMs: number | null;
 }
 
 /**
- * pass `useRequest`'s `refresh`, which waits for a read still in flight: a read
- * slower than the throttle would otherwise never answer while runs keep
- * starting
+ * Calls `refetch` when serve starts or finishes a run, or the tab comes
+ * back into view, and once `ageOut`'s run leaves the window; at most once
+ * per `RUN_ACTIVITY_REFETCH_MS`, and never while the tab is hidden. The
+ * first load counts as a fetch. Pass `useRequest`'s `refresh`, which waits
+ * for a read still in flight: a read slower than the throttle would
+ * otherwise never answer while runs keep starting (swamp-club#3960).
  */
 export function useRefetchOnRunActivity(
   refetch: () => void,
@@ -207,6 +241,7 @@ function useThrottledRefetch(
   const state = useRef({ lastAt: Date.now(), pending: false });
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+  // Sends a pending refetch now, or arms the throttle's timer for it.
   const schedule = useCallback(() => {
     if (timer.current !== null) clearTimeout(timer.current);
     timer.current = null;

@@ -17,8 +17,15 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+/**
+ * The `repository-verified` factor's inputs: the repository URL forms the
+ * registry can verify, and what each side knows about verification.
+ */
+
+/** A source host the registry verifies repositories on. */
 export type VcsHost = "github" | "gitlab" | "codeberg" | "bitbucket";
 
+/** A repository URL reduced to its host, owner and name. */
 export interface ParsedVcsUrl {
   host: VcsHost;
   owner: string;
@@ -49,6 +56,11 @@ const DEEP_LINK_SEGMENTS = new Set([
   "src",
 ]);
 
+/**
+ * Parses a repository URL the registry can verify: HTTPS, on one of the
+ * {@link VcsHost}s, naming an owner and a repository (a deep link such as
+ * `/tree/main` is cut off). Null for anything else.
+ */
 export function parseVcsUrl(raw: string): ParsedVcsUrl | null {
   if (typeof raw !== "string") return null;
   const trimmed = raw.trim();
@@ -114,9 +126,15 @@ function isValidPathComponent(s: string): boolean {
 }
 
 /**
- * unknown means the CLI could not tell (no credentials, swamp-club unreachable,
- * or a server that does not report it), so the factor is scored on the
- * repository URL alone
+ * Whether the registry will award `repository-verified` through the
+ * collective's private source hosting, as far as the CLI can tell before
+ * publish. The registry awards it to a private extension whose collective
+ * has private source hosting, whatever the repository URL.
+ *   attested     → the registry awards the factor
+ *   not_attested → it does not; `reason` says which half is missing
+ *   unknown      → the CLI could not tell (no credentials, swamp-club
+ *                  unreachable, or a server that does not report it), so
+ *                  the factor is scored on the repository URL alone
  */
 export type PrivateSourceStanding =
   | { kind: "attested" }
@@ -127,9 +145,15 @@ export type PrivateSourceStanding =
   | { kind: "unknown" };
 
 /**
- * predicted: an attested standing earns the factor, as the registry awards it
- * on the attestation alone; a public repository URL is provisional, since only
- * the registry calls the host's API
+ * What the scorer knows about `repository-verified`.
+ *   confirmed → the registry's own result: whether it verified a public
+ *               repository, and whether the extension is private with a
+ *               collective that has private source hosting
+ *   predicted → before publish: the manifest's repository URL and the
+ *               private source standing; an attested standing earns the
+ *               factor, as the registry awards it on the attestation alone,
+ *               and a public repository URL is provisional, since only the
+ *               registry calls the host's API
  */
 export type RepositoryEvidence =
   | {

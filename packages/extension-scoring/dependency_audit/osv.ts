@@ -17,13 +17,18 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+/** Reading OSV's answer for one npm package version. */
+
+/** A vulnerability's severity as the audit grades it. */
 export type OsvSeverity = "LOW" | "MEDIUM" | "HIGH" | "CRITICAL" | "UNKNOWN";
 
+/** One advisory affecting a version. */
 export interface OsvVulnerability {
   id: string;
   severity: OsvSeverity;
 }
 
+/** OSV answered with something that is not a vulnerability list. */
 export class MalformedOsvResponseError extends Error {
   constructor(detail: string) {
     super(`OSV returned ${detail}`);
@@ -43,6 +48,7 @@ const CVSS_V3_PR_C: Record<string, number> = { N: 0.85, L: 0.68, H: 0.50 };
 const CVSS_V3_UI: Record<string, number> = { N: 0.85, R: 0.62 };
 const CVSS_V3_CIA: Record<string, number> = { N: 0, L: 0.22, H: 0.56 };
 
+/** A CVSS v3 vector's base score, or null when it is not one. */
 export function parseCvssV3BaseScore(vector: string): number | null {
   if (!vector.startsWith("CVSS:3")) return null;
   const parts: Record<string, string> = {};

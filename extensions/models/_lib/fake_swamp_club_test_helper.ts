@@ -17,9 +17,19 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// in-memory swamp-club answering the lab API as swamp-club does for the calls
-// this model makes: one-step status order (422 on a jump), githubPrUrl kept
-// across the shipped transition
+// ---------------------------------------------------------------------------
+// In-memory swamp-club for tests
+// ---------------------------------------------------------------------------
+//
+// Answers the lab API the way swamp-club does for the calls this model
+// makes: the one-step status order (422 on a jump), `githubPrUrl` kept
+// across the shipped transition, relationship rules including
+// `duplicate_of`'s single canonical and no-chain checks, and lifecycle
+// entries echoed back on the issue GET. Tests assert on the resulting state
+// rather than on a script of canned responses.
+//
+// Not a `_test.ts` file, so `deno test` does not run it; under `_lib/`, so
+// swamp's extension discovery skips it.
 
 export const FAKE_SWAMP_CLUB_URL = "https://fake.swamp-club.test";
 
@@ -69,6 +79,7 @@ export class FakeSwampClub {
   ripples: { issue: number; body: string }[] = [];
   calls: FakeCall[] = [];
   roster: { userId: string; username: string }[] | null = [];
+  /** Return a Response to fail a call before the fake handles it. */
   failWhen?: (call: FakeCall) => Response | undefined;
   #nextId = 1;
 
@@ -103,6 +114,7 @@ export class FakeSwampClub {
     return this.entriesOn(issue).map((e) => e.step);
   }
 
+  /** Swap in as `globalThis.fetch`; returns the restore function. */
   install(): () => void {
     const original = globalThis.fetch;
     globalThis.fetch = ((input: string | URL | Request, init?: RequestInit) => {

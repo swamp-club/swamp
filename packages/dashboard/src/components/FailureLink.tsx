@@ -20,6 +20,9 @@
 /** @jsxRuntime automatic */
 /** @jsxImportSource react */
 
+// One click from a failed run to its failure: the run page opens the
+// failed step's log when the URL carries ?focus=failure.
+
 import type { MouseEvent } from "react";
 import { isPlainLeftClick } from "../routes.ts";
 import { failureHref, navigateToHref } from "../views/run_links.ts";
@@ -44,6 +47,7 @@ export function openFailureOnClick(
   };
 }
 
+/** A small danger-toned "View failure" link to a failed run's log. */
 export function FailureLink(
   { workflowName, runId, label = "View failure" }: {
     workflowName: string;

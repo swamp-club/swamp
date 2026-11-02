@@ -17,6 +17,20 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+/**
+ * @swamp-club/swamp-testing — Test utilities for swamp extensions.
+ *
+ * Provides test factories and conformance suites for all extension types:
+ * models, vaults, datastores, reports, and webhooks.
+ *
+ * - **Factories** create in-memory fakes for unit testing without infrastructure
+ * - **Conformance suites** verify that real implementations satisfy their contracts
+ *
+ * @module
+ */
+
+// --- Models ---
+
 export { createModelTestContext } from "./test_context.ts";
 
 export type {
@@ -41,9 +55,12 @@ export type {
   OwnerDefinition,
 } from "./types.ts";
 
-// these types let extension authors resolve TS7006 (implicit any on execute
-// parameters) under strict mode when a test file imports the sibling model
-// source.
+// --- Model authoring (escape hatch for strict-mode extensions) ---
+//
+// These types let extension authors resolve TS7006 (implicit any on
+// execute parameters) when a test file imports the sibling model source
+// under strict mode. See the `swamp-extension-model` skill's
+// `references/typing.md` for the full rationale and worked example.
 
 export { defineBehavior, defineModel } from "./model_definition_types.ts";
 
@@ -56,6 +73,8 @@ export type {
   ResourceOutputSpec,
   VersionUpgrade,
 } from "./model_definition_types.ts";
+
+// --- Vaults ---
 
 export { createVaultTestContext } from "./vault_test_context.ts";
 
@@ -96,6 +115,8 @@ export type {
   VaultExportConformanceOptions,
 } from "./vault_conformance.ts";
 
+// --- Webhooks ---
+
 export type {
   WebhookHandler,
   WebhookPayload,
@@ -109,6 +130,8 @@ export type {
   WebhookExportConformanceOptions,
   WebhookRequestFixture,
 } from "./webhook_conformance.ts";
+
+// --- Datastores ---
 
 export { createDatastoreTestContext } from "./datastore_test_context.ts";
 
@@ -224,6 +247,8 @@ export type {
   RecordingSyncService,
 } from "./recording_sync_service.ts";
 
+// --- Reports ---
+
 export { createReportTestContext } from "./report_test_context.ts";
 
 export type {
@@ -249,6 +274,8 @@ export type {
   WorkflowReportContext,
 } from "./report_types.ts";
 
+// --- Mocking ---
+
 export { withMockedFetch } from "./mock_fetch.ts";
 
 export type {
@@ -265,6 +292,8 @@ export type {
   CommandOutput,
   MockCommandResult,
 } from "./mock_command.ts";
+
+// --- Timing ---
 
 export { waitFor } from "./wait_for.ts";
 

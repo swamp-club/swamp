@@ -25,9 +25,15 @@ export interface Stat {
   label: string;
   value: ReactNode;
   tone?: StatTone;
+  /** Full value or explanation on hover. */
   title?: string;
 }
 
+/**
+ * The header's summary: a row of compact stat pills ("134 workflows",
+ * "64,000 passed", …). Zero-valued danger/warning pills stay neutral so
+ * red only appears when something is actually wrong.
+ */
 export function StatPills(
   { stats, label = "Summary" }: { stats: Stat[]; label?: string },
 ) {

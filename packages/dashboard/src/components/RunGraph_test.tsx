@@ -112,6 +112,7 @@ Deno.test("RunGraph: a failed job names the failing step", () => {
 
 Deno.test("RunGraph: a running job ticks its duration and shows progress", () => {
   const html = render();
+  // 7s since it started, from the live clock.
   assertStringIncludes(html, "7.0s");
   assertStringIncludes(html, "1/3 steps");
   assertStringIncludes(html, 'class="rg-progress"');
@@ -125,6 +126,7 @@ Deno.test("RunGraph: edges draw dashed when their condition was not met", () => 
     html,
     "test → publish: runs when test succeeded (not met)",
   );
+  // The edge into the running job animates.
   assertStringIncludes(html, "rg-edge rg-edge-met is-active");
   assertStringIncludes(html, 'class="rg-edge-flow"');
 });
@@ -196,8 +198,10 @@ Deno.test("fitView: a graph too wide to read when fitted opens readable, from th
   const view = fitView(layout, 800, viewportHeight(layout, 800));
   assertEquals(view.k, 0.8);
   assertEquals(view.x, 28);
+  // "Fit" shows all of it.
   const all = fitView(layout, 800, 400, "all");
   assert(all.k < 0.3 && all.k >= 0.25);
+  // A graph that fits legibly is fitted and centred.
   const roomy = fitView(layout, 3000, 400);
   assert(roomy.k >= 0.6 && roomy.k < 1);
   assert(Math.abs(roomy.x - (3000 - layout.width * roomy.k) / 2) < 1);

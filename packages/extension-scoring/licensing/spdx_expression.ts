@@ -18,34 +18,44 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * syntax only: it does not know which ids exist or are allowed, so callers
- * judge the tree with their own policy and read licenses the same way
+ * SPDX license expressions (SPDX 2.3, Annex D) parsed into a tree.
+ *
+ * This is syntax only: it does not know which ids exist or which are
+ * allowed. Callers judge the tree with their own policy, so the extension
+ * manifest rules and the dependency trust allowlist read licenses the same
+ * way.
  */
 
+/** A license id, with `+` ("or any later version") when written. */
 export interface SpdxLicenseNode {
   readonly kind: "license";
   readonly id: string;
   readonly orLater: boolean;
 }
 
+/** A license with an exception or addition: `<license> WITH <exception>`. */
 export interface SpdxWithNode {
   readonly kind: "with";
   readonly license: SpdxLicenseNode;
   readonly exception: string;
 }
 
+/** `AND` or `OR` of two sub-expressions. */
 export interface SpdxCompoundNode {
   readonly kind: "and" | "or";
   readonly left: SpdxExpression;
   readonly right: SpdxExpression;
 }
 
+/** A parsed SPDX license expression. */
 export type SpdxExpression = SpdxLicenseNode | SpdxWithNode | SpdxCompoundNode;
 
 /** Longest expression the parser accepts, to bound work on untrusted input. */
 export const MAX_SPDX_EXPRESSION_LENGTH = 512;
 
+/** Thrown when an expression is not valid SPDX syntax. */
 export class SpdxSyntaxError extends Error {
+  /** The token the parser stopped at, when there is one. */
   readonly term: string | undefined;
 
   constructor(message: string, term?: string) {
@@ -192,6 +202,12 @@ class Parser {
   }
 }
 
+/**
+ * Parses an SPDX license expression. `OR` binds loosest, then `AND`, then
+ * `WITH`; parentheses group.
+ *
+ * @throws SpdxSyntaxError when the text is not a valid expression.
+ */
 export function parseSpdxExpression(input: string): SpdxExpression {
   if (input.length > MAX_SPDX_EXPRESSION_LENGTH) {
     throw new SpdxSyntaxError(
@@ -201,6 +217,7 @@ export function parseSpdxExpression(input: string): SpdxExpression {
   return new Parser(tokenize(input)).parse();
 }
 
+/** Writes a tree back as an expression, with the parentheses it needs. */
 export function formatSpdxExpression(expr: SpdxExpression): string {
   switch (expr.kind) {
     case "license":
@@ -228,6 +245,7 @@ function formatAndOperand(expr: SpdxExpression, right = false): string {
   return text;
 }
 
+/** Every license and exception node in the tree, left to right. */
 export function spdxLeaves(
   expr: SpdxExpression,
 ): Array<SpdxLicenseNode | SpdxWithNode> {

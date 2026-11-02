@@ -25,6 +25,7 @@ export interface ViewChoice {
   kind: "choice";
   label: string;
   value: string;
+  /** The value that counts as "not customised" (no dot on the button). */
   defaultValue: string;
   options: ReadonlyArray<{ value: string; label: string }>;
   onChange: (value: string) => void;
@@ -52,6 +53,11 @@ interface DocLike {
 }
 const el = (node: unknown): ElLike | null => node as ElLike | null;
 
+/**
+ * One "View" button holding how a list is shown (sort, grouping, extra
+ * rows) so the page header carries a single search box instead of a row
+ * of selects. A dot marks a customised view.
+ */
 export function ViewMenu({ sections }: { sections: readonly ViewSection[] }) {
   const id = useId();
   const [open, setOpen] = useState(false);

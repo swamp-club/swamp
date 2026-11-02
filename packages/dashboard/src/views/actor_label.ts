@@ -17,6 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+/** The audit event fields that say who acted. */
 export interface AuditActor {
   initiatedBy: string;
   principalUsername?: string;
@@ -24,8 +25,9 @@ export interface AuditActor {
 }
 
 /**
- * the username, the email, or both as `username <email>`, whichever are known;
- * the event's initiatedBy when neither is
+ * Who an audit event names as its actor: the username, the email, or both as
+ * `username <email>`, whichever are known; the event's `initiatedBy` when
+ * neither is (swamp-club#3076).
  */
 export function actorLabel(event: AuditActor): string {
   const { principalUsername: username, principalEmail: email } = event;

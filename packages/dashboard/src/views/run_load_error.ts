@@ -18,8 +18,9 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * swamp serve reads the runs its datastore holds; the local dashboard reads
- * only the repo it serves
+ * Why a run that exists in the run list may not load. `swamp serve` reads
+ * the runs its datastore holds; the local dashboard (`swamp start` /
+ * `swamp dashboard`) reads only the repo it serves.
  */
 export function runUnreadableHint(local: boolean): string {
   return local

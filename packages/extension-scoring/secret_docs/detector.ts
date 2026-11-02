@@ -20,24 +20,62 @@
 import { namesSecretValue } from "./secret_names.ts";
 
 /**
- * the registry runs this over archives it did not author, so every pattern is
- * linear in line length and lines past MAX_SCANNED_LINE_LENGTH are skipped
+ * Finds extension documentation that tells users to handle a secret in
+ * plaintext, or to reference a vault with syntax swamp does not support
+ * (swamp-club#3757). The published README, the manifest description and the
+ * schema's describe strings are the setup path users copy, so a secret the
+ * docs put on a command line ends up in shell history, `.swamp.yaml` or run
+ * history whatever the code marks sensitive.
+ *
+ * Four patterns, each one decidable from the text alone:
+ *
+ * - vault reference syntax swamp does not support (`vault://`, `<vault:`,
+ *   `{{ vault ...` without the `$`, `swamp vault set`);
+ * - `--global-arg` or `--input` setting a secret argument to anything other
+ *   than a `${{ ... }}` expression;
+ * - `swamp vault put` with the value on the command line, unless the
+ *   command talks to a `--server`, where no other form exists, or the value
+ *   is a shell variable, whose name alone reaches shell history;
+ * - full-length credential shapes (GitHub, GitLab, Anthropic, AWS, Slack,
+ *   HashiCorp Vault, swamp keys, bearer tokens, `user:pass@` URLs).
+ *
+ * In Markdown the first three count only inside fenced code blocks, so
+ * prose that names the wrong form to warn against it is left alone;
+ * credential shapes count anywhere. Piping a value into `swamp vault put` is
+ * the form the CLI's help recommends and is not flagged. Exporting a secret
+ * into the environment is not flagged either: some SDKs read their
+ * credentials only from there.
+ *
+ * The registry runs the same check over archives it did not author, so every
+ * pattern is linear in the line length (bounded repetition, no nested
+ * quantifiers) and lines longer than {@link MAX_SCANNED_LINE_LENGTH} are
+ * skipped. The long-line safety warning already covers those.
  */
 
+/** How a text is read: which parts of it are documentation to check. */
 export type SecretDocsForm =
+  /** Markdown: fenced code blocks fully, prose for credential shapes only. */
   | "markdown"
+  /** Plain text such as the manifest description: every line. */
   | "plain"
+  /** TypeScript source: the string passed to `.describe(...)` or set as `description:`. */
   | "source";
 
+/** One line of documentation that mishandles a secret. */
 export interface SecretDocsFinding {
+  /** 1-based line the finding starts on. */
   line: number;
+  /** What is wrong on the line, and the form to use instead. */
   message: string;
 }
 
+/** Lines longer than this are not scanned. */
 export const MAX_SCANNED_LINE_LENGTH = 2000;
 
+/** The most source lines one backslash-continued command may join. */
 const MAX_CONTINUATION_LINES = 20;
 
+/** The form every secret in the docs should take. */
 const VAULT_EXPRESSION = "${{ vault.get(<vault>, <key>) }}";
 
 const UNSUPPORTED_SYNTAX: ReadonlyArray<{ pattern: RegExp; label: string }> = [
@@ -50,11 +88,14 @@ const UNSUPPORTED_SYNTAX: ReadonlyArray<{ pattern: RegExp; label: string }> = [
   },
 ];
 
+/** `--global-arg name=value` / `--input name=value`, quoted or not. */
 const ARG_ASSIGNMENT =
   /--(global-arg|input)(?:\s{1,8}|=)["']?([A-Za-z_][\w.-]{0,100})=(\S{0,8})/g;
 
+/** `swamp vault put` (or its `write-secret` alias) and what follows it. */
 const VAULT_PUT = /\bswamp\s{1,8}vault\s{1,8}(?:put|write-secret)\b(.*)$/;
 
+/** `swamp vault put` options that take a value. */
 const VAULT_PUT_VALUE_FLAGS = new Set([
   "--repo-dir",
   "--refresh-from",
@@ -73,6 +114,7 @@ const VAULT_PUT_VALUE_FLAGS = new Set([
 const SHELL_VARIABLE =
   /^(?:\$(?:[A-Za-z_]\w{0,100}|\{[A-Za-z_]\w{0,100}\})|"\$(?:[A-Za-z_]\w{0,100}|\{[A-Za-z_]\w{0,100}\})")$/;
 
+/** Shell tokens that end the command's own arguments. */
 const SHELL_OPERATOR = /^(?:\|\|?|&&?|;|\d?>>?|<<?<?)$/;
 
 const CREDENTIAL_SHAPES: ReadonlyArray<{ pattern: RegExp; label: string }> = [
@@ -132,8 +174,11 @@ const REPEATED_RUN = /(.)\1{7}/;
 const DOCUMENTATION_HOST =
   /^(?:localhost|127(?:\.\d{1,3}){3}|\[::1\]|(?:[\w-]{1,63}\.){0,8}example\.(?:com|org|net))$/i;
 
+/** The argument names an extension's schemas declare, and those they mark sensitive. */
 export interface ArgumentSchemas {
+  /** Names marked `.meta({ sensitive: true })` anywhere in the extension. */
   sensitive: ReadonlySet<string>;
+  /** Every declared argument and config field name. */
   declared: ReadonlySet<string>;
 }
 
@@ -142,15 +187,20 @@ const NO_SCHEMAS: ArgumentSchemas = {
   declared: new Set(),
 };
 
+/** A string literal passed to `.describe(...)` or set as `description:`. */
 const SOURCE_DOC_STRING =
   /(?:\.describe\(\s{0,8}|\bdescription\s{0,8}:\s{0,8})(?:"([^"\n]{0,2000})"|'([^'\n]{0,2000})'|`([^`\n]{0,2000})`)/g;
 
+/** A Markdown fence opener or closer. */
 const FENCE = /^ {0,3}(`{3,}|~{3,})/;
 
 /**
- * schemas: a name is a secret when a schema marks it sensitive, or when no
- * schema declares it and namesSecretValue accepts it; a declared non-sensitive
- * name (secretKey, naming a vault key) is the schema's call
+ * Checks one text for documentation that mishandles a secret.
+ *
+ * @param schemas the extension's argument names. A name is a secret when a
+ *   schema marks it sensitive, or when no schema declares it and
+ *   {@link namesSecretValue} accepts it: a declared name that is not
+ *   sensitive (`secretKey`, naming a vault key) is the schema's call.
  */
 export function detectSecretDocs(
   text: string,
@@ -179,22 +229,26 @@ export function detectSecretDocs(
   return findings;
 }
 
+/** A unit of text to check, the line it starts on, and whether all patterns apply. */
 interface Segment {
   line: number;
   text: string;
   code: boolean;
 }
 
+/** A declared argument or config field. */
 export interface SchemaField {
   name: string;
   sensitive?: boolean;
 }
 
+/** The parts of an extension's content metadata that declare arguments. */
 export interface SchemaMetadata {
   models: readonly {
     globalArguments: readonly SchemaField[];
     methods: readonly { arguments: readonly SchemaField[] }[];
   }[];
+  /** Methods an extension adds to other models' types. */
   extensions?: readonly {
     methods: readonly { arguments: readonly SchemaField[] }[];
   }[];
@@ -383,24 +437,32 @@ function credentialShapes(text: string): string[] {
   return problems;
 }
 
+/** The review rule whose findings the `secret-safe-docs` factor counts. */
 export const SECRET_UNSAFE_DOCS_RULE = "secret-unsafe-docs";
 
+/** A finding with the archive file it is in; no file means the manifest description. */
 export interface SecretDocsLocatedFinding {
   file?: string;
   line: number;
   message: string;
 }
 
+/** The most findings the registry stores for one version. */
 export const MAX_STORED_SECRET_DOCS_FINDINGS = 50;
 
+/** Findings past this many stop the scan; the factor then fails. */
 export const MAX_SCANNED_SECRET_DOCS_FINDINGS = 1000;
 
+/** Files larger than this are not scanned; the factor then fails. */
 export const MAX_SECRET_DOCS_FILE_BYTES = 1024 * 1024;
 
+/** More documentation files than this are not scanned; the factor then fails. */
 export const MAX_SECRET_DOCS_FILES = 10_000;
 
+/** Whether an author accepted a finding. */
 export type SecretDocsAccepted = (finding: SecretDocsLocatedFinding) => boolean;
 
+/** A declared acceptance, as the archive's content metadata carries it. */
 export interface SecretDocsAcceptance {
   rule: string;
   file?: string;
@@ -426,10 +488,14 @@ export function secretDocsAcceptanceMatcher(
     f.file === undefined ? description : lines.has(`${f.file}\0${f.line}`);
 }
 
+/** The secret-safe-docs outcome for one version. */
 export interface SecretDocsResult {
   passed: boolean;
+  /** The unaccepted findings, at most {@link MAX_STORED_SECRET_DOCS_FINDINGS}. */
   findings: SecretDocsLocatedFinding[];
+  /** How many unaccepted findings there were; a lower bound when truncated. */
   count: number;
+  /** The scan stopped early (a cap), so the docs were not all checked. */
   truncated: boolean;
 }
 

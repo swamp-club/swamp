@@ -17,6 +17,8 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+/** Reading a Deno lockfile as data, for the dependency audit. */
+
 import { formatRange, tryParseRange } from "@std/semver";
 import type { LockedDependencyVersions } from "./resolution.ts";
 import type { DependencyRegistry } from "./specifiers.ts";
@@ -26,6 +28,7 @@ export const MAX_LOCKFILE_BYTES = 16 * 1024 * 1024;
 
 const SUPPORTED_VERSIONS: ReadonlySet<string> = new Set(["4", "5"]);
 
+/** `npm:@scope/name@range` or `jsr:@scope/name@range` → its parts. */
 function packageOfSpecifier(
   key: string,
 ): { registry: DependencyRegistry; name: string; range: string | null } | null {
@@ -39,6 +42,7 @@ function packageOfSpecifier(
     : null;
 }
 
+/** Two ranges admit the same versions, e.g. `^2.0.0` and `2`. */
 function sameRange(a: string | null, b: string | null): boolean {
   if (a === b) return true;
   const ra = tryParseRange(a ?? "*");
@@ -47,6 +51,7 @@ function sameRange(a: string | null, b: string | null): boolean {
     formatRange(ra) === formatRange(rb);
 }
 
+/** `name@version` or `name@version_peer…` → its name and bare version. */
 function packageOfEntry(key: string): { name: string; version: string } | null {
   const at = key.indexOf("@", 1);
   if (at <= 0) return null;
@@ -56,6 +61,15 @@ function packageOfEntry(key: string): { name: string; version: string } | null {
   };
 }
 
+/**
+ * What a Deno lockfile (format 4 or 5) records, read as data: the resolved
+ * value of each import specifier, and every version of each package from
+ * the specifiers and the keys of the `npm` and `jsr` sections. Undefined
+ * when the text is not JSON or another format, so the audit resolves from
+ * the registry instead.
+ *
+ * @param source names the lockfile in findings, e.g. "deno.lock"
+ */
 export function parseDenoLockfile(
   text: string,
   source: string,

@@ -18,8 +18,12 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * the registry runs this on archives it did not author, so a module that does
- * not parse yields no specifiers and is never read as text
+ * Reading the import specifiers a TypeScript or JavaScript module writes,
+ * from its syntax tree. The registry runs this on archives it did not
+ * author, so a module that does not parse yields no specifiers here and is
+ * never read as text.
+ *
+ * @module
  */
 
 import {
@@ -38,9 +42,12 @@ export {
   type UnparsedModule,
 } from "./parse.ts";
 
+/** A specifier in import position, by UTF-16 offsets of its quotes. */
 export interface ImportedSpecifierAt {
   specifier: string;
+  /** Offset of the opening quote. */
   start: number;
+  /** Offset just past the closing quote. */
   end: number;
 }
 
@@ -50,8 +57,11 @@ function isNode(value: unknown): value is SyntaxNode {
 }
 
 /**
- * text in a comment, string, template or regex literal is never an import, and
- * neither is a dynamic import of anything but a string literal
+ * The module specifiers `program` imports, in source order: static imports,
+ * side-effect imports, `export ... from`, `export * from`, dynamic
+ * `import()` and `typeof import()` types, each written as a string literal.
+ * Text in a comment, string, template or regex literal is never one, and
+ * neither is a dynamic import of anything but a string literal.
  */
 export function importedSpecifiersIn(
   program: SyntaxNode,
@@ -107,6 +117,11 @@ export function importedSpecifiersIn(
   return found.sort((a, b) => a.start - b.start);
 }
 
+/**
+ * The specifiers in import position in `source`, with their offsets (see
+ * {@link importedSpecifiersIn}), or null when the module does not parse.
+ * `options.path` picks TypeScript, JavaScript or JSX.
+ */
 export function importedSpecifiersAt(
   source: string,
   options: Pick<ParseModuleOptions, "path"> = {},
@@ -115,6 +130,10 @@ export function importedSpecifiersAt(
   return parsed.ok ? importedSpecifiersIn(parsed.program) : null;
 }
 
+/**
+ * The specifiers {@link importedSpecifiersAt} finds, in source order; none
+ * for a module that does not parse.
+ */
 export function importedSpecifiers(
   source: string,
   options: Pick<ParseModuleOptions, "path"> = {},

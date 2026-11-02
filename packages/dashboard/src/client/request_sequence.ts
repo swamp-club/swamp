@@ -18,12 +18,16 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * each request takes a ticket and only the newest may apply its response, so a
- * slow reply to an earlier payload never overwrites a newer one
+ * Orders the responses of one hook's requests. Each request takes a ticket;
+ * only the newest ticket may apply its response, so a slow reply to an
+ * earlier payload (v4) can never overwrite a newer one (v5).
  */
 export interface RequestSequence {
+  /** Starts a request and returns its ticket. */
   next(): number;
+  /** True while no later request has started. */
   isCurrent(ticket: number): boolean;
+  /** Retires every outstanding ticket, e.g. on unmount. */
   invalidate(): void;
 }
 

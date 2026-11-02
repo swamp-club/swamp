@@ -17,6 +17,16 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+/**
+ * Generates a promptfoo configuration for testing internal routing within
+ * the swamp gateway skill. Given a user query and the SKILL.md routing
+ * table as context, does Claude pick the correct guide?
+ *
+ * Each guide topic is presented as a tool. The eval asserts the correct
+ * tool is called for each query.
+ *
+ * Usage: deno run --allow-read generate_routing_config.ts [--model <alias>]
+ */
 
 import { parseArgs } from "@std/cli/parse-args";
 import { join } from "@std/path";
@@ -141,6 +151,7 @@ export async function generateConfig(
     Deno.exit(1);
   }
 
+  // Read the SKILL.md body (stripping frontmatter) for the system message
   const skillsDir = join(Deno.cwd(), ".claude", "skills", "swamp");
   const skillMdContent = await Deno.readTextFile(join(skillsDir, "SKILL.md"));
   const lines = skillMdContent.split("\n");
@@ -157,6 +168,7 @@ export async function generateConfig(
   }
   const skillBody = lines.slice(bodyStart).join("\n").trim();
 
+  // Build tools — one per guide topic
   const tools: PromptfooTool[] = Object.entries(GUIDE_TOPICS).map(
     ([name, description]) => ({
       type: "function",
@@ -177,10 +189,12 @@ export async function generateConfig(
     }),
   );
 
+  // Read routing evals
   const evalPath = join(skillsDir, "evals", "routing_evals.json");
   const evalContent = await Deno.readTextFile(evalPath);
   const evals: RoutingEval[] = JSON.parse(evalContent);
 
+  // Generate test cases
   const tests: PromptfooTest[] = evals.map((item) => {
     const toolName = `load_${item.expected_guide.replace("-", "_")}_guide`;
     return {
@@ -207,6 +221,7 @@ export async function generateConfig(
   const systemMessage =
     `You are a skill router inside the swamp gateway skill. The user's request has already been routed to the swamp skill. Your job is to load the correct guide by calling the matching tool.\n\nHere is the routing table:\n\n${skillBody}\n\nYou MUST call exactly one tool. NEVER respond with text. Route based on the topic and keywords.`;
 
+  // Validate all expected_guide values map to known topics
   const unknownGuides = evals
     .map((e) => e.expected_guide)
     .filter((g) => !(g in GUIDE_TOPICS));
@@ -248,7 +263,7 @@ export async function generateConfig(
     tests,
   };
 
-  // round-trip through JSON so the YAML output has no anchors
+  // Suppress YAML anchors by pre-stringifying the config
   return JSON.parse(JSON.stringify(config));
 }
 

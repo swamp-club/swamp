@@ -28,9 +28,10 @@ import {
 } from "./AuditStates.tsx";
 
 /**
- * schedules and webhooks fire only from a running swamp serve; the local
- * dashboard has none behind it, so these pages show what serve would give and
- * how to run it
+ * Schedules and webhooks fire from a running `swamp serve`. The local
+ * dashboard (`swamp start` / `swamp dashboard`) reads the repo directly with
+ * no serve behind it, so these pages show what serve would give and how to
+ * run it, in the same style as the Activity page's audit-off state.
  */
 
 export const SCHEDULE_MANUAL_LINKS = [
@@ -126,6 +127,7 @@ function ServeOnlyState(
   );
 }
 
+/** The local dashboard's Schedules page: schedules fire from swamp serve. */
 export function SchedulesLocalState({ copy }: { copy: CopyFn }) {
   return (
     <ServeOnlyState
@@ -179,6 +181,7 @@ export function SchedulesLocalState({ copy }: { copy: CopyFn }) {
   );
 }
 
+/** The local dashboard's Webhooks page: webhook routes live on swamp serve. */
 export function WebhooksLocalState({ copy }: { copy: CopyFn }) {
   return (
     <ServeOnlyState

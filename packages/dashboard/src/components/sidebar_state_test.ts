@@ -26,6 +26,8 @@ import {
   showsLogout,
 } from "./sidebar_state.ts";
 
+// ── parseCollapsed ──────────────────────────────────────────────────────
+
 Deno.test("parseCollapsed: 'true' collapses", () => {
   assertEquals(parseCollapsed("true"), true);
 });
@@ -44,6 +46,8 @@ Deno.test("parseCollapsed: unrecognised value stays expanded", () => {
   assertEquals(parseCollapsed(""), false);
 });
 
+// ── resolveEscape ───────────────────────────────────────────────────────
+
 Deno.test("resolveEscape: open drawer closes before a detail view", () => {
   assertEquals(resolveEscape(true, true), "close-drawer");
 });
@@ -59,6 +63,8 @@ Deno.test("resolveEscape: closed drawer closes the detail view", () => {
 Deno.test("resolveEscape: nothing open does nothing", () => {
   assertEquals(resolveEscape(false, false), "none");
 });
+
+// ── MOBILE_MEDIA_QUERY ──────────────────────────────────────────────────
 
 Deno.test("MOBILE_MEDIA_QUERY: matches the 768px breakpoint in styles.css", () => {
   assertEquals(MOBILE_MEDIA_QUERY, "(max-width: 768px)");

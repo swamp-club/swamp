@@ -27,6 +27,7 @@ import {
 
 const ALL_STATUSES = [...STATUS_ORDER, "closed"] as const;
 
+/** The status swamp-club requires an issue to hold before each transition. */
 const REQUIRES: Record<ForwardStatus, string> = {
   open: "closed",
   triaged: "open",

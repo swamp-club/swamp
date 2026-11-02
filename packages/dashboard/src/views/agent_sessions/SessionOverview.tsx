@@ -44,16 +44,23 @@ function percent(share: number | null): string {
   return share === null ? "—" : `${Math.round(share * 100)}%`;
 }
 
+/** One figure in a stat strip: its value, what it is, and a short note. */
 type Stat = {
   label: string;
   value: ReactNode;
   unit?: string;
+  /** A short line under the label. */
   sub?: ReactNode;
+  /** The longer story, on hover. */
   title?: string;
+  /** Makes the figure a filter: what clicking it shows. */
   filter?: { pressed: boolean; onClick: () => void; tone: string };
 };
 
-/** divided by rules rather than boxed, so a page of figures stays one line high */
+/**
+ * Figures in one row, divided by rules rather than boxed, so a page of them
+ * stays one line high. `lead` names what they describe.
+ */
 function StatStrip(
   { items, label, lead }: {
     items: readonly Stat[];
@@ -133,10 +140,16 @@ function FindingBadges({ findings }: { findings: Record<Severity, number> }) {
   );
 }
 
+/**
+ * The open session: what it was (type icon, repo, harness, model, start),
+ * then what the table row does not already say: the label mix, which
+ * bypasses, where failures began, working against wall time, and context.
+ */
 export function SessionStats(
   { record, tiles, filter, onFilter }: {
     record: AgentSessionRecord;
     tiles: SessionTiles;
+    /** The turns' filter, which the swamp, bypass and failed figures set. */
     filter: CallFilter;
     onFilter: (filter: CallFilter) => void;
   },
@@ -217,8 +230,8 @@ export function SessionStats(
 }
 
 /**
- * totals across every listed session that passes the filter, not just the page
- * shown
+ * Totals across every listed session that passes the filter, not just the
+ * page shown, read from the sessions' summaries.
  */
 export function ListTotalsRow({ totals }: { totals: ListTotals }) {
   const summarized = totals.sessions - totals.unsummarized;
@@ -302,14 +315,21 @@ const SEVERITY_TEXT = {
   info: "info",
 } as const;
 
+/** Names one shown finding across re-sorts, as subagents load. */
 export function findingKey(shown: ShownFinding): string {
   return `${shown.sessionId}\n${shown.finding.title}`;
 }
 
+/**
+ * "What to look at": the findings the importer wrote, one headline each. A
+ * headline opens into its detail, what to tune, and a way to show its calls.
+ */
 export function FindingsPanel(
   { findings, unloaded, openKey, onToggle, onLoadSubagent, subagentName }: {
     findings: readonly ShownFinding[];
+    /** Subagents whose summary has findings, not yet read. */
     unloaded: readonly SessionRow[];
+    /** The finding opened, whose calls the turns show. */
     openKey: string | null;
     onToggle: (finding: ShownFinding) => void;
     onLoadSubagent: (row: SessionRow) => void;
@@ -411,13 +431,20 @@ function sameFilter(a: CallFilter, b: CallFilter): boolean {
   return a.kind !== "calls";
 }
 
+/**
+ * The call filters, each with how many of the session's calls it matches,
+ * and the active filter's count out of the total, in the filter's colour.
+ */
 export function FilterChips(
   { filter, onChange, findingTitle, count, total, withSubagents }: {
     filter: CallFilter;
     onChange: (filter: CallFilter) => void;
+    /** Set while a finding's calls are shown. */
     findingTitle: string | null;
+    /** How many calls a filter matches. */
     count: (filter: CallFilter) => number;
     total: number;
+    /** Whether opened subagents' calls are counted too. */
     withSubagents: boolean;
   },
 ) {

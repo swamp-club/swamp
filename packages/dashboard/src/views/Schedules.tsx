@@ -65,6 +65,7 @@ const LAST_RUN_LABELS: Record<string, string> = {
   never: "No runs in range",
 };
 
+/** What the schedule table can be filtered by, beyond free text. */
 const SCHEDULE_FACETS: readonly RowFacetSpec<ScheduleRow>[] = [
   {
     key: "activity",

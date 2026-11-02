@@ -79,6 +79,7 @@ function subagentTitle(record: AgentSessionRecord): string {
   return `Subagent${record.agentType ? ` ${record.agentType}` : ""}`;
 }
 
+/** Turns of the sessions that hold a call passing the filter. */
 function turnsWithMatches(
   filter: CallFilter,
   sessions: readonly AgentSessionRecord[],
@@ -106,6 +107,7 @@ export function SessionDetail({ row }: { row: SessionRow }) {
   );
   const [selected, setSelected] = useState<SelectedCall | null>(null);
 
+  // Escape closes the inspector.
   useEffect(() => {
     if (!selected) return;
     const onKey = (e: globalThis.KeyboardEvent) => {
@@ -163,8 +165,8 @@ export function SessionDetail({ row }: { row: SessionRow }) {
   };
 
   /**
-   * opening a finding shows its calls in the turns, in its colour; closing it
-   * shows every call again
+   * Opening a finding shows its calls in the turns, in its colour; closing
+   * it shows every call again.
    */
   const toggleFinding = (shown: ShownFinding) => {
     const key = findingKey(shown);
@@ -214,6 +216,7 @@ export function SessionDetail({ row }: { row: SessionRow }) {
       return next;
     });
 
+  // Selecting the selected call again closes the inspector.
   const selectCall = (call: SelectedCall) =>
     setSelected((current) =>
       current?.sessionId === call.sessionId && current.callId === call.callId

@@ -17,11 +17,14 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// a method that captures output writes it as a file data item with [stdout] and
-// [stderr] sections; pure so the panel and its tests agree on what the log is
+// Finding and reading a step's log. A model method that captures output
+// (a shell command, say) writes it as a `file` data item — `log` for the
+// built-in shell model — with `[stdout]` and `[stderr]` sections. Pure, so
+// the panel and its tests agree on what "the log" is.
 
 import type { ArtifactRefLike } from "./run_graph_model.ts";
 
+/** The step's log artifact: a `file` item named `log`, else any file. */
 export function pickLogArtifact(
   refs: readonly ArtifactRefLike[] | undefined,
 ): ArtifactRefLike | null {
@@ -41,6 +44,11 @@ export interface LogLine {
 
 const MARKER = /^\[(stdout|stderr)\]\s*$/;
 
+/**
+ * Splits log text into lines tagged with the stream they came from. The
+ * `[stdout]` / `[stderr]` markers are dropped; text before any marker has
+ * no stream. Keeps only the last `limit` lines.
+ */
 export function parseLog(text: string, limit = 500): {
   lines: LogLine[];
   truncated: number;
@@ -60,6 +68,7 @@ export function parseLog(text: string, limit = 500): {
   return { lines: truncated > 0 ? lines.slice(truncated) : lines, truncated };
 }
 
+/** A log built from a step's `stdout`/`stderr` outputs, when it has them. */
 export function logFromOutputs(
   outputs: Record<string, unknown> | undefined,
 ): string | null {

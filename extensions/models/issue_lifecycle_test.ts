@@ -21,6 +21,10 @@ import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
 import { buildNotifyMessage, model } from "./issue_lifecycle.ts";
 import { PR_COOLDOWN_MS } from "./_lib/schemas.ts";
 
+// ---------------------------------------------------------------------------
+// Test helpers
+// ---------------------------------------------------------------------------
+
 interface RecordedWrite {
   specName: string;
   instanceName: string;
@@ -28,9 +32,14 @@ interface RecordedWrite {
 }
 
 /**
- * replaces the env readers instead of calling Deno.env.set, which under
- * --parallel would repoint HOME for every file in the process; this extension
- * cannot import swamp's withMockedEnv
+ * Makes `Deno.env.get`, `has` and `toObject` answer from `overrides` (a key
+ * mapped to `undefined` reads as unset) and returns a function that puts the
+ * previous readers back. Mocks stack, so restore them in reverse order.
+ *
+ * `deno test --parallel` runs every test file in one process, so a real
+ * `Deno.env.set` here would repoint HOME for every other file running at the
+ * same moment; replacing the readers only affects this file's worker. This
+ * extension is self-contained, so it cannot import swamp's `withMockedEnv`.
  */
 function mockEnvReads(
   overrides: Record<string, string | undefined>,
@@ -72,8 +81,11 @@ function mockEnvReads(
 }
 
 /**
- * points HOME/XDG_CONFIG_HOME at an empty temp dir and clears credential env
- * vars so no swamp-club client is built; callers restore() in a finally
+ * Build a fake method execution context that records writes and short-circuits
+ * the swamp-club client by pointing HOME/XDG_CONFIG_HOME at an empty temp dir
+ * and clearing credential env vars.
+ *
+ * Callers must `restore()` in a finally block to put env vars back.
  */
 async function buildTestContext(
   issueNumber: number,
@@ -126,6 +138,10 @@ async function buildTestContext(
 
   return { context, writes, restore };
 }
+
+// ---------------------------------------------------------------------------
+// link_pr
+// ---------------------------------------------------------------------------
 
 Deno.test("link_pr: writes pullRequest-main resource with url, attempt, and linkedAt", async () => {
   const { context, writes, restore } = await buildTestContext(42);
@@ -232,12 +248,17 @@ Deno.test("link_pr: from pr_failed clears failure fields and increments attempt"
       "https://github.com/swamp-club/swamp/pull/1142",
     );
     assertEquals(prWrite!.data.attempt, 2);
+    // link_pr overwrites the entire resource — failure fields are absent
     assertEquals(prWrite!.data.failedAt, undefined);
     assertEquals(prWrite!.data.failureReason, undefined);
   } finally {
     await restore();
   }
 });
+
+// ---------------------------------------------------------------------------
+// pr-cooldown check
+// ---------------------------------------------------------------------------
 
 Deno.test("pr-cooldown: rejects when PR was linked too recently", async () => {
   const recentLinkedAt = new Date().toISOString();
@@ -319,6 +340,10 @@ Deno.test("pr-cooldown: rejects when no pullRequest is linked", async () => {
   assertStringIncludes(result.errors![0], "No pull request linked");
 });
 
+// ---------------------------------------------------------------------------
+// Model registration smoke tests
+// ---------------------------------------------------------------------------
+
 Deno.test("model: exposes the new pullRequest resource definition", () => {
   assertEquals(
     "pullRequest" in model.resources,
@@ -347,6 +372,11 @@ Deno.test("model: version is 2026.10.21.1", () => {
   assertEquals(model.version, "2026.10.21.1");
 });
 
+// ---------------------------------------------------------------------------
+// post_attestation — schema validation
+// ---------------------------------------------------------------------------
+
+/** A document that satisfies AttestationSchema, as the generator writes one. */
 function validAttestation(
   overrides: Record<string, unknown> = {},
 ): Record<string, unknown> {
@@ -383,6 +413,8 @@ Deno.test("post_attestation: rejects a document with no subject", async () => {
       Error,
     );
 
+    // This is the case that used to post cleanly and log commit=undefined,
+    // leaving CI to notice the mismatch after the PR was public.
     assertStringIncludes(error.message, "AttestationSchema");
     assertStringIncludes(error.message, "subject");
   } finally {
@@ -503,14 +535,19 @@ Deno.test("post_attestation: a valid document gets as far as needing swamp-club"
       Error,
     );
 
-    // no credentials, so reaching the client is how a schema-valid document
-    // shows itself; validation runs before any network call, so a rejected
-    // document never gets this far
+    // buildTestContext leaves no credentials, so reaching the client is how a
+    // schema-valid document announces itself. The point of the assertion is
+    // the absence of a schema complaint: validation happens before any
+    // network call, so a rejected document never gets this far.
     assertStringIncludes(error.message, "swamp-club is not reachable");
   } finally {
     await restore();
   }
 });
+
+// ---------------------------------------------------------------------------
+// pr_merged
+// ---------------------------------------------------------------------------
 
 Deno.test("pr_merged: transitions state to notify and writes mergedAt with attempt", async () => {
   const { context, writes, restore } = await buildTestContext(42, {
@@ -579,6 +616,10 @@ Deno.test("pr_merged: throws if no pullRequest linked", async () => {
   }
 });
 
+// ---------------------------------------------------------------------------
+// pr_failed
+// ---------------------------------------------------------------------------
+
 Deno.test("pr_failed: transitions state to pr_failed and writes failure info with attempt", async () => {
   const { context, writes, restore } = await buildTestContext(42, {
     resources: {
@@ -633,6 +674,10 @@ Deno.test("pr_failed: rejects empty reason via zod schema", async () => {
   );
 });
 
+// ---------------------------------------------------------------------------
+// Model registration smoke tests (new methods)
+// ---------------------------------------------------------------------------
+
 Deno.test("model: exposes pr_merged method definition", () => {
   assertEquals("pr_merged" in model.methods, true);
 });
@@ -645,17 +690,27 @@ Deno.test("model: has no ship method — pr_merged ships", () => {
   assertEquals("ship" in model.methods, false);
 });
 
+// ---------------------------------------------------------------------------
+// start() auto-assignment tests
+// ---------------------------------------------------------------------------
+
 interface FetchStubRoute {
   urlIncludes: string;
   method?: string;
   response: { status: number; body: unknown };
 }
 
+/**
+ * Build a test context for start() with a fetch stub and optional fake auth.json.
+ * The fetch stub intercepts all HTTP calls (health check, issue GET, assignees
+ * GET, issue PATCH). The fake auth.json provides a username for loadAuthFile().
+ */
 async function buildStartTestContext(
   issueNumber: number,
   opts: {
     routes: FetchStubRoute[];
     authUsername?: string;
+    /** If provided, written to auth.json alongside the username */
     authApiKey?: string;
   },
 ): Promise<{
@@ -672,6 +727,7 @@ async function buildStartTestContext(
 
   const originalFetch = globalThis.fetch;
 
+  // Write fake auth.json if credentials are provided
   if (opts.authUsername || opts.authApiKey) {
     const configDir = `${tempDir}/swamp`;
     await Deno.mkdir(configDir, { recursive: true });
@@ -689,6 +745,8 @@ async function buildStartTestContext(
     );
   }
 
+  // Point env reads at auth.json so createSwampClubClient uses it (not
+  // SWAMP_API_KEY)
   const restoreEnv = mockEnvReads({
     SWAMP_API_KEY: undefined,
     SWAMP_CLUB_URL: undefined,
@@ -696,6 +754,7 @@ async function buildStartTestContext(
     XDG_CONFIG_HOME: tempDir,
   });
 
+  // Install fetch stub
   globalThis.fetch = ((
     input: string | URL | Request,
     init?: RequestInit,
@@ -707,6 +766,7 @@ async function buildStartTestContext(
       : input.url;
     const method = init?.method ?? "GET";
 
+    // Capture PATCH bodies for assertion
     if (method === "PATCH" && init?.body) {
       patchBodies.push(JSON.parse(init.body as string));
     }
@@ -724,6 +784,7 @@ async function buildStartTestContext(
         );
       }
     }
+    // Default: 404
     return Promise.resolve(new Response("Not Found", { status: 404 }));
   }) as typeof fetch;
 
@@ -754,6 +815,7 @@ async function buildStartTestContext(
   return { context, writes, warnings, patchBodies, restore };
 }
 
+/** Standard routes for a successful start() + assignment flow. */
 function happyRoutes(opts: {
   issueNumber: number;
   issueAssignees?: { userId: string; username: string }[];
@@ -820,12 +882,14 @@ Deno.test("start: auto-assigns the current user on happy path", async () => {
   try {
     await model.methods.start.execute({}, context);
 
+    // Core start behavior: writes context + state
     const contextWrite = writes.find((w) => w.specName === "context");
     assertEquals(contextWrite !== undefined, true);
     const stateWrite = writes.find((w) => w.specName === "state");
     assertEquals(stateWrite !== undefined, true);
     assertEquals(stateWrite!.data.phase, "triaging");
 
+    // Assignment: PATCH with alice's userId
     assertEquals(patchBodies.length >= 1, true);
     const assignPatch = patchBodies.find(
       (b: unknown) => typeof b === "object" && b !== null && "assignees" in b,
@@ -882,6 +946,7 @@ Deno.test("start: skips PATCH when already assigned (idempotent)", async () => {
   try {
     await model.methods.start.execute({}, context);
 
+    // No assignees PATCH should have been made
     const assignPatch = patchBodies.find(
       (b: unknown) => typeof b === "object" && b !== null && "assignees" in b,
     );
@@ -892,27 +957,34 @@ Deno.test("start: skips PATCH when already assigned (idempotent)", async () => {
 });
 
 Deno.test("start: warns and skips assignment when no username in auth", async () => {
+  // Provide an auth.json with apiKey but no username — simulates older auth
+  // files or env-var-only auth where username was never stored.
   const routes = happyRoutes({
     issueNumber: 99,
     eligibleAssignees: [],
   });
   const { context, writes, warnings, patchBodies, restore } =
     await buildStartTestContext(99, {
+      // authUsername is deliberately omitted — no username in auth.json
       authApiKey: "swamp_fake_no_username",
       routes,
     });
   try {
+    // start() should still succeed (not throw)
     await model.methods.start.execute({}, context);
 
+    // Core behavior still works
     const stateWrite = writes.find((w) => w.specName === "state");
     assertEquals(stateWrite !== undefined, true);
     assertEquals(stateWrite!.data.phase, "triaging");
 
+    // No assignees PATCH
     const assignPatch = patchBodies.find(
       (b: unknown) => typeof b === "object" && b !== null && "assignees" in b,
     );
     assertEquals(assignPatch, undefined);
 
+    // Warning was logged
     assertEquals(warnings.length >= 1, true);
   } finally {
     await restore();
@@ -924,6 +996,7 @@ Deno.test("start: warns and skips assignment when assignees endpoint returns 403
     issueNumber: 99,
     eligibleAssignees: [],
   });
+  // Override the assignees route to return 403
   const assigneesIdx = routes.findIndex((r) =>
     r.urlIncludes.includes("assignees")
   );
@@ -943,9 +1016,11 @@ Deno.test("start: warns and skips assignment when assignees endpoint returns 403
   try {
     await model.methods.start.execute({}, context);
 
+    // Core behavior still works
     const stateWrite = writes.find((w) => w.specName === "state");
     assertEquals(stateWrite !== undefined, true);
 
+    // No assignees PATCH
     const assignPatch = patchBodies.find(
       (b: unknown) => typeof b === "object" && b !== null && "assignees" in b,
     );
@@ -1018,6 +1093,7 @@ Deno.test("start: succeeds even when PATCH fails", async () => {
     issueNumber: 99,
     eligibleAssignees: [{ userId: "user-alice-id", username: "alice" }],
   });
+  // Override the PATCH route to return 500
   const patchIdx = routes.findIndex(
     (r) =>
       r.urlIncludes.includes("/api/v1/lab/issues/99") && r.method === "PATCH",
@@ -1033,8 +1109,10 @@ Deno.test("start: succeeds even when PATCH fails", async () => {
     routes,
   });
   try {
+    // start() should still succeed — assignment is best-effort
     await model.methods.start.execute({}, context);
 
+    // Core behavior still works
     const stateWrite = writes.find((w) => w.specName === "state");
     assertEquals(stateWrite !== undefined, true);
     assertEquals(stateWrite!.data.phase, "triaging");
@@ -1042,6 +1120,10 @@ Deno.test("start: succeeds even when PATCH fails", async () => {
     await restore();
   }
 });
+
+// ---------------------------------------------------------------------------
+// notify
+// ---------------------------------------------------------------------------
 
 Deno.test("notify: transitions state to summarizing when offline", async () => {
   const { context, writes, restore } = await buildTestContext(42, {
@@ -1168,6 +1250,10 @@ Deno.test("buildNotifyMessage: falls back to plain text when no PR is available"
   assertStringIncludes(msg, "@external-user");
 });
 
+// ---------------------------------------------------------------------------
+// skip_notify
+// ---------------------------------------------------------------------------
+
 Deno.test("skip_notify: transitions state to summarizing", async () => {
   const { context, writes, restore } = await buildTestContext(42);
   try {
@@ -1182,6 +1268,10 @@ Deno.test("skip_notify: transitions state to summarizing", async () => {
   }
 });
 
+// ---------------------------------------------------------------------------
+// Model registration smoke tests (notify methods)
+// ---------------------------------------------------------------------------
+
 Deno.test("model: exposes notify method definition", () => {
   assertEquals("notify" in model.methods, true);
 });
@@ -1190,12 +1280,21 @@ Deno.test("model: exposes skip_notify method definition", () => {
   assertEquals("skip_notify" in model.methods, true);
 });
 
+// ---------------------------------------------------------------------------
+// notify — team-roster check against swamp-club
+// ---------------------------------------------------------------------------
+
 interface NotifyCall {
   url: string;
   method: string;
   body?: Record<string, unknown>;
 }
 
+/**
+ * Drive notify against a scripted swamp-club: an issue authored by
+ * `author`/`authorId` and an eligible-assignees roster. Pass `roster: null`
+ * or `issueStatus` to make those lookups fail. Records every call.
+ */
 async function runNotify(opts: {
   author: string;
   authorId?: string;
@@ -1231,6 +1330,7 @@ async function runNotify(opts: {
       return new Response("{}", { status: 201 });
     },
   );
+  // Wrap the stub so request bodies are captured alongside URL and method.
   const scripted = globalThis.fetch;
   globalThis.fetch = ((input: string | URL | Request, init?: RequestInit) => {
     calls.push({
@@ -1349,6 +1449,10 @@ Deno.test("notify: force thanks a team member without consulting the roster", as
   );
 });
 
+// ---------------------------------------------------------------------------
+// code_conformance_review
+// ---------------------------------------------------------------------------
+
 Deno.test("code_conformance_review: writes codeConformanceReview-main with plan version and steps", async () => {
   const { context, writes, restore } = await buildTestContext(42, {
     resources: {
@@ -1416,6 +1520,10 @@ Deno.test("code_conformance_review: throws when no plan exists", async () => {
   }
 });
 
+// ---------------------------------------------------------------------------
+// justify_deviations
+// ---------------------------------------------------------------------------
+
 Deno.test("justify_deviations: adds justification to unjustified steps", async () => {
   const { context, writes, restore } = await buildTestContext(42, {
     resources: {
@@ -1481,6 +1589,10 @@ Deno.test("justify_deviations: throws when no conformance review exists", async 
     await restore();
   }
 });
+
+// ---------------------------------------------------------------------------
+// code-conformance-clear check
+// ---------------------------------------------------------------------------
 
 Deno.test("code-conformance-clear: passes when all deviations are justified", async () => {
   const checkContext = {
@@ -1646,6 +1758,10 @@ Deno.test("code-conformance-clear: rejects when unjustified deviations remain", 
   assertStringIncludes(result.errors![0], "step 2");
 });
 
+// ---------------------------------------------------------------------------
+// Model registration smoke tests (code conformance)
+// ---------------------------------------------------------------------------
+
 Deno.test("model: exposes codeConformanceReview resource definition", () => {
   assertEquals("codeConformanceReview" in model.resources, true);
 });
@@ -1661,6 +1777,10 @@ Deno.test("model: exposes justify_deviations method definition", () => {
 Deno.test("model: exposes code-conformance-clear check definition", () => {
   assertEquals("code-conformance-clear" in model.checks, true);
 });
+
+// ---------------------------------------------------------------------------
+// conformance-review-required (verify pre-flight)
+// ---------------------------------------------------------------------------
 
 Deno.test("conformance-review-required: rejects when no conformance review exists", async () => {
   const checkContext = {
@@ -1733,6 +1853,10 @@ Deno.test("model: exposes conformance-review-required check definition", () => {
     ["verify"],
   );
 });
+
+// ---------------------------------------------------------------------------
+// triage: regression verification
+// ---------------------------------------------------------------------------
 
 Deno.test("triage: rejects isRegression=true without adversarial evidence fields", async () => {
   const { context, restore } = await buildTestContext(42);
@@ -1839,6 +1963,10 @@ Deno.test("triage: non-regression classification does not require evidence field
   }
 });
 
+// ---------------------------------------------------------------------------
+// summarize
+// ---------------------------------------------------------------------------
+
 Deno.test("summarize: writes summary-main and transitions to done", async () => {
   const { context, writes, restore } = await buildTestContext(42);
   try {
@@ -1897,6 +2025,10 @@ Deno.test("summarize: records outcomeMet=false when outcome does not match", asy
   }
 });
 
+// ---------------------------------------------------------------------------
+// Model registration smoke tests (new features)
+// ---------------------------------------------------------------------------
+
 Deno.test("model: exposes summary resource definition", () => {
   assertEquals("summary" in model.resources, true);
 });
@@ -1904,6 +2036,10 @@ Deno.test("model: exposes summary resource definition", () => {
 Deno.test("model: exposes summarize method definition", () => {
   assertEquals("summarize" in model.methods, true);
 });
+
+// ---------------------------------------------------------------------------
+// fast_forward
+// ---------------------------------------------------------------------------
 
 Deno.test("fast_forward: writes classification, plan, adversarialReview, codeConformanceReview, and state", async () => {
   const { context, writes, restore } = await buildTestContext(99);
@@ -1979,10 +2115,16 @@ Deno.test("model: exposes fast_forward method definition", () => {
   assertEquals("fast_forward" in model.methods, true);
 });
 
+// ---------------------------------------------------------------------------
+// Pinned invariants
+// ---------------------------------------------------------------------------
+
 /**
- * a direct client call would reintroduce the swallowed write;
- * post_attestation's downgrade wraps the policy call in try/catch rather than
- * bypassing it, so no exceptions are needed
+ * Every upstream write must go through the policy module in
+ * `_lib/lifecycle_recorder.ts`. A direct client call would reintroduce the
+ * swallow this model was changed to remove — including in `post_attestation`,
+ * whose deliberate downgrade wraps the policy call in a try/catch rather than
+ * bypassing it, which is why this assertion needs no exceptions.
  */
 Deno.test("issue_lifecycle: no upstream write bypasses the policy module", async () => {
   const source = await Deno.readTextFile(
@@ -2001,9 +2143,16 @@ Deno.test("issue_lifecycle: no upstream write bypasses the policy module", async
 });
 
 /**
- * notify and post_attestation are excluded on purpose: rollback cannot reach
- * their external side effects, so re-running would duplicate them. review
- * neither writes nor posts
+ * Pinned ratchet over the rollback flag. A method that writes local state
+ * before its lifecycle post must roll that write back when the post raises,
+ * or the phase advances past a step the audit trail never recorded.
+ *
+ * The two exclusions are deliberate and not interchangeable with an omission:
+ * `notify` sends a contributor ripple and `post_attestation` files an
+ * attestation, neither of which rollback can reach, so re-running them would
+ * duplicate an external side effect. `review` neither writes nor posts.
+ *
+ * Adding a method forces an edit here and a decision about the flag.
  */
 Deno.test("issue_lifecycle: rollbackOnFailure matches the pinned method set", () => {
   const rollsBack = [
@@ -2057,6 +2206,15 @@ Deno.test("issue_lifecycle: rollbackOnFailure matches the pinned method set", ()
   }
 });
 
+// ---------------------------------------------------------------------------
+// Model wiring — a dropped audit record fails the step
+// ---------------------------------------------------------------------------
+
+/**
+ * Like `buildTestContext`, but with credentials present and fetch stubbed, so
+ * the method builds a real client and the upstream responses are scripted.
+ * `respond` also receives the parsed JSON request body, when there is one.
+ */
 async function buildOnlineTestContext(
   issueNumber: number,
   respond: (url: string, method: string, body?: unknown) => Response,
@@ -2145,6 +2303,10 @@ Deno.test("plan: succeeds unchanged when no credentials are configured", async (
   }
 });
 
+// ---------------------------------------------------------------------------
+// iterate — reopening an approved plan
+// ---------------------------------------------------------------------------
+
 const APPROVED_PLAN_V1 = {
   version: 1,
   summary: "s",
@@ -2168,6 +2330,7 @@ const REVISED_PLAN_ARGS = {
   potentialChallenges: [],
 };
 
+/** A check context whose data repository answers from `resources`. */
 function checkContextFor(
   methodName: string,
   resources: Record<string, unknown>,
@@ -2187,6 +2350,7 @@ function checkContextFor(
   };
 }
 
+/** Run `iterate` from `phase` with plan v1 in place, offline or online. */
 async function iterateFrom(
   base: Awaited<ReturnType<typeof buildTestContext>>["context"],
   phase: string,
@@ -2234,6 +2398,7 @@ Deno.test("iterate: reopens an approved plan as the next version", async () => {
   }
 });
 
+/** Run `iterate` online from `phase`, returning every request it made. */
 async function iterateOnlineFrom(
   phase: string,
 ): Promise<{ method: string; url: string; body?: unknown }[]> {
@@ -2311,8 +2476,10 @@ Deno.test("adversarial-review-clear: a reopened plan cannot be re-approved on th
 });
 
 /**
- * asserted at the source, since driving start to that branch would need the
- * whole assignee lookup stubbed
+ * The auto-assign block promises in its own comment that assignment never
+ * breaks the triage flow, so the entry reporting on it must use the
+ * best-effort variant. Asserted at the source, since driving `start` to that
+ * branch would need the whole assignee lookup stubbed.
  */
 Deno.test("start: the assignment entry is recorded best-effort", async () => {
   const source = await Deno.readTextFile(

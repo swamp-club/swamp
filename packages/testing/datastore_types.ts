@@ -18,11 +18,14 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * mirrors the interfaces extension datastore implementations use; a CI test in
- * the main swamp repo verifies structural compatibility with the canonical
- * types
+ * Extension-author-facing subset of swamp's datastore interfaces.
+ *
+ * These types mirror the interfaces that extension datastore implementations
+ * actually use. A CI test in the main swamp repo verifies structural
+ * compatibility with the canonical types.
  */
 
+/** Procfile-style metadata stored in the lock. */
 export interface LockInfo {
   holder: string;
   hostname: string;
@@ -33,6 +36,7 @@ export interface LockInfo {
   holderUnknown?: true;
 }
 
+/** Configuration for lock behavior. */
 export interface LockOptions {
   lockKey?: string;
   namespace?: string;
@@ -41,6 +45,7 @@ export interface LockOptions {
   maxWaitMs?: number;
 }
 
+/** A distributed lock that can be acquired and released. */
 export interface DistributedLock {
   acquire(): Promise<void>;
   release(): Promise<void>;
@@ -49,6 +54,7 @@ export interface DistributedLock {
   forceRelease(expectedNonce: string): Promise<boolean>;
 }
 
+/** Result of a datastore health check. */
 export interface DatastoreHealthResult {
   readonly healthy: boolean;
   readonly message: string;
@@ -57,31 +63,45 @@ export interface DatastoreHealthResult {
   readonly details?: Record<string, string>;
 }
 
+/** Interface for verifying datastore accessibility. */
 export interface DatastoreVerifier {
   verify(): Promise<DatastoreHealthResult>;
 }
 
+/** Describes what a sync operation is about. */
 export interface SyncContext {
   models?: ReadonlyArray<{ modelType: string; modelId: string }>;
 }
 
+/** Capabilities a sync service advertises to swamp core. */
 export interface SyncCapabilities {
   scopedSync?: boolean;
   lazyHydration?: boolean;
+  /** Supports namespace-scoped sync via `DatastoreSyncOptions.namespace`. */
   namespacedSync?: boolean;
+  /** Supports two-phase push: `preparePush` then `commitPush`. */
   twoPhaseSync?: boolean;
+  /** Supports a dry-run `previewPush`. */
   previewPush?: boolean;
+  /** Supports a control-plane store for small remote records. */
   controlPlane?: boolean;
+  /** Honors `DatastoreSyncOptions.subdirs` on `pullChanged`. */
   configRefresh?: boolean;
 }
 
+/** Options accepted by sync service methods. */
 export interface DatastoreSyncOptions {
   signal?: AbortSignal;
   /**
-   * set by core only on markDirty calls; forward-slash-normalized, so convert
-   * to native separators for disk access on Windows.
+   * Cache-relative path of the file about to be written or removed.
+   * swamp core only sets this on `markDirty` calls; the field has no
+   * defined meaning on `pullChanged` or `pushChanged`. Path is
+   * forward-slash-normalized; extensions consuming it for disk access
+   * on Windows must convert to native separators. See the canonical
+   * `DatastoreSyncService.markDirty` JSDoc for the full contract.
    */
   relPath?: string;
+  /** Domain-level sync context, passed when the extension advertises scopedSync. */
   context?: SyncContext;
   /**
    * When `true`, `pullChanged` should download only metadata files
@@ -102,24 +122,32 @@ export interface DatastoreSyncOptions {
   subdirs?: readonly string[];
 }
 
+/** Options for `DatastoreSyncService.repairUnpushedFiles`. */
 export interface RepairUnpushedFilesOptions {
   signal?: AbortSignal;
   namespace?: string;
+  /** When `true`, report without uploading anything. */
   dryRun?: boolean;
+  /** When `true`, compare content by sha256 where size and mtime cannot. */
   exact?: boolean;
 }
 
+/** Summary of `DatastoreSyncService.repairUnpushedFiles`. */
 export interface UnpushedFilesSummary {
   /**
    * Files the remote has never received: every one found on a dry run, and
    * those still not uploaded on a real run.
    */
   unpushed: number;
+  /** Up to 20 of them, cache-relative with forward slashes. */
   samplePaths: readonly string[];
+  /** Local files whose key the remote holds with other bytes. */
   alreadyPresent: number;
   sampleAlreadyPresent: readonly string[];
+  /** Local files whose content differs from their last-synced entry. */
   locallyModified: number;
   sampleModified: readonly string[];
+  /** Local files that may differ from a last-synced entry with no sha256. */
   unknown: number;
   sampleUnknown: readonly string[];
   /**
@@ -128,21 +156,28 @@ export interface UnpushedFilesSummary {
    */
   peerDeleted: number;
   samplePeerDeleted: readonly string[];
+  /** Last-synced keys the remote now holds with other content. */
   remoteMovedOn: number;
+  /** Files uploaded and indexed. Zero when `dryRun` is `true`. */
   uploaded: number;
+  /** Whether the cache holds marks a push has not sent yet. */
   pendingChanges: boolean;
 }
 
+/** Interface for datastore synchronization services. */
 export interface DatastoreSyncService {
   pullChanged(options?: DatastoreSyncOptions): Promise<number | void>;
   pushChanged(options?: DatastoreSyncOptions): Promise<number | void>;
   markDirty(options?: DatastoreSyncOptions): Promise<void>;
   /**
-   * drops the per-path marks equal to relPaths made before the call; a parent's
+   * Drop the per-path marks whose keys equal `relPaths`, as `markDirty`
+   * received them. Only marks made before the call are dropped; a parent's
    * or child's mark, a bulk mark and an overflowed path set are kept, and
-   * nothing remote is touched.
+   * nothing remote is touched. Swamp calls it after undoing a refused push's
+   * writes (swamp-club#4091).
    */
   clearDirty?(relPaths: readonly string[]): Promise<void>;
+  /** Advertise what this sync service supports. */
   capabilities?(): SyncCapabilities;
   /**
    * Download a single file from the remote datastore by cache-relative path.
@@ -155,18 +190,22 @@ export interface DatastoreSyncService {
     options?: DatastoreSyncOptions,
   ): Promise<boolean>;
   /**
-   * reads one file as the remote holds it without touching the cache; null when
-   * the remote has none, any other failure rejects. relPath is cache-relative;
-   * absolute or `..` paths are rejected.
+   * Read one file as the remote holds it, without touching the local cache.
+   * Resolves to its bytes, or `null` when the remote has no such file; any
+   * other failure rejects. `relPath` is cache-relative, as for `hydrateFile`,
+   * so with a namespace it already starts with `{namespace}/`. A `relPath`
+   * that is absolute or has a `..` segment is rejected.
    */
   fetchContent?(
     relPath: string,
     options?: DatastoreSyncOptions,
   ): Promise<Uint8Array | null>;
   /**
-   * uploads cache files the remote has never received with create-only writes
-   * unless dryRun; reports differing local versions without uploading, deletes
-   * nothing, leaves dirty state and fingerprint alone.
+   * Find cache files the remote has never received and, unless `dryRun`,
+   * upload them with create-only writes. Reports local versions the remote
+   * lacks without uploading them, deletes nothing, and leaves dirty state
+   * and the sync fingerprint alone. See the canonical
+   * `DatastoreSyncService.repairUnpushedFiles` JSDoc for the full contract.
    */
   repairUnpushedFiles?(
     options?: RepairUnpushedFilesOptions,
@@ -180,11 +219,17 @@ export interface DatastoreSyncService {
 }
 
 /**
- * direct read and write of small records, bypassing cache and sync; keys are
- * slash-delimited paths kept under `_control/`. Without putIfAbsent, swamp
- * refuses workflows with a wait_for_signal step.
+ * Direct read and write of small records in the datastore, bypassing the
+ * cache and sync. Keys are slash-delimited paths such as `heartbeats/<id>`,
+ * kept under `_control/` in the backend, below the namespace when one is
+ * bound.
+ *
+ * `putIfAbsent` is optional on the interface, but a store without it cannot
+ * hold the records of workflow signal waits: swamp refuses to start a
+ * workflow that contains a `wait_for_signal` step on such a datastore.
  */
 export interface ControlPlaneStore {
+  /** Writes the record, replacing any that exists. */
   put(key: string, data: Uint8Array): Promise<void>;
   /**
    * Creates the record only if the key holds none, atomically: of any
@@ -202,9 +247,11 @@ export interface ControlPlaneStore {
   ): Promise<Uint8Array | null>;
   /** Removes the record. Removing a key that holds none is not an error. */
   delete(key: string): Promise<void>;
+  /** The keys under `prefix`, each in full, as passed to `put`. */
   list(prefix: string): Promise<string[]>;
 }
 
+/** Options for a control-plane read. */
 export interface ControlPlaneReadOptions {
   /**
    * Cancels the read: stop the request in flight and any retry backoff, and
@@ -214,15 +261,20 @@ export interface ControlPlaneReadOptions {
 }
 
 /**
- * reads control-plane records at the datastore-wide `_control/` root, whatever
- * the namespace; it must bind no namespace and share no state with any sync
- * service the provider builds.
+ * Reads control-plane records at the datastore-wide `_control/` root,
+ * whatever namespace a repository uses. Swamp reads the datastore format
+ * marker (`datastore-format`) through it before a command opens the
+ * datastore.
+ *
+ * It must bind no namespace and share no state with any sync service the
+ * provider builds.
  */
 export interface DatastoreControlPlaneStore {
   /**
-   * the record at `_control/<key>`, or null only when none exists; every other
-   * failure, access denied included, rejects. Must reject when the signal
-   * aborts.
+   * The record at `_control/<key>`, or null only when no such record exists.
+   * Every other failure, access denied included, rejects. Must reject when
+   * `options.signal` aborts; for a sync service's `ControlPlaneStore`
+   * honouring it is recommended, not required.
    */
   get(
     key: string,
@@ -231,12 +283,16 @@ export interface DatastoreControlPlaneStore {
 }
 
 /**
- * a DatastoreControlPlaneStore that can also write at the datastore-wide
- * `_control/` root, where the v3 writer lease keeps its records; writing binds
- * no namespace and never touches `<namespace>/_control/`.
+ * A {@link DatastoreControlPlaneStore} that can also write, at the same
+ * datastore-wide `_control/` root. The v3 writer lease keeps its records
+ * (`writer/`) here. Keys are relative to `_control/` at the datastore root;
+ * writing binds no namespace and never touches `<namespace>/_control/`.
+ * `assertWritableDatastoreControlPlaneStoreConformance` checks an
+ * implementation.
  */
 export interface WritableDatastoreControlPlaneStore
   extends DatastoreControlPlaneStore {
+  /** Writes the record at `_control/<key>`, replacing any record there. */
   put(key: string, data: Uint8Array): Promise<void>;
   /**
    * Creates the record only if none is there; returns false, leaving the
@@ -244,57 +300,106 @@ export interface WritableDatastoreControlPlaneStore
    * key, exactly one returns true.
    */
   putIfAbsent(key: string, data: Uint8Array): Promise<boolean>;
+  /** Removes the record; a missing record is no error. */
   delete(key: string): Promise<void>;
+  /** The keys under `_control/<prefix>`, relative to `_control/`. */
   list(prefix: string): Promise<string[]>;
 }
 
+/**
+ * Factory interface for user-defined datastores.
+ *
+ * Extension authors implement this interface to create custom datastore backends.
+ */
 export interface DatastoreProvider {
   createLock(datastorePath: string, options?: LockOptions): DistributedLock;
   createVerifier(): DatastoreVerifier;
   createSyncService?(repoDir: string, cachePath: string): DatastoreSyncService;
   resolveDatastorePath(repoDir: string): string;
   /**
-   * omitting this and returning undefined both fall back to the default cache
-   * under ~/.swamp/repos/<repoId>; the @swamp/* convention is to define it and
-   * return undefined so the intent is explicit.
+   * Resolve a local cache path for remote datastores.
+   *
+   * Optional at the type level, but note the runtime equivalence: every
+   * consumer in swamp core invokes this as
+   * `provider.resolveCachePath?.(repoDir) ?? <repoId-keyed default>`, so
+   * omitting the method and defining it to return `undefined` both fall
+   * back to `~/.swamp/repos/<repoId>`.
+   *
+   * The convention across all `@swamp/*` datastores is to define the
+   * method and return `undefined` when no custom cache is desired, so the
+   * intent ("I want core's default") is explicit to readers rather than
+   * inferred from a missing property.
    */
   resolveCachePath?(repoDir: string): string | undefined;
   /**
-   * read-only store for the datastore-wide control plane; building it must be
-   * cheap, with no sync service, namespace binding or request until `get`.
-   * Without it swamp reads the format marker through a sync service.
+   * Return a read-only store for the datastore-wide control plane. Building
+   * it must be cheap: no sync service, no namespace binding and no request
+   * until `get`, and a `get` should be one request with no credentials
+   * preflight. Optional; without it swamp reads the format marker through a
+   * fresh sync service's `controlPlaneStore()`. A v3-capable datastore
+   * returns a {@link WritableDatastoreControlPlaneStore} and declares
+   * {@link datastoreWideLease}.
    */
   datastoreControlPlaneStore?(): DatastoreControlPlaneStore;
   /**
-   * only the literal `true` counts: it declares namespaced pull and push never move
-   * `_control/writer/` or `_control/lineage/`, and that datastoreControlPlaneStore()
-   * is writable. Without it swamp refuses to bind the lease.
+   * `true` declares that no namespaced pull or push moves or copies
+   * `_control/writer/` or `_control/lineage/`, so the v3 writer lease's and
+   * replication lineages' records stay at the datastore root, and that `datastoreControlPlaneStore()` returns a
+   * {@link WritableDatastoreControlPlaneStore}. Only the literal `true`
+   * counts; without it swamp refuses to bind the lease. Check it with
+   * `assertWritableDatastoreControlPlaneStoreConformance`, namespaced-push
+   * case included.
    */
   readonly datastoreWideLease?: boolean;
   /**
-   * the `storage/1` chunk storage for a v3 datastore, scoped to the datastore
-   * root; check with assertStorageConformance.
+   * Return the `storage/1` chunk storage for a v3 datastore, scoped to the
+   * datastore root. Optional; swamp does not call it yet. Check an
+   * implementation with `assertStorageConformance`.
    */
   storage?(): DatastoreStorage;
   /**
-   * swamp appends _litestream/<fence>/ to the prefix; the target carries no
-   * credentials, so throw if the datastore's are outside the default chain,
-   * keeping secrets out of the message
+   * Where this datastore's v3 Litestream replica lives: the bucket, and the
+   * key prefix of the datastore root that `storage()` and
+   * `datastoreControlPlaneStore()` write under. Swamp appends
+   * `_litestream/<fence>/` to the prefix; the provider never builds replica
+   * paths.
+   *
+   * The target never carries credentials. Litestream resolves them from the
+   * AWS SDK default chain (environment, shared config and SSO, container or
+   * instance identity) or Google ADC, so a datastore whose credentials come
+   * from anywhere else cannot be replicated. Throw, rather than return a
+   * target Litestream cannot reach: a GCS datastore with a custom
+   * `apiEndpoint`, for example, which Litestream has no equivalent for.
+   * Swamp shows the thrown message to the user, so keep config values and
+   * secrets out of it.
+   *
+   * Optional; swamp does not call it yet. Check an implementation with
+   * `assertReplicaTargetConformance`.
    */
   replicaTarget?(): V3ReplicaTarget;
 
   /**
-   * the Litestream lineage paths under `<prefix>/_litestream/`, so swamp can
-   * remove a replaced lineage's path; never touches anything outside one fence
-   * directory and refuses a fence not in 12-digit padded form.
+   * The Litestream lineage paths under the replica target's
+   * `<prefix>/_litestream/`, so swamp can remove the path of a lineage a
+   * takeover replaced. `storage/1` is chunk-keyed and cannot reach them. It
+   * lists fence directories and removes one fence's objects; it never
+   * touches anything outside `<prefix>/_litestream/<fence>/`, and refuses a
+   * fence that is not the 12-digit padded form.
+   *
+   * Optional; swamp does not call it yet. Without it, a bucket replica keeps
+   * every old lineage's path and records, and chunk collection stays
+   * deferred while they are registered. Check an implementation with
+   * `assertReplicaPathConformance`.
    */
   replicaPaths?(): ReplicaPathStore;
 }
 
 /**
- * the fence directories under the replica target's `<prefix>/_litestream/`; a
- * fence is always the 12-digit padded form, and nothing outside a fence
- * directory is listed or touched.
+ * The lineage paths of a datastore's Litestream replica: the fence
+ * directories under `<prefix>/_litestream/`, where `<prefix>` is the
+ * replica target's. A fence is always the 12-digit padded form swamp writes
+ * (`000000000042`). Nothing outside `<prefix>/_litestream/<fence>/` is ever
+ * listed or touched.
  */
 export interface ReplicaPathStore {
   /**
@@ -324,6 +429,7 @@ export type V3ReplicaTarget =
     readonly bucket: string;
     readonly prefix: string;
     readonly region?: string;
+    /** An S3-compatible endpoint, as an http or https URL. */
     readonly endpoint?: string;
     /** Path-style addressing. Unset, it is on whenever `endpoint` is set. */
     readonly forcePathStyle?: boolean;
@@ -334,6 +440,7 @@ export type V3ReplicaTarget =
     readonly prefix: string;
   };
 
+/** What a {@link DatastoreStorage} supports. */
 export interface StorageCapabilities {
   /**
    * The largest chunk the backend stores, in bytes. Swamp cuts chunks of
@@ -347,19 +454,28 @@ export interface StorageCapabilities {
   readonly touch: boolean;
 }
 
+/** One chunk, as {@link DatastoreStorage.list} reports it. */
 export interface StoredChunk {
   readonly sha256: string;
+  /** When the chunk was last put or touched. */
   readonly lastModified: Date;
 }
 
 /**
- * immutable chunks keyed by namespace and SHA-256; namespace is _default when
- * unnamespaced. Swamp verifies every chunk it reads, and every method must
- * reject when the signal aborts
+ * The `storage/1` contract: immutable chunks keyed by namespace and the
+ * SHA-256 of their bytes, stored at
+ * `<prefix>/_blobs/<namespace>/sha256/<first two hex>/<sha256>`.
+ *
+ * `namespace` is the repository's namespace slug, or `_default` for an
+ * unnamespaced datastore (solo, or a team datastore with no namespace).
+ * `sha256` is 64 lowercase hex characters. Swamp verifies every chunk it
+ * reads, so the storage need not hash anything. Every method must reject
+ * when `signal` aborts.
  */
 export interface DatastoreStorage {
   readonly contract: "storage/1";
   capabilities(): StorageCapabilities;
+  /** The subset of `hashes` stored in `namespace`. */
   has(
     namespace: string,
     hashes: readonly string[],
@@ -392,6 +508,7 @@ export interface DatastoreStorage {
     hashes: readonly string[],
     signal: AbortSignal,
   ): Promise<Set<string>>;
+  /** Every chunk stored in `namespace`, in no particular order. */
   list(namespace: string, signal: AbortSignal): AsyncIterable<StoredChunk>;
   /** Removes the chunk; removing a missing chunk succeeds. */
   delete(namespace: string, sha256: string, signal: AbortSignal): Promise<void>;

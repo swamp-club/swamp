@@ -21,16 +21,22 @@ import { assertEquals, assertRejects } from "@std/assert";
 import { SwampClient } from "./client.ts";
 import { SwampClientError } from "./stream.ts";
 
+// ── Constructor ─────────────────────────────────────────────────────────
+
 Deno.test("SwampClient - constructor accepts a URL", () => {
   const client = new SwampClient("ws://localhost:9876/ws");
-  client.close();
+  // No error thrown — client is created in disconnected state
+  client.close(); // safe to call even when not connected
 });
 
 Deno.test("SwampClient - close is idempotent when not connected", () => {
   const client = new SwampClient("ws://localhost:9876/ws");
   client.close();
   client.close();
+  // No error — close on a null socket is a no-op
 });
+
+// ── Integration with a local WebSocket server ───────────────────────────
 
 Deno.test("SwampClient - connect and close lifecycle", async () => {
   const server = Deno.serve({ port: 0, onListen: () => {} }, (req) => {
@@ -46,6 +52,7 @@ Deno.test("SwampClient - connect and close lifecycle", async () => {
   const client = new SwampClient(`ws://localhost:${addr.port}/ws`);
 
   await client.connect();
+  // Calling connect again should return immediately (already open)
   await client.connect();
 
   client.close();
@@ -53,6 +60,7 @@ Deno.test("SwampClient - connect and close lifecycle", async () => {
 });
 
 Deno.test("SwampClient - connect rejects on refused connection", async () => {
+  // Port 1 is almost certainly not listening
   const client = new SwampClient("ws://127.0.0.1:1/ws");
 
   await assertRejects(
@@ -67,6 +75,7 @@ Deno.test("SwampClient - workflowRun receives completed event", async () => {
       const { socket, response } = Deno.upgradeWebSocket(req);
       socket.onmessage = (e) => {
         const msg = JSON.parse(e.data as string);
+        // Echo back a completed event
         socket.send(JSON.stringify({
           type: "event",
           id: msg.id,
@@ -106,6 +115,7 @@ Deno.test("SwampClient - workflowRun dispatches intermediate events to handlers"
       const { socket, response } = Deno.upgradeWebSocket(req);
       socket.onmessage = (e) => {
         const msg = JSON.parse(e.data as string);
+        // Send a sequence of events
         socket.send(JSON.stringify({
           type: "event",
           id: msg.id,
@@ -287,6 +297,7 @@ Deno.test("SwampClient - socket close rejects pending requests", async () => {
     if (req.headers.get("upgrade") === "websocket") {
       const { socket, response } = Deno.upgradeWebSocket(req);
       socket.onmessage = () => {
+        // Close instead of responding
         socket.close();
       };
       return response;
@@ -306,6 +317,8 @@ Deno.test("SwampClient - socket close rejects pending requests", async () => {
   client.close();
   await server.shutdown();
 });
+
+// ── Constructor options ───────────────────────────────────────────────
 
 Deno.test("SwampClient - constructor accepts token option", () => {
   const client = new SwampClient("ws://localhost:9876/ws", {
@@ -339,6 +352,8 @@ Deno.test("SwampClient - token is sent as WebSocket subprotocol", async () => {
   client.close();
   await server.shutdown();
 });
+
+// ── request<T>() ──────────────────────────────────────────────────────
 
 Deno.test("SwampClient - request resolves with payload", async () => {
   const server = Deno.serve({ port: 0, onListen: () => {} }, (req) => {

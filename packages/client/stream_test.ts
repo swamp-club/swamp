@@ -26,17 +26,22 @@ import {
 } from "./stream.ts";
 import type { SerializedError } from "./protocol.ts";
 
+// ── Test event types ────────────────────────────────────────────────────
+
 type TestEvent =
   | { kind: "started"; id: string }
   | { kind: "progress"; percent: number }
   | { kind: "completed"; result: string }
   | { kind: "error"; error: SerializedError };
 
+/** Helper: creates an async iterable from an array. */
 async function* asyncOf<T>(...items: T[]): AsyncGenerator<T> {
   for (const item of items) {
     yield item;
   }
 }
+
+// ── SwampClientError ────────────────────────────────────────────────────
 
 Deno.test("SwampClientError - constructor sets all fields", () => {
   const err = new SwampClientError("not_found", "Model not found", {
@@ -55,6 +60,8 @@ Deno.test("SwampClientError - details is optional", () => {
   assertEquals(err.details, undefined);
 });
 
+// ── withDefaults ────────────────────────────────────────────────────────
+
 Deno.test("withDefaults - provided handlers are used", () => {
   const calls: string[] = [];
   const handlers = withDefaults<TestEvent>({
@@ -69,6 +76,7 @@ Deno.test("withDefaults - provided handlers are used", () => {
 
 Deno.test("withDefaults - missing handlers get noop", () => {
   const handlers = withDefaults<TestEvent>({});
+  // Should not throw for unhandled kinds
   handlers.progress({ kind: "progress", percent: 50 });
   handlers.completed({ kind: "completed", result: "ok" });
 });
@@ -101,6 +109,8 @@ Deno.test("withDefaults - explicit handler takes precedence over fallback", () =
   handlers.progress({ kind: "progress", percent: 0 });
   assertEquals(calls, ["explicit", "fallback"]);
 });
+
+// ── consumeStream ───────────────────────────────────────────────────────
 
 Deno.test("consumeStream - dispatches all events to handlers", async () => {
   const events: TestEvent[] = [
@@ -147,6 +157,8 @@ Deno.test("consumeStream - works with async handlers", async () => {
 
   assertEquals(seen, ["a"]);
 });
+
+// ── result ──────────────────────────────────────────────────────────────
 
 Deno.test("result - returns completed event", async () => {
   const events: TestEvent[] = [

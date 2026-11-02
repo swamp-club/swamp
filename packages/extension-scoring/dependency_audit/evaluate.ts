@@ -18,9 +18,16 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * no I/O here: planNpmPackage resolves versions, the caller queries OSV once
- * per version, evaluateNpmPackage decides; JSR has no OSV data, so
- * evaluateJsrPackage decides from meta.json alone
+ * The dependency trust audit's decisions, given what npm, OSV and JSR
+ * answered: which findings each dependency gets, how push words them, how
+ * the registry's scorecard words them, and the points they cost. The caller
+ * fetches; nothing here does I/O.
+ *
+ * An audit runs in two passes per package: {@link planNpmPackage} resolves
+ * the version each specifier ships from the packument, the caller queries
+ * OSV once per version it names, then {@link evaluateNpmPackage} decides.
+ * JSR has no OSV data, so {@link evaluateJsrPackage} decides from the
+ * package's `meta.json` alone.
  */
 
 import {
@@ -59,10 +66,21 @@ import {
   specifierText,
 } from "./specifiers.ts";
 
+/** A lookup's outcome: its data, or why the service could not answer. */
 export type Lookup<T> =
   | { kind: "found"; value: T }
   | { kind: "unavailable"; reason: string };
 
+/**
+ * Why a finding exists, for the causes that change what the author does:
+ * - `not-audited`: a lookup failed, so the dependency is unknown.
+ * - `deprecated-version`: the version that ships is deprecated while the
+ *   package's latest is not.
+ * - `loose-specifier`: an unpinned, range or dist-tag specifier that no
+ *   valid lock fixed; the finding names the version that was audited.
+ * - `jsr-yanked`: the JSR version that ships is yanked.
+ * - `jsr-missing`: the JSR package or version does not exist.
+ */
 export type DependencyTrustCause =
   | "not-audited"
   | "deprecated-version"
@@ -70,46 +88,71 @@ export type DependencyTrustCause =
   | "jsr-yanked"
   | "jsr-missing";
 
+/** One finding as push reports it. */
 export interface DependencyTrustIssue {
   dependency: string;
   message: string;
+  /** Present on not-audited and the shipped-version findings only. */
   cause?: DependencyTrustCause;
+  /**
+   * The version to move to, on `jsr-yanked` and `deprecated-version`
+   * findings when another stable version exists.
+   */
   suggestedVersion?: string;
+  /** How to resolve a finding that has a cause. */
   remediation?: string;
+  /** Which fix `remediation` gives; present on `not-audited` findings only. */
   notAuditedFix?: NotAuditedFix;
 }
 
+/** One dependency's audit as push lists it. */
 export interface DependencyAuditSummary {
   name: string;
+  /**
+   * The import specifier as the source writes it, e.g. `npm:ms@^2.1.0`, or
+   * the one the import map resolves a bare import to.
+   */
   specifier: string;
+  /** The bare specifier the source wrote, when the import map resolved it. */
   importedAs?: string;
   version: string;
+  /** Where `version` came from; absent when nothing resolved. */
   resolvedFrom?: ShippedVersionSource;
   registry: DependencyRegistry;
   license: string | null;
   weeklyDownloads: number | null;
   publishedAgo: string | null;
   passed: boolean;
+  /** Present only when the dependency was not audited; `passed` is false. */
   cause?: DependencyTrustCause;
+  /** Which lookup failed and how, present with `cause`. */
   reason?: string;
+  /** How to resolve it, present with `cause`. */
   notAuditedFix?: NotAuditedFix;
 }
 
+/** The audit as push reports it: errors block a push, warnings print. */
 export interface DependencyTrustResult {
   errors: DependencyTrustIssue[];
   warnings: DependencyTrustIssue[];
   audited: DependencyAuditSummary[];
   passed: boolean;
-  /** a version the audit found unpublished is left out */
+  /**
+   * The version that ships for each specifier the audit resolved, for the
+   * archive's dependency audit record (swamp-club#3662). A version the
+   * audit found unpublished is left out.
+   */
   shipped?: ShippedDependency[];
 }
 
+/** A finding as the registry's scorecard words it. */
 export interface ScorecardDependencyFinding {
   packageName: string;
   reason: string;
   cause?: DependencyTrustCause;
 }
 
+/** A dependency the scorecard lists as audited. */
 export interface ScorecardDependencyAudited {
   registry: DependencyRegistry;
   packageName: string;
@@ -118,6 +161,7 @@ export interface ScorecardDependencyAudited {
   resolvedFrom: ShippedVersionSource | null;
 }
 
+/** The audit as the registry's scorecard stores it. */
 export interface ScorecardDependencyTrust {
   passed: boolean;
   earnedPoints: number;
@@ -128,6 +172,7 @@ export interface ScorecardDependencyTrust {
   audited: ScorecardDependencyAudited[];
 }
 
+/** Thresholds for the npm warnings. */
 export interface TrustThresholds {
   minWeeklyDownloads: number;
   maxAgeMonths: number;
@@ -139,6 +184,7 @@ export const DEFAULT_TRUST_THRESHOLDS: TrustThresholds = {
   maxAgeMonths: 24,
 };
 
+/** Licenses a dependency may carry without a warning. */
 export const LICENSE_ALLOWLIST: ReadonlySet<string> = new Set([
   "MIT",
   "Apache-2.0",
@@ -151,6 +197,7 @@ export const LICENSE_ALLOWLIST: ReadonlySet<string> = new Set([
   "CC0-1.0",
 ]);
 
+/** The most dependencies one audit looks up; the rest are not audited. */
 export const MAX_AUDITED_DEPENDENCIES = 50;
 
 /**
@@ -169,9 +216,11 @@ export function licenseAllowed(license: string | null | undefined): boolean {
   }
 }
 
+/** One finding with both wordings. */
 interface Finding {
   level: "error" | "warning";
   issue: DependencyTrustIssue;
+  /** How the scorecard records it; null when it does not. */
   scorecard:
     | {
       kind: "blocker" | "warning";
@@ -182,10 +231,13 @@ interface Finding {
     | null;
 }
 
+/** One specifier's audit. */
 export interface SpecifierAudit {
   findings: readonly Finding[];
   summary: DependencyAuditSummary;
+  /** The version that ships, unless the audit found it unpublished. */
   shipped?: ShippedVersion;
+  /** The version the audit resolved, published or not; null when none. */
   resolved: ShippedVersion | null;
 }
 
@@ -269,6 +321,7 @@ function vulnerabilityFindings(
   return out;
 }
 
+/** The npm gates over the facts for the version that ships. */
 function npmGateFindings(
   name: string,
   facts: NpmPackageFacts,
@@ -366,6 +419,7 @@ function formatAge(lastPublish: string | null, now: Date): string | null {
   return `${months}mo ago`;
 }
 
+/** What to add to a fix when the lockfile, not the source, chose the version. */
 function lockRefreshNote(
   shipped: ShippedVersion,
   lock: LockedDependencyVersions | undefined,
@@ -378,8 +432,10 @@ function lockRefreshNote(
 }
 
 /**
- * null for an exact pin or a locked version; pinning exact versions and
- * committing a lock earn the point alike
+ * The finding for an unpinned, range or dist-tag specifier that no valid
+ * lock fixed, naming the version that was audited; null for an exact pin
+ * or a locked version. Pinning exact versions or committing a lock earns
+ * the point alike (swamp-club#3970).
  */
 function looseSpecifierFinding(
   spec: DependencySpecifier,
@@ -419,7 +475,10 @@ function looseSpecifierFinding(
   );
 }
 
-/** the source is exact, but the author wrote looseAs and no valid lock fixed it */
+/**
+ * The loose finding a v2 record carries (swamp-club#4018): the source is
+ * exact, but the author wrote `looseAs` and no valid lock fixed it.
+ */
 function recordedLooseFinding(
   name: string,
   looseAs: string,
@@ -475,29 +534,36 @@ function notAuditedAudit(
   };
 }
 
+/** An npm package's packument lookup, or a name never looked up. */
 export type NpmLookup = Lookup<NpmPackument> | { kind: "invalid-name" };
 
+/** Whether an npm package name may be looked up at all. */
 export function npmNameValid(name: string): boolean {
   return NPM_NAME_RE.test(name);
 }
 
+/** Whether a JSR package name may be looked up at all. */
 export function jsrNameValid(name: string): boolean {
   return JSR_NAME_RE.test(name);
 }
 
+/** The versions each specifier of one npm package ships, before OSV is asked. */
 export interface NpmPlan {
+  /** Per specifier, in order: the version that ships, or null. */
   shipped: (ShippedVersion | null)[];
   /**
-   * why the specifier breaks the canonical shipped form, or null; absent
-   * without a v2 record
+   * Per specifier, in order, under a v2 record: why it breaks the canonical
+   * shipped form, or null (swamp-club#4018). Absent without a v2 record.
    */
   canonicalIssues?: (string | null)[];
+  /** The distinct versions to query OSV for. */
   osvVersions: string[];
 }
 
 /**
- * without npm metadata only an exact, installed, recorded or locked version
- * still lets OSV answer
+ * Resolves the version each specifier of one npm package ships. Without
+ * npm metadata only an exact, installed, recorded or locked version still
+ * lets OSV answer.
  */
 export function planNpmPackage(
   name: string,
@@ -532,6 +598,7 @@ export function planNpmPackage(
   return { shipped, osvVersions, ...issues };
 }
 
+/** Each specifier's canonical-form issue under a v2 record, else undefined. */
 function canonicalIssuesOf(
   specs: readonly DependencySpecifier[],
   record: RecordedDependencyVersions | undefined,
@@ -542,6 +609,7 @@ function canonicalIssuesOf(
     : undefined;
 }
 
+/** A v2 archive's specifier that breaks the canonical shipped form. */
 function canonicalAudit(
   name: string,
   spec: DependencySpecifier,
@@ -557,6 +625,10 @@ function canonicalAudit(
   );
 }
 
+/**
+ * Audits every specifier of one npm package from its packument and the
+ * OSV answers for the versions {@link planNpmPackage} named.
+ */
 export function evaluateNpmPackage(
   name: string,
   specs: readonly DependencySpecifier[],
@@ -661,14 +733,17 @@ export function evaluateNpmPackage(
   });
 }
 
+/** A JSR package's `meta.json` lookup. */
 export type JsrLookup =
   | Lookup<JsrPackageMeta>
   | { kind: "missing" }
   | { kind: "invalid-name" };
 
 /**
- * the package and the version that ships must exist, and a yanked version costs
- * both points; OSV has no JSR data, so there is no vulnerability check
+ * Audits every specifier of one JSR package from its `meta.json`: the
+ * package and the version that ships must exist, and a yanked version
+ * costs both points. OSV has no JSR data, so there is no vulnerability
+ * check.
  */
 export function evaluateJsrPackage(
   name: string,
@@ -789,8 +864,9 @@ export function evaluateJsrPackage(
 }
 
 /**
- * specifiers past MAX_AUDITED_DEPENDENCIES (in registry, name and version
- * order) are set aside and not looked up
+ * The specifiers grouped by package, in first-appearance order, with the
+ * ones past {@link MAX_AUDITED_DEPENDENCIES} (in registry, name and version
+ * order) set aside: those are not looked up.
  */
 export function groupForAudit(
   specifiers: readonly DependencySpecifier[],
@@ -814,6 +890,7 @@ export function groupForAudit(
   };
 }
 
+/** The audit of the specifiers {@link groupForAudit} set aside. */
 export function overLimitAudits(
   specs: readonly DependencySpecifier[],
 ): SpecifierAudit[] {
@@ -828,6 +905,7 @@ export function overLimitAudits(
   );
 }
 
+/** A package whose audit threw: every specifier of it is not audited. */
 export function failedPackageAudits(
   specs: readonly DependencySpecifier[],
   failure: string,
@@ -844,9 +922,12 @@ export function failedPackageAudits(
 }
 
 /**
- * names the bare imports a finding came from so the pusher can find the line;
- * the project config that resolved them is not named further, as the module
- * graph does not say which
+ * Names the bare imports a finding came from, so the pusher can find the
+ * line. Deno resolved them under the project's config — its imports, an
+ * importMap file, a scope or a workspace root (swamp-club#3612) — and the
+ * module graph does not say which, so the config is not named further. In
+ * a package.json project they resolved to an installed dependency
+ * (swamp-club#3630).
  */
 function importedAsSuffix(
   names: readonly string[],
@@ -857,6 +938,7 @@ function importedAsSuffix(
   })`;
 }
 
+/** The audit as push reports it, from every specifier's audit in order. */
 export function pushResult(
   audits: readonly { spec: DependencySpecifier; audit: SpecifierAudit }[],
 ): DependencyTrustResult {
@@ -892,8 +974,8 @@ export function pushResult(
 }
 
 /**
- * a module that does not parse is not audited: its imports cannot be read, so
- * its dependencies are unknown
+ * Why a module that does not parse is not audited: its imports cannot be
+ * read, so its dependencies are unknown (swamp-club#3983).
  */
 export const UNREADABLE_MODULE_REASON =
   "Its imports cannot be read: the module does not parse, so its dependencies were not audited.";
@@ -905,9 +987,11 @@ const UNAUDITED_KIND_TEXT: Readonly<Record<UnauditedDependencyKind, string>> = {
 };
 
 /**
- * no registry audit covers this code, so it is not audited and costs both
- * points; the origin comes from an author-written record, so it is made safe
- * for one line before it is named
+ * Code from outside npm and JSR that the bundles hold, one finding per
+ * origin (swamp-club#4018). No registry audit covers it, so it is not
+ * audited and costs both points. On the registry the origin comes from a
+ * record the author wrote, so it is made safe for one line before it is
+ * named.
  */
 function unauditedCodeFindings(
   unaudited: readonly UnauditedDependency[],
@@ -938,8 +1022,9 @@ function unauditedCodeFindings(
 }
 
 /**
- * adds the code from outside npm and JSR as not-audited warnings, so extension
- * quality and push charge it as the registry does
+ * The push audit with the code from outside npm and JSR that the bundles
+ * hold added as not-audited warnings, so `swamp extension quality` and push
+ * charge it as the registry does (swamp-club#4018).
  */
 export function withUnauditedCode(
   result: DependencyTrustResult,
@@ -954,8 +1039,11 @@ export function withUnauditedCode(
 }
 
 /**
- * each unreadable module path and each unaudited origin is not audited, so it
- * costs the factor's points as an unaudited dependency does
+ * The audit as the registry's scorecard stores it. `unreadable` lists the
+ * archive paths of code modules `writtenSpecifiers` could not read;
+ * each is not audited, under its path, so it costs the factor's points as
+ * an unaudited dependency does. `unaudited` is a v2 record's code from
+ * outside npm and JSR, each not audited under its origin (swamp-club#4018).
  */
 export function scorecardResult(
   audits: readonly { spec: DependencySpecifier; audit: SpecifierAudit }[],
@@ -1014,8 +1102,11 @@ export function scorecardResult(
 }
 
 /**
- * push only warns about a deprecated shipped version and a yanked JSR version,
- * but the rubric scores against them as the registry's scorecard does
+ * The findings that cost both points of the rubric's `dependency-trust`
+ * factor besides an unaudited dependency: every error, a deprecated shipped
+ * version and a yanked JSR version. Push only warns about the last two
+ * (`--yes` accepts them) but the rubric scores against them, as the
+ * registry's scorecard does.
  */
 export function dependencyTrustBlockerCount(
   result: DependencyTrustResult,
@@ -1026,6 +1117,7 @@ export function dependencyTrustBlockerCount(
     ).length;
 }
 
+/** How many dependencies have a loose specifier; together they cost one point. */
 export function looseSpecifierCount(result: DependencyTrustResult): number {
   return new Set(
     result.warnings
@@ -1034,6 +1126,10 @@ export function looseSpecifierCount(result: DependencyTrustResult): number {
   ).size;
 }
 
+/**
+ * The distinct fixes the unaudited dependencies need; a finding without
+ * one counts as `other`.
+ */
 export function notAuditedFixes(
   result: Pick<DependencyTrustResult, "warnings">,
 ): NotAuditedFix[] {
@@ -1046,12 +1142,17 @@ export function notAuditedFixes(
   ];
 }
 
+/** Whether every unaudited dependency is down to a lookup outage alone. */
 export function onlyOutagesNotAudited(
   fixes: readonly NotAuditedFix[],
 ): boolean {
   return fixes.length > 0 && fixes.every((fix) => fix === "outage");
 }
 
+/**
+ * The specifiers no published version matches, as the source (or its
+ * import map) writes them.
+ */
 export function unpublishedSpecifiers(result: DependencyTrustResult): string[] {
   return [
     ...new Set(
@@ -1062,6 +1163,7 @@ export function unpublishedSpecifiers(result: DependencyTrustResult): string[] {
   ];
 }
 
+/** How many dependencies a lookup failure left unaudited. */
 export function notAuditedCount(result: DependencyTrustResult): number {
   return new Set(
     result.warnings

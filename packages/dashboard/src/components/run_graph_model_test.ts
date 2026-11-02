@@ -154,6 +154,7 @@ Deno.test("buildRunGraph: edges leaving a cancelled job are unmet", () => {
     states({ status: "cancelled", jobs: jobs("cancelled") }),
     ["unmet"],
   );
+  // A running job the cancelled run never let finish.
   assertEquals(states({ status: "cancelled", jobs: jobs("running") }), [
     "unmet",
   ]);

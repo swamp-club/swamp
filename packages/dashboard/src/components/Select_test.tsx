@@ -41,6 +41,7 @@ Deno.test("Select: a closed combobox showing the chosen label", () => {
   assertStringIncludes(html, 'aria-expanded="false"');
   assertStringIncludes(html, 'aria-label="Prefix"');
   assertStringIncludes(html, ">deploy</span>");
+  // The menu isn't rendered until it opens, and nothing is a native select.
   assert(!html.includes('role="listbox"'));
   assert(!html.includes("<select"));
 });

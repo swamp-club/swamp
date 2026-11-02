@@ -32,6 +32,7 @@ Deno.test("modelOutputPayloads: a preset sends a duration that stays the same ac
 
   assertEquals(before.current, { model: "my-model", limit: 200, since: "7d" });
   assertEquals(after.current, before.current);
+  // The fallback for an older serve carries the ISO bound, which moves.
   assertEquals(before.legacy, {
     model: "my-model",
     limit: 200,

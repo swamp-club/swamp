@@ -19,6 +19,11 @@
 
 import { maxOf } from "../lib/array_extrema.ts";
 
+// Layout for the trigger → inputs → workflow → jobs diagram. Columns run
+// left to right; jobs are layered by their dependencies (a job sits one
+// column right of its latest dependency) and each column is centred on
+// the tallest one.
+
 export interface FlowJob {
   name: string;
   dependsOn: string[];
@@ -31,19 +36,24 @@ export interface FlowSpec {
     title: string;
     lines: string[];
   };
+  /** Input lines ("region = eu"); null when the trigger passes none. */
   inputs: string[] | null;
   inputsTitle?: string;
   workflowName: string;
   jobs: FlowJob[];
 }
 
+/** A job as `workflow.get` returns it. */
 export interface WorkflowJobDef {
   name: string;
   dependsOn?: unknown[];
   steps?: unknown[];
 }
 
-/** dependencies are objects ({ job, condition }); bare strings are accepted too */
+/**
+ * Jobs for the diagram from a workflow definition. Dependencies are
+ * objects (`{ job: "build", condition }`); bare strings are accepted too.
+ */
 export function flowJobsOf(
   jobs: readonly WorkflowJobDef[] | undefined,
 ): FlowJob[] {
@@ -96,11 +106,13 @@ const PAD_B = 10;
 const GAP_X = 52;
 const GAP_Y = 14;
 const MARGIN = 4;
+/** Input lines shown before "+N more". */
 export const MAX_INPUT_LINES = 4;
 
 /**
- * unknown dependencies are ignored and cycles are broken, so bad data still
- * draws
+ * Job names by column: a job with no dependencies is in column 0, any
+ * other one column right of its deepest dependency. Unknown dependencies
+ * are ignored and cycles are broken, so bad data still draws.
  */
 export function jobLayers(jobs: readonly FlowJob[]): string[][] {
   const byName = new Map(jobs.map((j) => [j.name, j]));
@@ -141,6 +153,7 @@ function edgePath(a: FlowNode, b: FlowNode): string {
   return `M${x1},${y1} C${x1 + dx},${y1} ${x2 - dx},${y2} ${x2},${y2}`;
 }
 
+/** Positions every node and edge of the flow. */
 export function layoutFlow(spec: FlowSpec): FlowLayout {
   const columns: Array<Omit<FlowNode, "x" | "y">[]> = [];
   columns.push([{
@@ -238,6 +251,7 @@ export function layoutFlow(spec: FlowSpec): FlowLayout {
   return { nodes, edges, width, height };
 }
 
+/** Shortens text to `max` characters with an ellipsis. */
 export function truncate(text: string, max: number): string {
   return text.length <= max ? text : `${text.slice(0, max - 1)}…`;
 }

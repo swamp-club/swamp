@@ -17,24 +17,31 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+/** Approve or reject: the two decisions a gate takes. */
 export type Decision = "approve" | "reject";
 
+/** The longest reason the page sends with a decision. */
 export const MAX_DECISION_REASON_LENGTH = 1024;
 
+/** A gate decided from this page, held until a listing no longer has it. */
 export interface DecidedGate {
   decision: Decision;
+  /** Who serve recorded as deciding; absent when the reply named no one. */
   decidedBy?: string;
+  /** When the reply landed, as an ISO time. */
   decidedAt: string;
 }
 
+/** Identifies a gate across listings. */
 export function gateKey(g: { runId: string; stepName: string }): string {
   return `${g.runId}\u0000${g.stepName}`;
 }
 
 /**
- * a listing read before the decision landed still has the gate, so it stays
- * settled rather than offering a second decision; the first listing without it
- * lets it go
+ * Keeps the decided gates a listing still holds. A listing read before the
+ * decision landed still has the gate, so it stays settled rather than
+ * offering a second decision; the first listing without it lets it go
+ * (swamp-club#3697).
  */
 export function pruneDecided(
   decided: ReadonlyMap<string, DecidedGate>,
@@ -49,11 +56,13 @@ export function pruneDecided(
   return changed ? kept : decided;
 }
 
+/** The reason to send: trimmed, capped, and absent when blank. */
 export function decisionReason(text: string): string | undefined {
   const trimmed = text.trim().slice(0, MAX_DECISION_REASON_LENGTH);
   return trimmed === "" ? undefined : trimmed;
 }
 
+/** The fields of an approve or reject reply the page reads. */
 interface DecisionReply {
   decidedBy?: unknown;
   allGatesDecided?: unknown;
@@ -67,6 +76,7 @@ function replyData(reply: unknown): DecisionReply {
   return data && typeof data === "object" ? data as DecisionReply : {};
 }
 
+/** Records a decision serve accepted. */
 export function decidedGate(
   decision: Decision,
   reply: unknown,
@@ -80,11 +90,17 @@ export function decidedGate(
   };
 }
 
+/** "Approved by user:alice", or "Approved" when no one was named. */
 export function decidedLabel(gate: DecidedGate): string {
   const verb = gate.decision === "approve" ? "Approved" : "Rejected";
   return gate.decidedBy ? `${verb} by ${gate.decidedBy}` : verb;
 }
 
+/**
+ * What happens to the run after a decision serve accepted: an approval may
+ * leave other gates pending, resume the run in serve, or leave it for a
+ * resume; a rejection ends it.
+ */
 export function decisionOutcome(decision: Decision, reply: unknown): string {
   if (decision === "reject") return "the run is rejected";
   const { allGatesDecided, autoResumed } = replyData(reply);
@@ -96,8 +112,9 @@ export function decisionOutcome(decision: Decision, reply: unknown): string {
 }
 
 /**
- * a gate a fresh listing does not hold was decided elsewhere (another tab, the
- * CLI, an earlier click), so say that instead of the refusal
+ * The message for a decision serve refused. A gate a fresh listing no
+ * longer holds was decided elsewhere (another tab, the CLI, or an earlier
+ * click), so that is said instead of the refusal.
  */
 export function refusalMessage(
   decision: Decision,

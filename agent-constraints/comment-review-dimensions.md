@@ -16,12 +16,13 @@ the next reader more than no comment at all.
 
 - Judge only comment lines the diff **adds or modifies**. Comments already in a
   touched file never block; list them under "Pre-existing observations".
-- **In scope**: comments in `.ts` and `.tsx` files, test files included, and
-  `AGENTS.md`.
+- **In scope**: comments in `.ts` and `.tsx` files under `src/`, `integration/`
+  and `scripts/`, test files included, and `AGENTS.md`.
 - **Out of scope**:
   - lint, format, coverage and compiler pragmas (`deno-lint-ignore`,
     `deno-fmt-ignore`, `deno-coverage-ignore`, `@ts-expect-error`, `@ts-ignore`,
     triple-slash references, JSX pragmas)
+  - `packages/`, `extensions/`, `evals/` and root-level files
   - the licence header
   - generated files, including their "generated" notice
   - text inside string or template literals, which is program output rather than
@@ -71,10 +72,6 @@ earn the extra lines; a comment there is a warning at most.
 a comment and its code is how the two drift apart.
 
 **MEDIUM: a comment restating a rule already stated in the same file.**
-
-**MEDIUM: JSDoc on a published package's API that adds little.** Documentation
-for extension authors may state a contract the types cannot: ownership, ordering,
-what a caller must guarantee. It may not repeat the signature.
 
 ## What must not be flagged
 

@@ -27,9 +27,11 @@ import {
 const fenced = (...lines: string[]) =>
   ["# Setup", "", "```bash", ...lines, "```", ""].join("\n");
 
+/** A key-shaped payload with no repeated run, unlike a placeholder. */
 const varied = (n: number) =>
   Array.from({ length: n }, (_, i) => "aB3dE5gH7jK9mN2p"[i % 16]).join("");
 
+/** The 1-based lines flagged in a fenced block built by {@link fenced}. */
 const flaggedLines = (text: string, schemas?: ArgumentSchemas) =>
   detectSecretDocs(text, "markdown", schemas).map((f) => f.line);
 

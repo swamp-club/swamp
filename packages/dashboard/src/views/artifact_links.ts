@@ -23,9 +23,11 @@ import { reportDataName } from "./report_name.ts";
 
 export interface ItemLink {
   label: string;
+  /** Null when there is no page to link to; show the label as plain text. */
   to: RouteState | null;
 }
 
+/** A report's JSON half, which is shown through its markdown's page. */
 function isReportJson(name: string, tags: Record<string, string>): boolean {
   return tags.type === "report" && !!tags.reportName &&
     name === `${reportDataName(tags.reportName, tags.varySuffix)}-json`;
@@ -38,9 +40,11 @@ function reportLabel(tags: Record<string, string>): string {
 }
 
 /**
- * every model data item carries its owner in tags.modelName, so step output
- * links to that model's exact version even when several steps write the same
- * name; null for a report's JSON half, reached from its markdown page
+ * The link for an artifact a step wrote. Every model data item carries its
+ * owner in `tags.modelName`, so step output links to that model's exact
+ * version — unambiguous even when several steps write the same name (the
+ * built-in method summary report runs on every step). Returns null for a
+ * report's JSON half, which is reached from its markdown page.
  */
 export function stepArtifactLink(ref: ArtifactRef): ItemLink | null {
   const tags = ref.tags ?? {};
@@ -63,6 +67,7 @@ export function stepArtifactLink(ref: ArtifactRef): ItemLink | null {
   };
 }
 
+/** Links to a run's workflow-scope reports (one per report, markdown only). */
 export function workflowReportLinks(
   refs: ArtifactRef[] | undefined,
   workflowName: string,
@@ -89,6 +94,7 @@ export function workflowReportLinks(
   return links;
 }
 
+/** A row of `data.search` results. */
 export interface SearchItem {
   name: string;
   modelName?: string;
@@ -110,6 +116,7 @@ export function dataRowLink(row: SearchItem): RouteState | null {
   };
 }
 
+/** Splits a model's data into plain items and reports for its detail page. */
 export function partitionModelData(
   modelName: string,
   rows: SearchItem[],

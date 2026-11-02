@@ -49,6 +49,8 @@ Deno.test("TRANSITIONS: link_pr accepts verifying, pr_open, and pr_failed", () =
 });
 
 Deno.test("TRANSITIONS: complete accepts implementing, pr_open, and releasing", () => {
+  // Accepting all three keeps backwards compatibility while allowing
+  // the new releasing phase to be closed out directly.
   assertEquals(TRANSITIONS.complete, ["implementing", "pr_open", "releasing"]);
 });
 
@@ -75,6 +77,8 @@ Deno.test("TRANSITIONS: post_attestation accepts only verifying", () => {
 });
 
 Deno.test("TRANSITIONS: link_pr is rejected from earlier lifecycle phases", () => {
+  // link_pr requires verification — it's not allowed from implementing
+  // or any earlier phase.
   const blockedPhases: ReadonlyArray<typeof Phase.options[number]> = [
     "created",
     "triaging",
@@ -105,6 +109,7 @@ Deno.test("TRANSITIONS: iterate accepts plan_generated and approved", () => {
 });
 
 Deno.test("PullRequestSchema: accepts any non-empty URL string", () => {
+  // URLs are opaque to the model — GitHub, GitLab, Gitea, Forgejo, etc.
   const samples = [
     "https://github.com/swamp-club/swamp/pull/1141",
     "https://gitlab.com/group/project/-/merge_requests/42",

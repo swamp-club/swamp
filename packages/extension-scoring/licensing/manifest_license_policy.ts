@@ -17,6 +17,13 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+/**
+ * Whether an extension manifest's declared license is a valid SPDX license
+ * expression: every license id a current SPDX id in its canonical case, and
+ * every `WITH` an SPDX exception. Custom references (`LicenseRef-`,
+ * `AdditionRef-`, `DocumentRef-`) are not SPDX identifiers and do not count.
+ */
+
 import {
   parseSpdxExpression,
   type SpdxExpression,
@@ -31,6 +38,7 @@ import {
   SPDX_LICENSE_IDS,
 } from "./spdx_lists.generated.ts";
 
+/** Why a declared license is not a valid SPDX expression. */
 export type ManifestLicenseViolationReason =
   | "invalid-syntax"
   | "unknown-license"
@@ -38,12 +46,16 @@ export type ManifestLicenseViolationReason =
   | "unknown-exception"
   | "custom-ref";
 
+/** One problem with a declared license. */
 export interface ManifestLicenseViolation {
   reason: ManifestLicenseViolationReason;
+  /** The id or token at fault, when there is one. */
   term?: string;
+  /** What is wrong and how to fix it, as one sentence. */
   message: string;
 }
 
+/** The result of checking a declared license. */
 export type ManifestLicenseCheck =
   | { valid: true; expression: SpdxExpression }
   | { valid: false; violations: ManifestLicenseViolation[] };
@@ -156,6 +168,10 @@ function checkException(
   return undefined;
 }
 
+/**
+ * Checks a manifest's declared license: SPDX syntax, then every id and
+ * exception against the vendored SPDX lists and the custom-addition rule.
+ */
 export function checkManifestLicense(license: string): ManifestLicenseCheck {
   let expression: SpdxExpression;
   try {
@@ -186,12 +202,16 @@ export function checkManifestLicense(license: string): ManifestLicenseCheck {
     : { valid: false, violations };
 }
 
+/** True when the declared license would pass {@link checkManifestLicense}. */
 export function isValidManifestLicense(license: string | undefined): boolean {
   return license !== undefined && checkManifestLicense(license).valid;
 }
 
+/** A declared license that is not a valid SPDX expression. */
 export interface ManifestLicenseWarning {
+  /** The declared value, as written. */
   license: string;
+  /** The first problem's reason; `violations` lists every one. */
   reason: ManifestLicenseViolationReason;
   term?: string;
   message: string;
@@ -199,8 +219,9 @@ export interface ManifestLicenseWarning {
 }
 
 /**
- * a license is optional: an invalid one never blocks, it only earns no quality
- * points
+ * The warning for a declared license that is not a valid SPDX expression,
+ * or undefined when it is valid or none is declared. A license is optional:
+ * an invalid one never blocks, it only earns no quality points.
  */
 export function manifestLicenseWarning(
   license: string | undefined,

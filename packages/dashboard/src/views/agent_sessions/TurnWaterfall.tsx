@@ -37,6 +37,7 @@ import {
 import { formatCompactCount, formatDuration } from "../../lib/format.ts";
 import { VirtualRows } from "../../components/VirtualRows.tsx";
 
+/** Turns with more calls than this draw only the rows in view. */
 export const VIRTUALISE_OVER = 100;
 const ROW_HEIGHT = 26;
 const VISIBLE_ROWS = 16;
@@ -55,9 +56,11 @@ export interface WaterfallProps {
   readonly onSelect: (call: SelectedCall) => void;
   readonly openSubagents: ReadonlySet<string>;
   readonly onToggleSubagent: (childId: string) => void;
+  /** Draws an opened subagent: its own turns, at full detail. */
   readonly renderSubagent: (childId: string) => ReactNode;
 }
 
+/** The key that opens one turn of one session. */
 export function turnKey(sessionId: string, n: number): string {
   return `${sessionId}#${n}`;
 }
@@ -78,6 +81,7 @@ function CallRow(
     sessionId: string;
     scale: { start: number; length: number };
     dim: boolean;
+    /** Set when the call is one of a shown finding's calls. */
     severity: string | undefined;
     selected: boolean;
     onSelect: (call: SelectedCall) => void;
@@ -192,10 +196,12 @@ function TurnCalls(
   );
 }
 
+/** The element id of one turn's row, so the strip can scroll to it. */
 export function turnRowId(sessionId: string, n: number): string {
   return `as-turn-${sessionId}-${n}`;
 }
 
+/** A turn's calls as ticks, coloured by label, dimmed when filtered out. */
 function Ticks(
   { turn, sessionId, filter }: {
     turn: AgentSessionTurn;
@@ -229,9 +235,10 @@ function place(segment: StripSegment, total: number) {
 }
 
 /**
- * the strip lays every turn end to end with idle time removed; each row draws
- * its track at the same place on the same scale, so a row sits under its own
- * piece of the strip
+ * One session's turns as a timeline. The strip on top lays every turn end to
+ * end with idle time removed; each turn's row below draws its track at the
+ * same place on the same scale, so a row sits under its own piece of the
+ * strip. A row opens into its calls, on the turn's own time scale.
  */
 export function TurnWaterfall(props: WaterfallProps) {
   const { record, filter, openTurns, onToggleTurn } = props;

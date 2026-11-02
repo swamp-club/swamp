@@ -25,10 +25,15 @@ import {
 } from "./_lib/fake_swamp_club_test_helper.ts";
 import type { LinkedIssueData } from "./_lib/schemas.ts";
 
+// ---------------------------------------------------------------------------
+// Harness — a lifecycle context wired to an in-memory swamp-club
+// ---------------------------------------------------------------------------
+
 const PR = "https://github.com/swamp-club/swamp/pull/501";
 
 interface Harness {
   club: FakeSwampClub;
+  // The method contexts differ only in which optional members they read.
   context: Parameters<typeof model.methods.notify.execute>[1];
   store: Record<string, Record<string, unknown>>;
   warnings: string[];
@@ -96,6 +101,10 @@ const carrying = (
 const linkedNumbers = (store: Harness["store"]) =>
   ((store["linkedIssues-main"]?.issues ?? []) as LinkedIssueData[])
     .map((i) => i.issueNumber);
+
+// ---------------------------------------------------------------------------
+// link_issue
+// ---------------------------------------------------------------------------
 
 Deno.test("link_issue: links a sibling and catches it up to the primary's status", async () => {
   await withLifecycle(1, (club, store) => {
@@ -327,6 +336,10 @@ Deno.test("fast_forward: refuses to make the primary platform while it carries a
   });
 });
 
+// ---------------------------------------------------------------------------
+// Linked issues move with the primary
+// ---------------------------------------------------------------------------
+
 Deno.test("triage: moves linked issues to triaged with the primary", async () => {
   await withLifecycle(1, (club, store) => {
     club.addIssue({ number: 1 });
@@ -468,6 +481,10 @@ Deno.test("pr_failed: the linked issue hears the PR failed but not why", async (
   });
 });
 
+// ---------------------------------------------------------------------------
+// notify and summarize
+// ---------------------------------------------------------------------------
+
 Deno.test("notify: thanks an external linked author and skips a team member", async () => {
   await withLifecycle(1, (club, store) => {
     club.addIssue({ number: 1, authorUsername: "lead", authorId: "u-lead" });
@@ -601,6 +618,10 @@ Deno.test("summarize: needs no linkedOutcomes when nothing is linked", async () 
   });
 });
 
+// ---------------------------------------------------------------------------
+// unlink_issue
+// ---------------------------------------------------------------------------
+
 Deno.test("unlink_issue: drops the issue and its relationship and leaves its status", async () => {
   await withLifecycle(1, (club, store) => {
     club.addIssue({ number: 1, status: "in_progress" });
@@ -688,6 +709,10 @@ Deno.test("unlink_issue: refuses an issue that is not linked", async () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// mark_duplicate
+// ---------------------------------------------------------------------------
+
 Deno.test("mark_duplicate: ships the duplicate with the PR from the canonical's entries", async () => {
   await withLifecycle(5, (club) => {
     club.addIssue({ number: 5 });
@@ -717,6 +742,8 @@ Deno.test("mark_duplicate: ships the duplicate with the PR from the canonical's 
     assertEquals(JSON.stringify(club.entriesOn(5)).includes("Secret"), false);
     assertEquals(club.stepsOn(9), ["pr_merged"]);
 
+    // The PR is on the issue before it ships, so swamp-club's shipped
+    // notification carries it.
     const patches = club.calls.filter((c) => c.method === "PATCH");
     const prAt = patches.findIndex((c) => "githubPrUrl" in (c.body ?? {}));
     const shipAt = patches.findIndex((c) => c.body?.status === "shipped");

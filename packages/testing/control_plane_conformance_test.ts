@@ -135,6 +135,7 @@ Deno.test("assertDatastoreControlPlaneStoreConformance: catches a store that rea
       () =>
         assertDatastoreControlPlaneStoreConformance({
           namespace: "team",
+          // A namespaced service's store, not the datastore-wide one.
           openDatastoreStore: async () => {
             const service = openSyncService();
             await service.pullChanged({ namespace: "team" });
@@ -169,6 +170,7 @@ async function withRemoteDir(
   }
 }
 
+/** Sync services and fixtures over `remote`, each with a cache of its own. */
 function remoteFixtures(remote: InMemoryRemote, dir: string) {
   let caches = 0;
   const openNamespacedSyncFixture = (): Promise<NamespacedSyncFixture> => {
@@ -287,6 +289,7 @@ Deno.test("assertWritableDatastoreControlPlaneStoreConformance: catches a store 
       () =>
         assertWritableDatastoreControlPlaneStoreConformance({
           namespace: "team",
+          // A namespaced service's store, not the datastore-wide one.
           openDatastoreStore: async () => {
             const service = fixtures.openSyncService();
             await service.pullChanged({ namespace: "team" });
@@ -383,6 +386,11 @@ Deno.test("assertWritableDatastoreControlPlaneStoreConformance: catches a namesp
   });
 });
 
+/**
+ * A sync service whose namespaced push into an upgraded namespace moves
+ * every root `_control` record into it except those under `keep`, as the
+ * S3 and GCS extensions' migrateRootControlPlaneToNamespace does.
+ */
 function migratingFixtures(
   remote: InMemoryRemote,
   dir: string,

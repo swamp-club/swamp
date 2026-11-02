@@ -32,6 +32,10 @@ import type {
   DistributedLock,
 } from "./datastore_types.ts";
 
+/**
+ * The datastore export shape that extension authors must produce.
+ * Matches the `export const datastore = { ... }` pattern.
+ */
 export interface DatastoreExport {
   type: string;
   name: string;
@@ -40,15 +44,38 @@ export interface DatastoreExport {
   createProvider: (config: Record<string, unknown>) => DatastoreProvider;
 }
 
+/** Options for datastore export conformance. */
 export interface DatastoreExportConformanceOptions {
+  /** Configs that should pass schema validation. At least one required. */
   validConfigs: Record<string, unknown>[];
+  /** Configs that should fail schema validation. */
   invalidConfigs?: Record<string, unknown>[];
 }
 
+/**
+ * Asserts that a datastore export has the correct structural shape.
+ *
+ * Tests: type matches naming pattern, name/description are non-empty,
+ * configSchema accepts valid configs and rejects invalid ones,
+ * createProvider returns a DatastoreProvider with required methods.
+ *
+ * ```typescript
+ * import { assertDatastoreExportConformance } from "@swamp-club/swamp-testing";
+ * import { datastore } from "./s3.ts";
+ *
+ * Deno.test("datastore export conforms", () => {
+ *   assertDatastoreExportConformance(datastore, {
+ *     validConfigs: [{ bucket: "my-bucket", region: "us-east-1" }],
+ *     invalidConfigs: [{}, { bucket: "AB" }],
+ *   });
+ * });
+ * ```
+ */
 export function assertDatastoreExportConformance(
   datastoreExport: DatastoreExport,
   options: DatastoreExportConformanceOptions,
 ): void {
+  // Type must match pattern
   assertExists(datastoreExport.type, "datastore.type must exist");
   assertEquals(
     /^@?[a-z][a-z0-9_-]*\/[a-z0-9][a-z0-9_-]*$/.test(datastoreExport.type),
@@ -56,6 +83,7 @@ export function assertDatastoreExportConformance(
     `datastore.type "${datastoreExport.type}" must match pattern @collective/name`,
   );
 
+  // Name and description
   assertExists(datastoreExport.name, "datastore.name must exist");
   assertEquals(
     datastoreExport.name.length > 0,
@@ -69,6 +97,7 @@ export function assertDatastoreExportConformance(
     "datastore.description must be non-empty",
   );
 
+  // configSchema
   assertExists(
     datastoreExport.configSchema,
     "datastore.configSchema must exist",
@@ -79,6 +108,7 @@ export function assertDatastoreExportConformance(
     "datastore.configSchema must have a safeParse method",
   );
 
+  // Valid configs
   assertEquals(
     options.validConfigs.length > 0,
     true,
@@ -93,6 +123,7 @@ export function assertDatastoreExportConformance(
     );
   }
 
+  // Invalid configs
   for (const config of options.invalidConfigs ?? []) {
     const result = datastoreExport.configSchema.safeParse(config);
     assertEquals(
@@ -102,6 +133,7 @@ export function assertDatastoreExportConformance(
     );
   }
 
+  // createProvider
   assertEquals(
     typeof datastoreExport.createProvider,
     "function",
@@ -126,6 +158,7 @@ export function assertDatastoreExportConformance(
     "provider must have resolveDatastorePath()",
   );
 
+  // resolveDatastorePath must return a string
   const path = provider.resolveDatastorePath("/tmp/test-repo");
   assertEquals(
     typeof path,
@@ -138,6 +171,7 @@ export function assertDatastoreExportConformance(
     "resolveDatastorePath must return a non-empty string",
   );
 
+  // createLock must return an object with the right methods
   const lock = provider.createLock("/tmp/test-ds");
   assertExists(lock, "createLock must return a lock");
   assertEquals(typeof lock.acquire, "function", "lock must have acquire()");
@@ -150,6 +184,7 @@ export function assertDatastoreExportConformance(
     "lock must have forceRelease()",
   );
 
+  // createVerifier must return an object with verify()
   const verifier = provider.createVerifier();
   assertExists(verifier, "createVerifier must return a verifier");
   assertEquals(
@@ -159,13 +194,35 @@ export function assertDatastoreExportConformance(
   );
 }
 
-// memory contract, not runtime-assertable: pullChanged must not retain file
-// content buffers in instance state after writing to disk, since in swamp serve
-// the sync service is a process-lifetime singleton
+// ── Memory contract (not runtime-assertable) ──────────────────────────
+//
+// pullChanged implementations MUST NOT retain file content buffers
+// (Uint8Array, ArrayBuffer) in instance state after writing to disk.
+// In swamp serve the sync service is a process-lifetime singleton, so
+// any accumulated state leaks for the entire process. See
+// design/enablers/datastores.md "Memory contract" for the full rules.
 
+/**
+ * Asserts that a DistributedLock implementation satisfies the behavioral
+ * contract.
+ *
+ * Tests: acquire/release lifecycle, withLock executes and releases,
+ * withLock releases on error, inspect returns info when held and null when
+ * not, forceRelease with correct/wrong nonce, release is idempotent.
+ *
+ * ```typescript
+ * import { assertLockConformance } from "@swamp-club/swamp-testing";
+ *
+ * Deno.test("s3 lock contract", async () => {
+ *   const lock = provider.createLock("/test/path");
+ *   await assertLockConformance(lock);
+ * });
+ * ```
+ */
 export async function assertLockConformance(
   lock: DistributedLock,
 ): Promise<void> {
+  // inspect returns null when not held
   const infoBeforeAcquire = await lock.inspect();
   assertEquals(
     infoBeforeAcquire,
@@ -173,6 +230,7 @@ export async function assertLockConformance(
     "inspect() must return null when lock is not held",
   );
 
+  // acquire/release lifecycle
   await lock.acquire();
   try {
     const infoWhileHeld = await lock.inspect();
@@ -203,6 +261,7 @@ export async function assertLockConformance(
     await lock.release();
   }
 
+  // After release, inspect returns null
   const infoAfterRelease = await lock.inspect();
   assertEquals(
     infoAfterRelease,
@@ -210,11 +269,14 @@ export async function assertLockConformance(
     "inspect() must return null after release",
   );
 
+  // release is idempotent
   await lock.release();
 
+  // withLock executes callback and returns result
   const result = await lock.withLock(() => Promise.resolve(42));
   assertEquals(result, 42, "withLock must return the callback's result");
 
+  // Lock is released after withLock
   const infoAfterWithLock = await lock.inspect();
   assertEquals(
     infoAfterWithLock,
@@ -222,6 +284,7 @@ export async function assertLockConformance(
     "lock must be released after withLock completes",
   );
 
+  // withLock releases on error
   try {
     await lock.withLock(() => Promise.reject(new Error("test error")));
   } catch {
@@ -234,6 +297,7 @@ export async function assertLockConformance(
     "lock must be released after withLock throws",
   );
 
+  // forceRelease with correct nonce
   await lock.acquire();
   try {
     const info = await lock.inspect();
@@ -262,6 +326,7 @@ export async function assertLockConformance(
       "lock must be released after forceRelease",
     );
   } finally {
+    // Ensure cleanup even if forceRelease didn't work
     try {
       await lock.release();
     } catch {
@@ -269,6 +334,7 @@ export async function assertLockConformance(
     }
   }
 
+  // forceRelease with wrong nonce
   await lock.acquire();
   try {
     const released = await lock.forceRelease("wrong-nonce-value");
@@ -278,6 +344,7 @@ export async function assertLockConformance(
       "forceRelease with wrong nonce must return false",
     );
 
+    // Verify lock is still held after wrong-nonce forceRelease
     const stillHeld = await lock.inspect();
     assertExists(
       stillHeld,
@@ -289,9 +356,29 @@ export async function assertLockConformance(
 }
 
 /**
- * core translates the rejection into its lock_timeout error (exit 75): code is
- * lock_timeout in any case, lockKey a string, waitedMs a number; createLock
- * must return locks on the same key
+ * Asserts that a lock rejects with a recognisable timeout error when another
+ * holder keeps the lock past `maxWaitMs`.
+ *
+ * Swamp core translates the rejection into its own lock-timeout error, which
+ * `swamp behavior run` reports as `"code": "lock_timeout"` with exit code
+ * 75, so callers know to retry. The translation relies on this shape:
+ *
+ * - `code` is `"lock_timeout"`, matched in any case (`"LOCK_TIMEOUT"` is fine)
+ * - `lockKey` is a string
+ * - `waitedMs` is a number
+ *
+ * `createLock` must return locks on the same key, so that a second lock
+ * contends with the first. Each call receives the `maxWaitMs` to use.
+ *
+ * ```typescript
+ * import { assertLockTimeoutConformance } from "@swamp-club/swamp-testing";
+ *
+ * Deno.test("s3 lock timeout contract", async () => {
+ *   await assertLockTimeoutConformance(({ maxWaitMs }) =>
+ *     provider.createLock("/test/path", { lockKey: "t/.lock", maxWaitMs })
+ *   );
+ * });
+ * ```
  */
 export async function assertLockTimeoutConformance(
   createLock: (options: { maxWaitMs: number }) => DistributedLock,
@@ -338,6 +425,18 @@ export async function assertLockTimeoutConformance(
   );
 }
 
+/**
+ * Asserts that a DatastoreVerifier implementation returns a valid health result.
+ *
+ * ```typescript
+ * import { assertVerifierConformance } from "@swamp-club/swamp-testing";
+ *
+ * Deno.test("s3 verifier contract", async () => {
+ *   const verifier = provider.createVerifier();
+ *   await assertVerifierConformance(verifier);
+ * });
+ * ```
+ */
 export async function assertVerifierConformance(
   verifier: DatastoreVerifier,
 ): Promise<void> {
@@ -371,10 +470,30 @@ export async function assertVerifierConformance(
   );
 }
 
+/** Options for sync service conformance. */
 export interface SyncServiceConformanceOptions {
+  /** Whether to assert that capabilities() returns scopedSync: true. */
   expectScopedSync?: boolean;
 }
 
+/**
+ * Asserts that a DatastoreSyncService implementation satisfies the
+ * behavioral contract.
+ *
+ * Tests: pullChanged/pushChanged/markDirty exist and are callable.
+ * When `capabilities()` is present, validates it returns a well-formed
+ * `SyncCapabilities`. When `expectScopedSync` is true, asserts
+ * `scopedSync === true`.
+ *
+ * ```typescript
+ * import { assertSyncServiceConformance } from "@swamp-club/swamp-testing";
+ *
+ * Deno.test("s3 sync service contract", async () => {
+ *   const syncService = provider.createSyncService!("/repo", "/cache");
+ *   await assertSyncServiceConformance(syncService);
+ * });
+ * ```
+ */
 export async function assertSyncServiceConformance(
   syncService: DatastoreSyncService,
   options?: SyncServiceConformanceOptions,
@@ -442,8 +561,11 @@ export async function assertSyncServiceConformance(
   }
 }
 
+/** One sync service bound to its own cache directory. */
 export interface SyncServiceRoundTripInstance {
+  /** The sync service under test. */
   service: DatastoreSyncService;
+  /** The cache directory the service syncs, which the suite writes into. */
   cacheDir: string;
 }
 
@@ -452,9 +574,19 @@ export interface SyncServiceRoundTripInstance {
  * The cache directories must differ.
  */
 export interface SyncServiceRoundTripFixture {
+  /** The instance that writes, marks and pushes. */
   first: SyncServiceRoundTripInstance;
+  /** The instance that pulls what `first` pushed. */
   second: SyncServiceRoundTripInstance;
+  /**
+   * Makes the next `first.service.pushChanged()` fail with a transport
+   * error. Without it the failed-push case is skipped.
+   */
   failNextPush?: () => void;
+  /**
+   * Makes the next `second.service.fetchContent()` fail with a transport
+   * error. Without it the `fetch-content-error` case is skipped.
+   */
   failNextFetch?: () => void;
   /**
    * A namespace both services can sync. The `fetch-content-namespace` case
@@ -462,6 +594,7 @@ export interface SyncServiceRoundTripFixture {
    * skipped without it. No other case passes a namespace.
    */
   namespace?: string;
+  /** Releases the backend and the cache directories. */
   cleanup: () => Promise<void>;
 }
 
@@ -473,6 +606,7 @@ export type SyncServiceRoundTripFactory = () => Promise<
   SyncServiceRoundTripFixture
 >;
 
+/** Options for {@link assertSyncServiceRoundTripConformance}. */
 export interface SyncServiceRoundTripOptions {
   /**
    * Whether a pull removes a local file the remote dropped. Default false,
@@ -482,11 +616,15 @@ export interface SyncServiceRoundTripOptions {
   expectPullDeletes?: boolean;
 }
 
+/** What {@link assertSyncServiceRoundTripConformance} ran. */
 export interface SyncServiceRoundTripResult {
+  /** Names of the cases that ran and passed. */
   passed: string[];
+  /** Cases that did not run, each with the reason. */
   skipped: { name: string; reason: string }[];
 }
 
+/** The two-phase push methods, which `DatastoreSyncService` leaves optional. */
 interface TwoPhasePush {
   preparePush(): Promise<unknown>;
   commitPush(manifest: unknown): Promise<number | void>;
@@ -550,6 +688,7 @@ function skipWithoutTwoPhase(
   return twoPhasePush(fixture.first.service) ? undefined : NO_TWO_PHASE;
 }
 
+/** Content with a NUL and high bytes, unique to one run. */
 function sampleBytes(label: string): Uint8Array {
   const text = new TextEncoder().encode(`${label}:${crypto.randomUUID()}\n`);
   return new Uint8Array([0x00, 0xff, 0x7f, ...text, 0x0a, 0x00]);
@@ -606,6 +745,7 @@ function assertCount(value: number | void, what: string): void {
   }
 }
 
+/** A changed result is a positive count, or void for "unknown". */
 function assertChanged(value: number | void, what: string): void {
   assertCount(value, what);
   if (value !== undefined) {
@@ -617,6 +757,7 @@ function assertChanged(value: number | void, what: string): void {
   }
 }
 
+/** An unchanged result is 0, or void for "unknown". */
 function assertUnchanged(value: number | void, what: string): void {
   assertCount(value, what);
   if (value !== undefined) {
@@ -677,7 +818,9 @@ interface RoundTripCase {
    * factory runs so a skipped case never builds a backend.
    */
   skipForOptions?: (options: SyncServiceRoundTripOptions) => string | undefined;
+  /** Returns a skip reason that depends on the fixture. */
   skip?: (fixture: SyncServiceRoundTripFixture) => string | undefined;
+  /** Whether the case passes the fixture's namespace to every sync call. */
   namespaced?: boolean;
   run: (fixture: SyncServiceRoundTripFixture) => Promise<void>;
 }
@@ -710,6 +853,8 @@ const ROUND_TRIP_CASES: readonly RoundTripCase[] = [
         await first.service.pushChanged(),
         "first pushChanged() of a deleted path",
       );
+      // second never pulled the file, so it only appears if the remote
+      // still holds it.
       assertCount(await second.service.pullChanged(), "second pullChanged()");
       await assertAbsent(
         second,
@@ -806,6 +951,7 @@ const ROUND_TRIP_CASES: readonly RoundTripCase[] = [
     run: async ({ first, second }) => {
       const twoPhase = twoPhasePush(first.service)!;
 
+      // preparePush publishes nothing and keeps the path dirty.
       const kept = `${ROOT}/two-phase/kept/raw`;
       const keptBytes = sampleBytes("two-phase-kept");
       await markAndWrite(first, kept, keptBytes);
@@ -828,6 +974,7 @@ const ROUND_TRIP_CASES: readonly RoundTripCase[] = [
         "preparePush must keep the path dirty so a later push uploads it",
       );
 
+      // commitPush publishes the manifest and clears dirty state.
       const committed = `${ROOT}/two-phase/committed/raw`;
       const committedBytes = sampleBytes("two-phase-committed");
       await markAndWrite(first, committed, committedBytes);
@@ -860,6 +1007,7 @@ const ROUND_TRIP_CASES: readonly RoundTripCase[] = [
         "commitPush must clear dirty state so the next push sends nothing",
       );
 
+      // Committing what a clean cache prepares changes nothing.
       const empty = await twoPhase.preparePush();
       assertUnchanged(
         await twoPhase.commitPush(empty),
@@ -967,6 +1115,8 @@ const ROUND_TRIP_CASES: readonly RoundTripCase[] = [
         "fetchContent() must reject an absolute relPath",
       );
 
+      // A local change not pushed yet: the remote's bytes come back, and the
+      // change stays local and stays pending.
       const localBytes = sampleBytes("fetch-content-local");
       await markAndWrite(second, rel, localBytes);
       const mtime = new Date("2001-01-01T00:00:00Z");
@@ -1035,6 +1185,7 @@ const ROUND_TRIP_CASES: readonly RoundTripCase[] = [
     },
     run: async ({ first, second, namespace }) => {
       const fetchContent = fetchContentOf(second.service)!;
+      // Cache-relative, so it starts with the namespace (fetchContent rule 3).
       const rel = `${namespace}/${ROOT}/fetch-content-namespace/raw`;
       const bytes = sampleBytes("fetch-content-namespace");
       await first.service.markDirty({ relPath: rel, namespace });
@@ -1066,6 +1217,7 @@ const ROUND_TRIP_CASES: readonly RoundTripCase[] = [
       const laterBytes = sampleBytes("mark-between-later");
       await markAndWrite(first, prepared, preparedBytes);
       const manifest = await twoPhase.preparePush();
+      // Another write of the same process, while the push is in flight.
       await markAndWrite(first, later, laterBytes);
       assertChanged(await twoPhase.commitPush(manifest), "first commitPush()");
       assertChanged(
@@ -1095,6 +1247,7 @@ const ROUND_TRIP_CASES: readonly RoundTripCase[] = [
       const rel = `${ROOT}/remark-between/raw`;
       await markAndWrite(first, rel, sampleBytes("remark-between-prepared"));
       const manifest = await twoPhase.preparePush();
+      // The same path written again while the push is in flight.
       const rewritten = sampleBytes("remark-between-rewritten");
       await markAndWrite(first, rel, rewritten);
       assertChanged(await twoPhase.commitPush(manifest), "first commitPush()");
@@ -1163,6 +1316,8 @@ const ROUND_TRIP_CASES: readonly RoundTripCase[] = [
 
       await first.service.markDirty({ relPath: dir });
       await writeLocal(first.cacheDir, added, addedBytes);
+      // An entry the walk lists but cannot stat, as a file removed while a
+      // push walks the directory is.
       await Deno.symlink(
         localPath(first.cacheDir, `${dir}/missing-target`),
         localPath(first.cacheDir, `${dir}/vanished`),
@@ -1172,6 +1327,8 @@ const ROUND_TRIP_CASES: readonly RoundTripCase[] = [
         await first.service.pushChanged(),
         "first pushChanged() of a marked directory with a vanished entry",
       );
+      // second never pulled live, so it only appears if the remote still
+      // holds it.
       assertChanged(await second.service.pullChanged(), "second pullChanged()");
       await assertHasBytes(
         second,
@@ -1199,8 +1356,8 @@ const ROUND_TRIP_CASES: readonly RoundTripCase[] = [
       const later = `${dir}/later/raw`;
       const peerBytes = sampleBytes("clear-dirty-peer");
       const laterBytes = sampleBytes("clear-dirty-later");
-      // a directory first marked for a write it then undid, as a refused push
-      // leaves its data-name directory
+      // A directory first marked for a write it then undid, as a refused
+      // push leaves its data-name directory (swamp-club#4091).
       await first.service.markDirty({ relPath: dir });
       await markAndWrite(second, peer, peerBytes);
       assertChanged(await second.service.pushChanged(), "second pushChanged()");
@@ -1218,6 +1375,7 @@ const ROUND_TRIP_CASES: readonly RoundTripCase[] = [
         "a cleared directory mark must not delete the peer's file remotely",
       );
 
+      // A mark made after clearDirty is kept and pushed.
       await first.service.markDirty({ relPath: dir });
       await writeLocal(first.cacheDir, later, laterBytes);
       assertChanged(await first.service.pushChanged(), "first pushChanged()");
@@ -1306,6 +1464,8 @@ const ROUND_TRIP_CASES: readonly RoundTripCase[] = [
         await first.service.pushChanged(),
         "first pushChanged() of the recorded delete",
       );
+      // second never pulled gone, so it only appears if the remote still
+      // holds it.
       assertChanged(await second.service.pullChanged(), "second pullChanged()");
       await assertAbsent(
         second,
@@ -1487,9 +1647,118 @@ const ROUND_TRIP_CASES: readonly RoundTripCase[] = [
 ];
 
 /**
- * counts may be void (unknown); a failing case rejects naming it and skipped
- * cases are returned; defaults follow the S3 and GCS extensions and may change,
- * so assert on the cases you rely on
+ * Asserts that a DatastoreSyncService moves files between two caches on one
+ * backend the way swamp core relies on, following the `markDirty` contract.
+ *
+ * Each case calls `factory` for a fresh backend, pulls on both instances,
+ * then runs:
+ *
+ * - `round-trip`: a path-marked file pushed by `first` pulls on `second`
+ *   with identical bytes.
+ * - `push-deletes`: a marked path that is absent on disk deletes the remote
+ *   file.
+ * - `pull-deletes`: a pull removes a local file the remote deleted. Skipped
+ *   unless `expectPullDeletes` is set.
+ * - `bulk-mark`: a bare `markDirty()` pushes every changed file.
+ * - `failed-push-retry`: a push that fails leaves the path dirty and the next
+ *   push uploads it. Skipped when the fixture has no `failNextPush`.
+ * - `two-phase`: `preparePush` publishes nothing and keeps the path dirty;
+ *   `commitPush` publishes and clears dirty state; committing what a clean
+ *   cache prepares changes nothing. Skipped without `preparePush` and
+ *   `commitPush`.
+ * - `pull-nothing-new`: a pull with nothing new returns 0 or void and leaves
+ *   local bytes and mtimes alone.
+ * - `forward-slash-paths`: a forward-slash `relPath` lands at the native path.
+ * - `fetch-content`: `fetchContent` returns the remote's bytes and `null` for
+ *   a missing file, rejects a `..` or absolute path, writes nothing into the
+ *   cache, leaves
+ *   a differing local file alone and keeps its pending push. Skipped when
+ *   `second.service` has no `fetchContent`.
+ * - `fetch-content-error`: a `fetchContent` that cannot read the remote
+ *   rejects, never resolving to `null`. Skipped without `fetchContent`, and
+ *   when the fixture has no `failNextFetch`.
+ * - `fetch-content-namespace`: a cache-relative path that starts with the
+ *   namespace is read without the namespace being added again. This case
+ *   passes the fixture's `namespace` to every call, its warm-up pulls
+ *   included, since a service may bind the namespace of its first pull.
+ *   Skipped without `fetchContent`, and unless the fixture names a
+ *   `namespace`. It has only been run against `createInMemoryRemote`, which
+ *   binds a namespace as the S3 and GCS datastores do but stores a
+ *   namespaced path as a plain key.
+ * - `mark-between-prepare-and-commit`: a path marked and written after
+ *   `preparePush` stays dirty through `commitPush`, and the next push sends
+ *   it. Skipped without `preparePush` and `commitPush`.
+ * - `remark-between-prepare-and-commit`: a path the prepare handled, marked
+ *   and rewritten again before `commitPush`, stays dirty, and the next push
+ *   sends its new bytes. Skipped without `preparePush` and `commitPush`.
+ * - `bulk-between-prepare-and-commit`: a bare `markDirty()` after
+ *   `preparePush` stays set through `commitPush`, and the next push sends a
+ *   file written after it. Skipped without `preparePush` and `commitPush`.
+ * - `vanish-during-walk`: a push of a marked directory holding an entry it
+ *   cannot stat (a dangling symlink, as a file removed mid-walk would be)
+ *   still sends the directory's changes and deletes none of its other files
+ *   remotely. Skipped on Windows.
+ * - `clear-dirty`: `clearDirty` drops a directory mark, so the next push
+ *   neither deletes a peer's file under it nor sends anything, and a mark
+ *   made after it is still pushed. Skipped when `first.service` has no
+ *   `clearDirty`.
+ * - `repair-unpushed`: a file written into the cache without a mark, which
+ *   no push sends, is reported by a `repairUnpushedFiles` dry run and
+ *   uploaded by a real run. Skipped, like the five cases below, when
+ *   `first.service` has no `repairUnpushedFiles`.
+ * - `repair-unpushed-keeps-pending`: a recorded delete is reported as
+ *   pending, survives the repair, and is applied by the next push.
+ * - `repair-unpushed-keeps-fingerprint`: after a real repair, the next pull
+ *   still receives a peer's commit made before it.
+ * - `repair-unpushed-classifies`: against the last sync, a local edit is
+ *   `locallyModified` (also when a peer changed the file too), a stale copy
+ *   is not, files a peer changed count as `remoteMovedOn`, and a file a peer
+ *   deleted is neither reported nor brought back. A real run uploads none
+ *   of them.
+ * - `repair-unpushed-peer-deleted`: an edited copy a pull kept after a peer
+ *   deleted its key is `peerDeleted`, not unpushed, and is never uploaded.
+ * - `repair-unpushed-already-present`: a local file whose key a peer pushed
+ *   with other bytes is `alreadyPresent`, and the peer's bytes stay.
+ *
+ * Counts may be void ("unknown") everywhere. A failing case rejects with an
+ * error naming it; skipped cases are returned so callers can assert on them.
+ *
+ * Experimental: like `createInMemoryRemote`, the defaults (such as skipping
+ * `pull-deletes`) follow what the S3 and GCS datastore extensions do today
+ * and may change as those extensions change. New cases may be added, and some
+ * may skip, so assert on the cases you rely on rather than on the exact
+ * skipped list.
+ *
+ * ```typescript
+ * import { assert } from "@std/assert";
+ * import { assertSyncServiceRoundTripConformance } from "@swamp-club/swamp-testing";
+ *
+ * Deno.test("s3 sync service round-trips", async () => {
+ *   const result = await assertSyncServiceRoundTripConformance(async () => {
+ *     const bucket = await createTestBucket();
+ *     const firstCache = await Deno.makeTempDir();
+ *     const secondCache = await Deno.makeTempDir();
+ *     return {
+ *       first: { service: syncFor(bucket, firstCache), cacheDir: firstCache },
+ *       second: { service: syncFor(bucket, secondCache), cacheDir: secondCache },
+ *       failNextPush: () => bucket.failNextPut(),
+ *       cleanup: async () => {
+ *         await bucket.destroy();
+ *         await Deno.remove(firstCache, { recursive: true });
+ *         await Deno.remove(secondCache, { recursive: true });
+ *       },
+ *     };
+ *   });
+ *   for (const name of ["round-trip", "push-deletes", "failed-push-retry"]) {
+ *     assert(result.passed.includes(name), `${name} did not run`);
+ *   }
+ *   for (const { name, reason } of result.skipped) {
+ *     console.log(`skipped ${name}: ${reason}`);
+ *   }
+ * });
+ * ```
+ *
+ * @experimental
  */
 export async function assertSyncServiceRoundTripConformance(
   factory: SyncServiceRoundTripFactory,
@@ -1510,6 +1779,7 @@ export async function assertSyncServiceRoundTripConformance(
   return result;
 }
 
+/** Resolves symlinks so two spellings of one directory compare equal. */
 async function canonicalDir(path: string): Promise<string> {
   try {
     return await Deno.realPath(path);

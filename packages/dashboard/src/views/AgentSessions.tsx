@@ -54,7 +54,12 @@ function parseHeadless(raw: string | null): HeadlessFilter {
   return raw === "interactive" || raw === "headless" ? raw : "all";
 }
 
-/** a Preview page: the sidebar shows it only when the viewer can read a session */
+/**
+ * What coding agents did in this repo: their sessions, turns and tool calls,
+ * labelled swamp, bypass or neutral, with the findings the importer wrote
+ * (swamp-club#4155). A Preview page: the sidebar shows it only when the
+ * viewer can read a session.
+ */
 export function AgentSessions() {
   const [repo, setRepo] = useQueryState<string | undefined>(
     "repo",

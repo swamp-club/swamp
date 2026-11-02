@@ -17,6 +17,10 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+// ---------------------------------------------------------------------------
+// Swamp Club Lifecycle API Client
+// ---------------------------------------------------------------------------
+
 import { join } from "@std/path";
 import type { IssueType } from "./schemas.ts";
 import {
@@ -28,8 +32,12 @@ import {
 export const LIFECYCLE_SUMMARY_MAX_CHARS = 2000;
 
 /**
- * rejected: the server refused, so a retry fails the same way. unavailable: no
- * answer. noop: the server had already applied the write
+ * Result of an upstream write the caller must be able to inspect.
+ *
+ * `rejected` means the server answered and refused — deterministic, so a
+ * retry of the same payload fails the same way. `unavailable` means the
+ * request never produced an answer. `noop` marks a write the server had
+ * already applied.
  */
 export type UpstreamOutcome =
   | { ok: true; noop?: boolean }
@@ -51,16 +59,20 @@ export interface EligibleAssignee {
   username: string;
 }
 
+/** Relationship types swamp-club accepts between lab issues. */
 export type IssueRelationshipType =
   | "parent_of"
   | "blocked_by"
   | "related_to"
   | "duplicate_of";
 
+/** A relationship as seen from the fetched issue. */
 export interface FetchedRelationship {
   id: string;
   type: IssueRelationshipType;
+  /** `outgoing` when the fetched issue is the source. */
   direction: "outgoing" | "incoming";
+  /** The issue on the other end. */
   otherIssueNumber: number;
 }
 
@@ -71,14 +83,22 @@ export interface FetchedIssue {
   title: string;
   body: string;
   author: string;
+  /** swamp-club user id of the author; absent if the server omits it. */
   authorId?: string;
   comments: { author: string; body: string; createdAt: string }[];
   assignees: { userId: string; username: string }[];
+  /** The PR recorded on the issue itself, when one was ever sent. */
   githubPrUrl?: string;
+  /**
+   * The PR named by the issue's lifecycle entries: the latest `pr_merged`,
+   * else the latest `pr_linked`. Before `link_pr` recorded the PR on the
+   * issue, this was the only place it was kept.
+   */
   lifecyclePrUrl?: string;
   relationships: FetchedRelationship[];
 }
 
+/** Pick the PR URL the lifecycle entries recorded, preferring the merge. */
 function prUrlFromEntries(
   entries: { step?: unknown; payload?: unknown }[],
 ): string | undefined {
@@ -94,6 +114,10 @@ function prUrlFromEntries(
   return urlOf("pr_merged") ?? urlOf("pr_linked");
 }
 
+/**
+ * HTTP client for the swamp-club lab issues API. Operates directly on a
+ * sequential lab issue number — the issue must already exist in swamp-club.
+ */
 export class SwampClubClient {
   private baseUrl: string;
   readonly #apiKey: string;
@@ -117,17 +141,24 @@ export class SwampClubClient {
     this.logInfo = logger?.info.bind(logger) ?? (() => {});
   }
 
+  /** A client for another issue on the same server, with no new probe. */
   forIssue(issueNumber: number): SwampClubClient {
+    // `log` is this client's warning sink and `logInfo` its info sink.
     return new SwampClubClient(this.baseUrl, this.#apiKey, issueNumber, {
       info: this.logInfo,
       warning: this.log,
     });
   }
 
+  /** Build the public lab URL for this issue. */
   labUrl(): string {
     return `${this.baseUrl}/lab/${this.issueNumber}`;
   }
 
+  /**
+   * Fetch the issue from swamp-club. Returns null if the issue does not
+   * exist or the request fails.
+   */
   async fetchIssue(): Promise<FetchedIssue | null> {
     try {
       const url = `${this.baseUrl}/api/v1/lab/issues/${this.issueNumber}`;
@@ -232,9 +263,12 @@ export class SwampClubClient {
   }
 
   /**
-   * reports the outcome because an entry is the durable audit record and a
-   * caller must tell recorded from dropped; failure policy lives in
-   * lifecycle_recorder.ts
+   * Post a structured lifecycle entry.
+   *
+   * Reports the outcome rather than swallowing it: a lifecycle entry is the
+   * durable audit record of a step, so a caller must be able to tell a
+   * recorded entry from a dropped one. The failure policy lives in
+   * `lifecycle_recorder.ts`, not here.
    */
   async postLifecycleEntry(
     params: LifecycleEntryParams,
@@ -312,9 +346,20 @@ export class SwampClubClient {
   }
 
   /**
-   * a 422 is benign only if a re-read shows the issue already has the status,
-   * not by matching error prose. The patch is never retried; a mismatch, even
-   * from a concurrent editor, surfaces as a failure
+   * Transition the issue status.
+   *
+   * A 422 means the lab aggregate refused the transition, which is benign
+   * exactly when the issue already carries the status we asked for — the
+   * ordinary shape of a re-run. That is confirmed by re-reading the issue and
+   * comparing the status field, not by matching the server's error prose,
+   * which swamp-club is free to reword.
+   *
+   * One read, never a retry loop. The read itself is retried once because it
+   * is a read and a flaky GET would otherwise strand every re-run; the patch
+   * is never retried. A status that does not match — including one moved by a
+   * concurrent editor — is a real failure and surfaces, because a benign
+   * no-op misreported as a failure still re-runs clean, while a real failure
+   * misread as benign is the defect this client exists to avoid.
    */
   async transitionStatus(status: string): Promise<UpstreamOutcome> {
     const outcome = await this.patchIssue({ status });
@@ -333,6 +378,13 @@ export class SwampClubClient {
     return outcome;
   }
 
+  /**
+   * Walk the issue forward to `target` one transition at a time, the only
+   * way swamp-club accepts. Re-reads the status first, so a re-run after a
+   * partial walk carries on from wherever the issue got to, and every step
+   * goes through `transitionStatus`, whose already-applied case is a no-op.
+   * Returns the first failed outcome, or ok when nothing needed to move.
+   */
   async walkStatusTo(target: ForwardStatus): Promise<UpstreamOutcome> {
     const issue = await this.fetchIssue() ?? await this.fetchIssue();
     if (!issue) {
@@ -350,8 +402,10 @@ export class SwampClubClient {
   }
 
   /**
-   * the PR is a field of its own, independent of status, so it survives the
-   * shipped transition into the reporter's notification
+   * Record the pull request on the issue. swamp-club applies it through
+   * `issue.linkPr()` as a field of its own, so it is independent of the
+   * status and survives the later `shipped` transition, which is what puts
+   * the PR link in the reporter's shipped notification.
    */
   async linkPr(url: string): Promise<UpstreamOutcome> {
     const githubPrNumber = parsePrNumber(url);
@@ -373,6 +427,7 @@ export class SwampClubClient {
     return await this.sendRelationship("POST", { type, targetIssueNumber });
   }
 
+  /** Remove a relationship by id. */
   async removeRelationship(relationshipId: string): Promise<UpstreamOutcome> {
     return await this.sendRelationship("DELETE", { relationshipId });
   }
@@ -419,14 +474,17 @@ export class SwampClubClient {
   }
 
   /**
-   * no benign case: patching a type to its current value succeeds, so a
-   * rejection is always a real failure
+   * Update the issue type. No benign case: patching a type to its current
+   * value already succeeds, so a rejection here is always a real failure.
    */
   async updateType(type: IssueType): Promise<UpstreamOutcome> {
     return await this.patchIssue({ type });
   }
 
-  /** returns null on any error; callers treat failure as a warning, not a gate */
+  /**
+   * Fetch the list of eligible assignees. Returns null on any error
+   * (401/403/network) — callers should treat failure as a warning, not a gate.
+   */
   async fetchEligibleAssignees(): Promise<EligibleAssignee[] | null> {
     try {
       const url = `${this.baseUrl}/api/v1/lab/assignees`;
@@ -460,6 +518,10 @@ export class SwampClubClient {
     }
   }
 
+  /**
+   * Resolve a username to a userId via the eligible-assignees endpoint.
+   * Returns null if the lookup fails or the username is not found.
+   */
   async resolveUserId(username: string): Promise<string | null> {
     const assignees = await this.fetchEligibleAssignees();
     if (!assignees) return null;
@@ -468,8 +530,11 @@ export class SwampClubClient {
   }
 
   /**
-   * the ripple is notify's deliverable, so the outcome is reported: a caller
-   * must tell a posted thank-you from a dropped one
+   * Post a comment (ripple) on the issue.
+   *
+   * Reports the outcome: for `notify` the ripple is the deliverable, not a
+   * courtesy, so a caller must be able to tell a posted thank-you from a
+   * dropped one.
    */
   async submitComment(body: string): Promise<UpstreamOutcome> {
     try {
@@ -508,17 +573,21 @@ export class SwampClubClient {
   }
 
   /**
-   * best-effort on purpose: assignment is a courtesy and must never break
-   * triage; patchIssue already logs the failure
+   * Update the issue's assignees. Deliberately best-effort: assignment is a
+   * courtesy action, not an audit record, and must never break the triage
+   * flow. `patchIssue` already logs the failure.
    */
   async updateAssignees(userIds: string[]): Promise<void> {
     await this.patchIssue({ assignees: userIds });
   }
 
   /**
-   * no benign-failure classification here, since it carries status, type and
-   * assignee patches; callers that know what they asked for interpret the
-   * outcome
+   * PATCH the issue with a partial set of fields.
+   *
+   * Deliberately free of any benign-failure classification: this helper
+   * carries status, type and assignees patches alike, so it cannot reason
+   * about a target status it may not have been given. Callers that know what
+   * they asked for interpret the outcome.
    */
   private async patchIssue(
     patch: Record<string, unknown>,
@@ -557,6 +626,11 @@ export class SwampClubClient {
   }
 }
 
+/**
+ * Load credentials from ~/.config/swamp/auth.json (or $XDG_CONFIG_HOME/swamp/auth.json).
+ * Returns { serverUrl, apiKey, username? } or null if the file doesn't exist.
+ * Username is optional — older auth.json files and env-var auth may not have it.
+ */
 export async function loadAuthFile(): Promise<
   { serverUrl: string; apiKey: string; username?: string } | null
 > {
@@ -578,9 +652,10 @@ export async function loadAuthFile(): Promise<
       username?: string;
     };
     if (creds.apiKey) {
-      // rewrite the legacy swamp.club URL to the new domain at the read site;
-      // the CLI's AuthRepository persists the rewrite, this code does not own
-      // the file
+      // Read-only domain migration: rewrite the legacy swamp.club URL to
+      // the new domain so callers transparently hit the right host. The
+      // CLI's AuthRepository persists the rewrite; here we don't own the
+      // file, so we just translate at the read site.
       const serverUrl = creds.serverUrl === "https://swamp.club"
         ? "https://swamp-club.com"
         : creds.serverUrl ?? "https://swamp-club.com";
@@ -596,7 +671,10 @@ export async function loadAuthFile(): Promise<
   }
 }
 
-/** precedence: explicit global args, then SWAMP_API_KEY env var, then auth.json */
+/**
+ * Create a SwampClubClient if a URL and API key are available.
+ * Precedence: explicit global args > SWAMP_API_KEY env var > auth.json file.
+ */
 export async function createSwampClubClient(
   globalArgs: {
     issueNumber: number;
@@ -629,6 +707,7 @@ export async function createSwampClubClient(
     return null;
   }
 
+  // Reachability check — verify the swamp-club URL is accessible before proceeding
   try {
     const healthUrl = `${url}/healthz`;
     const res = await fetch(healthUrl, {

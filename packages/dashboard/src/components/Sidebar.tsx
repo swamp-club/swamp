@@ -70,7 +70,12 @@ interface NavItemProps {
   active: boolean;
   onClick: (view: View) => void;
   badge?: number;
+  /** What the badge counts, read after it: "3 pending". */
   badgeLabel?: string;
+  /**
+   * Fades the item and tags it with a short hint ("Off") while keeping it
+   * clickable; `off.description` is its accessible description.
+   */
   off?: { hint: string; description: string };
 }
 
@@ -221,11 +226,17 @@ function tooltipFor(e: MouseEvent<HTMLElement>): RailTooltip | null {
   return { label, top: rect.top + rect.height / 2, left: rect.right + 10 };
 }
 
+/** Where the Logout confirm sits when it flies out beside the rail. */
 interface FlyoutAnchor {
   left: number;
   bottom: number;
 }
 
+/**
+ * Lines the flyout's bottom edge up with the Logout button so it grows
+ * upward from the foot of the rail, kept at least 8px inside the window.
+ * It starts past the rail's edge so it never covers the rail's controls.
+ */
 function flyoutAnchorFor(button: HTMLElement): FlyoutAnchor {
   const rect = button.getBoundingClientRect();
   const rail = button.closest(".sidebar")?.getBoundingClientRect() ?? rect;
@@ -240,8 +251,17 @@ interface SidebarProps {
   onNavigate: (view: View) => void;
   health: HealthSnapshot | null;
   approvalCount: number;
+  /**
+   * True when the viewer can read at least one agent session. The Agent
+   * sessions item shows only then; see the comment on the item.
+   */
   agentSessionsVisible?: boolean;
+  /** False once serve said it runs without an audit log. */
   auditEnabled?: boolean;
+  /**
+   * True on the local dashboard: no serve behind it, so schedules and
+   * webhooks are off and there is no login to leave.
+   */
   local?: boolean;
   onLogout: () => void;
   collapsed: boolean;
@@ -316,6 +336,7 @@ export function Sidebar({
     keepButtonRef.current?.focus({ preventScroll: true });
   }, [logoutStep]);
 
+  // A click anywhere outside the footer (the flyout is inside it) backs out.
   useEffect(() => {
     if (logoutStep !== "confirming") return;
     const onMouseDown = (e: globalThis.MouseEvent) => {
@@ -327,6 +348,7 @@ export function Sidebar({
     return () => document.removeEventListener("mousedown", onMouseDown);
   }, [logoutStep]);
 
+  // Move focus into the drawer when it opens so keyboard users land in it.
   useEffect(() => {
     if (drawerOpen) closeButtonRef.current?.focus();
   }, [drawerOpen]);
@@ -486,9 +508,12 @@ export function Sidebar({
           off={off.activity}
         />
         {
-          // Hidden rather than Off: Preview shows only when the viewer can read
-          // session data. Hiding is not access control; serve read-gates
-          // requests.
+          // Hidden, not "Off": this deliberately departs from the faded
+          // items operationsOff() gives (swamp-club#4155). A Preview page
+          // shows only when the viewer can read session data; with none,
+          // there is nothing to turn on here. Hiding is not access control:
+          // the route still answers a direct URL, and every request it
+          // sends is read-gated by serve.
           agentSessionsVisible && (
             <NavItem
               label="Agent sessions"

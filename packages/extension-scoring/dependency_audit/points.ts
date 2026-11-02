@@ -18,9 +18,11 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * only an outage clears on a re-run; canonical is a v2 archive whose source
- * breaks the canonical shipped form, origin is code from outside npm and JSR
- * that no registry audit covers
+ * How a dependency the audit could not check is resolved, by why it was
+ * not checked: only an `outage` clears on a re-run. `canonical` is a v2
+ * archive whose source breaks the canonical shipped form; `origin` is code
+ * from outside npm and JSR, which no registry audit covers
+ * (swamp-club#4018).
  */
 export type NotAuditedFix =
   | "outage"
@@ -31,6 +33,10 @@ export type NotAuditedFix =
   | "unexpected"
   | "other";
 
+/**
+ * How to resolve a dependency that was not audited, by why it was not: a
+ * lookup outage clears on a re-run, a wrong name or specifier never does.
+ */
 export const NOT_AUDITED_FIX: Readonly<Record<NotAuditedFix, string>> = {
   outage: "Re-run when OSV, npm and JSR are reachable.",
   name: "Correct the package name in the import.",
@@ -42,12 +48,14 @@ export const NOT_AUDITED_FIX: Readonly<Record<NotAuditedFix, string>> = {
   other: "Resolve the reason above, then re-run.",
 };
 
+/** Most points the `dependency-trust` factor awards. */
 export const DEPENDENCY_TRUST_MAX_POINTS = 2;
 
 /**
- * none while any dependency is blocked or not audited (unaudited is unknown,
- * not partly trusted); one when any specifier is loose, however many; otherwise
- * both
+ * Points the `dependency-trust` factor earns (swamp-club#3354): none while
+ * any dependency is blocked or was not audited, since an unaudited
+ * dependency is unknown rather than partly trusted; one when any specifier
+ * is loose, however many; otherwise both.
  */
 export function dependencyTrustEarnedPoints(counts: {
   blockerCount: number;

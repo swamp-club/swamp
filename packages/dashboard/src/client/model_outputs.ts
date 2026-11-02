@@ -17,8 +17,9 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// a preset goes as a duration, so the request does not change as the clock
-// moves
+// Serve's `model.output.search` over the dashboard time range, for a
+// model's page. A preset goes as a duration, so the
+// request does not change as the clock moves (swamp-club#3449).
 
 import { useRequest } from "./useRequest.ts";
 import { useTimeRange } from "./time_range.ts";
@@ -26,9 +27,12 @@ import { useRefetchOnRunActivity } from "./run_activity.ts";
 import { modelOutputPayloads } from "../lib/model_outputs.ts";
 
 /**
- * an older serve refuses a duration as `validation_failed`, so a preset search
- * refused that way is retried with ISO bounds rounded to the minute; any other
- * error stays on the duration request
+ * `model.output.search` with `payload` over the dashboard time range,
+ * fetched again when serve starts or finishes a run or the tab comes back
+ * into view. An older serve refuses a duration as `validation_failed`, so a
+ * preset search refused that way is retried with the ISO bounds, which move
+ * with the clock (rounded to the minute). Any other error stays on the
+ * duration request, so a retry or a refetch asks for the duration again.
  */
 export function useModelOutputSearch(
   payload: Record<string, unknown>,

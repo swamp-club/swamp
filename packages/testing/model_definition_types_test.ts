@@ -18,13 +18,25 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * type-level regression test: deno check must pass under strict noImplicitAny,
- * so a regression that makes execute parameters implicitly any fails here
+ * Type-level regression tests for the model-authoring escape hatch.
+ *
+ * The load-bearing assertion is that `deno check` passes under
+ * strict+noImplicitAny. If the generics in model_definition_types.ts
+ * silently regress such that execute parameters become implicitly
+ * `any`, this file fails to type-check and CI catches it.
+ *
+ * Context: swamp-club issue #141. See
+ * `.claude/skills/swamp-extension-model/references/typing.md` for
+ * the narrative and worked example.
  */
 
 import { assertEquals } from "@std/assert";
 import { z } from "zod";
 import { defineBehavior, defineModel, type ModelDefinition } from "./mod.ts";
+
+// ---------------------------------------------------------------------------
+// Shared schemas
+// ---------------------------------------------------------------------------
 
 const GlobalArgsSchema = z.object({
   region: z.string(),
@@ -35,15 +47,26 @@ const RunArgsSchema = z.object({ bucket: z.string() });
 
 type GlobalArgs = z.infer<typeof GlobalArgsSchema>;
 
+// ---------------------------------------------------------------------------
+// Type-level helpers
+// ---------------------------------------------------------------------------
+
+/** Compile-time check that two types are mutually assignable. */
 type Equals<A, B> = A extends B ? (B extends A ? true : false) : false;
 
+/** Asserts at compile time that `T` is exactly `true`. */
 function assertType<T extends true>(_value?: T): void {
   // no-op — purely a type-level assertion
 }
 
-// satisfies path: execute params get concrete types and context.globalArgs
-// narrows to the inferred shape; args stays any and authors parse it with the
-// method schema
+// ---------------------------------------------------------------------------
+// `satisfies ModelDefinition<...>` path
+//
+// Fixes TS7006 (execute params get concrete contextual types) and narrows
+// `context.globalArgs` to the inferred global-arguments shape. The `args`
+// parameter is typed as `any` via `z.infer<z.ZodTypeAny>` — authors
+// narrow it per-method by parsing with the method's schema.
+// ---------------------------------------------------------------------------
 
 const satisfiesModel = {
   type: "@swamp-test/satisfies-model",
@@ -54,8 +77,9 @@ const satisfiesModel = {
       description: "Run the model",
       arguments: RunArgsSchema,
       execute: (_args, context) => {
-        // load-bearing: with satisfies, context narrows to the global-arguments
-        // shape instead of being implicitly any
+        // Load-bearing: under the pre-escape-hatch form this line lived
+        // on an implicitly-any context. With `satisfies`, it narrows to
+        // the global-arguments shape.
         type CtxGlobalArgs = typeof context.globalArgs;
         assertType<Equals<CtxGlobalArgs, GlobalArgs>>();
         return Promise.resolve({ dataHandles: [] });
@@ -63,6 +87,10 @@ const satisfiesModel = {
     },
   },
 } satisfies ModelDefinition<typeof GlobalArgsSchema>;
+
+// ---------------------------------------------------------------------------
+// `defineModel` path — same contract as `satisfies`, function form.
+// ---------------------------------------------------------------------------
 
 const helperModel = defineModel({
   type: "@swamp-test/helper-model",
@@ -80,6 +108,10 @@ const helperModel = defineModel({
     },
   },
 });
+
+// ---------------------------------------------------------------------------
+// Runtime smoke — confirm the helpers preserve the input literal.
+// ---------------------------------------------------------------------------
 
 Deno.test("defineModel is an identity function at runtime", () => {
   const input = {
@@ -106,6 +138,10 @@ Deno.test("defineModel-based model preserves its literal shape", () => {
   assertEquals(helperModel.type, "@swamp-test/helper-model");
   assertEquals(Object.keys(helperModel.methods), ["run"]);
 });
+
+// ---------------------------------------------------------------------------
+// `defineBehavior` — the behavior spelling of `defineModel` (swamp-club#3338).
+// ---------------------------------------------------------------------------
 
 const helperBehavior = defineBehavior({
   type: "@swamp-test/helper-behavior",

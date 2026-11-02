@@ -26,9 +26,9 @@ import {
 } from "../components/decision_confirm.ts";
 
 /**
- * gates decided from this page, each held settled until a workflow.approvals
- * reply stops listing it, so a listing read before the decision landed never
- * offers a second decision
+ * The gates decided from this page, each held settled until a
+ * `workflow.approvals` reply no longer lists it, so a listing read before
+ * the decision landed never offers a second decision (swamp-club#3697).
  */
 export function useDecidedGates(approvalsPayload: unknown): {
   decided: ReadonlyMap<string, DecidedGate>;

@@ -83,6 +83,8 @@ import { AgentSessions } from "./views/AgentSessions.tsx";
 import { useAgentSessionsVisible } from "./client/useAgentSessions.ts";
 import "./styles/shell.css";
 
+// Views whose content is runs over time, which the dashboard-wide time
+// range scopes; the shell shows the picker above them.
 const TIMED_VIEWS: ReadonlySet<View> = new Set<View>([
   "overview",
   "workflows",
@@ -123,6 +125,7 @@ export function App() {
   );
 }
 
+/** A local dashboard page opened without its token (a pasted link, say). */
 function LocalTokenMissing() {
   return (
     <div className="login-container">
@@ -200,6 +203,8 @@ function Dashboard({ onLogout }: { onLogout: () => void }) {
 
   const closeDrawer = useCallback(() => setDrawerOpen(false), []);
 
+  // Return focus to the menu button when the drawer closes, but only while
+  // the mobile layout is showing it.
   const menuButtonRef = useRef<HTMLButtonElement>(null);
   const wasDrawerOpen = useRef(false);
   useEffect(() => {
@@ -227,6 +232,8 @@ function Dashboard({ onLogout }: { onLogout: () => void }) {
         setDrawerOpen(false);
       } else if (action === "leave-detail") {
         e.preventDefault();
+        // Deep-linked items step up to their model or run; other details
+        // close to their list view as before.
         goUp();
       }
     };
@@ -389,8 +396,8 @@ function Dashboard({ onLogout }: { onLogout: () => void }) {
       </main>
     </div>
   );
-  // run summaries in every view re-read on run activity and on coming back into
-  // view, not on a clock
+  // Run summaries in every view re-read on run activity and on coming back
+  // into view, not on a clock (swamp-club#3444).
   return (
     <RunActivityProvider activeRuns={health?.activeRuns}>
       {shell}
@@ -414,6 +421,10 @@ function writeCollapsed(value: boolean): void {
   }
 }
 
+/**
+ * A page the local dashboard can't serve (no `swamp serve` behind it): its
+ * title and what turning it on would give, like Activity's audit-off page.
+ */
 function LocalOffPage(
   { title, state: State }: {
     title: string;

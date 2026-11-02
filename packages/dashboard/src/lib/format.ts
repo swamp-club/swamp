@@ -17,20 +17,27 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+// Shared display formatting for counts, durations and times. Views use
+// these instead of local helpers so the same value reads the same
+// everywhere.
+
 const NUMBER = new Intl.NumberFormat("en-US");
 const COMPACT = new Intl.NumberFormat("en-US", {
   notation: "compact",
   maximumFractionDigits: 1,
 });
 
+/** 1234 → "1,234". */
 export function formatCount(n: number): string {
   return NUMBER.format(n);
 }
 
+/** Below 10,000 → "1,234"; above → "12.3K", "4.5M". */
 export function formatCompactCount(n: number): string {
   return Math.abs(n) < 10_000 ? NUMBER.format(n) : COMPACT.format(n);
 }
 
+/** "1 run", "3 runs"; `plural` defaults to `singular + "s"`. */
 export function pluralize(
   n: number,
   singular: string,
@@ -39,6 +46,10 @@ export function pluralize(
   return `${formatCount(n)} ${n === 1 ? singular : plural}`;
 }
 
+/**
+ * A duration at a precision that suits its size: "420ms", "4.2s",
+ * "3m 04s", "2h 13m", "4d 3h". Undefined or negative reads as "—".
+ */
 export function formatDuration(ms: number | undefined | null): string {
   if (ms === undefined || ms === null || !Number.isFinite(ms) || ms < 0) {
     return "—";
@@ -62,6 +73,10 @@ const MINUTE = 60_000;
 const HOUR = 60 * MINUTE;
 const DAY = 24 * HOUR;
 
+/**
+ * Time relative to `now`: "just now", "5m ago", "3h ago", "2d ago" for the
+ * past; "in 5m", "in 3h 10m", "in 2d" for the future.
+ */
 export function formatRelativeTime(
   iso: string | number | Date,
   now: number = Date.now(),
@@ -81,12 +96,14 @@ export function formatRelativeTime(
   return diff > 0 ? `in ${text}` : `${text} ago`;
 }
 
+/** "2026-10-12 14:03:22 UTC" — unambiguous, for titles and detail rows. */
 export function formatAbsoluteTime(iso: string | number | Date): string {
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return "—";
   return d.toISOString().replace("T", " ").replace(/\.\d{3}Z$/, " UTC");
 }
 
+/** "Oct 12, 14:03" in the viewer's locale and time zone. */
 export function formatShortDateTime(iso: string | number | Date): string {
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return "—";

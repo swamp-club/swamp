@@ -57,14 +57,20 @@ import {
 import { resizeObserverClass } from "./dom_types.ts";
 
 export interface HostMapProps {
+  /** Workers to draw, already filtered by status and the visibility TTL. */
   workers: readonly FleetWorker[];
+  /** Slot state per worker name. */
   slots: ReadonlyMap<string, readonly Slot[]>;
+  /** Label key (or `platform`) to group by. */
   groupBy: string;
   ttlMs: number;
+  /** When set and non-empty, workers it would not place on are dimmed. */
   selector?: Selector;
   selectedName: string | null;
   onSelect: (name: string | null) => void;
+  /** Accessible name for the map. */
   label: string;
+  /** The tab is hidden: draw nothing until it is back in view. */
   hidden?: boolean;
 }
 
@@ -76,9 +82,13 @@ interface SimNode extends SimulationNodeDatum {
   gone?: boolean;
 }
 
+/** How long leaving workers take to shrink away before the layout moves. */
 const EXIT_MS = 320;
+/** How long cards and workers glide to a new layout. */
 const GLIDE_MS = 700;
+/** Simulation ticks run off-screen to find where workers come to rest. */
 const SETTLE_TICKS = 260;
+/** Golden angle, for sunflower seeding of a card's workers. */
 const GOLDEN_ANGLE = Math.PI * (3 - Math.sqrt(5));
 /**
  * A disconnected worker starts half faded, so it reads as gone rather than
@@ -125,8 +135,13 @@ function nodeDomId(
 }
 
 /**
- * React owns the frame and D3 owns the SVG inside it; all geometry and state
- * come from the pure `host_map_model` and `host_map_layout` modules
+ * The fleet host map. React owns the frame; D3 owns the SVG inside it: group
+ * cards laid out as a capacity-weighted treemap, worker squares sized by
+ * capacity with one cell per dispatch slot, and a force simulation that holds
+ * each worker inside its card. All geometry and state come from the pure
+ * `host_map_model` and `host_map_layout` modules.
+ *
+ * Styles live in `src/styles/host-map.css`, imported by the view.
  */
 export function HostMap(props: HostMapProps) {
   const frameRef = useRef<HTMLDivElement | null>(null);
@@ -140,9 +155,11 @@ export function HostMap(props: HostMapProps) {
     order: string[];
     prefix: string;
     dataKey: string;
+    /** Set while leaving workers finish exiting, before the layout moves. */
     exitTimer?: ReturnType<typeof setTimeout>;
     /** Set while workers glide to a settled layout; ticks must not move them. */
     glideTimer?: ReturnType<typeof setTimeout>;
+    /** A draw was skipped while the tab was hidden. */
     skipped: boolean;
     initialized: boolean;
     ids: Map<string, string>;
@@ -237,6 +254,7 @@ export function HostMap(props: HostMapProps) {
     // follow-up draw then sees the change and glides to it.
     if (st.exitTimer !== undefined) return;
     const reduced = prefersReducedMotion();
+    // Back in view, the map goes straight to where it is now.
     const still = reduced || mode === "snap";
     st.skipped = false;
     const width = Math.max(
@@ -353,6 +371,9 @@ export function HostMap(props: HostMapProps) {
 
     st.sim.nodes(nextNodes);
     if (still || !st.initialized) {
+      // First paint (and reduced motion, and back in view): come to rest
+      // off-screen, then draw workers where they settled, with no visible
+      // shuffle.
       settle();
       st.initialized = true;
       if (reduced) {
@@ -396,6 +417,11 @@ export function HostMap(props: HostMapProps) {
       .attr("transform", (d) => `translate(${d.x ?? 0},${d.y ?? 0})`);
   }
 
+  /**
+   * Moves cards and workers to a new layout on one shared ease: where each
+   * worker comes to rest is worked out off-screen first, then every worker
+   * glides there while the cards resize, and the drift resumes on arrival.
+   */
   function glide() {
     const st = stateRef.current;
     if (!st.sim || !svgRef.current) return;

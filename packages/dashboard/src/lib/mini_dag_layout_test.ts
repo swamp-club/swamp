@@ -52,6 +52,7 @@ Deno.test("dagLevels: ignores unknown nodes, self loops and survives cycles", ()
   );
   assertEquals(levels.get("a"), 0);
   assertEquals(levels.size, 3);
+  // b and c sit on a cycle: each still lands after something it follows.
   assertEquals(levels.get("b")! >= 1, true);
   assertEquals(levels.get("c")! >= 1, true);
 });
@@ -72,6 +73,7 @@ Deno.test("layoutDag: places columns left to right and centres short columns", (
   assertEquals(layout.height, 2 * 20 + 10);
   const at = Object.fromEntries(layout.nodes.map((p) => [p.id, p]));
   assertEquals([at.a.x, at.b.x, at.d.x], [0, 130, 260]);
+  // The single-node columns sit midway down the two-node column.
   assertEquals(at.a.y, 15);
   assertEquals(at.d.y, 15);
   assertEquals([at.b.y, at.c.y], [0, 30]);
@@ -83,6 +85,8 @@ Deno.test("layoutDag: places columns left to right and centres short columns", (
 });
 
 Deno.test("layoutDag: orders a column by where its dependencies sit", () => {
+  // y depends on the lower of two roots, x on the upper: x stays above y
+  // even though y was listed first.
   const layout = layoutDag(
     [n("top"), n("bottom"), n("y"), n("x")],
     [

@@ -123,6 +123,7 @@ Deno.test("composeScore: an unanalysed version reads pending on every per-versio
     assertEquals(rows.get(id)?.status, "pending", id);
     assertEquals(rows.get(id)?.remediation, undefined, id);
   }
+  // description 1 + platforms 2 + repository 2
   assertEquals(score.earnedPoints, 5);
   assertEquals(score.percentage, Math.floor(500 / 16));
 });

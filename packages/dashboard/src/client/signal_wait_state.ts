@@ -17,14 +17,17 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+/** What a wait for a signal needs next. */
 export type SignalWaitState = "open" | "signalled" | "expired";
 
+/** The receipt of the signal that settled a wait. */
 export interface SignalReceiptInfo {
   id: string;
   submittedBy: string;
   receivedAt: string;
 }
 
+/** A wait for a signal as the dashboard lists it. */
 export interface SignalWaitRow {
   waitId: string;
   /**
@@ -37,10 +40,15 @@ export interface SignalWaitRow {
   runId: string;
   stepName: string;
   deadline: string;
+  /** The payload schema a signal has to match; only an open wait has one. */
   schema?: unknown;
+  /** Set on a signalled wait. */
   receipt?: SignalReceiptInfo;
+  /** A signalled wait whose run nothing else holds back: it can be resumed. */
   awaitingResume: boolean;
+  /** The CLI command that moves the wait on. */
   command: string;
+  /** The key a signal sent by key reaches the wait with; only a keyed wait has one. */
   key?: string;
   /**
    * The CLI command that signals the wait by its key. Serve sends it only
@@ -157,9 +165,12 @@ export function signalWaitRows(payload: unknown): SignalWaitRow[] {
 }
 
 /**
- * signals held for a wait that is not open yet, soonest to lapse first; with
- * now, a signal held until before now is left out, since serve does not hand it
- * to a wait
+ * The signals held for a wait that is not open yet, from a `workflow.waits`
+ * reply asked for with `includePending`, soonest to lapse first. With
+ * `now`, a signal held until before `now` is left out: serve no longer
+ * hands it to a wait. A reply without `pending`, such as one from a serve
+ * that predates held signals, lists nothing, and so does an entry without
+ * the fields a row needs or with a `heldUntil` that is not a time.
  */
 export function pendingSignalRows(
   payload: unknown,

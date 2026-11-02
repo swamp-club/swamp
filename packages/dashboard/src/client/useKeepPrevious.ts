@@ -24,6 +24,10 @@ interface Held<T> {
   value: T;
 }
 
+/**
+ * The held value after a render: the new value when there is one, else the
+ * previous one only if it was held under the same `key`.
+ */
 export function holdLatest<T>(
   held: Held<T> | null,
   value: T | null,

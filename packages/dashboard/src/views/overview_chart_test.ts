@@ -92,6 +92,7 @@ Deno.test("chartBars: long ranges switch to weekly bars", () => {
   assertEquals(bars.length <= Math.ceil(93 / 7), true);
   assertEquals(bars.length > MAX_DAILY_BARS / 7, true);
   assertEquals(bars[0].label, "07-01…");
+  // Jul 1–7 holds the first bucket; Jul 8–14 the second.
   assertEquals(bars[0].data.succeeded, 3);
   assertEquals(bars[1].data.succeeded, 2);
 });

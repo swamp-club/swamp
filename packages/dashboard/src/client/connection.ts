@@ -38,14 +38,17 @@ export interface AuthInfo {
   local?: true;
 }
 
+/** Aborts a token probe or `/auth/info` request that has not answered. */
 export const CHECK_TIMEOUT_MS = 10_000;
 
+/** The part of a WebSocket the controller drives. */
 export interface SocketLike {
   close(): void;
 }
 
 export interface SocketHandlers {
   onOpen(): void;
+  /** A decoded text frame. */
   onMessage(text: string): void;
   onClose(code: number): void;
 }
@@ -57,26 +60,36 @@ export interface Timers {
 
 export interface ConnectionDeps<S extends SocketLike> extends Timers {
   createSocket(protocols: string[] | undefined, handlers: SocketHandlers): S;
+  /** Asks serve over HTTP whether it accepts `token`. */
   probe(token: string | null, signal: AbortSignal): Promise<ProbeResult>;
+  /** One `/auth/info` request; null when serve did not answer usefully. */
   fetchAuthInfo(signal: AbortSignal): Promise<AuthInfo | null>;
   random?: () => number;
   checkTimeoutMs?: number;
   onOpen(socket: S): void;
   onMessage(socket: S, text: string): void;
+  /** The live socket closed; any requests on it are lost. */
   onDisconnect(): void;
   /**
    * Serve no longer accepts the token. The controller has stopped, and has
    * already reported a changed auth mode through onAuthModeChanged.
    */
   onReauth(): void;
+  /** Serve came back in a different auth mode. The controller has stopped. */
   onAuthModeChanged(info: AuthInfo): void;
 }
 
 export interface Connection {
+  /** Connects, replacing any earlier connection, and keeps reconnecting. */
   start(options: { token: string | null; authMode: AuthMode }): void;
+  /** Closes the socket and cancels any pending retry or check. */
   stop(): void;
 }
 
+/**
+ * Runs one request with a timeout. `onSettle` gets the result, or `failure`
+ * if the request rejected or timed out, unless `cancel` is called first.
+ */
 function attemptWithTimeout<T>(
   timers: Timers,
   timeoutMs: number,
@@ -108,6 +121,11 @@ function attemptWithTimeout<T>(
   };
 }
 
+/**
+ * Keeps one WebSocket to serve open. After an unexpected close it reconnects
+ * with backoff, and it stops for good when serve rejects the token or comes
+ * back in a different auth mode. Every side effect is injected.
+ */
 export function createConnection<S extends SocketLike>(
   deps: ConnectionDeps<S>,
 ): Connection {
@@ -300,6 +318,7 @@ export function socketProtocols(
   return [`bearer.${token}`];
 }
 
+/** Validates an `/auth/info` body. */
 export function parseAuthInfo(value: unknown): AuthInfo | null {
   if (typeof value !== "object" || value === null) return null;
   const { mode, verificationBaseUri, local } = value as Record<
@@ -316,6 +335,7 @@ export function parseAuthInfo(value: unknown): AuthInfo | null {
 
 type FetchFn = (url: string, init: RequestInit) => Promise<Response>;
 
+/** One `/auth/info` request; null on a network error or unusable answer. */
 export async function requestAuthInfo(
   fetchFn: FetchFn,
   signal: AbortSignal,
@@ -336,9 +356,14 @@ export async function requestAuthInfo(
 }
 
 /**
- * /api/v1/health authenticates like the WebSocket upgrade and answers 401 only
- * for a rejected token; heavier than needed, so probes only follow a failed
- * reconnect, spaced by backoff
+ * Asks serve whether it accepts `token`. `/api/v1/health` authenticates with
+ * the same check as the WebSocket upgrade and answers 401 only for a
+ * rejected token.
+ *
+ * It is heavier than the question needs: any accepted token also runs a full
+ * health collection, and every probe records an auth audit event. Probes only
+ * follow a failed reconnect and are spaced by backoff; switch to a
+ * lightweight token-check endpoint if serve gains one.
  */
 export async function requestTokenProbe(
   fetchFn: FetchFn,
@@ -367,6 +392,10 @@ export async function requestTokenProbe(
   }
 }
 
+/**
+ * Reads `/auth/info`, retrying with backoff until serve answers with a valid
+ * mode. Returns a function that cancels it.
+ */
 export function loadAuthInfo(
   deps: Timers & {
     fetchAuthInfo(signal: AbortSignal): Promise<AuthInfo | null>;

@@ -33,8 +33,11 @@ const FOCUSABLE =
   'a[href], button:not([disabled]), input, select, textarea, summary, [tabindex]:not([tabindex="-1"])';
 
 /**
- * the item renders exactly as on its own page; Escape and Back close the
- * drawer, and the run page owns those keys
+ * A report or data item opened from a run, shown in a drawer over the run
+ * page so the reader keeps their place. The item renders exactly as on its
+ * own page; "Open full page" goes there, and "Copy link" shares the run
+ * page with the drawer open. Escape and Back close it (the page owns
+ * those keys).
  */
 export function RunItemDrawer({ item, onClose }: RunItemDrawerProps) {
   const panelRef = useRef<HTMLDivElement>(null);

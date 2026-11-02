@@ -19,7 +19,10 @@
 
 import { agentMark } from "./agent_badge.ts";
 
-/** decorative; the agent's name stays as text */
+/**
+ * A small square before an agent's name: its initials in its colour.
+ * Decorative; the name stays as text.
+ */
 export function AgentBadge(
   { id, size = "sm" }: { id: string; size?: "sm" | "md" | "lg" },
 ) {

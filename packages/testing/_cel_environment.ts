@@ -17,9 +17,17 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// mirrored from swamp's createExtensionCelEnvironment because this package
-// publishes standalone to JSR and cannot import from src;
-// testing_package_compat_test.ts guards drift, so change both together
+// Local mirror of swamp's `createExtensionCelEnvironment` factory.
+//
+// Why mirrored instead of imported: this package publishes standalone to JSR
+// (`.github/workflows/publish-testing.yml` runs `deno check mod.ts` from
+// inside this directory), so it cannot import from `../../src/`.
+//
+// Drift guard: `src/domain/models/testing_package_compat_test.ts` runs both
+// this factory and `src/infrastructure/cel/cel_evaluator.ts`'s
+// `createExtensionCelEnvironment` and asserts identical results across a
+// representative set of expressions plus that each call yields a fresh,
+// isolated Environment. If you change one, change the other.
 
 import { Environment } from "cel-js";
 

@@ -21,6 +21,8 @@ import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import fc from "fast-check";
 import { highlightJson } from "./json_highlight.ts";
 
+// Removes the highlight tags and decodes the entities escapeHtml adds, which
+// recovers exactly what the browser displays as text.
 function displayed(html: string): string {
   return html.replace(/<[^>]+>/g, "").replace(/&lt;/g, "<")
     .replace(/&gt;/g, ">").replace(/&amp;/g, "&");
@@ -29,6 +31,8 @@ function displayed(html: string): string {
 function assertRoundTrips(raw: string): void {
   assertEquals(displayed(highlightJson(raw)), raw);
 }
+
+// ── text is never altered ───────────────────────────────────────────────
 
 Deno.test("highlightJson: keeps colons inside timestamps", () => {
   const raw = JSON.stringify(
@@ -73,6 +77,8 @@ Deno.test("highlightJson: passes non-JSON text through unchanged", () => {
   }
 });
 
+// ── token classification ────────────────────────────────────────────────
+
 Deno.test("highlightJson: classes keys and string values separately", () => {
   assertEquals(
     highlightJson('{"k" : "v"}'),
@@ -98,6 +104,8 @@ Deno.test("highlightJson: never nests spans inside a string", () => {
   );
   assertEquals(html.match(/<span/g)?.length, 2);
 });
+
+// ── property ────────────────────────────────────────────────────────────
 
 Deno.test("highlightJson: displayed text equals any stringified JSON", () => {
   fc.assert(

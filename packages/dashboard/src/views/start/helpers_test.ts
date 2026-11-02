@@ -104,6 +104,7 @@ Deno.test("screenComponentKey: maps every known screen to itself", () => {
   ) {
     assertEquals(screenComponentKey(screen), screen);
   }
+  // Screens of older versions are unknown now.
   assertEquals(screenComponentKey("resume"), "unknown");
   assertEquals(screenComponentKey("tasks"), "unknown");
 });
@@ -817,6 +818,7 @@ Deno.test("initialAgentPick: keeps the pick, else the task's agent, else the las
   assertEquals(initialAgentPick(ids, null, "codex", "opencode"), "codex");
   assertEquals(initialAgentPick(ids, null, undefined, "opencode"), "opencode");
   assertEquals(initialAgentPick(ids, null, undefined, undefined), "claude");
+  // An agent that can't launch here any more is passed over.
   assertEquals(initialAgentPick(ids, "cursor", "amp", "pi"), "claude");
   assertEquals(initialAgentPick([], null, undefined, "codex"), null);
 });

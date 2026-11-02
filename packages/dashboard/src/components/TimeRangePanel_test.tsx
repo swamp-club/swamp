@@ -25,6 +25,7 @@ import { TimeRangeButtonContent, TimeRangePanel } from "./TimeRangePanel.tsx";
 import type { TimeRange } from "../client/time_range.ts";
 import type { DayStats } from "../lib/calendar.ts";
 
+// Oct 12 2026, 15:00 local.
 const NOW = new Date(2026, 9, 12, 15).getTime();
 
 const stats = new Map<string, DayStats>([
@@ -88,12 +89,14 @@ Deno.test("TimeRangePanel: days carry accessible run summaries and failure marke
 
 Deno.test("TimeRangePanel: the custom range is selected and announced", () => {
   const html = render();
+  // Oct 3..9 are selected; Oct 10 is not.
   assertEquals(
     html.split('role="gridcell" class="trp-cell in-span').length - 1,
     7,
   );
   assertStringIncludes(html, 'aria-live="polite"');
   assertStringIncludes(html, "Oct 3 – Oct 9");
+  // One roving tab stop, on the range's last day.
   assertEquals(html.split('tabindex="0"').length - 1, 1);
   assertStringIncludes(html, 'data-day="2026-10-09" tabindex="0"');
 });

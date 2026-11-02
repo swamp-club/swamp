@@ -157,6 +157,8 @@ Deno.test("countExports: overloaded declarations each count separately", () => {
   assertEquals(r.documented, 1);
 });
 
+// ── computeAnalysisFactors ─────────────────────────────────────────────
+
 Deno.test("computeAnalysisFactors: all clean", () => {
   const doc: DocOutput = {
     version: 1,
@@ -275,6 +277,16 @@ Deno.test("computeAnalysisFactors: percentage rounds to 4 decimal places", () =>
   });
   assertEquals(f.percentageDocumentedSymbols, 0.3333);
 });
+
+// ── repositoryLikelyVerifiable ─────────────────────────────────────────
+
+// ═══════════════════════════════════════════════════════════════════════
+// Cases ported from swamp-club's tests/domain/analysis-factors_test.ts,
+// written when the registry kept its own copy of these functions. They
+// stay as the record of the behaviour both sides relied on.
+// ═══════════════════════════════════════════════════════════════════════
+
+// --- analysis-factors_test.ts ports ------------------------------------
 
 Deno.test("[parity] hasFencedCodeBlock - triple-backtick block matches", () => {
   const md = "# Title\n\n```ts\nconst x = 1;\n```\n";

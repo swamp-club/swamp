@@ -111,12 +111,14 @@ interface WorkflowRun {
   id: string;
   workflowId: string;
   workflowName: string;
+  /** Nested runs this run's steps wait on (swamp-club#2736). */
   nestedWaits?: {
     workflowName: string;
     runId: string;
     stepName: string;
     status?: string;
   }[];
+  /** On a nested workflow's run: the parent run that started it. */
   parentRun?: {
     workflowName: string;
     runId: string;
@@ -131,6 +133,7 @@ interface WorkflowRun {
   workflowDataArtifacts?: ArtifactRef[];
 }
 
+/** A `workflow.run.search` row for this run. */
 interface RunRow extends ResumableRun {
   triggerSource?: string;
 }
@@ -138,10 +141,12 @@ interface RunRow extends ResumableRun {
 interface RunDetailProps {
   workflowName: string;
   runId?: string;
+  /** Serve's live health snapshot; its active runs are runs serve drives. */
   health?: HealthSnapshot | null;
   onBack: () => void;
 }
 
+/** How often a run still in progress is re-read. */
 const LIVE_POLL_MS = 2500;
 const LIVE_STATUSES = new Set(["running", "pending"]);
 
@@ -151,9 +156,10 @@ const parseTab = oneOf(TABS, "graph");
 const parseOptional = (raw: string | null): string | null => raw || null;
 
 /**
- * reports and data open in a drawer on this page; the tab, selected job and
- * open item live in the URL, and ?focus=failure opens the run on its failed
- * step's log
+ * One workflow run: a summary header, the job graph (or the step list),
+ * and the reports and logs it produced. Reports and data open in a drawer
+ * on this page; the tab, selected job and open item live in the URL, and
+ * `?focus=failure` opens the run straight on its failed step's log.
  */
 export function RunDetail(props: RunDetailProps) {
   // A different run is a different page: reset selection and drawer state.
@@ -176,6 +182,7 @@ function RunPage({ workflowName, runId, health, onBack }: RunDetailProps) {
     ? null
     : extractObject<WorkflowDefinitionLike>(definitionReq.data);
 
+  // Run search carries the trigger and the derived awaiting-resume state.
   const rowReq = useRequest(
     "workflow.run.search",
     { workflow: workflowName, query: id, limit: 1 },
@@ -184,7 +191,7 @@ function RunPage({ workflowName, runId, health, onBack }: RunDetailProps) {
   const row = extractArray<RunRow>(rowReq.data).find((r) => r.runId === id);
   // Only a run with every gate decided gets the resume panel.
   const resumable = row && resumeStateFor(row) !== null ? row : undefined;
-  // a run serve drives now is not offered a resume
+  // A run serve drives now is not offered a resume (swamp-club#3005).
   const served = id !== undefined && activeRunIds(health?.activeRuns).has(id);
 
   const logsReq = useRequest(
@@ -200,8 +207,8 @@ function RunPage({ workflowName, runId, health, onBack }: RunDetailProps) {
     refetchHistory();
     refetchLogs();
   }, [refetchHistory, refetchLogs]);
-  // the clock re-reads join a read still in flight, so a slow serve never has
-  // more than one of each per page
+  // The clock re-reads join a read still in flight, so a slow serve never
+  // has more than one of each per page (swamp-club#3742).
   const reloadHistory = historyReq.reload;
   const reloadLogs = logsReq.reload;
   const reloadLive = useCallback(
@@ -218,9 +225,13 @@ function RunPage({ workflowName, runId, health, onBack }: RunDetailProps) {
   );
   useActiveRunsRefetch(health?.activeRuns, rows, refetchRun);
 
-  // serve has no per-run event stream, so a live run is re-read; the search row
-  // is re-read on a status change, when serve starts or stops driving the run,
-  // and after a resume; a hidden tab does not poll and re-reads once on return
+  // Serve has no per-run event stream: re-read a run in progress. Only the
+  // run and its logs change while it runs; the search row (trigger,
+  // awaiting resume) is re-read when the run's status changes, when serve
+  // starts or stops driving a run, and after a resume (swamp-club#3444).
+  // A hidden tab neither polls nor ticks; coming back into view re-reads a
+  // live run once, since a stuck run changes no run activity
+  // (swamp-club#3661).
   const live = run !== null && LIVE_STATUSES.has(run.status);
   const tabVisible = useTabVisible();
   usePolling(
@@ -257,6 +268,7 @@ function RunPage({ workflowName, runId, health, onBack }: RunDetailProps) {
     return map;
   }, [definition]);
 
+  // ── URL state: tab, selected job, open item, failure focus ────────────
   const [tab, setTab] = useQueryState<Tab>("tab", "graph", parseTab);
   const [selectedJob, setSelectedJob] = useQueryState<string | null>(
     "job",
@@ -331,6 +343,7 @@ function RunPage({ workflowName, runId, health, onBack }: RunDetailProps) {
     setFailureRequest({ step: null, nonce: Date.now() });
   }, [setFocusParam, setStepParam]);
 
+  /** The reader picked a job: the failure focus no longer describes the page. */
   const selectJob = useCallback((job: string | null) => {
     setSelectedJob(job);
     if (focusParam !== null) setFocusParam(null);
@@ -528,6 +541,8 @@ function RunPage({ workflowName, runId, health, onBack }: RunDetailProps) {
   );
 }
 
+// ── header ──────────────────────────────────────────────────────────────
+
 function runDisplayStatus(status: string): DisplayStatus {
   switch (status) {
     case "succeeded":
@@ -552,6 +567,10 @@ const RUN_LABELS: Record<string, string> = {
   pending: "Queued",
 };
 
+/**
+ * "View failure log": opens the failed job's panel on its step log. A real
+ * link, so it can be opened in a new tab or shared.
+ */
 function FailureLogLink(
   { href, onView, className }: {
     href: string;
@@ -834,13 +853,15 @@ function CopyButton({ text, label }: { text: string; label: string }) {
 }
 
 /**
- * uses the run summary, falling back to the run search on a server without it;
- * hidden if both fail
+ * The workflow's recent runs as a strip with this run highlighted, and
+ * links to the runs either side. Uses the run summary; on a server without
+ * it, falls back to the run search; hidden if both fail.
  */
 function RecentRuns(
   { workflowName, currentRunId, runStatus }: {
     workflowName: string;
     currentRunId?: string;
+    /** This run's status: the strip is re-read when it changes. */
     runStatus?: string;
   },
 ) {
@@ -935,6 +956,8 @@ function RecentRuns(
     </div>
   );
 }
+
+// ── notices, reports, logs ──────────────────────────────────────────────
 
 function RunNotices(
   { run, resumable, served, onResumed, failureLink, onViewFailure }: {
@@ -1110,6 +1133,9 @@ function LogsPanel({ logs, live }: { logs: LogsData; live: boolean }) {
   );
 }
 
+// ── loading ─────────────────────────────────────────────────────────────
+
+/** The run page's shape: columns of job cards, and a step list beside. */
 function RunSkeleton() {
   const columns = [2, 3, 2, 1];
   return (
@@ -1177,6 +1203,9 @@ function ListGlyph() {
   );
 }
 
+// ── hooks ───────────────────────────────────────────────────────────────
+
+/** Calls `fn` every `intervalMs` while non-null. */
 function usePolling(
   fn: () => Promise<unknown>,
   intervalMs: number | null,
@@ -1192,6 +1221,7 @@ function usePolling(
   }, [intervalMs]);
 }
 
+/** The current time, ticking every `intervalMs` while non-null. */
 function useNow(intervalMs: number | null): number {
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
@@ -1214,8 +1244,9 @@ function readItemParam(): DrawerItem | null {
 }
 
 /**
- * opening pushes a history entry so Back closes the drawer; switching items in
- * an open drawer replaces it
+ * The item open in the drawer, mirrored to `?item=`. Opening pushes a
+ * history entry so Back closes the drawer; switching items in an open
+ * drawer replaces it.
  */
 function useDrawerItem(): [
   DrawerItem | null,
@@ -1256,6 +1287,7 @@ function extractLogs(payload: unknown): LogsData | null {
   if (!payload || typeof payload !== "object") return null;
   const obj = payload as Record<string, unknown>;
 
+  // payload.data.log.lines
   if (obj.data && typeof obj.data === "object") {
     const d = obj.data as Record<string, unknown>;
     if (d.log && typeof d.log === "object") {
@@ -1264,11 +1296,13 @@ function extractLogs(payload: unknown): LogsData | null {
         return log as unknown as LogsData;
       }
     }
+    // payload.data.lines
     if (Array.isArray(d.lines)) {
       return d as unknown as LogsData;
     }
   }
 
+  // payload.log.lines
   if (obj.log && typeof obj.log === "object") {
     const log = obj.log as Record<string, unknown>;
     if (Array.isArray(log.lines)) {
@@ -1276,6 +1310,7 @@ function extractLogs(payload: unknown): LogsData | null {
     }
   }
 
+  // payload.lines
   if (Array.isArray(obj.lines)) {
     return obj as unknown as LogsData;
   }

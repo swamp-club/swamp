@@ -19,6 +19,7 @@
 
 import { useEffect } from "react";
 
+/** Sets the browser tab title while mounted, restoring it afterwards. */
 export function useDocumentTitle(title: string | null): void {
   useEffect(() => {
     if (title === null) return;

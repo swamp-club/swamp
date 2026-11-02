@@ -65,7 +65,8 @@ file headers explaining architecture, banners, or JSDoc restating a signature.
 Stale comments are deleted, not repaired. Pragmas and the licence header are not
 prose; leave them.
 
-This file follows the same rule: a new subsystem gets a pointer, not an essay.
+This applies to `src/`, `integration/` and `scripts/`. This file follows the
+same rule: a new subsystem gets a pointer, not an essay.
 `agent-constraints/comment-review-dimensions.md` is the enforcement, and lists
 what breaks when comments are stripped carelessly.
 

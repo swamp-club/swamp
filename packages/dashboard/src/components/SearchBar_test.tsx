@@ -63,6 +63,7 @@ Deno.test("SearchBar: applied filters show as removable chips", () => {
       noun="workflows"
     />,
   );
+  // One chip per value, each removable on its own, joined by "or".
   assertStringIncludes(html, '<span class="qchip-key">prefix</span>');
   assertStringIncludes(html, '<span class="qchip-val">deploy</span>');
   assertStringIncludes(html, '<span class="qchip-val">sync</span>');

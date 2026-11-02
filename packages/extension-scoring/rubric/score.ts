@@ -17,6 +17,13 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+/**
+ * The extension quality rubric: the factor table and the one score both the
+ * CLI and the registry compose from it. Pure; each side gathers the inputs
+ * its own way (the CLI from the archive it is about to push, the registry
+ * from the version it stored).
+ */
+
 import type { AnalysisFactors } from "./analysis.ts";
 import type {
   PrivateSourceStanding,
@@ -30,14 +37,27 @@ import {
 } from "../dependency_audit/points.ts";
 
 /**
- * every score records the version; a rule change that can move a score bumps it
- * so stored scores say which rules made them
+ * The rubric's version. Every score records it; a rule change that can move
+ * a score bumps it so stored scores say which rules made them. v5: one
+ * shared scorer for the CLI and the registry (swamp-club#3781). v6: a
+ * non-exact dependency spec costs the loose point only when no valid lock
+ * fixed its version (swamp-club#3970); a v2 archive is audited exact-only,
+ * and code from outside npm and JSR is not audited (swamp-club#4018).
+ * #3970 and #4018 share v6 by decision on #4018: the dependency rules of
+ * that release are one version, and the registry rescores under it once
+ * both are in (#3973, #3980).
  */
 export const RUBRIC_VERSION = 6;
 
 /**
- * provisional: before publish, a factor only the registry can award; it earns
- * nothing until the registry awards it
+ * Status of one scorecard row.
+ *   earned      → all points
+ *   partial     → some points
+ *   missing     → none
+ *   pending     → not scored yet (a version the registry has not analysed)
+ *   provisional → before publish, a factor only the registry can award and
+ *                 that it is expected to; it earns nothing until the
+ *                 registry awards it
  */
 export type FactorStatus =
   | "earned"
@@ -46,8 +66,10 @@ export type FactorStatus =
   | "pending"
   | "provisional";
 
+/** Whether a factor is scored per version or once for the package. */
 export type FactorCategory = "per-version" | "per-package";
 
+/** One row of the scorecard. */
 export interface RubricFactor {
   id: string;
   label: string;
@@ -55,47 +77,61 @@ export interface RubricFactor {
   maxPoints: number;
   status: FactorStatus;
   category: FactorCategory;
+  /** How to earn the missing points; absent on an earned, pending or provisional row. */
   remediation?: string;
 }
 
+/** The dependency audit's result, as the `dependency-trust` row needs it. */
 export interface DependencyTrustInput {
+  /** From {@link dependencyTrustEarnedPoints}, or the points a stored score recorded. */
   earnedPoints: number;
   blockerCount: number;
   notAuditedCount: number;
+  /** The distinct fixes the unaudited dependencies need; empty when unknown. */
   notAuditedFixes: readonly NotAuditedFix[];
   looseCount: number;
 }
 
+/** A per-version input that may not have been measured. */
 export type VersionAnalysis = {
   [K in keyof AnalysisFactors]: AnalysisFactors[K] | null;
 };
 
+/** Everything the rubric scores. A null per-version input reads as pending. */
 export interface RubricInputs {
   /**
-   * rows a later rubric version added are left out of an older score, as the
-   * registry shows versions it scored before them; a fresh score passes
-   * RUBRIC_VERSION
+   * The rubric version the per-version inputs were computed under. Rows a
+   * later version added are left out of an older score, as the registry
+   * shows versions it scored before them. A fresh score passes
+   * {@link RUBRIC_VERSION}.
    */
   scoredWith: number;
+  /** What the README and `deno doc` said; null when the version was never analysed. */
   analysis: VersionAnalysis | null;
+  /** The declared license is a valid SPDX expression. */
   licenseDeclared: boolean | null;
   dependencyTrust: DependencyTrustInput | null;
+  /** No secret-unsafe-docs finding is left unaccepted. */
   secretSafeDocs: boolean | null;
   description: string | undefined;
   platforms: readonly string[];
   repository: RepositoryEvidence;
   /**
-   * only the remediation text reads this; the analysis already scores the
-   * documentation factors 0
+   * Why `deno doc` could not analyse the source, or null when it could.
+   * Only the remediation text reads it; the analysis already scores the
+   * documentation factors 0.
    */
   docAnalysisError: string | null;
 }
 
+/** A composed score. */
 export interface RubricScore {
   rubricVersion: number;
   factors: RubricFactor[];
   earnedPoints: number;
+  /** Every row's points, provisional ones included. */
   maxPoints: number;
+  /** Points of provisional rows, pending the registry; not in `earnedPoints`. */
   provisionalPoints: number;
   /**
    * floor(earned × 100 / max), within 0 to 100: the registry's formula, so
@@ -104,8 +140,10 @@ export interface RubricScore {
   percentage: number;
 }
 
+/** A letter grade. */
 export type ScoreGrade = "A" | "B" | "C" | "D" | "F";
 
+/** The grade for a percentage. */
 export function gradeForPercentage(percentage: number): ScoreGrade {
   const clamped = clampPercentage(percentage);
   if (clamped >= 90) return "A";
@@ -137,12 +175,14 @@ const RICH_README_MIN_LENGTH = 500;
 const RICH_README_MIN_CODE_BLOCKS = 2;
 const SYMBOLS_DOCS_FULL_THRESHOLD = 0.8;
 
+/** How to earn `secret-safe-docs`. */
 export const SECRET_SAFE_DOCS_REMEDIATION =
   "Fix or accept each secret-unsafe-docs warning: the README, the manifest " +
   "description and describe strings should store secrets with " +
   "`swamp vault put <vault> <key>` (it prompts for the value) and pass them " +
   "as `${{ vault.get(<vault>, <key>) }}`.";
 
+/** Compose the rubric score. */
 export function composeScore(inputs: RubricInputs): RubricScore {
   const a = inputs.analysis;
   const rows: RubricFactor[] = [
@@ -368,6 +408,7 @@ function symbolsRow(
   );
 }
 
+/** Why a dependency with this fix was not audited, for the row's text. */
 const NOT_AUDITED_WHY: Readonly<
   Record<Exclude<NotAuditedFix, "other">, string>
 > = {
@@ -440,6 +481,7 @@ const PUBLIC_REPOSITORY_REMEDIATION =
   "Set `repository:` to a public HTTPS URL on github.com, gitlab.com, " +
   "codeberg.org, or bitbucket.org. Server will verify it resolves publicly.";
 
+/** What the missing-row remediation adds about private source hosting. */
 function privateSourceNote(privateSource: PrivateSourceStanding): string {
   switch (privateSource.kind) {
     case "attested":

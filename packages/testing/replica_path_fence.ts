@@ -17,11 +17,23 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+/**
+ * The fence rule a `replicaPaths()` store applies, kept apart from the
+ * conformance suite so the in-memory remote loads no assertion library.
+ *
+ * @module
+ */
+
+/** Digits a fence is padded to: the same width swamp writes. */
 export const FENCE_DIGITS = 12;
 
 /**
- * why value is not a padded fence: exactly 12 ASCII digits, from 000000000001.
- * Same rule as swamp's replica_path_store; change them together.
+ * Why `value` is not a padded fence, or undefined when it is one: exactly
+ * 12 ASCII digits, from `000000000001`. The same rule swamp applies
+ * (`src/domain/datastore/replica_path_store.ts`), and
+ * `replica_path_store_test.ts` there runs both over one fixture list:
+ * change them together. A provider's `removePath` refuses what this
+ * refuses.
  */
 export function replicaPathFenceProblem(value: unknown): string | undefined {
   if (typeof value !== "string") return "a fence must be a string";

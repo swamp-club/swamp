@@ -50,6 +50,7 @@ Deno.test("AppShellSkeleton: the sidebar shows its real sections", () => {
     assertStringIncludes(html, label);
   }
   assert(!html.includes("Models"));
+  // Chrome only: nothing to click until the dashboard is connected.
   assert(!html.includes("<a "));
   assert(!html.includes("<button"));
 });

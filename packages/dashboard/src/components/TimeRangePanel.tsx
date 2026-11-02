@@ -20,6 +20,11 @@
 /** @jsxRuntime automatic */
 /** @jsxImportSource react */
 
+// The time range picker's popover body: preset chips, a range calendar
+// whose days carry a tiny success/failure bar, time inputs and
+// Apply/Cancel. Pure presentation over props so it renders in tests;
+// TimeRangePicker.tsx owns the popover, data fetching and styles.
+
 import { type KeyboardEvent, useEffect, useMemo, useState } from "react";
 import {
   TIME_PRESETS,
@@ -63,23 +68,34 @@ const PRESET_NAMES: Record<TimePreset, string> = {
 
 export interface TimeRangePanelProps {
   range: TimeRange;
+  /** The current range's resolved bounds, to show a preset's days. */
   bounds: { since?: string; until?: string };
   now: number;
+  /** The first visible month and how many are shown side by side. */
   firstMonth: MonthRef;
   monthCount: number;
   onFirstMonthChange: (month: MonthRef) => void;
+  /** Runs per local day over the visible months; null while unknown. */
   stats: ReadonlyMap<DayKey, DayStats> | null;
   statsLoading: boolean;
+  /** The server could not supply run history (e.g. an older serve). */
   statsUnavailable: boolean;
   onApply: (range: TimeRange) => void;
   onCancel: () => void;
+  /** Move focus to the focused day on mount. */
   autoFocus?: boolean;
+  /**
+   * Moves DOM focus to a day's button (`[data-day="YYYY-MM-DD"]`); the
+   * popover supplies it so this component stays free of DOM calls.
+   */
   focusDay?: (key: DayKey) => void;
   locale?: string;
+  /** Prefix for element ids, unique per picker. */
   idPrefix?: string;
 }
 
 function weekdayNames(locale?: string): Array<{ short: string; long: string }> {
+  // 2026-01-04 is a Sunday.
   return Array.from({ length: 7 }, (_, i) => {
     const d = new Date(Date.UTC(2026, 0, 4 + i));
     return {
@@ -92,6 +108,7 @@ function weekdayNames(locale?: string): Array<{ short: string; long: string }> {
   });
 }
 
+/** An input's value, typed without the DOM lib (tests run without it). */
 function inputValue(target: unknown): string {
   return String((target as { value?: unknown }).value ?? "");
 }
@@ -488,6 +505,7 @@ function DayCell(
   );
 }
 
+/** The trigger button's face: icon, current range, chevron. */
 export function TimeRangeButtonContent({ label }: { label: string }) {
   return (
     <>

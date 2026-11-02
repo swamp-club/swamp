@@ -18,14 +18,18 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * renders only the rows in view plus an overscan; rows have one fixed height,
- * so the window is pure arithmetic
+ * A scrolling list that renders only the rows in view, plus a few either
+ * side. Rows have one fixed height, so the window is pure arithmetic. The
+ * agent sessions page uses it for turns with hundreds of calls
+ * (swamp-club#4155).
  */
 
 import { type ReactNode, useState } from "react";
 
+/** Rows rendered beyond each edge of the view, so a fast scroll stays drawn. */
 export const OVERSCAN_ROWS = 8;
 
+/** The rows to render, `[first, end)`, for a scroll position. */
 export function visibleWindow(
   scrollTop: number,
   viewportHeight: number,
@@ -46,6 +50,7 @@ export function visibleWindow(
 export interface VirtualRowsProps {
   readonly count: number;
   readonly rowHeight: number;
+  /** The visible height; the list scrolls inside it. */
   readonly height: number;
   readonly renderRow: (index: number) => ReactNode;
   readonly label: string;

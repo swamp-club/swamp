@@ -82,7 +82,7 @@ Deno.test("WorkflowCard: last run status, compact counts and pips linking to run
       now={NOW}
     />,
   );
-  assertStringIncludes(html, ">failed</span>");
+  assertStringIncludes(html, ">failed</span>"); // last run's StatusPill
   assertStringIncludes(html, "12.3K runs");
   assertStringIncludes(html, "345 failed");
   assertStringIncludes(html, "1m 30s");

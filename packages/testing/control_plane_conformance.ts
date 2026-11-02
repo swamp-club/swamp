@@ -27,11 +27,21 @@ import type {
   WritableDatastoreControlPlaneStore,
 } from "./datastore_types.ts";
 
+/** Options for {@link assertControlPlaneStoreConformance}. */
 export interface ControlPlaneStoreConformanceOptions {
+  /**
+   * How many creates of one key are raced against each other. Default: 8.
+   */
   concurrency?: number;
+  /**
+   * Set to false for a store that does not implement `putIfAbsent`. Only the
+   * other operations are then checked, and the store cannot hold the records
+   * of workflow signal waits. Default: true.
+   */
   requirePutIfAbsent?: boolean;
 }
 
+/** A store with the atomic create. */
 type AtomicStore =
   & ControlPlaneStore
   & Required<Pick<ControlPlaneStore, "putIfAbsent">>;
@@ -47,9 +57,29 @@ async function text(
 }
 
 /**
- * openStore is called more than once and must return handles onto the same
- * records each time, as two swamp processes on one datastore get; the suite
- * writes only under its own key prefix and removes what it wrote
+ * Checks a `ControlPlaneStore` against the contract swamp relies on.
+ *
+ * `openStore` is called more than once and must return handles onto the
+ * same records each time, as two swamp processes on one datastore get. The
+ * suite writes only under a key prefix of its own and removes what it
+ * wrote.
+ *
+ * Checked: `get` of a missing key, `put` round-trip and overwrite, `delete`
+ * and its idempotence, `list` by prefix, visibility of one handle's writes
+ * to another, and, unless `requirePutIfAbsent` is false, the atomic create:
+ * it creates once, never overwrites, is readable in full straight after,
+ * can be repeated after a delete, and of concurrent creates of one key
+ * exactly one wins.
+ *
+ * ```ts
+ * import { assertControlPlaneStoreConformance } from "@swamp-club/swamp-testing";
+ *
+ * Deno.test("control-plane store conformance", async () => {
+ *   await assertControlPlaneStoreConformance(() =>
+ *     createSyncService().controlPlaneStore()
+ *   );
+ * });
+ * ```
  */
 export async function assertControlPlaneStoreConformance(
   openStore: () => ControlPlaneStore | Promise<ControlPlaneStore>,
@@ -66,12 +96,14 @@ export async function assertControlPlaneStoreConformance(
   };
 
   try {
+    // get of a missing key
     assertEquals(
       await store.get(key("missing")),
       null,
       "get must return null for a key that holds no record",
     );
 
+    // put round-trip and overwrite
     await store.put(track("plain"), encode("one"));
     assertEquals(await text(store, key("plain")), "one", "put then get");
     await store.put(key("plain"), encode("two"));
@@ -94,6 +126,7 @@ export async function assertControlPlaneStoreConformance(
       "an empty record must read back as empty, not as null",
     );
 
+    // list by prefix
     await store.put(track("list/a"), encode("a"));
     await store.put(track("list/nested/b"), encode("b"));
     await store.put(track("listing"), encode("sibling"));
@@ -108,6 +141,7 @@ export async function assertControlPlaneStoreConformance(
       "list of a prefix with no keys must return an empty array",
     );
 
+    // delete and its idempotence
     await store.delete(key("plain"));
     assertEquals(await store.get(key("plain")), null, "delete then get");
     await store.delete(key("plain"));
@@ -125,6 +159,7 @@ export async function assertControlPlaneStoreConformance(
     const atomic = store as AtomicStore;
     const otherAtomic = other as AtomicStore;
 
+    // creates once, readable in full straight after
     const large = "x".repeat(64 * 1024);
     assertEquals(
       await atomic.putIfAbsent(track("once"), encode(large)),
@@ -137,6 +172,7 @@ export async function assertControlPlaneStoreConformance(
       "a record must be readable in full, from any handle, as soon as its create returns",
     );
 
+    // never overwrites, from either handle
     assertEquals(
       await atomic.putIfAbsent(key("once"), encode("second")),
       false,
@@ -153,6 +189,7 @@ export async function assertControlPlaneStoreConformance(
       "a refused putIfAbsent must leave the record unchanged",
     );
 
+    // a key written by put is taken too
     await store.put(track("taken"), encode("put"));
     assertEquals(
       await atomic.putIfAbsent(key("taken"), encode("create")),
@@ -161,6 +198,7 @@ export async function assertControlPlaneStoreConformance(
     );
     assertEquals(await text(store, key("taken")), "put");
 
+    // repeatable after a delete
     await store.delete(key("once"));
     assertEquals(
       await atomic.putIfAbsent(key("once"), encode("again")),
@@ -169,6 +207,7 @@ export async function assertControlPlaneStoreConformance(
     );
     assertEquals(await text(store, key("once")), "again");
 
+    // of concurrent creates of one key exactly one wins
     const racers = options.concurrency ?? 8;
     track("race");
     const results = await Promise.all(
@@ -197,10 +236,16 @@ export async function assertControlPlaneStoreConformance(
   }
 }
 
+/** Options for {@link assertDatastoreControlPlaneStoreConformance}. */
 export interface DatastoreControlPlaneStoreConformanceOptions {
+  /** The provider's `datastoreControlPlaneStore()`. */
   openDatastoreStore: () =>
     | DatastoreControlPlaneStore
     | Promise<DatastoreControlPlaneStore>;
+  /**
+   * A fresh sync service from the same provider, never pulled or pushed,
+   * with a cache of its own each call.
+   */
   openSyncService: () => DatastoreSyncService | Promise<DatastoreSyncService>;
   /**
    * The namespace a service is bound to, by pulling with it. Default: a
@@ -210,6 +255,30 @@ export interface DatastoreControlPlaneStoreConformanceOptions {
   namespace?: string;
 }
 
+/**
+ * Checks a provider's `datastoreControlPlaneStore()` against the contract
+ * swamp's datastore format check relies on.
+ *
+ * Checked: `get` reads the record a never-pulled sync service's control
+ * plane wrote at the datastore-wide root, returns null for a missing key,
+ * does not see a record written only under a namespace, and rejects when
+ * its signal is already aborted. Using it binds no namespace: a sync
+ * service built first can still pull under a namespace afterwards, and
+ * reads that namespace's records. The suite writes only under a key prefix
+ * of its own and removes what it wrote.
+ *
+ * ```ts
+ * import { assertDatastoreControlPlaneStoreConformance } from "@swamp-club/swamp-testing";
+ *
+ * Deno.test("datastore-wide control-plane store conformance", async () => {
+ *   await assertDatastoreControlPlaneStoreConformance({
+ *     openDatastoreStore: () => provider.datastoreControlPlaneStore!(),
+ *     openSyncService: async () =>
+ *       provider.createSyncService!(repoDir, await Deno.makeTempDir()),
+ *   });
+ * });
+ * ```
+ */
 export async function assertDatastoreControlPlaneStoreConformance(
   options: DatastoreControlPlaneStoreConformanceOptions,
 ): Promise<void> {
@@ -279,25 +348,43 @@ export async function assertDatastoreControlPlaneStoreConformance(
   }
 }
 
+/** A fresh sync service and the cache directory it syncs. */
 export interface NamespacedSyncFixture {
+  /** A sync service from the provider, never pulled or pushed. */
   service: DatastoreSyncService;
+  /** The service's own cache directory, which the suite writes into. */
   cacheDir: string;
 }
 
+/** Options for {@link assertWritableDatastoreControlPlaneStoreConformance}. */
 export interface WritableDatastoreControlPlaneStoreConformanceOptions {
+  /**
+   * The provider's `datastoreControlPlaneStore()`. Called more than once;
+   * each call must return a handle onto the same records.
+   */
   openDatastoreStore: () =>
     | WritableDatastoreControlPlaneStore
     | Promise<WritableDatastoreControlPlaneStore>;
+  /**
+   * A fresh sync service from the same provider, never pulled or pushed,
+   * with a cache of its own each call.
+   */
   openSyncService: () => DatastoreSyncService | Promise<DatastoreSyncService>;
   /**
-   * a fresh sync service with its cache directory for the namespaced-push case;
-   * without it, or without markNamespaceUpgradedFromSolo, that case is skipped
+   * A fresh sync service with its cache directory, for the namespaced-push
+   * case. Without it, or without `markNamespaceUpgradedFromSolo`, that case
+   * is skipped.
    */
   openNamespacedSyncFixture?: () => Promise<NamespacedSyncFixture>;
   /**
-   * puts the backend where a namespaced push moves root _control/ records into
-   * the namespace, as if a solo datastore was upgraded; without it the case is
-   * skipped
+   * Puts the backend in the state in which a namespaced push moves root
+   * `_control/` records into `namespace`: the namespace looks like one a
+   * solo (unnamespaced) datastore was upgraded to. For the S3 and GCS
+   * extensions that is a legacy `<prefix>/<namespace>/.datastore-index.json`
+   * existing, which `migrateRootControlPlaneToNamespace` checks before it
+   * moves anything. Without it the namespaced-push case is skipped, since a
+   * push into a fresh namespace never triggers the move and the case could
+   * not fail.
    */
   markNamespaceUpgradedFromSolo?: (namespace: string) => Promise<void>;
   /**
@@ -306,16 +393,70 @@ export interface WritableDatastoreControlPlaneStoreConformanceOptions {
    * before the suite runs; pass its name here.
    */
   namespace?: string;
+  /** How many creates of one key are raced. Default: 8. */
   concurrency?: number;
 }
 
+/** What {@link assertWritableDatastoreControlPlaneStoreConformance} ran. */
 export interface WritableDatastoreControlPlaneStoreConformanceResult {
+  /** Why the namespaced-push case was skipped, when it was. */
   namespacedPushSkipped?: string;
 }
 
 /**
- * checks the contract the v3 writer lease relies on: one set of records at the
- * datastore-wide _control/ root, whatever namespace a checkout syncs
+ * Checks a provider's writable `datastoreControlPlaneStore()` against the
+ * contract the v3 writer lease relies on: one set of records at the
+ * datastore-wide `_control/` root, whatever namespace a checkout syncs.
+ *
+ * Checked: everything {@link assertControlPlaneStoreConformance} checks
+ * (round-trip, list, delete, and the create-only `putIfAbsent`, whose
+ * refusal leaves the record unchanged and of whose concurrent calls exactly
+ * one wins), everything {@link assertDatastoreControlPlaneStoreConformance}
+ * checks, and then the root scope of its writes:
+ *
+ * - a record it writes is read at the root by a never-pulled sync service;
+ * - a namespaced service's record under the same key is not read, listed
+ *   or counted by `putIfAbsent` through it, and writing through it binds no
+ *   namespace;
+ * - a record under `writer/`, and one under `lineage/`, stays at the root,
+ *   unchanged, and is not copied into the namespace, after a namespaced
+ *   push into a namespace `markNamespaceUpgradedFromSolo` prepared. That is when the S3 and GCS
+ *   extensions move root `_control/` records into the namespace; a
+ *   datastore-wide record must never move. Skipped without
+ *   `openNamespacedSyncFixture` and `markNamespaceUpgradedFromSolo`, and
+ *   when the datastore-wide root holds any record before the case starts:
+ *   the move it triggers takes every root record, so it runs only against
+ *   an empty datastore or prefix. It always uses a fresh namespace of its
+ *   own, which stays marked upgraded.
+ *
+ * The suite writes only under keys of its own and removes them, a record
+ * moved into the namespace included. On a real bucket the namespaced-push
+ * case leaves behind the namespace's index, whatever
+ * `markNamespaceUpgradedFromSolo` wrote and, on a backend whose push does
+ * not delete a marked file missing from the cache, its one data file.
+ *
+ * ```ts
+ * import { assertWritableDatastoreControlPlaneStoreConformance } from "@swamp-club/swamp-testing";
+ *
+ * Deno.test("writable datastore-wide control-plane store conformance", async () => {
+ *   const openSyncFixture = async () => {
+ *     const cacheDir = await Deno.makeTempDir();
+ *     return { service: provider.createSyncService!(repoDir, cacheDir), cacheDir };
+ *   };
+ *   await assertWritableDatastoreControlPlaneStoreConformance({
+ *     openDatastoreStore: () => provider.datastoreControlPlaneStore!() as WritableDatastoreControlPlaneStore,
+ *     openSyncService: async () => (await openSyncFixture()).service,
+ *     openNamespacedSyncFixture: openSyncFixture,
+ *     // S3: the legacy index whose presence triggers the root-to-namespace move.
+ *     markNamespaceUpgradedFromSolo: (namespace) =>
+ *       putObject(
+ *         `${prefix}/${namespace}/.datastore-index.json`,
+ *         // An empty legacy (v1) index; the extensions parse it.
+ *         JSON.stringify({ version: 1, lastPulled: new Date().toISOString(), entries: {} }),
+ *       ),
+ *   });
+ * });
+ * ```
  */
 export async function assertWritableDatastoreControlPlaneStoreConformance(
   options: WritableDatastoreControlPlaneStoreConformanceOptions,
@@ -513,6 +654,10 @@ async function writeLocal(
   await Deno.writeFile(path, bytes);
 }
 
+/**
+ * A {@link ControlPlaneStore} held in memory, with `putIfAbsent`. For tests
+ * of code that reads and writes control-plane records.
+ */
 export function createInMemoryControlPlaneStore(): AtomicStore {
   const records = new Map<string, Uint8Array>();
   return {

@@ -58,7 +58,7 @@ export interface ScheduleEntry {
   cronExpression: string;
   nextRun: string | null;
   running: boolean;
-  /** unset on servers that do not report queues */
+  /** Unset on servers that predate queue reporting (swamp-club#3046). */
   queued?: number;
   oldestQueuedAt?: string | null;
   lastQueueDelayMs?: number | null;
@@ -66,9 +66,11 @@ export interface ScheduleEntry {
 
 export interface WebhookEntry {
   route: string;
+  /** The configured workflow id or name. */
   workflow: string;
+  /** Signature verification scheme, when serve reports it. */
   scheme?: string;
-  /** unset on servers that do not report webhook queues */
+  /** Unset on servers that predate webhook queue reporting (swamp-club#3665). */
   active?: number;
   queued?: number;
   oldestQueuedAt?: string | null;
@@ -93,6 +95,7 @@ export interface HealthSnapshot {
   scheduling: {
     enabled: boolean;
     schedules: ScheduleEntry[];
+    /** The IANA zone serve's scheduler reads cron in; absent on older serves. */
     timeZone?: string;
   };
   webhooks: WebhookEntry[];
@@ -101,9 +104,11 @@ export interface HealthSnapshot {
 
 export interface HealthStream {
   health: HealthSnapshot | null;
+  /** Serve refused the stream for this token. */
   denied: boolean;
 }
 
+/** How one pass over the health stream ended. */
 export type HealthStreamEnd =
   | { kind: "denied" }
   | { kind: "retry"; retryMs: number };
@@ -119,6 +124,7 @@ export async function readHealthStream(
     url: string;
     headers: Record<string, string>;
     signal: AbortSignal;
+    /** Serve accepted the stream. */
     onOpen: () => void;
     onSnapshot: (snapshot: HealthSnapshot) => void;
     fetchFn?: typeof fetch;
@@ -178,9 +184,11 @@ export async function readHealthStream(
 }
 
 /**
- * a hidden tab closes the stream and keeps the last snapshot; coming back into
- * view reconnects. A refused token stays refused until the token changes or the
- * tab returns to view
+ * Serve's health snapshot, streamed while `visible`. A hidden tab closes the
+ * stream and keeps the last snapshot; coming back into view reconnects, and
+ * serve sends a snapshot as soon as a stream opens (swamp-club#3661). A
+ * refused token stays refused until the token changes or the tab comes
+ * back into view, which tries it once more.
  */
 export function useHealthStream(
   visible: boolean,

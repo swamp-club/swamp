@@ -35,6 +35,8 @@ import {
 } from "./routes.ts";
 import type { View } from "./types.ts";
 
+// ── parseRoute ──────────────────────────────────────────────────────────
+
 Deno.test("parseRoute: /dashboard defaults to overview", () => {
   assertEquals(parseRoute("/dashboard"), {
     view: "overview",
@@ -130,6 +132,8 @@ Deno.test("parseRoute: bare path without /dashboard prefix", () => {
   });
 });
 
+// ── buildPath ───────────────────────────────────────────────────────────
+
 Deno.test("buildPath: overview produces /dashboard", () => {
   assertEquals(
     buildPath({ view: "overview", detail: null }),
@@ -184,6 +188,8 @@ Deno.test("buildPath: encodes special characters", () => {
   );
 });
 
+// ── Round-trips ─────────────────────────────────────────────────────────
+
 Deno.test("round-trip: overview", () => {
   const state: RouteState = { view: "overview", detail: null };
   assertEquals(parseRoute(buildPath(state)), state);
@@ -230,6 +236,8 @@ Deno.test("round-trip: model with special characters", () => {
   assertEquals(parseRoute(buildPath(state)), state);
 });
 
+// ── isPlainLeftClick ────────────────────────────────────────────────────
+
 const PLAIN_CLICK: ClickLike = {
   button: 0,
   metaKey: false,
@@ -260,6 +268,8 @@ Deno.test("isPlainLeftClick: an already-handled click is not plain", () => {
     false,
   );
 });
+
+// ── deep links: data, versions and reports ─────────────────────────────
 
 Deno.test("parseRoute: data item latest", () => {
   assertEquals(parseRoute("/dashboard/models/incidents/data/state"), {
@@ -503,6 +513,8 @@ Deno.test("parentOf: existing details have no parent", () => {
   assertEquals(parentOf(null), null);
 });
 
+// ── Schedules and webhooks ──────────────────────────────────────────────
+
 Deno.test("parseRoute: schedule detail", () => {
   assertEquals(parseRoute("/dashboard/schedules/nightly-backup"), {
     view: "schedules",
@@ -618,9 +630,12 @@ Deno.test("isStartPath: the start path is not a serve view", () => {
   });
 });
 
-// the models assertions above are the old-link regression suite; each is
-// repeated for the behaviors and behaviours spellings, which resolve to the
-// same route
+// ── behaviors: the canonical segment, and every old link ───────────────
+//
+// The parseRoute("/dashboard/models/...") assertions above stay as the
+// old-link regression suite. Each one is repeated here for the canonical
+// `behaviors` segment and the `behaviours` spelling, which must resolve to
+// the same route.
 
 const BEHAVIOR_LINKS: [string, RouteState][] = [
   ["", { view: "models", detail: null }],
@@ -821,6 +836,8 @@ Deno.test("round-trip property: a model-era link redirects to the same route", (
     ),
   );
 });
+
+// ── legacyRedirectPath ──────────────────────────────────────────────────
 
 Deno.test("legacyRedirectPath: rewrites only the leading models segment", () => {
   const cases: [string, string][] = [

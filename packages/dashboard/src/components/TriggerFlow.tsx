@@ -84,6 +84,11 @@ function NodeBody({ node }: { node: FlowNode }) {
   );
 }
 
+/**
+ * What a trigger starts: the schedule or webhook, the inputs it passes,
+ * the workflow and its jobs in dependency order. The workflow node links
+ * to the workflow's page.
+ */
 export function TriggerFlow({ spec }: { spec: FlowSpec }) {
   const markerId = `flow-arrow-${useId().replace(/[^a-zA-Z0-9_-]/g, "")}`;
   const layout = layoutFlow(spec);
@@ -103,6 +108,7 @@ export function TriggerFlow({ spec }: { spec: FlowSpec }) {
         role="img"
         aria-label={label}
         viewBox={`0 0 ${layout.width} ${layout.height}`}
+        // Shrinks to fit a narrow panel down to 70%, then scrolls.
         style={{
           width: "100%",
           maxWidth: layout.width,

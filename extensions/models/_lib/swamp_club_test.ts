@@ -24,6 +24,10 @@ import {
   FakeSwampClub,
 } from "./fake_swamp_club_test_helper.ts";
 
+// ---------------------------------------------------------------------------
+// Test helpers
+// ---------------------------------------------------------------------------
+
 interface CapturedPost {
   url: string;
   body: Record<string, unknown>;
@@ -76,6 +80,10 @@ function buildClientWithFetchStub(): {
     },
   };
 }
+
+// ---------------------------------------------------------------------------
+// postLifecycleEntry summary truncation
+// ---------------------------------------------------------------------------
 
 Deno.test("postLifecycleEntry: sends summary unchanged when at the limit", async () => {
   const { client, posts, restore } = buildClientWithFetchStub();
@@ -161,6 +169,10 @@ Deno.test("postLifecycleEntry: truncates summary one char over the limit", async
   }
 });
 
+// ---------------------------------------------------------------------------
+// postAttestation
+// ---------------------------------------------------------------------------
+
 Deno.test("postAttestation: returns server response on success", async () => {
   const originalFetch = globalThis.fetch;
   const serverResponse = {
@@ -222,11 +234,19 @@ Deno.test("postAttestation: throws on non-OK response with status and body", asy
   }
 });
 
+// ---------------------------------------------------------------------------
+// Upstream outcome reporting
+// ---------------------------------------------------------------------------
+
 interface RecordedCall {
   method: string;
   url: string;
 }
 
+/**
+ * Install a fetch stub driven by a per-call responder, recording every call so
+ * a test can assert that a read was (or was not) attempted.
+ */
 function withScriptedFetch(
   respond: (call: RecordedCall, index: number) => Response | Error,
 ): { client: SwampClubClient; calls: RecordedCall[]; restore: () => void } {
@@ -498,6 +518,10 @@ Deno.test("fetchIssue: drops an author id that is not a string", async () => {
     restore();
   }
 });
+
+// ---------------------------------------------------------------------------
+// Linked issues — status walks, PR links and relationships
+// ---------------------------------------------------------------------------
 
 async function withFake(
   setup: (club: FakeSwampClub) => void,

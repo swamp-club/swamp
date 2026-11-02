@@ -18,9 +18,10 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * in a canonical archive every npm: and jsr: import names one plain semver
- * version; push checks each shipped specifier against this and the registry
- * reads v2 archives by the same rule
+ * The canonical shipped form (swamp-club#3970): in an archive push writes,
+ * every `npm:` and `jsr:` import names one plain semver version, which the
+ * v2 dependency audit record lists. Push checks every specifier it ships
+ * against this; the registry reads a v2 archive by the same rule.
  */
 
 import { type DependencyAuditRecordV2, isPlainSemver } from "./audit_record.ts";
@@ -31,12 +32,16 @@ import {
 } from "./resolution.ts";
 import { parseSpecifier } from "./specifiers.ts";
 
+// `npm:@scope/name@version[/subpath]`, `npm:name@version[/subpath]`
 const NPM_RE = /^npm:(?<name>(?:@[^/@]+\/)?[^/@]+)(?:@(?<version>[^/]*))?/;
+// `jsr:@scope/name@version[/subpath]`
 const JSR_RE = /^jsr:(?<name>(?:@[^/@]+\/)?[^/@]+)(?:@(?<version>[^/]*))?/;
 
 /**
- * anything other than npm: or jsr: is outside the rule; zod is provided by the
- * host, so it ships as written and is never audited
+ * Why `specifier`, as an archive's source writes it, breaks the canonical
+ * form, or null when it keeps it. Anything other than `npm:` or `jsr:` is
+ * outside the rule. zod is the one exception: the host provides it, so it
+ * ships as written and is never audited.
  */
 export function canonicalShippedSpecifierIssue(
   specifier: string,
@@ -67,9 +72,12 @@ export function canonicalShippedSpecifierIssue(
 }
 
 /**
- * an import resolves only when it is exact and the record lists that version;
- * an entry reached through a non-exact spelling with no valid lock keeps it as
- * looseAs, so it costs the loose point
+ * How the registry reads a v2 record (swamp-club#4018): an import resolves
+ * only when it is exact and the record lists that version, taking the
+ * entry's `from` and `locked`. An entry that some import reached through a
+ * non-exact spelling with no valid lock (`from` is `registry`, or
+ * `installed` without a verified lock) keeps that spelling as `looseAs`, so
+ * it costs the loose point.
  */
 export function canonicalRecordedVersions(
   record: DependencyAuditRecordV2,
@@ -98,6 +106,10 @@ export function canonicalRecordedVersions(
   };
 }
 
+/**
+ * Whether a spelling the author wrote names one exact version; a subpath
+ * after the version does not count against it.
+ */
 function isExactWriting(written: string): boolean {
   const version = parseSpecifier(written)?.version ?? null;
   return version !== null && exactVersion(version) !== null;

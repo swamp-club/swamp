@@ -75,6 +75,7 @@ interface WorkflowsProps {
   onOpenWorkflow?: (workflowName: string) => void;
 }
 
+/** Cards rendered per step; more appear as the list scrolls. */
 const PAGE = 60;
 
 const GROUPS: readonly GroupBy[] = ["none", "prefix", "trigger", "webhook"];

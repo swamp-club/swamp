@@ -17,8 +17,10 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+/** Where a Cancel button is in its two-step confirm. */
 export type CancelStep = "idle" | "confirming" | "cancelling";
 
+/** What moved it: a click on Cancel, Keep or Confirm, or the request ending. */
 export type CancelEvent = "ask" | "keep" | "confirm" | "settled";
 
 /**
@@ -38,17 +40,24 @@ export function nextCancelStep(
   return event === "settled" ? "idle" : "cancelling";
 }
 
+/** A nested run a cancel left suspended, and the command that cancels it. */
 export interface NestedRunLeft {
   workflowName: string;
   runId: string;
   cancelCommand: string;
 }
 
+/** What a cancel did, for the view to show after the row is gone. */
 export interface CancelOutcome {
   message: string;
+  /** Nested runs the cancelled run waited on, still suspended. */
   nestedRunsLeft: NestedRunLeft[];
 }
 
+/**
+ * Describes a `workflow.cancel` reply. A cancelled run that waited on nested
+ * runs leaves them suspended, so they are listed with their cancel commands.
+ */
 export function cancelOutcome(
   workflowName: string,
   reply: unknown,

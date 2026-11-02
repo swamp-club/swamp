@@ -25,10 +25,15 @@ import type {
   WritableDatastoreControlPlaneStore,
 } from "./datastore_types.ts";
 
+/** Options for {@link assertReplicaTargetConformance}. */
 export interface ReplicaTargetConformanceOptions {
+  /** The provider's `replicaTarget()`, which swamp calls synchronously. */
   replicaTarget: () => V3ReplicaTarget;
+  /** The bucket the provider is configured with. */
   bucket: string;
+  /** The provider's `storage()`. */
   openStorage: () => DatastoreStorage | Promise<DatastoreStorage>;
+  /** The provider's writable `datastoreControlPlaneStore()`. */
   openDatastoreStore: () =>
     | WritableDatastoreControlPlaneStore
     | Promise<WritableDatastoreControlPlaneStore>;
@@ -41,15 +46,20 @@ export interface ReplicaTargetConformanceOptions {
 }
 
 /**
- * the fields each kind of target may carry; anything else is refused. Copies
- * the rules in swamp's src/domain/datastore/replica_target.ts; change them
- * together.
+ * The fields each kind of target may carry; anything else is refused. These
+ * rules copy swamp's own (`src/domain/datastore/replica_target.ts`), and
+ * `replica_target_test.ts` there runs both over one fixture list: change
+ * them together.
  */
 const ALLOWED_KEYS: Readonly<Record<string, readonly string[]>> = {
   s3: ["type", "bucket", "prefix", "region", "endpoint", "forcePathStyle"],
   gcs: ["type", "bucket", "prefix"],
 };
 
+/**
+ * Why `value` is not a replica target swamp can use, or undefined when it
+ * is one. The same rules swamp applies to what `replicaTarget()` returns.
+ */
 export function replicaTargetProblem(value: unknown): string | undefined {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
     return "it is not an object";
@@ -130,9 +140,37 @@ async function sha256Hex(bytes: Uint8Array): Promise<string> {
 }
 
 /**
- * checks a target swamp accepts, the provider's bucket, and a prefix that is
- * the root storage() and the control plane write under; writes and deletes a
- * record and chunk of its own
+ * Checks a provider's `replicaTarget()` against the contract swamp's v3
+ * replication relies on.
+ *
+ * Checked: the target is one swamp accepts (its type's fields only, so no
+ * credentials; a bucket; a prefix with no leading, trailing or repeated
+ * slash and no `.` or `..` segment; an http or https endpoint with no
+ * userinfo, query or fragment); it names the provider's `bucket`; and its
+ * `prefix` is the datastore root that `storage()` and
+ * `datastoreControlPlaneStore()` write under: a control-plane record the
+ * suite writes is at `<prefix>/_control/<key>`, and a chunk at
+ * `<prefix>/_blobs/<namespace>/sha256/<first two hex>/<sha256>` (with no
+ * leading slash for an empty prefix).
+ *
+ * The suite writes one record and one chunk of its own, under a namespace
+ * of its own, and deletes both.
+ *
+ * ```ts
+ * import { assertReplicaTargetConformance } from "@swamp-club/swamp-testing";
+ *
+ * Deno.test("replica target conformance", async () => {
+ *   const provider = createProvider(config);
+ *   await assertReplicaTargetConformance({
+ *     replicaTarget: () => provider.replicaTarget!(),
+ *     bucket: config.bucket,
+ *     openStorage: () => provider.storage!(),
+ *     openDatastoreStore: () =>
+ *       provider.datastoreControlPlaneStore!() as WritableDatastoreControlPlaneStore,
+ *     objectExists: (key) => headObject(config.bucket, key),
+ *   });
+ * });
+ * ```
  */
 export async function assertReplicaTargetConformance(
   options: ReplicaTargetConformanceOptions,

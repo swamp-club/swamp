@@ -20,6 +20,7 @@
 import type { RequestErrorInfo } from "../client/stream.ts";
 import { reportDataName } from "./report_name.ts";
 
+/** A data artifact reference as recorded on a workflow run. */
 export interface ArtifactRef {
   dataId: string;
   name: string;
@@ -27,12 +28,14 @@ export interface ArtifactRef {
   tags?: Record<string, string>;
 }
 
+/** The parts of a `workflow.history.get` run this page reads. */
 export interface RunView {
   id: string;
   workflowName: string;
   workflowDataArtifacts?: ArtifactRef[];
 }
 
+/** The parts of a `data.get` result this page reads. */
 export interface DataItem {
   id: string;
   name: string;
@@ -62,9 +65,10 @@ export type RunReportRefs =
   | { status: "missing" };
 
 /**
- * markdown vs JSON is decided from the name the report is persisted under,
- * computed from its tags, not a -json suffix, which a report or variant name
- * could itself end in
+ * Finds a workflow-scope report's markdown and JSON artifacts on a run.
+ * Markdown vs JSON is decided from the name the report is persisted under,
+ * computed from its tags — not by a `-json` suffix, which a report or
+ * variant name could itself end in.
  */
 export function resolveRunReportRefs(
   run: RunView,
@@ -85,14 +89,17 @@ export function resolveRunReportRefs(
 }
 
 /**
- * the server can answer with another item of the same name, so anything but an
- * exact match to the recorded artifact is treated as superseded
+ * True when the item served for a run's report is exactly the artifact the
+ * run recorded. Until run-scoped lookups resolve older versions
+ * (swamp-club#2601) the server can answer with another item of the same
+ * name; anything but an exact match is treated as superseded.
  */
 export function matchesRunRef(item: DataItem, ref: ArtifactRef): boolean {
   return item.version === ref.version && item.id === ref.dataId &&
     item.modelType === "workflow";
 }
 
+/** True when a model-scoped item is the named report (and variant). */
 export function isRequestedReport(
   item: DataItem,
   reportName: string,
@@ -105,6 +112,7 @@ export function isRequestedReport(
   return (item.tags.varySuffix || undefined) === (variant || undefined);
 }
 
+/** The JSON sibling of a report's markdown item, when it is a report. */
 export function reportJsonName(item: DataItem): string | null {
   if (item.tags.type !== "report" || !item.tags.reportName) return null;
   if (!item.contentType.startsWith("text/markdown")) return null;
@@ -115,9 +123,10 @@ export function reportJsonName(item: DataItem): string | null {
 const PAIR_WINDOW_MS = 60_000;
 
 /**
- * the two items keep separate version counters and share no key, but the report
- * writes the JSON right after the markdown, so take the earliest JSON version
- * created at or after it, within a minute
+ * Picks the JSON version written with a markdown version. The two items
+ * keep separate version counters and share no key, but the report writes
+ * the JSON straight after the markdown, so take the earliest JSON version
+ * created at or after it, within a minute.
  */
 export function pairJsonVersion(
   markdownCreatedAt: string,
@@ -136,6 +145,7 @@ export function pairJsonVersion(
   return best?.version ?? null;
 }
 
+/** The newest version number, from a newest-first `data.versions` list. */
 export function latestVersion(versions: VersionInfo[]): number | null {
   const latest = versions.find((v) => v.isLatest) ?? versions[0];
   return latest?.version ?? null;
@@ -160,6 +170,7 @@ export function contentKind(
   return "text";
 }
 
+/** Pretty-prints JSON content; leaves invalid JSON as it is. */
 export function prettyJson(content: string): string {
   try {
     return JSON.stringify(JSON.parse(content), null, 2);
@@ -182,8 +193,8 @@ const DENIED_CODES: ReadonlySet<string> = new Set([
 ]);
 
 /**
- * serve keeps saying "Model" (it is protocol); the page says "Behavior", the
- * product term
+ * How serve's `entityType` reads on the page. Serve keeps saying "Model"
+ * (it is protocol); the page says "Behavior", the product term.
  */
 const ENTITY_LABELS: ReadonlyMap<string, string> = new Map([
   ["Workflow run or workflow", "Workflow run"],
@@ -191,8 +202,9 @@ const ENTITY_LABELS: ReadonlyMap<string, string> = new Map([
 ]);
 
 /**
- * `pinned` means the page asked for one exact version (a permalink or a run's
- * report): a missing item there has expired or been cleaned up, not renamed
+ * What to tell the reader when a request failed. `pinned` is true when the
+ * page asked for one exact version (a permalink or a run's report): a
+ * missing item there has expired or been cleaned up, not merely renamed.
  */
 export function pageError(
   message: string | null,
@@ -212,14 +224,17 @@ export function pageError(
   return { kind: "failed", message };
 }
 
+/** A short run id for breadcrumbs and titles. */
 export function shortRunId(runId: string): string {
   return runId.length > 8 ? runId.slice(0, 8) : runId;
 }
 
+/** The browser tab title for an item. */
 export function documentTitle(item: string, context: string): string {
   return `${item} · ${context} · Swamp`;
 }
 
+/** The raw bytes to download for an item's content. */
 export function contentBytes(
   content: string,
   encoding: string | undefined,
@@ -233,4 +248,5 @@ export function contentBytes(
   return new TextEncoder().encode(content);
 }
 
+/** Content past this many characters is shown truncated until expanded. */
 export const RENDER_LIMIT = 256 * 1024;

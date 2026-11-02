@@ -17,6 +17,9 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+// Ordering for queues of things waiting on a person: the item that has
+// waited longest is the most urgent, so it comes first.
+
 /**
  * Sorts oldest first by the time `timeOf` returns. Items without a usable
  * time keep their relative order after every timed item. Stable.
@@ -39,8 +42,9 @@ const HOUR = 60 * MINUTE;
 const DAY = 24 * HOUR;
 
 /**
- * coarser than a run duration on purpose: the value is not ticking, so seconds
- * would read as false precision
+ * How long something has waited, at the precision a queue needs: "< 1m",
+ * "20m", "3h 05m", "2d 4h". Coarser than a run duration on purpose — the
+ * value is not ticking, so seconds would read as false precision.
  */
 export function formatWait(ms: number): string {
   if (!Number.isFinite(ms) || ms < MINUTE) return "< 1m";

@@ -22,6 +22,7 @@
 import type { WorkerSummary } from "../lib/host_map_model.ts";
 import { RouteLink } from "./RouteLink.tsx";
 
+/** The pool at a glance — busy, idle, unavailable — linking to the Workers view. */
 export function WorkersPill({ summary }: { summary: WorkerSummary }) {
   return (
     <RouteLink

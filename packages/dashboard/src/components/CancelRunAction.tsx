@@ -29,7 +29,9 @@ import {
 interface CancelRunActionProps {
   runId: string;
   workflowName: string;
+  /** The workflow's id when the row has one; its name otherwise. */
   workflowIdOrName?: string;
+  /** Called once the cancel landed, with what it did. */
   onCancelled: (outcome: CancelOutcome) => void;
   /** Called when the cancel was refused, so the view can refetch. */
   onRefused?: () => void;

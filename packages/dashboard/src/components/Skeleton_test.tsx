@@ -34,6 +34,8 @@ function count(html: string, needle: string): number {
 
 Deno.test("SkeletonChart: draws one bar and one x label per bar", () => {
   const html = renderToStaticMarkup(<SkeletonChart bars={5} />);
+  // Each bar and each x label is a placeholder block; gridLines + 1 more
+  // blocks are the y-axis ticks.
   assertEquals(count(html, 'class="skel"'), 5 + 5 + 5);
   assertStringIncludes(html, 'aria-hidden="true"');
 });

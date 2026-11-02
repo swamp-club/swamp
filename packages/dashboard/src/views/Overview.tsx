@@ -83,6 +83,7 @@ interface WorkflowRunSearchItem {
 
 interface OverviewProps {
   health: HealthSnapshot | null;
+  /** Serve refused the health stream for this token. */
   healthDenied: boolean;
   onOpenRun?: (workflowName: string, runId?: string) => void;
   approvalsRequest: SharedApprovals;
@@ -106,8 +107,8 @@ export function Overview(
 
   const runs = extractArray<WorkflowRunSearchItem>(runsData);
   const approvals = pendingApprovals(approvalsData);
-  // a decided gate stays settled until a listing drops it, and a gate in flight
-  // takes no second click
+  // A decided gate stays settled until a listing drops it, and a gate in
+  // flight takes no second click (swamp-club#3697).
   const { decided, hold } = useDecidedGates(approvalsData);
   const [deciding, setDeciding] = useState<ReadonlySet<string>>(
     () => new Set(),
@@ -155,7 +156,7 @@ export function Overview(
   const [resumingRuns, setResumingRuns] = useState<ReadonlySet<string>>(
     () => new Set(),
   );
-  // runs serve drives now, whoever approved them
+  // Runs serve drives now, whoever approved them (swamp-club#3005).
   const servedRuns = activeRunIds(health?.activeRuns);
   const refetchRunsAndApprovals = useCallback(() => {
     refetchRuns();

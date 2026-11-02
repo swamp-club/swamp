@@ -33,6 +33,8 @@ import {
   type VaultProvider,
 } from "./vault_types.ts";
 
+// --- assertVaultExportConformance ---
+
 Deno.test("assertVaultExportConformance: passes for valid export", () => {
   const { vault } = createVaultTestContext();
   const validExport = {
@@ -119,6 +121,8 @@ Deno.test("assertVaultExportConformance: fails when invalid config is accepted",
   );
 });
 
+// --- assertVaultConformance ---
+
 Deno.test("assertVaultConformance: passes for conforming in-memory vault", async () => {
   const { vault } = createVaultTestContext();
   await assertVaultConformance(vault, { cleanup: false });
@@ -164,6 +168,7 @@ Deno.test("createVaultTestContext: getStoredTags returns copy not reference", as
 });
 
 Deno.test("assertVaultConformance: detects broken get (returns wrong value)", async () => {
+  // A vault that always returns the same value regardless of key
   const brokenVault = {
     get: () => Promise.resolve("always-this"),
     put: () => Promise.resolve(),
@@ -175,11 +180,15 @@ Deno.test("assertVaultConformance: detects broken get (returns wrong value)", as
     await assertVaultConformance(brokenVault, { cleanup: false });
     throw new Error("Should have thrown");
   } catch (e) {
+    // Expected — the put/get roundtrip check will fail because
+    // list() doesn't include the stored keys
     if (e instanceof Error && e.message === "Should have thrown") {
       throw e;
     }
   }
 });
+
+// --- assertVaultAnnotationExportConformance ---
 
 Deno.test("assertVaultAnnotationExportConformance: passes for valid export", () => {
   const { vault, annotationProvider } = createVaultTestContext({
@@ -232,6 +241,8 @@ Deno.test("assertVaultAnnotationExportConformance: fails when annotation methods
   );
 });
 
+// --- assertVaultAnnotationConformance ---
+
 Deno.test("assertVaultAnnotationConformance: passes for conforming in-memory provider", async () => {
   const { annotationProvider } = createVaultTestContext({
     withAnnotations: true,
@@ -257,6 +268,9 @@ Deno.test("assertVaultAnnotationConformance: detects broken getAnnotation (never
     if (e instanceof Error && e.message === "Should have thrown") {
       throw e;
     }
+    // Expected — getAnnotation should return null for unannotated key
+    // but this broken provider always returns a non-null value, which
+    // will fail the "must return null" assertion
   }
 });
 
@@ -269,6 +283,7 @@ Deno.test("assertVaultAnnotationConformance: detects broken deleteAnnotation (no
       annotations.set(key, ann);
       return Promise.resolve();
     },
+    // deleteAnnotation is a no-op — doesn't actually delete
     deleteAnnotation: () => Promise.resolve(),
     listAnnotations: () => Promise.resolve(new Map(annotations)),
   };
@@ -284,6 +299,7 @@ Deno.test("assertVaultAnnotationConformance: detects broken deleteAnnotation (no
 });
 
 Deno.test("assertVaultAnnotationConformance: VaultAnnotation value object behavior", () => {
+  // Verify the VaultAnnotation class works correctly in isolation
   const ann = VaultAnnotation.create({
     url: "https://example.com",
     notes: "test",
@@ -295,19 +311,24 @@ Deno.test("assertVaultAnnotationConformance: VaultAnnotation value object behavi
   assertEquals(ann.labels["env"], "dev");
   assertEquals(ann.isEmpty(), false);
 
+  // toData/fromData roundtrip
   const data = ann.toData();
   const restored = VaultAnnotation.fromData(data);
   assertEquals(restored.url, ann.url);
   assertEquals(restored.notes, ann.notes);
   assertEquals(restored.labels["env"], ann.labels["env"]);
 
+  // merge preserves existing, adds new
   const merged = ann.merge({ labels: { region: "us-east-1" } });
   assertEquals(merged.labels["env"], "dev");
   assertEquals(merged.labels["region"], "us-east-1");
 
+  // empty annotation
   const empty = VaultAnnotation.create({});
   assertEquals(empty.isEmpty(), true);
 });
+
+// --- Existence conformance ---
 
 function existenceExport(provider: VaultProvider & VaultExistenceProvider) {
   return {

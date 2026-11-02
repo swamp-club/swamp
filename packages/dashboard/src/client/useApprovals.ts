@@ -30,9 +30,11 @@ import { useSwamp } from "./SwampProvider.tsx";
 export interface SharedApprovals extends ApprovalsSnapshot {
   /** Ordinary reload: coalesces with a read already in flight. */
   refetch(): void;
+  /** After a mutation: supersedes any earlier read. */
   refresh(): void;
 }
 
+/** Mounted once by Dashboard, which is keyed to the connection generation. */
 export function useApprovals(): SharedApprovals {
   const { request } = useSwamp();
   const [owner] = useState(() =>

@@ -18,8 +18,10 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * the dashboard's one door into core: import these names from here, never from
- * src/ directly; no Deno or Node APIs, so it bundles as is
+ * The dashboard's one door into core: the agent session record that core
+ * owns (swamp-club#4154, v2 from #4178). The page imports these names from
+ * here, never from `src/` directly; `dashboard_core_import_rules_test.ts`
+ * pins that. The module has no Deno or Node APIs, so it bundles as is.
  */
 
 export {

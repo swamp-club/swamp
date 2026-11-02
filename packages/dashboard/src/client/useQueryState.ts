@@ -25,6 +25,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 // Back/Forward, and in-app navigation that pushes a URL with a query
 // string (`navigateToHref` dispatches popstate), re-read the param.
 
+/** The value `parse` makes of `?key=` in a query string. */
 export function queryParamValue<T>(
   search: string,
   key: string,
@@ -95,6 +96,7 @@ export function useQueryState<T>(
   return [value, set];
 }
 
+/** Parses a param that must be one of `options`. */
 export function oneOf<T extends string>(
   options: readonly T[],
   fallback: T,
@@ -112,6 +114,7 @@ export const asFlag = (raw: string | null): boolean => raw === "1";
 export const flagParam = (v: boolean): string | null => (v ? "1" : null);
 export const nullableParam = (v: string | null): string | null => v;
 
+/** Every `?key=` value in a query string, de-duplicated, in order. */
 export function queryListValue(search: string, key: string): string[] {
   try {
     return [
@@ -139,6 +142,10 @@ function writeList(key: string, values: readonly string[]): void {
   }
 }
 
+/**
+ * A list of values mirrored to repeated params (`?prefix=a&prefix=b`), for
+ * multi-value filters. An empty list removes the param.
+ */
 export function useQueryList(
   key: string,
 ): [readonly string[], (next: readonly string[]) => void] {

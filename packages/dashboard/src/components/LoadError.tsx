@@ -29,6 +29,7 @@ import type { CSSProperties } from "react";
  */
 export function LoadError(
   { subject, message, onRetry, inset = false, style }: {
+    /** What failed to load, e.g. "vaults" → "Couldn't load vaults." */
     subject: string;
     message: string | null;
     onRetry: () => void;

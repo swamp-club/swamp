@@ -57,6 +57,10 @@ Deno.test("assertReplicaPathConformance: the in-memory remote conforms and is le
   }
 });
 
+/**
+ * A bucket stand-in over one map, for stores that break the contract in
+ * one way each. Keys are full bucket keys with an empty prefix.
+ */
 function fakeOptions(
   makeStore: (objects: Map<string, Uint8Array>) => ReplicaPathStore,
 ): ReplicaPathConformanceOptions {

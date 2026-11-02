@@ -71,12 +71,14 @@ import {
 import { upstreamStatusForPhase } from "./_lib/issue_status.ts";
 import type { SwampClubClient } from "./_lib/swamp_club.ts";
 
+/** Global args type for the issue-lifecycle model. */
 type GlobalArgs = {
   issueNumber: number;
   swampClubUrl?: string;
   swampClubApiKey?: string;
 };
 
+/** Read the current state from data repository (for checks). */
 async function readState(
   dataRepository: {
     getContent: (
@@ -128,8 +130,9 @@ export function buildNotifyMessage(
 }
 
 /**
- * both sides are swamp-club identities, so the handle is a sound fallback when
- * the user id is missing, unlike a GitHub login
+ * Whether the issue author is on swamp-club's team roster. Both sides are
+ * swamp-club identities, so the handle is a sound fallback when the server
+ * omits the user id — unlike a GitHub login, which is a different namespace.
  */
 function isTeamMember(
   issue: Pick<FetchedIssue, "author" | "authorId">,
@@ -142,6 +145,7 @@ function isTeamMember(
   );
 }
 
+/** Explain why notify posted nothing and how the operator can proceed. */
 function notifyUndecided(reason: string): Error {
   return new Error(
     `${reason}, so no thank-you was posted and the phase is still notify. ` +
@@ -150,6 +154,7 @@ function notifyUndecided(reason: string): Error {
   );
 }
 
+/** A client for this lifecycle's issue, or an error saying why there is none. */
 async function requireSwampClub(context: {
   globalArgs: GlobalArgs;
   logger: {
@@ -167,6 +172,7 @@ async function requireSwampClub(context: {
   return sc;
 }
 
+/** Whether `value` parses as an http or https URL. */
 function isHttpUrl(value: string): boolean {
   try {
     const { protocol } = new URL(value);
@@ -177,9 +183,10 @@ function isHttpUrl(value: string): boolean {
 }
 
 /**
- * a security issue is only carried with another security issue: a fix must not
- * be announced on a public issue before it ships, nor a public issue tracked
- * under one its reader cannot see
+ * A security fix must not be announced on a public issue before it ships,
+ * and a public issue must not be tracked under one whose milestones its
+ * reader cannot see — so a security issue is only ever carried with another
+ * security issue. Returns the refusal, or null when the pair is allowed.
  */
 function securityParityError(
   primary: { number: number; type: string },
@@ -194,8 +201,10 @@ function securityParityError(
 }
 
 /**
- * covers the primary's type changing after link_issue checked the pair, in
- * triage or fast_forward; runs before any upstream write
+ * Refuse a type change on the primary that would break security parity
+ * with an issue it already carries. `link_issue` checks the pair when it is
+ * formed; this covers the primary's type changing afterwards, in `triage`
+ * or `fast_forward`. Runs before any upstream write.
  */
 async function assertLinkedParity(
   sc: SwampClubClient,
@@ -224,8 +233,10 @@ async function assertLinkedParity(
 }
 
 /**
- * a warning, not a refusal: status walks only move forward so a second
- * carrier's transitions are no-ops, and related_to is also used by hand
+ * Warn when the issue about to be linked is already related to another
+ * issue that has not shipped: another lifecycle may be carrying it. A
+ * warning, not a refusal — status walks only move forward, so a second
+ * carrier's transitions are no-ops, and `related_to` is also used by hand.
  */
 async function warnIfCarriedElsewhere(
   sc: SwampClubClient,
@@ -252,6 +263,10 @@ async function warnIfCarriedElsewhere(
     );
   }
 }
+
+// ---------------------------------------------------------------------------
+// Model Definition
+// ---------------------------------------------------------------------------
 
 export const model = {
   type: "@swamp/issue-lifecycle",
@@ -1055,7 +1070,8 @@ export const model = {
           isVerbose: false,
         });
 
-        // assignment failures only warn; they must never break the triage flow
+        // Auto-assign the issue to the current authenticated user.
+        // All failures are warnings — assignment must never break the triage flow.
         const authFile = await loadAuthFile();
         const authUsername = authFile?.username;
         if (!authUsername) {
@@ -1080,8 +1096,9 @@ export const model = {
               );
             } else {
               await sc.updateAssignees([...existingIds, resolvedUserId]);
-              // best-effort because it reports on a best-effort assignment;
-              // raising would break the triage flow
+              // Best-effort: this entry reports on the assignment above,
+              // which is itself best-effort. Raising here would break the
+              // triage flow this block promises never to break.
               await recordLifecycleBestEffort(sc, context.logger, {
                 step: "assigned",
                 targetStatus: "open",
@@ -1244,9 +1261,10 @@ export const model = {
             { number: issueNumber, type: args.type },
             linked,
           );
-          // the entry post is the last fatal upstream action: rollback cannot
-          // unsend an entry, so anything that can raise runs before it or a
-          // re-run would post it twice
+          // The entry post is the last fatal upstream action in this method:
+          // rollback reverts the local write but cannot unsend an entry, so
+          // anything that can raise must run before it or a re-run would post
+          // the entry twice.
           recordUpstreamChange(
             context.logger,
             "issue type update",
@@ -1474,9 +1492,11 @@ export const model = {
         const { issueNumber } = context.globalArgs;
         const handles = [];
 
-        // iterating an approved plan reopens it; swamp-club never moves an
-        // issue backwards, so the entry targets the status the issue holds,
-        // since the issue page groups entries by targetStatus
+        // Iterating on an approved plan reopens it. approve already moved
+        // the swamp-club issue to in_progress, and swamp-club never moves an
+        // issue backwards, so the entry targets the status the issue holds —
+        // the issue page groups entries by targetStatus, and a triaged entry
+        // would hide the reopen above the approval.
         const state = await context.readResource!("state-main") as
           | StateData
           | null;
@@ -2029,7 +2049,7 @@ export const model = {
           context.logger,
         );
         if (sc && plan) {
-          // transition before the entry post, as in triage
+          // Transition before the entry post — see the note in `triage`.
           recordUpstreamChange(
             context.logger,
             "status transition to in_progress",
@@ -2250,8 +2270,8 @@ export const model = {
             "issue type update",
             await sc.updateType("platform"),
           );
-          // walk through triaged first: swamp-club rejects a direct jump from
-          // open to in_progress
+          // Walk through triaged first — a freshly filed issue is in status
+          // open, and swamp-club rejects a direct jump to in_progress.
           recordUpstreamChange(
             context.logger,
             "status transition to triaged",
@@ -2544,8 +2564,14 @@ export const model = {
           ) => Promise<Record<string, unknown> | null>;
         },
       ) => {
-        // validated before the client is built, so a malformed document fails
-        // without dialing out and before it leaves the machine
+        // Validated before the client is built, so a malformed document
+        // fails without dialing out. The shape used to be enforced nowhere:
+        // this method posted whatever parsed, and `.github/workflows/ci.yml`
+        // read the fields it needed with `jq` once the PR was already public.
+        // An attestation missing `subject` posted cleanly and logged
+        // `commit=undefined`. Checking here moves that contract to the moment
+        // before the document leaves the machine, where the failure is still
+        // cheap and the operator is still standing in front of it.
         let parsed: unknown;
         try {
           parsed = JSON.parse(args.attestation);
@@ -2587,9 +2613,15 @@ export const model = {
           { id: result.id, postedBy: result.postedBy },
         );
 
-        // Deliberate downgrade: the attestation POST already wrote a record
-        // rollback cannot reach, so failing here would file a second one on
-        // re-run.
+        // The one deliberate downgrade in this model. Unlike every other
+        // method, the attestation POST above has already written a durable
+        // upstream record that rollback cannot reach, and this entry cannot
+        // run first because its payload carries the id that POST returned.
+        // Failing here would send the operator into a re-run that files a
+        // second attestation for the same commit — worse than a missing
+        // entry, since the attestation row is itself the audit record and
+        // `postAttestation` already raises when it fails. The id is named in
+        // the warning so the entry can be reconstructed by hand.
         try {
           await recordLifecycle(sc, {
             step: "attestation_posted",
@@ -2694,9 +2726,9 @@ export const model = {
         );
         const linked = await readLinkedIssues(context.readResource);
         if (sc) {
-          // recorded on the issue itself so it shows during work and survives
-          // the shipped transition into the reporter's notification;
-          // idempotent, so it runs before the entry post
+          // Recorded on the issue itself so it shows while work is in
+          // progress and survives the shipped transition into the reporter's
+          // notification. Idempotent, so it runs before the entry post.
           recordUpstreamChange(
             context.logger,
             "PR link on the issue",
@@ -2793,7 +2825,7 @@ export const model = {
           context.logger,
         );
         if (sc) {
-          // transition before the entry post, as in triage
+          // Transition before the entry post — see the note in `triage`.
           recordUpstreamChange(
             context.logger,
             "status transition to shipped",
@@ -2957,7 +2989,7 @@ export const model = {
           context.logger,
         );
         if (sc) {
-          // transition before the entry post, as in triage
+          // Transition before the entry post — see the note in `triage`.
           recordUpstreamChange(
             context.logger,
             "status transition to shipped",
@@ -3038,11 +3070,12 @@ export const model = {
           context.logger,
         );
 
-        // the ripple cannot be taken back, so every lookup that decides it runs
-        // first and fails closed; the handle mentioned and the id checked come
-        // from the same fetch
+        // The ripple cannot be taken back, so every lookup that decides it
+        // runs first and fails closed. The handle mentioned and the id
+        // checked come from the same fetch.
         let author: string | undefined;
         let teamMember = false;
+        // Fetched at most once and shared with the linked-author pass below.
         let roster: EligibleAssignee[] | null = null;
         if (sc) {
           const issue = await sc.fetchIssue();
@@ -3072,9 +3105,9 @@ export const model = {
         } else if (author && sc) {
           const body = args.message ??
             buildNotifyMessage(author, prData, planData, duplicate);
-          // the ripple is the deliverable so a failure raises; it runs before
-          // the state write, so the phase stays notify and a re-run retries
-          // with no duplicate
+          // The ripple is this method's deliverable, not a courtesy, so a
+          // failure raises. It runs before the state write, so the phase is
+          // still `notify` and the re-run retries it with no duplicate.
           await recordRipple(sc, body);
           context.logger.info(
             "Posted thank-you ripple for @{author} on issue #{issueNumber}",
@@ -3087,9 +3120,13 @@ export const model = {
           );
         }
 
-        // linked authors are thanked best-effort: no rollback, so raising would
-        // re-thank them; the message omits the primary's plan summary, and
-        // force covers only the primary's author
+        // Linked issues' authors are thanked after the primary's, and only
+        // best-effort: this method does not roll back, so raising after one
+        // ripple posted would make the re-run thank that author twice. The
+        // message leaves out the primary's plan summary, which may come from
+        // an issue the linked issue's reader cannot see.
+        // `force` is about the primary's author only, so linked authors are
+        // always checked against the roster.
         if (sc && linked.length > 0) {
           const linkedRoster = roster ?? await sc.fetchEligibleAssignees();
           if (!linkedRoster) {
@@ -3264,8 +3301,8 @@ export const model = {
         const { issueNumber } = context.globalArgs;
         const handles = [];
 
-        // every carried issue gets its own outcome so none is closed out on the
-        // strength of the primary's
+        // Every issue this lifecycle carried gets its own outcome, so none
+        // can be closed out on the strength of the primary's.
         const linked = await readLinkedIssues(context.readResource);
         const outcomes = args.linkedOutcomes ?? [];
         const expected = new Set(linked.map((l) => l.issueNumber));
@@ -3341,8 +3378,8 @@ export const model = {
           },
           isVerbose: false,
         });
-        // best-effort like mirrors: the posts cannot be taken back, and the
-        // primary's entry is the audit record
+        // Best-effort for the same reason as mirrors: the posts cannot be
+        // taken back, and the primary's entry above is the audit record.
         if (sc) {
           for (const outcome of outcomes) {
             await recordLifecycleBestEffort(
@@ -3468,8 +3505,8 @@ export const model = {
           linkedAt: now,
         };
         const existing = await readLinkedIssues(context.readResource);
-        // changing how an issue is linked would leave the old relationship in
-        // swamp-club, where unlink_issue would not find it
+        // Changing how an issue is linked would leave the old relationship
+        // in swamp-club, where unlink_issue would no longer find it.
         const previous = existing.find((i) => i.issueNumber === target);
         if (previous && previous.relationship !== relationship) {
           throw new Error(
@@ -3484,8 +3521,8 @@ export const model = {
           { issues: [...others, entry], updatedAt: now },
         );
 
-        // every write below is idempotent, so all run before the entry posts: a
-        // failure rolls back and the re-run converges
+        // Every write below is idempotent, so all of them run before the
+        // entry posts: a failure rolls back and the re-run converges.
         recordUpstreamChange(
           context.logger,
           `${relationship} relationship between #${primary} and #${target}`,
@@ -3521,6 +3558,8 @@ export const model = {
           },
           isVerbose: false,
         });
+        // The linked issue's own note is best-effort, like every other entry
+        // on a linked issue: the primary's entry above is the audit record.
         await recordLifecycleBestEffort(linkedSc, context.logger, {
           step: "linked",
           targetStatus: status,
@@ -3598,9 +3637,9 @@ export const model = {
         if (!linkedIssue) {
           throw new Error(`Could not fetch issue #${target} from swamp-club.`);
         }
-        // seen from the linked issue, related_to comes in from the primary and
-        // duplicate_of goes out; matching direction keeps a hand-made link the
-        // other way from being removed
+        // Seen from the linked issue, link_issue's related_to comes in from
+        // the primary and its duplicate_of goes out to it. Matching the
+        // direction keeps a hand-made link the other way from being removed.
         const direction = entry.relationship === "duplicate_of"
           ? "outgoing"
           : "incoming";
@@ -3616,7 +3655,7 @@ export const model = {
           );
         }
         // swamp-club deletes a relationship through either issue it joins, so
-        // the linked issue's endpoint serves both directions
+        // the linked issue's endpoint serves both link directions.
         if (relationship) {
           recordUpstreamChange(
             context.logger,
@@ -3706,9 +3745,9 @@ export const model = {
           );
         }
 
-        // shipping this issue as a duplicate would strand any issue it carries
-        // short of shipped, and notify would thank those reporters for a fix
-        // that never reached them
+        // Shipping this issue as a duplicate would leave any issue it carries
+        // stranded short of shipped, and notify would then thank those
+        // reporters for a fix that never reached them.
         const linked = await readLinkedIssues(context.readResource);
         if (linked.length > 0) {
           throw new Error(
@@ -3741,9 +3780,9 @@ export const model = {
               `issueNumber=${issueNumber} --input relationship=duplicate_of`,
           );
         }
-        // no security-parity check, unlike link_issue: the canonical issue has
-        // shipped, so its number and PR are public and nothing else of it
-        // reaches this issue
+        // No security-parity check, unlike link_issue: the canonical issue
+        // has shipped, so its number and PR are already public, and nothing
+        // else of it reaches this issue.
         const duplicate = await sc.fetchIssue();
         if (!duplicate) {
           throw new Error(
@@ -3751,9 +3790,9 @@ export const model = {
           );
         }
 
-        // a URL found on the canonical issue goes into this issue's public
-        // thank-you, so it must be http(s) like the prUrl argument; link_pr
-        // accepts any non-empty string
+        // A URL found on the canonical issue goes into this issue's public
+        // thank-you, so it is held to the same http(s) rule as the prUrl
+        // argument; link_pr accepts any non-empty string.
         let foundPrUrl: string | undefined;
         for (
           const candidate of [canonical.githubPrUrl, canonical.lifecyclePrUrl]
@@ -3801,8 +3840,9 @@ export const model = {
           }),
         ];
 
-        // idempotent writes first, the entry last; the PR goes on before the
-        // walk so it is on the issue when the shipped notification is sent
+        // Idempotent writes first, the entry last. The PR goes on before the
+        // walk so it is already on the issue when swamp-club sends the
+        // shipped notification, which is where the reporter sees it.
         recordUpstreamChange(
           context.logger,
           `duplicate_of relationship to #${canonicalNumber}`,
@@ -3821,8 +3861,8 @@ export const model = {
           "status transition to shipped",
           await sc.walkStatusTo("shipped"),
         );
-        // names the canonical issue by number only: it may be restricted to
-        // admins while this one is public
+        // Names the canonical issue by number only: it may be restricted
+        // to admins while this one is public.
         await recordLifecycle(sc, {
           step: "duplicate_shipped",
           targetStatus: "shipped",

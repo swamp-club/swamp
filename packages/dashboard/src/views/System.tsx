@@ -484,8 +484,8 @@ function formatUptime(startedAt: string | null): string {
 }
 
 /**
- * a break opportunity follows each / and -, so a long path wraps after
- * separators rather than mid-name
+ * Lets a long path wrap after its separators rather than mid-name: a
+ * break opportunity follows each `/` and `-`.
  */
 export function withPathBreaks(text: string): ReactNode[] {
   return text.split(/(?<=[/-])/).flatMap((part, i) =>

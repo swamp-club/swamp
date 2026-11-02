@@ -73,6 +73,7 @@ Deno.test("ScheduleTable: links the schedule, describes the cron and shows its r
   assertEquals(html.includes("Override"), false);
   assertStringIncludes(
     html,
+    // A failed run's pip opens its failure log.
     'href="/dashboard/workflows/@acme%2Fquota-reset/runs/r2-aaaaaaaa?focus=failure"',
   );
   assertStringIncludes(html, "5m ago");

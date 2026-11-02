@@ -17,6 +17,13 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+/**
+ * The extension quality rubric: factor table, per-version analysis, and the
+ * score both the CLI and the registry compose.
+ *
+ * @module
+ */
+
 export {
   type AnalysisFactors,
   computeAnalysisFactors,

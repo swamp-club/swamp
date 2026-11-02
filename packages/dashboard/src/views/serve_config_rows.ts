@@ -28,9 +28,13 @@ export interface ServeConfigRow {
 const UNKNOWN = "—";
 
 /**
- * a missing or oddly shaped field renders as a dash rather than "disabled", so
- * payload drift shows as unknown instead of a plausible value; null when there
- * is no config to show
+ * Translate a `serve.config` response into the rows the System view renders.
+ *
+ * The server sends `{ config: { ... } }`, with `tls`, `scheduling` and
+ * `dashboard` as `{ enabled }` objects and the other flags as booleans. A
+ * field that is missing or has an unexpected shape renders as a dash rather
+ * than "disabled", so drift in the payload shows as unknown instead of as a
+ * plausible value. Returns null when there is no config to show.
  */
 export function serveConfigRows(payload: unknown): ServeConfigRow[] | null {
   if (!isRecord(payload) || !isRecord(payload.config)) return null;

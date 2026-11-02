@@ -20,6 +20,8 @@
 import { assertEquals, assertRejects } from "@std/assert";
 import { withMockedFetch } from "./mock_fetch.ts";
 
+// --- Sequential mode ---
+
 Deno.test("withMockedFetch: sequential mode returns responses in order", async () => {
   const { result, calls } = await withMockedFetch([
     Response.json({ value: "first" }),
@@ -47,12 +49,14 @@ Deno.test("withMockedFetch: sequential mode throws when exhausted", async () => 
         Response.json({ ok: true }),
       ], async () => {
         await fetch("https://api.example.com/one");
-        await fetch("https://api.example.com/two");
+        await fetch("https://api.example.com/two"); // no response queued
       }),
     Error,
     "no more responses",
   );
 });
+
+// --- Handler mode ---
 
 Deno.test("withMockedFetch: handler mode routes by URL", async () => {
   const { result } = await withMockedFetch((req) => {
@@ -84,6 +88,8 @@ Deno.test("withMockedFetch: handler receives request body", async () => {
   assertEquals(calls[0].body, '{"message":"hello"}');
 });
 
+// --- Call recording ---
+
 Deno.test("withMockedFetch: captures headers", async () => {
   const { calls } = await withMockedFetch([
     Response.json({}),
@@ -95,6 +101,8 @@ Deno.test("withMockedFetch: captures headers", async () => {
 
   assertEquals(calls[0].headers["authorization"], "Bearer token123");
 });
+
+// --- Restore ---
 
 Deno.test("withMockedFetch: restores original fetch after success", async () => {
   const originalFetch = globalThis.fetch;
@@ -113,6 +121,8 @@ Deno.test("withMockedFetch: restores original fetch after error", async () => {
   }
   assertEquals(globalThis.fetch, originalFetch);
 });
+
+// --- Return value ---
 
 Deno.test("withMockedFetch: returns callback result", async () => {
   const { result } = await withMockedFetch([

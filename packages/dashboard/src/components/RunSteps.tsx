@@ -53,6 +53,7 @@ export interface ApprovalInfo {
   reason?: string;
 }
 
+/** A step as `workflow.history.get` returns it. */
 export interface StepRun extends StepRunLike {
   modelName?: string;
   methodName?: string;
@@ -70,13 +71,19 @@ export interface JobRun {
   duration?: number;
 }
 
+/** Shared by every step row: how links open and what time it is. */
 export interface StepContext {
   runStatus: string;
   now: number;
+  /** Opens a report or data item in the page's drawer. */
   onOpenItem: (item: DrawerItem) => void;
+  /** In-app navigation for plain clicks on other links. */
   onNavigate: (to: RouteState) => void;
+  /** Task type per step name, from the definition, when known. */
   taskTypes?: ReadonlyMap<string, string>;
+  /** A step to open and scroll to (a failure link's target). */
   focusStep?: string | null;
+  /** Changes each time the focus is requested, to re-scroll. */
   focusNonce?: number;
 }
 
@@ -85,6 +92,10 @@ function isDrawerItem(detail: DetailView): detail is DrawerItem {
     detail?.kind === "runReport";
 }
 
+/**
+ * A link to a report or data item: a plain click opens it in the drawer,
+ * a modified or middle click opens its full page in a new tab.
+ */
 export function ItemLink(
   { to, onOpen, className, title, children }: {
     to: RouteState;
@@ -111,6 +122,7 @@ export function ItemLink(
   );
 }
 
+/** A link to another dashboard page, navigating in-app on a plain click. */
 export function NavLink(
   { to, onNavigate, className, children, title }: {
     to: RouteState;
@@ -143,6 +155,7 @@ const TASK_BADGES: Record<string, string> = {
   assert: "assert",
 };
 
+/** Why a step was skipped, in words. */
 export function skipReasonText(
   reason: StepRunLike["skipReason"],
 ): string | null {
@@ -161,6 +174,7 @@ export function skipReasonText(
   }
 }
 
+/** One step: status, name, timing, and whatever explains its outcome. */
 export function StepRow({ step, ctx }: { step: StepRun; ctx: StepContext }) {
   const status = displayStatus(step.status, ctx.runStatus);
   const isFailure = status === "failed" && !step.allowedFailure;
@@ -351,6 +365,7 @@ function ApprovalNote({ approval }: { approval: ApprovalInfo }) {
   );
 }
 
+/** A job's steps as a list. */
 export function StepList(
   { steps, ctx }: { steps: StepRun[]; ctx: StepContext },
 ) {
@@ -364,6 +379,10 @@ export function StepList(
   );
 }
 
+/**
+ * The side panel for the job selected in the graph: its status and timing,
+ * what it waited on, and its steps.
+ */
 export function RunJobPanel(
   { job, graph, ctx, onClose, headingRef }: {
     job: JobRun;
@@ -484,6 +503,7 @@ export function RunJobPanel(
   );
 }
 
+/** Every job with its steps: the "List" tab. */
 export function RunJobList(
   { jobs, ctx, graph }: { jobs: JobRun[]; ctx: StepContext; graph: RunGraph },
 ) {

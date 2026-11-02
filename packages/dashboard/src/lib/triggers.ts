@@ -17,11 +17,16 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+// Pure view logic for the Schedules and Webhooks pages: run aggregation by
+// trigger, how a webhook names its workflow, what a failed change says,
+// inputs JSON validation and the side-by-side run comparison.
+
 import { formatAbsoluteTime, formatDuration } from "./format.ts";
 import { fuzzyFilter } from "./fuzzy.ts";
 
-// shapes of workflow.run.summary, kept structural so this module stays free of
-// the request hooks and testable on its own
+// The shapes of `workflow.run.summary` (src/client/run_summary.ts), kept
+// here structurally so this module stays free of the request hooks and can
+// be tested on its own.
 
 export interface RecentRun {
   runId: string;
@@ -45,9 +50,11 @@ export interface WorkflowRunSummary extends RunCounts {
   workflowId: string;
   workflowName: string;
   lastStartedAt?: string;
+  /** Newest first. */
   recent: RecentRun[];
 }
 
+/** A run as `workflow.run.search` returns it. */
 export interface TriggerRun {
   runId: string;
   workflowId?: string;
@@ -83,8 +90,9 @@ type StatusBucket =
   | "suspended";
 
 /**
- * as serve's run summary buckets them: interrupted counts as failed and pending
- * as running; undefined for a status this dashboard does not know
+ * The count a run status lands in, as serve's run summary buckets it:
+ * `interrupted` counts as failed and `pending` as running. Undefined for a
+ * status this dashboard does not know.
  */
 export function runStatusBucket(status: string): StatusBucket | undefined {
   switch (status) {
@@ -109,8 +117,9 @@ function startedMs(run: { startedAt?: string }): number {
 }
 
 /**
- * serve filters by trigger and name itself; this keeps a server that ignores
- * those filters or matches names by substring from mixing in other runs
+ * Runs of one trigger, newest first, of exactly the named workflows. Serve
+ * filters by trigger and name itself; this keeps a server that ignores
+ * those filters (or matches names by substring) from mixing in others.
  */
 export function runsOfTrigger(
   runs: readonly TriggerRun[],
@@ -127,8 +136,9 @@ export function runsOfTrigger(
 }
 
 /**
- * rounded up to whole hours ("36h") so the window never shrinks; undefined for
- * an open-ended range
+ * `since` as the duration an older serve's run search takes ("36h"),
+ * rounded up to whole hours so the window never shrinks. Undefined for an
+ * open-ended range.
  */
 export function legacySince(
   since: string | undefined,
@@ -158,8 +168,8 @@ export function runsWithin<T extends { startedAt?: string }>(
 }
 
 /**
- * builds what workflow.run.summary returns from a run search, for a serve that
- * lacks it
+ * Per-workflow counts and recent runs built from a run search — what
+ * `workflow.run.summary` returns, for a serve that predates it.
  */
 export function summarizeRuns(
   runs: readonly TriggerRun[],
@@ -196,6 +206,7 @@ export function summarizeRuns(
   return [...byName.values()];
 }
 
+/** Counts summed over the given workflow summaries. */
 export function sumCounts(summaries: Iterable<RunCounts>): RunCounts {
   const total = { ...EMPTY_COUNTS };
   for (const s of summaries) {
@@ -210,23 +221,34 @@ export function sumCounts(summaries: Iterable<RunCounts>): RunCounts {
   return total;
 }
 
+/** Mean duration of finished runs, or undefined when none finished. */
 export function averageDuration(counts: RunCounts): number | undefined {
   const finished = counts.succeeded + counts.failed + counts.cancelled;
   return finished > 0 ? counts.durationMs / finished : undefined;
 }
 
+/** "92%" of finished runs that succeeded, or "—" when none finished. */
 export function successRate(counts: RunCounts): string {
   const finished = counts.succeeded + counts.failed + counts.cancelled;
   if (finished === 0) return "—";
   return `${Math.round((counts.succeeded / finished) * 100)}%`;
 }
 
+// ── Webhooks ────────────────────────────────────────────────────────────
+
 export interface WebhookEntry {
   route: string;
+  /** The configured workflow id or name. */
   workflow: string;
+  /** Signature verification scheme, on servers that report it. */
   scheme?: string;
 }
 
+/**
+ * The workflow name a webhook's configured reference names: the name
+ * itself, or the name of the workflow whose id it is. Unknown references
+ * are returned as configured.
+ */
 export function webhookWorkflowName(
   ref: string,
   workflows: ReadonlyArray<{ id: string; name: string }>,
@@ -235,6 +257,7 @@ export function webhookWorkflowName(
   return workflows.find((w) => w.id === ref)?.name ?? ref;
 }
 
+/** Every route pointing at each workflow, sorted. */
 export function routesByWorkflow(
   webhooks: ReadonlyArray<{ route: string; workflowName: string }>,
 ): Map<string, string[]> {
@@ -247,6 +270,7 @@ export function routesByWorkflow(
   return map;
 }
 
+/** Fuzzy filter over a webhook's route and workflow. */
 export function filterWebhooks<
   T extends { route: string; workflowName: string },
 >(
@@ -256,18 +280,22 @@ export function filterWebhooks<
   return fuzzyFilter(webhooks, query, (w) => [w.route, w.workflowName]);
 }
 
+// ── Schedule changes ────────────────────────────────────────────────────
+
 const DENIED_CODES: ReadonlySet<string> = new Set([
   "unauthorized",
   "forbidden",
   "access_not_configured",
 ]);
 
+/** True for serve's refusal codes (no access, or no policy configured). */
 export function isDeniedCode(code: string | undefined): boolean {
   return code !== undefined && DENIED_CODES.has(code);
 }
 
 export type ScheduleAction = "save" | "reset";
 
+/** The message beside a schedule's controls after a change. */
 export interface ScheduleFeedback {
   tone: "success" | "danger";
   text: string;
@@ -278,6 +306,10 @@ const ACTION_TEXT: Record<ScheduleAction, string> = {
   reset: "reset",
 };
 
+/**
+ * What to say when a schedule change failed: a permission refusal reads as
+ * one, anything else keeps serve's own message.
+ */
 export function scheduleErrorMessage(
   action: ScheduleAction,
   workflowName: string,
@@ -291,6 +323,7 @@ export function scheduleErrorMessage(
   return `Couldn't ${ACTION_TEXT[action]} the schedule: ${error.message}`;
 }
 
+/** What to say once a schedule change landed. */
 export function scheduleSuccessMessage(action: ScheduleAction): string {
   switch (action) {
     case "save":
@@ -304,6 +337,7 @@ export type InputsParse =
   | { ok: true; value: Record<string, unknown> }
   | { ok: false; error: string };
 
+/** Validates the editor's inputs JSON: empty means `{}`, else an object. */
 export function parseInputsJson(text: string): InputsParse {
   if (text.trim() === "") return { ok: true, value: {} };
   let value: unknown;
@@ -322,6 +356,7 @@ export function parseInputsJson(text: string): InputsParse {
   return { ok: true, value: value as Record<string, unknown> };
 }
 
+/** Pretty JSON for the editor; `{}` reads as an empty box. */
 export function formatInputsJson(inputs: Record<string, unknown>): string {
   return Object.keys(inputs).length === 0
     ? ""
@@ -333,9 +368,11 @@ export interface InputRow {
   effective?: unknown;
   builtIn?: unknown;
   override?: unknown;
+  /** Where the effective value comes from. */
   origin: "override" | "workflow" | "none";
 }
 
+/** Effective vs workflow-file vs override value of every input key. */
 export function inputRows(
   effective: Record<string, unknown> | undefined,
   builtIn: Record<string, unknown> | undefined,
@@ -359,11 +396,14 @@ export function inputRows(
   });
 }
 
+/** A value as one line of text: strings bare, everything else as JSON. */
 export function valueText(value: unknown): string {
   if (value === undefined) return "—";
   if (typeof value === "string") return value;
   return JSON.stringify(value);
 }
+
+// ── Run comparison ──────────────────────────────────────────────────────
 
 export interface RunDetailStep {
   name: string;
@@ -378,6 +418,7 @@ export interface RunDetailJob {
   steps: RunDetailStep[];
 }
 
+/** One side: the search item, plus the full run once fetched. */
 export interface CompareSide {
   run: TriggerRun;
   jobs?: RunDetailJob[] | null;
@@ -388,8 +429,10 @@ export interface CompareRow {
   label: string;
   a: string;
   b: string;
+  /** Status cells render as pills. */
   kind?: "status";
   differs: boolean;
+  /** B relative to A, for durations ("+1.2s"). */
   delta?: string;
 }
 
@@ -408,8 +451,9 @@ function stepText(step: RunDetailStep | undefined): string {
 }
 
 /**
- * a row differs when what it says differs, except times and durations, which
- * always do; a duration row carries the change instead
+ * Rows comparing two runs. A row differs when what it says differs —
+ * except times and durations, which always do; a duration row carries the
+ * change instead.
  */
 export function compareRuns(a: CompareSide, b: CompareSide): CompareRow[] {
   const rows: CompareRow[] = [];
@@ -497,8 +541,8 @@ export function compareRuns(a: CompareSide, b: CompareSide): CompareRow[] {
 }
 
 /**
- * at most two runs stay selected; picking a third drops the earliest so the
- * latest two are compared
+ * The selection after toggling a run: at most two, and picking a third
+ * drops the earliest pick so the latest two are compared.
  */
 export function toggleCompare(
   selected: readonly string[],

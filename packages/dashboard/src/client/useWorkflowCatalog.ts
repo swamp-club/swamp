@@ -44,6 +44,7 @@ export interface WorkflowCatalog {
   error: string | null;
   facetsOf: (workflow: WorkflowRef) => WorkflowFacets;
   prefixes: Array<{ prefix: string; count: number }>;
+  /** Every webhook route, sorted. */
   webhookRoutes: string[];
 }
 

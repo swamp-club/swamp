@@ -23,6 +23,14 @@
 // checks answer `unauthorized` / `access_not_configured` to a principal
 // without admin on audit.
 
+/**
+ * - disabled: serve runs without an audit log
+ * - denied: the signed-in principal may not read it
+ * - connecting: subscribing to the live feed
+ * - live: the live feed is streaming
+ * - paused: the viewer paused the live feed
+ * - error: the feed failed for another reason
+ */
 export type AuditStatus =
   | "disabled"
   | "denied"
@@ -40,6 +48,7 @@ const DENIED_CODES = new Set([
   "forbidden",
 ]);
 
+/** What an error code from an audit request means for the page. */
 export function classifyAuditError(
   code: string | null | undefined,
 ): AuditProblem {

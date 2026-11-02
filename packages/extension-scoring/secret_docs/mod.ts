@@ -17,6 +17,14 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+/**
+ * The secret-safe-docs check: documentation that handles a secret in
+ * plaintext, which files it reads, and how acceptances and caps decide the
+ * `secret-safe-docs` factor.
+ *
+ * @module
+ */
+
 export {
   type ArgumentSchemas,
   argumentSchemas,

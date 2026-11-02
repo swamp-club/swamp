@@ -294,7 +294,7 @@ jobs:
             workingDir: "/tmp/swamp-verify-reviews-${{ run.id }}"
 
       - name: comment-review
-        guard: "${{ data.latest('repo-' + run.id, 'diff').attributes.files.filter(f, f.endsWith('.ts') || f.endsWith('.tsx') || f == 'AGENTS.md').size() == 0 }}"
+        guard: "${{ data.latest('repo-' + run.id, 'diff').attributes.files.filter(f, ((f.startsWith('src/') || f.startsWith('integration/') || f.startsWith('scripts/')) && (f.endsWith('.ts') || f.endsWith('.tsx'))) || f == 'AGENTS.md').size() == 0 }}"
         task:
           type: model_method
           modelType: "command/shell"

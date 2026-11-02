@@ -49,6 +49,8 @@ import {
   LEGACY_EXTENSION_SEMANTICS,
 } from "./in_memory_remote.ts";
 
+// --- assertDatastoreExportConformance ---
+
 Deno.test("assertDatastoreExportConformance: passes for valid export", () => {
   const { provider } = createDatastoreTestContext();
   const validExport = {
@@ -91,12 +93,20 @@ Deno.test("assertDatastoreExportConformance: fails for bad type pattern", () => 
   );
 });
 
+// --- assertLockConformance ---
+
 Deno.test("assertLockConformance: passes for conforming in-memory lock", async () => {
   const { provider } = createDatastoreTestContext();
   const lock = provider.createLock("/test/path");
   await assertLockConformance(lock);
 });
 
+// --- assertLockTimeoutConformance ---
+
+/**
+ * Minimal contended lock: locks created by one factory share a single slot,
+ * and acquire() gives up after maxWaitMs with the given rejection.
+ */
 function contendedLockFactory(
   reject: (lockKey: string, waitedMs: number) => unknown,
 ): (options: { maxWaitMs: number }) => DistributedLock {
@@ -145,6 +155,8 @@ Deno.test("assertLockTimeoutConformance: fails for a plain Error", async () => {
   );
 });
 
+// --- assertVerifierConformance ---
+
 Deno.test("assertVerifierConformance: passes for conforming verifier", async () => {
   const { provider } = createDatastoreTestContext();
   const verifier = provider.createVerifier();
@@ -158,6 +170,8 @@ Deno.test("assertVerifierConformance: passes for unhealthy verifier", async () =
   const verifier = provider.createVerifier();
   await assertVerifierConformance(verifier);
 });
+
+// --- assertSyncServiceConformance ---
 
 Deno.test("assertSyncServiceConformance: passes for basic sync service", async () => {
   const { provider } = createDatastoreTestContext({ withSyncService: true });
@@ -184,6 +198,8 @@ Deno.test("assertSyncServiceConformance: passes without capabilities method", as
   await assertSyncServiceConformance(syncService);
 });
 
+// --- assertSyncServiceRoundTripConformance ---
+
 async function removeTempDir(dir: string): Promise<void> {
   if (Deno.build.os === "windows") {
     await Deno.remove(dir, { recursive: true }).catch(() => {});
@@ -192,11 +208,16 @@ async function removeTempDir(dir: string): Promise<void> {
   }
 }
 
+/** A round-trip fixture whose services are in-memory remote connections. */
 interface InMemoryRoundTripFixture extends SyncServiceRoundTripFixture {
   first: { service: InMemorySyncService; cacheDir: string };
   second: { service: InMemorySyncService; cacheDir: string };
 }
 
+/**
+ * Two instances of one fresh in-memory remote, per case. `breakFixture`
+ * lets a test swap in a deliberately broken service.
+ */
 function inMemoryRemoteFactory(
   remoteOptions?: InMemoryRemoteOptions,
   withFailureHook = true,
@@ -258,6 +279,7 @@ const ALL_ROUND_TRIP_CASES = [
   "repair-unpushed-already-present",
 ];
 
+/** Cases that skip on this OS whatever the fixture. */
 const OS_SKIPPED = Deno.build.os === "windows" ? ["vanish-during-walk"] : [];
 
 Deno.test("assertSyncServiceRoundTripConformance: the default in-memory remote passes and skips only pull-deletes", async () => {
@@ -411,6 +433,7 @@ Deno.test("assertSyncServiceRoundTripConformance: rejects a stub service that ne
     const dir = await Deno.makeTempDir({ prefix: "swamp-round-trip-" });
     const stub = () => ({
       pullChanged: () => Promise.resolve(0),
+      // Claims an upload but sends nothing.
       pushChanged: () => Promise.resolve(1),
       markDirty: () => Promise.resolve(),
     });
@@ -449,6 +472,7 @@ Deno.test("assertSyncServiceRoundTripConformance: rejects two instances on one c
       ...fixture,
       second: {
         ...fixture.second,
+        // Same directory, spelled differently.
         cacheDir: join(fixture.first.cacheDir, "..", "first"),
       },
       cleanup: async () => {
@@ -470,6 +494,7 @@ Deno.test("assertSyncServiceRoundTripConformance: a cleanup error does not mask 
     const dir = await Deno.makeTempDir({ prefix: "swamp-round-trip-" });
     const stub = () => ({
       pullChanged: () => Promise.resolve(0),
+      // Claims an upload but sends nothing.
       pushChanged: () => Promise.resolve(1),
       markDirty: () => Promise.resolve(),
     });
@@ -539,6 +564,9 @@ Deno.test({
   },
 });
 
+// --- assertSyncServiceRoundTripConformance: every case can fail ---
+
+/** Every file in `dir`, as forward-slash paths relative to it. */
 async function listFiles(dir: string): Promise<string[]> {
   const found: string[] = [];
   const visit = async (path: string): Promise<void> => {
@@ -579,10 +607,13 @@ function withSecond(
 }
 
 interface BrokenImplementation {
+  /** The case the break targets; every earlier case must still pass. */
   caseName: string;
+  /** What the broken service gets wrong. */
   bug: string;
   remoteOptions?: InMemoryRemoteOptions;
   options?: { expectPullDeletes?: boolean };
+  /** Whether the case skips on this OS, so the break cannot show. */
   ignore?: boolean;
   breakFixture: (
     fixture: InMemoryRoundTripFixture,

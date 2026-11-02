@@ -17,13 +17,17 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// the value is the item's own full-page path without the /dashboard/ prefix, so
-// it reuses the route grammar instead of inventing a second one
+// The report or data item open in a run page's side drawer, kept in the
+// URL as `?item=<route path>` so the drawer survives a reload and can be
+// shared. The value is the item's own full-page path (without the
+// `/dashboard/` prefix), so it reuses the route grammar instead of
+// inventing a second one.
 
 import { buildPath, type DetailView, parseRoute } from "../routes.ts";
 
 export const ITEM_PARAM = "item";
 
+/** The kinds of item the drawer shows: a data item or a report. */
 export type DrawerItem = Extract<
   NonNullable<DetailView>,
   { kind: "data" | "report" | "runReport" }
@@ -31,11 +35,13 @@ export type DrawerItem = Extract<
 
 const PREFIX = "/dashboard/";
 
+/** The param value for an item. */
 export function itemParamFor(item: DrawerItem): string {
   const path = buildPath({ view: "models", detail: item });
   return path.startsWith(PREFIX) ? path.slice(PREFIX.length) : path;
 }
 
+/** The item a param names, or null for a missing or foreign value. */
 export function parseItemParam(raw: string | null): DrawerItem | null {
   if (!raw) return null;
   const { detail } = parseRoute(`${PREFIX}${raw.replace(/^\/+/, "")}`);
@@ -48,6 +54,7 @@ export function parseItemParam(raw: string | null): DrawerItem | null {
   return null;
 }
 
+/** `href` with the item param set (or removed for null). */
 export function withItemParam(href: string, item: DrawerItem | null): string {
   const url = new URL(href);
   if (item) url.searchParams.set(ITEM_PARAM, itemParamFor(item));
@@ -55,6 +62,7 @@ export function withItemParam(href: string, item: DrawerItem | null): string {
   return url.toString();
 }
 
+/** A short name for the drawer's heading. */
 export function drawerTitle(item: DrawerItem): string {
   switch (item.kind) {
     case "data":

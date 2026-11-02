@@ -18,17 +18,24 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 
+/**
+ * Chooses how eval generators reach the model: provider APIs or an authenticated
+ * Claude/Codex CLI. Claude aliases retain their existing local and CI defaults.
+ */
 
 export type Route = "api" | "cli";
 
 export const ROUTES: readonly Route[] = ["api", "cli"];
 
 interface CliModel {
+  /** Passed to the selected CLI; Claude aliases resolve to the latest model. */
   model: string;
   provider?: "codex";
+  /** Reasoning effort passed through the selected CLI's configuration. */
   effort: string;
 }
 
+/** Aliases the CLI route supports. Fable and the remaining GPT/Gemini models are API-only. */
 export const CLI_MODELS: Readonly<Record<string, CliModel>> = {
   sonnet: { model: "sonnet", effort: "low" },
   opus: { model: "opus", effort: "medium" },
@@ -49,6 +56,10 @@ export function defaultRoute(
   return alias in CLI_MODELS ? "cli" : "api";
 }
 
+/**
+ * The route for `alias`: the requested one when given, else the default.
+ * Throws on an unknown route or a model with no CLI route.
+ */
 export function resolveRoute(
   alias: string,
   requested: string | undefined,
@@ -64,6 +75,7 @@ export function resolveRoute(
   return route as Route;
 }
 
+/** Throws when `alias` cannot run on `route`. */
 export function assertRouteSupports(alias: string, route: Route): void {
   if (route === "api" && CLI_MODELS[alias]?.provider === "codex") {
     throw new Error(`model "${alias}" is CLI-only; use --route cli`);
@@ -77,6 +89,7 @@ export function assertRouteSupports(alias: string, route: Route): void {
   }
 }
 
+/** The promptfoo provider entry for the CLI route. */
 export function cliProviderEntry(
   alias: string,
   systemPrompt: string,

@@ -17,8 +17,9 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// one bar per local day (empty days included, so gaps read as gaps), or per
-// week once a range is too long for daily bars to stay legible
+// Bars for the Overview's executions chart: one per local day across the
+// selected time range (empty days included, so gaps read as gaps), or one
+// per week once a range is too long for daily bars to stay legible.
 
 import {
   addDays,
@@ -36,7 +37,9 @@ export interface ChartBucket {
 }
 
 export interface ChartBar {
+  /** First day the bar covers. */
   day: DayKey;
+  /** "10-12" for a day, "10-06…" for a week. */
   label: string;
   data: { succeeded: number; failed: number; cancelled: number; other: number };
 }
@@ -47,6 +50,11 @@ function dayCount(from: DayKey, to: DayKey): number {
   return Math.round((Date.parse(to) - Date.parse(from)) / 86_400_000) + 1;
 }
 
+/**
+ * Daily (or weekly) bars from the summary's hourly timeline. `since` and
+ * `until` bound the range; without `since` the range starts at the first
+ * bucket, and without `until` it ends at `now`.
+ */
 export function chartBars(
   timeline: readonly ChartBucket[],
   bounds: { since?: string; until?: string },
@@ -86,15 +94,18 @@ export function chartBars(
 }
 
 export interface ChartAxis {
+  /** Distance between gridlines; a whole number of runs. */
   step: number;
+  /** Top of the axis: always exactly four steps. */
   max: number;
+  /** Gridline values from 0 to `max`. */
   ticks: number[];
 }
 
 /**
- * four gridlines at a 1/2/5×10ⁿ step, so a quiet week isn't drawn against an
- * axis sized for a busy one; the top is exactly four steps, so every gridline
- * lands on a round label
+ * A y-axis with four gridlines at a 1/2/5×10ⁿ step, so a quiet week isn't
+ * drawn against an axis sized for a busy one. The top is exactly four steps,
+ * so every gridline lands on a round label.
  */
 export function chartAxis(maxVal: number): ChartAxis {
   const rawStep = Math.max(maxVal, 1) / 4;

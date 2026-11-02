@@ -36,10 +36,16 @@ export function statusLabel(status: DisplayStatus): string {
   return LABELS[status];
 }
 
+/**
+ * One glyph per run status, drawn in the status color: a check, a cross, a
+ * spinner, a clock, a hollow ring, a slashed circle, a stop square. Shape as
+ * well as color carries the status, so it reads without color too.
+ */
 export function RunStatusIcon(
   { status, size = 16, label }: {
     status: DisplayStatus;
     size?: number;
+    /** Announced name; defaults to the status. Pass "" when text says it. */
     label?: string;
   },
 ) {

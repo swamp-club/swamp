@@ -55,6 +55,9 @@ import {
   writtenSpecifiers,
 } from "../dependency_audit/mod.ts";
 
+// The registry's path through the shared evaluator: no fetching, the
+// answers each vector gives handed straight to it.
+
 interface FindingVector {
   name: string;
   registry: DependencyRegistry;
@@ -204,6 +207,7 @@ for (const v of vectors.findings as FindingVector[]) {
       v.scorecard.findings,
     );
     assertEquals(scorecard.earnedPoints, v.scorecard.earnedPoints);
+    // each finding costs what the vector says, and the factor what the worst costs
     assertEquals(
       scorecard.earnedPoints,
       2 - Math.max(0, ...v.expect.map((f) => f.pointsLost)),
@@ -377,6 +381,7 @@ for (const v of vectors.recordV2 as RecordV2Vector[]) {
     assertEquals(record.unaudited, v.expect.unaudited ?? []);
     const text = serializeDependencyAuditRecordV2(record);
     assertEquals(parseDependencyAuditRecordV2(text), record);
+    // a reader that knows only v1 reads it as no record
     assertEquals(parseDependencyAuditRecord(text), null);
   });
 }
@@ -428,6 +433,7 @@ const canonicalRegistry = vectors.canonicalRegistry as {
   jsr: Record<string, unknown>;
 };
 
+/** The registry's path for a v2 archive: the record decides each version. */
 function scoreV2Archive(v: CanonicalScoringVector) {
   const record = parseDependencyAuditRecordV2(JSON.stringify(v.record))!;
   const recorded = canonicalRecordedVersions(record);

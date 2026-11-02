@@ -17,6 +17,16 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+/**
+ * Generates a promptfoo configuration YAML from existing trigger_evals.json
+ * files and SKILL.md frontmatter, using lightweight API calls (~193 calls)
+ * instead of spawning Claude Code sessions.
+ *
+ * Usage: deno run --allow-read generate_config.ts [--model <alias>]
+ *
+ * Supported model aliases: sonnet, opus, gpt-5.4, gemini-2.5-pro
+ * Default: sonnet
+ */
 
 import { parseArgs } from "@std/cli/parse-args";
 import { join } from "@std/path";
@@ -165,6 +175,7 @@ export async function generateConfig(
   for (const skillName of SKILL_NAMES) {
     const skillDir = join(SKILLS_DIR, skillName);
 
+    // Read skill description from SKILL.md frontmatter
     const skillMdContent = await Deno.readTextFile(
       join(skillDir, "SKILL.md"),
     );
@@ -188,6 +199,7 @@ export async function generateConfig(
       },
     });
 
+    // Read trigger evals
     const evalPath = join(skillDir, "evals", "trigger_evals.json");
     let evalSet: EvalQuery[];
     try {
@@ -198,6 +210,7 @@ export async function generateConfig(
       continue;
     }
 
+    // Generate test cases
     for (const item of evalSet) {
       const direction = item.should_trigger ? "SHOULD" : "should NOT";
       const desc = `[${skillName}] ${direction} trigger: ${
@@ -248,6 +261,7 @@ export async function generateConfig(
     }
   }
 
+  // Escape-hatch tool for queries that don't match any skill
   tools.push({
     type: "function",
     function: {

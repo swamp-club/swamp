@@ -93,6 +93,7 @@ Deno.test("SessionsTable: one row per session with the prototype's columns", () 
       onSort={noop}
     />,
   );
+  // Every column sorts; the sorted one says which way.
   assertEquals(html.split('class="as-sort"').length - 1, 11);
   assertEquals(html.split('aria-sort="descending"').length - 1, 1);
   assertEquals(html.split('aria-sort="none"').length - 1, 10);
@@ -114,8 +115,10 @@ Deno.test("SessionsTable: one row per session with the prototype's columns", () 
     assertStringIncludes(html, `>${column}<`);
   }
   assertEquals(html.split('class="as-row"').length - 1, 3);
+  // The type icon says what it means on hover.
   assertStringIncludes(html, 'aria-label="Headless: run by automation');
   assertStringIncludes(html, 'aria-label="Interactive: a person steered');
+  // Findings and subagents are counts in badges, explained on hover.
   assertStringIncludes(html, 'aria-label="2 high findings">2<');
   assertStringIncludes(html, 'aria-label="1 subagent">+1<');
 });
@@ -144,6 +147,7 @@ Deno.test("SessionStats: the session's type, where it ran, and the figures the t
       onFilter={noop}
     />,
   );
+  // swamp, bypass and failed filter the turns; the active one is pressed.
   assertEquals(html.split("as-stat-button").length - 1, 3);
   assertStringIncludes(
     html,
@@ -181,6 +185,7 @@ Deno.test("ListTotalsRow: totals over every listed session, with findings as bad
     html,
     `in ${totals.sessionsWithFindings} session`,
   );
+  // The type counts show as the icons the table uses.
   assertStringIncludes(html, 'aria-label="Headless');
   for (const severity of ["high", "medium", "low"] as const) {
     if (totals.findings[severity] > 0) {
@@ -191,6 +196,7 @@ Deno.test("ListTotalsRow: totals over every listed session, with findings as bad
 
 Deno.test("TurnWaterfall: the strip and every turn's track share one scale", () => {
   const html = waterfall(edits);
+  // One piece of the strip per turn, and the same piece again on each row.
   assertEquals(
     html.split('class="as-strip-turn"').length - 1,
     edits.turns.length * 2,
@@ -213,6 +219,7 @@ Deno.test("FindingsPanel: headlines only until one is opened", () => {
   assertStringIncludes(html, "What to look at");
   for (const shown of mergedFindings(long, [child])) {
     assertStringIncludes(html, shown.finding.title);
+    // Details and what to tune wait until the headline is opened.
     assert(!html.includes(shown.finding.tune));
   }
   assertStringIncludes(html, "Subagent Explore");

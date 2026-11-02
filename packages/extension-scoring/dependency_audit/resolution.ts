@@ -31,19 +31,27 @@ import type { DependencyRegistry } from "./specifiers.ts";
 export type { DependencyRegistry };
 
 /**
- * the port between the dependency audit and whichever lockfile the bundler
- * honours, so another platform's lockfile can plug in
+ * What a package manager's lockfile records for a package. The port between
+ * the dependency audit and whichever lockfile the bundler honours, so
+ * another platform's lockfile can plug in.
  */
 export interface LockedDependencyVersions {
+  /** Names the lockfile in findings, e.g. "deno.lock". */
   readonly source: string;
+  /**
+   * The version the lockfile resolves this import specifier to, when it
+   * records the specifier itself (`null` for an unpinned import).
+   */
   resolvedFor(
     registry: DependencyRegistry,
     name: string,
     specVersion: string | null,
   ): string | undefined;
+  /** Every version the lockfile records for the package, transitive too. */
   versionsFor(registry: DependencyRegistry, name: string): readonly string[];
 }
 
+/** How a specifier pins its package. */
 export type SpecifierKind = "exact" | "range" | "dist-tag" | "unpinned";
 
 /**
@@ -62,40 +70,43 @@ export interface ShippedVersion {
   /** The archive's dependency audit record decided it; `from` stays push's source. */
   recorded?: true;
   /**
-   * a valid lock fixed this version: a deno.lock push bundled with, or a
-   * package-lock.json that node_modules matches; a version from the lockfile is
-   * always locked
+   * A valid lock fixed this version: a `deno.lock` push bundled with, or a
+   * `package-lock.json` that node_modules matches (swamp-club#3970). A
+   * version from the lockfile is always locked.
    */
   locked?: true;
   /**
-   * a v2 record entry ships a version no valid lock fixed though the author
-   * wrote a non-exact spelling, kept here so it costs the loose point as in the
-   * source
+   * A v2 record's entry ships a version no valid lock fixed, though the
+   * author wrote a non-exact spelling, kept here: it costs the loose point
+   * as such a spelling does in the source (swamp-club#4018).
    */
   looseAs?: string;
 }
 
 /**
- * what the archive's dependency audit record says push audited; the registry
- * audits the version push shipped
+ * What an archive's dependency audit record says push audited
+ * (swamp-club#3662): the registry audits the version push shipped.
  */
 export interface RecordedDependencyVersions {
+  /** The version push audited for this import's own specifier. */
   recordedFor(
     registry: DependencyRegistry,
     name: string,
     specVersion: string | null,
   ): ShippedVersion | undefined;
   /**
-   * present only for a v2 record: why the specifier breaks the canonical
-   * shipped form, or null; with it a version comes only from an exact specifier
-   * the record lists
+   * Present only for a v2 record (swamp-club#4018): why `specifier`, as the
+   * archive's source writes it, breaks the canonical shipped form, or null.
+   * With it a version comes only from an exact specifier the record lists.
    */
   canonicalIssue?(specifier: string): string | null;
 }
 
+/** What a registry publishes for one package. */
 export interface PublishedPackage {
   versions: readonly string[];
   distTags: Readonly<Record<string, string>>;
+  /** Versions withdrawn from range resolution (JSR yanks). */
   yanked?: ReadonlySet<string>;
 }
 
@@ -169,9 +180,22 @@ function resolveJsrVersion(
 }
 
 /**
- * order: exact pin; installed package.json version (the bundle inlines it);
- * recorded version if the registry lists it; lockfile's version; highest locked
- * satisfying one
+ * The version that ships for a specifier: an exact pin; else the version
+ * installed in a package.json project's node_modules (swamp-club#3630),
+ * which the bundle inlines whatever the lockfile says; else, for the
+ * registry, the version the archive's audit record says push audited, when
+ * the registry lists it; else the version
+ * the lockfile resolves that specifier to; else, when the lockfile does not
+ * record the specifier, the highest version it records for the package that
+ * satisfies it (Deno reuses a locked version that does); else what the
+ * registry resolves today. A stale lock that satisfies nothing falls
+ * through to the registry, as Deno re-resolves it. Null when nothing
+ * resolves.
+ *
+ * A v2 record replaces all of that (swamp-club#4018): its archive ships the
+ * canonical form, so only an exact specifier the record lists resolves,
+ * with no lock read and no registry resolution. Anything else is null, and
+ * the record's `canonicalIssue` says why.
  */
 export function resolveShippedVersion(
   registry: DependencyRegistry,
@@ -222,9 +246,13 @@ export function resolveShippedVersion(
 }
 
 /**
- * prefers the shipped version's major (minor too for 0.x), else the newest
- * overall; only semver-parsing versions qualify so registry metadata cannot put
- * arbitrary text in a suggestion
+ * The version to move to when `shipped` should not be used: the newest
+ * stable version that is not in `excluded`, preferring the shipped version's
+ * major (its minor too for 0.x, where the minor is the breaking line) and
+ * falling back to the newest overall. Only versions that parse as semver
+ * qualify, so registry metadata cannot put arbitrary text in a suggestion;
+ * the version is returned as the registry lists it.
+ * Null when no other version qualifies.
  */
 export function suggestVersion(
   shipped: string,

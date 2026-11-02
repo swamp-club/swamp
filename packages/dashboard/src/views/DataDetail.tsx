@@ -74,6 +74,11 @@ interface DataDetailProps {
   embedded?: boolean;
 }
 
+/**
+ * The shareable page for one data item, one version of it, or a report —
+ * the target of `/models/<m>/data/<d>[/versions/<n>]`,
+ * `/models/<m>/reports/<r>` and `/workflows/<wf>/runs/<id>/reports/<r>`.
+ */
 export function DataDetail(
   { detail, onBack, embedded = false }: DataDetailProps,
 ) {
@@ -92,6 +97,8 @@ export function DataDetail(
       );
   }
 }
+
+// ── data item / version ────────────────────────────────────────────────
 
 function DataItemPage(
   { detail, onBack, embedded }: {
@@ -185,6 +192,8 @@ function DataItemPage(
   );
 }
 
+// ── model report (latest) ──────────────────────────────────────────────
+
 function ModelReportPage(
   { detail, onBack, embedded }: {
     detail: Extract<ItemDetail, { kind: "report" }>;
@@ -260,6 +269,8 @@ function ModelReportPage(
     />
   );
 }
+
+// ── a run's workflow-scope report ──────────────────────────────────────
 
 function RunReportPage(
   { detail, onBack, embedded }: {
@@ -376,6 +387,9 @@ function RunReportPage(
   );
 }
 
+// ── shared pieces ──────────────────────────────────────────────────────
+
+/** Loads the JSON half of a model report, paired to the markdown version. */
 function useReportJson(
   modelName: string,
   item: DataItem | null,
@@ -540,6 +554,7 @@ function ItemPage(props: ItemPageProps) {
   );
 }
 
+/** The content panel's shape while an embedded item loads. */
 function EmbeddedSkeleton({ label }: { label: string }) {
   return (
     <SkeletonRegion label={label}>

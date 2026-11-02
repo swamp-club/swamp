@@ -17,11 +17,18 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+/**
+ * The `npm:` and `jsr:` dependencies an extension's source imports, read
+ * the same way by push and by the registry's scorecard.
+ */
+
 import { importedSpecifiersAt } from "../source/imports.ts";
 import type { ShippedVersion } from "./resolution.ts";
 
+/** A package registry the audit checks. */
 export type DependencyRegistry = "npm" | "jsr";
 
+/** One dependency an import names. */
 export interface DependencySpecifier {
   name: string;
   version: string | null;
@@ -33,18 +40,20 @@ export interface DependencySpecifier {
    */
   importedAs?: string;
   /**
-   * the installed version the bundle inlines, when the import resolved to it;
-   * version is then the range package.json declares
+   * The version installed in a package.json project's node_modules, which
+   * the bundle inlines, when the import resolved to it; `version` is then
+   * the range package.json declares (swamp-club#3630).
    */
   installedVersion?: string;
   /**
-   * the version the bundle holds, as push read it from Deno's module graph;
-   * when set it is the version that ships and the audit resolves nothing
-   * itself; the registry never sets it
+   * The version the bundle holds, as push read it from Deno's module graph
+   * (swamp-club#3970). When set it is the version that ships, and the audit
+   * resolves nothing itself; the registry never sets it.
    */
   bundled?: ShippedVersion;
 }
 
+// `npm:@scope/name@version`, `npm:name@version`, `npm:name`; a subpath is dropped
 const NPM_SPECIFIER_RE =
   /^npm:(?<name>(?:@[^/@]+\/)?[^/@]+)(?:@(?<version>[^/]+))?/;
 
@@ -56,11 +65,17 @@ const JSR_SPECIFIER_RE =
 /** zod is externalized by the bundler — not a real extension dependency. */
 const EXCLUDED_NPM_PACKAGES: ReadonlySet<string> = new Set(["zod"]);
 
+/** A JSR package name: `@scope/name`, lowercase alphanumerics and hyphens. */
 export const JSR_NAME_RE = /^@[a-z0-9-]+\/[a-z0-9-]+$/;
 
+/** npm's naming rules, uppercase allowed for legacy names. */
 export const NPM_NAME_RE =
   /^(?:@[a-z0-9-*~][a-z0-9-*._~]*\/)?[a-z0-9-~][a-z0-9-._~]*$/i;
 
+/**
+ * The package an `npm:` or `jsr:` specifier names, or null for anything
+ * else and for an excluded package.
+ */
 export function parseSpecifier(
   raw: string,
 ):
@@ -85,6 +100,7 @@ export function parseSpecifier(
   return null;
 }
 
+/** The specifier as the source writes it, without any subpath. */
 export function specifierText(
   spec: Pick<DependencySpecifier, "registry" | "name" | "version">,
 ): string {
@@ -94,8 +110,9 @@ export function specifierText(
 }
 
 /**
- * an installed package.json dependency ships pinned to its installed version,
- * so two installed copies under one declared range are two dependencies
+ * A specifier's identity for deduplication: an installed package.json
+ * dependency ships pinned to its installed version, so two installed copies
+ * under one declared range are two dependencies (swamp-club#3793).
  */
 export function specifierKey(
   spec: Pick<
@@ -110,9 +127,13 @@ export function specifierKey(
 }
 
 /**
- * read from the syntax tree, so a commented-out import or a specifier-shaped
- * string is never audited; null for a module that does not parse, whose imports
- * are unknown, so the registry counts it as not audited
+ * The `npm:` and `jsr:` dependencies a module writes out in import
+ * position: static, side-effect and dynamic imports and re-exports, read
+ * from the module's syntax tree (`sourceFile` picks TypeScript or
+ * JavaScript), so a commented-out import or a specifier-shaped string is
+ * never audited. Each appears once, in source order. Null for a module that
+ * does not parse: its imports are unknown, not absent, so the registry
+ * counts it as not audited (the `unreadable` paths `scorecardResult` takes).
  */
 export function writtenSpecifiers(
   source: string,
@@ -133,6 +154,7 @@ export function writtenSpecifiers(
   return results;
 }
 
+/** File extensions of code modules whose imports the audit reads. */
 export const CODE_FILE_EXTENSIONS: readonly string[] = [
   ".ts",
   ".tsx",
@@ -154,6 +176,7 @@ export function isAuditedCodeFile(path: string): boolean {
   return !/[._]test\.[cm]?[jt]sx?$/.test(lower);
 }
 
+/** Sorts dependencies by registry, name and version, as the audit reports them. */
 export function compareSpecifiers(
   a: Pick<DependencySpecifier, "registry" | "name" | "version">,
   b: Pick<DependencySpecifier, "registry" | "name" | "version">,

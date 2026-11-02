@@ -17,12 +17,20 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// a lab issue moves one step at a time (open, triaged, in_progress, shipped)
-// and refuses jumps; closed reopens to open. The path is computed here as a
-// pure function and walked one PATCH at a time
+// ---------------------------------------------------------------------------
+// swamp-club Issue Status Order
+// ---------------------------------------------------------------------------
+//
+// swamp-club's lab issue moves one step at a time — open, triaged,
+// in_progress, shipped — and refuses any jump (`ForgeIssue` in swamp-club's
+// `lib/domain/lab/issue.ts`). `closed` is terminal but can be reopened to
+// `open`. A lifecycle that carries more than one issue has to bring each of
+// them to the primary issue's status, so the path is worked out here once,
+// as a pure function, and the client walks it one PATCH at a time.
 
 import type { Phase } from "./schemas.ts";
 
+/** Statuses a lab issue passes through, in the only order swamp-club allows. */
 export const STATUS_ORDER = [
   "open",
   "triaged",
@@ -33,9 +41,12 @@ export const STATUS_ORDER = [
 export type ForwardStatus = typeof STATUS_ORDER[number];
 
 /**
- * empty when the issue is at or past the target, since a walk only moves
- * forward; a closed issue is reopened first; an unknown status raises because a
- * newer one may not sit on this line
+ * The single-step transitions that take an issue from `current` to `target`.
+ *
+ * Empty when the issue is already at or past the target: a status walk only
+ * ever moves forward, so an issue that got ahead is left where it is. A
+ * closed issue is reopened first. An unknown status raises rather than
+ * guessing, since a status swamp-club added later may not sit on this line.
  */
 export function statusPath(
   current: string,
@@ -55,6 +66,10 @@ export function statusPath(
   return [...STATUS_ORDER.slice(currentIndex + 1, targetIndex + 1)];
 }
 
+/**
+ * The swamp-club status the primary issue holds while its lifecycle is in
+ * `phase` — what an issue linked part way through is caught up to.
+ */
 export function upstreamStatusForPhase(phase: Phase): ForwardStatus {
   switch (phase) {
     case "created":
@@ -77,6 +92,7 @@ export function upstreamStatusForPhase(phase: Phase): ForwardStatus {
   }
 }
 
+/** The pull request number in a `.../pull/<n>` URL, if it has one. */
 export function parsePrNumber(url: string): number | undefined {
   const match = /\/pull\/(\d+)(?:[/?#]|$)/.exec(url);
   return match ? Number(match[1]) : undefined;

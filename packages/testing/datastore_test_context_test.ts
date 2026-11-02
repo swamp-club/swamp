@@ -20,6 +20,8 @@
 import { assertEquals, assertRejects } from "@std/assert";
 import { createDatastoreTestContext } from "./datastore_test_context.ts";
 
+// --- resolveDatastorePath ---
+
 Deno.test("createDatastoreTestContext: default datastore path", () => {
   const { provider } = createDatastoreTestContext();
   assertEquals(
@@ -35,6 +37,8 @@ Deno.test("createDatastoreTestContext: custom datastore path", () => {
   assertEquals(provider.resolveDatastorePath("/repo"), "/custom/path");
 });
 
+// --- resolveCachePath ---
+
 Deno.test("createDatastoreTestContext: no cache path by default", () => {
   const { provider } = createDatastoreTestContext();
   assertEquals(provider.resolveCachePath, undefined);
@@ -46,6 +50,8 @@ Deno.test("createDatastoreTestContext: custom cache path", () => {
   });
   assertEquals(provider.resolveCachePath!("/repo"), "/cache/path");
 });
+
+// --- Health verifier ---
 
 Deno.test("createDatastoreTestContext: default healthy verifier", async () => {
   const { provider } = createDatastoreTestContext();
@@ -71,6 +77,8 @@ Deno.test("createDatastoreTestContext: custom health result", async () => {
   assertEquals(result.latencyMs, 5000);
 });
 
+// --- Lock: acquire/release ---
+
 Deno.test("createDatastoreTestContext: lock acquire and release", async () => {
   const { provider, isLockHeld, getLockOperations } =
     createDatastoreTestContext();
@@ -87,6 +95,8 @@ Deno.test("createDatastoreTestContext: lock acquire and release", async () => {
   assertEquals(ops[0].method, "acquire");
   assertEquals(ops[1].method, "release");
 });
+
+// --- Lock: withLock ---
 
 Deno.test("createDatastoreTestContext: withLock holds and releases", async () => {
   const { provider, isLockHeld } = createDatastoreTestContext();
@@ -118,6 +128,8 @@ Deno.test("createDatastoreTestContext: withLock releases on error", async () => 
   assertEquals(isLockHeld(), false);
 });
 
+// --- Lock: inspect ---
+
 Deno.test("createDatastoreTestContext: inspect returns null when not held", async () => {
   const { provider } = createDatastoreTestContext();
   const lock = provider.createLock("/ds");
@@ -136,6 +148,8 @@ Deno.test("createDatastoreTestContext: inspect returns info when held", async ()
   assertEquals(typeof info!.nonce, "string");
   await lock.release();
 });
+
+// --- Lock: forceRelease ---
 
 Deno.test("createDatastoreTestContext: forceRelease with correct nonce", async () => {
   const { provider, isLockHeld } = createDatastoreTestContext();
@@ -159,6 +173,8 @@ Deno.test("createDatastoreTestContext: forceRelease with wrong nonce", async () 
   await lock.release();
 });
 
+// --- Lock: acquire fails ---
+
 Deno.test("createDatastoreTestContext: lock acquire fails when configured", async () => {
   const { provider } = createDatastoreTestContext({ lockAcquireFails: true });
   const lock = provider.createLock("/ds");
@@ -174,6 +190,8 @@ Deno.test("createDatastoreTestContext: withLock fails when acquire fails", async
     "Failed to acquire lock",
   );
 });
+
+// --- Sync service ---
 
 Deno.test("createDatastoreTestContext: no sync service by default", () => {
   const { provider } = createDatastoreTestContext();
@@ -195,6 +213,8 @@ Deno.test("createDatastoreTestContext: sync service when enabled", async () => {
   assertEquals(ops[1].method, "pushChanged");
 });
 
+// --- Lock operations recording ---
+
 Deno.test("createDatastoreTestContext: getLockOperations returns a copy", async () => {
   const { provider, getLockOperations } = createDatastoreTestContext();
   const lock = provider.createLock("/ds");
@@ -207,6 +227,8 @@ Deno.test("createDatastoreTestContext: getLockOperations returns a copy", async 
   assertEquals(ops1.length, 1);
   assertEquals(ops2.length, 2);
 });
+
+// --- Lock key tracking ---
 
 Deno.test("createDatastoreTestContext: lock key is recorded in operations", async () => {
   const { provider, getLockOperations } = createDatastoreTestContext();

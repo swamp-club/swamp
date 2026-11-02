@@ -26,6 +26,7 @@
 
 const WORKSPACE_PATH = /^\/dashboard\/w\/([^/]+)(?=\/|$)/;
 
+/** The workspace a dashboard path addresses, or null for serve's paths. */
 export function workspaceFromPath(pathname: string): string | null {
   const match = WORKSPACE_PATH.exec(pathname);
   if (!match) return null;
@@ -41,18 +42,21 @@ export const PAGE_WORKSPACE: string | null = workspaceFromPath(
   globalThis.location?.pathname ?? "",
 );
 
+/** The dashboard's base path for a workspace (or serve, for null). */
 export function dashboardBaseFor(workspace: string | null): string {
   return workspace === null
     ? "/dashboard"
     : `/dashboard/w/${encodeURIComponent(workspace)}`;
 }
 
+/** A server path (`/auth/info`, `/api/v1/health`, `/`) for a workspace. */
 export function serverPathFor(workspace: string | null, path: string): string {
   return workspace === null
     ? path
     : `/w/${encodeURIComponent(workspace)}${path}`;
 }
 
+/** {@link serverPathFor} for the page's own workspace. */
 export function serverPath(path: string): string {
   return serverPathFor(PAGE_WORKSPACE, path);
 }
@@ -63,8 +67,10 @@ export function serverPath(path: string): string {
  * page's sessionStorage entry.
  */
 export const LOCAL_TOKEN_KEY = "swamp-local-token";
+/** The start page's sessionStorage key (`views/start/helpers.ts`). */
 const START_TOKEN_KEY = "swamp-start-token";
 
+/** The header the hub reads the local token from on HTTP requests. */
 export const LOCAL_TOKEN_HEADER = "x-swamp-local-token";
 
 function stored(storage: () => Storage, key: string): string | null {
@@ -75,12 +81,18 @@ function stored(storage: () => Storage, key: string): string | null {
   }
 }
 
+/**
+ * The local dashboard's token: what `swamp start` or `swamp dashboard`
+ * handed the page in its URL. Null under serve, and on a workspace page
+ * opened without it.
+ */
 export function localToken(): string | null {
   if (PAGE_WORKSPACE === null) return null;
   return stored(() => sessionStorage, START_TOKEN_KEY) ??
     stored(() => localStorage, LOCAL_TOKEN_KEY);
 }
 
+/** Keeps a token the page was handed, for this tab and later ones. */
 export function keepLocalToken(token: string): void {
   for (
     const [storage, key] of [
@@ -96,6 +108,7 @@ export function keepLocalToken(token: string): void {
   }
 }
 
+/** `headers` plus the local token, when the page has one. */
 export function withLocalToken(
   headers: Record<string, string> = {},
 ): Record<string, string> {
@@ -103,6 +116,10 @@ export function withLocalToken(
   return token === null ? headers : { ...headers, [LOCAL_TOKEN_HEADER]: token };
 }
 
+/**
+ * The subprotocols a local dashboard socket offers (the hub echoes the
+ * bearer one), or undefined under serve.
+ */
 export function localSocketProtocols(): string[] | undefined {
   const token = localToken();
   return token === null ? undefined : [`bearer.${token}`];

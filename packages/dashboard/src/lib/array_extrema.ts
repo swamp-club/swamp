@@ -17,10 +17,12 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// Math.max(...values) puts every element on the call stack and throws a
-// RangeError on very large inputs, so this loops; a copy of
-// src/domain/array_extrema.ts, which the dashboard cannot import
+// The largest value of a collection of any size. `Math.max(...values)`
+// puts every element on the call stack and throws a RangeError past about
+// 125k of them (swamp-club#2565); this walks them in a loop instead. The
+// dashboard's copy of `src/domain/array_extrema.ts`, which it can't import.
 
+/** The largest value, or `undefined` when there are none. */
 export function maxOf(values: Iterable<number>): number | undefined {
   let result: number | undefined;
   for (const value of values) {

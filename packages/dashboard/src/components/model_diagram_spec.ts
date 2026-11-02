@@ -28,6 +28,12 @@ import type {
   DiagramSpec,
 } from "./model_diagram_layout.ts";
 
+// Turns serve's `model.get` result (plus the model's data, already fetched
+// for the page) into the diagram's boxes. Optional metadata can describe
+// declared outputs, reports and extensions; otherwise the diagram uses
+// observed data and marks extension names inferred from the type.
+
+/** Mirrors DataOutputSpecDescribeData in src/libswamp/types/schema_helpers.ts. */
 export interface DataOutputSpec {
   specName: string;
   kind: "resource" | "file";
@@ -40,12 +46,14 @@ export interface DataOutputSpec {
   tags?: Record<string, string>;
 }
 
+/** Mirrors MethodDescribeData in src/libswamp/types/schema_helpers.ts. */
 export interface MethodInfo {
   name: string;
   description?: string;
   arguments?: object;
 }
 
+/** Mirrors ModelGetData in src/libswamp/models/get.ts. */
 export interface ModelInfo {
   id?: string;
   name: string;
@@ -65,6 +73,7 @@ export interface ModelInfo {
   definition?: string;
 }
 
+/** A `data.search` row with the fields the diagram reads. */
 export interface ModelDataRow extends SearchItem {
   type?: string;
 }
@@ -87,6 +96,7 @@ function asSchema(value: unknown): JsonSchemaLike | null {
     : null;
 }
 
+/** A short type for a JSON schema property: "string", "string[]", "enum". */
 export function schemaTypeLabel(schema: unknown): string {
   const s = asSchema(schema);
   if (!s) return "any";
@@ -111,8 +121,9 @@ function valueTypeLabel(value: unknown): string {
 }
 
 /**
- * serve's reported extension wins; otherwise a scoped type's first two segments
- * name it, marked inferred; unscoped built-in types have none
+ * The extension that owns a type. Serve reports it when it knows; else a
+ * scoped type's first two segments name it (`@acme/aws/ec2` → `@acme/aws`),
+ * marked inferred. Built-in, unscoped types (`command/shell`) have none.
  */
 export function modelExtension(
   model: Pick<ModelInfo, "type" | "extension">,
@@ -309,6 +320,7 @@ const STALE_LABELS: Record<string, string> = {
   invalid: "invalid",
 };
 
+/** Builds the diagram for a model and its data rows. */
 export function buildDiagramSpec(
   model: ModelInfo,
   rows: readonly ModelDataRow[],
@@ -376,6 +388,7 @@ const VERBS: Record<DiagramGroup["key"], string> = {
   reports: "Generates",
 };
 
+/** One sentence per side, for screen readers and the text alternative. */
 export function describeDiagram(spec: DiagramSpec): string {
   const listOf = (nodes: DiagramNode[]) =>
     nodes.filter((n) => n.kind !== "placeholder").map((n) => n.label);

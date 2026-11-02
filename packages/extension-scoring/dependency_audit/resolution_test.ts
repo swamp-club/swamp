@@ -173,6 +173,7 @@ Deno.test("resolveShippedVersion: the lock's entry for the specifier beats a hig
     resolveShippedVersion("npm", "x", "^1.0.0", lock, NPM),
     { version: "1.0.0", from: "lockfile" },
   );
+  // A specifier the lock does not record takes the highest locked match.
   assertEquals(
     resolveShippedVersion("npm", "x", "~1.2.0", lock, NPM),
     { version: "1.2.0", from: "lockfile" },
@@ -306,6 +307,7 @@ Deno.test("canonicalRecordedVersions: only an entry no valid lock fixed keeps th
       locked: false,
       writtenAs: ["npm:e@1.0.0"],
     },
+    // an exact spelling with a subpath is still exact
     {
       name: "f",
       version: "1.0.0",

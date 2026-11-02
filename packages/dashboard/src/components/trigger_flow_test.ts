@@ -60,6 +60,7 @@ Deno.test("jobLayers: ignores unknown dependencies and breaks cycles", () => {
 Deno.test("layoutFlow: one column per stage, edges follow dependencies", () => {
   const layout = layoutFlow(spec);
   const xs = [...new Set(layout.nodes.map((n) => n.x))];
+  // trigger, inputs, workflow + three job layers
   assertEquals(xs.length, 6);
   assertEquals(
     layout.edges.map((e) => `${e.from}->${e.to}`).sort(),

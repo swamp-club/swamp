@@ -28,6 +28,7 @@ import type {
 } from "./types.ts";
 import { createExtensionCelEnvironment } from "./_cel_environment.ts";
 
+/** A resource captured by the test context's writeResource. */
 export interface WrittenResource {
   specName: string;
   name: string;
@@ -35,6 +36,7 @@ export interface WrittenResource {
   handle: DataHandle;
 }
 
+/** A file captured by the test context's createFileWriter. */
 export interface WrittenFile {
   specName: string;
   name: string;
@@ -48,23 +50,38 @@ export interface WrittenFile {
   handle: DataHandle;
 }
 
+/** A log entry captured by the test context's logger. */
 export interface CapturedLog {
   level: LogLevel;
   message: string;
   args: unknown[];
 }
 
+/**
+ * Options for creating a test context.
+ *
+ * `TGlobalArgs` is the type of `globalArgs`. It accepts any object type,
+ * including interfaces, and is usually inferred from the `globalArgs` option.
+ */
 export interface ModelTestContextOptions<
   TGlobalArgs extends object = Record<string, unknown>,
 > {
+  /** Global arguments passed to the execute function (default: {}). */
   globalArgs?: TGlobalArgs;
+  /** Definition metadata overrides. */
   definition?: Partial<DefinitionInfo>;
+  /** Method name (default: "run"). */
   methodName?: string;
+  /** Repository directory path (default: "/tmp/swamp-test"). */
   repoDir?: string;
+  /** Abort signal (default: never-aborted). */
   signal?: AbortSignal;
   /**
-   * pre-seed stored resources so readResource returns them; keys are instance
-   * names (the name argument of writeResource), not the specName.
+   * Pre-seed stored resources so `readResource` returns them.
+   *
+   * Keys are **instance names** (the `name` parameter from `writeResource`,
+   * not the `specName`). For example, if your model writes with
+   * `writeResource("state", "main", data)`, seed with `{ "main": data }`.
    */
   storedResources?: Record<string, Record<string, unknown>>;
   /**
@@ -73,24 +90,55 @@ export interface ModelTestContextOptions<
    * for inspection via getEvents().
    */
   onEvent?: (event: MethodExecutionEvent) => void;
+  /** W3C trace headers to expose as context.traceHeaders (default: unset). */
   traceHeaders?: Record<string, string>;
 }
 
+/** The return value from createModelTestContext. */
 export interface ModelTestContextResult<
   TGlobalArgs extends object = Record<string, unknown>,
 > {
+  /** The MethodContext to pass to your execute function. */
   context: MethodContext<TGlobalArgs>;
+  /** Returns all resources written via writeResource during execution. */
   getWrittenResources(): WrittenResource[];
+  /** Returns all files written via createFileWriter during execution. */
   getWrittenFiles(): WrittenFile[];
+  /** Returns all log entries captured during execution. */
   getLogs(): CapturedLog[];
+  /** Returns log entries filtered by level. */
   getLogsByLevel(level: LogLevel): CapturedLog[];
+  /** Returns all events emitted via context.onEvent during execution. */
   getEvents(): MethodExecutionEvent[];
 }
 
 /**
- * creates an in-memory test context for model execute functions;
- * context.globalArgs takes the type of the globalArgs option, and a type
- * argument without a value still yields an empty object at runtime.
+ * Creates a test context for unit testing extension model execute functions.
+ *
+ * The returned context has in-memory implementations of writeResource,
+ * readResource, and createFileWriter. All written data and log output
+ * can be inspected via the returned helper functions.
+ *
+ * ```typescript
+ * import { createModelTestContext } from "@swamp-club/swamp-testing";
+ * import { model } from "./my_model.ts";
+ *
+ * Deno.test("run method writes expected resource", async () => {
+ *   const { context, getWrittenResources } = createModelTestContext({
+ *     globalArgs: { message: "hello" },
+ *   });
+ *
+ *   await model.methods.run.execute({}, context);
+ *
+ *   const resources = getWrittenResources();
+ *   assertEquals(resources.length, 1);
+ *   assertEquals(resources[0].data.message, "HELLO");
+ * });
+ * ```
+ *
+ * `context.globalArgs` takes the type of the `globalArgs` option, so an
+ * interface-typed value comes back as that interface. A type argument given
+ * without a `globalArgs` value still yields an empty object at runtime.
  */
 export function createModelTestContext<
   TGlobalArgs extends object = Record<string, unknown>,
@@ -170,6 +218,7 @@ export function createModelTestContext<
       allocateDataId(),
     );
     writtenResources.push({ specName, name, data, handle });
+    // Also store so subsequent readResource calls can find it
     storedResources.set(name, data);
     return Promise.resolve(handle);
   };

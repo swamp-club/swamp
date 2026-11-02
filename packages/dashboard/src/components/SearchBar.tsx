@@ -44,18 +44,23 @@ import { formatCount } from "../lib/format.ts";
 export interface SearchFacet extends FacetDef {
   selected: readonly string[];
   onSelect: (values: readonly string[]) => void;
+  /** False for facets that can only hold one value. */
   multi?: boolean;
 }
 
 interface SearchBarProps {
+  /** Free-text search (fuzzy over names). */
   query: string;
   onQuery: (query: string) => void;
   facets: readonly SearchFacet[];
   placeholder?: string;
+  /** "12 of 141 workflows" while anything narrows the list. */
   shown?: number;
   total?: number;
   noun?: string;
+  /** Clears the query and every facet. */
   onClear: () => void;
+  /** Controls after the field, e.g. the View menu. */
   trailing?: ReactNode;
 }
 
@@ -93,6 +98,15 @@ function isTyping(target: unknown): boolean {
   );
 }
 
+/**
+ * One search box that guides filtering. Focus it to see what you can
+ * filter by; pick a facet (or type `prefix:`) to see its values; or just
+ * type to search names, with matching values suggested alongside.
+ * Values are checkboxes: clicking (or Enter on) a value ticks or unticks
+ * it and keeps the list open, so several can be chosen in one go. Applied filters sit in the box as chips joined by
+ * "and"; click a chip to change it. "/" focuses the box from anywhere and
+ * Backspace in an empty box removes the last chip.
+ */
 export function SearchBar(
   {
     query,
@@ -176,6 +190,7 @@ export function SearchBar(
 
   const focusInput = () => el(inputRef.current)?.focus();
 
+  /** Closes the menu; an unfinished `key:` in the box goes with it. */
   const close = () => {
     setOpen(false);
     if (parseFacetInput(draft, facets) !== null) setDraft("");
@@ -203,6 +218,11 @@ export function SearchBar(
     focusInput();
   };
 
+  /**
+   * Applies a suggestion. A value ticks or unticks in its facet (or, for a
+   * single-value facet, replaces it) and the facet's list stays open so
+   * more can be ticked; Escape or a click outside closes it.
+   */
   const pick = (s: Suggestion | undefined) => {
     if (!s) return;
     if (s.kind === "facet") {
@@ -224,10 +244,13 @@ export function SearchBar(
         ? facet.selected.filter((v) => v !== value)
         : [...facet.selected, value],
     );
+    // Picked from free-text suggestions: switch to that facet's list, so
+    // the rest of its values are a click away.
     if (!parsed) showFacet(facet.key);
     else focusInput();
   };
 
+  /** Backspace in an empty box: the last value chip goes. */
   const removeLast = () => {
     const last = [...facets].reverse().find((f) => f.selected.length > 0);
     last?.onSelect(last.selected.slice(0, -1));
@@ -274,6 +297,7 @@ export function SearchBar(
       <div
         className={`qbar-field${open ? " is-open" : ""}`}
         onMouseDown={(e) => {
+          // Clicking the field's padding focuses the input.
           if (e.target === e.currentTarget) {
             e.preventDefault();
             focusInput();

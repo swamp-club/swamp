@@ -17,12 +17,14 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// every term must appear as a subsequence; word starts and consecutive runs
-// score higher, so "dep api" ranks "deploy-api" above
-// "data-export-pipeline-api"
+// Fuzzy matching for the dashboard's search boxes. Every whitespace-
+// separated term of the query must appear in the text as a subsequence;
+// matches at word starts and runs of consecutive characters score higher,
+// so "dep api" ranks "deploy-api" above "data-export-pipeline-api".
 
 export interface FuzzyMatch {
   score: number;
+  /** Indices into the text of every matched character, ascending. */
   indices: number[];
 }
 
@@ -32,6 +34,7 @@ function isWordStart(text: string, i: number): boolean {
   if (i === 0) return true;
   const prev = text[i - 1];
   if (BOUNDARY.test(prev)) return true;
+  // camelCase boundary
   return prev === prev.toLowerCase() && text[i] !== text[i].toLowerCase();
 }
 
@@ -71,6 +74,10 @@ function matchTerm(
   return best;
 }
 
+/**
+ * Matches `query` against `text`. Returns null when any term is missing;
+ * an empty query matches everything with score 0.
+ */
 export function fuzzyMatch(query: string, text: string): FuzzyMatch | null {
   const terms = query.toLowerCase().split(/\s+/).filter(Boolean);
   if (terms.length === 0) return { score: 0, indices: [] };
@@ -89,6 +96,10 @@ export function fuzzyMatch(query: string, text: string): FuzzyMatch | null {
   return { score, indices: [...all].sort((a, b) => a - b) };
 }
 
+/**
+ * Filters and ranks `items` by the best match across the strings `keys`
+ * returns for each. Order is preserved for an empty query.
+ */
 export function fuzzyFilter<T>(
   items: readonly T[],
   query: string,

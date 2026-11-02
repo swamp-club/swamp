@@ -17,9 +17,28 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// compile-time sync check between the client's hand-duplicated wire protocol
-// and src/serve/protocol.ts; the duplication keeps the published package free
-// of CLI source dependencies
+// Compile-time sync check between this package's hand-duplicated wire
+// protocol (./protocol.ts) and the server's source of truth
+// (src/serve/protocol.ts).
+//
+// The duplication is deliberate — the client package must have zero
+// dependencies on the CLI source tree so it can publish to JSR — but
+// nothing cross-checked the two files, so they drifted silently. This
+// test (a test file may cross the package boundary; only the published
+// export graph must stay self-contained) makes drift a hard `deno check`
+// error, in the style of integration/extension_kind_sync_test.ts.
+//
+// Three levels of check:
+//   1. Same-named payload/frame types that are byte-equivalent today must
+//      stay STRUCTURALLY IDENTICAL (mutually assignable + same key set —
+//      the key-set check is what catches an added *optional* field, which
+//      plain mutual assignability lets through).
+//   2. Same-named types that already diverged are PINNED: the client type
+//      must remain assignable to the serve type (safe to send), and the
+//      divergence itself is pinned so that fixing it forces the pair to be
+//      promoted to level 1 rather than passing silently.
+//   3. The ServerRequest / ServerMessage unions are compared variant by
+//      variant, with the exact set of known-divergent variants pinned.
 
 import type * as client from "./protocol.ts";
 import type * as serve from "../../src/serve/protocol.ts";
@@ -33,14 +52,25 @@ type SameKeys<A, B> = [keyof A] extends [keyof B]
   : false
   : false;
 
+/** Mutually assignable AND the same property names (catches optional drift). */
 type Identical<A, B> = MutuallyAssignable<A, B> extends true ? SameKeys<A, B>
   : false;
 
+/** The client type can be sent where the serve type is expected. */
 type ClientSendable<C, S> = [C] extends [S] ? true : false;
 
+/** The keys of `T` whose value type is `false`. */
 type FalseKeys<T extends Record<string, boolean>> = {
   [K in keyof T]: T[K] extends false ? K : never;
 }[keyof T];
+
+// ── 1. Structurally identical pairs ──────────────────────────────────────
+//
+// Every same-named type not listed in the divergence block below must be
+// an exact structural copy of its serve counterpart. If an entry here
+// fails to type-check, the two protocol files drifted: mirror the change
+// into packages/client/protocol.ts (or, if the divergence is intentional,
+// move the pair to the pinned block below with a comment).
 
 const _identicalPairs: {
   WorkflowRunPayload: Identical<
@@ -414,21 +444,50 @@ const _identicalPairs: {
 };
 void _identicalPairs;
 
+// ── 2. Known-divergent pairs (pinned) ────────────────────────────────────
+//
+// Each entry is [clientSendable, identical]. `clientSendable: true` proves
+// the client type is still assignable to what the server accepts — the
+// safety property. `identical: false` pins the divergence: when the client
+// copy is brought back in sync, the pair must move up to the identical
+// block, so a fix cannot land without being recorded here.
+//
+// Currently empty — every same-named type is an exact structural copy. To
+// pin a new intentional divergence, add an entry of the form
+//
+//   TypeName: [
+//     ClientSendable<client.TypeName, serve.TypeName>,
+//     Identical<client.TypeName, serve.TypeName>,
+//   ];   // value: [true, false]
+//
+// with a comment explaining why the divergence is intentional.
+
 const _pinnedDivergentPairs: Record<never, [boolean, boolean]> = {};
 void _pinnedDivergentPairs;
 
+// Client-only types with no serve counterpart, intentionally excluded:
+// DataResponse (client-side generic for the serve *Response family),
+// WorkflowRunEvent / ModelMethodRunEvent / WorkflowRunView /
+// ModelMethodRunView (wire shapes of libswamp domain events, which
+// src/serve/protocol.ts does not re-declare).
+
+// ── 3. Union variants, compared per discriminant ─────────────────────────
+
+// Every request type-tag the client can emit must exist on the server.
 const _requestTagsAreSubset: ClientSendable<
   client.ServerRequest["type"],
   serve.ServerRequest["type"]
 > = true;
 void _requestTagsAreSubset;
 
+// Every message type-tag the client can parse must exist on the server.
 const _messageTagsAreSubset: ClientSendable<
   client.ServerMessage["type"],
   serve.ServerMessage["type"]
 > = true;
 void _messageTagsAreSubset;
 
+/** Per-variant assignability of the client union into the serve union. */
 type RequestVariantCompat = {
   [K in client.ServerRequest["type"]]: ClientSendable<
     Extract<client.ServerRequest, { type: K }>,
@@ -443,18 +502,32 @@ type MessageVariantCompat = {
   >;
 };
 
+// The exact set of request variants that do NOT line up today. Pinned in
+// both directions: a new divergence fails here, and a fixed one must be
+// removed from the expected union. Currently `never`: every request
+// variant the client can emit is accepted by the server as-is.
 const _divergentRequestVariants: MutuallyAssignable<
   FalseKeys<RequestVariantCompat>,
   never
 > = true;
 void _divergentRequestVariants;
 
+// The exact set of message variants that do NOT line up today. Currently
+// `never`: every response frame the client declares matches the payload
+// shape the server actually sends. (The generic DataResponse variants are
+// exact copies of the serve `{ data: Record<string, unknown> }` response
+// family; operations with flat payloads — server.version, access.*,
+// run.history, cluster.instances, serve.config — and the typed
+// workflow.trigger.get response mirror their serve counterparts.)
 const _divergentMessageVariants: MutuallyAssignable<
   FalseKeys<MessageVariantCompat>,
   never
 > = true;
 void _divergentMessageVariants;
 
+// A tiny runtime smoke test so this file registers in the test summary
+// rather than passing as a silent no-op. The real assertions are the
+// type-level constants above, enforced by `deno check`.
 Deno.test("client protocol stays in sync with src/serve/protocol.ts (compile-time)", () => {
   // Intentionally trivial: reaching this line means the compile-time
   // checks above type-checked.

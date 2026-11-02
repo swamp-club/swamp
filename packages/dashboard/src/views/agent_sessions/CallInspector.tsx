@@ -52,10 +52,14 @@ function SpanList({ nodes }: { nodes: SpanNode[] }) {
   );
 }
 
-/** docks to the bottom of the window, full width, so the turns keep theirs */
+/**
+ * One call: what it ran, how it was labelled and why, and its swamp spans.
+ * It docks to the bottom of the window, full width, so the turns keep theirs.
+ */
 export function CallInspector(
   { call, subagentLabel, onClose }: {
     call: AgentSessionToolCall;
+    /** For a subagent call: the child it started, as the page names it. */
     subagentLabel?: string;
     onClose: () => void;
   },

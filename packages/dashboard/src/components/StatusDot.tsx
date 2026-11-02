@@ -28,6 +28,7 @@ const DOT_COLORS: Record<string, string> = {
   pending: "var(--info)",
 };
 
+/** The theme color for a status; unknown statuses are muted. */
 export function statusColor(status: string): string {
   return DOT_COLORS[status] ?? "var(--text-3)";
 }

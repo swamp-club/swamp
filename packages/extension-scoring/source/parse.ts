@@ -18,14 +18,18 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * the import scan, swamp's safety rules and the quality-ignore directive reader
- * all parse with these options, so a module reads the same to each, on the CLI
- * and on the registry
+ * The one way extension source is parsed. The import scan, swamp's safety
+ * rules and its quality-ignore directive reader all parse with these
+ * options, so a module reads the same to every one of them, on the CLI and
+ * on the registry.
+ *
+ * @module
  */
 
 import { parse, type ParserOptions, type ParserPlugin } from "@babel/parser";
 import { extname } from "@std/path";
 
+/** A syntax-tree node, as far as a reader of extension source needs it. */
 export interface SyntaxNode {
   type: string;
   start?: number | null;
@@ -33,6 +37,7 @@ export interface SyntaxNode {
   [key: string]: unknown;
 }
 
+/** A comment or token Babel found, by UTF-16 offsets into the source. */
 export interface SourceSpan {
   type?: unknown;
   value?: unknown;
@@ -44,19 +49,29 @@ export interface SourceSpan {
   } | null;
 }
 
+/** A module that parsed. */
 export interface ParsedModule {
   ok: true;
   program: SyntaxNode;
   comments: SourceSpan[];
+  /** Empty unless {@link ParseModuleOptions.tokens} was asked for. */
   tokens: SourceSpan[];
 }
 
+/** A module that did not parse, and Babel's reason with its position. */
 export interface UnparsedModule {
   ok: false;
   reason: string;
 }
 
+/** How {@link parseExtensionModule} reads a module. */
 export interface ParseModuleOptions {
+  /**
+   * The module's path, which picks the syntax: TypeScript for `.ts`, `.mts`,
+   * `.cts` and `.tsx`, JavaScript for `.js`, `.mjs`, `.cjs` and `.jsx`, and
+   * JSX for the `x` extensions. Without one the module is read as
+   * TypeScript.
+   */
   path?: string;
   /**
    * Read the module as `deno bundle` output rather than as source an
@@ -64,6 +79,7 @@ export interface ParseModuleOptions {
    * proposals a bundler can leave, recovering from errors where Babel can.
    */
   bundle?: boolean;
+  /** Also return the tokens. */
   tokens?: boolean;
 }
 
@@ -119,9 +135,11 @@ export function parserPluginsFor(path?: string): ParserPlugin[] {
 }
 
 /**
- * never throws: a syntax error or stack overflow comes back as UnparsedModule;
- * module only, except CommonJS read as a script, since script mode would read
- * <!-- as a comment
+ * Parses `source` as a module. Never throws: a syntax error, and a stack
+ * overflow on extreme nesting, come back as an {@link UnparsedModule}.
+ * Module only, apart from CommonJS (`.cjs`, `.cts`), which is read as a
+ * script: Deno runs extensions as modules, and a script-mode retry would
+ * read `<!--` as a comment, which in a module is live code.
  */
 export function parseExtensionModule(
   source: string,

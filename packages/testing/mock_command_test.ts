@@ -20,6 +20,8 @@
 import { assertEquals, assertRejects } from "@std/assert";
 import { withMockedCommand } from "./mock_command.ts";
 
+// --- Sequential mode ---
+
 Deno.test("withMockedCommand: sequential mode returns outputs in order", async () => {
   const { result, calls } = await withMockedCommand([
     { stdout: "first", code: 0 },
@@ -59,6 +61,8 @@ Deno.test("withMockedCommand: sequential mode throws when exhausted", async () =
   );
 });
 
+// --- Handler mode ---
+
 Deno.test("withMockedCommand: handler mode routes by command", async () => {
   const { result } = await withMockedCommand((cmd, args) => {
     if (cmd === "op" && args.includes("read")) {
@@ -87,6 +91,8 @@ Deno.test("withMockedCommand: handler receives full args", async () => {
   assertEquals(calls[0].command, "git");
   assertEquals(calls[0].args, ["commit", "-m", "test message"]);
 });
+
+// --- Exit code and stderr ---
 
 Deno.test("withMockedCommand: non-zero exit code sets success=false", async () => {
   const { result } = await withMockedCommand([
@@ -118,6 +124,8 @@ Deno.test("withMockedCommand: zero exit code sets success=true", async () => {
   assertEquals(result, true);
 });
 
+// --- Restore ---
+
 Deno.test("withMockedCommand: restores original Deno.Command after success", async () => {
   const OriginalCommand = Deno.Command;
   await withMockedCommand([], () => {});
@@ -135,6 +143,8 @@ Deno.test("withMockedCommand: restores original Deno.Command after error", async
   }
   assertEquals(Deno.Command, OriginalCommand);
 });
+
+// --- Command options ---
 
 Deno.test("withMockedCommand: handler mode records env, cwd and clearEnv", async () => {
   const { calls } = await withMockedCommand(
@@ -211,6 +221,8 @@ Deno.test("withMockedCommand: env is snapshotted at construction", async () => {
   assertEquals(calls[0].env, { TOKEN: "original" });
 });
 
+// --- Return value ---
+
 Deno.test("withMockedCommand: returns callback result", async () => {
   const { result } = await withMockedCommand([
     { stdout: "42", code: 0 },
@@ -222,6 +234,8 @@ Deno.test("withMockedCommand: returns callback result", async () => {
 
   assertEquals(result, 42);
 });
+
+// --- Uint8Array input ---
 
 Deno.test("withMockedCommand: accepts Uint8Array stdout", async () => {
   const bytes = new Uint8Array([0x48, 0x65, 0x6c, 0x6c, 0x6f]);

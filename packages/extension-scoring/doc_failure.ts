@@ -17,14 +17,25 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+/**
+ * Why `deno doc` could not analyse an extension's source, in a short
+ * sentence that names only what failed to resolve (swamp-club#3370). The
+ * CLI's quality run and the registry's scorecard both describe a failure
+ * with this module.
+ *
+ * @module
+ */
+
 import { redactPaths, stripAnsi } from "./text.ts";
 
+/** Longest description returned. */
 export const MAX_DOC_FAILURE_CHARS = 300;
 
 const MAX_NAMED_PER_KIND = 3;
 
 const MAX_SPECIFIER_CHARS = 80;
 
+/** The description when deno's output names nothing recognisable. */
 export const DOC_FAILURE_FALLBACK =
   "deno doc could not analyse this version's source.";
 
@@ -80,9 +91,15 @@ function cap(text: string): string {
 }
 
 /**
- * raw deno output never leaves this function; paths are relative to the
- * extraction root, any other path is redacted. roots are the root as it appears
- * in file:// URLs, several when it has more than one spelling
+ * Describe a failed `deno doc` run from its combined output. Raw deno
+ * output never leaves this function: the result names the bare imports
+ * that did not resolve, the modules missing from the archive (relative to
+ * the extraction root; any other path is redacted), and the hosts imports
+ * may not be fetched from, or {@link DOC_FAILURE_FALLBACK}.
+ *
+ * @param roots the extraction root as it appears in deno's `file://` URLs,
+ *   with forward slashes; several when the root has more than one spelling
+ *   (resolved and real path)
  */
 export function describeDocFailure(output: string, roots: string[]): string {
   const lines = clean(output).split("\n");
@@ -135,9 +152,10 @@ export function describeDocFailure(output: string, roots: string[]): string {
 }
 
 /**
- * npm publishing no version matching these specifiers fails deno's whole npm
- * resolution, so deno's own output names whichever import it was resolving;
- * only the CLI consults the audit before scoring
+ * Describe a `deno doc` failure that the dependency audit explains: npm
+ * publishes no version matching these specifiers, which fails deno's whole
+ * npm resolution, so deno's own output names whichever import it was
+ * resolving. Only the CLI consults the audit before scoring.
  */
 export function describeUnpublishedSpecifiers(specifiers: string[]): string {
   return cap(

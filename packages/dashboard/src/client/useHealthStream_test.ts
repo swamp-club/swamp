@@ -25,6 +25,7 @@ function frame(instanceId: string): string {
   return `event: health\ndata: ${JSON.stringify({ instanceId })}\n\n`;
 }
 
+/** A fetch answering one stream whose chunks the test pushes itself. */
 function streamingFetch(status = 200, headers: HeadersInit = {}) {
   let controller!: ReadableStreamDefaultController<Uint8Array>;
   const body = new ReadableStream<Uint8Array>({
@@ -82,6 +83,7 @@ Deno.test("readHealthStream: hands each health event to onSnapshot", async () =>
     opened,
   );
   stream.push(frame("a"));
+  // A frame split across chunks still parses.
   stream.push("event: health\ndata: ");
   stream.push(`${JSON.stringify({ instanceId: "b" })}\n\n`);
   stream.push(`event: session-ended\ndata: {"code":4001}\n\n`);
@@ -100,12 +102,14 @@ Deno.test("readHealthStream: aborting closes the stream and delivers nothing mor
     headers: {},
     signal: abort.signal,
     onOpen: () => {},
+    // The tab hides right after the first snapshot lands.
     onSnapshot: (s: HealthSnapshot) => {
       snapshots.push(s.instanceId);
       abort.abort();
     },
     fetchFn: stream.fetchFn,
   });
+  // Both frames arrive in one chunk; the second is read after the abort.
   stream.push(frame("a") + frame("b"));
   await done;
   assertEquals(snapshots, ["a"]);
@@ -116,6 +120,7 @@ Deno.test("readHealthStream: a stream closed before it opens delivers nothing", 
   const snapshots: string[] = [];
   const opened = { count: 0 };
   const abort = new AbortController();
+  // A snapshot is already waiting when the tab hides.
   stream.push(frame("a"));
   abort.abort();
   await reader(stream.fetchFn, abort.signal, snapshots, opened);

@@ -19,6 +19,13 @@
 
 import type { RouteState } from "../routes.ts";
 
+// Geometry for the model diagram: a model's inputs on the left, the model
+// (inside its extension's frame) in the centre, and its outputs and
+// reports on the right. Narrow screens get a vertical variant: inputs
+// above the model, outputs and reports below it, joined by a spine. This
+// module is pure — it places boxes and draws connector paths; the
+// component only paints what it returns.
+
 export type DiagramNodeKind =
   | "argument"
   | "method"
@@ -31,9 +38,12 @@ export type DiagramNodeKind =
 export interface DiagramNode {
   id: string;
   label: string;
+  /** Second line: type, kind, argument names. */
   detail?: string;
   kind: DiagramNodeKind;
+  /** Where the box links; null for boxes with no page. */
   to: RouteState | null;
+  /** Longer text for the tooltip (a description). */
   description?: string;
 }
 
@@ -42,6 +52,7 @@ export type DiagramGroupKey = "arguments" | "methods" | "outputs" | "reports";
 export interface DiagramGroup {
   key: DiagramGroupKey;
   title: string;
+  /** Inputs flow into the model; outputs flow out of it. */
   side: "in" | "out";
   nodes: DiagramNode[];
 }
@@ -49,6 +60,7 @@ export interface DiagramGroup {
 export interface DiagramExtension {
   name: string;
   version?: string;
+  /** True when derived from the type's scope rather than reported by serve. */
   inferred: boolean;
 }
 
@@ -56,7 +68,9 @@ export interface DiagramModel {
   name: string;
   type: string;
   version?: number;
+  /** A staleness label when the definition is not current ("upgradable"). */
   stale?: string;
+  /** Footer line under the name ("2 methods"). */
   summary?: string;
 }
 
@@ -70,7 +84,9 @@ export type DiagramOrientation = "horizontal" | "vertical";
 
 export interface LayoutOptions {
   orientation: DiagramOrientation;
+  /** Boxes a group shows before collapsing the rest into "+N more". */
   maxPerGroup?: number;
+  /** Groups the viewer expanded to show every box. */
   expanded?: ReadonlySet<DiagramGroupKey>;
 }
 
@@ -85,6 +101,7 @@ export interface PlacedBox extends Rect {
   node: DiagramNode;
   group: DiagramGroupKey;
   side: "in" | "out";
+  /** Label and detail cut to fit the box; the full text goes in a title. */
   label: string;
   detail: string;
   truncated: boolean;
@@ -92,6 +109,7 @@ export interface PlacedBox extends Rect {
 
 export interface PlacedToggle extends Rect {
   group: DiagramGroupKey;
+  /** Boxes hidden while collapsed (0 when expanded). */
   hidden: number;
   expanded: boolean;
   label: string;
@@ -110,6 +128,7 @@ export interface PlacedEdge {
   d: string;
   group: DiagramGroupKey;
   side: "in" | "out";
+  /** Faint edge to a placeholder box. */
   muted: boolean;
 }
 
@@ -121,6 +140,7 @@ export interface PlacedModel extends Rect {
 
 export interface PlacedFrame extends Rect {
   label: string;
+  /** Where the label's baseline sits. */
   labelX: number;
   labelY: number;
 }
@@ -137,6 +157,7 @@ export interface DiagramLayout {
   edges: PlacedEdge[];
 }
 
+// Geometry, in SVG user units (1:1 with CSS px at natural size).
 export const PAD = 16;
 export const BOX_H = 44;
 export const BOX_GAP = 8;
@@ -153,17 +174,19 @@ const V_WIDTH = 344;
 const V_SPINE_INSET = 10;
 const V_BOX_INSET = 30;
 const V_SECTION_GAP = 28;
-const BOX_TEXT_INSET = 44;
-const LABEL_CHAR_W = 7.3;
-const DETAIL_CHAR_W = 6.2;
-const NAME_CHAR_W = 9.2;
-const TYPE_CHAR_W = 6.6;
+const BOX_TEXT_INSET = 44; // glyph column + right padding
+const LABEL_CHAR_W = 7.3; // 12px JetBrains Mono
+const DETAIL_CHAR_W = 6.2; // 10.5px JetBrains Mono
+const NAME_CHAR_W = 9.2; // 16px semibold sans, a generous average
+const TYPE_CHAR_W = 6.6; // 11px mono
 export const DEFAULT_MAX_PER_GROUP = 6;
 
+/** Characters of `charWidth` that fit in `width` px. */
 export function charsThatFit(width: number, charWidth: number): number {
   return Math.max(1, Math.floor(width / charWidth));
 }
 
+/** Cuts `text` to `max` characters with a trailing ellipsis. */
 export function truncate(text: string, max: number): string {
   if (text.length <= max) return text;
   if (max <= 1) return "…";
@@ -171,8 +194,9 @@ export function truncate(text: string, max: number): string {
 }
 
 /**
- * a group over the cap shows max - 1 boxes plus a "+N more" toggle in the last
- * slot, so a collapsed group never takes more room than max boxes
+ * The boxes a group shows and how many are folded away. A group over the
+ * cap shows `max - 1` boxes plus a "+N more" toggle in the `max`th slot,
+ * so a collapsed group never takes more room than `max` boxes.
  */
 export function visibleNodes(
   nodes: readonly DiagramNode[],
@@ -191,6 +215,7 @@ export function visibleNodes(
   };
 }
 
+/** The extension frame's caption. */
 export function frameLabel(ext: DiagramExtension): string {
   if (ext.inferred) return `${ext.name} · inferred`;
   return ext.version ? `${ext.name} · v${ext.version}` : ext.name;
@@ -248,6 +273,10 @@ function toggleLabel(block: GroupBlock): string {
   return block.expanded ? "Show fewer" : `+${block.hidden} more`;
 }
 
+/**
+ * Places one stack of groups at (x, y) with boxes `w` wide; headings sit
+ * at `headX`. Returns the boxes, toggles and headings it placed.
+ */
 function placeStack(
   blocks: readonly GroupBlock[],
   x: number,
@@ -290,6 +319,7 @@ function placeStack(
 
 const r = (n: number) => Math.round(n * 10) / 10;
 
+/** A horizontal S-curve from (x1, y1) to (x2, y2). */
 export function curve(x1: number, y1: number, x2: number, y2: number): string {
   const dx = (x2 - x1) / 2;
   return `M${r(x1)} ${r(y1)} C${r(x1 + dx)} ${r(y1)} ${r(x2 - dx)} ${r(y2)} ${
@@ -298,8 +328,8 @@ export function curve(x1: number, y1: number, x2: number, y2: number): string {
 }
 
 /**
- * spread over the middle of the model's side so a fan of connectors stays
- * readable
+ * Where the i-th of n edges meets the model's side: spread over the middle
+ * of the edge so a fan of connectors stays readable at the model.
  */
 export function anchorY(model: Rect, i: number, n: number): number {
   const mid = model.y + model.h / 2;
@@ -500,6 +530,7 @@ function layoutVertical(
   return layout;
 }
 
+/** Lays out `spec` for the given orientation. */
 export function layoutDiagram(
   spec: DiagramSpec,
   options: LayoutOptions,

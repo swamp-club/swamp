@@ -22,12 +22,19 @@ import { absoluteUrl, type RouteState } from "../routes.ts";
 import { copyText } from "./clipboard.ts";
 
 interface ShareBarProps {
+  /** The page as shown; for a "latest" page this follows new versions. */
   link: RouteState;
+  /** The same item pinned to the version on screen, when that differs. */
   permalink?: RouteState;
 }
 
 type Copied = "link" | "permalink" | "failed" | null;
 
+/**
+ * Copy buttons for sharing the page. "Copy permalink" pins the version
+ * being read, so a link pasted into an incident thread keeps showing what
+ * the author saw after newer versions are written.
+ */
 export function ShareBar({ link, permalink }: ShareBarProps) {
   const [copied, setCopied] = useState<Copied>(null);
   const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);

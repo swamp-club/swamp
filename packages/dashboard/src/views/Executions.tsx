@@ -89,6 +89,7 @@ interface RunItem {
 }
 
 interface ExecutionsProps {
+  /** Serve's live health snapshot: schedules and webhooks for the filters. */
   health?: HealthSnapshot | null;
   onOpenRun?: (workflowName: string, runId?: string) => void;
 }
@@ -115,6 +116,7 @@ const STATUS_LABELS: Record<(typeof RUN_STATUSES)[number], string> = {
   cancelled: "Cancelled",
 };
 
+/** "in the last 7 days", "of all time", "between Oct 3 and Oct 9". */
 function rangePhrase(range: TimeRange): string {
   if (range.kind === "preset" && range.preset === "all") return "yet";
   const text = describeTimeRange(range);
@@ -139,8 +141,9 @@ export function Executions({ health, onOpenRun }: ExecutionsProps) {
   const { range } = useTimeRange();
   const searchWindow = runSearchWindow(range);
 
-  // runs are paged on the server, so the filter becomes the exact workflow
-  // names it selects; until the catalog is in, nothing is requested
+  // Runs are paged on the server, so the workflow filter becomes the exact
+  // workflow names it selects. Until the catalog is in, a filter cannot be
+  // resolved and nothing is requested.
   const workflowFilterActive = isFilterActive(filter);
   const resolvingFilter = workflowFilterActive && catalog.loading;
   const workflowNames = useMemo(
@@ -182,8 +185,8 @@ export function Executions({ health, onOpenRun }: ExecutionsProps) {
     }),
     { enabled },
   );
-  // on a preset range, read the page again once the oldest match leaves the
-  // window, as the totals below do
+  // On a preset range, read the page again once the oldest match leaves
+  // the window, as the totals below do (swamp-club#3450).
   const answered = extractSearchWindow(search.data);
   useRefetchOnAgeOut(search.refresh, {
     answer: search.data,
@@ -205,6 +208,8 @@ export function Executions({ health, onOpenRun }: ExecutionsProps) {
   const total = extractTotal(shown) ?? pageRuns.length;
   const refreshing = search.loading && shown !== null;
 
+  // Totals for the header and the status counts: every status, the same
+  // workflows, source and time range.
   const totalsQuery: RunSummaryQuery = {};
   if (serverNames !== null) totalsQuery.workflows = [...serverNames];
   if (sources.length > 0) totalsQuery.triggerSources = [...sources];
@@ -216,6 +221,7 @@ export function Executions({ health, onOpenRun }: ExecutionsProps) {
       : summary.totals
     : null;
 
+  // Recent runs of the workflows on this page, one strip per row.
   const pageWorkflows = useMemo(
     () => [...new Set(runs.map((r) => r.workflowName))].sort(),
     [runs],
@@ -231,6 +237,8 @@ export function Executions({ health, onOpenRun }: ExecutionsProps) {
     ? COLUMNS
     : COLUMNS.filter((c) => c.header !== "Recent runs");
 
+  // The seam for live updates: a stream of run events can call this (or
+  // splice rows in) once serve pushes new executions.
   const refreshAll = useCallback(() => {
     search.refetch();
     totalsRequest.refetch();

@@ -17,8 +17,18 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+/**
+ * The per-version analysis factors: what the README and `deno doc` output
+ * say about one version of an extension. Pure; the caller runs `deno doc`
+ * and reads the README.
+ */
+
 import { stripAnsi } from "../text.ts";
 
+/**
+ * Slow-type diagnostic codes emitted by `deno doc --lint`. When any of
+ * these appear the package fails the `fast-check` analysis factor.
+ */
 export const SLOW_TYPE_CODES: ReadonlySet<string> = new Set([
   "missing-return-type",
   "missing-explicit-type",
@@ -35,18 +45,22 @@ export const SLOW_TYPE_CODES: ReadonlySet<string> = new Set([
   "unsupported-using-stmt",
 ]);
 
+/** True if the markdown text contains a fenced code block. */
 export function hasFencedCodeBlock(md: string): boolean {
   return /^```[\w-]*\s*\n[\s\S]*?\n```/m.test(md);
 }
 
+/** Count fenced code blocks; non-overlapping, same regex as the boolean check. */
 export function countFencedCodeBlocks(md: string): number {
   const matches = md.match(/^```[\w-]*\s*\n[\s\S]*?\n```/gm);
   return matches ? matches.length : 0;
 }
 
 /**
- * deno doc --lint exits 0 even with errors printed, so the caller must not rely
- * on exit status; this count is the source of truth
+ * Parse the combined stdout+stderr from `deno doc --lint`, strip ANSI,
+ * and count how many diagnostics belong to {@link SLOW_TYPE_CODES}.
+ * `deno doc --lint` exits 0 even with errors printed, so the caller
+ * does NOT rely on exit status — this is the source of truth.
  */
 export function countSlowTypeDiagnostics(rawLintOutput: string): number {
   const plain = stripAnsi(rawLintOutput);
@@ -58,6 +72,7 @@ export function countSlowTypeDiagnostics(rawLintOutput: string): number {
   return count;
 }
 
+/** A single node in `deno doc --json` output. */
 export interface DocNode {
   module_doc?: { doc?: string };
   symbols?: Array<{
@@ -70,6 +85,7 @@ export interface DocNode {
   }>;
 }
 
+/** Full `deno doc --json` shape. */
 export interface DocOutput {
   version: number;
   nodes: Record<string, DocNode>;
@@ -84,6 +100,11 @@ export function hasModuleDoc(doc: DocOutput, entrypointUrl: string): boolean {
   return !!(node?.module_doc?.doc && node.module_doc.doc.trim());
 }
 
+/**
+ * Count `(totalExports, documentedExports)` for one entrypoint.
+ * An exported declaration is any symbol with `declarationKind === "export"`.
+ * Overloaded symbols declare multiple declarations — each counts separately.
+ */
 export function countExports(
   doc: DocOutput,
   entrypointUrl: string,
@@ -101,6 +122,7 @@ export function countExports(
   return { total, documented };
 }
 
+/** What the README and `deno doc` say about one version. */
 export interface AnalysisFactors {
   hasReadme: boolean;
   hasReadmeExamples: boolean;
@@ -112,12 +134,14 @@ export interface AnalysisFactors {
   hasLicenseFile: boolean;
 }
 
+/** Compose the per-version analysis factors. Pure — no I/O. */
 export function computeAnalysisFactors(input: {
   entrypointUrls: string[];
   readme: string | null;
   hasLicenseFile: boolean;
   doc: DocOutput;
   rawLintOutput: string;
+  /** `deno doc` could not analyse the source, so `doc` is empty. */
   docFailed?: boolean;
 }): AnalysisFactors {
   const { entrypointUrls, readme, hasLicenseFile, doc, rawLintOutput } = input;

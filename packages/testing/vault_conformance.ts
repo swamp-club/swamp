@@ -26,6 +26,10 @@ import {
   type VaultProvider,
 } from "./vault_types.ts";
 
+/**
+ * The vault export shape that extension authors must produce.
+ * Matches the `export const vault = { ... }` pattern.
+ */
 export interface VaultExport {
   type: string;
   name: string;
@@ -37,15 +41,38 @@ export interface VaultExport {
   ) => VaultProvider;
 }
 
+/** Options for vault export conformance. */
 export interface VaultExportConformanceOptions {
+  /** Configs that should pass schema validation. At least one required. */
   validConfigs: Record<string, unknown>[];
+  /** Configs that should fail schema validation. */
   invalidConfigs?: Record<string, unknown>[];
 }
 
+/**
+ * Asserts that a vault export has the correct structural shape.
+ *
+ * Tests: type matches naming pattern, name/description are non-empty,
+ * configSchema accepts valid configs and rejects invalid ones,
+ * createProvider returns an object with get/put/list/getName.
+ *
+ * ```typescript
+ * import { assertVaultExportConformance } from "@swamp-club/swamp-testing";
+ * import { vault } from "./my_vault.ts";
+ *
+ * Deno.test("vault export conforms", () => {
+ *   assertVaultExportConformance(vault, {
+ *     validConfigs: [{ region: "us-east-1" }],
+ *     invalidConfigs: [{}, { region: "" }],
+ *   });
+ * });
+ * ```
+ */
 export function assertVaultExportConformance(
   vaultExport: VaultExport,
   options: VaultExportConformanceOptions,
 ): void {
+  // Type must match pattern: @collective/name or collective/name
   assertExists(vaultExport.type, "vault.type must exist");
   assertEquals(
     /^@?[a-z][a-z0-9_-]*\/[a-z0-9][a-z0-9_-]*$/.test(vaultExport.type),
@@ -53,6 +80,7 @@ export function assertVaultExportConformance(
     `vault.type "${vaultExport.type}" must match pattern @collective/name or collective/name`,
   );
 
+  // Name and description
   assertExists(vaultExport.name, "vault.name must exist");
   assertEquals(
     vaultExport.name.length > 0,
@@ -66,6 +94,7 @@ export function assertVaultExportConformance(
     "vault.description must be non-empty",
   );
 
+  // configSchema
   assertExists(vaultExport.configSchema, "vault.configSchema must exist");
   assertEquals(
     typeof vaultExport.configSchema.safeParse,
@@ -73,6 +102,7 @@ export function assertVaultExportConformance(
     "vault.configSchema must have a safeParse method",
   );
 
+  // Valid configs should pass
   assertEquals(
     options.validConfigs.length > 0,
     true,
@@ -87,6 +117,7 @@ export function assertVaultExportConformance(
     );
   }
 
+  // Invalid configs should fail
   for (const config of options.invalidConfigs ?? []) {
     const result = vaultExport.configSchema.safeParse(config);
     assertEquals(
@@ -96,12 +127,14 @@ export function assertVaultExportConformance(
     );
   }
 
+  // createProvider
   assertEquals(
     typeof vaultExport.createProvider,
     "function",
     "vault.createProvider must be a function",
   );
 
+  // Create a provider with the first valid config and check methods
   const provider = vaultExport.createProvider(
     "conformance-test",
     options.validConfigs[0],
@@ -117,8 +150,11 @@ export function assertVaultExportConformance(
   );
 }
 
+/** Options for vault behavioral conformance. */
 export interface VaultConformanceOptions {
+  /** Prefix for test keys to avoid collisions (default: "swamp-conformance-test-"). */
   keyPrefix?: string;
+  /** Delete test keys after the test (default: true). */
   cleanup?: boolean;
   /**
    * When true, tests that put() forwards tags to the provider.
@@ -133,7 +169,24 @@ export interface VaultConformanceOptions {
   getStoredTags?: (secretKey: string) => Record<string, string> | undefined;
 }
 
-/** hits real infrastructure; test keys are prefixed and cleaned up by default. */
+/**
+ * Asserts that a VaultProvider implementation satisfies the behavioral contract.
+ *
+ * Tests: put/get roundtrip, get-missing rejects, put overwrites existing key,
+ * list includes stored keys, getName returns non-empty string.
+ *
+ * **Warning**: This hits real infrastructure. Test keys are prefixed and
+ * cleaned up by default.
+ *
+ * ```typescript
+ * import { assertVaultConformance } from "@swamp-club/swamp-testing";
+ *
+ * Deno.test("aws-sm vault contract", async () => {
+ *   const provider = vault.createProvider("test", { region: "us-east-1" });
+ *   await assertVaultConformance(provider);
+ * });
+ * ```
+ */
 export async function assertVaultConformance(
   provider: VaultProvider,
   options?: VaultConformanceOptions,
@@ -146,6 +199,7 @@ export async function assertVaultConformance(
   const createdKeys: string[] = [];
 
   try {
+    // getName returns a non-empty string
     const name = provider.getName();
     assertEquals(typeof name, "string", "getName() must return a string");
     assertEquals(
@@ -154,6 +208,7 @@ export async function assertVaultConformance(
       "getName() must return a non-empty string",
     );
 
+    // put/get roundtrip
     await provider.put(testKey1, "conformance-value-1");
     createdKeys.push(testKey1);
     const value1 = await provider.get(testKey1);
@@ -163,6 +218,7 @@ export async function assertVaultConformance(
       "get() must return the value that was put()",
     );
 
+    // put overwrites
     await provider.put(testKey1, "conformance-value-updated");
     const valueUpdated = await provider.get(testKey1);
     assertEquals(
@@ -171,9 +227,11 @@ export async function assertVaultConformance(
       "put() must overwrite an existing key",
     );
 
+    // second key
     await provider.put(testKey2, "conformance-value-2");
     createdKeys.push(testKey2);
 
+    // re-read first key to confirm second write didn't clobber it
     const value1AfterKey2 = await provider.get(testKey1);
     assertEquals(
       value1AfterKey2,
@@ -181,6 +239,7 @@ export async function assertVaultConformance(
       "get(key1) must still return key1's value after writing key2",
     );
 
+    // list includes stored keys
     const keys = await provider.list();
     assertEquals(Array.isArray(keys), true, "list() must return an array");
     assertEquals(
@@ -194,6 +253,7 @@ export async function assertVaultConformance(
       `list() must include "${testKey2}"`,
     );
 
+    // get-missing rejects
     const missingKey = `${prefix}nonexistent-${
       crypto.randomUUID().slice(0, 8)
     }`;
@@ -209,6 +269,7 @@ export async function assertVaultConformance(
       "get() must reject for a key that was never put()",
     );
 
+    // tag pass-through (opt-in)
     if (options?.testTags) {
       assertExists(
         options.getStoredTags,
@@ -235,6 +296,7 @@ export async function assertVaultConformance(
         "stored tags must include the tags passed to put()",
       );
 
+      // put without tags should not create tags
       const noTagKey = `${prefix}no-tags-${crypto.randomUUID().slice(0, 8)}`;
       await provider.put(noTagKey, "untagged-value");
       createdKeys.push(noTagKey);
@@ -247,8 +309,10 @@ export async function assertVaultConformance(
     }
   } finally {
     if (cleanup) {
-      // best-effort cleanup: not every provider has delete, so put an empty
-      // value as a soft signal; prefixed keys stay identifiable.
+      // Best-effort cleanup — don't fail the test if cleanup fails.
+      // Not all vault providers have a delete method, so we use put
+      // with an empty value as a soft cleanup signal. The keys are
+      // namespaced with the prefix, so leftover keys are identifiable.
       for (const key of createdKeys) {
         try {
           await provider.put(key, "");
@@ -260,6 +324,10 @@ export async function assertVaultConformance(
   }
 }
 
+/**
+ * The vault export shape for vaults that support annotations.
+ * Extends the base VaultExport with annotation provider methods.
+ */
 export interface VaultAnnotationExport {
   type: string;
   name: string;
@@ -271,13 +339,36 @@ export interface VaultAnnotationExport {
   ) => VaultProvider & VaultAnnotationProvider;
 }
 
+/** Options for vault annotation export conformance. */
 export interface VaultAnnotationExportConformanceOptions {
+  /** Configs that should pass schema validation. At least one required. */
   validConfigs: Record<string, unknown>[];
 }
 
 /**
- * call after assertVaultExportConformance; separate because annotation support
- * is opt-in.
+ * Asserts that a vault export's createProvider returns an object that
+ * implements VaultAnnotationProvider methods.
+ *
+ * Call this **after** `assertVaultExportConformance` to additionally verify
+ * annotation support. This is a separate call because annotation support
+ * is opt-in — not all vault providers implement it.
+ *
+ * ```typescript
+ * import {
+ *   assertVaultExportConformance,
+ *   assertVaultAnnotationExportConformance,
+ * } from "@swamp-club/swamp-testing";
+ * import { vault } from "./my_vault.ts";
+ *
+ * Deno.test("vault export conforms with annotations", () => {
+ *   assertVaultExportConformance(vault, {
+ *     validConfigs: [{ region: "us-east-1" }],
+ *   });
+ *   assertVaultAnnotationExportConformance(vault, {
+ *     validConfigs: [{ region: "us-east-1" }],
+ *   });
+ * });
+ * ```
  */
 export function assertVaultAnnotationExportConformance(
   vaultExport: VaultAnnotationExport,
@@ -316,12 +407,35 @@ export function assertVaultAnnotationExportConformance(
   );
 }
 
+/** Options for vault annotation behavioral conformance. */
 export interface VaultAnnotationConformanceOptions {
+  /** Prefix for test keys to avoid collisions (default: "swamp-conformance-test-"). */
   keyPrefix?: string;
+  /** Delete test annotations after the test (default: true). */
   cleanup?: boolean;
 }
 
-/** hits real infrastructure; test keys are prefixed and cleaned up by default. */
+/**
+ * Asserts that a VaultAnnotationProvider implementation satisfies the
+ * behavioral contract.
+ *
+ * Tests: putAnnotation/getAnnotation roundtrip, getAnnotation returns null
+ * for unannotated key, deleteAnnotation clears annotations, listAnnotations
+ * includes annotated keys, VaultAnnotation.merge() preserves existing fields,
+ * toData()/fromData() roundtrip, isEmpty() for empty annotations.
+ *
+ * **Warning**: This hits real infrastructure. Test keys are prefixed and
+ * cleaned up by default.
+ *
+ * ```typescript
+ * import { assertVaultAnnotationConformance } from "@swamp-club/swamp-testing";
+ *
+ * Deno.test("vault annotation contract", async () => {
+ *   const provider = vault.createProvider("test", { region: "us-east-1" });
+ *   await assertVaultAnnotationConformance(provider);
+ * });
+ * ```
+ */
 export async function assertVaultAnnotationConformance(
   provider: VaultAnnotationProvider,
   options?: VaultAnnotationConformanceOptions,
@@ -334,6 +448,7 @@ export async function assertVaultAnnotationConformance(
   const annotatedKeys: string[] = [];
 
   try {
+    // getAnnotation returns null for unannotated key
     const missing = await provider.getAnnotation(testKey1);
     assertEquals(
       missing,
@@ -341,6 +456,7 @@ export async function assertVaultAnnotationConformance(
       "getAnnotation() must return null for a key with no annotation",
     );
 
+    // putAnnotation/getAnnotation roundtrip
     const annotation1 = VaultAnnotation.create({
       url: "https://example.com/secret-1",
       notes: "conformance test annotation",
@@ -375,6 +491,7 @@ export async function assertVaultAnnotationConformance(
       "getAnnotation().labels must match what was put",
     );
 
+    // toData()/fromData() roundtrip
     const data = retrieved.toData();
     assertExists(data.updatedAt, "toData().updatedAt must exist");
     const restored = VaultAnnotation.fromData(data);
@@ -389,6 +506,7 @@ export async function assertVaultAnnotationConformance(
       "fromData(toData()) must preserve notes",
     );
 
+    // merge() preserves existing fields and adds new ones
     const merged = retrieved.merge({
       labels: { version: "2" },
     });
@@ -408,6 +526,7 @@ export async function assertVaultAnnotationConformance(
       "merge() must add new labels",
     );
 
+    // isEmpty() returns true for empty annotations
     const empty = VaultAnnotation.create({});
     assertEquals(
       empty.isEmpty(),
@@ -420,12 +539,14 @@ export async function assertVaultAnnotationConformance(
       "isEmpty() must return false for annotation with fields",
     );
 
+    // Second annotation on a different key
     const annotation2 = VaultAnnotation.create({
       notes: "second annotation",
     });
     await provider.putAnnotation(testKey2, annotation2);
     annotatedKeys.push(testKey2);
 
+    // listAnnotations includes annotated keys
     const annotations = await provider.listAnnotations();
     assertEquals(
       annotations instanceof Map,
@@ -443,6 +564,7 @@ export async function assertVaultAnnotationConformance(
       `listAnnotations() must include "${testKey2}"`,
     );
 
+    // deleteAnnotation clears the annotation
     await provider.deleteAnnotation(testKey1);
     const afterDelete = await provider.getAnnotation(testKey1);
     assertEquals(
@@ -451,6 +573,7 @@ export async function assertVaultAnnotationConformance(
       "getAnnotation() must return null after deleteAnnotation()",
     );
 
+    // listAnnotations no longer includes deleted key
     const annotationsAfterDelete = await provider.listAnnotations();
     assertEquals(
       annotationsAfterDelete.has(testKey1),
@@ -463,6 +586,7 @@ export async function assertVaultAnnotationConformance(
       "listAnnotations() must still include non-deleted key",
     );
 
+    // Remove testKey1 from cleanup list since it's already deleted
     const idx = annotatedKeys.indexOf(testKey1);
     if (idx !== -1) annotatedKeys.splice(idx, 1);
   } finally {
@@ -478,6 +602,10 @@ export async function assertVaultAnnotationConformance(
   }
 }
 
+/**
+ * The vault export shape for vaults that support existence checks.
+ * Extends the base VaultExport with the VaultExistenceProvider method.
+ */
 export interface VaultExistenceExport {
   type: string;
   name: string;
@@ -489,14 +617,36 @@ export interface VaultExistenceExport {
   ) => VaultProvider & VaultExistenceProvider;
 }
 
+/** Options for vault existence export conformance. */
 export interface VaultExistenceExportConformanceOptions {
+  /** Configs that should pass schema validation. At least one required. */
   validConfigs: Record<string, unknown>[];
 }
 
 /**
- * call after assertVaultExportConformance; separate because existence checks
- * are opt-in, a provider implementing has() only where its API can answer
- * without reading the value.
+ * Asserts that a vault export's createProvider returns an object that
+ * implements VaultExistenceProvider.
+ *
+ * Call this **after** `assertVaultExportConformance`. It is a separate call
+ * because existence checks are opt-in — a provider implements `has()` only
+ * where its API can answer without reading the value.
+ *
+ * ```typescript
+ * import {
+ *   assertVaultExistenceExportConformance,
+ *   assertVaultExportConformance,
+ * } from "@swamp-club/swamp-testing";
+ * import { vault } from "./my_vault.ts";
+ *
+ * Deno.test("vault export conforms with existence checks", () => {
+ *   assertVaultExportConformance(vault, {
+ *     validConfigs: [{ region: "us-east-1" }],
+ *   });
+ *   assertVaultExistenceExportConformance(vault, {
+ *     validConfigs: [{ region: "us-east-1" }],
+ *   });
+ * });
+ * ```
  */
 export function assertVaultExistenceExportConformance(
   vaultExport: VaultExistenceExport,
@@ -520,13 +670,19 @@ export function assertVaultExistenceExportConformance(
   );
 }
 
+/** Options for vault existence behavioral conformance. */
 export interface VaultExistenceConformanceOptions {
+  /** Prefix for test keys to avoid collisions (default: "swamp-conformance-test-"). */
   keyPrefix?: string;
+  /** Remove test keys after the test (default: true). */
   cleanup?: boolean;
   /**
-   * the suite asserts this count does not change across has(), proving has()
-   * never reads a value; for createVaultTestContext({ withExistence: true })
-   * use getOperationsByMethod(`get`).length
+   * Returns how many secret values the provider has read so far. When
+   * supplied, the suite reads it immediately before and after every has()
+   * call and asserts it did not change, which proves a has() answer never
+   * reads a value. Wire it to the provider's own counter; for
+   * createVaultTestContext({ withExistence: true }) that is
+   * getOperationsByMethod("get").length.
    */
   getValueReadCount?: () => number;
   /**
@@ -538,9 +694,29 @@ export interface VaultExistenceConformanceOptions {
 }
 
 /**
- * has() is true exactly when get() succeeds, false for a missing key, rejects
- * an unauthorized key with the same error get() raises, and never reads a
- * value. Hits real infrastructure; keys are prefixed and cleaned up.
+ * Asserts that a VaultExistenceProvider implementation satisfies the
+ * behavioral contract: has() is true exactly when get() succeeds, false for
+ * a missing key, rejects an unauthorized key with the same error get()
+ * raises, and never reads a value.
+ *
+ * Tests: has(missing) is false and get(missing) rejects; after put(), has()
+ * is true and get() resolves; writing a second key leaves the first answer
+ * unchanged; after delete() (when the provider has one), has() is false and
+ * get() rejects; every answer is a boolean. With `getValueReadCount`, no
+ * has() call changes the count. With `unauthorizedKey`, has() and get()
+ * reject alike.
+ *
+ * **Warning**: This hits real infrastructure. Test keys are prefixed and
+ * cleaned up by default.
+ *
+ * ```typescript
+ * import { assertVaultExistenceConformance } from "@swamp-club/swamp-testing";
+ *
+ * Deno.test("vault existence contract", async () => {
+ *   const provider = vault.createProvider("test", { region: "us-east-1" });
+ *   await assertVaultExistenceConformance(provider);
+ * });
+ * ```
  */
 export async function assertVaultExistenceConformance(
   provider: VaultProvider & VaultExistenceProvider,
@@ -595,6 +771,7 @@ export async function assertVaultExistenceConformance(
   }
 
   try {
+    // missing key: has() false, get() rejects
     const missingKey = `${prefix}nonexistent-${
       crypto.randomUUID().slice(0, 8)
     }`;
@@ -609,6 +786,7 @@ export async function assertVaultExistenceConformance(
       "get() must reject for a key has() answers false",
     );
 
+    // present key: has() true, get() resolves
     const testKey1 = `${prefix}${crypto.randomUUID().slice(0, 8)}`;
     await provider.put(testKey1, "existence-value-1");
     createdKeys.push(testKey1);
@@ -623,6 +801,7 @@ export async function assertVaultExistenceConformance(
       "get() must succeed for a key has() answers true",
     );
 
+    // a second key leaves the first answer unchanged
     const testKey2 = `${prefix}${crypto.randomUUID().slice(0, 8)}`;
     await provider.put(testKey2, "existence-value-2");
     createdKeys.push(testKey2);
@@ -637,6 +816,7 @@ export async function assertVaultExistenceConformance(
       "has(key1) must still be true after writing key2",
     );
 
+    // delete, when the provider supports it
     if (canDelete) {
       await remove(testKey2);
       createdKeys.splice(createdKeys.indexOf(testKey2), 1);
@@ -652,6 +832,7 @@ export async function assertVaultExistenceConformance(
       );
     }
 
+    // unauthorized key: has() and get() reject alike
     if (options?.unauthorizedKey !== undefined) {
       const key = options.unauthorizedKey;
       const before = readCount?.();
@@ -685,8 +866,9 @@ export async function assertVaultExistenceConformance(
     }
   } finally {
     if (cleanup) {
-      // best-effort cleanup: delete when the provider can, otherwise overwrite
-      // with an empty value.
+      // Best-effort cleanup — don't fail the test if cleanup fails. Delete
+      // when the provider can; otherwise overwrite with an empty value, as
+      // assertVaultConformance does.
       for (const key of createdKeys) {
         try {
           if (canDelete) {

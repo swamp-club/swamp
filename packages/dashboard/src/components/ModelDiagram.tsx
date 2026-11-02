@@ -62,6 +62,7 @@ const KIND_LABEL: Record<DiagramNodeKind, string> = {
   placeholder: "",
 };
 
+/** A 12×12 glyph per kind, drawn in currentColor. */
 function Glyph({ kind }: { kind: DiagramNodeKind }) {
   switch (kind) {
     case "argument":
@@ -89,6 +90,7 @@ function Glyph({ kind }: { kind: DiagramNodeKind }) {
   }
 }
 
+/** In-app navigation for a link; without one, links load like plain hrefs. */
 export type Navigate = (to: RouteState) => void;
 
 function go(e: MouseEvent, to: RouteState, navigate: Navigate | undefined) {
@@ -393,6 +395,7 @@ function DiagramSvg(
   );
 }
 
+/** The kinds a diagram uses, for its legend. */
 function legendKinds(spec: DiagramSpec): DiagramNodeKind[] {
   const order: DiagramNodeKind[] = [
     "argument",

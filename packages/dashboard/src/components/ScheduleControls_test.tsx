@@ -85,6 +85,8 @@ Deno.test("ScheduleControls: announces success and alerts on refusal", () => {
   assertStringIncludes(refused, "You don&#x27;t have permission");
 });
 
+// ── ScheduleEditorForm ──────────────────────────────────────────────────
+
 const NOW = Date.parse("2026-10-12T20:30:00.000Z");
 
 function renderForm(
@@ -160,6 +162,7 @@ Deno.test("ScheduleEditorForm: previews in serve's zone and adds the viewer's ti
     viewerZone: "UTC",
   });
   assertStringIncludes(html, "serve&#x27;s time zone (America/New_York)");
+  // 09:00 in New York is 13:00 UTC on 2026-10-13.
   assertStringIncludes(html, 'dateTime="2026-10-13T13:00:00.000Z"');
   assertStringIncludes(html, "your time");
 });

@@ -32,8 +32,8 @@ import {
 } from "./connection.ts";
 import { MAX_DELAY_MS, type ProbeResult } from "./reconnect.ts";
 
-// fake timers tell check timeouts from retries by this duration; retries are
-// capped below it
+// Fake timers tell check timeouts from retries by this duration. Retries are
+// capped at MAX_DELAY_MS (30s), so no retry can ever share it.
 const CHECK_TIMEOUT = 99_999;
 
 Deno.test("fakeTimers: check timeouts cannot collide with retry delays", () => {
@@ -51,6 +51,7 @@ class FakeSocket {
   }
 }
 
+/** A timer queue the test advances by hand. */
 function fakeTimers() {
   let nextId = 1;
   const timers = new Map<number, { fn: () => void; ms: number }>();
@@ -68,7 +69,9 @@ function fakeTimers() {
     [...timers].filter(([, t]) => (t.ms === CHECK_TIMEOUT) === timeout);
   return {
     api,
+    /** Delays of pending retry timers. */
     retries: () => find(false).map(([, t]) => t.ms),
+    /** Number of pending check timeouts. */
     checkTimeouts: () => find(true).length,
     fireRetry() {
       const [[id, timer]] = find(false);
@@ -153,6 +156,7 @@ Deno.test("createConnection: delays grow while failing and reset after an open",
   h.timers.fireRetry();
   h.latest().handlers.onOpen();
   h.latest().handlers.onClose(1001);
+  // The open in between reset the backoff.
   assertEquals(h.timers.retries(), [500]);
   h.timers.fireRetry();
   h.latest().handlers.onOpen();
@@ -181,6 +185,7 @@ Deno.test("createConnection: a revoked principal reauths once and stops", async 
   h.connection.start({ token: "t", authMode: "token" });
   h.latest().handlers.onOpen();
   h.latest().handlers.onClose(4003);
+  // The auth mode is re-read before going to login.
   assertEquals(h.authChecks.length, 1);
   h.authChecks[0].reply({ mode: "token" });
   await settle();
@@ -241,6 +246,7 @@ Deno.test("createConnection: a failed upgrade with a token probes it", async () 
     assertEquals(h.timers.retries(), []);
     h.probes[0].reply(result);
     await settle();
+    // Both reauth and recheck read the auth mode; network-error does not.
     assertEquals(
       h.authChecks.length,
       expected === "retry" ? 0 : 1,
@@ -289,6 +295,7 @@ Deno.test("createConnection: a socket constructor that throws counts as a failed
       return socket;
     },
   });
+  // Logs "could not open a WebSocket" once; the controller reports it there.
   h.connection.start({ token: "t", authMode: "token" });
   assertEquals(h.sockets.length, 0);
   assertEquals(h.probes.map((p) => p.arg), ["t"]);
@@ -305,6 +312,7 @@ Deno.test("createConnection: a probe that never answers times out and retries", 
   h.timers.fireCheckTimeout();
   assertEquals(h.probes[0].signal.aborted, true);
   assertEquals(h.timers.retries(), [500]);
+  // A reply after the timeout is ignored.
   h.probes[0].reply(401);
   await settle();
   assertEquals(h.events.includes("reauth"), false);
@@ -374,6 +382,7 @@ Deno.test("createConnection: stop on an open socket reports the disconnect once"
   socket.handlers.onOpen();
   h.connection.stop();
   assertEquals(socket.closed, true);
+  // The socket's own close arrives later and is stale.
   socket.handlers.onClose(1000);
   assertEquals(h.events, ["open:0", "disconnect"]);
   assertEquals(h.timers.retries(), []);

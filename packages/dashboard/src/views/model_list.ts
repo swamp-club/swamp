@@ -22,6 +22,10 @@ import { formatCount } from "../lib/format.ts";
 import { workflowPrefix } from "../lib/workflow_facets.ts";
 import type { ModelUsage } from "./model_executions.ts";
 
+// Filtering and ordering for the Models page. Search is fuzzy over the
+// name and the type; the type and prefix selects narrow exactly.
+
+/** A `model.search` row; `methods` only when serve includes it. */
 export interface ModelSummary {
   id: string;
   name: string;
@@ -31,12 +35,15 @@ export interface ModelSummary {
 
 export interface ModelFilter {
   query: string;
+  /** Any of these exact model types; empty keeps every type. */
   types: readonly string[];
+  /** Any of these name prefixes; empty keeps every prefix. */
   prefixes: readonly string[];
 }
 
 export type ModelSort = "name" | "recent" | "busy";
 
+/** Models matching `filter`, ranked by match when there is a query. */
 export function filterModels(
   models: readonly ModelSummary[],
   filter: ModelFilter,
@@ -50,8 +57,8 @@ export function filterModels(
 }
 
 /**
- * "relevance" keeps the incoming fuzzy-ranked order; "recent" and "busy" put
- * used models first, then fall back to name
+ * Orders models. "relevance" keeps the incoming (fuzzy-ranked) order;
+ * "recent" and "busy" put used models first, then fall back to name.
  */
 export function sortModels(
   models: readonly ModelSummary[],
@@ -90,12 +97,14 @@ function counted(values: Iterable<string>): CountedOption[] {
     .map(([value, n]) => ({ value, label: value, hint: formatCount(n) }));
 }
 
+/** One option per model type, with how many models use it. */
 export function modelTypeOptions(
   models: readonly ModelSummary[],
 ): CountedOption[] {
   return counted(models.map((m) => m.type));
 }
 
+/** One option per name prefix shared by the models. */
 export function modelPrefixOptions(
   models: readonly ModelSummary[],
 ): CountedOption[] {

@@ -17,6 +17,13 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https:\/\/www.gnu.org\/licenses\/>.
 
+/**
+ * SwampClient — typed WebSocket client for the swamp serve API.
+ *
+ * Provides both callback-based and AsyncIterable-based consumption of
+ * workflow and model method execution event streams.
+ */
+
 import type {
   DataResponse,
   ModelMethodRunEvent,
@@ -95,6 +102,7 @@ export class SwampClient {
       socket.onclose = () => {
         this.socket = null;
         this.connectPromise = null;
+        // Reject all pending requests
         for (const [id, pending] of this.pending) {
           pending.reject(new Error("WebSocket closed"));
           this.pending.delete(id);
@@ -105,11 +113,16 @@ export class SwampClient {
     return this.connectPromise;
   }
 
+  /** Closes the WebSocket connection. */
   close(): void {
     this.socket?.close();
     this.socket = null;
   }
 
+  /**
+   * Runs a workflow and returns the completed event payload.
+   * Optionally dispatches events to partial handlers as they arrive.
+   */
   async workflowRun(
     payload: WorkflowRunPayload,
     handlers?: Partial<EventHandlers<WorkflowRunEvent>>,
@@ -130,6 +143,10 @@ export class SwampClient {
     });
   }
 
+  /**
+   * Runs a model method and returns the completed event payload.
+   * Optionally dispatches events to partial handlers as they arrive.
+   */
   async modelMethodRun(
     payload: ModelMethodRunPayload,
     handlers?: Partial<EventHandlers<ModelMethodRunEvent>>,
@@ -150,6 +167,9 @@ export class SwampClient {
     });
   }
 
+  /**
+   * Returns an AsyncIterable of workflow run events.
+   */
   async *workflowRunStream(
     payload: WorkflowRunPayload,
   ): AsyncGenerator<WorkflowRunEvent> {
@@ -181,6 +201,9 @@ export class SwampClient {
     }
   }
 
+  /**
+   * Returns an AsyncIterable of model method run events.
+   */
   async *modelMethodRunStream(
     payload: ModelMethodRunPayload,
   ): AsyncGenerator<ModelMethodRunEvent> {
@@ -212,10 +235,15 @@ export class SwampClient {
     }
   }
 
+  /** Cancels a running operation by its request id. */
   cancel(id: string): void {
     this.send({ type: "cancel", id });
   }
 
+  /**
+   * Sends a request-response command and resolves with the response payload.
+   * Works with any non-streaming ServerRequest type (data.*, model.*, workflow.search, etc.).
+   */
   async request<T = DataResponse>(
     type: string,
     payload?: Record<string, unknown>,
@@ -270,11 +298,13 @@ export class SwampClient {
     if (msg.type === "event") {
       const event = msg.event;
 
+      // Dispatch to handler
       const handler = pending.handlers[event.kind];
       if (handler) {
         handler(event);
       }
 
+      // Resolve/reject on terminal events
       if (event.kind === "completed" || event.kind === "cancelled") {
         this.pending.delete(msg.id);
         pending.resolve(event.run);
@@ -293,6 +323,8 @@ export class SwampClient {
       return;
     }
 
+    // Request-response: the response type matches the request type and
+    // carries a payload (e.g. { type: "workflow.search", id, payload }).
     if ("payload" in msg) {
       this.pending.delete(msg.id);
       // deno-lint-ignore no-explicit-any
@@ -308,6 +340,10 @@ export class SwampClient {
   }
 }
 
+/**
+ * Simple async iterable queue for bridging push-based WebSocket events
+ * into a pull-based AsyncGenerator.
+ */
 class AsyncIterableQueue<T> implements AsyncIterable<T> {
   private buffer: T[] = [];
   private resolve: ((value: IteratorResult<T>) => void) | null = null;

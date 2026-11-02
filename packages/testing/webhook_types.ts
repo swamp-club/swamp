@@ -17,26 +17,40 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+/**
+ * Extension-author-facing subset of swamp's webhook types.
+ *
+ * These types mirror the webhook handler contract that `swamp serve` uses. A
+ * CI test in the main swamp repo verifies structural compatibility with the
+ * canonical types.
+ */
+
+/** The payload exposed to workflows via the `webhook` CEL namespace. */
 export interface WebhookPayload {
   body: unknown;
   headers: Record<string, string>;
   route: string;
 }
 
+/** A custom HTTP response returned by {@link WebhookHandler.respond}. */
 export interface WebhookResponse {
   status: number;
   headers?: Record<string, string>;
   /** Serialized as JSON unless it is already a string. */
   body?: unknown;
+  /** Whether the verified request still starts a workflow run. */
   enqueue: boolean;
 }
 
 /**
- * handles one webhook request. Hooks run only after verify succeeds, and
- * transform sees headers with the signature and credential headers removed.
+ * Handles one webhook request. Hooks run only after `verify` succeeds, and
+ * `transform` only sees headers with the signature and credential headers
+ * removed.
  */
 export interface WebhookHandler {
+  /** Lowercased header carrying the signature/secret. */
   readonly signatureHeader: string;
+  /** Lowercased headers that must be present before the body is read. */
   readonly requiredHeaders: readonly string[];
   verify(
     body: Uint8Array,

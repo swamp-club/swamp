@@ -24,6 +24,12 @@ import {
   type WorkspaceList,
 } from "../client/workspace_list.ts";
 
+/**
+ * The local dashboard's workspace picker: every workspace `swamp start`
+ * knows, and the way back to the start page. Switching loads the other
+ * workspace's dashboard, which a separate swamp process serves. It shows
+ * nothing until the list arrives, and nothing for a fixed repo.
+ */
 export function WorkspaceSwitcher({ current }: { current: string }) {
   const [list, setList] = useState<WorkspaceList | null>(null);
 

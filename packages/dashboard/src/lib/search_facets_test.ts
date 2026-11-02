@@ -113,5 +113,6 @@ Deno.test("draftForQuery: the box follows the query unless picking a filter", ()
   assertEquals(draftForQuery("dep", "", facets), "");
   assertEquals(draftForQuery("", "deploy", facets), "deploy");
   assertEquals(draftForQuery("trigger:", "", facets), "trigger:");
+  // An unknown key is plain text, so it follows the query.
   assertEquals(draftForQuery("nope:", "x", facets), "x");
 });

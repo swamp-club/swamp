@@ -70,6 +70,8 @@ Deno.test("nextRefetch: a change after a quiet window refetches now", () => {
 });
 
 Deno.test("nextRefetch: a change inside the window waits for its end", () => {
+  // The first load counts as a fetch: a tab opened in the background and
+  // shown a moment later does not fetch twice.
   assertEquals(
     nextRefetch({ lastAt: T0, pending: true, visible: true }, T0 + 2_000),
     { kind: "at", at: T0 + WINDOW },
@@ -79,6 +81,7 @@ Deno.test("nextRefetch: a change inside the window waits for its end", () => {
 Deno.test("nextRefetch: a burst of changes costs one refetch per window", () => {
   let state = { lastAt: T0, pending: false };
   let refetches = 0;
+  // A run starts or finishes every 5 s (each health snapshot) for 2 min.
   for (let now = T0 + 5_000; now <= T0 + 120_000; now += 5_000) {
     state.pending = true;
     const step = nextRefetch({ ...state, visible: true }, now);
@@ -105,6 +108,7 @@ Deno.test("nextRefetch: a hidden tab holds the change until it is shown", () => 
 Deno.test("nextRefetch: switching tabs quickly still costs one refetch per window", () => {
   let state = { lastAt: T0 - WINDOW, pending: false };
   let refetches = 0;
+  // Shown every second for a minute: each show is a pending change.
   for (let now = T0; now < T0 + 60_000; now += 1_000) {
     state.pending = true;
     if (nextRefetch({ ...state, visible: true }, now).kind === "now") {
@@ -119,11 +123,14 @@ const iso = (ms: number) => new Date(ms).toISOString();
 const MIN = 60_000;
 
 Deno.test("ageOutDelayMs: the oldest run leaves the window after its start minus since", () => {
+  // Last hour: since is T0 - 1h; a run 61 minutes old has aged out, one 20
+  // minutes into the window leaves it in 20 minutes.
   assertEquals(ageOutDelayMs(iso(T0), iso(T0 + 20 * MIN)), 20 * MIN);
 });
 
 Deno.test("ageOutDelayMs: a run on the boundary is due now", () => {
   assertEquals(ageOutDelayMs(iso(T0), iso(T0)), 0);
+  // Not expected from serve, which counts only runs at or after since.
   assertEquals(ageOutDelayMs(iso(T0), iso(T0 - MIN)), 0);
 });
 

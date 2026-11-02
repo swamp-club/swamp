@@ -23,32 +23,48 @@ import {
   type WireFrame,
 } from "../../client/stream.ts";
 
+/**
+ * The waits before each reconnect attempt. Once they are used up the page
+ * reports itself stopped.
+ */
 const RECONNECT_DELAYS_MS = [1000, 2000, 4000];
 
+/** How long a socket must stay open before the attempts are reset. */
 const STABLE_AFTER_MS = 10_000;
 
 interface Pending {
+  /** Set for streams: called with each `event` frame. */
   onEvent?: (event: unknown) => void;
+  /** A stream's response payload, held until its `done` frame. */
   payload?: unknown;
   resolve: (value: unknown) => void;
   reject: (error: Error) => void;
 }
 
 export interface StartClientOptions {
+  /** Called after a reconnect succeeds, so the page can resync. */
   onReconnect?: () => void;
+  /** Called once the socket is gone for good. */
   onStopped?: () => void;
 }
 
+/**
+ * The page's connection to the `swamp start` loopback server. It speaks the
+ * dashboard's wire shape over `/start/ws`, authenticated with the
+ * `bearer.<token>` subprotocol.
+ */
 export class StartClient {
   readonly #url: string;
   readonly #token: string;
   readonly #options: StartClientOptions;
   readonly #pending = new Map<string, Pending>();
   #ws: WebSocket | null = null;
+  /** The socket still opening, so close() can abandon it. */
   #connecting: WebSocket | null = null;
   #nextId = 0;
   #closed = false;
   #stopped = false;
+  /** Reconnect attempts since the last socket that stayed open. */
   #attempts = 0;
   #retryTimer: ReturnType<typeof setTimeout> | undefined;
   #stableTimer: ReturnType<typeof setTimeout> | undefined;
@@ -59,15 +75,18 @@ export class StartClient {
     this.#options = options;
   }
 
+  /** The socket URL for the page's own host. */
   static urlFor(location: Location): string {
     const proto = location.protocol === "https:" ? "wss:" : "ws:";
     return `${proto}//${location.host}/start/ws`;
   }
 
+  /** Opens the socket. Rejects if it doesn't open. */
   connect(): Promise<void> {
     return this.#open(false);
   }
 
+  /** Closes the socket for good, without reporting the page as stopped. */
   close(): void {
     this.#closed = true;
     clearTimeout(this.#retryTimer);
@@ -79,10 +98,15 @@ export class StartClient {
     this.#ws = null;
   }
 
+  /** Sends a request and resolves with its response payload. */
   request<T>(type: string, payload?: unknown): Promise<T> {
     return this.#send(type, payload) as Promise<T>;
   }
 
+  /**
+   * Sends a streaming request. Each event frame goes to `onEvent`; the
+   * promise resolves with the response payload once the stream is done.
+   */
   stream<T>(
     type: string,
     payload: unknown,
@@ -154,6 +178,7 @@ export class StartClient {
     });
   }
 
+  /** Schedules the next reconnect attempt, or stops once they run out. */
   #retry(): void {
     const delay = RECONNECT_DELAYS_MS[this.#attempts];
     if (delay === undefined) {

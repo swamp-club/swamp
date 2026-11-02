@@ -28,8 +28,9 @@ export interface WorkspaceList {
 }
 
 /**
- * a hub serving one fixed repo says it is not switchable; an answer without the
- * field comes from a hub that is always switchable
+ * Reads `/api/local/workspaces`. A hub serving one fixed repo
+ * (`swamp dashboard` in a folder) says it is not switchable; an answer
+ * without the field comes from a hub that always was.
  */
 export function parseWorkspaceList(body: unknown): WorkspaceList {
   const { workspaces, switchable } = (body ?? {}) as Record<string, unknown>;
