@@ -46,11 +46,15 @@ import {
   agentScreenHeading,
   agentsToggleLabel,
   allTasksLabel,
+  type BackRequest,
+  backRequest,
   contentsLabel,
   contentsNames,
   createdLabel,
+  DEFAULT_WORKSPACE_ORDER,
   extraToolsToSend,
   firstLine,
+  formatWorkspaceOrder,
   importNameFromPath,
   importProblem,
   initialAgentPick,
@@ -66,11 +70,16 @@ import {
   type LaunchStep,
   locationCheckKey,
   type LocationCheckReply,
-  middleEllipsis,
+  navDepth,
   newWorkspaceNameProblem,
+  nextWorkspaceOrder,
   orderExamples,
   parseTokenFromHash,
+  parseWorkspaceOrder,
+  pathLabel,
   pickFirstTaskIdea,
+  planHistorySync,
+  railRequest,
   resumeChecklist,
   resumeGuidance,
   resumeLaunchLabel,
@@ -89,9 +98,12 @@ import {
   toolsToAdd,
   toSigninEvent,
   updatedLabel,
+  WORKSPACE_ORDER_KEY,
   workspaceAgentTags,
   workspaceChooseError,
   workspaceLocationHint,
+  type WorkspaceOrder,
+  type WorkspaceSortKey,
 } from "./helpers.ts";
 import type {
   ExamplePrompt,
@@ -357,8 +369,7 @@ function StartFrame({ children }: { children: ReactNode }) {
 const RAIL_STEPS = [
   { label: "Workspace", screens: ["workspace"] },
   { label: "Task", screens: ["task"] },
-  { label: "Agent", screens: ["agent"] },
-  { label: "Launch", screens: ["trust", "launched"] },
+  { label: "Launch", screens: ["agent", "trust", "launched"] },
 ] as const;
 
 /** The step a screen belongs to, or -1 for screens outside the steps. */
@@ -368,8 +379,20 @@ function railStep(key: string): number {
   );
 }
 
-/** The getting-started steps beside the screen: done, current, to come. */
-function StepRail({ current }: { current: number }) {
+/** The step each rail entry leads back to, in rail order. */
+const RAIL_TARGETS = ["workspace", "task", null] as const;
+
+/**
+ * The getting-started steps beside the screen: done, current, to come. A
+ * done step is a link when `linkFor` has somewhere to send it.
+ */
+function StepRail(
+  { current, linkFor, disabled }: {
+    current: number;
+    linkFor: (i: number) => (() => void) | null;
+    disabled: boolean;
+  },
+) {
   return (
     <nav className="start-rail" aria-label="Getting started">
       <ol>
@@ -379,12 +402,9 @@ function StepRail({ current }: { current: number }) {
             : i === current
             ? "current"
             : "todo";
-          return (
-            <li
-              key={step.label}
-              className={`start-rail-step start-rail-${state}`}
-              aria-current={state === "current" ? "step" : undefined}
-            >
+          const go = state === "done" ? linkFor(i) : null;
+          const body = (
+            <>
               <span className="start-rail-mark" aria-hidden="true">
                 {state === "done"
                   ? (
@@ -407,12 +427,210 @@ function StepRail({ current }: { current: number }) {
                 {step.label}
                 {state === "done" && <span className="sr-only">(done)</span>}
               </span>
+            </>
+          );
+          return (
+            <li
+              key={step.label}
+              className={`start-rail-step start-rail-${state}${
+                go ? " start-rail-linked" : ""
+              }`}
+              aria-current={state === "current" ? "step" : undefined}
+            >
+              {go
+                ? (
+                  <button
+                    type="button"
+                    className="start-rail-link"
+                    onClick={go}
+                    disabled={disabled}
+                    title={`Back to ${step.label}`}
+                  >
+                    {body}
+                  </button>
+                )
+                : body}
             </li>
           );
         })}
       </ol>
     </nav>
   );
+}
+
+/**
+ * What the shown screen tells navigation: unsaved typing, work running, and
+ * a step of its own that Back undoes first (an open form).
+ */
+interface NavReport {
+  unsaved: boolean;
+  busy: boolean;
+  inner: (() => void) | null;
+}
+
+const NavReportContext = createContext<(report: NavReport) => void>(
+  () => {},
+);
+
+/** Reports the screen's state to the rail and the browser's Back. */
+function useNavReport(
+  unsaved: boolean,
+  busy: boolean,
+  inner: (() => void) | null = null,
+): void {
+  const report = useContext(NavReportContext);
+  const innerRef = useRef(inner);
+  innerRef.current = inner;
+  const hasInner = inner !== null;
+  useEffect(() => {
+    report({
+      unsaved,
+      busy,
+      inner: hasInner ? () => innerRef.current?.() : null,
+    });
+  }, [report, unsaved, busy, hasInner]);
+  // Cleared only on unmount: clearing between updates would drop the open
+  // form's history entry for a moment.
+  useEffect(
+    () => () => report({ unsaved: false, busy: false, inner: null }),
+    [report],
+  );
+}
+
+/**
+ * Keeps one browser history entry per step above the workspace list, so the
+ * browser's Back sends the request the page's own Back would. Forward has
+ * nothing to replay and is undone. A move that would drop unsaved typing
+ * waits for the person to confirm it.
+ */
+function useStartNav(
+  status: StartStatus,
+  client: StartClient,
+  onStatus: (status: StartStatus) => void,
+) {
+  const report = useRef<NavReport>({
+    unsaved: false,
+    busy: false,
+    inner: null,
+  });
+  const [busy, setBusy] = useState(false);
+  const busyRef = useRef(false);
+  const [error, setError] = useState<string | null>(null);
+  const [pending, setPending] = useState<BackRequest | null>(null);
+  const statusRef = useRef(status);
+  statusRef.current = status;
+  // The depth of each history entry the page made, and the one it is on.
+  const entries = useRef<number[] | null>(null);
+  const at = useRef(0);
+  // Each history.go the page makes fires a popstate it must not act on; a
+  // resync waits for it, since history.go is async.
+  const ownPops = useRef(0);
+
+  const wantDepth = useCallback(
+    () => navDepth(statusRef.current) + (report.current.inner ? 1 : 0),
+    [],
+  );
+  const resync = useCallback(() => {
+    if (ownPops.current > 0) return;
+    if (entries.current === null) {
+      history.replaceState({ startIndex: 0 }, "");
+      entries.current = [0];
+      at.current = 0;
+    }
+    const move = planHistorySync(entries.current, at.current, wantDepth());
+    if (move.kind === "push") {
+      entries.current = [
+        ...entries.current.slice(0, at.current + 1),
+        move.depth,
+      ];
+      at.current = entries.current.length - 1;
+      history.pushState({ startIndex: at.current }, "");
+    } else if (move.kind === "go") {
+      ownPops.current++;
+      at.current = move.to;
+      history.go(move.delta);
+    }
+  }, [wantDepth]);
+  const setReport = useCallback((r: NavReport) => {
+    report.current = r;
+    if (entries.current !== null) resync();
+  }, [resync]);
+
+  const depth = navDepth(status);
+  useEffect(() => resync(), [depth, resync]);
+
+  const perform = useCallback(async (request: BackRequest) => {
+    setPending(null);
+    busyRef.current = true;
+    setBusy(true);
+    setError(null);
+    try {
+      onStatus(await client.request<StartStatus>(request));
+    } catch (err) {
+      setError(errorMessage(err, "Couldn't go back. Try again."));
+      resync();
+    } finally {
+      busyRef.current = false;
+      setBusy(false);
+    }
+  }, [client, onStatus, resync]);
+
+  // False when the move can't start now: a request is still running.
+  const go = useCallback((request: BackRequest): boolean => {
+    if (busyRef.current || report.current.busy) return false;
+    if (report.current.unsaved) {
+      setPending(request);
+      return true;
+    }
+    void perform(request);
+    return true;
+  }, [perform]);
+
+  useEffect(() => {
+    const onPop = (e: PopStateEvent) => {
+      const state = e.state as { startIndex?: unknown } | null;
+      const index = typeof state?.startIndex === "number"
+        ? state.startIndex
+        : 0;
+      at.current = Math.min(index, (entries.current?.length ?? 1) - 1);
+      if (ownPops.current > 0) {
+        ownPops.current--;
+        if (ownPops.current === 0) resync();
+        return;
+      }
+      const depth = entries.current?.[at.current] ?? 0;
+      if (depth >= wantDepth()) {
+        resync();
+        return;
+      }
+      const inner = report.current.inner;
+      if (inner) {
+        inner();
+        return;
+      }
+      const request = backRequest(statusRef.current);
+      if (request === null || !go(request)) resync();
+    };
+    globalThis.addEventListener("popstate", onPop);
+    return () => globalThis.removeEventListener("popstate", onPop);
+  }, [go, resync, wantDepth]);
+
+  const cancel = useCallback(() => {
+    setPending(null);
+    resync();
+  }, [resync]);
+  const confirm = useCallback(() => {
+    if (pending === null || busyRef.current || report.current.busy) return;
+    void perform(pending);
+  }, [pending, perform]);
+  // A prompt left open while the screen moved on would send a stale request.
+  const screen = status.screen;
+  useEffect(() => {
+    setPending(null);
+    resync();
+  }, [screen, resync]);
+
+  return { go, confirm, pending, cancel, busy, error, setReport };
 }
 
 interface ScreenProps {
@@ -425,14 +643,17 @@ function ScreenView(props: ScreenProps) {
   const key = screenComponentKey(props.status.screen);
   const root = useRef<HTMLDivElement>(null);
   const shown = useRef<string | null>(null);
+  const nav = useStartNav(props.status, props.client, props.onStatus);
+  // Agent and trust are one screen; a launch moving between them keeps focus.
+  const focusKey = key === "trust" ? "agent" : key;
 
   // On a screen change, move focus to the new screen's heading so keyboard
   // and screen-reader users land at its start. A screen that focused
   // something itself (the task box) keeps it.
   useEffect(() => {
     const previous = shown.current;
-    shown.current = key;
-    if (previous === null || previous === key) return;
+    shown.current = focusKey;
+    if (previous === null || previous === focusKey) return;
     const container = root.current;
     if (!container) return;
     const active = document.activeElement;
@@ -440,23 +661,68 @@ function ScreenView(props: ScreenProps) {
       return;
     }
     container.querySelector<HTMLElement>("h2")?.focus();
-  }, [key]);
+  }, [focusKey]);
+
+  const pending = nav.pending;
+  const navNotice = (
+    <>
+      {pending && (
+        <div
+          className="start-warning start-confirm"
+          role="group"
+          aria-label="Discard your task?"
+        >
+          <span>Discard your task?</span>
+          <button
+            type="button"
+            className="start-secondary start-small"
+            onClick={nav.confirm}
+          >
+            Discard and go back
+          </button>
+          <button
+            type="button"
+            className="start-primary start-small"
+            autoFocus
+            onClick={nav.cancel}
+          >
+            Keep editing
+          </button>
+        </div>
+      )}
+      <ErrorBox message={nav.error} />
+    </>
+  );
+  const linkFor = (i: number) => {
+    const target = RAIL_TARGETS[i];
+    const request = target ? railRequest(target, props.status.screen) : null;
+    return request ? () => void nav.go(request) : null;
+  };
 
   const step = railStep(key);
-  if (step < 0) {
-    return (
-      <div ref={root} className="start-content start-content-wide">
-        {renderScreen(key, props)}
-      </div>
-    );
-  }
   return (
-    <div className="start-layout">
-      <StepRail current={step} />
-      <div ref={root} className="start-content">
-        {renderScreen(key, props)}
-      </div>
-    </div>
+    <NavReportContext.Provider value={nav.setReport}>
+      {step < 0
+        ? (
+          <div ref={root} className="start-content start-content-wide">
+            {navNotice}
+            {renderScreen(key, props)}
+          </div>
+        )
+        : (
+          <div className="start-layout">
+            <StepRail
+              current={step}
+              linkFor={linkFor}
+              disabled={nav.busy || pending !== null}
+            />
+            <div ref={root} className="start-content">
+              {navNotice}
+              {renderScreen(key, props)}
+            </div>
+          </div>
+        )}
+    </NavReportContext.Provider>
   );
 }
 
@@ -473,10 +739,11 @@ function renderScreen(
       return <SignInScreen {...props} />;
     case "blocked":
       return <BlockedScreen {...props} />;
+    // One element for both, so a choose that moves agent to trust keeps the
+    // screen's state mid-launch.
     case "agent":
-      return <AgentScreen {...props} />;
     case "trust":
-      return <TrustScreen {...props} />;
+      return <AgentScreen {...props} />;
     case "launched":
       return <LaunchedScreen {...props} />;
     case "home":
@@ -580,17 +847,19 @@ function useAction(
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const run = useCallback(
-    async (action: () => Promise<StartStatus>) => {
+    async (action: () => Promise<StartStatus>): Promise<boolean> => {
       setBusy(true);
       setError(null);
       try {
         onStatus(await action());
+        return true;
       } catch (err) {
         setError(
           describeError
             ? describeError(err)
             : errorMessage(err, "Something went wrong. Try again."),
         );
+        return false;
       } finally {
         setBusy(false);
       }
@@ -792,9 +1061,6 @@ const WORKSPACE_EXPLAINER =
 
 const IMPORT_FOLDER_HINT = "Choose a folder that's already a swamp folder.";
 
-/** Longest folder path shown on a workspace card before it's shortened. */
-const CARD_PATH_MAX = 60;
-
 /** Error codes from an import that are about the name, not the folder. */
 const IMPORT_NAME_ERRORS = new Set(["name_taken", "invalid_name"]);
 
@@ -940,8 +1206,7 @@ function WorkspaceScreen({ status, client, onStatus }: ScreenProps) {
       setDefaultLocation(defaultLocation);
       setListError(null);
       if (relayout) setFirstRun(workspaces.length === 0);
-      // Keep the choice while it is still listed; else pick up where you
-      // left off: the newest workspace.
+      // Keep the choice while it is still listed; else the newest created.
       setSelected((prev) =>
         prev === NEW_WORKSPACE || prev === IMPORT_WORKSPACE ||
           (prev !== null && workspaces.some((w) => w.name === prev))
@@ -988,12 +1253,48 @@ function WorkspaceScreen({ status, client, onStatus }: ScreenProps) {
       )
     );
 
+  const [order, setOrderState] = useState<WorkspaceOrder>(() => {
+    try {
+      return parseWorkspaceOrder(localStorage.getItem(WORKSPACE_ORDER_KEY));
+    } catch {
+      return DEFAULT_WORKSPACE_ORDER;
+    }
+  });
+  const sortBy = (key: WorkspaceSortKey) => {
+    const next = nextWorkspaceOrder(order, key);
+    setOrderState(next);
+    try {
+      localStorage.setItem(WORKSPACE_ORDER_KEY, formatWorkspaceOrder(next));
+    } catch {
+      // Storage blocked: the order lasts for this page load only.
+    }
+  };
   const existing = list ?? [];
-  const radio = useRadioGroup(selected, [
-    ...existing.map((w) => w.name),
-    NEW_WORKSPACE,
-    IMPORT_WORKSPACE,
-  ]);
+  const shown = sortWorkspaces(existing, order);
+  // The + and Import buttons and Cancel unmount what was clicked, so focus
+  // moves to the form's first field, or back to the button that opened it.
+  const focusAfterSwap = useRef<string | null>(null);
+  const formRef = useRef<HTMLFormElement>(null);
+  const openForm = (form: string) => {
+    focusAfterSwap.current = form;
+    setSelected(form);
+  };
+  const cancelForm = () => {
+    if (selected === null) return;
+    focusAfterSwap.current = selected;
+    setSelected(existing[0]?.name ?? NEW_WORKSPACE);
+  };
+  useEffect(() => {
+    const opened = focusAfterSwap.current;
+    if (opened === null) return;
+    focusAfterSwap.current = null;
+    const form = formRef.current;
+    const field = form?.querySelector<HTMLElement>("input");
+    const button = Array.from(
+      form?.querySelectorAll<HTMLElement>("[data-opens]") ?? [],
+    ).find((b) => b.dataset.opens === opened);
+    (selected === opened ? field : button)?.focus();
+  }, [selected]);
   const trimmed = name.trim();
   const finalName = trimmed || suggested;
   const suggestedTaken = trimmed === "" && suggested !== "" &&
@@ -1007,6 +1308,9 @@ function WorkspaceScreen({ status, client, onStatus }: ScreenProps) {
     newWorkspaceNameProblem(finalName, existing) === null;
   const importingSelected = selected === IMPORT_WORKSPACE;
   const creating = firstRun ? !importingSelected : selected === NEW_WORKSPACE;
+  // A form opened over the list: Back, and the browser's Back, close it.
+  const formOverList = !firstRun && existing.length > 0 &&
+    (creating || importingSelected);
   // Ask the server where the new workspace would go each time the name or
   // folder settles: it works the path out, so the preview is always the
   // folder a create would make.
@@ -1083,9 +1387,9 @@ function WorkspaceScreen({ status, client, onStatus }: ScreenProps) {
   const canSubmit = !busy &&
     (importingSelected
       ? importCheck === null && folderOk
-      : creating
-      ? nameOk && locationProblem === null && serverNameProblem === null
-      : existing.some((w) => w.name === selected));
+      : creating && nameOk && locationProblem === null &&
+        serverNameProblem === null);
+  useNavReport(false, busy, formOverList ? cancelForm : null);
   const now = new Date();
 
   const submit = (e: React.FormEvent) => {
@@ -1101,7 +1405,11 @@ function WorkspaceScreen({ status, client, onStatus }: ScreenProps) {
         )
       );
     } else if (creating) choose(finalName, typedLocation);
-    else if (selected !== null) choose(selected);
+  };
+  const open = (workspace: string) => {
+    if (busy) return;
+    setSelected(workspace);
+    choose(workspace);
   };
 
   const nameFields = (
@@ -1369,11 +1677,7 @@ function WorkspaceScreen({ status, client, onStatus }: ScreenProps) {
     ? (creating ? "Creating…" : "Opening…")
     : firstRun
     ? "Create workspace and continue"
-    : creating
-    ? "Create workspace"
-    : selected && existing.some((w) => w.name === selected)
-    ? `Continue in ${selected}`
-    : "Continue";
+    : "Create workspace";
 
   return (
     <div className="login-card start-card">
@@ -1400,6 +1704,7 @@ function WorkspaceScreen({ status, client, onStatus }: ScreenProps) {
       )}
       {list !== null && (
         <form
+          ref={formRef}
           className={`start-workspace-form${firstRun ? " start-panel" : ""}`}
           onSubmit={submit}
         >
@@ -1431,94 +1736,94 @@ function WorkspaceScreen({ status, client, onStatus }: ScreenProps) {
                         Already have a swamp repo?{" "}
                         <button
                           type="button"
-                          className="start-link"
+                          className="start-secondary start-small start-icon-button"
                           onClick={() => setSelected(IMPORT_WORKSPACE)}
                         >
-                          Import it →
+                          <ActionIcon path={IMPORT_ICON} />
+                          Import
                         </button>
                       </p>
                     </>
                   )}
               </>
             )
+            : selected === NEW_WORKSPACE || importingSelected
+            ? (
+              <div className="start-form-panel">
+                <h3 className="start-form-title">
+                  {importingSelected
+                    ? "Import an existing swamp repo"
+                    : "Start a new workspace"}
+                </h3>
+                <p className="start-panel-intro">
+                  {importingSelected
+                    ? "Use a swamp repo you already have, where it is. Nothing is moved."
+                    : "For a different project or task. We'll suggest a name."}
+                </p>
+                {importingSelected ? importFields : nameFields}
+              </div>
+            )
             : (
               <>
-                <p>Pick up where you left off, or start a new workspace.</p>
-                <div
-                  className="start-workspaces"
-                  role="radiogroup"
-                  aria-label="Workspaces"
-                  onKeyDown={radio.onKeyDown}
-                >
-                  {existing.map((w) => (
-                    <WorkspaceCard
-                      key={w.name}
-                      workspace={w}
-                      now={now}
-                      selected={selected === w.name}
-                      tabIndex={radio.tabIndexFor(w.name)}
-                      onSelect={() => setSelected(w.name)}
-                    />
-                  ))}
-                  <div
-                    className={`start-harness start-new-option${
-                      selected === NEW_WORKSPACE
-                        ? " start-harness-selected"
-                        : ""
-                    }`}
-                  >
+                <div className="start-workspace-bar">
+                  <h3 className="start-ws-heading">
+                    Your workspaces{" "}
+                    <span className="start-ws-count">{existing.length}</span>
+                  </h3>
+                  <div className="start-workspace-adds">
                     <button
                       type="button"
-                      role="radio"
-                      aria-checked={selected === NEW_WORKSPACE}
-                      tabIndex={radio.tabIndexFor(NEW_WORKSPACE)}
-                      className="start-new-option-head"
-                      onClick={() => setSelected(NEW_WORKSPACE)}
+                      className="start-secondary start-small start-icon-button"
+                      data-opens={NEW_WORKSPACE}
+                      onClick={() => openForm(NEW_WORKSPACE)}
                     >
-                      <span className="start-harness-name">
-                        Start a new workspace
-                      </span>
-                      <span className="start-workspace-task">
-                        For a different project or task. We'll suggest a name.
-                      </span>
+                      <ActionIcon path={PLUS_ICON} />
+                      New workspace
                     </button>
-                    {selected === NEW_WORKSPACE && nameFields}
-                  </div>
-                  <div
-                    className={`start-harness start-new-option${
-                      importingSelected ? " start-harness-selected" : ""
-                    }`}
-                  >
                     <button
                       type="button"
-                      role="radio"
-                      aria-checked={importingSelected}
-                      tabIndex={radio.tabIndexFor(IMPORT_WORKSPACE)}
-                      className="start-new-option-head"
-                      onClick={() => setSelected(IMPORT_WORKSPACE)}
+                      className="start-secondary start-small start-icon-button"
+                      data-opens={IMPORT_WORKSPACE}
+                      title="Import an existing swamp repo"
+                      onClick={() => openForm(IMPORT_WORKSPACE)}
                     >
-                      <span className="start-harness-name">
-                        Import an existing workspace
-                      </span>
-                      <span className="start-workspace-task">
-                        Use a swamp repo you already have, where it is. Nothing
-                        is moved.
-                      </span>
+                      <ActionIcon path={IMPORT_ICON} />
+                      Import
                     </button>
-                    {importingSelected && importFields}
                   </div>
                 </div>
+                <WorkspaceTable
+                  workspaces={shown}
+                  now={now}
+                  order={order}
+                  onSort={sortBy}
+                  opening={choosing ? selected : null}
+                  disabled={busy}
+                  onOpen={open}
+                />
               </>
             )}
-          <div className="start-actions">
-            <button
-              type="submit"
-              className="start-primary"
-              disabled={!canSubmit}
-            >
-              {submitLabel}
-            </button>
-          </div>
+          {(firstRun || creating || importingSelected) && (
+            <div className="start-actions">
+              {formOverList && (
+                <button
+                  type="button"
+                  className="start-secondary"
+                  onClick={cancelForm}
+                  disabled={busy}
+                >
+                  Cancel
+                </button>
+              )}
+              <button
+                type="submit"
+                className="start-primary"
+                disabled={!canSubmit}
+              >
+                {submitLabel}
+              </button>
+            </div>
+          )}
           {firstRun && !importingSelected && (
             <p className="start-hint">
               {withCode(workspaceLocationHint(defaultLocation))}
@@ -1528,6 +1833,30 @@ function WorkspaceScreen({ status, client, onStatus }: ScreenProps) {
       )}
       {list !== null && firstRun && <FirstRunSteps />}
     </div>
+  );
+}
+
+const PLUS_ICON = "M12 5v14M5 12h14";
+// A folder with an arrow going in: import uses the folder where it is.
+const IMPORT_ICON =
+  "M4 20h16a1 1 0 0 0 1-1V8a1 1 0 0 0-1-1h-7.9a1 1 0 0 1-.8-.4l-.9-1.2A1 1 0 0 0 9.6 5H4a1 1 0 0 0-1 1v13a1 1 0 0 0 1 1zM8 13h7M12 10l3 3-3 3";
+
+/** A stroke icon beside a button's visible label. */
+function ActionIcon({ path }: { path: string }) {
+  return (
+    <svg
+      width="16"
+      height="16"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d={path} />
+    </svg>
   );
 }
 
@@ -1573,87 +1902,176 @@ function FirstRunSteps() {
   );
 }
 
-function WorkspaceCard(
-  { workspace, now, selected, tabIndex, onSelect }: {
-    workspace: WorkspaceSummary;
+/** Longest folder path shown on a workspace card before it's shortened. */
+const ROW_PATH_MAX = 96;
+/** The same, on a phone-width screen. */
+const ROW_PATH_NARROW_MAX = 44;
+
+const SORT_COLUMNS: { key: WorkspaceSortKey | null; label: string }[] = [
+  { key: "name", label: "Workspace name" },
+  { key: null, label: "Agent" },
+  { key: "created", label: "Created" },
+  { key: "updated", label: "Updated" },
+];
+
+/**
+ * The workspaces as compact cards under a header that sorts them. A card
+ * opens on a click; its name is the button that keyboards and screen
+ * readers reach. A sorted header flips its order on a second click.
+ */
+function WorkspaceTable(
+  { workspaces, now, order, onSort, opening, disabled, onOpen }: {
+    workspaces: readonly WorkspaceSummary[];
     now: Date;
-    selected: boolean;
-    tabIndex: number;
-    onSelect: () => void;
+    order: WorkspaceOrder;
+    onSort: (key: WorkspaceSortKey) => void;
+    opening: string | null;
+    disabled: boolean;
+    onOpen: (name: string) => void;
   },
 ) {
-  const updated = updatedLabel(workspace.updatedAt, now);
-  const created = createdLabel(workspace.createdAt, now);
-  const agents = workspaceAgentTags(workspace);
-  const dates = [created, updated].filter((d): d is string => d !== null);
   return (
-    <button
-      type="button"
-      role="radio"
-      aria-checked={selected}
-      tabIndex={tabIndex}
-      className={`start-harness start-workspace${
-        selected ? " start-harness-selected" : ""
-      }`}
-      onClick={onSelect}
-      title={workspace.path}
+    <div className="start-ws">
+      <div
+        className="start-ws-grid start-ws-header"
+        role="group"
+        aria-label="Sort workspaces"
+      >
+        {SORT_COLUMNS.map(({ key, label }) => {
+          const active = key !== null && order.key === key;
+          const direction = order.dir === "asc" ? "ascending" : "descending";
+          return (
+            <span
+              key={label}
+              className={`start-ws-col-${key ?? label.toLowerCase()}`}
+            >
+              {key === null ? label : (
+                <button
+                  type="button"
+                  className={`start-ws-sort${
+                    active ? " start-ws-sort-active" : ""
+                  }`}
+                  aria-pressed={active}
+                  aria-label={active
+                    ? `${label}, sorted ${direction}`
+                    : `Sort by ${label.toLowerCase()}`}
+                  onClick={() => onSort(key)}
+                >
+                  {label}
+                  <span className="start-ws-sort-mark" aria-hidden="true">
+                    {active ? (order.dir === "asc" ? "\u25b4" : "\u25be") : ""}
+                  </span>
+                </button>
+              )}
+            </span>
+          );
+        })}
+      </div>
+      <ul className="start-ws-list" aria-label="Workspaces">
+        {workspaces.map((w) => (
+          <WorkspaceRow
+            key={w.name}
+            workspace={w}
+            now={now}
+            opening={opening === w.name}
+            disabled={disabled}
+            onOpen={() => onOpen(w.name)}
+          />
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+function WorkspaceRow(
+  { workspace, now, opening, disabled, onOpen }: {
+    workspace: WorkspaceSummary;
+    now: Date;
+    opening: boolean;
+    disabled: boolean;
+    onOpen: () => void;
+  },
+) {
+  const agents = workspaceAgentTags(workspace);
+  const [first] = agents.tags;
+  const others = agents.tags.length - 1 + agents.more;
+  const agentNames = [
+    ...agents.tags.map((t) => t.name),
+    ...(agents.moreTitle ? [agents.moreTitle] : []),
+  ].join(", ");
+  const created = createdLabel(workspace.createdAt, now);
+  const updated = updatedLabel(workspace.updatedAt, now);
+  return (
+    <li
+      className={`start-ws-grid start-ws-card${
+        opening ? " start-ws-card-opening" : ""
+      }${disabled ? " start-ws-card-disabled" : ""}`}
+      onClick={disabled ? undefined : onOpen}
+      aria-busy={opening}
     >
-      <span className="start-workspace-head">
-        <span className="start-workspace-name">{workspace.name}</span>
-        <span className="start-agent-tags">
-          {agents.tags.length === 0 && (
-            <span className="start-agent-tag-chip start-agent-tag-none">
-              No agent yet
-            </span>
-          )}
-          {agents.tags.map((t) => (
-            <span
-              key={t.id}
-              className={`start-agent-tag-chip${
-                t.launched ? " start-agent-tag-launched" : ""
-              }`}
-              title={t.launched
-                ? `Launched with ${t.name}`
-                : `Set up for ${t.name}`}
-            >
-              <AgentBadge id={t.id} />
-              {t.name}
-            </span>
-          ))}
-          {agents.more > 0 && (
-            <span
-              className="start-agent-tag-chip"
-              title={agents.moreTitle ?? undefined}
-            >
-              +{agents.more}
-            </span>
-          )}
-        </span>
-      </span>
-      {workspace.imported && (
-        <span className="start-workspace-path">
-          {middleEllipsis(workspace.path, CARD_PATH_MAX)}
-        </span>
-      )}
-      <span className="start-workspace-brief">
-        <span className="start-workspace-label">Brief</span>
+      <span className="start-ws-col-name start-ws-title">
+        <button
+          type="button"
+          className="start-ws-open"
+          onClick={(e) => {
+            e.stopPropagation();
+            onOpen();
+          }}
+          disabled={disabled}
+        >
+          {workspace.name}
+        </button>
+        {opening && <span className="start-ws-note">Opening…</span>}
+        {workspace.running && !opening && (
+          <span
+            className="start-ws-note"
+            title="Also open in another swamp start"
+          >
+            Open elsewhere
+          </span>
+        )}
         <span
-          className={`start-workspace-task${
-            workspace.taskTitle ? "" : " start-workspace-task-empty"
+          className={`start-ws-brief${
+            workspace.taskTitle ? "" : " start-ws-empty"
           }`}
+          title={workspace.taskTitle ?? undefined}
         >
           {workspace.taskTitle ?? "No brief yet"}
         </span>
       </span>
-      {dates.length > 0 && (
-        <span className="start-workspace-dates">{dates.join(" · ")}</span>
-      )}
-      {workspace.running && (
-        <span className="start-harness-note">
-          Also open in another swamp start
+      <span className="start-ws-col-agent">
+        {first
+          ? (
+            <span
+              className={`start-agent-tag-chip${
+                first.launched ? " start-agent-tag-launched" : ""
+              }`}
+              title={agentNames}
+            >
+              <AgentBadge id={first.id} />
+              {first.name}
+              {others > 0 && <span className="start-ws-more">+{others}</span>}
+            </span>
+          )
+          : <span className="start-ws-empty">No agent yet</span>}
+      </span>
+      <span className="start-ws-col-created">
+        <span className="start-ws-cell-label">Created</span>
+        {created ?? "\u2014"}
+      </span>
+      <span className="start-ws-col-updated">
+        <span className="start-ws-cell-label">Updated</span>
+        {updated ?? "\u2014"}
+      </span>
+      <span className="start-ws-path" title={workspace.path}>
+        <span className="start-ws-path-wide">
+          {pathLabel(workspace.path, ROW_PATH_MAX)}
         </span>
-      )}
-    </button>
+        <span className="start-ws-path-narrow">
+          {pathLabel(workspace.path, ROW_PATH_NARROW_MAX)}
+        </span>
+      </span>
+    </li>
   );
 }
 
@@ -1666,6 +2084,7 @@ function TaskScreen({ status, client, onStatus }: ScreenProps) {
   const [idea] = useState(() => pickFirstTaskIdea(Math.random()));
   // Typed text that Continue hasn't saved yet; Switch asks before losing it.
   const unsaved = text.trim() !== "" && text !== (status.task?.text ?? "");
+  useNavReport(unsaved, busy);
   const taskCount = status.tasks?.length ?? 0;
   // A new task in a workspace that has others: Cancel goes back to them.
   const nextTask = status.taskId === undefined && taskCount > 0;
@@ -2006,7 +2425,17 @@ function AgentScreen({ status, client, onStatus }: ScreenProps) {
   const [extrasOpen, setExtrasOpen] = useState(() =>
     showExtrasOpen(status.enrolledTools, extras)
   );
-  const { busy, error, run } = useAction(onStatus);
+  const { busy: choosing, error, run } = useAction(onStatus);
+  const {
+    launch,
+    running,
+    reached,
+    error: launchError,
+  } = useLaunch(client, onStatus);
+  // Held across both requests, so nothing re-enables between choose and launch.
+  const [launching, setLaunching] = useState(false);
+  const busy = choosing || running || launching;
+  useNavReport(false, busy);
 
   // The agent that opens is always set up; it is never an extra.
   useEffect(() => {
@@ -2039,8 +2468,33 @@ function AgentScreen({ status, client, onStatus }: ScreenProps) {
     launchableCount,
     launchable[0]?.displayName,
   );
-  const selectedName = available.find((h) => h.id === selected)?.displayName;
+  const selectedHarness = available.find((h) => h.id === selected);
+  const selectedName = selectedHarness?.displayName;
   const enrolled = status.enrolledTools ?? [];
+  const toolsToSend = selected === null
+    ? []
+    : extraToolsToSend(extras, selected, enrolled);
+  const trustName = selectedName ?? "Your agent";
+  const setup = selected === null
+    ? null
+    : setupSummary(enrolled, [selected, ...toolsToSend], selected);
+  // Picking a card only changes this page; the button alone sends the choice
+  // and the trust confirmation, in that order.
+  const trustAndLaunch = async () => {
+    if (selected === null || busy) return;
+    setLaunching(true);
+    try {
+      const chosen = await run(() =>
+        client.request<StartStatus>("start.harness.choose", {
+          id: selected,
+          tools: toolsToSend,
+        })
+      );
+      if (chosen) await launch();
+    } finally {
+      setLaunching(false);
+    }
+  };
   const extraRows = [...available, ...unavailable].filter((h) =>
     h.id !== selected
   );
@@ -2098,7 +2552,7 @@ function AgentScreen({ status, client, onStatus }: ScreenProps) {
           <span className="start-task-strip-text">{status.task.title}</span>
         </div>
       )}
-      <ErrorBox message={error ?? listError} />
+      <ErrorBox message={error ?? launchError ?? listError} />
       {harnesses === null && !listError && (
         <div className="login-waiting">
           <div className="login-spinner" />
@@ -2148,7 +2602,9 @@ function AgentScreen({ status, client, onStatus }: ScreenProps) {
                 selected={selected === h.id}
                 fixed={solo}
                 tabIndex={radio.tabIndexFor(h.id)}
-                onSelect={() => setSelected(h.id)}
+                onSelect={() => {
+                  if (!busy) setSelected(h.id);
+                }}
               />
             ))}
           </div>
@@ -2200,6 +2656,33 @@ function AgentScreen({ status, client, onStatus }: ScreenProps) {
           </p>
         </details>
       )}
+      {harnesses !== null && selected !== null && !noneLaunchable && (
+        <section className="start-trust" aria-label="Before it opens">
+          <p className="start-field-label">
+            {trustName} will work in your Swamp workspace.
+          </p>
+          <div className="start-path">{status.workspacePath}</div>
+          <ul className="start-facts">
+            <li>{trustName} can read, edit and run files in this folder.</li>
+            {setup && <li>{setup}</li>}
+          </ul>
+          <div className="start-note">
+            {trustNote(selectedHarness?.trustMode ?? "unknown", trustName)}
+          </div>
+          {status.apiKeyFromEnv && (
+            <div className="start-warning">{withCode(API_KEY_WARNING)}</div>
+          )}
+          {status.alsoOpenElsewhere && (
+            <div className="start-warning">
+              Another swamp start has this workspace open. Launching here opens
+              a second {trustName} window in the same workspace.
+            </div>
+          )}
+        </section>
+      )}
+      {(running || reached !== null) && (
+        <LaunchChecklist reached={reached} name={trustName} />
+      )}
       <div className="start-actions">
         <button
           type="button"
@@ -2224,16 +2707,13 @@ function AgentScreen({ status, client, onStatus }: ScreenProps) {
               type="button"
               className="start-primary"
               disabled={busy || selected === null}
-              onClick={() =>
-                selected !== null &&
-                void run(() =>
-                  client.request<StartStatus>("start.harness.choose", {
-                    id: selected,
-                    tools: extraToolsToSend(extras, selected, enrolled),
-                  })
-                )}
+              onClick={() => void trustAndLaunch()}
             >
-              {selectedName ? `Continue with ${selectedName}` : "Continue"}
+              {launching || running
+                ? "Launching…"
+                : selectedName
+                ? `Trust and launch ${selectedName}`
+                : "Trust and launch"}
             </button>
           )}
       </div>
@@ -2496,69 +2976,6 @@ function trustNote(mode: string, name: string): string {
 const API_KEY_WARNING =
   "Your agent's terminal needs `SWAMP_API_KEY` too. Make sure your shell " +
   "profile sets it, or sign in with `swamp auth login`.";
-
-function TrustScreen({ status, client, onStatus }: ScreenProps) {
-  const name = status.harness?.displayName ?? "Your agent";
-  const { busy, error: backError, run } = useAction(onStatus);
-  const { launch, running, reached, error } = useLaunch(client, onStatus);
-  const setup = setupSummary(
-    status.enrolledTools,
-    status.tools,
-    status.harness?.id,
-  );
-
-  return (
-    <div className="login-card start-card">
-      <StatusChips
-        status={status}
-        client={client}
-        onStatus={onStatus}
-        disabled={busy || running}
-      />
-      <h2 tabIndex={-1}>{name} will work in your Swamp workspace.</h2>
-      <div className="start-path">{status.workspacePath}</div>
-      <ul className="start-facts">
-        <li>{name} can read, edit and run files in this folder.</li>
-        {setup && <li>{setup}</li>}
-      </ul>
-      <div className="start-note">
-        {trustNote(status.harness?.trustMode ?? "unknown", name)}
-      </div>
-      {status.apiKeyFromEnv && (
-        <div className="start-warning">{withCode(API_KEY_WARNING)}</div>
-      )}
-      {status.alsoOpenElsewhere && (
-        <div className="start-warning">
-          Another swamp start has this workspace open. Launching here opens a
-          second {name} window in the same workspace.
-        </div>
-      )}
-      <ErrorBox message={error ?? backError} />
-      {(running || reached !== null) && (
-        <LaunchChecklist reached={reached} name={name} />
-      )}
-      <div className="start-actions">
-        <button
-          type="button"
-          className="start-secondary"
-          disabled={busy || running}
-          onClick={() =>
-            void run(() => client.request<StartStatus>("start.back"))}
-        >
-          Back
-        </button>
-        <button
-          type="button"
-          className="start-primary"
-          disabled={busy || running}
-          onClick={() => void launch()}
-        >
-          {running ? "Launching…" : `Trust and launch ${name}`}
-        </button>
-      </div>
-    </div>
-  );
-}
 
 /** The launch command with a Copy button, for when no window opened. */
 function CommandBlock(
