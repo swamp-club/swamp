@@ -284,6 +284,7 @@ export function SessionDetail(
     setFilter(next);
     setFindingTitle(null);
     setOpenFinding(null);
+    setReveal(null);
     if (next.kind !== "all") openAll(turnsWithMatches(next, sessions));
   };
 
@@ -295,6 +296,7 @@ export function SessionDetail(
     const key = findingKey(shown);
     if (openFinding === key) {
       setOpenFinding(null);
+      setReveal(null);
       if (filter.kind === "calls") changeFilter({ kind: "all" });
       closed(`finding:${key}`);
       return;
@@ -330,27 +332,27 @@ export function SessionDetail(
     const row = childRow(childId);
     if (row) void childRecords.load(row);
     const key = `subagent:${childId}`;
-    const next = new Set(openSubagents);
-    if (next.has(childId)) {
-      next.delete(childId);
-      closed(key);
-    } else {
-      next.add(childId);
-      jumpTo(subagentBoxId(childId), key);
-    }
-    setOpenSubagents(next);
+    const opening = !openSubagents.has(childId);
+    setOpenSubagents((current) => {
+      const next = new Set(current);
+      if (opening) next.add(childId);
+      else next.delete(childId);
+      return next;
+    });
+    if (opening) jumpTo(subagentBoxId(childId), key);
+    else closed(key);
   };
 
   const toggleTurn = (key: string) => {
-    const next = new Set(openTurns);
-    if (next.has(key)) {
-      next.delete(key);
-      closed(`turn:${key}`);
-    } else {
-      next.add(key);
-      jumpTo(turnHeadId(key), `turn:${key}`);
-    }
-    setOpenTurns(next);
+    const opening = !openTurns.has(key);
+    setOpenTurns((current) => {
+      const next = new Set(current);
+      if (opening) next.add(key);
+      else next.delete(key);
+      return next;
+    });
+    if (opening) jumpTo(turnHeadId(key), `turn:${key}`);
+    else closed(`turn:${key}`);
   };
 
   const revealTurn = (key: string) => {

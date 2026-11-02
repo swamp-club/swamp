@@ -242,7 +242,7 @@ export function SessionsTable(
         view.scrollTop,
       height: at.height,
     });
-  }, [openAt, compact, rows]);
+  }, [openName, openAt, compact, rows.length]);
   const onKey = (row: SessionRow) => (e: KeyboardEvent) => {
     if (e.key === "Enter" || e.key === " ") {
       e.preventDefault();
