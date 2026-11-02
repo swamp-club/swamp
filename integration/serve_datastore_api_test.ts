@@ -1936,3 +1936,78 @@ Deno.test({
     });
   },
 });
+
+Deno.test({
+  name:
+    "datastore API: a compacted base vouches for a definition chunk only through the record the caller may read, not a same-named definition of another type (swamp-club#4260)",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    await withServer(bobReads("*"), async (server) => {
+      // Two definitions named shared share one config partition: one of an
+      // ordinary type bob may read, one of a control-plane type only an
+      // admin may.
+      const types = [server.modelType.normalized, "@swamp/grant"];
+      const shas: string[] = [];
+      for (const [expectedSeq, type] of types.entries()) {
+        const content = definitionYaml("shared", type);
+        const sha = await sha256Hex(content);
+        shas.push(sha);
+        const landed = await post(
+          configCommitsPath(server, "shared"),
+          "alice-token",
+          commitBody({
+            expectedSeq,
+            txnId: crypto.randomUUID(),
+            ops: [{
+              kind: "put",
+              intent: {
+                kind: "definition.create",
+                definition: { kind: "model", name: "shared" },
+              },
+              key: `config/models/${type}/shared.yaml`,
+              blob: { sha256: sha, size: content.length },
+            }],
+            chunks: [{ sha256: sha, size: content.length }],
+          }, [content]),
+        );
+        assertEquals(landed.status, 200, JSON.stringify(landed.json));
+      }
+      // Folds both commits: only the base names either chunk now.
+      const store = server.v3.commitStore;
+      const fence = store.writerFence();
+      await store.compactHistory(
+        Number.MAX_SAFE_INTEGER,
+        fence === undefined ? {} : { fence },
+      );
+      const config = partitionOf({
+        kind: "config",
+        definitionKind: "model",
+        name: "shared",
+      });
+      for (const sha of shas) {
+        assertEquals(
+          (await store.baseRecordKeysNaming(server.v3.namespace, config, sha))
+            .length,
+          1,
+        );
+      }
+      const [ordinary, controlPlane] = shas;
+      const readable = await chunkRead(server, ordinary);
+      assertEquals(readable.status, 200);
+      assertEquals(readable.held, [ordinary]);
+      const hidden = await chunkRead(server, controlPlane);
+      assertEquals(hidden.status, 404);
+      assertEquals(hidden.body, {
+        code: "not_found",
+        message: "No such chunk",
+      });
+      assertEquals(hidden.held, []);
+      for (const sha of shas) {
+        const admin = await chunkRead(server, sha, "alice-token");
+        assertEquals(admin.status, 200, sha);
+        assertEquals(admin.held, [sha], sha);
+      }
+    });
+  },
+});
