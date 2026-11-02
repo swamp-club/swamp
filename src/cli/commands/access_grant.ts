@@ -184,6 +184,7 @@ const accessGrantCreateCommand = new Command()
         resourceKind: resource.kind,
         resourcePattern: resource.pattern,
         condition: options.when as string | undefined,
+        methods,
       });
     } catch (error) {
       throw new UserError(

@@ -30,6 +30,7 @@ import {
   modelTypeFields,
   unresolvedAccessResource,
   vaultKindResource,
+  type VaultMethod,
   workflowAccessResource,
 } from "../access/access_resources.ts";
 import { controlPlaneRecordResource } from "../access/control_plane_records.ts";
@@ -424,6 +425,12 @@ async function modelWriteAccessOf(
     case "data.save":
     case "data.append":
     case "output.save":
+      // the commit names no method, and any method a scoped run allow covers
+      // could have saved it
+      return {
+        action: "run",
+        resource: { ...resourceAs("model"), anyMethod: true },
+      };
     // saving an evaluation needs run on the behavior, as model.evaluate decides
     case "evaluated-definition.save":
       return { action: "run", resource: resourceAs("model") };
@@ -488,7 +495,7 @@ export async function readAccessOf(
     const write = await definitionAccessOf(op, intent.definition, resolver);
     return write.action === "admin"
       ? write
-      : { action: "read", resource: write.resource };
+      : { action: "read", resource: readOfDefinition(write.resource) };
   }
   if ("autoDefinition" in intent) {
     const binding = bindKey(intent, op.kind, op.key);
@@ -531,7 +538,7 @@ export async function definitionRecordReadAccessOf(
   );
   return write.action === "admin"
     ? write
-    : { action: "read", resource: write.resource };
+    : { action: "read", resource: readOfDefinition(write.resource) };
 }
 
 /**
@@ -604,7 +611,7 @@ export async function baseRecordReadAccessOf(
       return [
         write.action === "admin"
           ? write
-          : { action: "read", resource: write.resource },
+          : { action: "read", resource: readOfDefinition(write.resource) },
       ];
     }
     case "definition": {
@@ -718,7 +725,7 @@ export async function partitionReadAccessOf(
         case "vault":
           return [{
             action: "read",
-            resource: vaultKindResource(identity.name),
+            resource: vaultKindResource(identity.name, undefined, "describe"),
           }];
         case "model":
           // The partition names no behavior type, and same-named
@@ -771,9 +778,12 @@ export async function partitionWriteAccessOf(
       const lookup = await resolver.model(model);
       return {
         action: "run",
-        resource: lookup === undefined
-          ? unresolvedModelResource(type, identity.id, "model")
-          : modelAccessResource(lookup, "model"),
+        resource: {
+          ...(lookup === undefined
+            ? unresolvedModelResource(type, identity.id, "model")
+            : modelAccessResource(lookup, "model")),
+          anyMethod: true,
+        },
       };
     }
     case "run": {
@@ -803,13 +813,34 @@ export async function partitionWriteAccessOf(
         case "vault":
           return {
             action: "write",
-            resource: vaultKindResource(identity.name),
+            resource: {
+              ...vaultKindResource(identity.name),
+              anyMethod: true,
+            },
           };
       }
       return { action: "admin", resource: ADMIN_RESOURCE };
     case "definition":
     case "lockfile":
       return { action: "admin", resource: ADMIN_RESOURCE };
+  }
+}
+
+// reading a definition is the same read however it was written
+function readOfDefinition(resource: AccessResource): AccessResource {
+  return resource.kind === "vault"
+    ? vaultKindResource(resource.name, undefined, "describe")
+    : resource;
+}
+
+function vaultDefinitionMethod(intent: Intent): VaultMethod {
+  switch (intent.kind) {
+    case "definition.create":
+      return "create";
+    case "definition.delete":
+      return "delete";
+    default:
+      return "edit";
   }
 }
 
@@ -835,7 +866,14 @@ async function definitionAccessOf(
         }),
       };
     case "vault":
-      return { action: "write", resource: vaultKindResource(definition.name) };
+      return {
+        action: "write",
+        resource: vaultKindResource(
+          definition.name,
+          undefined,
+          vaultDefinitionMethod(op.intent),
+        ),
+      };
     case "model": {
       const type = keyType;
       // A behavior definition's type comes from its key, never its content.

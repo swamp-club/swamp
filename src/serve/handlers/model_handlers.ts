@@ -1371,10 +1371,17 @@ export async function handleModelMethodDescribe(
   controller: AbortController,
   principal: Principal | null,
 ): Promise<void> {
-  const target = await resolveModelTarget(
+  const resolved = await resolveModelTarget(
     ctx.repoContext.definitionRepo,
     payload.modelIdOrName,
   );
+  const target: ResourceResolution = resolved.status === "failed" ? resolved : {
+    ...resolved,
+    resource: {
+      ...resolved.resource,
+      fields: { ...resolved.resource.fields, methodName: payload.methodName },
+    },
+  };
   if (
     !authorizeResolved(
       socket,

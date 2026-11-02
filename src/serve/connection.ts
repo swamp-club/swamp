@@ -337,6 +337,7 @@ const AccessCheckRequestSchema = z.object({
     action: z.string(),
     resource: z.string(),
     collectives: z.array(z.string()).optional(),
+    method: z.string().min(1).optional(),
   }),
 });
 

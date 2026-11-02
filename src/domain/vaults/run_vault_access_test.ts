@@ -63,7 +63,7 @@ Deno.test("RunVaultAccess.check: allows a vault on the list and a policy allow",
     allowedVaults: ["erp"],
     allowListSource: "wf",
   });
-  await access.check("erp", "read", "k");
+  await access.check("erp", "read", "get", "k");
 });
 
 Deno.test("RunVaultAccess.check: refusal names the vault and principal, never a value", async () => {
@@ -75,7 +75,7 @@ Deno.test("RunVaultAccess.check: refusal names the vault and principal, never a 
     },
   });
   const error = await assertRejects(
-    () => access.check("erp", "read", "db-password"),
+    () => access.check("erp", "read", "get", "db-password"),
     VaultAccessDeniedError,
   );
   assertStringIncludes(error.message, "'erp'");
@@ -96,7 +96,7 @@ Deno.test("RunVaultAccess.check: workflow list refusal names the workflow", asyn
     allowListSource: "deploy",
   });
   const error = await assertRejects(
-    () => access.check("erp", "write"),
+    () => access.check("erp", "write", "put"),
     VaultAccessDeniedError,
   );
   assertStringIncludes(error.message, "'erp'");
@@ -113,11 +113,11 @@ Deno.test("RunVaultAccess.check: onDenied is called once per vault, key and acti
     },
   });
   for (let i = 0; i < 3; i++) {
-    await assertRejects(() => access.check("erp", "read", "k"));
+    await assertRejects(() => access.check("erp", "read", "get", "k"));
   }
   assertEquals(calls, 1);
-  await assertRejects(() => access.check("erp", "write", "k"));
-  await assertRejects(() => access.check("erp", "read", "other"));
+  await assertRejects(() => access.check("erp", "write", "put", "k"));
+  await assertRejects(() => access.check("erp", "read", "get", "other"));
   assertEquals(calls, 3);
 });
 
@@ -128,9 +128,9 @@ Deno.test("runWithVaultAccess: nested allow-lists intersect", async () => {
     runWithVaultAccess(inner, async () => {
       const access = currentVaultAccess()!;
       assertEquals([...access.allowedVaults!], ["b"]);
-      await access.check("b", "read");
-      await assertRejects(() => access.check("a", "read"));
-      await assertRejects(() => access.check("c", "read"));
+      await access.check("b", "read", "get");
+      await assertRejects(() => access.check("a", "read", "get"));
+      await assertRejects(() => access.check("c", "read", "get"));
     }));
 });
 
@@ -148,11 +148,11 @@ Deno.test("runWithVaultAccess: an inner scope cannot replace the outer policy", 
         async () => {
           const access = currentVaultAccess()!;
           const error = await assertRejects(
-            () => access.check("payroll", "read"),
+            () => access.check("payroll", "read", "get"),
             VaultAccessDeniedError,
           );
           assertStringIncludes(error.message, "bot:outer");
-          await access.check("erp", "read");
+          await access.check("erp", "read", "get");
           assertEquals(innerPolicy.calls.includes("erp:read"), true);
         },
       ),
@@ -168,9 +168,9 @@ Deno.test("runWithVaultAccess: an inner scope without a policy inherits the oute
         RunVaultAccess.create({ allowedVaults: ["erp", "payroll"] }),
         async () => {
           await assertRejects(() =>
-            currentVaultAccess()!.check("payroll", "read")
+            currentVaultAccess()!.check("payroll", "read", "get")
           );
-          await currentVaultAccess()!.check("erp", "read");
+          await currentVaultAccess()!.check("erp", "read", "get");
         },
       ),
   );
@@ -283,7 +283,7 @@ function keyConditionedPolicy(
   return {
     principal: "user:bot",
     calls,
-    decide(vaultName, action, secretKey, options) {
+    decide(vaultName, action, _method, secretKey, options) {
       calls.push([vaultName, action, secretKey, options?.keyUnknown]);
       if (vaultName !== vault) return { allowed: true, reason: "granted" };
       return options?.keyUnknown
@@ -302,15 +302,19 @@ Deno.test("RunVaultAccess.check: with keyUnknown an outcome that depends on the 
       denials.push(d);
     },
   });
-  await access.check("outputs", "write", undefined, { keyUnknown: true });
+  await access.check("outputs", "write", "put", undefined, {
+    keyUnknown: true,
+  });
   assertEquals(
-    await access.decide("outputs", "write", undefined, { keyUnknown: true }),
+    await access.decide("outputs", "write", "put", undefined, {
+      keyUnknown: true,
+    }),
     { allowed: false, undetermined: true },
   );
   assertEquals(denials, []);
   assertEquals(policy.calls[0], ["outputs", "write", undefined, true]);
   await assertRejects(
-    () => access.check("outputs", "write", "k"),
+    () => access.check("outputs", "write", "put", "k"),
     VaultAccessDeniedError,
     "denied by grant g-key",
   );
@@ -329,7 +333,7 @@ Deno.test("RunVaultAccess.check: an undetermined decision without keyUnknown ref
     },
   });
   await assertRejects(
-    () => access.check("outputs", "write"),
+    () => access.check("outputs", "write", "put"),
     VaultAccessDeniedError,
   );
 });
@@ -341,7 +345,8 @@ Deno.test("RunVaultAccess.check: with keyUnknown a workflow list and another pol
     allowListSource: "wf",
   });
   const error = await assertRejects(
-    () => listed.check("outputs", "write", undefined, { keyUnknown: true }),
+    () =>
+      listed.check("outputs", "write", "put", undefined, { keyUnknown: true }),
     VaultAccessDeniedError,
   );
   assertEquals(error.denial.workflow, "wf");
@@ -352,7 +357,8 @@ Deno.test("RunVaultAccess.check: with keyUnknown a workflow list and another pol
     policy: policyAllowing("user:other", {}),
   }));
   const refused = await assertRejects(
-    () => nested.check("outputs", "write", undefined, { keyUnknown: true }),
+    () =>
+      nested.check("outputs", "write", "put", undefined, { keyUnknown: true }),
     VaultAccessDeniedError,
   );
   assertEquals(refused.denial.principal, "user:other");

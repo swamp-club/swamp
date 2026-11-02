@@ -826,7 +826,7 @@ function keyConditionedScope(
   return RunVaultAccess.create({
     policy: {
       principal: "user:bot",
-      decide: (vaultName, action, secretKey, options) => {
+      decide: (vaultName, action, _method, secretKey, options) => {
         decided.push([vaultName, action, secretKey, options?.keyUnknown]);
         if (options?.keyUnknown) {
           return { allowed: false, undetermined: true, reason: "key" };

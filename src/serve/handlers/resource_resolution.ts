@@ -417,9 +417,26 @@ export type ReferenceAccess<T> =
   }
   | { status: "failed"; error: unknown };
 
+type OwnedOutput = { definitionId: string; methodName?: string };
+
 type AnyOutputReference =
-  | OutputReference<{ definitionId: string }>
-  | OutputIdReference<{ definitionId: string }>;
+  | OutputReference<OwnedOutput>
+  | OutputIdReference<OwnedOutput>;
+
+// the read returns what one method run produced, so its behavior resources
+// carry that method and a methods-scoped grant decides it; data never does
+function withOutputMethod(
+  resources: AccessResource[],
+  output: OwnedOutput | null,
+): AccessResource[] {
+  const methodName = output?.methodName;
+  if (methodName === undefined) return resources;
+  return resources.map((resource) =>
+    resource.kind === "data"
+      ? resource
+      : { ...resource, fields: { ...resource.fields, methodName } }
+  );
+}
 
 /**
  * ids are not unique and a copy shares the original's outputs and data, so each
@@ -506,11 +523,14 @@ export async function resolveOutputAccess<
     let resources: AccessResource[];
     switch (reference.kind) {
       case "output":
-        resources = await outputOwners(
-          definitionRepo,
-          reference.match.output.definitionId,
-          reference.match.type,
-          kinds,
+        resources = withOutputMethod(
+          await outputOwners(
+            definitionRepo,
+            reference.match.output.definitionId,
+            reference.match.type,
+            kinds,
+          ),
+          reference.match.output,
         );
         break;
       case "model": {
@@ -523,7 +543,7 @@ export async function resolveOutputAccess<
             kinds,
           )
           : [];
-        resources = [...named, ...owners];
+        resources = withOutputMethod([...named, ...owners], reference.latest);
         break;
       }
       case "ambiguous": {
@@ -543,7 +563,7 @@ export async function resolveOutputAccess<
             );
             owners.set(key, found);
           }
-          candidates.push(found);
+          candidates.push(withOutputMethod(found, output));
         }
         return {
           status: "ambiguous",

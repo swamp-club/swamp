@@ -38,6 +38,7 @@ import type {
 import { registerManagedConfig } from "../../infrastructure/persistence/paths.ts";
 import {
   RunVaultAccess,
+  type RunVaultMethod,
   runWithVaultAccess,
   VaultAccessDeniedError,
 } from "./run_vault_access.ts";
@@ -1277,42 +1278,64 @@ function serviceWithSpyVault(
 const PER_VAULT_METHODS: {
   method: string;
   action: "read" | "write";
+  verb: RunVaultMethod;
   call: (s: VaultService, vault: string) => Promise<unknown>;
 }[] = [
-  { method: "get", action: "read", call: (s, v) => s.get(v, "k") },
-  { method: "has", action: "read", call: (s, v) => s.has(v, "k") },
-  { method: "list", action: "read", call: (s, v) => s.list(v) },
+  { method: "get", action: "read", verb: "get", call: (s, v) => s.get(v, "k") },
+  { method: "has", action: "read", verb: "get", call: (s, v) => s.has(v, "k") },
+  {
+    method: "list",
+    action: "read",
+    verb: "list-keys",
+    call: (s, v) => s.list(v),
+  },
   {
     method: "getAnnotation",
     action: "read",
+    verb: "describe",
     call: (s, v) => s.getAnnotation(v, "k"),
   },
   {
     method: "getRefreshHook",
     action: "read",
+    verb: "describe",
     call: (s, v) => s.getRefreshHook(v, "k"),
   },
-  { method: "put", action: "write", call: (s, v) => s.put(v, "k", "secret") },
-  { method: "delete", action: "write", call: (s, v) => s.delete(v, "k") },
+  {
+    method: "put",
+    action: "write",
+    verb: "put",
+    call: (s, v) => s.put(v, "k", "secret"),
+  },
+  {
+    method: "delete",
+    action: "write",
+    verb: "delete",
+    call: (s, v) => s.delete(v, "k"),
+  },
   {
     method: "putAnnotation",
     action: "write",
+    verb: "annotate",
     call: (s, v) =>
       s.putAnnotation(v, "k", VaultAnnotation.create({ notes: "n" })),
   },
   {
     method: "deleteAnnotation",
     action: "write",
+    verb: "annotate",
     call: (s, v) => s.deleteAnnotation(v, "k"),
   },
   {
     method: "putRefreshHook",
     action: "write",
+    verb: "edit",
     call: (s, v) => s.putRefreshHook(v, "k", RefreshHook.create("echo", 1000)),
   },
   {
     method: "deleteRefreshHook",
     action: "write",
+    verb: "edit",
     call: (s, v) => s.deleteRefreshHook(v, "k"),
   },
 ];
@@ -1330,13 +1353,13 @@ Deno.test("VaultService: without a vault access scope every per-vault method rea
 Deno.test("VaultService: a refused scope stops every per-vault method before the provider", async () => {
   const { service, calls, type } = serviceWithSpyVault("erp");
   try {
-    for (const { method, action, call } of PER_VAULT_METHODS) {
+    for (const { method, action, verb, call } of PER_VAULT_METHODS) {
       const decided: string[] = [];
       const access = RunVaultAccess.create({
         policy: {
           principal: "bot:reporter",
-          decide: (vaultName, a) => {
-            decided.push(`${vaultName}:${a}`);
+          decide: (vaultName, a, m) => {
+            decided.push(`${vaultName}:${a}:${m}`);
             return { allowed: false, reason: "no grant allows it" };
           },
         },
@@ -1347,7 +1370,7 @@ Deno.test("VaultService: a refused scope stops every per-vault method before the
       );
       assertStringIncludes(error.message, "'erp'");
       assertStringIncludes(error.message, "bot:reporter");
-      assertEquals(decided, [`erp:${action}`], method);
+      assertEquals(decided, [`erp:${action}:${verb}`], method);
     }
     assertEquals(calls, []);
   } finally {

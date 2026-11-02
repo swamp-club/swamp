@@ -319,6 +319,7 @@ async function additionsRefusal(
       !isCallerVaultAuthorized(context.deps.caller, context.deps.requestId, {
         vaultName,
         action: "read",
+        method: "get",
         existing: vaultAccessResource(vaultName),
         key,
       }, ctx)

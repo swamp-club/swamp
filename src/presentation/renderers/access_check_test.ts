@@ -427,3 +427,19 @@ Deno.test("accessCheckRenderer json: includes the tag policy when the server rep
   assertEquals(JSON.parse(output[0]).matchingGrants[0].impliedBy, "write");
   assertEquals("tagRequiresExplicitGrant" in JSON.parse(output[1]), false);
 });
+
+Deno.test("accessCheckRenderer: names the checked method in log and JSON output", () => {
+  const output: string[] = [];
+  const origLog = console.log;
+  console.log = (...args: unknown[]) => output.push(args.join(" "));
+  try {
+    createAccessCheckRenderer("log").render(makeResult({ method: "put" }));
+    createAccessCheckRenderer("json").render(makeResult({ method: "put" }));
+    createAccessCheckRenderer("json").render(makeResult());
+  } finally {
+    console.log = origLog;
+  }
+  assertStringIncludes(output[0], "method put");
+  assertEquals(JSON.parse(output[1]).method, "put");
+  assertEquals("method" in JSON.parse(output[2]), false);
+});

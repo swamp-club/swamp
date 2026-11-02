@@ -1072,7 +1072,11 @@ Deno.test("readDefinition: an ambiguous dispatch hides control-plane types inste
 
 function scopeCheckingVault(): CapabilityService {
   const checked = (vault: string, action: "read" | "write") =>
-    currentVaultAccess()?.check(vault, action) ?? Promise.resolve();
+    currentVaultAccess()?.check(
+      vault,
+      action,
+      action === "read" ? "get" : "put",
+    ) ?? Promise.resolve();
   return new CapabilityService({
     repoDir: "/tmp/test",
     repoContext: stubRepoContext(),

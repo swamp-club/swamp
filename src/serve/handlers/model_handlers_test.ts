@@ -32,6 +32,8 @@ import {
   handleModelCreate,
   handleModelDelete,
   handleModelEdit,
+  handleModelGet,
+  handleModelMethodDescribe,
   handleModelMethodHistoryGet,
   handleModelMethodHistoryLogs,
   handleModelMethodHistorySearch,
@@ -1870,6 +1872,159 @@ for (
     );
   });
 }
+
+Deno.test("model output and history reads: a methods-scoped read grant decides by the method that produced the output", async () => {
+  await withEditTestTypeRegistered(() =>
+    withTempDir(async (dir) => {
+      const repoDir = join(dir, "repo");
+      const { ctx, output } = await saveRunUnder(repoDir, undefined);
+      const scopedTo = (methods: string[]): ConnectionContext => ({
+        ...ctx,
+        authConfig: { ...ctx.authConfig, mode: "token" },
+        policySnapshotLoader: {
+          decisionService: new GrantBasedAccessDecisionService(
+            new PolicySnapshot(
+              [grant({
+                actions: ["read"],
+                resource: { kind: "model", pattern: "watched" },
+                methods,
+              })],
+              [],
+              createConditionEvaluator(),
+            ),
+          ),
+        } as unknown as PolicySnapshotLoader,
+      });
+      const reads = [
+        handleModelOutputGet,
+        handleModelMethodHistoryGet,
+        handleModelMethodHistoryLogs,
+      ];
+      for (const ref of [output.id, "watched"]) {
+        for (const read of reads) {
+          const allowed = createMockSocket();
+          await read(
+            allowed,
+            scopedTo(["execute"]),
+            "req",
+            { outputIdOrModelName: ref },
+            new AbortController(),
+            EDITOR,
+          );
+          const [ok] = frames(allowed);
+          assert(
+            ok.type !== "error",
+            `${read.name} ${ref}: ${JSON.stringify(ok)}`,
+          );
+
+          const refused = createMockSocket();
+          await read(
+            refused,
+            scopedTo(["other"]),
+            "req",
+            { outputIdOrModelName: ref },
+            new AbortController(),
+            EDITOR,
+          );
+          const [denied] = frames(refused);
+          assertEquals(
+            denied.error?.code,
+            "unauthorized",
+            `${read.name} ${ref}`,
+          );
+        }
+      }
+    })
+  );
+});
+
+Deno.test("handleModelMethodDescribe: a methods-scoped read grant admits describing only its methods", async () => {
+  await withEditTestTypeRegistered(() =>
+    withTempDir(async (dir) => {
+      const definitionRepo = new YamlDefinitionRepository(dir);
+      await saveEditModel(definitionRepo, "scoped-model");
+      const ctx = createPolicyEditCtx(dir, definitionRepo, [
+        grant({
+          actions: ["read"],
+          resource: { kind: "model", pattern: "scoped-model" },
+          methods: ["execute"],
+        }),
+      ]);
+      const describe = async (methodName: string) => {
+        const socket = createMockSocket();
+        await handleModelMethodDescribe(
+          socket,
+          ctx,
+          "req",
+          { modelIdOrName: "scoped-model", methodName },
+          new AbortController(),
+          EDITOR,
+        );
+        return frames(socket)[0];
+      };
+      assert((await describe("execute")).error?.code !== "unauthorized");
+      assertEquals((await describe("other")).error?.code, "unauthorized");
+    })
+  );
+});
+
+Deno.test("model requests that name no method: a methods-scoped grant does not admit get, edit or delete", async () => {
+  await withTempDir(async (dir) => {
+    const definitionRepo = new YamlDefinitionRepository(dir);
+    const definition = await saveEditModel(definitionRepo, "scoped-model");
+    const ctx = createPolicyEditCtx(dir, definitionRepo, [
+      grant({
+        actions: ["read", "write"],
+        resource: { kind: "model", pattern: "scoped-model" },
+        methods: ["execute"],
+      }),
+    ]);
+    const unscoped = createPolicyEditCtx(dir, definitionRepo, [
+      grant({
+        actions: ["read"],
+        resource: { kind: "model", pattern: "scoped-model" },
+      }),
+    ]);
+
+    const get = async (c: ConnectionContext) => {
+      const socket = createMockSocket();
+      await handleModelGet(
+        socket,
+        c,
+        "req",
+        { modelIdOrName: "scoped-model" },
+        new AbortController(),
+        EDITOR,
+      );
+      return frames(socket)[0];
+    };
+    assertEquals((await get(ctx)).error?.code, "unauthorized");
+    assertEquals((await get(unscoped)).type, "model.get");
+
+    const editSocket = createMockSocket();
+    await handleModelEdit(
+      editSocket,
+      ctx,
+      "req",
+      { modelIdOrName: "scoped-model", content: editYaml(definition) },
+      new AbortController(),
+      EDITOR,
+    );
+    assertEquals(frames(editSocket)[0].error?.code, "unauthorized");
+
+    const deleteSocket = createMockSocket();
+    await handleModelDelete(
+      deleteSocket,
+      ctx,
+      "req",
+      { modelIdOrName: "scoped-model" },
+      new AbortController(),
+      EDITOR,
+    );
+    assertEquals(frames(deleteSocket)[0].error?.code, "unauthorized");
+    assert(await definitionRepo.findByName(EDIT_TEST_TYPE, "scoped-model"));
+  });
+});
 
 Deno.test("handleModelMethodHistoryLogs: never reads a log file outside the repo's outputs directory", async () => {
   await withEditTestTypeRegistered(() =>

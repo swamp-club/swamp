@@ -81,6 +81,10 @@ import {
 import type { GrantBasedAccessDecisionService } from "../../domain/access/grant_based_access_decision_service.ts";
 import { decideRunVaultAccess } from "../run_vault_access_policy.ts";
 import {
+  RUN_VAULT_METHODS,
+  type RunVaultMethod,
+} from "../../domain/vaults/run_vault_access.ts";
+import {
   parseResourceSelector,
   type ResourceKind,
 } from "../../domain/access/resource_selector.ts";
@@ -509,7 +513,7 @@ export async function handleAccessCheck(
       ctx,
       resource.kind,
       resource.pattern,
-      {},
+      payload.method ? { methodName: payload.method } : {},
     );
     const targetAccessPrincipal = {
       principal: targetPrincipal,
@@ -540,6 +544,7 @@ export async function handleAccessCheck(
         collectives: [...collectives],
         groups: [...groups],
         decisions: decisions as unknown as Record<string, unknown>[],
+        ...(payload.method ? { method: payload.method } : {}),
         approveRequiresExplicitGrant: !service.runImpliesApprove,
         signalRequiresExplicitGrant: !service.runImpliesSignal,
         tagRequiresExplicitGrant: !service.writeImpliesTag,
@@ -1352,6 +1357,13 @@ function stringList(value: unknown): string[] | undefined {
   return value.filter((v): v is string => typeof v === "string");
 }
 
+function runVaultMethodOf(
+  explained: AccessResource,
+): RunVaultMethod | undefined {
+  const method = explained.fields.methodName;
+  return RUN_VAULT_METHODS.find((m) => m === method);
+}
+
 /**
  * reported beside the request decision so one check answers both; a wildcard,
  * another kind or another action has none. omittedMemberships names memberships
@@ -1374,6 +1386,7 @@ function runVaultAccessReport(
       principal,
       explained.name,
       action,
+      runVaultMethodOf(explained),
     );
   } catch (error) {
     // the run-time line is extra; failing to compute it must not cost the

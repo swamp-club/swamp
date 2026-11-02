@@ -902,7 +902,7 @@ async function prepareSensitiveResourceData(
       const pair = `${targetVault}\0${vaultKey}`;
       if (checked.has(pair)) continue;
       checked.add(pair);
-      await access.check(targetVault, "write", vaultKey);
+      await access.check(targetVault, "write", "put", vaultKey);
     }
   }
 
