@@ -5215,10 +5215,11 @@ export class WorkflowExecutionService {
           const stepRun = jobRun.getStep(stepName);
           if (stepRun?.status !== "pending") return;
           settleUnstartedStep(levelSteps.get(stepName), stepRun, jobRun);
-          // A later cleanup step can read the outcome, as it can a started
-          // step's. An undecided step has none.
+          // A later cleanup step can read the outcome; an undecided step has
+          // none. Keyed by step name alone, so a step that ran in another job
+          // keeps its entry.
           if (stepRun.status !== "pending" && expressionContext?.steps) {
-            expressionContext.steps[stepName] = attachStepOutputSources(
+            expressionContext.steps[stepName] ??= attachStepOutputSources(
               { status: stepRun.status, outputs: undefined },
               undefined,
             );

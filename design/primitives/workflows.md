@@ -3939,7 +3939,8 @@ engine evaluates the remaining steps in topological order:
   approval gate or a wait for a signal never counts, whatever gates it, so the
   cancellation does not become a suspended run; a nested workflow that suspends
   at its own gate still does, as it does in cleanup mode. A cleanup step gets
-  the cleanup signal, and can read the status of a settled step. Every
+  the cleanup signal, and can read the status of a settled step, unless a step
+  of that name ran in another job, whose outcome it keeps. Every
   other step is settled as above, so a resume runs it. A `failed`-gated rollback
   on a settled step runs. A step recorded `running` fails as cancelled rather
   than starting, and a finished step or one re-entering a wait is not decided
