@@ -913,3 +913,35 @@ Deno.test("decideRunVaultAccess: a vault deny scoped to a verb refuses that verb
     true,
   );
 });
+
+Deno.test("decideRunVaultAccess: with keyUnknown a key-conditioned allow scoped to another verb does not defer the refusal", () => {
+  const svc = service([
+    grant({
+      actions: ["write"],
+      resource: { kind: "vault", pattern: "outputs" },
+      methods: ["delete"],
+      condition: 'key == "x"',
+    }),
+  ]);
+  const put = decideRunVaultAccess(
+    svc,
+    user(),
+    "outputs",
+    "write",
+    "put",
+    undefined,
+    { keyUnknown: true },
+  );
+  assertEquals(put.allowed, false);
+  assertEquals(put.rule, "vault-scoped");
+  const del = decideRunVaultAccess(
+    svc,
+    user(),
+    "outputs",
+    "write",
+    "delete",
+    undefined,
+    { keyUnknown: true },
+  );
+  assertEquals(del.rule, "key-undetermined");
+});

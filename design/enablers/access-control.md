@@ -809,7 +809,11 @@ Datastore commits that a run saves (`data.save`, `data.append`, `output.save`)
 and partition uploads name no method, but any method a scoped run allow covers
 could have made them, so they are decided as any method
 (`AccessResource.anyMethod`, set only in
-`src/domain/datastore_v3/commit_authorization.ts`).
+`src/domain/datastore_v3/commit_authorization.ts`): a scoped run allow admits
+them. A scoped deny still refuses them, because the commit cannot show which
+method ran; a member's local run is not authorized by serve, so the commit is
+the only point where the deny applies. A behavior with a scoped deny for a
+member therefore takes no data or output commits from that member's runs.
 
 `swamp access grant create` refuses `methods` on a workflow or data grant and a
 vault method that is not a vault verb. A grant file or stored grant with them
@@ -836,8 +840,9 @@ The same variable list (`src/domain/access/condition_fields.ts`) serves grant
 validation and the runtime evaluator. `methodName` is a request field: only
 method requests (a method run, its cancel and attach, output and method-run
 items) carry it, and a request without one evaluates it as `""`, so a condition
-on it simply does not match. A vault's `key` is a request field too: the secret a request names
-(`put`, `read-secret`, `delete`, ...), `""` on one that names none. `collective` and `owner` are declared but serve does not supply them
+on it simply does not match. A vault's `key` is a request field too: the
+secret a request names (`put`, `read-secret`, `delete`, ...), `""` on one that
+names none. `collective` and `owner` are declared but serve does not supply them
 yet: a deny that references them refuses every request of its kind, an allow
 never matches, and loading the policy logs a warning naming each such grant.
 

@@ -1357,11 +1357,6 @@ function stringList(value: unknown): string[] | undefined {
   return value.filter((v): v is string => typeof v === "string");
 }
 
-/**
- * reported beside the request decision so one check answers both; a wildcard,
- * another kind or another action has none. omittedMemberships names memberships
- * the decision was made without
- */
 function runVaultMethodOf(
   explained: AccessResource,
 ): RunVaultMethod | undefined {
@@ -1369,6 +1364,11 @@ function runVaultMethodOf(
   return RUN_VAULT_METHODS.find((m) => m === method);
 }
 
+/**
+ * reported beside the request decision so one check answers both; a wildcard,
+ * another kind or another action has none. omittedMemberships names memberships
+ * the decision was made without
+ */
 function runVaultAccessReport(
   service: GrantBasedAccessDecisionService,
   principal: AccessPrincipal,

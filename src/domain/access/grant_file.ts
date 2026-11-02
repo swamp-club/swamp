@@ -17,11 +17,11 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { findGrantMethodIssues } from "./grant_methods.ts";
 import { getLogger } from "@logtape/logtape";
 import { join, resolve } from "@std/path";
 import { parse as parseYaml } from "@std/yaml";
 import { z } from "zod";
+import { findGrantMethodIssues } from "./grant_methods.ts";
 import { type Action, ActionSchema } from "./action.ts";
 import { type Effect, EffectSchema } from "./effect.ts";
 import {

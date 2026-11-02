@@ -106,6 +106,7 @@ function refusalDependsOnKey(
   principal: AccessPrincipal,
   vaultName: string,
   action: VaultAction,
+  method: RunVaultMethod | undefined,
   refusal: RunVaultDecision,
 ): boolean {
   const snapshot = service.snapshot;
@@ -121,7 +122,9 @@ function refusalDependsOnKey(
     grant.condition !== undefined &&
     (refusal.rule === "vault-deny"
       ? grant.id === refusal.grantId
-      : grant.effect === "allow" && grant.actions.includes(action)) &&
+      : grant.effect === "allow" && grant.actions.includes(action) &&
+        (!grant.methods?.length ||
+          (method !== undefined && grant.methods.includes(method)))) &&
     resourceSelectorMatches(grant.resource, vaultName) &&
     conditionReferencesField(grant.condition, "vault", "key")
   );
@@ -151,7 +154,14 @@ export function decideRunVaultAccess(
   if (
     options?.keyUnknown === true && !decision.allowed && principal !== null &&
     (decision.rule === "vault-deny" || decision.rule === "vault-scoped") &&
-    refusalDependsOnKey(service, principal, vaultName, action, decision)
+    refusalDependsOnKey(
+      service,
+      principal,
+      vaultName,
+      action,
+      method,
+      decision,
+    )
   ) {
     return {
       allowed: false,

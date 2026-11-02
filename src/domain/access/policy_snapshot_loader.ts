@@ -17,7 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { findGrantMethodIssues } from "./grant_methods.ts";
 import { getLogger } from "@logtape/logtape";
 import {
   type DiagnosticPhaseHandle,
@@ -31,6 +30,7 @@ import {
   type ConditionTypeLiteralReader,
   findGrantSpellingIssues,
 } from "./grant_spelling.ts";
+import { findGrantMethodIssues } from "./grant_methods.ts";
 import type {
   UnifiedDataRepository,
   UnreadableModelRecord,

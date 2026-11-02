@@ -15,6 +15,7 @@
 // GNU Affero General Public License for more details.
 //
 // You should have received a copy of the GNU Affero General Public License
+// along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 // anyMethod lets a methods-scoped allow match a request that names no method;
 // only commits whose method cannot be known may set it, so a new setter is a

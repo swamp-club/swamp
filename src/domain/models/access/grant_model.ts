@@ -17,8 +17,8 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { findGrantMethodIssues } from "../../access/grant_methods.ts";
 import { z } from "zod";
+import { findGrantMethodIssues } from "../../access/grant_methods.ts";
 import { ModelType } from "../model_type.ts";
 import {
   defineModel,
