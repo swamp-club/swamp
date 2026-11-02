@@ -215,7 +215,7 @@ export function createWorkflowHistoryGetDeps(
     undefined,
     unreadableContent,
   );
-  runRepo.recordsAreForwarded = recordsAreForwarded;
+  runRepo.recordsAreForwarded = recordsAreForwarded === true;
   return {
     isPartialId,
     nestedLink: { runRepo, workflowRepo },

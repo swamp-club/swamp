@@ -551,14 +551,13 @@ export function serveMayActOnRun(
     isServeDrivenRun(run);
 }
 
+// Decided whether or not gates remain: a partly approved member-driven run
+// still goes back to its owner, never to a --server resume.
 export async function ownerResumesRun(
   ctx: ConnectionContext,
   outcome: ApprovalOutcome,
 ): Promise<boolean> {
-  if (
-    ctx.repoContext.takesForwardedRunRecords !== true ||
-    !outcome.allGatesDecided
-  ) return false;
+  if (ctx.repoContext.takesForwardedRunRecords !== true) return false;
   const workflow = await ctx.repoContext.workflowRepo.findByName(
     outcome.workflowName,
   );

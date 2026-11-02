@@ -95,6 +95,8 @@ export interface AggregateResourceResolver {
   workflow(workflowId: string): Promise<ResolvedWorkflow | undefined>;
   keyOwner(key: string): Promise<KeyOwnership | undefined>;
   isRestrictedType(type: ModelType): boolean;
+  /** serve-driven or holding a decision; a record it cannot read counts */
+  runRecordGuarded(workflowId: string, runId: string): Promise<boolean>;
 }
 
 export interface CallerAuthority {
@@ -353,8 +355,12 @@ export async function writeAccessOf(
     const workflow = await resolver.workflow(intent.run.workflowId);
     const removal = intent.kind === "run.delete" ||
       intent.kind === "run-snapshot.delete";
+    // Deleting a guarded run's record then forwarding a first record under
+    // its id would drop the serve-driven marker or a decision.
+    const guarded = removal &&
+      await resolver.runRecordGuarded(intent.run.workflowId, intent.run.runId);
     return {
-      action: removal ? "write" : "run",
+      action: guarded ? "admin" : removal ? "write" : "run",
       resource: workflow === undefined
         ? unresolvedAccessResource("workflow", intent.run.workflowId)
         : workflowAccessResource({

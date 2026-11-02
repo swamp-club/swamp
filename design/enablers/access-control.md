@@ -1615,11 +1615,15 @@ outcomes a member wrote, and a wait exists for someone else to signal. Approval 
 are unaffected: `approve` and `reject` go to serve's handlers. Use `--server`, a
 trigger or a schedule.
 
-**Delete and recreate.** A caller with `write` on a workflow can delete a run's record
-and snapshot and forward a new record under the same run id. With nothing stored to
-compare, it reads as a new member-driven run: a serve-driven run's marker and any
-decision it held are gone. This is a known limit. `write` already allows deleting the
-run, the commit stamp records who did it, and serve does not act on the new record.
+**Delete and recreate.** A forwarded record under a deleted run's id has nothing
+stored to compare against, so deleting a guarded run's record needs `admin` on the
+workflow. A run is guarded when its stored record is serve-driven or holds an
+approval decision; a record serve cannot read counts as guarded. This covers a
+forwarded `run.delete` or `run-snapshot.delete` and `workflow delete` through serve,
+and the refusal is audited. A member still deletes their own undecided member-driven
+run with `write`. Serve's retention and `run gc` are unchanged: `run gc` still lets a
+caller with `write` on data remove a finished run that held a decision, which is the
+remaining limit, since a record forwarded afterwards cannot carry a decision.
 
 **Limits of the marker.** When a member-driven parent is cancelled through serve, a
 child that does not link back is not cancelled with it: its owner cancels it.

@@ -90,7 +90,7 @@ export interface WorkflowRunRepository {
    * is that member's report and its fields never stand in for a link a child
    * does not hold
    */
-  recordsAreForwarded?: boolean;
+  recordsAreForwarded: boolean;
 
   verifyIndexes?(): Promise<void>;
 

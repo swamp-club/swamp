@@ -59,6 +59,8 @@ import { localEncryptionSecretsDirFor } from "../src/domain/vaults/local_encrypt
 import { UploadLedger } from "../src/infrastructure/datastore_v3/upload_ledger.ts";
 import { ForwardedContentAuthority } from "../src/serve/forwarded_content_authorization.ts";
 import { waitFor } from "@swamp-club/swamp-testing";
+import type { AuditEvent } from "../src/domain/serve_audit/audit_event.ts";
+import type { ConnectionContext } from "../src/serve/handlers/shared.ts";
 import { join } from "@std/path";
 import {
   blobSaveOps,
@@ -1196,6 +1198,7 @@ Deno.test({
             workflow: () => Promise.resolve(undefined),
             keyOwner: () => Promise.resolve(undefined),
             isRestrictedType: () => false,
+            runRecordGuarded: () => Promise.resolve(false),
           },
           possesses: () => Promise.resolve(true),
           signal: new AbortController().signal,
@@ -2018,6 +2021,147 @@ Deno.test({
           withReference(crypto.randomUUID()),
         );
         assertEquals(landed.status, 200, JSON.stringify(landed.json));
+      },
+      undefined,
+      MANAGED,
+    );
+  },
+});
+
+Deno.test({
+  name:
+    "forwarded content: deleting the record of a run serve drives, or of one holding a decision, needs admin and a refusal is audited; a member's own undecided run still deletes (swamp-club#4290)",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    const grants = [
+      grant({
+        actions: ["read", "write", "run", "approve"],
+        resource: { kind: "workflow", pattern: "*" },
+      }),
+      grant({
+        subject: { kind: "user", name: "bob" },
+        actions: ["read", "write", "run", "admin"],
+        resource: { kind: "workflow", pattern: "*" },
+      }),
+    ];
+    await withServer(
+      grants,
+      async (server) => {
+        const audit: AuditEvent[] = [];
+        (server.ctx as { auditEmitter?: unknown }).auditEmitter = {
+          emit: (event: AuditEvent) => audit.push(event),
+          durableStalled: false,
+        } as unknown as ConnectionContext["auditEmitter"];
+        const partitionFor = (runId: string) =>
+          partitionOf({ kind: "run", workflowId: WORKFLOW, runId });
+        const keyFor = (runId: string) =>
+          `workflow-runs/${WORKFLOW}/workflow-run-${runId}.yaml`;
+        const remove = async (runId: string, token = "alice-token") => {
+          const partition = partitionFor(runId);
+          const head = await server.v3.commitStore.head(
+            server.v3.namespace,
+            partition,
+          );
+          return await post(
+            `${server.url}/partitions/${
+              encodeURIComponent(partition.toString())
+            }/commits`,
+            token,
+            commitBody({
+              expectedSeq: head.seq,
+              txnId: crypto.randomUUID(),
+              ops: [{
+                kind: "tombstone",
+                intent: {
+                  kind: "run.delete",
+                  run: { workflowId: WORKFLOW, runId },
+                },
+                key: keyFor(runId),
+              }],
+              chunks: [],
+            }),
+          );
+        };
+        const gated = {
+          jobs: [{
+            jobName: "main",
+            status: "running",
+            steps: [{ stepName: "gate", status: "running" }],
+          }],
+        };
+        const serveSaves = async (
+          runId: string,
+          change: (run: WorkflowRun) => void,
+        ) => {
+          const run = await server.ctx.repoContext.workflowRunRepo.findById(
+            createWorkflowId(WORKFLOW),
+            createWorkflowRunId(runId),
+          );
+          assert(run !== null);
+          change(run);
+          await runInRootUnitOfWork(
+            server.ctx.repoContext,
+            { flush: undefined },
+            () =>
+              server.ctx.repoContext.workflowRunRepo.save(
+                createWorkflowId(WORKFLOW),
+                run,
+              ),
+          );
+          await server.v3.readModel.catchUp(new AbortController().signal);
+        };
+        const forwarded = async () => {
+          const runId = crypto.randomUUID();
+          const landed = await forwardRun(server, runRecord(runId, gated));
+          assertEquals(landed.status, 200, JSON.stringify(landed.json));
+          return runId;
+        };
+        const adminDenials = () =>
+          audit.filter((event) =>
+            event.outcome === "denied" && event.action === "admin" &&
+            event.resourceKind === "workflow"
+          ).length;
+
+        const own = await forwarded();
+        const ownDeleted = await remove(own);
+        assertEquals(ownDeleted.status, 200, JSON.stringify(ownDeleted.json));
+
+        const driven = await forwarded();
+        await serveSaves(driven, (run) => run.start(1, "other-team-node"));
+        const drivenRefused = await remove(driven);
+        assertEquals(
+          drivenRefused.status,
+          403,
+          JSON.stringify(drivenRefused.json),
+        );
+        assertEquals(drivenRefused.json.reason, "forbidden");
+        assertEquals(adminDenials(), 1, "the refused delete is audited");
+        const recreated = await forwardRun(server, runRecord(driven, gated));
+        assertEquals(recreated.status, 403, JSON.stringify(recreated.json));
+
+        const decided = await forwarded();
+        await serveSaves(
+          decided,
+          (run) =>
+            run.getJob("main")!.getStep("gate")!.recordApprovalDecision({
+              approved: true,
+              decidedBy: "user:approver",
+              decidedAt: "2026-11-02T00:00:00.000Z",
+            }),
+        );
+        const decidedRefused = await remove(decided);
+        assertEquals(
+          decidedRefused.status,
+          403,
+          JSON.stringify(decidedRefused.json),
+        );
+        assertEquals(adminDenials(), 2, "the refused delete is audited");
+
+        for (const runId of [driven, decided]) {
+          const byAdmin = await remove(runId, "bob-token");
+          assertEquals(byAdmin.status, 200, JSON.stringify(byAdmin.json));
+        }
       },
       undefined,
       MANAGED,

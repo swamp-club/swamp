@@ -17,6 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { quoteShellWord } from "../../domain/shell_word.ts";
 import { findWorkflowByIdOrName } from "../../domain/workflows/workflow_lookup.ts";
 import { checkLastEvaluation } from "../last_evaluated_trust.ts";
 import { Command } from "@cliffy/command";
@@ -173,6 +174,15 @@ export function workflowStepLockHook(
   };
 }
 
+export function noReplayableEvaluationError(workflowName: string): UserError {
+  return new UserError(
+    `No previously evaluated workflow found for "${workflowName}" that this checkout can replay.\n\nEvaluate it first:\n  swamp workflow evaluate ${
+      quoteShellWord(workflowName)
+    }`,
+    "evaluation_not_checked",
+  );
+}
+
 export const workflowRunCommand = new Command()
   .name("run")
   .description(
@@ -211,7 +221,7 @@ export const workflowRunCommand = new Command()
   )
   .option(
     "--last-evaluated",
-    "Replay the previously evaluated workflow with the inputs it was evaluated with; an --input must match them. Behavior definitions are evaluated fresh. In a serve-mode checkout, an evaluation written by another member is not used: the run evaluates again, without its stored inputs",
+    "Replay the previously evaluated workflow with the inputs it was evaluated with; an --input must match them. Behavior definitions are evaluated fresh. In a serve-mode checkout, an evaluation written by anyone but this member or serve is not used: the run evaluates again, without its stored inputs",
     { default: false },
   )
   .option("--input <value:string>", "Input values (key=value or JSON)", {
@@ -393,10 +403,7 @@ export const workflowRunCommand = new Command()
           // The service would read the repository for a missing cache, which
           // holds what this read did not vouch for: nothing checked, no replay.
           if (cache === null) {
-            throw new UserError(
-              `No previously evaluated workflow found for "${found.name}" that this checkout can replay.\n\nEvaluate it first:\n  swamp workflow evaluate ${found.name}`,
-              "evaluation_not_checked",
-            );
+            throw noReplayableEvaluationError(found.name);
           }
           return cache;
         },
@@ -721,6 +728,7 @@ export const workflowRunCommand = new Command()
                   commandTarget: formatCommandTarget({
                     repoDir: options.repoDir as string | undefined,
                   }),
+                  inputsReplayed: evaluationCheck?.stands,
                 });
               const eventStream = workflowRun(libCtx, deps, {
                 workflowIdOrName,

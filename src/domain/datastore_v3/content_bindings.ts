@@ -149,6 +149,19 @@ export function isServeDrivenRun(
   return run.triggeringPrincipal !== undefined || run.instanceId !== undefined;
 }
 
+/**
+ * a record serve drives or that holds a decision: deleting it would let a
+ * forwarded first record under the same id drop the marker or the decision
+ */
+export function isGuardedRunRecord(
+  run: Pick<WorkflowRunData, "triggeringPrincipal" | "instanceId" | "jobs">,
+): boolean {
+  return isServeDrivenRun(run) ||
+    run.jobs.some((job) =>
+      job.steps.some((step) => step.approvalDecision !== undefined)
+    );
+}
+
 export interface RunRecordJudgement {
   readonly refusal?: string;
   readonly inputsChanged: boolean;

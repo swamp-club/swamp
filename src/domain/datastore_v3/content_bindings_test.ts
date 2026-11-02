@@ -25,6 +25,7 @@ import type {
 import {
   identityRefusal,
   isCanonicalRunLogFile,
+  isGuardedRunRecord,
   judgeRunRecord,
   runIdentityRefusal,
   type RunRecordContext,
@@ -613,4 +614,41 @@ Deno.test("judgeRunRecord: deferred expressions and workflow artifacts a record 
   assertEquals(judged.refusal, undefined);
   assertEquals(judged.addedDeferred, [{ expression: "e" }]);
   assertEquals(judged.addedOutputs[0].dataArtifacts, [{ name: "a" }]);
+});
+
+Deno.test("isGuardedRunRecord: a run serve drives or one holding a decision is guarded; a member's undecided run is not (swamp-club#4290)", () => {
+  const step = (fields: Record<string, unknown> = {}) => ({
+    stepName: "gate",
+    status: "succeeded",
+    ...fields,
+  });
+  const run = (
+    fields: Record<string, unknown> = {},
+    steps = [step()],
+  ) =>
+    ({
+      jobs: [{ jobName: "main", status: "running", steps }],
+      ...fields,
+    }) as unknown as Parameters<typeof isGuardedRunRecord>[0];
+  assertEquals(isGuardedRunRecord(run()), false);
+  assertEquals(isGuardedRunRecord(run({}, [])), false);
+  assertEquals(isGuardedRunRecord(run({ instanceId: "node" })), true);
+  assertEquals(
+    isGuardedRunRecord(run({ triggeringPrincipal: { kind: "user" } })),
+    true,
+  );
+  assertEquals(
+    isGuardedRunRecord(
+      run({}, [
+        step(),
+        step({
+          approvalDecision: {
+            approved: false,
+            decidedAt: "2026-11-02T00:00:00.000Z",
+          },
+        }),
+      ]),
+    ),
+    true,
+  );
 });

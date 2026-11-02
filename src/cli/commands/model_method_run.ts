@@ -270,7 +270,7 @@ The lock wait defaults to 60 seconds. Set the SWAMP_LOCK_TIMEOUT_MS environment 
     )
     .option(
       "--last-evaluated",
-      "Skip CEL evaluation, use previously evaluated definition. In a serve-mode checkout, an evaluation written by another member is not used: the run evaluates again, without its stored inputs",
+      "Skip CEL evaluation, use previously evaluated definition. In a serve-mode checkout, an evaluation written by anyone but this member or serve is not used: the run evaluates again, without its stored inputs",
       { default: false },
     )
     .option("--input <value:string>", "Input values (key=value or JSON)", {
@@ -892,6 +892,7 @@ The lock wait defaults to 60 seconds. Set the SWAMP_LOCK_TIMEOUT_MS environment 
                       quiet: ctx.verbosity === "quiet",
                       verbose: ctx.verbosity === "verbose",
                       surface: syntax.surface,
+                      inputsReplayed: evaluationCheck?.stands,
                     },
                   );
 

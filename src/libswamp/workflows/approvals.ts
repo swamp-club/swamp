@@ -177,7 +177,10 @@ export async function* workflowApprovals(
       };
       const nestedLink = new NestedRunLink({
         workflowRepo: deps.workflowRepo,
-        runRepo: { findById: findParent },
+        runRepo: {
+          findById: findParent,
+          recordsAreForwarded: deps.runRepo.recordsAreForwarded,
+        },
       });
 
       for (const workflow of workflows) {

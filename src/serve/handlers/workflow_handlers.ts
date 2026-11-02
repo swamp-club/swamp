@@ -153,6 +153,7 @@ import {
   resolveSuspendedRun,
 } from "../../domain/workflows/suspended_run_resolver.ts";
 import { createWorkflowId } from "../../domain/workflows/workflow_id.ts";
+import { isGuardedRunRecord } from "../../domain/datastore_v3/content_bindings.ts";
 import { unclaimedRuns } from "../../domain/workflows/run_claim.ts";
 import {
   NestedRunPendingError,
@@ -2600,6 +2601,25 @@ export async function handleWorkflowDelete(
     )
   ) return;
   const workflow = targetArgument(target, payload.workflowIdOrName);
+  // Deleting a run serve drives, or one holding a decision, would let a member
+  // forward a first record under its id that drops the marker or decision.
+  if (
+    ctx.repoContext.takesForwardedRunRecords === true && workflow.byId &&
+    (await ctx.repoContext.workflowRunRepo.findAllByWorkflowId(
+      createWorkflowId(workflow.idOrName),
+    )).some((run) => isGuardedRunRecord(run.toData())) &&
+    !authorizeResolved(
+      socket,
+      requestId,
+      principal,
+      "admin",
+      target,
+      payload.workflowIdOrName,
+      "workflow",
+      ctx,
+      "workflow_delete_failed",
+    )
+  ) return;
 
   // the root pushes only once the success reply was sent
   let replied = false;

@@ -613,7 +613,10 @@ Deno.test("nestedWaitView: a run with a finished nested run is not awaiting resu
   review.waitForSignal(SignalWait.open({ type: "object" }, 60, new Date()));
   parent.suspend();
   const deps = {
-    runRepo: { findById: () => Promise.resolve(child) },
+    runRepo: {
+      findById: () => Promise.resolve(child),
+      recordsAreForwarded: false,
+    },
     workflowRepo: { findById: () => Promise.resolve(childWorkflow) },
   };
 
@@ -735,7 +738,10 @@ function runWaitingOnNestedRun(): {
   return {
     parent,
     nestedLink: {
-      runRepo: { findById: () => Promise.resolve(child) },
+      runRepo: {
+        findById: () => Promise.resolve(child),
+        recordsAreForwarded: false,
+      },
       workflowRepo: { findById: () => Promise.resolve(childWorkflow) },
     },
   };
@@ -896,7 +902,7 @@ Deno.test("workflowHistoryGet: reads signal waits in a child span only for a sus
 
 Deno.test("createWorkflowHistoryGetDeps: the run repository it builds carries the forwarded flag, so a forged link shows as no child (swamp-club#4245)", () => {
   const flagOf = (forwarded?: boolean) =>
-    (createWorkflowHistoryGetDeps(
+    createWorkflowHistoryGetDeps(
       "/nonexistent",
       undefined,
       undefined,
@@ -904,8 +910,7 @@ Deno.test("createWorkflowHistoryGetDeps: the run repository it builds carries th
       undefined,
       undefined,
       forwarded,
-    ).nestedLink?.runRepo as { recordsAreForwarded?: boolean } | undefined)
-      ?.recordsAreForwarded;
+    ).nestedLink?.runRepo.recordsAreForwarded;
   assertEquals(flagOf(true), true);
-  assertEquals(flagOf(), undefined);
+  assertEquals(flagOf(), false);
 });

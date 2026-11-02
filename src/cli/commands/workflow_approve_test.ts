@@ -175,3 +175,32 @@ Deno.test("renderApproveResult: a run its owner resumes says so, with a local re
     "Once it finishes, resume the parent run: swamp workflow resume parent --run parent-run",
   ]);
 });
+
+Deno.test("renderApproveResult: a partly approved run its owner resumes gets the local resume command, never --server (swamp-club#4290)", () => {
+  const data = approval({
+    allGatesDecided: false,
+    ownerResumes: true,
+    awaitingParent: {
+      resumeCommand: "swamp workflow resume parent --run parent-run",
+    },
+  } as Partial<WorkflowApproveData>);
+  const lines = captureStdout(() =>
+    renderApproveResult(hintTestContext(), data, {
+      server: "wss://serve.example",
+      serveResuming: false,
+    })
+  );
+  assertEquals(lines, [
+    `If you started this run: swamp workflow resume wipe-drive --run ${RUN_ID}`,
+    "Once it finishes, resume the parent run: swamp workflow resume parent --run parent-run",
+  ]);
+  const json = captureStdout(() =>
+    renderApproveResult(hintTestContext({ outputMode: "json" }), data, {
+      server: "wss://serve.example",
+      serveResuming: false,
+    })
+  );
+  const parsed = JSON.parse(json.join("\n"));
+  assertEquals(parsed.ownerResumes, true);
+  assertEquals(parsed.allGatesDecided, false);
+});

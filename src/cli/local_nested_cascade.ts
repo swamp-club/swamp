@@ -32,7 +32,10 @@ import {
 
 export interface LocalNestedCascadeDeps {
   workflowRepo: Pick<WorkflowRepository, "findById">;
-  runRepo: Pick<WorkflowRunRepository, "findById" | "save">;
+  runRepo: Pick<
+    WorkflowRunRepository,
+    "findById" | "save" | "recordsAreForwarded"
+  >;
   runClaims: WorkflowRunClaims;
   findEvaluatedWorkflow: EvaluatedWorkflowLookup;
   /** Without it, a child's owner cannot be looked up and is taken as gone. */

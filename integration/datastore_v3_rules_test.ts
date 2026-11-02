@@ -204,6 +204,7 @@ const PINNED_V3_IMPORTERS: readonly string[] = [
   "src/cli/last_evaluated_trust.ts -> src/infrastructure/datastore_v3/trusted_evaluations.ts",
   // a run serve drives is the one it may act on
   "src/serve/resume_launcher.ts -> src/domain/datastore_v3/content_bindings.ts",
+  "src/serve/handlers/workflow_handlers.ts -> src/domain/datastore_v3/content_bindings.ts",
   "src/cli/last_evaluated_trust.ts -> src/infrastructure/datastore_v3/v3_repo_context.ts",
   "src/cli/repo_context.ts -> src/infrastructure/datastore_v3/serve_upstream_registry.ts",
   "src/serve/handlers/admin_handlers.ts -> src/infrastructure/datastore_v3/v3_repo_context.ts",
@@ -335,9 +336,11 @@ const PINNED_V3_IMPORTERS: readonly string[] = [
   "src/serve/follower_feed.ts -> src/domain/datastore_v3/serve_leader.ts",
   "src/serve/peer_auth.ts -> src/domain/datastore_v3/serve_leader.ts",
   "src/serve/commit_read_filter.ts -> src/domain/datastore_v3/commit_authorization.ts",
+  "src/serve/commit_read_filter.ts -> src/domain/datastore_v3/content_bindings.ts",
   "src/serve/commit_read_filter.ts -> src/domain/datastore_v3/commit_store.ts",
   "src/serve/commit_read_filter.ts -> src/domain/datastore_v3/op.ts",
   "src/serve/commit_read_filter.ts -> src/domain/datastore_v3/partition_key.ts",
+  "src/serve/commit_read_filter.ts -> src/domain/datastore_v3/read_model.ts",
   "src/serve/commit_read_filter.ts -> src/infrastructure/datastore_v3/v3_datastore.ts",
   "src/serve/handlers/commit_feed_handlers.ts -> src/domain/datastore_v3/commit_store.ts",
   // swamp-club#4148: a stale follower's subscription ends with the refusal.

@@ -18,7 +18,8 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { RunIndexSnapshot } from "../../domain/workflows/run_index_snapshot.ts";
-import { assertEquals, assertThrows } from "@std/assert";
+import { assert, assertEquals, assertThrows } from "@std/assert";
+import type { AuditEvent } from "../../domain/serve_audit/audit_event.ts";
 import { dirname, join } from "@std/path";
 import { stringify as stringifyYaml } from "@std/yaml";
 import { YamlWorkflowRepository } from "../../infrastructure/persistence/yaml_workflow_repository.ts";
@@ -2429,4 +2430,80 @@ Deno.test("handleWorkflowApprovals: a request cancelled during its suspended-run
       await Promise.all(holders);
     }
   });
+});
+
+Deno.test("handleWorkflowDelete: where members forward records, deleting a workflow with a run serve drives or a decided run needs admin, and a refusal is audited (swamp-club#4290)", async () => {
+  const deleteAs = async (
+    options: {
+      forwards: boolean;
+      guarded: boolean;
+      actions: Grant["actions"];
+    },
+  ) => {
+    let outcome: { deleted: boolean; frames: { type: string }[] } | undefined;
+    const denials: AuditEvent[] = [];
+    await withWorkflowRepo(async (dir, repo) => {
+      const workflow = await saveEditWorkflow(repo, "guarded-wf");
+      const run = WorkflowRun.create(workflow);
+      if (options.guarded) run.start(1, "serve-node");
+      const ctx = {
+        ...workflowEditCtx(dir, repo, [
+          workflowGrant({ actions: options.actions }),
+        ]),
+        datastoreResolver: {
+          resolvePath: (subdir: string) => join(dir, ".swamp", subdir),
+        },
+      } as unknown as Record<string, unknown>;
+      ctx.repoContext = {
+        workflowRepo: repo,
+        takesForwardedRunRecords: options.forwards,
+        workflowRunRepo: { findAllByWorkflowId: () => Promise.resolve([run]) },
+      };
+      ctx.auditEmitter = {
+        emit: (event: AuditEvent) => {
+          if (event.outcome === "denied") denials.push(event);
+        },
+        durableStalled: false,
+      };
+      const socket = editSocket();
+      await handleWorkflowDelete(
+        socket,
+        ctx as unknown as ConnectionContext,
+        "req-delete-guarded",
+        { workflowIdOrName: workflow.name },
+        new AbortController(),
+        WORKFLOW_EDITOR,
+      );
+      outcome = {
+        deleted: (await repo.findById(workflow.id)) === null,
+        frames: sentFrames(socket),
+      };
+    });
+    assert(outcome !== undefined);
+    return { ...outcome, denials };
+  };
+
+  const refused = await deleteAs({
+    forwards: true,
+    guarded: true,
+    actions: ["write"],
+  });
+  assertEquals(refused.deleted, false);
+  assertEquals(refused.frames.map((f) => f.type), ["error"]);
+  assertEquals(refused.denials.map((e) => e.action), ["admin"]);
+
+  for (
+    const allowed of [
+      { forwards: true, guarded: true, actions: ["write", "admin"] },
+      { forwards: true, guarded: false, actions: ["write"] },
+      { forwards: false, guarded: true, actions: ["write"] },
+    ] as const
+  ) {
+    const result = await deleteAs({
+      ...allowed,
+      actions: [...allowed.actions],
+    });
+    assertEquals(result.deleted, true, JSON.stringify(allowed));
+    assertEquals(result.denials, []);
+  }
 });

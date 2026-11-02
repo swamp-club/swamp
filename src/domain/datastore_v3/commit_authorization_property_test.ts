@@ -80,6 +80,9 @@ class WorldResolver implements AggregateResourceResolver {
   isRestrictedType(type: ModelType) {
     return type.normalized === "acme/locked";
   }
+  runRecordGuarded() {
+    return Promise.resolve(false);
+  }
 }
 
 function intentOf(

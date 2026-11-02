@@ -31,12 +31,18 @@ import {
 } from "../domain/datastore_v3/commit_authorization.ts";
 import type { CommitChange } from "../domain/datastore_v3/commit_store.ts";
 import type { Op } from "../domain/datastore_v3/op.ts";
-import type { PartitionKey } from "../domain/datastore_v3/partition_key.ts";
+import { isGuardedRunRecord } from "../domain/datastore_v3/content_bindings.ts";
+import {
+  type PartitionKey,
+  partitionOf,
+} from "../domain/datastore_v3/partition_key.ts";
+import { ReadModelIncompleteError } from "../domain/datastore_v3/read_model.ts";
 import type { AccessResource } from "../domain/access/access_decision_service.ts";
 import type { Action } from "../domain/access/action.ts";
 import { findDefinitionByIdGlobal } from "../domain/models/model_lookup.ts";
 import type { ModelType } from "../domain/models/model_type.ts";
 import { findWorkflowById } from "../domain/workflows/workflow_lookup.ts";
+import { WorkflowRunSchema } from "../domain/workflows/workflow_run.ts";
 import type { V3Datastore } from "../infrastructure/datastore_v3/v3_datastore.ts";
 import {
   type AccessCaller,
@@ -44,6 +50,10 @@ import {
   type ConnectionContext,
   isAdminOnlyModelType,
 } from "./handlers/shared.ts";
+import {
+  MAX_CHECKED_CONTENT_BYTES,
+  parseRecord,
+} from "./forwarded_content_authorization.ts";
 
 /**
  * drops lease ops for a reader that does not understand them: an older swamp
@@ -164,6 +174,8 @@ export function memoized(
       ),
     keyOwner: (key) => resolver.keyOwner(key),
     isRestrictedType: (type) => resolver.isRestrictedType(type),
+    runRecordGuarded: (workflowId, runId) =>
+      resolver.runRecordGuarded(workflowId, runId),
   };
 }
 
@@ -213,5 +225,46 @@ export function serveResolver(
         ctx.authConfig.restrictedModelTypes,
       );
     },
+    runRecordGuarded: (workflowId, runId) =>
+      storedRunRecordGuarded(v3, workflowId, runId),
   };
+}
+
+/**
+ * every run record the run's partition holds is read, whatever directory its
+ * key names; one that cannot be read or parsed counts as guarded
+ */
+export async function storedRunRecordGuarded(
+  v3: V3Datastore,
+  workflowId: string,
+  runId: string,
+): Promise<boolean> {
+  const partition = partitionOf({ kind: "run", workflowId, runId });
+  let records;
+  try {
+    records = await v3.readModel.liveRecords(v3.namespace, partition);
+  } catch (error) {
+    if (error instanceof ReadModelIncompleteError) return true;
+    throw error;
+  }
+  const identity = partition.identity;
+  if (identity.kind !== "run") return true;
+  const recordName = `workflow-run-${identity.runId}.yaml`;
+  for (const record of records) {
+    const key = record.key.toString();
+    const name = key.split("/").at(-1)?.toLowerCase();
+    if (name !== recordName) continue;
+    const found = await v3.readModel.recordBytes(
+      v3.namespace,
+      partition,
+      key,
+      MAX_CHECKED_CONTENT_BYTES,
+    );
+    if (found === undefined || found.record.sha256 !== record.sha256) {
+      return true;
+    }
+    const parsed = WorkflowRunSchema.safeParse(parseRecord(found.bytes));
+    if (!parsed.success || isGuardedRunRecord(parsed.data)) return true;
+  }
+  return false;
 }

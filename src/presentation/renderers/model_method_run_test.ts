@@ -488,6 +488,33 @@ Deno.test("JsonModelMethodRunRenderer: completed serializes ModelMethodRunView",
   }
 });
 
+Deno.test("JsonModelMethodRunRenderer: the result says whether --last-evaluated replayed the stored inputs, and says nothing without it (swamp-club#4290)", async () => {
+  const logs: string[] = [];
+  const originalLog = console.log;
+  console.log = (msg: string) => logs.push(msg);
+
+  try {
+    for (const inputsReplayed of [false, true, undefined]) {
+      logs.length = 0;
+      const renderer = createModelMethodRunRenderer("json", {
+        modelName: "test-model",
+        methodName: "run",
+        inputsReplayed,
+      });
+      await consumeStream(
+        toStream(fullEventStream(makeRunView("succeeded"))),
+        renderer.handlers(),
+      );
+      const parsed = JSON.parse(logs[0]);
+      assertEquals(parsed.inputsReplayed, inputsReplayed);
+      assertEquals("inputsReplayed" in parsed, inputsReplayed !== undefined);
+      assertEquals(parsed.modelName, "test-model");
+    }
+  } finally {
+    console.log = originalLog;
+  }
+});
+
 Deno.test("JsonModelMethodRunRenderer: cancelled run prints the run and sets runFailed() (swamp-club#3317)", async () => {
   const logs: string[] = [];
   const originalLog = console.log;

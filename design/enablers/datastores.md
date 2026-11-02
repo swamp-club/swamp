@@ -6679,7 +6679,7 @@ resource is the same one serve's handlers check for the same write:
 | Any intent on a control-plane behavior (`swamp/grant`, `swamp/group`, `swamp/server-token`, …), and the control-plane intent kinds | `admin`, on its `access:` record | `admin` |
 | Any intent on a `--restricted-model-types` type | `admin` | as its kind |
 | `run.create`, `run.update` | `run` on the workflow | `read` on the workflow |
-| `run.delete`, `run-snapshot.delete` | `write` on the workflow | `read` on the workflow |
+| `run.delete`, `run-snapshot.delete` | `write` on the workflow; `admin` on it when the stored run record is serve-driven or holds an approval decision, or cannot be read | `read` on the workflow |
 | `definition.delete`, `evaluated-workflow.delete` | `write` on `model:`, `workflow:` or `vault:` by kind | `read` on it |
 | `definition.rename-from` | `write` on both names the rename joins | `read` on it |
 | `definition.create`, `.edit`, `.rename-to` of a behavior, workflow or vault | `write` on the definition, both names for a rename, and its content checks | `read` by kind |
