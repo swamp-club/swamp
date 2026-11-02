@@ -129,6 +129,9 @@ interface IndexedFile {
    */
   carriedAt: number;
   verifiedAt: number;
+  // moves on each #reassign, so a read another refresh overtook does not write
+  // back older keys
+  generation: number;
 }
 
 interface IndexedDir {
@@ -490,6 +493,7 @@ export class DefinitionIdIndex
         isSymlink: entry.isSymlink,
         carriedAt: 0,
         verifiedAt: 0,
+        generation: 0,
       });
       return 0;
     }
@@ -507,6 +511,7 @@ export class DefinitionIdIndex
           isSymlink: true,
           carriedAt: 0,
           verifiedAt: 0,
+          generation: 0,
         });
       }
       return 0;
@@ -531,6 +536,7 @@ export class DefinitionIdIndex
       isSymlink: entry.isSymlink,
       carriedAt: 0,
       verifiedAt: 0,
+      generation: 0,
     });
     return 1;
   }
@@ -572,8 +578,8 @@ export class DefinitionIdIndex
     return parsed;
   }
 
-  // a file swapped for a symlink since it was listed is read as one, so its
-  // target must stay contained in the repo
+  // isSymlink is the path now where the caller lstat'ed it; a refresh another
+  // refresh overtook during its read leaves the newer keys in place
   async #refresh(
     path: string,
     segments: readonly string[],
@@ -583,12 +589,15 @@ export class DefinitionIdIndex
   ): Promise<boolean> {
     const swapped = isSymlink !== file.isSymlink;
     if (!swapped && this.#trusted(file.fingerprint, fingerprint)) return false;
+    const generation = file.generation;
     const found = await this.#source.readDefinitionFile(
       path,
       [...segments],
       isSymlink,
     );
-    if (!this.#isCurrent(path, file)) return true;
+    if (!this.#isCurrent(path, file) || file.generation !== generation) {
+      return true;
+    }
     file.fingerprint = swapped ? undefined : fingerprint;
     this.#reassign(path, file, found, isSymlink);
     return true;
@@ -917,7 +926,7 @@ export class DefinitionIdIndex
   #commit(
     path: string,
     dir: IndexedDir,
-    carried: ReadonlySet<string> = new Set(),
+    carried: ReadonlySet<string>,
   ): void {
     const previous = this.#dirs.get(path);
     if (previous && previous.ticket > dir.ticket) return;
@@ -971,6 +980,7 @@ export class DefinitionIdIndex
     isSymlink: boolean = file.isSymlink,
   ): void {
     this.#unindex(file, path);
+    file.generation++;
     file.id = found?.definition.id;
     file.name = found?.definition.name;
     file.owner = found && !isSymlink ? ownerOf(found) : undefined;

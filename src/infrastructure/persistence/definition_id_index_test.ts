@@ -1768,3 +1768,53 @@ Deno.test("DefinitionIdIndex: a clock stepped back runs the sweep at once rather
     });
   });
 });
+
+Deno.test("DefinitionIdIndex: a pass whose read another pass overtook leaves the newer keys, so the file is found by the id it declares now", async () => {
+  await withTempDir(async (dir) => {
+    const primary = join(dir, "models");
+    const auto = join(dir, ".swamp", "auto-definitions");
+    const repo = new YamlDefinitionRepository(dir, undefined, primary, auto);
+    const path = join(auto, "test", "a", "x.yaml");
+    let held: Promise<void> | undefined;
+    const reading = Promise.withResolvers<void>();
+    const index = new DefinitionIdIndex({
+      definitionRoots: () => repo.definitionRoots(),
+      readDefinitionFile: async (file, segments, isSymlink) => {
+        const found = await repo.readDefinitionFile(file, segments, isSymlink);
+        const gate = file === path ? held : undefined;
+        if (gate) {
+          held = undefined;
+          reading.resolve();
+          await gate;
+        }
+        return found;
+      },
+    }, { now: () => Date.now() + 60_000 });
+    await writeDefinition(path, crypto.randomUUID(), "x");
+    await writeDefinition(
+      join(auto, "test", "a", "y.yaml"),
+      crypto.randomUUID(),
+      "y",
+    );
+    await index.begin();
+
+    const older = crypto.randomUUID();
+    await replaceDefinition(path, older, "x");
+    const view = await index.begin();
+    const gate = Promise.withResolvers<void>();
+    held = gate.promise;
+    const overtaken = view.findAllById(crypto.randomUUID() as DefinitionId);
+    await reading.promise;
+
+    const newer = crypto.randomUUID();
+    await replaceDefinition(path, newer, "x");
+    assertEquals(await owners(index, crypto.randomUUID()), []);
+    gate.resolve();
+    assertEquals(await overtaken, []);
+
+    await withCapturedSpans(async (spans) => {
+      assertEquals((await owners(index, newer)).map((o) => o.name), ["x"]);
+      assertEquals(verifySpans(spans).length, 0);
+    });
+  });
+});

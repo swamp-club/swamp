@@ -252,7 +252,10 @@ found nothing, exports a `swamp.serve.definition_index.verify` span with
 `definition_index.files_verified` and `definition_index.files_reread`; a sweep's
 nests under the validate span, which also gains
 `definition_index.files_verified`. A miss pass runs after the check, so its
-counts are only on its span.
+counts are only on its span. Its first miss after a relist stats every file kept
+since the last pass, so frequent writes alongside lookups of ids no longer
+defined (an owner lookup for a deleted definition) show up as `miss` spans with
+a large `files_verified`.
 
 Supported branches: serve with its definition index (every `swamp serve`), the
 full scan a `CanonicalResources` without an index falls back to (no
