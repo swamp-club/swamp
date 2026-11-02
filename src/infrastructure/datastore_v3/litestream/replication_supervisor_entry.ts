@@ -18,8 +18,8 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * main.ts calls runSupervisorMain first when started with the supervisor
- * marker, so no CLI command, auth gate, telemetry or extension loading runs
+ * main.ts runs the supervisor before the CLI, so no command, auth gate,
+ * telemetry or extension loading runs
  */
 
 import { defaultLitestreamBinaryProvider } from "./litestream_binary_provider.ts";

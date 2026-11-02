@@ -17,69 +17,37 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * The writer's check that its replication lineage can be restored
- * (swamp-club#3935). A reader finds a replica it cannot restore only when it
- * clones or refreshes, and then nobody but the writer can use the datastore.
- * So the writer's sidecar restores its own lineage, the way a reader would,
- * and records the verdict; a lineage found broken is never continued, and
- * the next writer restarts it from its intact copy.
- *
- * Pure rules, no I/O. See "Verifying the replica" in
- * `design/enablers/datastore-litestream.md`.
- *
- * @module
- */
-
 import { normalizeTxid } from "./published_lineage.ts";
 
 /**
- * The longest a lineage goes unchecked while its writer keeps acknowledging
- * (swamp-club#4261). A compaction writes new LTX files and deletes the ones
- * it merged, so later restores read through files the last check never
- * read; checking after every compacted level would cost a full restore an
- * hour or more. Damage a compaction introduces is found within this
- * backstop instead, and until then the writer's intact copy is what a
- * lineage found broken restarts from.
+ * compactions rewrite files the last check never read, and checking each costs
+ * a full restore; damage is found within this backstop instead
  */
 export const REPLICA_VERIFY_BACKSTOP_MS = 4 * 60 * 60 * 1000;
 
 /**
- * How long a sidecar waits before it tries again after a check that
- * recorded no verdict (swamp-club#4261): the replica was unreachable for a
- * moment, or the restore passed its deadline. Such a check says nothing
- * about the lineage, so the backstop does not apply to it.
+ * retry delay after a check that recorded no verdict (replica unreachable or
+ * deadline passed); it says nothing about the lineage, so the backstop does not
+ * apply
  */
 export const REPLICA_VERIFY_RETRY_MS = 10 * 60 * 1000;
 
-/** The verdict of one check of a lineage, recorded beside `commits.db`. */
 export interface ReplicaVerification {
-  /** The lineage that was restored. */
   readonly lineageFence: number;
-  /** The TXID the writer had acknowledged, which the check restored. */
   readonly txid: string;
-  /** When the check finished, as an ISO time. */
   readonly checkedAt: string;
-  /** Whether the restore passed SQLite's integrity check. */
   readonly ok: boolean;
-  /** Why it failed; present only when `ok` is false. */
   readonly error?: string;
   /**
-   * The newest snapshot (Litestream level 9) the check's restore read
-   * through, by its max TXID: the replica's newest when the check started,
-   * if it is at or below `txid`. Absent when it was not known or was newer,
-   * and in verdicts recorded before swamp-club#4261; then the next known
-   * snapshot counts as new, which costs one more check.
+   * newest snapshot (level 9) the restore read through, if at or below txid;
+   * absent when unknown or newer, so the next known snapshot counts as new
    */
   readonly snapshotTxid?: string;
 }
 
 /**
- * The snapshot a restore at `txid` reads through, by its max TXID: the
- * replica's newest, `snapshotTxid`, only when it is at or below `txid`. A
- * newer one was written after the writer's last acknowledgement and is
- * read only by later restores, so neither a verdict nor a sidecar's own
- * attempt records it, and the next decision still sees it as new.
+ * a snapshot above txid is read only by later restores, so it is not recorded
+ * and the next decision still sees it as new
  */
 export function snapshotReadAt(
   snapshotTxid: string | undefined,
@@ -93,68 +61,37 @@ export function snapshotReadAt(
     : undefined;
 }
 
-/** A check this sidecar started, whatever it ended with. */
 export interface ReplicaVerifyAttempt {
   readonly startedAtMs: number;
   /**
-   * When it ended, once it has. A check can run up to its 30-minute
-   * deadline, so the retry delay counts from here.
+   * a check can run up to its 30-minute deadline, so the retry delay counts
+   * from when it ended
    */
   readonly endedAtMs?: number;
-  /** The acknowledged TXID it checked. */
   readonly txid: string | undefined;
-  /**
-   * The snapshot it read through ({@link snapshotReadAt}), if one was
-   * known.
-   */
   readonly snapshotTxid: string | undefined;
 }
 
-/** What a sidecar knows when it decides whether to check its lineage now. */
 export interface ReplicaVerifyObservation {
-  /** The lineage the sidecar replicates. */
   readonly lineageFence: number;
-  /**
-   * The TXID the writer last acknowledged on that lineage, or undefined when
-   * it acknowledged none (or on another lineage).
-   */
   readonly acknowledgedTxid: string | undefined;
-  /** The last recorded verdict, whatever lineage it names. */
   readonly last: ReplicaVerification | undefined;
   /**
-   * The newest snapshot on the replica, by its max TXID, or undefined when
-   * it is not known. An unknown snapshot is never a new one, and neither is
-   * one above the acknowledged TXID until the writer reaches it.
+   * an unknown snapshot is never new, nor is one above the acknowledged TXID
+   * until the writer reaches it
    */
   readonly snapshotTxid: string | undefined;
-  /** The last check this sidecar started, if it started one. */
   readonly lastAttempt: ReplicaVerifyAttempt | undefined;
   readonly nowMs: number;
-  /** Whether the sidecar is about to stop for being idle. */
   readonly idle: boolean;
-  /** {@link REPLICA_VERIFY_BACKSTOP_MS} outside tests. */
   readonly backstopMs: number;
-  /** {@link REPLICA_VERIFY_RETRY_MS} outside tests. */
   readonly retryMs: number;
 }
 
 /**
- * Whether a sidecar restores its lineage now (swamp-club#4261): only when
- * the writer has acknowledged something the last verdict does not cover,
- * and only when a check can change the answer — the lineage has no verdict
- * yet, the replica holds a snapshot the last verdict did not read through,
- * or the backstop has passed since that verdict was recorded. New
- * acknowledgements alone never start one, so neither a serve that writes
- * all day nor a run of short-lived CLI sidecars restores on a timer.
- *
- * After its own last check a sidecar waits, unless a new snapshot appeared
- * since: until the backstop when that check recorded a verdict on this
- * lineage (one dated at or after its start), and only
- * {@link REPLICA_VERIFY_RETRY_MS} from its end when it recorded none, since
- * a check that could not run says nothing about the lineage. A sidecar
- * about to idle out never checks the acknowledged TXID it already tried,
- * however that check ended and however long it took, so it always reaches
- * its exit.
+ * check only when something acknowledged is uncovered and a check can change
+ * the answer: no verdict, new snapshot, or backstop passed; an idling sidecar
+ * never retries a tried TXID
  */
 export function shouldVerifyReplica(o: ReplicaVerifyObservation): boolean {
   if (o.acknowledgedTxid === undefined) return false;
@@ -187,11 +124,6 @@ export function shouldVerifyReplica(o: ReplicaVerifyObservation): boolean {
   return o.nowMs - Date.parse(last.checkedAt) >= o.backstopMs;
 }
 
-/**
- * Whether `record` says the lineage begun at `lineageFence` cannot be
- * restored. A verdict on any other lineage, a passing one, or none says
- * nothing about it.
- */
 export function isLineageBroken(
   record: ReplicaVerification | undefined,
   lineageFence: number,
@@ -201,9 +133,8 @@ export function isLineageBroken(
 }
 
 /**
- * Parses a recorded verdict, or returns undefined when it is not one. An
- * unreadable record reads as no verdict, never as a broken lineage, so a
- * damaged file cannot restart the lineage on every command.
+ * an unreadable record reads as no verdict, never a broken lineage, so a
+ * damaged file cannot restart the lineage on every command
  */
 export function parseReplicaVerification(
   value: unknown,

@@ -29,7 +29,6 @@ import {
 
 const BACKSTOP = 4 * 60 * 60 * 1000;
 const RETRY = 10 * 60 * 1000;
-/** 2026-10-25T12:00:00.000Z, the default verdict's checkedAt. */
 const CHECKED_AT_MS = Date.parse("2026-10-25T12:00:00.000Z");
 
 function observe(
@@ -62,12 +61,10 @@ function verdict(
   };
 }
 
-/** The writer has acknowledged past the default verdict. */
 const moved = { last: verdict(), acknowledgedTxid: "0000000000000011" };
 
 Deno.test("shouldVerifyReplica: checks a new lineage", () => {
   assertEquals(shouldVerifyReplica(observe()), true);
-  // Even when the replica's snapshot is not known.
   assertEquals(shouldVerifyReplica(observe({ snapshotTxid: undefined })), true);
 });
 
@@ -94,7 +91,6 @@ Deno.test("shouldVerifyReplica: a verdict on the acknowledged TXID covers it", (
     ),
     false,
   );
-  // A failed verdict covers it too: the restart, not another check, is next.
   assertEquals(
     shouldVerifyReplica(observe({ last: verdict({ ok: false }) })),
     false,
@@ -122,14 +118,12 @@ Deno.test("shouldVerifyReplica: new acknowledgements alone wait for the backstop
 });
 
 Deno.test("shouldVerifyReplica: the backstop counts from the recorded verdict, not the sidecar's start", () => {
-  // A fresh sidecar (no attempt of its own) shortly after another's check.
   assertEquals(
     shouldVerifyReplica(
       observe({ ...moved, lastAttempt: undefined, nowMs: CHECKED_AT_MS + 1 }),
     ),
     false,
   );
-  // A verdict dated after now (a clock moved back) never starts a loop.
   assertEquals(
     shouldVerifyReplica(observe({ ...moved, nowMs: CHECKED_AT_MS - 1 })),
     false,
@@ -143,7 +137,6 @@ Deno.test("shouldVerifyReplica: a new snapshot is checked before the backstop", 
     ),
     true,
   );
-  // Spelled differently, the same snapshot is not new.
   assertEquals(
     shouldVerifyReplica(observe({ ...moved, snapshotTxid: "1" })),
     false,
@@ -178,7 +171,6 @@ Deno.test("shouldVerifyReplica: a verdict from before snapshots were recorded is
 });
 
 Deno.test("shouldVerifyReplica: a new lineage whose first check recorded no verdict is tried again after the retry delay, not the backstop", () => {
-  // The check started, and the replica could not be reached: no verdict.
   const attempt = {
     startedAtMs: CHECKED_AT_MS,
     endedAtMs: CHECKED_AT_MS,
@@ -197,7 +189,6 @@ Deno.test("shouldVerifyReplica: a new lineage whose first check recorded no verd
     ),
     true,
   );
-  // A new snapshot does not wait for the delay.
   assertEquals(
     shouldVerifyReplica(
       observe({
@@ -212,7 +203,6 @@ Deno.test("shouldVerifyReplica: a new lineage whose first check recorded no verd
 });
 
 Deno.test("shouldVerifyReplica: a backstop check that recorded no verdict is tried again after the retry delay", () => {
-  // The verdict is a backstop old; the check it started recorded nothing.
   const started = CHECKED_AT_MS + BACKSTOP;
   const attempt = {
     startedAtMs: started,
@@ -235,7 +225,6 @@ Deno.test("shouldVerifyReplica: a backstop check that recorded no verdict is tri
 });
 
 Deno.test("shouldVerifyReplica: the retry delay counts from the end of a check that ran up to its deadline", () => {
-  // The restore stalled for 30 minutes and recorded nothing.
   const ended = CHECKED_AT_MS + 30 * 60_000;
   const attempt = {
     startedAtMs: CHECKED_AT_MS,
@@ -277,8 +266,6 @@ Deno.test("shouldVerifyReplica: a sidecar about to idle out never checks a TXID 
       false,
     );
   }
-  // A TXID acknowledged since is still checked on the way out, once the
-  // retry delay from the failed check's end has passed.
   assertEquals(
     shouldVerifyReplica(
       observe({
@@ -293,7 +280,6 @@ Deno.test("shouldVerifyReplica: a sidecar about to idle out never checks a TXID 
 });
 
 Deno.test("shouldVerifyReplica: a check that recorded a verdict holds back the next until the backstop or a new snapshot", () => {
-  // The verdict is dated at the attempt's start: that attempt recorded it.
   const attempt = {
     startedAtMs: CHECKED_AT_MS,
     endedAtMs: CHECKED_AT_MS,
@@ -336,8 +322,6 @@ Deno.test("snapshotReadAt: only a snapshot at or below the restored TXID", () =>
 });
 
 Deno.test("shouldVerifyReplica: a snapshot written ahead of the acknowledged TXID is checked once the writer passes it", () => {
-  // Checked at 0x10 while the replica already held a snapshot at 0x12: the
-  // restore did not read it, so neither the verdict nor the attempt has it.
   const attempt = {
     startedAtMs: CHECKED_AT_MS,
     endedAtMs: CHECKED_AT_MS,
@@ -363,8 +347,6 @@ Deno.test("shouldVerifyReplica: a snapshot written ahead of the acknowledged TXI
 });
 
 Deno.test("shouldVerifyReplica: a snapshot ahead of the acknowledged TXID is not new yet", () => {
-  // Litestream snapshotted past what the writer has acknowledged: checking
-  // now would not read it, so it waits rather than checking every tick.
   assertEquals(
     shouldVerifyReplica(
       observe({ ...moved, snapshotTxid: "0000000000000012" }),

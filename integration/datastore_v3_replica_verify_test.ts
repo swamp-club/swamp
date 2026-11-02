@@ -60,10 +60,6 @@ import {
 
 const ignore = SIDECAR_TESTS_IGNORED;
 
-/**
- * Every replica-check temp file beside the copy or in the private
- * directory (swamp-club#4261).
- */
 async function verifyLeftovers(
   paths: { sharedDir: string; privateDir: string },
 ): Promise<string[]> {
@@ -80,10 +76,6 @@ async function verifyLeftovers(
   return found;
 }
 
-/**
- * Writes the config a sidecar replicating lineage `fence` runs with, as the
- * supervisor does, and returns its path.
- */
 async function sidecarConfig(
   env: ReplicationEnv,
   paths: Awaited<ReturnType<ReplicationEnv["paths"]>>,
@@ -100,7 +92,6 @@ async function sidecarConfig(
   return paths.config;
 }
 
-/** Waits for the env's sidecar to idle out, so nothing writes its lineage. */
 async function sidecarGone(env: ReplicationEnv): Promise<void> {
   await waitFor(
     async () => await presenceOf(env) === undefined,
@@ -109,12 +100,6 @@ async function sidecarGone(env: ReplicationEnv): Promise<void> {
   );
 }
 
-/**
- * Replaces the files of lineage `fence` with a whole lineage of a copy of
- * the writer's database whose index on the commits table has a damaged
- * root page: Litestream restores it cleanly, and SQLite's integrity check
- * fails on it. Returns the TXID that lineage reaches.
- */
 async function breakLineage(
   env: ReplicationEnv,
   fence: number,
@@ -159,8 +144,8 @@ async function breakLineage(
     stderr: "null",
   }).spawn();
   try {
-    // Up to its snapshot (swamp-club#4261): a new snapshot is what starts
-    // the writer's next check.
+    // wait for a snapshot: a new snapshot is what starts the writer's next
+    // check
     await waitFor(
       async () => (await ltxFiles(join(replica, "ltx", "9"))).length > 0,
       "Litestream to replicate and snapshot the broken copy",
@@ -239,14 +224,11 @@ Deno.test({
         { timeoutMs: 20_000 },
       );
       await sidecarGone(env);
-      // Restored beside the copy, and nothing left there or under /tmp.
       assertEquals(await verifyLeftovers(paths), []);
 
       const txid = await breakLineage(env, first);
       const copy = (await readCopyState(paths))!;
       await writeCopyState(paths, { ...copy, txid });
-      // The broken lineage carries a new snapshot, which is what starts this
-      // check under swamp-club#4261's rule; it still finds the damage.
       const snapshot = await readNewestSnapshotTxid({
         binary: LITESTREAM_BINARY!,
         config: await sidecarConfig(env, paths, first),
@@ -305,9 +287,8 @@ Deno.test({
         "the sidecar to check its new lineage",
         { timeoutMs: 20_000 },
       );
-      // Its first listing can run before Litestream writes the lineage's
-      // first snapshot. Then the next acknowledgement is checked once that
-      // snapshot is seen, at the latest when the sidecar goes idle.
+      // the first listing can run before Litestream writes the first snapshot;
+      // the next acknowledgement is then checked once the snapshot is seen
       if ((await readReplicaVerification(paths))?.snapshotTxid === undefined) {
         await writeCommand(env, 1);
       }
@@ -509,8 +490,6 @@ Deno.test({
         lineageFence: 2,
         txid: "0000000000000005",
       });
-      // A Litestream that records where it was told to restore, writes the
-      // files a stopped restore leaves, then fails or stalls.
       const recorded = join(dir, "restore-target");
       const stub = (tail: string) =>
         `#!/bin/sh\nwhile [ "$1" != "-o" ]; do shift; done\n` +
@@ -543,7 +522,6 @@ Deno.test({
         const target = (await Deno.readTextFile(recorded)).trim();
         assertEquals(dirname(target), paths.sharedDir);
         assertEquals(await verifyLeftovers(paths), []);
-        // No verdict: a restore that could not run never restarts a lineage.
         assertEquals(await readReplicaVerification(paths), undefined);
       }
     } finally {
@@ -604,7 +582,6 @@ Deno.test({
         }),
         newest,
       );
-      // A replica it cannot list reads as unknown.
       assertEquals(
         await readNewestSnapshotTxid({
           binary: LITESTREAM_BINARY!,

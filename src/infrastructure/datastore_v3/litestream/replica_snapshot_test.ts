@@ -21,9 +21,9 @@ import { assertEquals } from "@std/assert";
 import { parseNewestSnapshotTxid } from "./replica_snapshot.ts";
 
 /**
- * `litestream ltx -level 9 -json` from the pinned Litestream 0.5.17 against a
- * file replica (swamp-club#4261). A pin bump that changes this shape must
- * update this fixture, or the snapshot trigger silently stops firing.
+ * output of the pinned litestream against a file replica; a pin bump that
+ * changes this shape must update the fixture, or the snapshot trigger silently
+ * stops firing
  */
 const PINNED_OUTPUT = `[
   {

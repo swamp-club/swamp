@@ -17,24 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * The Litestream sidecar a v3 writer replicates `commits.db` through
- * (swamp-club#3416, Phase 4 D1): reused across commands, started when none
- * runs, replaced when it is frozen, on another lineage, or cannot upload.
- *
- * A command observes the sidecar while it holds `use.lock` shared, so the
- * sidecar cannot idle out between what the command saw and what it does.
- * Liveness comes from `supervisor.lock`, which the supervisor holds for its
- * whole life. A process is signalled only after its arguments show it is
- * this database's own; anything a command cannot verify is waited for, then
- * refused, so two sidecars never share a replica path.
- *
- * Before a write command reports success it forces one sync, checks that
- * the replica has every commit, then checks its writer lease.
- *
- * @module
- */
-
 import { basename, dirname, fromFileUrl, join } from "@std/path";
 import { padFence } from "../../../domain/datastore_v3/writer_lease.ts";
 import { normalizeTxid } from "../../../domain/datastore_v3/published_lineage.ts";
@@ -91,35 +73,21 @@ import {
 import { hostnameOf, localProcess } from "../process_identity.ts";
 import { supervisorArgs, touchUseLock } from "./replication_supervisor.ts";
 
-/** How long each part of finding a sidecar may take. */
 export interface ReplicatorTimings {
-  /** The sidecar's idle timeout, given to the supervisor. */
   readonly idleMs: number;
-  /** How long the supervisor gives Litestream to stop before killing it. */
   readonly stopWaitMs: number;
-  /** How often the supervisor checks for idleness. */
   readonly tickMs: number;
   /**
-   * How long a command waits for the use lock. Longer than the stop wait,
-   * so a command that arrives while an idle sidecar stops gets the lock
-   * once it has gone, rather than failing just before.
+   * longer than the stop wait, so a command arriving while an idle sidecar
+   * stops gets the lock once it has gone, not a failure
    */
   readonly lockWaitMs: number;
-  /** How long a sidecar may take to start answering, or a probe to answer. */
   readonly startWaitMs: number;
-  /** How long one `GET /info` may take. */
   readonly probeMs: number;
-  /** How often a waiting command looks again. */
   readonly pollMs: number;
-  /**
-   * The longest the sidecar goes without checking a lineage its writer
-   * keeps acknowledging on (swamp-club#3935, swamp-club#4261); the
-   * supervisor's default when absent.
-   */
   readonly verifyIntervalMs?: number;
 }
 
-/** The production timings: a five-minute idle sidecar. */
 export const DEFAULT_REPLICATOR_TIMINGS: ReplicatorTimings = {
   idleMs: SIDECAR_IDLE_TIMEOUT_MS,
   stopWaitMs: 10_000,
@@ -130,72 +98,55 @@ export const DEFAULT_REPLICATOR_TIMINGS: ReplicatorTimings = {
   pollMs: 50,
 };
 
-/** How a supervisor process is started: the command and its argument prefix. */
 export interface SupervisorCommand {
   readonly command: string;
   readonly prefixArgs: readonly string[];
-  /** The environment to give it; the current one when omitted. */
   readonly env?: Record<string, string>;
 }
 
-/** What the replicator does to the world, replaceable in tests. */
 export interface ReplicatorDeps {
   readonly processes: LitestreamProcesses;
   readonly control: LitestreamControl;
-  /** Resolves the hash-checked binary, so a download fails in the command. */
   resolveBinary(): Promise<string>;
   readonly supervisor: SupervisorCommand;
   readonly timings: ReplicatorTimings;
   now(): number;
   sleep(ms: number): Promise<void>;
-  /** The per-user root of configs and sockets; `/tmp/swamp-<uid>` by default. */
   readonly privateRoot?: string;
 }
 
-/** What a writer asks for. */
 export interface ReplicationRequest {
   readonly commitsDb: string;
   readonly replica: V3ReplicaSetting;
-  /** The fence this process's writer lease holds. */
   readonly fence: number;
-  /** Throws when this process's writer lease was taken over. */
   assertLeaseCurrent(): Promise<void>;
 }
 
-/** What {@link ReplicationHandle.sync} runs between the sync and the lease check. */
 export interface SyncOptions {
   beforeLeaseCheck?(txid: string): Promise<void>;
   /**
-   * Gives the sync up as a definite failure (swamp-club#3802): the replica's
-   * storage was found unreachable. Unlike a sidecar's error answer, it does
-   * not mark the sidecar for replacement.
+   * gives the sync up as a definite failure: replica storage was found
+   * unreachable; unlike a sidecar error answer, it does not mark the sidecar
+   * for replacement
    */
   readonly signal?: AbortSignal;
 }
 
-/** A command's use of the sidecar, from acquire to release. */
 export interface ReplicationHandle {
-  /** The lineage the sidecar replicates. */
   readonly lineageFence: number;
   /**
-   * Forces one sync and confirms every commit made before it, then runs
-   * `options.beforeLeaseCheck` with the replicated TXID (16 hex digits),
-   * then checks the writer lease (swamp-club#3482: what a writer publishes
-   * must be visible before its check passes). Resolves with the TXID.
-   *
-   * @throws V3ReplicationError
+   * forces one sync, runs beforeLeaseCheck with the replicated TXID, then
+   * checks the writer lease, so what a writer publishes is visible before its
+   * check passes
    */
   sync(
     deadlineMs: number,
     options?: SyncOptions,
   ): Promise<string>;
-  /** Whether the sidecar still answers on its control socket. */
   probe(): Promise<boolean>;
-  /** Records the use and lets the sidecar idle out. Idempotent. */
   release(): Promise<void>;
 }
 
-/** The arguments a `deno run` of the supervisor entry needs, from source. */
 export function sourceSupervisorCommand(): SupervisorCommand {
   const entry = fromFileUrl(
     new URL("./replication_supervisor_entry.ts", import.meta.url),
@@ -209,7 +160,6 @@ export function sourceSupervisorCommand(): SupervisorCommand {
   };
 }
 
-/** How this process starts a supervisor: itself, or `deno run` from source. */
 export function hostSupervisorCommand(): SupervisorCommand {
   const execPath = Deno.execPath();
   return /[\\/]deno(\.exe)?$/.test(execPath)
@@ -218,16 +168,9 @@ export function hostSupervisorCommand(): SupervisorCommand {
 }
 
 /**
- * Starts Litestream with fresh local state when that state belongs to
- * another lineage than `lineageFence` (swamp-club#3935), and records which
- * lineage it belongs to from now on. Litestream 0.5 keeps one local position
- * per database, not per replica: a sidecar on a new lineage would resume the
- * old lineage's position against an empty replica path, and fail to sync
- * once that lineage's early L0 files have expired. Started fresh, it uploads
- * a snapshot as the new lineage's first file, as after a restore. State a
- * sidecar left on this same lineage is kept, even if no head was published
- * on it yet. A copy from before the record goes by the lineage of its last
- * published head. Called only while no sidecar runs on the database.
+ * litestream keeps one local position per database, not per replica; a new
+ * lineage resuming the old position fails to sync, so state from another
+ * lineage is reset
  */
 export async function resetForeignLitestreamState(
   paths: Pick<ReplicationPaths, "commitsDb" | "copy" | "litestreamState">,
@@ -251,22 +194,12 @@ export async function resetForeignLitestreamState(
   await writeLitestreamStateOwner(paths, lineageFence);
 }
 
-/**
- * Manages this process's uses of Litestream sidecars: one handle per
- * canonical `commits.db`, shared by every caller while any holds it.
- */
 export class LitestreamReplicator {
   readonly #held = new Map<string, HeldEntry>();
-  /** Acquires in flight, which concurrent callers for the database join. */
   readonly #acquiring = new Map<string, Promise<HeldEntry>>();
 
   constructor(private readonly deps: ReplicatorDeps) {}
 
-  /**
-   * Reuses, starts or replaces the sidecar for `request`, and holds it.
-   *
-   * @throws V3ReplicationUnavailableError when none can be used
-   */
   async acquire(request: ReplicationRequest): Promise<ReplicationHandle> {
     const paths = await replicationPathsFor(
       request.commitsDb,
@@ -296,8 +229,8 @@ export class LitestreamReplicator {
         }
         entry = await acquiring;
       }
-      // The last release may have retired the entry while this acquire
-      // waited (swamp-club#3565): its handle is released, so it starts over.
+      // the last release may have retired the entry while this acquire waited;
+      // its handle is released, so start over
       if (this.#held.get(key) !== entry) continue;
       const held = entry;
       held.refs++;
@@ -305,7 +238,6 @@ export class LitestreamReplicator {
     }
   }
 
-  /** Drops one caller's hold on `entry`, releasing it with the last one. */
   async #releaseShared(key: string, entry: HeldEntry): Promise<void> {
     entry.refs--;
     if (entry.refs > 0) return;
@@ -361,7 +293,6 @@ export class LitestreamReplicator {
     }
   }
 
-  /** The lineage the lease hook recorded, or one decided now if it could not. */
   async #lineage(
     paths: ReplicationPaths,
     request: ReplicationRequest,
@@ -391,7 +322,6 @@ export class LitestreamReplicator {
     return decided.lineage;
   }
 
-  /** Polls a lock on `file` until it is taken, or throws past the wait. */
   async #waitForLock(
     file: Deno.FsFile,
     exclusive: boolean,
@@ -406,7 +336,6 @@ export class LitestreamReplicator {
     }
   }
 
-  /** Finds a sidecar to reuse on this lineage, or makes one; its supervisor pid. */
   async #findOrStart(
     paths: ReplicationPaths,
     replica: V3ReplicaSetting,
@@ -471,9 +400,8 @@ export class LitestreamReplicator {
   }
 
   /**
-   * Observes the sidecar and decides. A free supervisor lock stays held by
-   * this probe until the caller acts, so no supervisor can start between
-   * the observation and a kill of the orphan it names.
+   * a free supervisor lock stays held by this probe until the caller acts, so
+   * none can start between observing and killing the orphan it names
    */
   async #observeAndDecide(
     paths: ReplicationPaths,
@@ -558,7 +486,6 @@ export class LitestreamReplicator {
     }
   }
 
-  /** Whether the socket answers, from the Litestream the record names. */
   async #answers(
     paths: ReplicationPaths,
     litestreamPid: number | undefined,
@@ -576,7 +503,6 @@ export class LitestreamReplicator {
     }
   }
 
-  /** Writes the config and launches a detached supervisor. */
   async #launch(
     paths: ReplicationPaths,
     replica: V3ReplicaSetting,
@@ -618,12 +544,6 @@ export class LitestreamReplicator {
     this.deps.processes.launch(launch);
   }
 
-  /**
-   * Replaces a verified sidecar: takes `use.lock` exclusively on this
-   * command's own descriptor, so no other command is using it, kills the
-   * supervisor's group, waits for its lock to come free, then goes back to
-   * a shared hold.
-   */
   async #replace(
     paths: ReplicationPaths,
     action: Extract<SidecarAction, { kind: "replace" }>,
@@ -638,10 +558,9 @@ export class LitestreamReplicator {
     );
     try {
       const processes = this.deps.processes;
-      // Converting a flock is not atomic: while this command waited, its
-      // shared hold lapsed and another command may have replaced the
-      // sidecar. Kill only the supervisor the record still names, verified
-      // again; otherwise the caller looks afresh.
+      // the shared hold may have lapsed while waiting and another command
+      // replaced the sidecar; kill only the supervisor the record still names,
+      // verified again, else look afresh
       const now = await readPresence(paths);
       if (
         now.kind !== "found" ||
@@ -682,14 +601,9 @@ export class LitestreamReplicator {
   }
 
   /**
-   * Stops the sidecar of the `commits.db` at `commitsDb`, when one runs, so
-   * the copy can be replaced by a restore (swamp-club#3482), and keeps any
-   * other from starting until the returned release: `use.lock` is held
-   * exclusively throughout, which every acquire waits for. This process
-   * must hold no use of that sidecar. A sidecar it cannot verify as this
-   * user's, on this host, for this database, is refused, never killed.
-   *
-   * @throws V3ReplicationUnavailableError
+   * stops the sidecar so the copy can be replaced by a restore, holding
+   * use.lock exclusively until the returned release; a sidecar not verified as
+   * this user's, host and database is refused, never killed
    */
   async quiesce(commitsDb: string): Promise<() => void> {
     const paths = await replicationPathsFor(
@@ -798,13 +712,11 @@ export class LitestreamReplicator {
   }
 }
 
-/** A held sidecar and how many callers in the process hold it. */
 interface HeldEntry {
   readonly handle: SharedHandle;
   refs: number;
 }
 
-/** One acquired sidecar, shared by every caller in the process. */
 class SharedHandle {
   #released = false;
 
@@ -817,7 +729,6 @@ class SharedHandle {
     private readonly assertLeaseCurrent: () => Promise<void>,
   ) {}
 
-  /** A caller's view: its release drops only its own reference. */
   view(releaseShared: () => Promise<void>): ReplicationHandle {
     let released = false;
     return {
@@ -843,8 +754,8 @@ class SharedHandle {
       );
     } catch (error) {
       if (options.signal?.aborted === true) {
-        // The caller found the storage unreachable: the sidecar did not fail,
-        // so it is kept for the next command (swamp-club#3802).
+        // the caller found the storage unreachable, not a sidecar failure, so
+        // the sidecar is kept for the next command
         throw new V3ReplicationError(messageOf(options.signal.reason), {
           cause: error,
         });
@@ -889,7 +800,7 @@ class SharedHandle {
       await this.assertLeaseCurrent();
     } catch (error) {
       if (!(error instanceof WriterFencedError)) {
-        // Not a takeover: the lease could not be checked (swamp-club#3491).
+        // not a takeover: the lease could not be checked
         throw new V3ReplicationError(
           (published ? "they were published to the replica, but " : "") +
             `this process's writer lease could not be checked: ${
@@ -932,7 +843,6 @@ class SharedHandle {
     }
   }
 
-  /** A sidecar that failed definitely is replaced by the next command. */
   async #condemn(): Promise<void> {
     await markForReplacement(this.paths, this.supervisorPid).catch(() => {});
   }
@@ -953,10 +863,9 @@ function messageOf(error: unknown): string {
 }
 
 /**
- * Whether the sidecar `record` names runs on this machine, which its pids
- * are then verified on: by the supervisor's process identity, whatever the
- * hostname is now (swamp-club#3801). A record without an identity, or one
- * either side has no boot id for, by its hostname, as before.
+ * judge own host by the supervisor's process identity, whatever the hostname is
+ * now; a record without identity, or no boot id on either side, goes by
+ * hostname
  */
 function isOwnHost(record: PresenceRecord, local: LocalProcess): boolean {
   const process = record.process;

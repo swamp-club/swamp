@@ -17,10 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// ratchet on the sink inventory: design-doc destinations are covered, anchors
-// exist, scanned sites are anchors or pinned NOT_A_SINK entries, and named
-// gates and tests exist
-
 import { assert, assertEquals, assertGreater } from "@std/assert";
 import { join } from "@std/path";
 import { z } from "zod";

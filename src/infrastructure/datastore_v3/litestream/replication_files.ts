@@ -18,33 +18,9 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * Where a v3 writer's Litestream sidecar keeps its state (swamp-club#3416),
- * and the files themselves.
- *
- * Every path derives from the canonical (`realPath`) `commits.db`, so two
- * spellings of one database, `/tmp/d` and `/private/tmp/d` or a symlinked
- * datastore, find the same sidecar.
- *
- * - Beside `commits.db`, in `.commits.db-replication/`, only non-secret
- *   shared files: `supervisor.lock` (held by the running supervisor for its
- *   whole life, the liveness signal), `presence.json` (the pidfile, written
- *   only by the lock holder), `replace-<pid>` marks, `use.lock` (shared by
- *   commands while they use the sidecar) and `lineage.json`; and, since
- *   swamp-club#3482, `copy.json` (which lineage and TXID the copy holds) and
- *   `restore.lock` (taken by a restore of the copy); and, since
- *   swamp-club#3935, `replica-verify.json` (whether the sidecar could restore
- *   its lineage the way a reader would) and `litestream-state.json` (which
- *   lineage Litestream's local state belongs to); and, since
- *   swamp-club#4261, while a replica check runs, its restored
- *   `verify-<uuid>.db`, which holds what `commits.db` beside it does. The
- *   directory and the presence record are trusted only when this user owns
- *   them.
- * - In a per-user directory, `/tmp/swamp-<uid>/<hash>/`, created 0700 and
- *   checked before every use, what a process trusts for paths: the
- *   Litestream config and the control socket. Another user who can write a
- *   shared datastore can see that a sidecar runs, never redirect it.
- *
- * @module
+ * paths derive from the canonical commits.db so two spellings find one sidecar;
+ * the shared dir is trusted only when this user owns it; config and socket live
+ * in a private 0700 per-user dir
  */
 
 import { basename, dirname, join } from "@std/path";
@@ -69,32 +45,24 @@ import {
 import { atomicWriteTextFile } from "../../persistence/atomic_write.ts";
 import type { V3ReplicaSetting } from "./replica_setting.ts";
 
-/** The shared directory's name beside `commits.db`. */
 export function replicationDirName(commitsDbFile: string): string {
   return `.${commitsDbFile}-replication`;
 }
 
-/** Litestream's own local state directory beside `commits.db`. */
 export function litestreamStateDirName(commitsDbFile: string): string {
   return `.${commitsDbFile}-litestream`;
 }
 
-/** Where a database's sidecar state lives. */
 export interface ReplicationPaths {
-  /** The canonical `commits.db`. */
   readonly commitsDb: string;
   readonly sharedDir: string;
   readonly supervisorLock: string;
   readonly presence: string;
   readonly useLock: string;
   readonly lineage: string;
-  /** Which lineage, up to which TXID, the copy holds (swamp-club#3482). */
   readonly copy: string;
-  /** Serializes restores of the copy (swamp-club#3482). */
   readonly restoreLock: string;
-  /** The last check that the lineage can be restored (swamp-club#3935). */
   readonly verify: string;
-  /** Which lineage Litestream's local state belongs to (swamp-club#3935). */
   readonly litestreamState: string;
   readonly privateDir: string;
   readonly config: string;
@@ -106,7 +74,6 @@ function socketPathLimit(): number {
   return Deno.build.os === "linux" ? 108 : 104;
 }
 
-/** This user's private root, `/tmp/swamp-<uid>`. */
 export function defaultPrivateRoot(): string {
   const uid = Deno.uid();
   if (uid === null) {
@@ -120,13 +87,6 @@ export function defaultPrivateRoot(): string {
   return `/tmp/swamp-${uid}`;
 }
 
-/**
- * The replication paths of the `commits.db` at `commitsDbPath`, whose
- * directory must exist; the database itself may not yet (a copy about to
- * be restored). `privateRoot` defaults to {@link defaultPrivateRoot}.
- *
- * @throws UserError when the socket path would pass the AF_UNIX limit
- */
 export async function replicationPathsFor(
   commitsDbPath: string,
   privateRoot: string = defaultPrivateRoot(),
@@ -164,7 +124,6 @@ export async function replicationPathsFor(
   };
 }
 
-/** The database's canonical path, through its directory when it is missing. */
 async function canonicalDatabasePath(path: string): Promise<string> {
   try {
     return await Deno.realPath(path);
@@ -183,7 +142,6 @@ async function shortHash(text: string): Promise<string> {
     .map((byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
-/** Whether `info` is a real directory this user owns. */
 function ownedDirectory(info: Deno.FileInfo): boolean {
   const uid = Deno.uid();
   return info.isDirectory && !info.isSymlink &&
@@ -191,11 +149,8 @@ function ownedDirectory(info: Deno.FileInfo): boolean {
 }
 
 /**
- * Creates the per-user directory and this database's subdirectory, 0700,
- * and refuses either when it is a symlink, another user's, or open to
- * others: the config and socket in it are trusted.
- *
- * @throws UserError
+ * refuses a symlink, another user's directory or one open to others, since the
+ * config and socket in it are trusted
  */
 export async function ensurePrivateDir(paths: ReplicationPaths): Promise<void> {
   for (const dir of [dirname(paths.privateDir), paths.privateDir]) {
@@ -218,9 +173,8 @@ export async function ensurePrivateDir(paths: ReplicationPaths): Promise<void> {
 }
 
 /**
- * Creates the shared directory beside `commits.db` when it is missing, and
- * says whether this user owns it and no one else can write it. Files in
- * any other directory are never trusted.
+ * reports whether this user owns the dir and no one else can write it; files in
+ * any other directory are never trusted
  */
 export async function ensureSharedDir(
   paths: ReplicationPaths,
@@ -238,30 +192,21 @@ export async function ensureSharedDir(
     : "foreign";
 }
 
-/** What `presence.json` records about the running sidecar. */
 export interface PresenceRecord {
   readonly supervisorPid: number;
-  /** Set once the supervisor has started Litestream. */
   readonly litestreamPid?: number;
   readonly uid: number | null;
-  /** For display, and to judge a record without `process`. */
   readonly hostname: string;
-  /**
-   * The supervisor's process identity, by which its owner is judged
-   * (swamp-club#3801). Undefined in a record from an older swamp.
-   */
   readonly process?: ProcessIdentity;
   readonly lineageFence: number;
   readonly replicaPath: string;
 }
 
-/** A presence record as a reader found it. */
 export type PresenceRead =
   | { readonly kind: "missing" }
   | { readonly kind: "foreign" }
   | { readonly kind: "found"; readonly record: PresenceRecord };
 
-/** Reads `presence.json`, trusting it only when this user owns it. */
 export async function readPresence(
   paths: ReplicationPaths,
 ): Promise<PresenceRead> {
@@ -317,7 +262,6 @@ function parsePresence(value: unknown): PresenceRecord | undefined {
   };
 }
 
-/** Writes `presence.json` by temp file and rename. Only the lock holder calls it. */
 export async function writePresence(
   paths: ReplicationPaths,
   record: PresenceRecord,
@@ -325,7 +269,6 @@ export async function writePresence(
   await atomicWriteTextFile(paths.presence, JSON.stringify(record));
 }
 
-/** Removes `presence.json` when it still names `supervisorPid`. */
 export async function removeOwnPresence(
   paths: ReplicationPaths,
   supervisorPid: number,
@@ -336,16 +279,10 @@ export async function removeOwnPresence(
   }
 }
 
-/** The replacement mark that condemns supervisor `pid`. */
 export function replaceMarkPath(paths: ReplicationPaths, pid: number): string {
   return join(paths.sharedDir, `replace-${pid}`);
 }
 
-/**
- * Marks supervisor `pid` for replacement after a definite sync failure, so
- * the next command replaces it instead of reusing a sidecar that cannot
- * upload.
- */
 export async function markForReplacement(
   paths: ReplicationPaths,
   pid: number,
@@ -359,7 +296,6 @@ export async function markForReplacement(
   }
 }
 
-/** Whether a replacement mark names supervisor `pid`. */
 export async function isMarkedForReplacement(
   paths: ReplicationPaths,
   pid: number,
@@ -373,7 +309,6 @@ export async function isMarkedForReplacement(
   }
 }
 
-/** Removes every replacement mark: a new supervisor starts clean. */
 export async function clearReplacementMarks(
   paths: ReplicationPaths,
 ): Promise<void> {
@@ -384,13 +319,8 @@ export async function clearReplacementMarks(
   }
 }
 
-/** The prefix of a replica check's restored temp file. */
 const VERIFY_TEMP_PREFIX = "verify-";
 
-/**
- * A new temp path for a replica check's restore (swamp-club#4261): in the
- * shared directory beside `commits.db`, on the copy's own filesystem.
- */
 export function verifyTempPath(
   paths: Pick<ReplicationPaths, "sharedDir">,
 ): string {
@@ -400,7 +330,6 @@ export function verifyTempPath(
   );
 }
 
-/** Every file a restore into `temp` may leave. */
 export function verifyTempFiles(temp: string): string[] {
   return [temp, `${temp}-wal`, `${temp}-shm`, `${temp}.tmp`];
 }
@@ -409,10 +338,8 @@ const VERIFY_TEMP_NAME =
   /^verify-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.db(-wal|-shm|\.tmp)?$/;
 
 /**
- * Removes what a replica check killed mid-restore left beside the copy
- * (swamp-club#4261). Only a new supervisor calls it, under the supervisor
- * lock, so no check of this copy is running. The listing is read whole
- * before anything is removed.
+ * only a new supervisor calls it, under the supervisor lock, so no check is
+ * running; the listing is read whole before anything is removed
  */
 export async function clearVerifyLeftovers(
   paths: Pick<ReplicationPaths, "sharedDir">,
@@ -439,7 +366,6 @@ export async function readLineage(
   }
 }
 
-/** Writes `lineage.json` by temp file and rename. */
 export async function writeLineage(
   paths: Pick<ReplicationPaths, "lineage">,
   lineage: ReplicationLineage,
@@ -447,7 +373,6 @@ export async function writeLineage(
   await atomicWriteTextFile(paths.lineage, JSON.stringify(lineage));
 }
 
-/** Removes `lineage.json`, so the next lease restarts the lineage. */
 export async function removeLineage(
   paths: Pick<ReplicationPaths, "lineage">,
 ): Promise<void> {
@@ -471,7 +396,6 @@ export async function readCopyState(
   }
 }
 
-/** Writes `copy.json` by temp file and rename. */
 export async function writeCopyState(
   paths: Pick<ReplicationPaths, "copy">,
   state: LocalCopyState,
@@ -495,7 +419,6 @@ export async function readReplicaVerification(
   }
 }
 
-/** Writes `replica-verify.json` by temp file and rename. */
 export async function writeReplicaVerification(
   paths: Pick<ReplicationPaths, "verify">,
   verification: ReplicaVerification,
@@ -504,8 +427,8 @@ export async function writeReplicaVerification(
 }
 
 /**
- * The lineage Litestream's local state belongs to, or undefined when no
- * record says (one missing, unreadable, or from before swamp-club#3935).
+ * the lineage Litestream's local state belongs to, or undefined when no record
+ * says (missing or unreadable)
  */
 export async function readLitestreamStateOwner(
   paths: Pick<ReplicationPaths, "litestreamState">,
@@ -522,7 +445,6 @@ export async function readLitestreamStateOwner(
   }
 }
 
-/** Records the lineage Litestream's local state belongs to. */
 export async function writeLitestreamStateOwner(
   paths: Pick<ReplicationPaths, "litestreamState">,
   lineageFence: number,
@@ -534,10 +456,9 @@ export async function writeLitestreamStateOwner(
 }
 
 /**
- * Litestream's config for one database: its control socket and one replica
- * at `replicaPath`. Strings are JSON-quoted, which YAML reads as they are.
- * It never holds credentials, which Litestream reads from its environment,
- * and never sets a checkpoint option: `commits.db` keeps SQLite's default.
+ * strings are JSON-quoted, which YAML reads as they are; never holds
+ * credentials (litestream reads its environment) nor sets a checkpoint option,
+ * so commits.db keeps SQLite's default
  */
 export function renderLitestreamConfig(
   paths: Pick<ReplicationPaths, "commitsDb" | "socket">,
@@ -553,10 +474,6 @@ export function renderLitestreamConfig(
   ].join("\n") + "\n";
 }
 
-/**
- * Litestream's config for restoring one database from `replicaPath`
- * (swamp-club#3482): the replica alone, no control socket.
- */
 export function renderLitestreamRestoreConfig(
   commitsDb: string,
   replica: V3ReplicaSetting,
@@ -604,7 +521,6 @@ function databaseConfigLines(
   return lines;
 }
 
-/** The path Litestream replicates to, for the lineage at `lineagePath`. */
 export function litestreamReplicaPath(
   replica: V3ReplicaSetting,
   lineagePath: string,

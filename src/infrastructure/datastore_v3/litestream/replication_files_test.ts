@@ -327,8 +327,6 @@ Deno.test("renderLitestreamConfig: an s3 replica with an endpoint uses path-styl
   assertEquals(/secret|access/i.test(config), false);
 });
 
-// the rendering of SWAMP_V3_REPLICA settings from before replica targets, byte
-// for byte: an unset forcePathStyle changes nothing
 Deno.test("renderLitestreamRestoreConfig: an s3 setting without forcePathStyle renders as before", () => {
   const head = [
     "logging:",
@@ -401,8 +399,6 @@ Deno.test("renderLitestreamConfig: forcePathStyle true turns path style on witho
   assertStringIncludes(config, "force-path-style: true");
 });
 
-// Litestream refuses `type: gcs` as an unknown replica type; its GCS replica
-// type is `gs`
 Deno.test("renderLitestreamRestoreConfig: a gcs replica is Litestream's gs type and names its bucket", () => {
   assertEquals(
     renderLitestreamRestoreConfig(

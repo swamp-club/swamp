@@ -18,19 +18,9 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * The writer's check of its own replica (swamp-club#3935): the sidecar
- * restores its lineage at the TXID the writer last acknowledged, exactly as
- * a reader's restore would, into a temp file beside `commits.db` it then
- * deletes, and records the verdict in `replica-verify.json`. Beside the
- * copy, not under `/tmp`: on the copy's own filesystem, never a tmpfs
- * holding a second copy of the commit log in memory (swamp-club#4261).
- *
- * Only a restore that fails SQLite's integrity check is a broken lineage.
- * One that could not run (the replica unreachable, past
- * {@link VERIFY_DEADLINE_MS}) records nothing: restarting the lineage over a network failure would upload a
- * full snapshot for nothing.
- *
- * @module
+ * restores into a temp file beside commits.db, on the copy's own filesystem,
+ * never a tmpfs; only an integrity-check failure is a broken lineage, a restore
+ * that could not run records nothing
  */
 
 import {
@@ -68,33 +58,17 @@ function shortened(message: string): string {
     : `${message.slice(0, VERDICT_ERROR_CHARS)}…`;
 }
 
-/** What {@link verifyReplica} checks. */
 export interface VerifyReplicaRequest {
   readonly paths: ReplicationPaths;
-  /** The lineage the sidecar replicates. */
   readonly lineageFence: number;
   readonly replicaType: LitestreamReplicaType;
-  /** The hash-checked Litestream binary. */
   readonly binary: string;
   readonly now: () => number;
   readonly signal: AbortSignal;
-  /** {@link VERIFY_DEADLINE_MS} when absent. */
   readonly deadlineMs?: number;
-  /**
-   * The replica's newest snapshot when the check started (swamp-club#4261),
-   * recorded in the verdict when it is at or below the restored TXID;
-   * absent when it was not known.
-   */
   readonly snapshotTxid?: string;
 }
 
-/**
- * Restores the sidecar's lineage the way a reader would and records the
- * verdict. Resolves with it, or undefined when the writer acknowledged
- * nothing on this lineage, so there is nothing a reader would restore.
- *
- * @throws when the restore could not run; nothing is recorded then
- */
 export async function verifyReplica(
   request: VerifyReplicaRequest,
 ): Promise<ReplicaVerification | undefined> {
@@ -103,9 +77,9 @@ export async function verifyReplica(
   if (copy === undefined || copy.lineageFence !== lineageFence) {
     return undefined;
   }
-  // Beside the copy (swamp-club#4261), in the shared directory a supervisor
-  // trusts only when this user owns it and nobody else can write to it: the
-  // restored file holds what `commits.db` beside it holds.
+  // beside the copy, in the shared directory a supervisor trusts only when this
+  // user owns it and no one else can write it: the restored file holds what
+  // commits.db holds
   const temp = verifyTempPath(paths);
   const read = snapshotReadAt(request.snapshotTxid, copy.txid);
   const snapshot = read !== undefined ? { snapshotTxid: read } : {};
@@ -114,8 +88,6 @@ export async function verifyReplica(
     try {
       await restoreAndCheck({
         binary: request.binary,
-        // The sidecar's own config names `commits.db` and its replica; the
-        // restore writes only to the temp file.
         config: paths.config,
         source: paths.commitsDb,
         temp,
