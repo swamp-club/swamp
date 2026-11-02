@@ -17,17 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Content-level authorisation of forwarded commits (swamp-club#3922), end
- * to end over serve's datastore API on a real v3 repository.
- *
- * Parity tests send one edit over the WebSocket handler and as a forwarded
- * commit, and expect the same answer from both. The rest pin what only a
- * forwarded commit could try: content that claims another aggregate's
- * identity, run records that carry authority or executable state, data
- * that names secrets, and evaluations serve would run.
- */
-
 import { NestedRunLink } from "../src/domain/workflows/nested_run_link.ts";
 import { WorkflowRun } from "../src/domain/workflows/workflow_run.ts";
 import {
@@ -83,7 +72,6 @@ import {
 
 const encoder = new TextEncoder();
 
-/** A YAML file's bytes, as the repositories write one. */
 function yaml(value: unknown): Uint8Array {
   return encoder.encode(stringifyYaml(JSON.parse(JSON.stringify(value))));
 }
@@ -92,7 +80,6 @@ function base64(bytes: Uint8Array): string {
   return btoa(String.fromCharCode(...bytes));
 }
 
-/** Forwards one commit of `ops` onto `partition`'s head. */
 async function forward(
   server: Server,
   partition: PartitionKey,
@@ -113,7 +100,6 @@ async function forward(
   );
 }
 
-/** A put of `bytes` inline. */
 function put(intent: unknown, key: string, bytes: Uint8Array) {
   return { kind: "put", intent, key, inline: base64(bytes) };
 }
@@ -122,7 +108,6 @@ function behaviorPartition(name: string): PartitionKey {
   return partitionOf({ kind: "config", definitionKind: "model", name });
 }
 
-/** The forwarded edit of the server's `web` behavior to `definition`. */
 function webEdit(server: Server, definition: Definition) {
   return put(
     { kind: "definition.edit", definition: { kind: "model", name: "web" } },
@@ -131,7 +116,6 @@ function webEdit(server: Server, definition: Definition) {
   );
 }
 
-/** `web` as stored, with `change` applied to its data. */
 function editedWeb(
   server: Server,
   change: (data: Record<string, unknown>) => void,
@@ -142,7 +126,6 @@ function editedWeb(
   return Definition.fromData(data);
 }
 
-/** Sends `web`'s edit over the WebSocket handler; true when it is refused. */
 async function refusedOverWebSocket(
   server: Server,
   definition: Definition,
@@ -165,10 +148,6 @@ const writeModels = grant({
   resource: { kind: "model", pattern: "*" },
 });
 
-/**
- * The answer both paths give one edit, run against a fresh server each, so
- * one landing cannot change the other's.
- */
 async function parity(
   grants: Grant[],
   change: (server: Server) => Definition,
@@ -209,7 +188,6 @@ Deno.test({
       editedWeb(server, (data) => {
         data.tags = { env: "prod" };
       });
-    // Write implies tag; a deny on tag takes it away.
     const noTag = grant({
       effect: "deny",
       actions: ["tag"],
@@ -263,7 +241,6 @@ Deno.test({
     await withServer(
       member(),
       async (server) => {
-        // Another behavior's name, in web's file.
         const renamed = editedWeb(server, (data) => {
           data.name = "prod-db";
         });
@@ -272,7 +249,6 @@ Deno.test({
         ]);
         assertEquals(named.status, 403, JSON.stringify(named.json));
         assertEquals(named.json.reason, "content-refused");
-        // Another id: an edit never changes a definition's id.
         const reid = editedWeb(server, (data) => {
           data.id = crypto.randomUUID();
         });
@@ -281,7 +257,6 @@ Deno.test({
         ]);
         assertEquals(moved.status, 403, JSON.stringify(moved.json));
         assertEquals(moved.json.reason, "content-refused");
-        // The same file declaring its own identity lands.
         const kept = await forward(server, behaviorPartition("web"), [
           webEdit(server, editedWeb(server, () => {})),
         ]);
@@ -470,7 +445,6 @@ Deno.test({
         );
         assertEquals(answer.status, 403, JSON.stringify(fields));
         assertEquals(answer.json.reason, "content-refused");
-        // A refusal never echoes the caller's value.
         assert(!JSON.stringify(answer.json).includes("/etc/passwd"));
       };
       await refusedFor({
@@ -514,7 +488,6 @@ Deno.test({
           steps: [{ stepName: "gate", startedAt: started, ...step }],
         }],
       });
-    // Holding approve does not help: a decision is made by serve's handler.
     const runOnly = [
       grant({
         actions: ["read", "run", "approve"],
@@ -560,8 +533,8 @@ Deno.test({
   sanitizeOps: false,
   sanitizeResources: false,
   fn: async () => {
-    // Reads only its own behavior's data: a vault is read as data:<name>
-    // too, so a wider data grant would read the vault.
+    // reads only its own behavior's data: a vault is read as data:<name> too,
+    // so a wider data grant would read the vault
     const runner = [
       writeModels,
       grant({ actions: ["read"], resource: { kind: "data", pattern: "web" } }),
@@ -766,7 +739,6 @@ Deno.test({
                 triggeringPrincipal: undefined,
                 instanceId: undefined,
                 ownerBeforeResume: undefined,
-                // A record holds its log as the repository stores it.
                 logFile: run.logFile === undefined
                   ? undefined
                   : `.swamp/workflow-runs/${run.workflowId}/workflow-run-${run.id}.log`,
@@ -777,8 +749,6 @@ Deno.test({
               before: canonical(before),
               after: canonical(after)!,
             });
-            // The record the handler wrote holds a decision the one before
-            // does not: it is serve's own, and a forwarded copy is refused.
             const decides = after.jobs.some((job, j) =>
               job.steps.some((step, s) =>
                 step.approvalDecision !== undefined &&
@@ -790,7 +760,6 @@ Deno.test({
               assert(judged.refusal !== undefined, JSON.stringify(after));
               continue;
             }
-            // Nothing else a real run writes is refused.
             assertEquals(judged.refusal, undefined, JSON.stringify(after));
           }
         }
@@ -804,7 +773,6 @@ Deno.test({
   },
 });
 
-/** Saves `workflow` as serve does, in a unit of work. */
 async function saveWorkflow(server: Server, workflow: WorkflowEntity) {
   await runInRootUnitOfWork(
     server.ctx.repoContext,
@@ -817,7 +785,6 @@ function workflowPartition(name: string): PartitionKey {
   return partitionOf({ kind: "config", definitionKind: "workflow", name });
 }
 
-/** A workflow `name` whose one step runs `web`'s noop method. */
 function runsWeb(name: string, id?: string): WorkflowEntity {
   return WorkflowEntity.create({
     ...(id === undefined ? {} : { id }),
@@ -846,7 +813,6 @@ Deno.test({
       actions: ["read", "write", "run"],
       resource: { kind: "workflow", pattern: "*" },
     });
-    // Reads behaviors, but may not run `web`.
     const readsModels = grant({
       actions: ["read"],
       resource: { kind: "model", pattern: "*" },
@@ -861,7 +827,6 @@ Deno.test({
         await withServer(
           grants,
           async (server) => {
-            // A workflow with one gate; the edit adds a step running web.
             const stored = WorkflowEntity.create({
               name: "deploy",
               jobs: [
@@ -944,7 +909,6 @@ Deno.test({
       member(),
       async (server) => {
         const type = server.modelType.normalized;
-        // web exists; a second definition named web under a uuid key.
         const twin = Definition.create({
           name: "web",
           type,
@@ -1060,7 +1024,6 @@ Deno.test({
           ],
         );
         assertEquals(rename.status, 403, JSON.stringify(rename.json));
-        // Secrets an earlier vault named `kept` left behind.
         const leftovers = localEncryptionSecretsDirFor(
           server.ctx.repoDir,
           "kept",
@@ -1112,7 +1075,6 @@ Deno.test({
         const theirs = runsWeb("theirs");
         await saveWorkflow(server, mine);
         await saveWorkflow(server, theirs);
-        // Theirs, filed by its id, under my workflow's intent.
         const evaluated = await forward(server, workflowPartition("mine"), [
           put(
             {
@@ -1125,7 +1087,6 @@ Deno.test({
         ]);
         assertEquals(evaluated.status, 403, JSON.stringify(evaluated.json));
         assertEquals(evaluated.json.reason, "content-refused");
-        // A snapshot declaring another workflow than its run's.
         const runId = crypto.randomUUID();
         const snapshot = await forward(
           server,
@@ -1171,7 +1132,6 @@ Deno.test({
   sanitizeOps: false,
   sanitizeResources: false,
   fn: async () => {
-    // Runs web, but reads nothing: no partition vouches for its chunks.
     const runsOnly = grant({
       actions: ["run"],
       resource: { kind: "model", pattern: "*" },
@@ -1200,7 +1160,6 @@ Deno.test({
         () => !ledger.holds("user:caller", "_default", sha, Date.now()),
         "the upload's grace window to end",
       );
-      // The same request again, with its chunk named but its entry gone.
       const named = new Uint8Array(body);
       const retried = await post(url, "alice-token", named);
       assertEquals(retried.status, 200, JSON.stringify(retried.json));
@@ -1258,11 +1217,9 @@ Deno.test({
           key: RecordKey.create(key),
           inline: base64(yaml(edit.toData())),
         });
-        // The API catches the read model up before it checks content.
         await server.v3.readModel.catchUp(new AbortController().signal);
         assertEquals(await authority.check(checked, [checked]), undefined);
         assert(await authority.unchanged());
-        // Another edit lands in between.
         const moved = await forward(server, partition, [
           webEdit(
             server,
@@ -1287,8 +1244,8 @@ Deno.test({
   sanitizeOps: false,
   sanitizeResources: false,
   fn: async () => {
-    // The stored definition reads data the writer cannot; the edit copies
-    // that expression into a new argument.
+    // the stored definition reads data the writer cannot; the edit copies that
+    // expression into a new argument
     const reads = '${{ data.latest("vault-keeper", "token").attributes.v }}';
     const copy = (server: Server) =>
       editedWeb(server, (data) => {
@@ -1478,7 +1435,6 @@ Deno.test({
         );
         assertEquals(auto.status, 200, JSON.stringify(auto.json));
         await server.v3.readModel.catchUp(new AbortController().signal);
-        // Promoted: a named definition of the same id, type and name.
         const promoted = await forward(server, behaviorPartition("adhoc"), [
           put(
             {
@@ -1491,7 +1447,6 @@ Deno.test({
         ]);
         assertEquals(promoted.status, 200, JSON.stringify(promoted.json));
 
-        // Direct execution on web with changed globals saves a copy here.
         const copy = (change: (data: Record<string, unknown>) => void) => {
           const data = JSON.parse(JSON.stringify(server.model.toData()));
           data.type = type;
@@ -1541,7 +1496,6 @@ Deno.test({
   sanitizeOps: false,
   sanitizeResources: false,
   fn: async () => {
-    // Writes vaults but reads none of them, and reads only web's data.
     const runner = [
       writeModels,
       grant({ actions: ["read"], resource: { kind: "data", pattern: "web" } }),
@@ -1636,7 +1590,6 @@ Deno.test({
         }),
       );
       assertEquals(orphan.status, 403, JSON.stringify(orphan.json));
-      // An env read handed down from a parent is authored by the caller.
       const env = await forwardRun(
         server,
         runRecord(crypto.randomUUID(), {
@@ -1817,7 +1770,6 @@ Deno.test({
             steps: [{ stepName: "deploy", status }],
           }],
         });
-        // A first record may not claim the marker: serve records it.
         const claimed = await forwardRun(
           server,
           runRecord(runId, {
@@ -1826,7 +1778,6 @@ Deno.test({
           }),
         );
         assertEquals(claimed.status, 403, JSON.stringify(claimed.json));
-        // As serve's own write stores it, on any team node.
         const landed = await forwardRun(
           server,
           runRecord(runId, steps("running")),
@@ -1840,7 +1791,6 @@ Deno.test({
               yaml(runRecord(runId, fields)),
             ),
           ]);
-        // A member-driven run reports what it likes of its own steps.
         const reported = await update(steps("failed"));
         assertEquals(reported.status, 200, JSON.stringify(reported.json));
 

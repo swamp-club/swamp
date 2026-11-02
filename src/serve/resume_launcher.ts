@@ -17,13 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Launches a detached workflow resume that serve drives itself.
- *
- * Shared by the `workflow.resume` handler, which then streams the buffer to
- * its client, and by auto-resume on approval, which has no client at all.
- */
-
 import { isServeDrivenRun } from "../domain/datastore_v3/content_bindings.ts";
 import { mapWorkflowExecutionEvent } from "../libswamp/workflows/run.ts";
 import { createStepLockHook, createWorkflowRunDeps } from "./deps.ts";
@@ -101,89 +94,45 @@ import {
 const logger = getSwampLogger(["serve", "resume"]);
 const DEFAULT_BUFFER_CAPACITY = 10_000;
 
-/** Terminal code of a resume refused because another holder has the claim. */
 export const CONTINUATION_HELD_CODE = "continuation_held";
 
-/**
- * Terminal code of a continuation that lost: the run was no longer suspended
- * by the time the resume looked. Every other resume keeps
- * `workflow_resume_failed` for the same refusal.
- */
 export const RUN_NOT_SUSPENDED_CODE = "run_not_suspended";
 
-/**
- * Terminal code of a continuation refused because this instance's record of
- * the run is not the one the datastore holds.
- */
 export const RUN_RECORD_STALE_CODE = "run_record_stale";
 
 export interface DetachedResumeRequest {
-  /** Workflow id or name, resolved the same way as `workflow resume`. */
   workflowIdOrName: string;
   runId?: string;
-  /**
-   * Treat `workflowIdOrName` as a workflow id the caller already resolved
-   * and authorized, and look it up by id only.
-   */
   byId?: boolean;
-  /** With `byId`, the workflow name the caller authorized. */
   expectedName?: string;
-  /** Resume from a failed step instead of a decided approval gate. */
   from?: string;
-  /** The job of the `from` step, when its name is used in more than one job. */
   fromJob?: string;
   /**
-   * Accept only a suspended run. Auto-resume sets it so an approval can
-   * never start a retry of a failed run, even if the run fails between the
-   * approval and the launch.
+   * auto-resume sets it so an approval never starts a retry of a failed run,
+   * even if the run fails between the approval and the launch
    */
   suspendedOnly?: boolean;
   inputs?: Record<string, unknown>;
   traceparent?: string;
   tracestate?: string;
-  /** Principal charged against the registry's per-principal cap. */
   principalId: string | null;
-  /**
-   * Who asked for the resume. When the run is a nested workflow's run, its
-   * parent is auto-resumed for this subject once it ends, if the parent's
-   * policy and the subject's access allow (swamp-club#2736).
-   */
   subject?: DecisionSubject;
-  /**
-   * The grant `subject` must still hold on the parent workflow for that
-   * auto-resume: `approve` after an approval, the default, and `signal`
-   * after a signal (swamp-club#3108).
-   */
   parentGrant?: Action;
   /**
-   * Answer a run that is no longer suspended with
-   * {@link RUN_NOT_SUSPENDED_CODE}. Set by the continuation of a settled
-   * run, which may find a peer got there first; a resume that follows an
-   * approval keeps `workflow_resume_failed`.
+   * set by the continuation of a settled run, which may find a peer got there
+   * first; a resume after an approval keeps workflow_resume_failed for a run no
+   * longer suspended
    */
   lostRaceIsOrdinary?: boolean;
-  /**
-   * Who asks for the suspension's continuation claim. Unset for a resume a
-   * person asked for.
-   */
   continuation?: ContinuationMode;
-  /**
-   * Refuse a run whose record here differs from the datastore's, where that
-   * can be told. Set by the continuation of a settled run.
-   */
   requireCurrentRecord?: boolean;
   /**
-   * Whether the requester may read a workflow. A refusal naming nested runs
-   * names them only when every one is readable; otherwise it is generic.
-   * Without it, refusals are generic.
+   * a refusal naming nested runs names them only when every one is readable;
+   * without this, refusals are generic
    */
   canReadWorkflow?: (
     workflow: { workflowId: string; workflowName: string },
   ) => Promise<boolean>;
-  /**
-   * Called once the run ends, with the same terminal pushed to the buffer,
-   * after the run left the registry. Awaited.
-   */
   onTerminal?: (terminal: BufferTerminal) => void | Promise<void>;
 }
 
@@ -191,17 +140,11 @@ export type DetachedResumeResult =
   | { ok: true; runId: string; buffer: RunEventBuffer }
   | { ok: false; code: string; message: string };
 
-/** Whether `error` is a resume serve launched by itself losing a race. */
 function lostRace(request: DetachedResumeRequest, error: unknown): boolean {
   return request.lostRaceIsOrdinary === true &&
     error instanceof RunNotSuspendedError;
 }
 
-/**
- * Resolves the run, registers it in the active-run registry and starts the
- * resume in the background. Fails fast, without starting anything, when the
- * run is not resumable or the registry refuses it.
- */
 export async function startDetachedResume(
   ctx: ConnectionContext,
   registry: ActiveRunRegistry,
@@ -325,9 +268,9 @@ export async function startDetachedResume(
     let terminal: BufferTerminal = { kind: "done" };
     const runCheckpointer = new WorkflowRunCheckpointer(ctx.repoContext);
     try {
-      // The root covers the resume and its terminal frame; its flush is the
-      // post-resume push. The cleanup and the parent's auto-resume run after
-      // it ends, so that resume opens a root of its own (swamp-club#3035).
+      // the root covers the resume and its terminal frame; its flush is the
+      // post-resume push. The cleanup and the parent's auto-resume run after it
+      // ends, so that resume opens a root of its own
       await runInRootUnitOfWork(
         ctx.repoContext,
         {
@@ -373,8 +316,8 @@ export async function startDetachedResume(
               ephemeral.catalog,
             );
 
-            // Held to the principal that triggered the run, never the
-            // approver or resumer (swamp-club#2676).
+            // held to the principal that triggered the run, never the approver
+            // or resumer
             const vaultScope = resumeRunVaultScope(
               runVaultScopeContext(ctx),
               resolvedRun,
@@ -459,8 +402,6 @@ export async function startDetachedResume(
                 ),
               };
             } else if (error instanceof OrphanedNestedRunError) {
-              // A nested run nothing waits on any more: the resume cancelled
-              // it, or refused without a write (swamp-club#2867).
               terminal = {
                 kind: "error",
                 code: "workflow_resume_failed",
@@ -479,9 +420,8 @@ export async function startDetachedResume(
               };
             }
           } finally {
-            // On v3 a success waits for the root's commit (swamp-club#3759),
-            // and with replication on for its confirmation below
-            // (swamp-club#3489).
+            // on v3 a success waits for the root's commit, and with replication
+            // on for its confirmation below
             if (
               terminal.kind !== "done" ||
               (!ctx.confirmReplicated && ctx.holdRepliesUntilCommitted !== true)
@@ -495,7 +435,6 @@ export async function startDetachedResume(
           () => ctx.runTracker,
           error,
         );
-        // Names the steps a recovery must acknowledge (swamp-club#3882).
         throw withCommittedUnknownSteps(error, runCheckpointer);
       }).finally(() => runCheckpointer.close());
       if (!buffer.finished) {
@@ -592,7 +531,6 @@ export async function startDetachedResume(
   return { ok: true, runId, buffer };
 }
 
-/** The outcome of an approval, as reported by `workflowApprove`. */
 export interface ApprovalOutcome {
   workflowName: string;
   runId: string;
@@ -601,11 +539,9 @@ export interface ApprovalOutcome {
 }
 
 /**
- * Whether serve may act on a run's reported state without a caller asking it to
- * run it. A member-driven run's state is that member's report: resuming it here
- * would run later steps with someone else's authority on inputs they reported,
- * so its owner resumes it (swamp-club#4245). A run is the member's only where
- * members can forward one; elsewhere every record is this host's own.
+ * a member-driven run's state is that member's report: resuming it here would
+ * run later steps with someone else's authority, so its owner resumes it.
+ * Elsewhere every record is this host's own
  */
 export function serveMayActOnRun(
   ctx: ConnectionContext,
@@ -615,7 +551,6 @@ export function serveMayActOnRun(
     isServeDrivenRun(run);
 }
 
-/** Whether an approved run is left for its owner to resume. */
 export async function ownerResumesRun(
   ctx: ConnectionContext,
   outcome: ApprovalOutcome,
@@ -635,18 +570,6 @@ export async function ownerResumesRun(
   return run !== null && !serveMayActOnRun(ctx, run);
 }
 
-/**
- * Resumes a run in the background once an approval has decided its last
- * gate, when the workflow's auto-resume policy allows it. Returns whether a
- * resume was launched.
- *
- * The run is addressed by the workflow name and run id that the approval
- * resolved, never by the caller's request fields. It is charged to the
- * approver's principal. A refused launch or a failed resume is logged and
- * audited, since no client is listening to this run. A refused launch leaves
- * the run as it was; the logged message says what to do next, such as the
- * cancel command when the workflow changed shape since the run.
- */
 export async function autoResumeAfterApproval(
   ctx: ConnectionContext,
   outcome: ApprovalOutcome,
@@ -714,23 +637,6 @@ export async function autoResumeAfterApproval(
   return true;
 }
 
-/**
- * Resumes the parent of a nested workflow's run that has finished, when the
- * parent still waits on it and nothing else (swamp-club#2736). Returns
- * whether a resume was launched.
- *
- * A parent this instance still drives (draining its other steps, or just
- * suspended again by a resume) is awaited first, so the wakeup is not lost.
- * The parent is then read again and resumed only when it is suspended, has
- * no step still running, no gate of its own waiting and every nested run it
- * waits on finished, its workflow's auto-resume policy is on, and the
- * subject still holds `grant` on the parent workflow, decided against its
- * current token record: `approve` after an approval, `signal` after a
- * signal. That is the grant the child's own continuation relied on: the
- * resume follows a decision rather than being a new run. A parent that
- * waits for a signal of its own continues only once every such wait has an
- * outcome. A skip is audited; nothing is written.
- */
 export async function autoResumeParentAfterChild(
   ctx: ConnectionContext,
   child: { workflowId: string; runId: string },
@@ -854,7 +760,6 @@ export async function autoResumeParentAfterChild(
   return true;
 }
 
-/** The wait outcomes of this server's datastore; none where it holds no waits. */
 function outcomesOf(
   ctx: ConnectionContext,
 ): Pick<SignalWaitStore, "findOutcome"> {
@@ -864,29 +769,16 @@ function outcomesOf(
     : { findOutcome: () => Promise.resolve({ kind: "absent" }) };
 }
 
-/** What made serve try to continue a run by itself. */
 export interface ContinuationCause {
-  /** A signal this instance just accepted, or a pass of the sweep. */
   readonly kind: "signal" | "sweep";
-  /** Principal charged against the registry's per-principal cap. */
   readonly principalId: string | null;
-  /**
-   * The signaller. When the run is a nested workflow's run, its parent is
-   * continued for this subject once the run ends, if it still holds `signal`
-   * on the parent workflow.
-   */
   readonly subject?: DecisionSubject;
-  /**
-   * Replace the claim of a holder known to be dead. Set only where this
-   * instance's copy of the run is known to be current.
-   */
   readonly takeover: boolean;
 }
 
 /**
- * The last skip audited for each run, per serve process: a run the sweep
- * cannot launch is tried on every pass, and is audited once per suspension
- * and reason.
+ * a run the sweep cannot launch is tried on every pass, so its skip is audited
+ * once per suspension and reason
  */
 const auditedSkips = new WeakMap<object, Map<string, string>>();
 const AUDITED_SKIPS_MAX = 10_000;
@@ -901,9 +793,8 @@ function skipMemo(key: object): Map<string, string> {
 }
 
 /**
- * The resumes of one suspension that failed and left the run suspended, per
- * serve process. Such a run is still settled, so every pass would launch it
- * again; each failure doubles the wait before the next attempt instead.
+ * such a run is still settled, so every pass would launch it again; each
+ * failure doubles the wait before the next attempt instead
  */
 interface FailedContinuation {
   readonly suspensionKey: string;
@@ -915,9 +806,7 @@ const failedContinuations = new WeakMap<
   Map<string, FailedContinuation>
 >();
 
-/** The wait after the first failed resume of a suspension; doubled each time. */
 export const CONTINUATION_BACKOFF_BASE_MS = 30_000;
-/** The longest wait between two resumes of one suspension. */
 export const CONTINUATION_BACKOFF_MAX_MS = 900_000;
 
 function failedContinuationsOf(key: object): Map<string, FailedContinuation> {
@@ -929,10 +818,6 @@ function failedContinuationsOf(key: object): Map<string, FailedContinuation> {
   return failed;
 }
 
-/**
- * When the next resume of `runId` may be launched by `registry`'s instance,
- * in epoch milliseconds, or undefined for a run not held back.
- */
 export function continuationRetryAt(
   registry: ActiveRunRegistry,
   runId: string,
@@ -941,43 +826,31 @@ export function continuationRetryAt(
 }
 
 /**
- * Suspensions this instance found claimed by another holder while it could
- * not take a claim over, per serve process. On a synced datastore that is
- * the lasting state of every copy of a run a peer resumed, and the set of
- * them only grows until a restart, so each is looked at again only after
- * {@link HELD_ELSEWHERE_RECHECK_MS}, not on every pass: looking costs a read
- * of the datastore per wait and per claim.
+ * on a synced datastore this is the lasting state of every copy of a run a peer
+ * resumed, so each is rechecked only after the interval, not every pass:
+ * looking costs a datastore read per wait and per claim
  */
 const heldElsewhere = new WeakMap<
   object,
   Map<string, { suspensionKey: string; recheckAt: number }>
 >();
 
-/** How long a suspension found held by another is left unread. */
 export const HELD_ELSEWHERE_RECHECK_MS = 600_000;
 
-/** How old a local command's claim is before serve reports it as left behind. */
 const LOCAL_CLAIM_GRACE_MS = 60_000;
 
-/**
- * Refusals that mean the run is already being resumed, by another holder or
- * by this instance: nothing to report.
- */
 const BENIGN_REFUSALS: ReadonlySet<string> = new Set([
   CONTINUATION_HELD_CODE,
   RUN_NOT_SUSPENDED_CODE,
   RUN_RECORD_STALE_CODE,
   "already_registered",
   "reserved",
-  // A pass in flight when shutdown began.
   "draining",
 ]);
 
 /**
- * Says so when a run the sweep continued has ended and its parent still
- * waits on it. The sweep has no signaller to authorize the parent's resume
- * with, so the parent stays suspended until someone resumes it. Returns
- * whether there was such a parent to name.
+ * the sweep has no signaller to authorize the parent's resume, so the parent
+ * stays suspended until someone resumes it
  */
 export async function noteParkedParent(
   ctx: ConnectionContext,
@@ -1005,28 +878,6 @@ export async function noteParkedParent(
   return true;
 }
 
-/**
- * Continues a suspended run that needs no further decision, when its
- * workflow's auto-resume policy allows (swamp-club#3108): every gate is
- * decided, no step waits on a nested run, and every wait for a signal has an
- * outcome. A wait past its deadline with no outcome is given one first,
- * `timed_out` (swamp-club#3109). Returns whether a resume was launched.
- *
- * Nothing is authorized here. The stored outcome is the authorization, as an
- * approval is for its own auto-resume: whoever settled the run's last wait
- * was allowed to, and a deadline needs nobody's leave. A run another holder
- * has claimed or resumed is left alone without a word, since that is the
- * ordinary state of a copy of the run that is behind, as is a run whose
- * record here differs from the one the datastore holds; the one exception is
- * a claim a local command left on a run this instance knows is still
- * suspended, which only a manual resume clears. Any other skip or refusal
- * leaves the run suspended and is logged and audited once per suspension and
- * reason; the next pass of the sweep tries again. A resume that was launched
- * and failed, leaving the run suspended, is tried again only after a backoff
- * that doubles with each failure of that suspension, from
- * {@link CONTINUATION_BACKOFF_BASE_MS} up to
- * {@link CONTINUATION_BACKOFF_MAX_MS}.
- */
 export async function continueSettledRun(
   ctx: ConnectionContext,
   target: { workflowId: string; runId: string },
@@ -1035,7 +886,6 @@ export async function continueSettledRun(
 ): Promise<boolean> {
   const registry = ctx.activeRunRegistry;
   if (!registry || registry.draining) return false;
-  // Already driven by this instance.
   if (registry.get(target.runId)) return false;
 
   const workflowRepo = ctx.repoContext.workflowRepo;
@@ -1095,18 +945,18 @@ export async function continueSettledRun(
   // signal or approval released the steps it reset.
   if (run.awaitsResumeAfterRecovery) return false;
   let verdict = await decideContinuation(run, outcomesOf(ctx));
-  // Nothing else looks at a deadline under serve (swamp-club#3109): a run
-  // held back only by its waits has the overdue ones settled as timed out
-  // here, and the resume fails their steps as a manual one would.
+  // nothing else looks at a deadline under serve: a run held back only by its
+  // waits has the overdue ones settled as timed out here, and the resume fails
+  // their steps as a manual one would
   let waitsTimedOut = 0;
   const waits = ctx.repoContext.signalWaits;
   if (
     verdict.kind === "blocked" && verdict.reason === "wait_unsettled" &&
     waits?.supported
   ) {
-    // A wait can be open over a pending signal that applies to it, left by
-    // a signaller that stopped before it read the key again
-    // (swamp-club#3212). It is taken here, before any wait is timed out.
+    // a wait can be open over a pending signal that applies to it, left by a
+    // signaller that stopped before it read the key again; it is taken here,
+    // before any wait is timed out
     const signalsTaken = await takePendingSignalsOfRun(waits.store, run);
     waitsTimedOut = await settleExpiredWaits(
       waits.store,
@@ -1150,7 +1000,6 @@ export async function continueSettledRun(
     return skip("skipped", "workflow_not_found");
   }
 
-  // A resume of this suspension failed here before: wait out its backoff.
   const failed = failedContinuationsOf(registry);
   const earlier = failed.get(run.id);
   if (earlier && earlier.suspensionKey !== suspensionKey) failed.delete(run.id);
@@ -1259,9 +1108,9 @@ export async function continueSettledRun(
       : skip("failed", launched.code);
   }
 
-  // The memo is kept until the resume ends well: one that fails and leaves
-  // the run suspended is launched again after its backoff, and the launch
-  // and its failure are each reported once.
+  // the memo is kept until the resume ends well: one that fails and leaves the
+  // run suspended is launched again after its backoff, and the launch and its
+  // failure are each reported once
   if (failures === 0) emitSystemAuditEvent(ctx, "workflow.auto_resume", detail);
   return true;
 }

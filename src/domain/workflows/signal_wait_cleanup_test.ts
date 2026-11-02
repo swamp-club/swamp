@@ -537,7 +537,6 @@ Deno.test("findRegistrationOfStep: finds the wait a step of a run registered, an
     }),
     undefined,
   );
-  // The same run id under another workflow is not this wait (swamp-club#4245).
   assertEquals(
     await findRegistrationOfStep(store, {
       workflowId: crypto.randomUUID(),

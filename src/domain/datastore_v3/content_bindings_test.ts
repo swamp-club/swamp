@@ -117,7 +117,6 @@ Deno.test("identityRefusal: each declared field that differs from its intent, ke
   ];
   for (const [field, refusal] of cases) {
     assert(refusal !== undefined, `${field} should refuse`);
-    // A refusal names the field, never the caller's value.
     assert(!refusal.includes("prod") && !refusal.includes(OTHER), field);
   }
 });
@@ -293,7 +292,6 @@ Deno.test("judgeRunRecord: a run serve drives takes no forwarded record, whichev
   } as WorkflowRunData["triggeringPrincipal"];
   const steps = [step("deploy", { status: "running" })];
   const forged = [step("deploy", { status: "succeeded" })];
-  // By its principal, and by an instance no node here need know of.
   assert(
     judge(
       run(steps, { triggeringPrincipal: principal }),
@@ -306,7 +304,6 @@ Deno.test("judgeRunRecord: a run serve drives takes no forwarded record, whichev
       run(forged, { instanceId: "old-leader" }),
     ).refusal !== undefined,
   );
-  // Nor can a record take a run over, or a member-driven one be refused.
   assert(
     judge(run(steps), run(forged, { instanceId: "old-leader" })).refusal !==
       undefined,
@@ -374,7 +371,6 @@ Deno.test("judgeRunRecord: what the record adds for serve to authorise is return
   assert(judged.inputsChanged);
   assertEquals(judged.addedReferences, [ref]);
   assertEquals(judged.addedOutputs.map((o) => o.stepName), ["deploy"]);
-  // An unchanged record adds nothing.
   const same = judge(before, before);
   assert(!same.inputsChanged);
   assertEquals(same.addedOutputs, []);
@@ -403,7 +399,6 @@ Deno.test("judgeRunRecord: a record never creates or changes a decision, whateve
       gate({ status: "failed", approvalDecision: DECIDED }),
     ).refusal !== undefined,
   );
-  // One serve holds may stay on the record as it runs on.
   assertEquals(
     judge(
       gate({ status: "waiting_approval", approvalDecision: DECIDED }),
@@ -440,7 +435,6 @@ Deno.test("judgeRunRecord: only a retry clears a decision, and a decided step st
       run([step("renamed", { status: "failed", approvalDecision: DENIED })]),
     ).refusal !== undefined,
   );
-  // An undecided step may leave the record.
   assertEquals(
     judge(
       run([step("gate", { status: "failed", startedAt: STARTED })]),
@@ -481,7 +475,6 @@ Deno.test("judgeRunRecord: a duplicate step key is refused, so a record has one 
       run([decided, step("gate", { status: "succeeded" })]),
     ).refusal !== undefined,
   );
-  // The same step name in another job is another step.
   assertEquals(
     judge(undefined, {
       ...run([]),
@@ -526,7 +519,6 @@ const OPEN_WAIT = {
 
 Deno.test("judgeRunRecord: a run a member drives names no signal wait and carries no signal's outcome (swamp-club#4245)", () => {
   const running = run([step("wait", { status: "running" })]);
-  // Opening one, on a first record or later, or swapping one held.
   assert(
     judge(
       running,
@@ -553,7 +545,6 @@ Deno.test("judgeRunRecord: a run a member drives names no signal wait and carrie
       ]),
     ).refusal !== undefined,
   );
-  // A signal's outcome, with or without a wait to go with it.
   assert(
     judge(
       running,
@@ -565,7 +556,6 @@ Deno.test("judgeRunRecord: a run a member drives names no signal wait and carrie
       ]),
     ).refusal !== undefined,
   );
-  // One a record already held stays, and a retry may clear it.
   assertEquals(judge(held, held).refusal, undefined);
   assertEquals(
     judge(held, run([step("wait", { status: "pending" })])).refusal,

@@ -17,16 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Whether `--last-evaluated` stands in a serve-mode checkout (swamp-club#4245).
- *
- * Running an evaluation skips evaluating, and its checks. A checkout reads
- * evaluations other members forwarded, so it runs only one serve or its own
- * member wrote; any other is set aside and the run evaluates again.
- *
- * @module
- */
-
 import { findDefinitionByIdOrName } from "../domain/models/model_lookup.ts";
 import { ModelType } from "../domain/models/model_type.ts";
 import type { ServerCredentialRepository } from "../domain/auth/server_credential.ts";
@@ -105,10 +95,8 @@ function adviceFor(error: UserError, knowsMember: boolean): string {
 const EVALUATION_NOT_CHECKED = "evaluation_not_checked";
 
 /**
- * What a run may do with its last evaluation. `vetted` holds what the check read:
- * the run replays those bytes, never a later read of the repository, so what it
- * runs is what was checked (swamp-club#4245). A null `cache` means there is none,
- * which the run reports as it reports any missing evaluation.
+ * vetted holds what the check read: the run replays those bytes, never a later
+ * read, so what it runs is what was checked. A null cache means there is none
  */
 export type LastEvaluationCheck<T> =
   | { readonly stands: true; readonly vetted: false }

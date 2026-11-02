@@ -18,23 +18,9 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * What a forwarded put's content may declare and change, judged without
- * policy (swamp-club#3922).
- *
- * Serve finds aggregates by what their content declares: a definition by
- * its id or name, a vault by its name, a run by the ids it holds. A put is
- * authorised on its intent, so its content must declare the identity its
- * intent and key name, or a caller allowed to write one aggregate could
- * install content another is found by. A run record also carries what
- * serve acts on when it resumes or settles the run: who triggered it, where
- * it logs, which gates were decided. These rules say which of those fields
- * a forwarded record may set. A record reports what a run did: it may apply
- * a decision serve holds, and never makes one (swamp-club#4245).
- *
- * Every function is pure. Refusals name the field, never its value: the
- * value is the caller's, and may be a host path.
- *
- * @module
+ * a put must declare the identity its intent and key name, or a caller allowed
+ * to write one aggregate could install content another is found by. Refusals
+ * name the field, never its value, which may be a host path
  */
 
 import { canonicalJson } from "../expressions/expression_references.ts";
@@ -44,29 +30,21 @@ import type {
 } from "../workflows/workflow_run.ts";
 import type { Intent } from "./intent.ts";
 
-/** The identity a definition-like file's content declares. */
 export interface DeclaredIdentity {
   readonly id: string;
   readonly name: string;
-  /** The behavior or vault type it declares, as normalised; none for a workflow. */
   readonly type?: string;
 }
 
-/** What a key's layout says about the file it names. */
 export interface KeyFacts {
-  /** The id a uuid-named file is named by. */
   readonly fileId?: string;
-  /** The name a file whose intent carries only an id is named by. */
   readonly fileName?: string;
-  /** The type the key's directory names, as normalised. */
   readonly type?: string;
 }
 
 /**
- * Why a definition, vault, auto-definition or evaluated file's declared
- * identity is not the one its intent and key name, or undefined when it is.
- * `stored` is the identity of the record the put replaces (for a move or a
- * rename, the record it moves): an edit never changes a definition's id.
+ * stored is the record the put replaces (for a move or rename, the record it
+ * moves): an edit never changes a definition's id
  */
 export function identityRefusal(
   intent: Intent,
@@ -110,16 +88,11 @@ export function identityRefusal(
   return "it is not a definition";
 }
 
-/** The ids a run record or run snapshot declares. */
 export interface DeclaredRun {
   readonly workflowId: string;
   readonly runId?: string;
 }
 
-/**
- * Why a run record's or run snapshot's declared run is not the one its
- * intent names, or undefined when it is.
- */
 export function runIdentityRefusal(
   intent: Intent,
   declared: DeclaredRun,
@@ -137,17 +110,13 @@ export function runIdentityRefusal(
   return undefined;
 }
 
-/**
- * The run log path a run record may hold: the one the run repository
- * stores, relative to the repository, with forward slashes.
- */
 export function canonicalRunLogFile(workflowId: string, runId: string): string {
   return `.swamp/workflow-runs/${workflowId}/workflow-run-${runId}.log`;
 }
 
 /**
- * Whether `logFile` names the run's own log, as a record written on any
- * platform spells it: serve reads and appends to the path a record holds.
+ * serve reads and appends to the path a record holds, so it must be the run's
+ * own log, spelled as a record written on any platform spells it
  */
 export function isCanonicalRunLogFile(
   logFile: string,
@@ -158,7 +127,6 @@ export function isCanonicalRunLogFile(
     canonicalRunLogFile(workflowId, runId);
 }
 
-/** A step output reference a run record adds, for serve to authorise. */
 export interface AddedStepOutput {
   readonly jobName: string;
   readonly stepName: string;
@@ -166,15 +134,14 @@ export interface AddedStepOutput {
   readonly dataArtifacts: readonly unknown[];
 }
 
-/** The approval decisions a stored child run, linking back, holds. */
 export interface HeldChildRun {
   readonly decisions: readonly unknown[];
 }
 
 /**
- * Whether serve drives a run: only serve records a triggering principal or
- * names an instance as a run's owner, so either marks the run whichever team
- * node holds it. Gates bind on such a run, and no member writes its record.
+ * only serve records a triggering principal or names an instance as a run's
+ * owner, so either marks the run whichever team node holds it; gates bind on
+ * such a run and no member writes its record
  */
 export function isServeDrivenRun(
   run: { readonly triggeringPrincipal?: unknown; readonly instanceId?: string },
@@ -182,40 +149,25 @@ export function isServeDrivenRun(
   return run.triggeringPrincipal !== undefined || run.instanceId !== undefined;
 }
 
-/** What a forwarded run record needs serve to authorise beyond `run`. */
 export interface RunRecordJudgement {
-  /** Set when the record may not land whatever the caller holds. */
   readonly refusal?: string;
-  /** Whether the record's inputs changed (or were set, on a create). */
   readonly inputsChanged: boolean;
-  /** Deferred expressions the record adds, as stored. */
   readonly addedDeferred: readonly unknown[];
-  /** Inherited expressions the record adds. */
   readonly addedInherited: readonly string[];
-  /** Vault references the record adds, as stored. */
   readonly addedReferences: readonly unknown[];
-  /** Completed steps whose output or data artifacts the record sets. */
   readonly addedOutputs: readonly AddedStepOutput[];
 }
 
-/** The inputs to {@link judgeRunRecord}. */
 export interface RunRecordContext {
   readonly workflowId: string;
   readonly runId: string;
-  /** The stored record the put replaces, absent for a run's first record. */
   readonly before?: WorkflowRunData;
   readonly after: WorkflowRunData;
-  /** The workflow's `vaults:` list, undefined when it has none. */
   readonly workflowVaults?: readonly string[];
-  /**
-   * The stored record of the child a step links to, when that child links
-   * back to this step; a link either record holds alone proves nothing.
-   */
   readonly heldChild?: (
     jobName: string,
     step: StepRunData,
   ) => HeldChildRun | undefined;
-  /** Whether the stored workflow's step of this name calls a child workflow. */
   readonly storedStepIsNested?: (
     jobName: string,
     step: StepRunData,
@@ -223,19 +175,9 @@ export interface RunRecordContext {
 }
 
 /**
- * Judges a forwarded run record against the record it replaces and what serve
- * holds (swamp-club#3922, swamp-club#4245). Serve does not try to stop a member
- * forging the record of a run they drive; it stops that forgery reaching
- * anything outside their own run. The statuses, outputs and timings they report
- * are out of scope ("Run records: the threat model" in
- * `design/enablers/access-control.md`). So:
- * - a run serve drives takes no forwarded record at all;
- * - a decision equals one serve holds, and a step holding one stays;
- * - who triggered the run, its parent, vaults, initiator, plan, log and a serve
- *   owner, and what a waiting gate shows its approver, are frozen;
- * - step keys are unique, so a record has one reading;
- * - what it adds that serve acts on is returned for serve to authorise against
- *   the caller, under the lock.
+ * serve does not stop a member forging the record of a run they drive, only
+ * that forgery reaching anything outside their run; statuses, outputs and
+ * timings they report are out of scope
  */
 export function judgeRunRecord(context: RunRecordContext): RunRecordJudgement {
   const { before, after } = context;
@@ -327,8 +269,8 @@ export function judgeRunRecord(context: RunRecordContext): RunRecordJudgement {
       beforeSteps.set(stepKey(job.jobName, step.stepName), step);
     }
   }
-  // A decided step stays: re-added in a later record, it would read as never
-  // decided.
+  // a decided step stays: re-added in a later record, it would read as never
+  // decided
   const afterSteps = new Set(
     after.jobs.flatMap((job) =>
       job.steps.map((step) => stepKey(job.jobName, step.stepName))
@@ -387,7 +329,6 @@ export function judgeRunRecord(context: RunRecordContext): RunRecordJudgement {
   };
 }
 
-/** The refusal for one step's change, or undefined. */
 function judgeStep(
   context: RunRecordContext,
   jobName: string,
@@ -420,10 +361,6 @@ function judgeStep(
     signalRefusal(prior, step);
 }
 
-/**
- * A decision is one serve holds. A record may carry the step's own, or on a
- * nested step one its linked child holds; only a retry clears one.
- */
 function decisionRefusal(
   context: RunRecordContext,
   jobName: string,
@@ -439,8 +376,8 @@ function decisionRefusal(
   if (prior?.approvalDecision !== undefined) {
     return "it changes an approval decision";
   }
-  // A child's decision belongs on the step that calls the child: on a gate it
-  // would read as an approval of something its approver never saw.
+  // a child's decision belongs on the step that calls the child: on a gate it
+  // would read as an approval of something its approver never saw
   const held = context.storedStepIsNested?.(jobName, step) === true
     ? context.heldChild?.(jobName, step)?.decisions ?? []
     : [];
@@ -450,11 +387,9 @@ function decisionRefusal(
 }
 
 /**
- * A run a member drives cannot wait for a signal: serve can deliver one only to a
- * wait it registered itself. So a forwarded record names no new wait and carries
- * no signal's outcome. A wait id on a record would otherwise reach serve's wait
- * records, which cancel and delete by id, from a member's say-so. A step's status
- * is the run's to report; nothing here asks how it got there.
+ * a run a member drives cannot wait for a signal: serve delivers one only to a
+ * wait it registered, and a wait id on a record would reach serve's wait
+ * records, which cancel and delete by id
  */
 function signalRefusal(
   prior: StepRunData | undefined,
@@ -474,7 +409,6 @@ function stepKey(jobName: string, stepName: string): string {
   return JSON.stringify([jobName, stepName]);
 }
 
-/** The entries of `after` that `before` does not hold, compared as JSON. */
 function added<T>(
   before: readonly T[] | undefined,
   after: readonly T[] | undefined,

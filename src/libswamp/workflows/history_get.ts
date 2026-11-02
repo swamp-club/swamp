@@ -200,11 +200,7 @@ export function createWorkflowHistoryGetDeps(
    * model could not materialise fails loudly
    */
   unreadableContent?: UnreadableContentLookup,
-  /**
-   * The repository context's flag: this builds its own run repository, and a
-   * forwarded record's link is shown only if its child links back
-   * (swamp-club#4245).
-   */
+  /** a forwarded record's link is shown only if its child links back */
   recordsAreForwarded?: boolean,
 ): WorkflowHistoryGetDeps {
   const dsPath = (subdir: string): string | undefined =>

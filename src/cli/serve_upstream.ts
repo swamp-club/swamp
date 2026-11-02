@@ -104,8 +104,8 @@ export function serveUpstreamRunsLocally(
 }
 
 /**
- * A forwarded run record applies a decision and never makes one
- * (swamp-club#4245), so these reach serve's handlers, as `--server` does.
+ * a forwarded run record applies a decision and never makes one, so these reach
+ * serve's handlers, as --server does
  */
 const DECIDED_ON_SERVE =
   "a decision on a run is serve's to make; the command goes to serve's handler";

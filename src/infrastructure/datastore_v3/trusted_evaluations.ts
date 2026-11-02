@@ -18,23 +18,9 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * The evaluated definitions and workflows serve may run with
- * `--last-evaluated` on a v3 datastore (swamp-club#3922).
- *
- * An evaluation holds resolved values and the expressions its source
- * authored: running one skips evaluation and its checks. Serve saves an
- * evaluation only for a caller who may run what it evaluates, but a team
- * member's client forwards the evaluations its own runs write, which serve
- * cannot re-derive. So serve runs only evaluations it wrote itself: the
- * read model records who wrote each record, and an evaluation a forwarded
- * commit wrote, or one whose writer is unknown (from before the read model
- * recorded writers, or loaded from a compacted base), is refused with a
- * request to evaluate on serve.
- *
- * The bytes parsed are the ones the writer check vouched for: the record is
- * read with its digest, never re-read from the file after the check.
- *
- * @module
+ * serve runs only evaluations it wrote itself; one a forwarded commit wrote, or
+ * whose writer is unknown, is refused with a request to evaluate on serve. The
+ * bytes parsed are the ones vouched for
  */
 
 import { isFilenameSafeDefinitionName } from "../../domain/definitions/definition.ts";
@@ -55,34 +41,18 @@ import {
 } from "../persistence/yaml_evaluated_workflow_repository.ts";
 import type { V3Datastore } from "./v3_datastore.ts";
 
-/** The code of a checkout's refusal of an evaluation another member wrote. */
 export const EVALUATION_OTHER_WRITER = "evaluation_other_writer";
 
-/** The largest evaluation serve reads to run. */
 const MAX_EVALUATION_BYTES = 16 * 1024 * 1024;
 
-/** Loads the evaluations serve may run. */
 export interface EvaluationTrust {
-  /**
-   * The evaluated definition of a behavior, when serve wrote it; null when
-   * there is none.
-   *
-   * @throws UserError when the stored evaluation was not serve's own
-   */
   definition(
     type: ModelType,
     name: string,
   ): Promise<EvaluatedDefinitionCache | null>;
-  /**
-   * The evaluated workflow of a workflow, when serve wrote it; null when
-   * there is none.
-   *
-   * @throws UserError when the stored evaluation was not serve's own
-   */
   workflow(name: string): Promise<EvaluatedWorkflowCache | null>;
 }
 
-/** The {@link EvaluationTrust} of a v3 datastore's read model. */
 export function v3EvaluationTrust(
   v3: Pick<V3Datastore, "namespace" | "readModel">,
   repos: {
@@ -90,19 +60,16 @@ export function v3EvaluationTrust(
     readonly workflowRepo: Pick<WorkflowRepository, "findByName">;
   },
   /**
-   * Set by a serve-mode checkout, and to "" when its member is unknown: it
+   * set by a serve-mode checkout, and to empty when its member is unknown: it
    * trusts serve's evaluations and this principal's, never another member's,
-   * and any other writer's record refuses instead of being passed over
-   * (swamp-club#4245). Serve passes none.
+   * and any other writer's record refuses. Serve passes none
    */
   ownPrincipal?: string,
 ): EvaluationTrust {
   /**
-   * The trusted bytes at the first key holding serve's own record, or null
-   * when no key holds a record. On serve a key holding another writer's record
-   * is passed over, so a forwarded evaluation cannot hide serve's own; when
-   * only such records exist the evaluation is refused. A checkout stops at
-   * such a key and sets the replay aside.
+   * on serve a key holding another writer's record is passed over, so a
+   * forwarded evaluation cannot hide serve's own; a checkout stops at such a
+   * key and sets the replay aside
    */
   const trusted = async (
     partition: PartitionKey,

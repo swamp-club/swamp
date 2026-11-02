@@ -220,7 +220,6 @@ function workflowOfRunsDir(runsDir: string): Record<string, string> {
 export class YamlWorkflowRunRepository implements WorkflowRunRepository {
   private readonly baseDir: string;
 
-  /** Whether a member can forward these records (swamp-club#4245). */
   recordsAreForwarded?: boolean;
 
   /**

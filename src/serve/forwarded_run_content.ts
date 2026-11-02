@@ -17,20 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Content checks for a forwarded run record and run snapshot
- * (swamp-club#3922, swamp-club#4245). {@link judgeRunRecord} decides what a
- * record may set; this module supplies it with the stored workflow and what
- * serve holds (child runs' decisions), and authorises,
- * against the caller and again under the forwarded lock, what the record adds
- * that serve acts on when it resumes the run: inputs and expressions it
- * evaluates, vault references it rehydrates, and step outputs it reads data
- * through. A record applies decisions and never makes them, so `approve` and
- * `signal` are not asked here: serve's handlers ask them when they decide.
- *
- * @module
- */
-
 import type { AccessResource } from "../domain/access/access_decision_service.ts";
 import type { ContentRefusal } from "../domain/datastore_v3/commit_authorization.ts";
 import {
@@ -82,12 +68,9 @@ import {
 } from "./forwarded_content_authorization.ts";
 
 /**
- * A run snapshot: the evaluated workflow a run settles against, bound to
- * the run its intent names, and frozen once written: a cancel settles a
- * nested run against it, so a later put must hold the same bytes, which a
- * retried or replayed commit does. Nothing in it runs (resume re-evaluates
- * from the stored workflow), so the binding and run on the workflow are all
- * else it needs.
+ * frozen once written: a cancel settles a nested run against it, so a later put
+ * must hold the same bytes, which a retried or replayed commit does. Nothing in
+ * it runs
  */
 export async function checkRunSnapshot(
   context: ContentCheckContext,
@@ -119,7 +102,6 @@ function sameBytes(a: Uint8Array, b: Uint8Array): boolean {
   return a.length === b.length && a.every((byte, i) => byte === b[i]);
 }
 
-/** A run record: what {@link judgeRunRecord} returns, authorised. */
 export async function checkRunRecord(
   context: ContentCheckContext,
   op: PutOp,
@@ -204,10 +186,6 @@ function heldKey(jobName: string, stepName: string): string {
   return JSON.stringify([jobName, stepName]);
 }
 
-/**
- * The stored child of each step that links one and changes status, when it links
- * back. Bounded by the record's own step count.
- */
 async function heldChildren(
   context: ContentCheckContext,
   run: { readonly workflowId: string; readonly runId: string },
@@ -232,9 +210,8 @@ async function heldChildren(
 }
 
 /**
- * The stored record of the child `step` links to, when that child's parent
- * link names this run, job and step. Read through `context.prior`, so a child
- * that moves before the commit lands sends the commit back to be judged again.
+ * read through context.prior, so a child that moves before the commit lands
+ * sends the commit back to be judged again
  */
 async function heldChildOf(
   context: ContentCheckContext,
@@ -286,10 +263,6 @@ async function heldChildOf(
   };
 }
 
-/**
- * Why what a record adds may not stand, or undefined: decided against the
- * caller, before the lock and again under it.
- */
 async function additionsRefusal(
   context: ContentCheckContext,
   op: PutOp,
@@ -372,11 +345,9 @@ async function additionsRefusal(
 }
 
 /**
- * Why a run's first record may not name `raw` as its parent, or undefined:
- * the parent must be a run that exists and has not finished, of a
- * workflow the caller may run. A parent records its wait on the child only
- * once the child suspends, so no link back is required here; the cascade
- * checks both directions before it acts on a parent.
+ * a parent records its wait on the child only once the child suspends, so no
+ * link back is required here; the cascade checks both directions before it acts
+ * on a parent
  */
 async function parentRefusal(
   context: ContentCheckContext,
@@ -417,7 +388,6 @@ function isReference(
     typeof (entry as { key?: unknown }).key === "string";
 }
 
-/** Every stored vault reference a value holds, at any depth. */
 function storedReferences(
   value: unknown,
 ): { vaultName: string; key: string }[] {
@@ -437,12 +407,9 @@ function storedReferences(
 }
 
 /**
- * Why a step output a record adds may not stand, or undefined. Serve reads
- * the data a model_method output names when it resumes the run, so each
- * reference must name what the stored step runs, when the step names it
- * literally, or a behavior the caller may run; and the caller must be able
- * to read its data, as workflow history decides. A nested workflow output
- * must be the child run the step's link names.
+ * serve reads the data a model_method output names on resume, so each reference
+ * must name what the stored step runs or a behavior the caller may run, and its
+ * data must be readable by the caller
  */
 async function outputRefusalOf(
   context: ContentCheckContext,
@@ -518,13 +485,9 @@ async function outputRefusalOf(
 }
 
 /**
- * Why a nested workflow output may not stand, or undefined. Serve reads the
- * child run's outputs into later steps when it resumes the run, so the
- * child must be this step's own, as the nested-run cascade decides it: the
- * child's record exists and its parent link names this run, job and step,
- * and a link on the step, if any, names that child. The caller must also be
- * able to read the child's workflow, whose outputs it exposes. A link either
- * record holds alone proves nothing: a forwarded record may set it.
+ * serve reads the child run's outputs into later steps on resume, so the child
+ * must be this step's own; a link either record holds alone proves nothing,
+ * since a forwarded record may set it
  */
 async function childOutputRefusal(
   context: ContentCheckContext,
@@ -590,7 +553,6 @@ async function childOutputRefusal(
     : `not authorized to read workflow:${resource.name}`;
 }
 
-/** The stored step's target when it names its behavior literally. */
 function literalTarget(
   targets: readonly StepTarget[],
   jobName: string,

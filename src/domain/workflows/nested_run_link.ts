@@ -43,24 +43,17 @@ import { getSwampLogger } from "../../infrastructure/logging/logger.ts";
 
 const logger = getSwampLogger(["workflow", "nested-run"]);
 
-/** What NestedRunLink reads. It never writes. */
 export interface NestedRunLinkDeps {
   runRepo: Pick<WorkflowRunRepository, "findById" | "recordsAreForwarded">;
   workflowRepo: Pick<WorkflowRepository, "findById">;
   /**
-   * Where signal wait records are kept. With it a child's wait is asked of
-   * its outcome; without it, of the child's run record, which still shows
-   * a wait a signal has settled as open until the child is resumed.
+   * with it a child's wait is asked of its outcome; without it, of the child's
+   * run record, which still shows a settled wait as open until the child is
+   * resumed
    */
   signalWaits?: SignalWaitSupport;
 }
 
-/**
- * A child run as a parent's nested wait resolves it. `backLinkDropped` is set
- * when the child carries no parentRun at all and was accepted on the record
- * fields an older binary keeps when it saves the run (see
- * {@link NestedRunLink.resolveChild}).
- */
 export type ChildResolution =
   | {
     readonly kind: "resolved";
@@ -70,25 +63,18 @@ export type ChildResolution =
   | { readonly kind: "missing"; readonly reason: string }
   | { readonly kind: "broken"; readonly reason: string }
   | {
-    /** The child's record exists, or may, but reading it failed. */
     readonly kind: "unreadable";
     readonly ref: NestedRunRef;
     readonly reason: string;
   };
 
-/** The run a next action names. */
 export interface NestedRunTarget {
   readonly workflowId: string;
   readonly workflowName: string;
   readonly runId: string;
-  /** True when a serve instance owns the run, so commands need --server. */
   readonly serveOwned: boolean;
 }
 
-/**
- * What it takes for a parent's nested wait to settle, at the innermost run
- * that has to act.
- */
 export type NestedWaitAction =
   | {
     readonly kind: "approve";
@@ -97,15 +83,12 @@ export type NestedWaitAction =
     readonly stepName: string;
   }
   | {
-    /** A step of the run waits for a signal on a wait still open. */
     readonly kind: "signal";
     readonly target: NestedRunTarget;
     readonly jobName: string;
     readonly stepName: string;
     readonly waitId: string;
-    /** When the wait stops accepting a signal, as an ISO timestamp. */
     readonly deadline: string;
-    /** The key the wait's step declared, if any (swamp-club#3214). */
     readonly key?: string;
   }
   | { readonly kind: "resume"; readonly target: NestedRunTarget }
@@ -117,38 +100,26 @@ export type NestedWaitAction =
     readonly stepName: string;
   }
   | {
-    /**
-     * The run is running or pending: wait for it, or cancel it if no process
-     * drives it any more.
-     */
     readonly kind: "running";
     readonly target: NestedRunTarget;
   };
 
-/** A nested wait whose child has not finished. */
 export interface PendingNestedWait {
   readonly wait: NestedWaitRef;
   readonly child: WorkflowRun;
   readonly action: NestedWaitAction;
 }
 
-/** A run above a nested run, as its parentRun link names it. */
 export interface AncestorRunRef {
   readonly workflowId: string;
   readonly workflowName: string;
   readonly runId: string;
 }
 
-/**
- * A nested run's view of the runs above it (see
- * {@link NestedRunLink.parentVerdict}). `ended` and `replaced` make the run
- * orphaned: nothing will read its outcome.
- */
 export type ParentVerdict =
   | { readonly kind: "none" }
   | {
     readonly kind: "awaited";
-    /** Every ancestor record read, nearest first. */
     readonly ancestors: readonly AncestorRunRef[];
   }
   | {
@@ -161,11 +132,9 @@ export type ParentVerdict =
     readonly kind: "unreadable";
     readonly reason: string;
     readonly parent?: AncestorRunRef;
-    /** True when the run above has no record at all, not a failed read. */
     readonly missing?: true;
   };
 
-/** True when the verdict says nothing waits on the run any more. */
 export function isOrphaned(
   verdict: ParentVerdict,
 ): verdict is Extract<ParentVerdict, { kind: "ended" | "replaced" }> {
@@ -174,17 +143,10 @@ export function isOrphaned(
 
 const FINISHED = new Set(["succeeded", "failed", "cancelled"]);
 
-/** True when a run has finished: succeeded, failed or cancelled. */
 export function isFinishedRun(run: WorkflowRun): boolean {
   return FINISHED.has(run.status);
 }
 
-/**
- * True when a child with no parentRun agrees with the step waiting on it on
- * every field an older binary keeps when it saves the child: a nested run
- * has no trigger source of its own, inherits its parent's initiator, and
- * starts once the step that runs it has started.
- */
 function startedByWaitingStep(
   parent: WorkflowRun,
   wait: NestedWaitRef,
@@ -208,30 +170,13 @@ function targetOf(run: WorkflowRun): NestedRunTarget {
   };
 }
 
-/**
- * Follows the links between a parent run's nested workflow steps and the
- * child runs they wait on (swamp-club#2736). Every link is validated from
- * both ends before it is followed, and nothing here writes a run: whether a
- * parent can continue is always derived from its children.
- */
 export class NestedRunLink {
   constructor(private readonly deps: NestedRunLinkDeps) {}
 
   /**
-   * Loads the child a nested wait links and checks it links back: the
-   * child's id and workflow must be the ones linked, and its parentRun must
-   * name this parent run and step.
-   *
-   * An older binary drops parentRun when it saves the child (an approve or
-   * resume of the child from a version without nested gates). A child with
-   * no parentRun at all is still accepted when the fields such a save keeps
-   * agree with this parent: no trigger source of its own, the parent's
-   * initiator, and a start no earlier than the waiting step's. A malformed
-   * or mismatched parentRun is never accepted. Where records are forwarded the
-   * parent's fields are a member's report, so only a child that links back is.
-   *
-   * A child whose record cannot be read is reported as unreadable, never
-   * thrown: the cause is logged, since a parse error quotes the record.
+   * an older binary drops parentRun when it saves the child, so a child with
+   * none is accepted if the fields such a save keeps agree with the parent; a
+   * malformed or mismatched parentRun never is
    */
   async resolveChild(
     parent: WorkflowRun,
@@ -297,12 +242,6 @@ export class NestedRunLink {
     };
   }
 
-  /**
-   * The parent's nested waits whose child has not finished, each with the
-   * action that settles it. A missing child or broken link is not pending:
-   * the parent's resume fails that step. A child whose record cannot be read
-   * may be either, so it throws {@link NestedRunUnreadableError}.
-   */
   async pendingWaits(parent: WorkflowRun): Promise<PendingNestedWait[]> {
     const pending: PendingNestedWait[] = [];
     for (const wait of parent.findNestedWaits()) {
@@ -325,20 +264,13 @@ export class NestedRunLink {
     return pending;
   }
 
-  /**
-   * True when every nested wait of the parent has a finished child. Throws
-   * {@link NestedRunUnreadableError} when a child's record cannot be read.
-   */
   async childrenSettled(parent: WorkflowRun): Promise<boolean> {
     return (await this.pendingWaits(parent)).length === 0;
   }
 
   /**
-   * The signal waits held by the unfinished runs below `parent`, at any
-   * depth, in stored order. A signal for one of them is what moves `parent`
-   * on, so ending `parent` discards the wait as surely as ending the run
-   * that holds it (swamp-club#2867). Only a child linked both ways is
-   * followed.
+   * ending parent discards a wait below it as surely as ending the run that
+   * holds it; only a child linked both ways is followed
    */
   async signalWaitsBelow(
     parent: WorkflowRun,
@@ -365,10 +297,6 @@ export class NestedRunLink {
     return waits;
   }
 
-  /**
-   * True while the child's parent run exists, has not finished, and a step
-   * of it still waits on this exact child.
-   */
   async isAwaitedByParent(child: WorkflowRun): Promise<boolean> {
     const link = child.parentRun;
     if (link?.kind !== "valid") return false;
@@ -383,15 +311,9 @@ export class NestedRunLink {
   }
 
   /**
-   * Whether the runs above a nested run still wait on it, walking up its
-   * parentRun links (swamp-club#2867). A run with no parentRun is `none`.
-   * The first ancestor that finished, or whose step moved on to another
-   * child, decides; otherwise the run is `awaited`, with the ancestor
-   * records that was read from.
-   *
-   * A parent records its wait only once its child has suspended, so an
-   * unfinished parent whose step carries no link yet still awaits a child
-   * that started no earlier than that step.
+   * a parent records its wait only once its child has suspended, so an
+   * unfinished parent whose step carries no link yet still awaits a child that
+   * started no earlier than that step
    */
   async parentVerdict(run: WorkflowRun): Promise<ParentVerdict> {
     if (run.parentRun === undefined) return { kind: "none" };
@@ -468,10 +390,6 @@ export class NestedRunLink {
     return { kind: "awaited", ancestors };
   }
 
-  /**
-   * The action that moves an unfinished child run on, walking down to the
-   * innermost run that has to act.
-   */
   async describeWait(
     child: WorkflowRun,
     depth: number,
@@ -544,7 +462,6 @@ export class NestedRunLink {
   }
 }
 
-/** The run's first open wait as its own record shows it, with no store. */
 function openWaitOnRecord(
   run: WorkflowRun,
   now: Date,
@@ -566,10 +483,6 @@ function server(target: NestedRunTarget): string {
   return target.serveOwned ? " --server <url>" : "";
 }
 
-/**
- * The commands that settle a nested wait, as one sentence for a refusal or
- * a hint. A serve-owned run gets the --server form.
- */
 export function nestedWaitHint(action: NestedWaitAction): string {
   const t = action.target;
   const run = `run ${t.runId} of workflow "${t.workflowName}"`;
@@ -611,12 +524,6 @@ export function nestedWaitHint(action: NestedWaitAction): string {
   }
 }
 
-/**
- * Refuses a resume of a run whose nested workflow steps wait on child runs
- * that have not finished. The message names each child and what settles
- * it; {@link genericMessage} names none, for callers that may not reveal
- * the child runs.
- */
 export class NestedRunPendingError extends UserError {
   constructor(
     readonly parent: { readonly workflowName: string; readonly id: string },
@@ -634,19 +541,12 @@ export class NestedRunPendingError extends UserError {
     this.name = "NestedRunPendingError";
   }
 
-  /** The refusal without naming any child run. */
   get genericMessage(): string {
     return `Run ${this.parent.id} waits on a nested workflow run that has not finished. ` +
       `Finish or cancel the nested run, then resume this run.`;
   }
 }
 
-/**
- * Refuses a resume of a run whose nested workflow step waits on a child run
- * whose record cannot be read, so whether the child finished is unknown.
- * The message names the child; {@link genericMessage} does not, for callers
- * that may not reveal the child runs.
- */
 export class NestedRunUnreadableError extends UserError {
   constructor(
     readonly parent: { readonly workflowName: string; readonly id: string },
@@ -660,18 +560,12 @@ export class NestedRunUnreadableError extends UserError {
     this.name = "NestedRunUnreadableError";
   }
 
-  /** The refusal without naming the child run. */
   get genericMessage(): string {
     return `Run ${this.parent.id} waits on a nested workflow run whose record cannot be read. ` +
       `Repair that run's record, then resume this run, or cancel this run.`;
   }
 }
 
-/**
- * Refuses, changing nothing, while a nested workflow step of the run waits
- * on a child run that has not finished, or whose record cannot be read.
- * Every resume entry reaches this before the run is changed.
- */
 export async function assertNestedWaitsSettled(
   deps: NestedRunLinkDeps,
   run: WorkflowRun,

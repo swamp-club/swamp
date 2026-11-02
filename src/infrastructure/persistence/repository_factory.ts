@@ -367,8 +367,8 @@ export interface RepositoryContext {
    */
   evaluationTrust?: EvaluationTrust;
   /**
-   * This repository is a v3 serve's: members forward run records to it, so
-   * a run's reported state is the member's own (swamp-club#4245).
+   * this repository is a v3 serve's: members forward run records to it, so a
+   * run's reported state is the member's own
    */
   takesForwardedRunRecords?: boolean;
 }

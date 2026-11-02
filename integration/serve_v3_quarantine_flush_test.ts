@@ -17,15 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * A grant revoked while a member worked offline (swamp-club#4195), end to
- * end: serve in a Worker, and checkouts reaching it through a proxy that
- * can be taken down. The member's flush finds the change refused for the
- * grant it lost: it is quarantined in the member's outbox and handed to
- * serve. A non-admin cannot accept it; an admin lands it, as the member,
- * and the member's next command settles its entry.
- */
-
 import { Job } from "../src/domain/workflows/job.ts";
 import { Step } from "../src/domain/workflows/step.ts";
 import { StepTask } from "../src/domain/workflows/step_task.ts";
@@ -69,13 +60,11 @@ await initializeLogging({});
 
 const DATA_ID = "5a0c2e1f-3d4e-4f60-9b7c-8d9e0f1a2b3c";
 
-/** Bob may read every behavior and its data. */
 const BOB_READS: readonly GrantSpec[] = [
   { user: "bob", actions: ["read"], kind: "model", pattern: "*" },
   { user: "bob", actions: ["read"], kind: "data", pattern: "*" },
 ];
 
-/** Bob may also write them, until it is revoked. */
 const BOB_WRITES: readonly GrantSpec[] = [
   {
     user: "bob",
@@ -86,13 +75,11 @@ const BOB_WRITES: readonly GrantSpec[] = [
   { user: "bob", actions: ["read", "write"], kind: "data", pattern: "*" },
 ];
 
-/** Alice (the harness's caller) is a member and an admin. */
 const ALICE_ADMIN: readonly GrantSpec[] = [
   ...MEMBER,
   { actions: ["admin"], kind: "access", pattern: "*" },
 ];
 
-/** A proxy in front of serve that can be taken down and brought back. */
 interface Proxy {
   readonly origin: string;
   down(): Promise<void>;
@@ -143,10 +130,6 @@ function startProxy(target: string): Proxy {
   return proxy;
 }
 
-/**
- * One writing command in `client`, opened as `model method run` opens it:
- * no lease registered, no offline mode, as a new process starts.
- */
 async function command<T>(
   scratch: Pick<Scratch, "configDir">,
   client: Pick<Client, "repoDir">,
@@ -175,7 +158,6 @@ async function command<T>(
   });
 }
 
-/** A read-kind run's save of `out` on web: allowed offline without a lease. */
 async function readKindSave(
   ctx: Awaited<ReturnType<typeof requireInitializedRepoUnlocked>>,
   serve: Serve,
@@ -196,7 +178,6 @@ async function readKindSave(
   )).version;
 }
 
-/** The kept entries of `client`'s outbox, as `datastore status` lists them. */
 async function keptEntries(
   scratch: Scratch,
   client: Client,
@@ -221,7 +202,6 @@ async function keptEntries(
   );
 }
 
-/** Asks serve, as `client`'s caller, to accept the kept change `txnId`. */
 async function accept(
   scratch: Scratch,
   client: Client,
@@ -231,7 +211,6 @@ async function accept(
   return await decide(scratch, client, env, txnId, "accept");
 }
 
-/** Asks serve, as `client`'s caller, to discard the kept change `txnId`. */
 async function discard(
   scratch: Scratch,
   client: Client,
@@ -241,7 +220,6 @@ async function discard(
   return await decide(scratch, client, env, txnId, "discard");
 }
 
-/** Asks serve, as `client`'s caller, to accept or discard `txnId`. */
 async function decide(
   scratch: Scratch,
   client: Client,
@@ -309,11 +287,9 @@ Deno.test({
           ),
           2,
         );
-        // Revoked while bob is offline.
         await serve.setGrants([...ALICE_ADMIN, ...BOB_READS]);
         proxy.up();
 
-        // Bob's next command flushes: refused for the grant he lost.
         await command(scratch, bob, bobEnv, () => Promise.resolve());
         const kept = await keptEntries(scratch, bob, bobEnv);
         assertEquals(kept.map((entry) => entry.state), ["quarantined"]);
@@ -323,14 +299,12 @@ Deno.test({
           "serve refused the change",
         );
 
-        // Bob cannot accept his own change.
         const refused = await assertRejects(
           () => accept(scratch, bob, bobEnv, txnId),
           ServeUpstreamError,
         );
         assertEquals(refused.status, 403);
 
-        // Alice, an admin, lands it as bob.
         const accepted = await accept(scratch, alice, aliceEnv, txnId);
         assertEquals(accepted.principal, "user:bob");
         assertEquals(accepted.acceptedBy, "user:caller");
@@ -339,7 +313,6 @@ Deno.test({
         );
         assertEquals(landed?.principal, "user:bob");
 
-        // Bob's next command finds it landed and settles it.
         await command(scratch, bob, bobEnv, () => Promise.resolve());
         assertEquals(await keptEntries(scratch, bob, bobEnv), []);
       } finally {
@@ -385,7 +358,6 @@ Deno.test({
         assertEquals(kept.map((entry) => entry.state), ["quarantined"]);
         const txnId = kept[0].txnId;
 
-        // Bob cannot discard it; alice, an admin, does.
         const refused = await assertRejects(
           () => discard(scratch, bob, bobEnv, txnId),
           ServeUpstreamError,
@@ -394,14 +366,12 @@ Deno.test({
         const discarded = await discard(scratch, alice, aliceEnv, txnId);
         assertEquals(discarded.state, "discarded");
 
-        // Bob's next command keeps it as rejected, declined at serve.
         await command(scratch, bob, bobEnv, () => Promise.resolve());
         const declined = await keptEntries(scratch, bob, bobEnv);
         assertEquals(declined.map((entry) => entry.state), ["rejected"]);
         assertEquals(declined[0].txnId, txnId);
         assertEquals(declined[0].reason, "discarded at serve by an admin");
 
-        // Even with the grant back, it is never sent again.
         await serve.setGrants([...ALICE_ADMIN, ...BOB_WRITES]);
         await command(scratch, bob, bobEnv, () => Promise.resolve());
         assertEquals(
@@ -426,7 +396,6 @@ Deno.test({
   sanitizeResources: false,
   fn: async () => {
     await withScratch(async (scratch) => {
-      // Holding approve does not help: a decision is made by serve's handler.
       const serve = await scratch.serve({
         grants: [
           ...BOB_READS,

@@ -37,79 +37,49 @@ import type { Workflow } from "./workflow.ts";
 import { createWorkflowId } from "./workflow_id.ts";
 import type { WorkflowRun } from "./workflow_run.ts";
 
-/** What {@link settleOrphanedNestedRun} reads, and the one run it writes. */
 export interface OrphanedNestedRunDeps
   extends Pick<NestedRunLinkDeps, "workflowRepo" | "signalWaits"> {
   runRepo: Pick<
     WorkflowRunRepository,
     "findById" | "save" | "recordsAreForwarded"
   >;
-  /** The run's own evaluated snapshot, which it is settled against. */
   findEvaluatedWorkflow?: EvaluatedWorkflowLookup;
   runTracker?: Pick<RunTrackerRepository, "complete">;
-  /**
-   * Compares this host's record of a run with the datastore's. With it, a
-   * parent that still reads as waiting is confirmed there, so a parent a
-   * peer already ended is not taken for one that waits.
-   */
   runRecordCurrency?: RunRecordCurrency;
-  /**
-   * Fetches the record of a run above that this host does not have, before
-   * it is taken for missing. Called only for a record that reads as absent.
-   */
   fetchMissing?: (
     run: { workflowId: string; runId: string },
   ) => Promise<void>;
 }
 
-/**
- * Why a nested run was not continued (swamp-club#2867):
- *
- * - `orphaned`: a run above it ended, or its step moved on to another child.
- *   The run was cancelled.
- * - `unreadable`: a run above it could not be read. Nothing was written.
- * - `stale`: this host's record of a run above it is not the datastore's.
- *   Nothing was written; the same command can be tried again.
- */
 export interface OrphanedNestedRunRefusal {
   readonly kind: "orphaned" | "unreadable" | "stale";
   readonly message: string;
-  /** The refusal without naming the run above. */
   readonly genericMessage: string;
-  /** The run above that decided, when one was named. */
   readonly parent?: AncestorRunRef;
 }
 
-/** A resume refused by {@link settleOrphanedNestedRun}. */
 export class OrphanedNestedRunError extends UserError {
   constructor(readonly refusal: OrphanedNestedRunRefusal) {
     super(refusal.message);
     this.name = "OrphanedNestedRunError";
   }
 
-  /** The refusal without naming the run above. */
   get genericMessage(): string {
     return this.refusal.genericMessage;
   }
 }
 
 /**
- * The cancel reason recorded on a nested run nothing waits on any more. It
- * names no other run: the reason is stored on the run and shown to anyone
- * who may read it, and a link to another run is shown only to a reader of
- * that run's workflow. The run's `parentRun` names the parent.
+ * names no other run: the reason is stored on the run and shown to anyone who
+ * may read it, while a link to another run is shown only to a reader of that
+ * run's workflow
  */
 export const PARENT_ENDED_CANCEL_REASON =
   "The run that started this nested run ended or moved on";
 
 /**
- * Stops a nested run from continuing once nothing waits on it
- * (swamp-club#2867). Returns undefined for a run that may continue: one
- * with no parent, or one every run above still waits on.
- *
- * An orphaned run that has not finished is cancelled and saved here: the run
- * writes its own record, never another run's. The caller holds the run's
- * claim, so nothing saves between its read and this save.
+ * the run writes its own record, never another run's; the caller holds the
+ * run's claim, so nothing saves between its read and this save
  */
 export async function settleOrphanedNestedRun(
   deps: OrphanedNestedRunDeps,
