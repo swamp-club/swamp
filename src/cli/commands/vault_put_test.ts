@@ -17,10 +17,12 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
+import { UserError } from "../../domain/errors.ts";
 import {
   parseKeyValue,
   resolveKeyValue,
+  resolveRemoteKeyValue,
   skipsOverwriteConfirmation,
   vaultPutCommand,
 } from "./vault_put.ts";
@@ -140,4 +142,125 @@ Deno.test("skipsOverwriteConfirmation: neither flag requires confirmation", () =
     false,
   );
   assertEquals(skipsOverwriteConfirmation({ yes: false, force: false }), false);
+});
+
+function countingReader(content: string | null) {
+  const reader = {
+    calls: 0,
+    read: (): Promise<string | null> => {
+      reader.calls++;
+      return Promise.resolve(content);
+    },
+  };
+  return reader;
+}
+
+Deno.test("resolveRemoteKeyValue: reads a piped value and strips its trailing newline", async () => {
+  const reader = countingReader("piped-secret\n");
+  const result = await resolveRemoteKeyValue(
+    "API_KEY",
+    undefined,
+    false,
+    reader.read,
+  );
+  assertEquals(result, { key: "API_KEY", value: "piped-secret" });
+  assertEquals(reader.calls, 1);
+});
+
+Deno.test("resolveRemoteKeyValue: preserves a piped multiline PEM value exactly", async () => {
+  const pem =
+    "-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXk=\n-----END OPENSSH PRIVATE KEY-----\n";
+  const result = await resolveRemoteKeyValue(
+    "SSH_KEY",
+    undefined,
+    false,
+    countingReader(pem).read,
+  );
+  assertEquals(result, { key: "SSH_KEY", value: pem });
+});
+
+Deno.test("resolveRemoteKeyValue: a value argument wins and stdin is not read", async () => {
+  const reader = countingReader("stdin-secret");
+  const result = await resolveRemoteKeyValue(
+    "API_KEY",
+    "arg-secret",
+    false,
+    reader.read,
+  );
+  assertEquals(result, { key: "API_KEY", value: "arg-secret" });
+  assertEquals(reader.calls, 0);
+});
+
+Deno.test("resolveRemoteKeyValue: KEY=VALUE wins and stdin is not read", async () => {
+  const reader = countingReader("stdin-secret");
+  const result = await resolveRemoteKeyValue(
+    "API_KEY=inline-secret",
+    undefined,
+    false,
+    reader.read,
+  );
+  assertEquals(result, { key: "API_KEY", value: "inline-secret" });
+  assertEquals(reader.calls, 0);
+});
+
+Deno.test("resolveRemoteKeyValue: a TTY with no value errors without reading or prompting", async () => {
+  const reader = countingReader("unused");
+  const error = await assertRejects(
+    () => resolveRemoteKeyValue("API_KEY", undefined, true, reader.read),
+    UserError,
+  );
+  assertStringIncludes(
+    error.message,
+    'echo "<value>" | swamp vault put <vault> API_KEY --server <url>',
+  );
+  assertStringIncludes(
+    error.message,
+    "swamp vault put <vault> API_KEY <value> --server <url>",
+  );
+  assertStringIncludes(
+    error.message,
+    "swamp vault put <vault> API_KEY=<value> --server <url>",
+  );
+  assertStringIncludes(
+    error.message,
+    "Interactive prompts are not available with --server",
+  );
+  assertEquals(reader.calls, 0);
+});
+
+Deno.test("resolveRemoteKeyValue: empty stdin errors with remote usage and no prompt note", async () => {
+  const error = await assertRejects(
+    () =>
+      resolveRemoteKeyValue(
+        "API_KEY",
+        undefined,
+        false,
+        countingReader(null).read,
+      ),
+    UserError,
+  );
+  assertStringIncludes(error.message, "No value given for API_KEY");
+  assertStringIncludes(error.message, "--server <url>");
+  assertEquals(error.message.includes("Interactive prompts"), false);
+});
+
+Deno.test("resolveRemoteKeyValue: an empty key errors without reading stdin", async () => {
+  const reader = countingReader("secret");
+  await assertRejects(
+    () => resolveRemoteKeyValue("", undefined, false, reader.read),
+    UserError,
+    "Key cannot be empty",
+  );
+  assertEquals(reader.calls, 0);
+});
+
+Deno.test("vaultPutCommand: help advertises piping the value with --server", () => {
+  const description = vaultPutCommand.getDescription();
+  assertStringIncludes(description, "With --server, pipe the value on stdin");
+  assertEquals(
+    description.includes(
+      "stdin and interactive prompts are not available remotely",
+    ),
+    false,
+  );
 });

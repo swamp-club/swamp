@@ -66,6 +66,9 @@ swamp vault put dev-secrets API_KEY
 # 2. Piped from stdin (recommended for scripts/CI)
 echo "$DB_PASSWORD" | swamp vault put dev-secrets DB_PASSWORD --json
 cat secret.txt | swamp vault put dev-secrets CERT --json
+#    Also works with --server: the value is read locally and sent over the
+#    authenticated connection (use --force to overwrite an existing key)
+op read "op://prod/api-key/credential" | swamp vault put prod-secrets API_KEY --server wss://swamp.example.com --force --json
 
 # 3. Inline KEY=VALUE (insecure — exposes value in shell history/process tables;
 #    use only for non-sensitive test data)
