@@ -17,6 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { ExecutionOutputNames } from "./execution_output_names.ts";
 import { errorPaths, userErrorCode } from "../errors.ts";
 import type { Logger } from "@logtape/logtape";
 import type {
@@ -160,6 +161,7 @@ export class InProcessExecutor {
     const files = this.modelDef.files ?? {};
 
     const deferred = this.method.rollbackOnFailure === true;
+    const outputNames = new ExecutionOutputNames();
 
     const {
       writeResource,
@@ -180,6 +182,8 @@ export class InProcessExecutor {
       this.context.onEvent,
       this.context.redactor,
       deferred,
+      Deno.build.os,
+      outputNames,
     );
 
     const {
@@ -199,6 +203,8 @@ export class InProcessExecutor {
       this.context.runtimeTags,
       this.definition.name,
       deferred,
+      Deno.build.os,
+      outputNames,
     );
 
     const readResource = createResourceReader(

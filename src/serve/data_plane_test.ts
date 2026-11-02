@@ -1612,3 +1612,80 @@ Deno.test("DataPlane: writtenVersions waits for a write still running before rep
     assertEquals((await reported).map((v) => v.dataName), ["log"]);
   });
 });
+
+async function writeFileOverPlane(h: Harness, name: string): Promise<void> {
+  const open = await h.plane.handle(
+    request("/data/writers", {
+      method: "POST",
+      body: JSON.stringify({ specName: "log", name }),
+    }),
+  );
+  assertEquals(open?.status, 200);
+  const { writerId } = await open!.json();
+  const content = await h.plane.handle(
+    request(`/data/writers/${writerId}/content`, {
+      method: "POST",
+      body: "file body",
+    }),
+  );
+  assertEquals(content?.status, 200);
+}
+
+function writeResourceOverPlane(h: Harness, name: string) {
+  return h.plane.handle(
+    request("/data/resource", {
+      method: "POST",
+      body: JSON.stringify({
+        specName: "result",
+        name,
+        data: { value: "resource" },
+      }),
+    }),
+  );
+}
+
+Deno.test("DataPlane: a resource under a name the dispatch wrote as a file is a 400 and saves nothing", async () => {
+  await withHarness(async (h) => {
+    h.dispatches.register(activeDispatch());
+    await writeFileOverPlane(h, "x");
+
+    const clash = await writeResourceOverPlane(h, "x");
+    assertEquals(clash?.status, 400);
+    assertStringIncludes(
+      await clash!.text(),
+      "Duplicate data instance name 'x' (already written as file 'log' in this run)",
+    );
+    assertEquals(h.stored.get(`${MODEL_TYPE.normalized}/m-1/x`)?.version, 1);
+  });
+});
+
+Deno.test("DataPlane: a file writer under a name the dispatch wrote as a resource is refused at open", async () => {
+  await withHarness(async (h) => {
+    h.dispatches.register(activeDispatch());
+    assertEquals((await writeResourceOverPlane(h, "x"))?.status, 200);
+
+    const open = await h.plane.handle(
+      request("/data/writers", {
+        method: "POST",
+        body: JSON.stringify({ specName: "log", name: "x" }),
+      }),
+    );
+    assertEquals(open?.status, 400);
+    assertStringIncludes(
+      await open!.text(),
+      "already written as resource 'result' in this run",
+    );
+    assertEquals(h.plane.openWriterCount, 0);
+    assertEquals(h.stored.get(`${MODEL_TYPE.normalized}/m-1/x`)?.version, 1);
+  });
+});
+
+Deno.test("DataPlane: a released dispatch's data names no longer clash", async () => {
+  await withHarness(async (h) => {
+    h.dispatches.register(activeDispatch());
+    await writeFileOverPlane(h, "x");
+
+    h.plane.releaseDispatch("d-1");
+    assertEquals((await writeResourceOverPlane(h, "x"))?.status, 200);
+  });
+});

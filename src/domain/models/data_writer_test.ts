@@ -76,6 +76,8 @@ import {
   VaultAccessDeniedError,
 } from "../vaults/run_vault_access.ts";
 import { ResourceSensitiveFieldsInvalidError } from "../vaults/secret_reference_errors.ts";
+import { ExecutionOutputNames } from "./execution_output_names.ts";
+import { UserError } from "../errors.ts";
 
 function createMockRepo(): UnifiedDataRepository {
   return {
@@ -6131,4 +6133,175 @@ Deno.test("DataWriter.writeStream: a stream error is not hidden by the sync, and
     );
     assertEquals(finalized, []);
   });
+});
+
+function createNameRecordingRepo(): {
+  repo: UnifiedDataRepository;
+  writes: string[];
+} {
+  const base = createMockRepo();
+  const writes: string[] = [];
+  const repo: UnifiedDataRepository = {
+    ...base,
+    save: (type, id, data, content) => {
+      writes.push(data.name);
+      return base.save(type, id, data, content);
+    },
+    allocateVersion: (type, id, data) => {
+      writes.push(data.name);
+      return base.allocateVersion(type, id, data);
+    },
+  };
+  return { repo, writes };
+}
+
+function sharedWriters(
+  repo: UnifiedDataRepository,
+  outputNames: ExecutionOutputNames,
+  options: {
+    resources?: Record<string, ResourceOutputSpec>;
+    vaultService?: VaultService;
+    dataOutputOverrides?: Array<
+      { specName: string; resolvedVarySuffix?: string }
+    >;
+  } = {},
+) {
+  const { writeResource } = createResourceWriter(
+    repo,
+    modelType,
+    modelId,
+    options.resources ?? testResources,
+    undefined,
+    options.dataOutputOverrides,
+    undefined,
+    undefined,
+    undefined,
+    options.vaultService,
+    options.vaultService ? "create" : undefined,
+    undefined,
+    undefined,
+    false,
+    Deno.build.os,
+    outputNames,
+  );
+  const { createFileWriter } = createFileWriterFactory(
+    repo,
+    modelType,
+    modelId,
+    testFiles,
+    undefined,
+    options.dataOutputOverrides,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    false,
+    Deno.build.os,
+    outputNames,
+  );
+  return { writeResource, createFileWriter };
+}
+
+Deno.test("createResourceWriter: a resource under a name this run wrote as a file is refused before it commits", async () => {
+  const { repo, writes } = createNameRecordingRepo();
+  const { writeResource, createFileWriter } = sharedWriters(
+    repo,
+    new ExecutionOutputNames(),
+  );
+
+  await createFileWriter("log", "x").writeText("file body");
+  await assertRejects(
+    () => writeResource("item", "x", { value: "resource" }),
+    UserError,
+    "Duplicate data instance name 'x' (already written as file 'log' in this run)",
+  );
+  assertEquals(writes, ["x"]);
+});
+
+Deno.test("createFileWriterFactory: a file under a name this run wrote as a resource is refused at open", async () => {
+  const { repo, writes } = createNameRecordingRepo();
+  const { writeResource, createFileWriter } = sharedWriters(
+    repo,
+    new ExecutionOutputNames(),
+  );
+
+  await writeResource("item", "x", { value: "resource" });
+  assertThrows(
+    () => createFileWriter("log", "x"),
+    UserError,
+    "Duplicate data instance name 'x' (already written as resource 'item' in this run)",
+  );
+  assertEquals(writes, ["x"]);
+});
+
+Deno.test("createResourceWriter: a repeat under the same spec is still written", async () => {
+  const { repo, writes } = createNameRecordingRepo();
+  const { writeResource } = sharedWriters(repo, new ExecutionOutputNames());
+
+  await writeResource("item", "x", { value: "one" });
+  await writeResource("item", "x", { value: "two" });
+  assertEquals(writes, ["x", "x"]);
+});
+
+Deno.test("createResourceWriter: names a vary suffix makes distinct do not clash", async () => {
+  const { repo, writes } = createNameRecordingRepo();
+  const { writeResource, createFileWriter } = sharedWriters(
+    repo,
+    new ExecutionOutputNames(),
+    { dataOutputOverrides: [{ specName: "item", resolvedVarySuffix: "prod" }] },
+  );
+
+  await createFileWriter("log", "x").writeText("file body");
+  const handle = await writeResource("item", "x", { value: "resource" });
+  assertEquals(handle.name, "x-prod");
+  assertEquals(writes, ["x", "x-prod"]);
+});
+
+Deno.test("createResourceWriter: concurrent writes of one name across kinds let exactly one through", async () => {
+  const { repo, writes } = createNameRecordingRepo();
+  const { writeResource, createFileWriter } = sharedWriters(
+    repo,
+    new ExecutionOutputNames(),
+  );
+
+  const results = await Promise.allSettled([
+    writeResource("item", "x", { value: "resource" }),
+    Promise.resolve().then(() => createFileWriter("log", "x").writeText("f")),
+  ]);
+  assertEquals(results.map((r) => r.status), ["fulfilled", "rejected"]);
+  assertEquals(writes, ["x"]);
+});
+
+Deno.test("createResourceWriter: a refused sensitive resource stores no vault secret", async () => {
+  const { repo, writes } = createNameRecordingRepo();
+  const vaultService = createTestVaultService();
+  const puts: string[] = [];
+  const originalPut = vaultService.put.bind(vaultService);
+  vaultService.put = (...args: Parameters<VaultService["put"]>) => {
+    puts.push(String(args[1]));
+    return originalPut(...args);
+  };
+  const { writeResource, createFileWriter } = sharedWriters(
+    repo,
+    new ExecutionOutputNames(),
+    {
+      vaultService,
+      resources: {
+        item: {
+          schema: z.object({ value: z.string().meta({ sensitive: true }) }),
+          lifetime: "infinite",
+          garbageCollection: 10,
+        },
+      },
+    },
+  );
+
+  await createFileWriter("log", "x").writeText("file body");
+  await assertRejects(
+    () => writeResource("item", "x", { value: "secret" }),
+    UserError,
+    "Duplicate data instance name 'x'",
+  );
+  assertEquals(puts, []);
+  assertEquals(writes, ["x"]);
 });

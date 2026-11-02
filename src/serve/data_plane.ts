@@ -36,6 +36,7 @@ import {
 } from "../domain/remote/observability.ts";
 import { isAbsolute, join, normalize, resolve } from "@std/path";
 import { ModelType } from "../domain/models/model_type.ts";
+import { ExecutionOutputNames } from "../domain/models/execution_output_names.ts";
 import {
   type DataHandle,
   type DataWriter,
@@ -164,6 +165,8 @@ export class DataPlane {
    * hand them to its lock's push
    */
   readonly #writtenByDispatch = new Map<string, WrittenVersion[]>();
+  /** the data names each dispatch has written, shared by its writers */
+  readonly #outputNamesByDispatch = new Map<string, ExecutionOutputNames>();
   readonly #inFlight = new Map<
     string,
     { count: number; idle: PromiseWithResolvers<void> }
@@ -208,6 +211,16 @@ export class DataPlane {
     }
     this.#dispatchesWithWrites.delete(dispatchId);
     this.#writtenByDispatch.delete(dispatchId);
+    this.#outputNamesByDispatch.delete(dispatchId);
+  }
+
+  #outputNames(dispatchId: string): ExecutionOutputNames {
+    let names = this.#outputNamesByDispatch.get(dispatchId);
+    if (names === undefined) {
+      names = new ExecutionOutputNames();
+      this.#outputNamesByDispatch.set(dispatchId, names);
+    }
+    return names;
   }
 
   /**
@@ -635,6 +648,9 @@ export class DataPlane {
       dispatch.methodName,
       undefined,
       dispatch.redactor,
+      false,
+      Deno.build.os,
+      this.#outputNames(dispatch.dispatchId),
     );
     // Mark the lease BEFORE persisting: a lease may over-report writes
     // (safe, conservative) but must never under-report them.
@@ -733,6 +749,9 @@ export class DataPlane {
       dispatch.definitionTags,
       dispatch.runtimeTags,
       dispatch.definitionName,
+      false,
+      Deno.build.os,
+      this.#outputNames(dispatch.dispatchId),
     );
     // A refused open (an undeclared spec, a reserved name or tag) is the
     // worker's request at fault, reported as the resource path reports it.
