@@ -783,8 +783,12 @@ async function takeV3WriterHold(
       if (fence !== undefined) await handle.raiseWriterFence(fence);
       // before the recovery, lineage and sidecar this hold starts, which can
       // fail before the command commits anything
+      // only a CLI command's teardown reads the marks; serve's would go stale
       const datastore = resolve(config.path);
-      if (!commandStartMarks.has(datastore)) {
+      if (
+        ownerCheckOf(config, options.ownerCheck).as !== "serve" &&
+        !commandStartMarks.has(datastore)
+      ) {
         commandStartMarks.set(datastore, {
           path: config.path,
           mark: handle.commitStore.highWaterMark().cursor,
@@ -2436,7 +2440,7 @@ export async function compactQuietly(
         .debug`Compacted ${report.compacted} commits of the v3 datastore at ${handle.datastorePath}`;
     }
   } catch (error) {
-    if (signal.aborted && error === signal.reason) {
+    if (signal.aborted && isBudgetAbort(error, signal.reason)) {
       logger
         .debug`Compacting the v3 datastore at ${handle.datastorePath} used its ${budgetMs} ms budget; the next writer goes on`;
       return;
@@ -2444,6 +2448,15 @@ export async function compactQuietly(
     logger
       .warn`Compacting the v3 datastore at ${handle.datastorePath} failed; the next writer retries: ${error}`;
   }
+}
+
+// a layer between the signal and the throw may wrap or re-create the reason
+function isBudgetAbort(error: unknown, reason: unknown): boolean {
+  if (error === reason) return true;
+  if (error instanceof DOMException && error.name === "TimeoutError") {
+    return true;
+  }
+  return error instanceof Error && error.cause === reason;
 }
 
 export const SERVE_MAINTENANCE_INTERVAL_MS = 60 * 60 * 1000;

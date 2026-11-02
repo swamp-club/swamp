@@ -131,12 +131,12 @@ export async function withChangeSignalled<T>(
     result = await write();
   } catch (error) {
     if (signalAfter) {
-      try {
-        for (const change of list) {
+      for (const change of list) {
+        try {
           await signalChange(markDirty, change, options);
+        } catch {
+          // The write's own failure is the one the caller needs to see.
         }
-      } catch {
-        // The write's own failure is the one the caller needs to see.
       }
     }
     throw error;

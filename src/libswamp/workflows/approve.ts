@@ -24,6 +24,7 @@ import type {
 } from "../../domain/workflows/repositories.ts";
 import {
   resolveSuspendedRun,
+  suspendedRunClaimKey,
   type SuspendedRunInfo,
 } from "../../domain/workflows/suspended_run_resolver.ts";
 import type { WorkflowRunClaims } from "../../domain/workflows/run_claim.ts";
@@ -114,12 +115,14 @@ export function createWorkflowApproveDeps(
 
 type ApproveOutcome =
   | { error: SwampError }
+  | { storedAs: string }
   | { run: WorkflowRun; workflowName: string; decidedBy: string };
 
 async function approveClaimedRun(
   deps: WorkflowApproveDeps,
   input: WorkflowApproveInput,
   runId: string,
+  claimKey: string,
 ): Promise<ApproveOutcome> {
   let resolved: SuspendedRunInfo;
   try {
@@ -139,6 +142,8 @@ async function approveClaimedRun(
   }
 
   const { run, workflowName, workflow } = resolved;
+  // decided only under the claim of the id as stored
+  if (run.id !== claimKey) return { storedAs: run.id };
 
   const orphaned = await settleOrphanedNestedRun(deps, run, workflow);
   if (orphaned) return { error: orphanedNestedRunError(orphaned) };
@@ -209,11 +214,10 @@ export async function* workflowApprove(
       (async function* () {
         yield { kind: "resolving" };
 
-        // Resolved once to learn which run is meant, then again under that
-        // run's claim: only the second read is decided on.
-        let located: SuspendedRunInfo;
+        // Only the read under the run's claim is decided on.
+        let claimKey: string;
         try {
-          located = await resolveSuspendedRun(
+          claimKey = await suspendedRunClaimKey(
             deps.workflowRepo,
             deps.runRepo,
             input.workflowIdOrName,
@@ -230,10 +234,27 @@ export async function* workflowApprove(
           return;
         }
 
-        const outcome = await deps.runClaims.withClaim(
-          located.run.id,
-          () => approveClaimedRun(deps, input, located.run.id),
+        const readId = input.runId ?? claimKey;
+        let outcome = await deps.runClaims.withClaim(
+          claimKey,
+          () => approveClaimedRun(deps, input, readId, claimKey),
         );
+        if ("storedAs" in outcome) {
+          const storedAs = outcome.storedAs;
+          outcome = await deps.runClaims.withClaim(
+            storedAs,
+            () => approveClaimedRun(deps, input, storedAs, storedAs),
+          );
+        }
+        if ("storedAs" in outcome) {
+          yield {
+            kind: "error",
+            error: validationFailed(
+              `Workflow run ${readId} changed while it was claimed. Approve it again.`,
+            ),
+          };
+          return;
+        }
         if ("error" in outcome) {
           yield { kind: "error", error: outcome.error };
           return;

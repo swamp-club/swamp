@@ -202,8 +202,6 @@ const PINNED_V3_IMPORTERS: readonly string[] = [
   // a serve-mode checkout's --last-evaluated trusts only serve's and its own
   // member's evaluations, and its signal outcomes are serve's
   "src/cli/last_evaluated_trust.ts -> src/infrastructure/datastore_v3/trusted_evaluations.ts",
-  // a run serve drives is the one it may act on
-  "src/serve/resume_launcher.ts -> src/domain/datastore_v3/content_bindings.ts",
   "src/cli/last_evaluated_trust.ts -> src/infrastructure/datastore_v3/v3_repo_context.ts",
   "src/cli/repo_context.ts -> src/infrastructure/datastore_v3/serve_upstream_registry.ts",
   "src/serve/handlers/admin_handlers.ts -> src/infrastructure/datastore_v3/v3_repo_context.ts",

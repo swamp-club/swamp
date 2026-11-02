@@ -835,6 +835,21 @@ Deno.test("withChangeSignalled: a write that throws is signalled after too, and 
   });
 });
 
+Deno.test("withChangeSignalled: one failed signal after a throwing write still signals the other changes", async () => {
+  await withReports(async () => {
+    const { hook, calls, failNext } = recordingHook();
+    const writeError = new Error("write failed");
+    const thrown = await assertRejects(() =>
+      withChangeSignalled(hook, [WRITE, REMOVE], {}, () => {
+        failNext(new Error("mark failed"));
+        return Promise.reject(writeError);
+      })
+    );
+    assertStrictEquals(thrown, writeError);
+    assertEquals(calls, [WRITE.path, REMOVE.path, WRITE.path, REMOVE.path]);
+  });
+});
+
 Deno.test("withChangeSignalled: a failed signal after a write that landed is logged, and the write still succeeds", async () => {
   await withReports(async () => {
     const { hook, calls, failNext } = recordingHook();

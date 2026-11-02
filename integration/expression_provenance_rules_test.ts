@@ -24,6 +24,7 @@
 import { assertGreater } from "@std/assert";
 import {
   assertPinnedSet,
+  callArguments,
   productionSourceFiles,
   repoRelative,
   SRC_DIR,
@@ -59,34 +60,6 @@ const UNSAFE_PROVENANCE = /^(undefined|ProvenanceMap\.authored\(\))$/;
 const PINNED_AUTHORED_SAVES: readonly string[] = [
   "src/libswamp/workflows/evaluate.ts: ProvenanceMap.authored()",
 ];
-
-function callArguments(source: string, open: number): string[] {
-  const args: string[] = [];
-  let depth = 0;
-  let start = open;
-  for (let i = open; i < source.length; i++) {
-    const ch = source[i];
-    if (ch === '"' || ch === "'" || ch === "`") {
-      const quote = ch;
-      for (i++; i < source.length && source[i] !== quote; i++) {
-        if (source[i] === "\\") i++;
-      }
-      continue;
-    }
-    if (ch === "(" || ch === "[" || ch === "{") depth++;
-    else if (ch === ")" || ch === "]" || ch === "}") {
-      if (depth === 0) {
-        args.push(source.slice(start, i).trim());
-        return args.filter((a) => a !== "");
-      }
-      depth--;
-    } else if (ch === "," && depth === 0) {
-      args.push(source.slice(start, i).trim());
-      start = i + 1;
-    }
-  }
-  return args;
-}
 
 Deno.test("expression provenance rules: only partitionAuthoredAt calls the raw-text gate", async () => {
   const callers = new Set<string>();

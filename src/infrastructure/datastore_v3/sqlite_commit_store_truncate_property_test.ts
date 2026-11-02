@@ -337,6 +337,8 @@ Deno.test("SqliteCommitStore.truncateAfter: undoes the appends past the mark exa
       ),
       {
         numRuns: 150,
+        // seeded so the floors below hold on every run
+        seed: 4291,
         examples: [
           [
             [{ space: 1, name: "z", blob: 0, fenceBump: 1, versioned: false }],
@@ -356,9 +358,10 @@ Deno.test("SqliteCommitStore.truncateAfter: undoes the appends past the mark exa
         ],
       },
     );
-    assert(truncatedRuns > 0, "no run truncated");
-    assert(refusedRuns > 0, "no run was refused");
-    assert(retainingRuns > 0, "no run dropped a version");
+    // a change to the arbitraries or a fast-check upgrade moves these floors
+    assert(truncatedRuns >= 70, `only ${truncatedRuns} runs truncated`);
+    assert(refusedRuns >= 60, `only ${refusedRuns} runs were refused`);
+    assert(retainingRuns >= 50, `only ${retainingRuns} runs dropped a version`);
   } finally {
     if (Deno.build.os === "windows") {
       await Deno.remove(dir, { recursive: true }).catch(() => {});

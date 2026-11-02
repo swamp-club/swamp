@@ -245,7 +245,7 @@ export function replicaRestorableFindingMessage(
         `serve, starts a new lineage from it`;
     case "broken-copy-damaged":
       return `The replica of ${lineage} cannot be restored: ${error}. ` +
-        `This checkout's own copy fails SQLite's quick check too ` +
+        `This checkout's own copy is missing or fails SQLite's quick check ` +
         `(${finding.copyCheck}), so no new lineage is started from it. ` +
         `Restore this checkout from an older lineage or a backup, as ` +
         `${KEPT_LINEAGES_RECOVERY_DOC} describes`;

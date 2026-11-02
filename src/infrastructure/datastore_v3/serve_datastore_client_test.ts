@@ -784,7 +784,11 @@ Deno.test("ServeDatastoreClient.acquireLock: a floor past the small reply limit 
 });
 
 Deno.test("ServeDatastoreClient.acquireLock: a lease past its limit is refused and cancelled (swamp-club#4166)", async () => {
-  const body = counted(Infinity, 0x20, new TextEncoder().encode("{"));
+  const body = counted(
+    SERVE_LEASE_REPLY_MAX_BYTES + 2 * PIECE,
+    0x20,
+    new TextEncoder().encode("{"),
+  );
   const { client } = clientWith(() =>
     new Response(body.stream, { status: 201 })
   );
@@ -797,7 +801,11 @@ Deno.test("ServeDatastoreClient.acquireLock: a lease past its limit is refused a
 });
 
 Deno.test("ServeDatastoreClient.renewLock: a renewal past the small reply limit is refused, as it carries no floor (swamp-club#4166)", async () => {
-  const body = counted(Infinity, 0x20, new TextEncoder().encode("{"));
+  const body = counted(
+    SERVE_REPLY_MAX_BYTES + 2 * PIECE,
+    0x20,
+    new TextEncoder().encode("{"),
+  );
   const { client } = clientWith(() => new Response(body.stream));
   const error = await assertRejects(
     () => client.renewLock(LEASE.leaseId, 30_000, signal()),
@@ -939,7 +947,7 @@ Deno.test("ServeDatastoreClient.checkAccess: every reply naming the caller's rea
 
 const PIECE = 256 * 1024;
 
-function counted(total = Infinity, fill = 0x20, prefix = new Uint8Array()) {
+function counted(total: number, fill = 0x20, prefix = new Uint8Array()) {
   let handed = 0;
   let cancelled = false;
   const stream = new ReadableStream<Uint8Array>({
@@ -980,7 +988,7 @@ function assertBounded(body: ReturnType<typeof counted>, maxBytes: number) {
 Deno.test("ServeDatastoreClient.getChunk: a body past the largest chunk is refused and cancelled, whatever Content-Length says", async () => {
   const lengths: Record<string, string>[] = [{}, { "content-length": "10" }];
   for (const headers of lengths) {
-    const body = counted();
+    const body = counted(CHUNK_BYTES + 2 * PIECE);
     const { client } = clientWith(() =>
       new Response(body.stream, { status: 200, headers })
     );
@@ -1040,12 +1048,12 @@ Deno.test("ServeDatastoreClient.changes and partitionCommits: a page past its li
     commits: [],
   });
 
-  const feed = counted();
-  const { client: endless } = clientWith(() =>
+  const feed = counted(SERVE_PAGE_MAX_BYTES + 2 * PIECE);
+  const { client: oversized } = clientWith(() =>
     new Response(feed.stream, { status: 200 })
   );
   await assertRejects(
-    () => endless.changes(0, signal(), 1000),
+    () => oversized.changes(0, signal(), 1000),
     ServeReplyTooLargeError,
   );
   assertBounded(feed, SERVE_PAGE_MAX_BYTES);
@@ -1110,7 +1118,7 @@ Deno.test("MAX_WRITTEN_COMMIT_REPLY_BYTES: a page of the largest commit serve's 
 });
 
 Deno.test("ServeDatastoreClient: a small JSON reply past its limit is refused", async () => {
-  const body = counted();
+  const body = counted(SERVE_REPLY_MAX_BYTES + 2 * PIECE);
   const { client } = clientWith(() => new Response(body.stream));
   const error = await assertRejects(
     () => client.hasChunks(["a".repeat(64)], signal()),
@@ -1127,7 +1135,11 @@ Deno.test("ServeDatastoreClient: an error body past its limit maps from the stat
       (c: ServeDatastoreClient) => c.acquireLock(LOCK_KEY, 30_000, 0, signal()),
     ]
   ) {
-    const body = counted(Infinity, 0x20, new TextEncoder().encode('{"code":'));
+    const body = counted(
+      SERVE_ERROR_BODY_MAX_BYTES + 2 * PIECE,
+      0x20,
+      new TextEncoder().encode('{"code":'),
+    );
     const { client } = clientWith(() =>
       new Response(body.stream, { status: 409 })
     );
@@ -1221,7 +1233,7 @@ Deno.test("ServeDatastoreClient.compactedBase: an entry of another namespace or 
 });
 
 Deno.test("ServeDatastoreClient.compactedBase: a page past its limit is refused and cancelled", async () => {
-  const feed = counted();
+  const feed = counted(SERVE_PAGE_MAX_BYTES + 2 * PIECE);
   const { client } = clientWith(() =>
     new Response(feed.stream, { status: 200 })
   );

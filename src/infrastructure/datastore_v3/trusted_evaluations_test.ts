@@ -84,7 +84,7 @@ Deno.test("v3EvaluationTrust: an evaluation a forwarded commit wrote, or of unkn
   await assertRejects(
     () => trustOver("user:ana").trust.definition(TYPE, "web"),
     UserError,
-    "not made on this server",
+    "not by this server",
   );
   await assertRejects(
     () => trustOver(null).trust.definition(TYPE, "web"),

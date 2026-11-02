@@ -652,7 +652,7 @@ Deno.test({
       await assertRejects(
         () => trust.definition(type, "web"),
         UserError,
-        "not made on this server",
+        "not by this server",
       );
     });
   },

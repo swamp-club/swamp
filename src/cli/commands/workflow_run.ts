@@ -58,7 +58,10 @@ import {
 } from "../../domain/datastore/datastore_config.ts";
 import type { DatastoreSyncService } from "../../domain/datastore/datastore_sync_service.ts";
 import type { RepositoryContext } from "../../infrastructure/persistence/repository_factory.ts";
-import { createSyncGate, type SyncGate } from "../../serve/sync_gate.ts";
+import {
+  createSyncGate,
+  type SyncGate,
+} from "../../infrastructure/persistence/sync_gate_lock.ts";
 import { createStepLockHook } from "../../serve/deps.ts";
 import { findDefinitionByIdOrName } from "../../domain/models/model_lookup.ts";
 import {

@@ -298,6 +298,10 @@ Deno.test("checkRunRecord: a nested step's decision is its child's, when that ch
       op,
     );
   assertEquals(await judged(childRecord(RUN, decision)), undefined);
+  assertEquals(
+    await judged(childRecord(RUN.toUpperCase(), decision)),
+    undefined,
+  );
   const other = "99999999-aaaa-4bbb-8ccc-dddddddddddd";
   assert(await judged(childRecord(other, decision)) !== undefined);
   assert(
@@ -442,6 +446,10 @@ Deno.test("checkRunRecord: a nested workflow output must be a child run whose re
     allowed = ["run", "read"],
   ) => await checkRunRecord(context(stored, allowed).context, op);
   assertEquals(await judged({ [childKey]: child(RUN) }), undefined);
+  assertEquals(
+    await judged({ [childKey]: child(RUN.toUpperCase()) }),
+    undefined,
+  );
   assert(
     await judged({
       [childKey]: child("99999999-aaaa-4bbb-8ccc-dddddddddddd"),

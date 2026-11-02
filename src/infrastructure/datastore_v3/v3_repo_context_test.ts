@@ -58,6 +58,7 @@ import {
   v3RepositoryFactoryConfig,
   v3RetentionHistory,
 } from "./v3_repo_context.ts";
+import type { V3OwnerCheck } from "./v3_repo_context.ts";
 import { V3_CACHE_ROOT_ESCAPE_CODE } from "./cache_root_containment.ts";
 import {
   acquireV3WriterLock,
@@ -319,6 +320,27 @@ Deno.test("compactQuietly: a compaction that runs out of its budget stops at deb
       60_000,
     );
     assertEquals(levelsOf(), ["debug", "warning"]);
+
+    const afterAbort = (fail: (signal: AbortSignal) => unknown) =>
+      compactQuietly(
+        {
+          datastorePath,
+          compactIfDue: (signal: AbortSignal) =>
+            new Promise((_, reject) =>
+              signal.addEventListener("abort", () => reject(fail(signal)))
+            ),
+        } as unknown as V3Datastore,
+        1,
+      );
+    await afterAbort((signal) =>
+      new Error("the fence wait gave up", { cause: signal.reason })
+    );
+    await afterAbort(() =>
+      new DOMException("Signal timed out.", "TimeoutError")
+    );
+    assertEquals(levelsOf(), ["debug", "warning", "debug", "debug"]);
+    await afterAbort(() => new Error("disk full"));
+    assertEquals(levelsOf(), ["debug", "warning", "debug", "debug", "warning"]);
   } finally {
     await reset();
   }
@@ -1586,82 +1608,98 @@ Deno.test({
   },
 });
 
+async function holdCutOffWhileRecordingLineage(
+  ownerCheck: V3OwnerCheck,
+): Promise<void> {
+  await withTempDir(async (dir) => {
+    const repoDir = join(dir, "repo");
+    await Deno.mkdir(repoDir, { recursive: true });
+    const remote = createInMemoryRemote({
+      controlPlane: true,
+      storage: true,
+      replicaTarget: {
+        type: "s3",
+        bucket: "team-bucket",
+        prefix: "",
+        region: "us-east-1",
+      },
+      replicaPaths: true,
+    });
+    const store = remote.datastoreControlPlaneStore!();
+    await store.put(
+      "datastore-format",
+      new TextEncoder().encode('{"format":3,"minReaderFormat":3}'),
+    );
+    const cut = new Proxy(store, {
+      get(target, property) {
+        const value = Reflect.get(target, property, target);
+        if (typeof value !== "function") return value;
+        if (property !== "putIfAbsent") return value.bind(target);
+        return (key: string, ...rest: unknown[]) =>
+          key.startsWith("lineage/")
+            ? Promise.reject(
+              new Error(`S3 putObjectConditional failed key=${key}`, {
+                cause: Object.assign(new Error("read ECONNRESET"), {
+                  code: "ECONNRESET",
+                }),
+              }),
+            )
+            : value.apply(target, [key, ...rest]);
+      },
+    });
+    try {
+      const location = bindV3BucketDatastore(
+        repoDir,
+        { ...BUCKET_CONFIG },
+        {
+          createLock: () => {
+            throw new Error("not used");
+          },
+          createVerifier: () => {
+            throw new Error("not used");
+          },
+          resolveDatastorePath: (repo) => join(repo, ".swamp"),
+          datastoreWideLease: true,
+          datastoreControlPlaneStore: () => cut,
+          storage: () => remote.storage!(),
+          replicaTarget: () => remote.replicaTarget!(),
+          replicaPaths: () => remote.replicaPaths!(),
+        },
+        { platform: { os: "linux", arch: "x86_64" } },
+      );
+      await assertRejects(
+        () => holdV3Writer(location, repoDir, { ownerCheck }),
+        V3ReplicationError,
+        "replication lineage of this writer could not be recorded",
+      );
+      assertEquals(
+        v3CommandCommits(),
+        ownerCheck.as === "serve" ? { committed: true } : {
+          committed: false,
+          datastorePath: location.path,
+        },
+      );
+      await closeV3Datastores();
+      assertEquals(v3CommandCommits(), { committed: true });
+    } finally {
+      resetV3BucketBindingsForTesting();
+    }
+  });
+}
+
 Deno.test({
   name:
     "holdV3Writer: a hold cut off from the storage while it records its replication lineage has committed nothing, and v3CommandCommits says so until the close (swamp-club#3882)",
   // Litestream replication needs a Unix user id.
   ignore: Deno.build.os === "windows",
-  fn: async () => {
-    await withTempDir(async (dir) => {
-      const repoDir = join(dir, "repo");
-      await Deno.mkdir(repoDir, { recursive: true });
-      const remote = createInMemoryRemote({
-        controlPlane: true,
-        storage: true,
-        replicaTarget: {
-          type: "s3",
-          bucket: "team-bucket",
-          prefix: "",
-          region: "us-east-1",
-        },
-        replicaPaths: true,
-      });
-      const store = remote.datastoreControlPlaneStore!();
-      await store.put(
-        "datastore-format",
-        new TextEncoder().encode('{"format":3,"minReaderFormat":3}'),
-      );
-      const cut = new Proxy(store, {
-        get(target, property) {
-          const value = Reflect.get(target, property, target);
-          if (typeof value !== "function") return value;
-          if (property !== "putIfAbsent") return value.bind(target);
-          return (key: string, ...rest: unknown[]) =>
-            key.startsWith("lineage/")
-              ? Promise.reject(
-                new Error(`S3 putObjectConditional failed key=${key}`, {
-                  cause: Object.assign(new Error("read ECONNRESET"), {
-                    code: "ECONNRESET",
-                  }),
-                }),
-              )
-              : value.apply(target, [key, ...rest]);
-        },
-      });
-      try {
-        const location = bindV3BucketDatastore(
-          repoDir,
-          { ...BUCKET_CONFIG },
-          {
-            createLock: () => {
-              throw new Error("not used");
-            },
-            createVerifier: () => {
-              throw new Error("not used");
-            },
-            resolveDatastorePath: (repo) => join(repo, ".swamp"),
-            datastoreWideLease: true,
-            datastoreControlPlaneStore: () => cut,
-            storage: () => remote.storage!(),
-            replicaTarget: () => remote.replicaTarget!(),
-            replicaPaths: () => remote.replicaPaths!(),
-          },
-          { platform: { os: "linux", arch: "x86_64" } },
-        );
-        await assertRejects(
-          () => holdV3Writer(location, repoDir),
-          V3ReplicationError,
-          "replication lineage of this writer could not be recorded",
-        );
-        assertEquals(v3CommandCommits(), {
-          committed: false,
-          datastorePath: location.path,
-        });
-        await closeV3Datastores();
-        assertEquals(v3CommandCommits(), { committed: true });
-      } finally {
-        resetV3BucketBindingsForTesting();
-      }
-    });
-  },
+  fn: () => holdCutOffWhileRecordingLineage({ as: "writer" }),
+});
+
+Deno.test({
+  name:
+    "holdV3Writer: serve's hold records no command mark, so v3CommandCommits never reads serve as a command that committed nothing",
+  // Litestream replication needs a Unix user id.
+  ignore: Deno.build.os === "windows",
+  fn: () =>
+    holdCutOffWhileRecordingLineage({ as: "serve", address: undefined }),
 });

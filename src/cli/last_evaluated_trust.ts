@@ -88,7 +88,7 @@ const realDeps: LastEvaluatedDeps = {
 function adviceFor(error: UserError, knowsMember: boolean): string {
   return knowsMember
     ? `${error.message} Evaluate it from this checkout to replay your own.`
-    : `${error.message} This checkout cannot tell which writes are yours, as with a token from the environment, so only serve's own evaluations replay.`;
+    : `${error.message} This checkout cannot tell which writes are yours, as with a token from the environment, so only evaluations saved with no member's principal replay.`;
 }
 
 /** The code of a refusal to replay: the caller asked for an exact replay. */
@@ -126,8 +126,8 @@ export async function checkLastEvaluation<T>(
   try {
     const principal = await deps.principal(upstream) ?? "";
     knowsMember = principal !== "";
-    // Unknown is not unset: "" matches only serve's own records and takes
-    // the checkout's strict path.
+    // Unknown is not unset: "" matches only records with no forwarded
+    // principal and takes the checkout's strict path.
     const cache = await read(await deps.trust(repoDir, repos, principal));
     if (cache === undefined) return { stands: true, vetted: false };
     return { stands: true, vetted: true, cache };
