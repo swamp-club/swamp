@@ -594,11 +594,12 @@ Pending-dispatch transitions are written the same way by
 with no push, and falls back to the method run until the `pending` definition
 exists. Transitions that arrive while that one fallback is creating the
 definition wait for it and then write directly, so a fresh repository's first
-burst of queued steps costs one output record, not one per step. Before swamp-club#4292 each transition was a method run, so a saturated
-pool saved about two output records per queued step. The step does not wait
-for its queue transitions, so one can start after the dispatching run's root
-ended; its write then goes to the datastore's hook, or on a v3 datastore
-commits on its own. The CLI:
+burst of queued steps costs one output record, not one per step. Before
+swamp-club#4292 each transition was a method run, so a saturated pool wrote
+about two output records per queued step. The step does not wait for its
+queue transitions, so one can start after the dispatching run's root ended;
+its write then goes to the datastore's hook, or on a v3 datastore commits on
+its own. The CLI:
 
 ```bash
 swamp worker token create <name> --duration <dur>   # mint; prints the credential once
