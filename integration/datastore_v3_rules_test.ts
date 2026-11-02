@@ -369,6 +369,7 @@ const PINNED_V3_IMPORTERS: readonly string[] = [
   "src/serve/forwarded_content_authorization.ts -> src/domain/datastore_v3/intent_key_paths.ts",
   "src/serve/forwarded_content_authorization.ts -> src/domain/datastore_v3/op.ts",
   "src/serve/forwarded_content_authorization.ts -> src/domain/datastore_v3/partition_key.ts",
+  "src/serve/forwarded_content_authorization.ts -> src/domain/datastore_v3/read_model.ts",
   "src/serve/forwarded_content_authorization.ts -> src/infrastructure/datastore_v3/v3_datastore.ts",
   "src/serve/forwarded_data_content.ts -> src/domain/datastore_v3/commit_authorization.ts",
   "src/serve/forwarded_data_content.ts -> src/domain/datastore_v3/op.ts",

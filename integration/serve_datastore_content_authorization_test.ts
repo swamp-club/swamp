@@ -32,6 +32,7 @@ import {
 import { stringify as stringifyYaml } from "@std/yaml";
 import type { Grant } from "../src/domain/models/access/grant_model.ts";
 import { Definition } from "../src/domain/definitions/definition.ts";
+import { ModelType } from "../src/domain/models/model_type.ts";
 import {
   type PartitionKey,
   partitionOf,
@@ -2162,6 +2163,62 @@ Deno.test({
           const byAdmin = await remove(runId, "bob-token");
           assertEquals(byAdmin.status, 200, JSON.stringify(byAdmin.json));
         }
+      },
+      undefined,
+      MANAGED,
+    );
+  },
+});
+
+Deno.test({
+  name:
+    "forwarded content: a rename never takes as its prior a same-named admin-only behavior of another type that declares its id (swamp-club#4294)",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    await withServer(
+      [writeModels],
+      async (server) => {
+        const adminType = ModelType.create("command/shell");
+        const admin = Definition.create({
+          name: "producer",
+          globalArguments: {},
+        });
+        await runInRootUnitOfWork(
+          server.ctx.repoContext,
+          { flush: undefined },
+          () => server.ctx.repoContext.definitionRepo.save(adminType, admin),
+        );
+        (server.ctx.authConfig as { restrictedModelTypes: string[] })
+          .restrictedModelTypes = [adminType.normalized];
+        const renamed = await forward(
+          server,
+          behaviorPartition("producer-renamed"),
+          [
+            put(
+              {
+                kind: "definition.rename-to",
+                definition: { kind: "model", name: "producer-renamed" },
+                from: "producer",
+              },
+              `config/models/${server.modelType.normalized}/producer-renamed.yaml`,
+              yaml({
+                ...admin.toData(),
+                name: "producer-renamed",
+                type: server.modelType.normalized,
+              }),
+            ),
+          ],
+        );
+        assertEquals(renamed.status, 403, JSON.stringify(renamed.json));
+        assertStringIncludes(String(renamed.json.message), "cannot be read");
+        assertEquals(
+          await server.ctx.repoContext.definitionRepo.findByName(
+            server.modelType,
+            "producer-renamed",
+          ),
+          null,
+        );
       },
       undefined,
       MANAGED,

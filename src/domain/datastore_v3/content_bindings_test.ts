@@ -77,6 +77,14 @@ Deno.test("identityRefusal: each declared field that differs from its intent, ke
       identityRefusal(create, {}, declared, { id: OTHER, name: "web" }),
     ],
     [
+      "stored type",
+      identityRefusal(create, {}, declared, {
+        id: ID,
+        name: "web",
+        type: "acme/admin",
+      }),
+    ],
+    [
       "auto-definition id",
       identityRefusal(
         { kind: "auto-definition.save", autoDefinition: { id: OTHER } },

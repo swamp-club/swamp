@@ -39,6 +39,7 @@ import {
 } from "../src/infrastructure/tracing/span_test_helpers.ts";
 import { VERSION } from "../src/cli/commands/version.ts";
 import {
+  createModelLock,
   requireInitializedRepo,
   requireInitializedRepoReadOnly,
   requireInitializedRepoUnlocked,
@@ -128,6 +129,7 @@ import { hourStartOf } from "../src/infrastructure/persistence/control_plane_ret
 import { Command } from "@cliffy/command";
 import { workflowApprovalsCommand } from "../src/cli/commands/workflow_approvals.ts";
 import { runCommand } from "../src/cli/commands/run.ts";
+import { datastoreLockCommand } from "../src/cli/commands/datastore_lock.ts";
 import { vaultAuditTrailCommand } from "../src/cli/commands/vault_audit_trail.ts";
 import { vaultReadSecretCommand } from "../src/cli/commands/vault_read_secret.ts";
 import {
@@ -356,6 +358,55 @@ Deno.test({
         ),
         "the record is in the bucket's control plane",
       );
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "v3 bucket: datastore lock release --force --behavior releases that behavior's lock on a direct checkout (swamp-club#4294)",
+  ignore: Deno.build.os === "windows",
+  async fn() {
+    await withRoot(async (root, bucket) => {
+      const repoDir = join(root, "repo");
+      await initRepo(repoDir);
+      assertEquals(errorOf(await setupBucket(repoDir, bucket)), undefined);
+      const { datastoreConfig } = await resolveDatastoreForRepo(repoDir);
+      await v3DatastoreConfigOf(repoDir, datastoreConfig);
+      const held = await createModelLock(
+        datastoreConfig,
+        "aws-ec2",
+        "my-server",
+      );
+      await held.acquire();
+      try {
+        const originalLog = console.log;
+        console.log = () => {};
+        try {
+          await new Command()
+            .globalOption("--json", "JSON output")
+            .command(
+              "datastore",
+              new Command().command("lock", datastoreLockCommand),
+            )
+            .parse([
+              "datastore",
+              "lock",
+              "release",
+              "--force",
+              "--behavior",
+              "aws-ec2/my-server",
+              "--repo-dir",
+              repoDir,
+              "--json",
+            ]);
+        } finally {
+          console.log = originalLog;
+        }
+        assertEquals(await held.inspect(), null);
+      } finally {
+        await held.release().catch(() => {});
+      }
     });
   },
 });

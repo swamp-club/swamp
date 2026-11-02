@@ -106,6 +106,7 @@ import { isTransientError } from "../infrastructure/persistence/io_errors.ts";
 import {
   setImplicitServeRouting,
   setMarkerServerAddress,
+  setRemoteIndicatorMode,
 } from "./remote_run.ts";
 import {
   serveUpstreamCommandPath,
@@ -2617,6 +2618,10 @@ async function runInvocation(
       quietRequested = options.quiet ?? false;
       setLockProgressQuiet(quietRequested);
       setLockProgressOutputMode(outputMode);
+      setRemoteIndicatorMode(
+        outputMode,
+        commandInfo.optionKeys.includes("--server"),
+      );
       setServeOfflineOutputMode(outputMode);
       enableV3RecoveryProgress();
 

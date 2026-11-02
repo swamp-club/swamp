@@ -38,6 +38,7 @@ import {
   collectServeExtraArgs,
   isUnreachableBindHost,
   legacyHealthBody,
+  loadServeCaCerts,
   MAX_CANCEL_BODY_BYTES,
   parseContinuationSweepInterval,
   parseDatastorePollInterval,
@@ -2009,6 +2010,35 @@ Deno.test("resolveServeStartupSettings: TLS is enabled when both cert and key ar
     mergedServeOptions({ certFile: "cert.pem", keyFile: "key.pem" }),
   );
   assertEquals(settings.tlsEnabled, true);
+});
+
+Deno.test("loadServeCaCerts: no --ca-cert reads nothing", async () => {
+  assertEquals(await loadServeCaCerts(undefined), undefined);
+});
+
+Deno.test("loadServeCaCerts: returns the PEM file's content", async () => {
+  const dir = await Deno.makeTempDir();
+  try {
+    const path = join(dir, "ca.pem");
+    await Deno.writeTextFile(path, "PEM");
+    assertEquals(await loadServeCaCerts(path), ["PEM"]);
+  } finally {
+    await Deno.remove(dir, { recursive: true }).catch(() => {});
+  }
+});
+
+Deno.test("loadServeCaCerts: an unreadable file is a UserError naming --ca-cert", async () => {
+  const dir = await Deno.makeTempDir();
+  try {
+    const path = join(dir, "missing.pem");
+    await assertRejects(
+      () => loadServeCaCerts(path),
+      UserError,
+      `Could not read the CA certificate file '${path}' given by --ca-cert`,
+    );
+  } finally {
+    await Deno.remove(dir, { recursive: true }).catch(() => {});
+  }
 });
 
 Deno.test("readTlsFile: returns the file content", async () => {

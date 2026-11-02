@@ -33,6 +33,7 @@ import {
   vaultEdit,
   type VaultEditDeps,
   type VaultEditEvent,
+  VaultSaveOutcomeUnknownError,
 } from "./edit.ts";
 import type { VaultConfigData } from "../../domain/vaults/vault_config.ts";
 import { registerManagedConfig } from "../../infrastructure/persistence/paths.ts";
@@ -538,6 +539,28 @@ Deno.test("vaultEdit: stdin rename whose secrets cannot move leaves the config u
     "Cannot rename vault 'my-vault' to 'renamed': Secrets are already stored",
   );
   assertEquals(saved, []);
+});
+
+Deno.test("vaultEdit: a rename whose save outcome is unknown keeps the secrets where the save would put them", async () => {
+  const calls: string[] = [];
+  const { deps } = makeStdinDeps({
+    moveSecrets: () => {
+      calls.push("move");
+      return Promise.resolve(() => {
+        calls.push("undo");
+        return Promise.resolve();
+      });
+    },
+    saveConfigData: () =>
+      Promise.reject(new VaultSaveOutcomeUnknownError("reply lost")),
+  });
+
+  await assertRejects(
+    () => runStdin(deps, "name: renamed\ntype: env\n"),
+    VaultSaveOutcomeUnknownError,
+    "reply lost",
+  );
+  assertEquals(calls, ["move"]);
 });
 
 Deno.test("vaultEdit: stdin rename moves the secrets back when the save fails", async () => {

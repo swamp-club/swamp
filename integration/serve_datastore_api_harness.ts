@@ -35,6 +35,7 @@ import {
   type VouchBudget,
 } from "../src/serve/datastore_api.ts";
 import { matchDatastoreRoute } from "../src/serve/datastore_routes.ts";
+import { handleMessage } from "../src/serve/connection.ts";
 import {
   asTryLock,
   DatastoreLockLeases,
@@ -164,6 +165,9 @@ export async function withServer(
       ),
     } as ConnectionContext;
     const handle = async (req: Request): Promise<Response> => {
+      if ((req.headers.get("upgrade") ?? "").toLowerCase() === "websocket") {
+        return requestSocket(req, ctx);
+      }
       const route = matchDatastoreRoute(new URL(req.url).pathname);
       if (route === undefined) return new Response("no", { status: 404 });
       return await handleDatastoreRequest(req, route, "127.0.0.1", {
@@ -207,6 +211,23 @@ export async function withServer(
       await locks.dispose();
     }
   });
+}
+
+function requestSocket(req: Request, ctx: ConnectionContext): Response {
+  const token = (req.headers.get("authorization") ?? "").replace(
+    /^Bearer /,
+    "",
+  );
+  const id = TOKENS[token];
+  if (id === undefined) return new Response("bad token", { status: 401 });
+  const { socket, response } = Deno.upgradeWebSocket(req);
+  const active = new Map<string, AbortController>();
+  socket.onmessage = (event) =>
+    handleMessage(socket, ctx, active, event, {
+      kind: "user",
+      id: id.replace(/^user:/, ""),
+    });
+  return response;
 }
 
 export function sha256Hex(bytes: Uint8Array): Promise<string> {

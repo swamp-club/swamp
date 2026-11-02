@@ -40,6 +40,7 @@ import {
   requestServerResponse,
   resetImplicitServeRouting,
   resetMarkerServerAddress,
+  resetRemoteIndicatorMode,
   resolveCaCertPath,
   resolveServerToken,
   resolveServerTokenFromOptions,
@@ -51,6 +52,7 @@ import {
   ServerResponseError,
   setImplicitServeRouting,
   setMarkerServerAddress,
+  setRemoteIndicatorMode,
   subscribeServerEvents,
   tokenFileBoundTo,
   toWebSocketUrl,
@@ -2825,6 +2827,78 @@ Deno.test("writeRemoteIndicator: an unparseable value is not echoed", () => {
   } finally {
     console.error = originalError;
   }
+});
+
+function capturedIndicator(
+  mode: "log" | "json",
+  explicitServer: boolean,
+): string[] {
+  const calls: string[] = [];
+  const originalError = console.error;
+  console.error = (...args: unknown[]) => {
+    calls.push(args.map(String).join(" "));
+  };
+  setRemoteIndicatorMode(mode, explicitServer);
+  try {
+    writeRemoteIndicator("https://serve.example.com");
+  } finally {
+    resetRemoteIndicatorMode();
+    console.error = originalError;
+  }
+  return calls;
+}
+
+Deno.test("writeRemoteIndicator: an implicitly routed --json command writes no indicator", () => {
+  assertEquals(capturedIndicator("json", false), []);
+});
+
+Deno.test("writeRemoteIndicator: an explicit --server keeps the indicator in --json", () => {
+  assertEquals(capturedIndicator("json", true).length, 1);
+});
+
+Deno.test("writeRemoteIndicator: log mode keeps the indicator whatever routed it", () => {
+  assertEquals(capturedIndicator("log", false).length, 1);
+  assertEquals(capturedIndicator("log", true).length, 1);
+});
+
+Deno.test({
+  name:
+    "requestServerResponse: an implicitly routed --json error leaves stderr one JSON document (swamp-club#4294)",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    const server = scriptedServer((request, reply) => {
+      reply({
+        type: "error",
+        id: request.id,
+        error: {
+          code: "workflow_approve_failed",
+          message: "Step build is not awaiting approval",
+        },
+      });
+    });
+    const stderr: string[] = [];
+    const originalError = console.error;
+    console.error = (...args: unknown[]) => {
+      stderr.push(args.map(String).join(" "));
+    };
+    setRemoteIndicatorMode("json", false);
+    try {
+      const error = await assertRejects(() =>
+        requestServerResponse(
+          { server: server.url },
+          { type: "workflow.approve" },
+        )
+      );
+      renderError(error, "json");
+    } finally {
+      resetRemoteIndicatorMode();
+      console.error = originalError;
+      await server.shutdown();
+    }
+    const document = JSON.parse(stderr.join("\n"));
+    assertEquals(document.code, "workflow_approve_failed");
+  },
 });
 
 Deno.test("toWebSocketUrl: the invalid-URL error hides credentials", () => {

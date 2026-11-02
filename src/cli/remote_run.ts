@@ -20,6 +20,7 @@
 import type { Command } from "@cliffy/command";
 import { getLogger } from "@logtape/logtape";
 import { errorPaths, markErrorPaths, UserError } from "../domain/errors.ts";
+import type { OutputMode } from "../presentation/output/output.ts";
 import type {
   ModelMethodRunPayload,
   ServerMessage,
@@ -123,7 +124,25 @@ function serverWithoutCredentials(server: string): string | undefined {
   return `${url.protocol}//${url.host}${path}`;
 }
 
+let _remoteIndicatorSilent = false;
+
+/**
+ * a JSON error goes to stderr too, so a command routed to serve by the marker
+ * or env stays one JSON document; an explicit --server keeps its indicator
+ */
+export function setRemoteIndicatorMode(
+  mode: OutputMode,
+  explicitServer: boolean,
+): void {
+  _remoteIndicatorSilent = mode === "json" && !explicitServer;
+}
+
+export function resetRemoteIndicatorMode(): void {
+  _remoteIndicatorSilent = false;
+}
+
 export function writeRemoteIndicator(serverUrl: string): void {
+  if (_remoteIndicatorSilent) return;
   console.error(
     gutterLine(
       "Remote",

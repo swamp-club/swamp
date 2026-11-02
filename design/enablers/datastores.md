@@ -6704,17 +6704,21 @@ reads a checked put's bytes only once the caller is shown to possess every
 chunk it names, so a refusal tells it nothing about content it may not read;
 refusals name the field, never its value. It parses the content as the
 repositories do, reads the record the put replaces from the read model (for
-a move, the record the commit tombstones; for a rename, the old name's), and
+a move, the record the commit tombstones; for a rename, the old name's,
+at its name's key or, when that misses, the one record of the old name that
+declares the put's id and type, as adoption keeps a definition at its id
+key; a same-named record of another type is never taken), and
 applies, through the caller's audited decisions, what serve's handlers apply
 to the same write. The checks the handlers share are one implementation
 (`RequestAuthority`).
 
 - **Identity** (`content_bindings.ts`): a definition, vault, auto-definition
   or evaluated file declares the name, id and type its intent and key name;
-  an edit keeps the stored id. A create may not take an id a definition or
-  workflow holds, or one that records (a behavior's data, a workflow's runs)
-  are still stored under, nor a name another live definition holds (of any
-  type, for a behavior), except an auto-definition promoted to its own name.
+  an edit keeps the stored id and type. A create may not take an id a
+  definition or workflow holds, or one that records (a behavior's data, a
+  workflow's runs) are still stored under, nor a name another live definition
+  holds (of any type, for a behavior), except an auto-definition promoted to
+  its own name.
   The id checks run again under the lock; two creates of one name share the
   name's config partition, so its head orders them.
 - **Behavior and workflow edits**: `write` on the result, `tag` for a retag
@@ -6725,8 +6729,11 @@ to the same write. The checks the handlers share are one implementation
   every name it touches as `vault.edit` decides it, the local_encryption key
   source left as serve sets it, no create over secrets serve still holds
   under the name. A local_encryption vault is renamed with `vault.edit`,
-  which moves its secrets; a forwarded rename's removal lands only after its
-  rename-to.
+  which moves serve's secrets. Serve and each member keep their own
+  local_encryption secrets, so a member's `vault edit` of one moves the
+  checkout's secrets as a local edit does, saves through that request rather
+  than forwarding commits, and moves them back if serve refuses; a forwarded
+  rename's removal lands only after its rename-to.
 - **Auto-definitions**: content of the shape direct execution writes, or
   changing only a stored one's global arguments, needs `run` and adoption's
   guards; any other content is an edit of the behavior. A copy carrying a
@@ -8355,7 +8362,8 @@ the shared `--address`, which a forwarded browser session's Origin names,
 and its own advertised address, which a follower forwarding to it puts in
 Host. `serve --ca-cert` (`SWAMP_CA_CERT`, `tls.ca-cert`) adds the CA
 certificates a node trusts when it calls the leader, as clients' `--ca-cert`
-does.
+does. Serve reads the file at startup on every repository, so an unreadable
+one is refused even where no leader link uses it.
 
 **Proxy, don't impersonate.** A follower passes each write to the leader
 with the caller's own credential, and the leader authenticates and

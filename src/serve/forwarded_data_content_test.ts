@@ -60,6 +60,7 @@ function context(stored: Record<string, string>): ContentCheckContext {
       ),
     digest: () => Promise.resolve(null),
     holdsRecordsUnder: () => Promise.resolve(false),
+    keysIn: () => Promise.resolve([]),
     recheckUnderLock: () => {},
     now: () => new Date(),
   };
