@@ -1200,10 +1200,9 @@ export class DispatchService {
   }
 
   /**
-   * the JS is what the definition's factory built; the declared list and the
-   * assets are read at each dispatch so a newly declared or edited asset ships
-   * under a new fingerprint, and recorded hashes let the data plane refuse
-   * bytes changed since
+   * the declared list and assets are read at each dispatch so a change ships
+   * under a new fingerprint; recorded hashes let the data plane refuse bytes
+   * changed since
    */
   async #ensureBundle(modelDef: ModelDefinition): Promise<string> {
     if (!modelDef.bundleSourceFactory) {
