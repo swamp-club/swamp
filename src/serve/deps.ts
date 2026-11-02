@@ -283,8 +283,8 @@ export async function createWorkflowRunDeps(
           signal,
         ),
       findEvaluatedWorkflow: (runId) => evaluatedWorkflows().findByRunId(runId),
-      // on a v3 datastore only serve's own evaluations run: none trusted
-      // refuses rather than falling back to the file
+      // on a v3 datastore only evaluations with no forwarded writer run: none
+      // trusted refuses rather than falling back to the file
       evaluatedCache: async (name) => {
         const trust = repoContext.evaluationTrust;
         if (trust === undefined) {
@@ -294,7 +294,7 @@ export async function createWorkflowRunDeps(
         if (cache === null) {
           throw new UserError(
             `No previously evaluated workflow found for "${name}" that this ` +
-              `server evaluated.\n\nEvaluate the workflow first:\n` +
+              `server can run.\n\nEvaluate the workflow first:\n` +
               `  swamp workflow evaluate ${name}`,
           );
         }

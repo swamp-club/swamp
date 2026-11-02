@@ -536,6 +536,64 @@ Deno.test({
 });
 
 Deno.test({
+  name:
+    "remote execution: a resource under a name the dispatch wrote as a file is refused at the write call",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    await withTempDir(async (dir) => {
+      const orchestrator = await startOrchestrator(dir);
+      const workerStop = new AbortController();
+      let workerDone: Promise<WorkerExitResult> | null = null;
+      try {
+        const token = await orchestrator.mintToken("clash-worker");
+        workerDone = runWorker({
+          url: orchestrator.serverUrl,
+          token,
+          labels: { tier: "it" },
+          swampVersion: "test",
+          cacheDir: join(dir, "worker-cache"),
+          signal: workerStop.signal,
+          runnerCommand: TEST_RUNNER_COMMAND,
+        });
+        await waitFor(
+          () => orchestrator.gateway.workers().length === 1,
+          "worker enrollment",
+        );
+
+        await orchestrator.dispatchService.executeRemote(
+          remoteStepRequest({ methodArgs: { echo: "", mode: "clash" } }),
+        );
+
+        const repo = orchestrator.repoContext.unifiedDataRepo;
+        const report = JSON.parse(
+          new TextDecoder().decode(
+            (await repo.getContent(IT_TYPE, IT_DEFINITION_ID, "clash-report"))!,
+          ),
+        );
+        assertStringIncludes(
+          report.echo,
+          "Duplicate data instance name 'clash-x' (already written as file 'log' in this run)",
+        );
+        assertEquals(
+          await repo.listVersions(IT_TYPE, IT_DEFINITION_ID, "clash-x"),
+          [1],
+        );
+        assertEquals(
+          (await repo.findByName(IT_TYPE, IT_DEFINITION_ID, "clash-x"))!
+            .tags.type,
+          "file",
+        );
+      } finally {
+        workerStop.abort();
+        if (workerDone) await workerDone.catch(() => {});
+        await orchestrator.shutdown();
+      }
+    });
+  },
+});
+
+Deno.test({
   name: "remote execution: boot reconciliation marks stale records",
   sanitizeOps: false,
   sanitizeResources: false,

@@ -107,8 +107,19 @@ Deno.test("StartSession.chooseHarness: moves agent to trust", () => {
   assertEquals(session.harness, "codex");
 });
 
-Deno.test("StartSession.chooseHarness: is refused outside the agent step", () => {
-  for (const step of ["task", "trust", "launched"] as const) {
+Deno.test("StartSession.chooseHarness: changes the agent at trust and clears trust", () => {
+  const session = StartSession.fromData({
+    ...sessionAt("trust").toData(),
+    trustConfirmedAt: NOW.toISOString(),
+  });
+  session.chooseHarness("codex");
+  assertEquals(session.step, "trust");
+  assertEquals(session.harness, "codex");
+  assertEquals(session.trustConfirmedAt, undefined);
+});
+
+Deno.test("StartSession.chooseHarness: is refused at task and launched", () => {
+  for (const step of ["task", "launched"] as const) {
     assertThrows(
       () => sessionAt(step).chooseHarness("claude"),
       StartTransitionError,
@@ -123,13 +134,13 @@ Deno.test("StartSession.back: moves agent to task", () => {
   assertEquals(session.task?.text, "list my pods");
 });
 
-Deno.test("StartSession.back: moves trust to agent and clears trust", () => {
+Deno.test("StartSession.back: moves trust to task and clears trust", () => {
   const session = StartSession.fromData({
     ...sessionAt("trust").toData(),
     trustConfirmedAt: NOW.toISOString(),
   });
   session.back();
-  assertEquals(session.step, "agent");
+  assertEquals(session.step, "task");
   assertEquals(session.trustConfirmedAt, undefined);
   assertEquals(session.harness, "claude");
 });

@@ -2082,6 +2082,35 @@ Deno.test("restrictedCommands: admin can use restricted command", async () => {
   assertEquals(unauthorizedErrors.length, 0);
 });
 
+Deno.test("restrictedCommands: a methods-scoped admin grant does not admit a restricted command, which names no method", async () => {
+  const mock = createMockSocket();
+  const active = new Map<string, AbortController>();
+  const scopedAdmin = makeGrant({
+    subject: { kind: "user", name: "adam" },
+    actions: ["admin"],
+    resource: { kind: "access", pattern: "*" },
+    methods: ["create"],
+  });
+  using ctx = makeCtx(restrictedCommandConfig, [scopedAdmin]);
+
+  handleMessage(
+    mock as unknown as WebSocket,
+    ctx,
+    active,
+    makeEvent(JSON.stringify({
+      type: "model.search",
+      id: "rc-scoped-admin-1",
+      payload: { query: "test" },
+    })),
+    testPrincipal,
+  );
+
+  await waitFor(() => mock.sent.length > 0, "the refusal");
+  const msg = parseSent(mock);
+  assertEquals(msg.type, "error");
+  assertEquals((msg.error as Record<string, unknown>).code, "unauthorized");
+});
+
 Deno.test("restrictedCommands: non-restricted command still allowed for non-admin", async () => {
   const mock = createMockSocket();
   const active = new Map<string, AbortController>();

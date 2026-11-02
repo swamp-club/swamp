@@ -23,6 +23,7 @@
  */
 
 import { DatabaseSync } from "node:sqlite";
+import { exists } from "@std/fs";
 import { join } from "@std/path";
 import {
   type DatastoreConfig,
@@ -138,7 +139,9 @@ export async function inspectV3ReplicaRestorable(
     checkedAt: verdict.checkedAt,
   };
   if (verdict.ok) return { status: "verified", ...recorded };
-  const copyCheck = quickCheck(commitsDb);
+  const copyCheck = await exists(commitsDb)
+    ? quickCheck(commitsDb)
+    : `this checkout has no copy at ${commitsDb}`;
   return {
     status: copyCheck === "ok" ? "broken" : "broken-copy-damaged",
     ...recorded,

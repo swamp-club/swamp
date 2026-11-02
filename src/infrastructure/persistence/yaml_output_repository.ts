@@ -51,12 +51,15 @@ import { isIoError } from "./io_errors.ts";
 import { readDirSorted } from "./sorted_dir_entries.ts";
 import {
   inTimeSlices,
+  inTimeSlicesFromNow,
   mapBounded,
   SCAN_CONCURRENCY,
   type ScanKind,
+  sortInTimeSlices,
   withScanPermit,
 } from "./scan_permits.ts";
 import { type SharedScanOutcome, SharedScans } from "./shared_scans.ts";
+import { runOutsideAmbientContext } from "../runtime/ambient_context.ts";
 import type {
   NewestFirstOutput,
   OutputKey,
@@ -105,6 +108,61 @@ import {
 } from "./workflow_run_index.ts";
 
 const logger = getLogger(["output-repo"]);
+
+type PositionedOutput = ListedOutput & { position: number };
+
+/** a name without a stamp sorts first: only reading it says when it started */
+function newestFileFirst(a: PositionedOutput, b: PositionedOutput): number {
+  if (a.stamp !== b.stamp) {
+    if (a.stamp === undefined) return -1;
+    if (b.stamp === undefined) return 1;
+    return a.stamp < b.stamp ? 1 : -1;
+  }
+  return a.position - b.position;
+}
+
+interface ListingOrder {
+  readonly sorted: Promise<PositionedOutput[]>;
+  readonly controller: AbortController;
+  waiting: number;
+  settled: boolean;
+}
+
+async function pickInTimeSlices<T, R>(
+  items: readonly T[],
+  pick: (item: T, index: number) => R | undefined,
+  signal: AbortSignal | undefined,
+): Promise<R[]> {
+  const picked: R[] = [];
+  let at = 0;
+  await inTimeSlices(
+    () => at < items.length,
+    (until) => {
+      do {
+        const value = pick(items[at], at);
+        if (value !== undefined) picked.push(value);
+        at++;
+      } while (at < items.length && performance.now() < until);
+    },
+    signal,
+  );
+  return picked;
+}
+
+function untilAborted<T>(
+  promise: Promise<T>,
+  signal: AbortSignal | undefined,
+): Promise<T> {
+  if (signal === undefined) return promise;
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => reject(signal.reason);
+    if (signal.aborted) return onAbort();
+    signal.addEventListener("abort", onAbort, { once: true });
+    promise.then(resolve, reject).finally(() =>
+      signal.removeEventListener("abort", onAbort)
+    );
+  });
+}
 
 function describeRecordError(error: unknown): string {
   if (error instanceof z.ZodError) {
@@ -167,31 +225,61 @@ interface ListedOutput {
 async function chooseReadable<T extends ListedOutput>(
   listed: T[],
   selectReadable: SelectReadableOutputs | undefined,
+  signal: AbortSignal | undefined,
 ): Promise<T[]> {
   if (selectReadable === undefined) return listed;
   const keys: OutputKey[] = [];
   const keyIndex = new Map<string, number>();
-  const keyOf = (file: ListedOutput): string =>
-    JSON.stringify([file.modelType.normalized, file.definitionId, file.method]);
-  for (const file of listed) {
-    if (file.definitionId === undefined) continue;
-    const key = keyOf(file);
-    if (keyIndex.has(key)) continue;
-    keyIndex.set(key, keys.length);
-    keys.push({
-      type: file.modelType,
-      definitionId: file.definitionId,
-      methodName: file.method,
-    });
-  }
+  // A file without a key is always read: its slot stays -1.
+  const keyOfFile = new Int32Array(listed.length).fill(-1);
+  let at = 0;
+  const indexing = inTimeSlicesFromNow(
+    () => at < listed.length,
+    (until) => {
+      do {
+        const file = listed[at];
+        if (file.definitionId !== undefined) {
+          const key = JSON.stringify([
+            file.modelType.normalized,
+            file.definitionId,
+            file.method,
+          ]);
+          let index = keyIndex.get(key);
+          if (index === undefined) {
+            index = keys.length;
+            keyIndex.set(key, index);
+            keys.push({
+              type: file.modelType,
+              definitionId: file.definitionId,
+              methodName: file.method,
+            });
+          }
+          keyOfFile[at] = index;
+        }
+        at++;
+      } while (at < listed.length && performance.now() < until);
+    },
+    signal,
+  );
+  if (indexing !== undefined) await indexing;
   const readable = keys.length === 0 ? [] : await selectReadable(keys);
   const tally = currentDiagnosticTally();
-  return listed.filter((file) => {
-    if (file.definitionId === undefined) return true;
-    if (readable[keyIndex.get(keyOf(file))!] === true) return true;
-    tally.add("skipped_by_authorization");
-    return false;
-  });
+  const kept: T[] = [];
+  at = 0;
+  const filtering = inTimeSlicesFromNow(
+    () => at < listed.length,
+    (until) => {
+      do {
+        const key = keyOfFile[at];
+        if (key === -1 || readable[key] === true) kept.push(listed[at]);
+        else tally.add("skipped_by_authorization");
+        at++;
+      } while (at < listed.length && performance.now() < until);
+    },
+    signal,
+  );
+  if (filtering !== undefined) await filtering;
+  return kept;
 }
 
 interface HistoryWindow {
@@ -297,6 +385,11 @@ export class YamlOutputRepository implements OutputRepository {
   private readonly summaries: OutputSummaryIndex;
 
   private recordsInCheckout?: Promise<boolean>;
+
+  private readonly listingOrders = new WeakMap<
+    readonly ListedOutput[],
+    ListingOrder
+  >();
 
   constructor(
     private readonly repoDir: string,
@@ -530,7 +623,7 @@ export class YamlOutputRepository implements OutputRepository {
     const { stampIn } = historyWindowOf(window);
     const listed = await this.listType(
       type,
-      "search",
+      "bulk",
       (name) => {
         const match = OUTPUT_FILE_NAME.exec(name);
         if (match === null) return true;
@@ -770,9 +863,19 @@ export class YamlOutputRepository implements OutputRepository {
         return stamp === undefined || stampIn(stamp);
       },
     );
+    const tally = currentDiagnosticTally();
+    const ordered = await pickInTimeSlices(
+      await this.sharedOrder(listing.value, signal),
+      (file) => {
+        if (file.stamp === undefined || stampIn(file.stamp)) return file;
+        tally.add("skipped_by_name");
+        return undefined;
+      },
+      signal,
+    );
     return this.newestFirst(
       listing,
-      (file) => file.stamp === undefined || stampIn(file.stamp),
+      ordered,
       () => true,
       signal,
       selectReadable,
@@ -802,42 +905,86 @@ export class YamlOutputRepository implements OutputRepository {
         return name?.definitionId === definitionId && stampIn(name.stamp);
       },
     );
+    // A definition's files are few of its type's, so it sorts only those.
+    const tally = currentDiagnosticTally();
+    const mine = await pickInTimeSlices(
+      listing.value,
+      (file, position): PositionedOutput | undefined => {
+        if (
+          file.stamp === undefined ||
+          (file.definitionId === definitionId && stampIn(file.stamp))
+        ) return { ...file, position };
+        tally.add("skipped_by_name");
+        return undefined;
+      },
+      signal,
+    );
     return this.newestFirst(
       listing,
-      (file) =>
-        file.stamp === undefined ||
-        (file.definitionId === definitionId && stampIn(file.stamp)),
+      await sortInTimeSlices(mine, newestFileFirst, signal),
       (output) => output.definitionId === definitionId,
       signal,
       selectReadable,
     );
   }
 
+  /**
+   * one sort per shared listing for every caller on it; once the last caller
+   * leaves an unsettled sort, it is forgotten before it is aborted, so a later
+   * caller sorts afresh rather than inheriting the abort
+   */
+  private async sharedOrder(
+    listing: readonly ListedOutput[],
+    signal: AbortSignal | undefined,
+  ): Promise<PositionedOutput[]> {
+    signal?.throwIfAborted();
+    let order = this.listingOrders.get(listing);
+    if (order === undefined) {
+      const controller = new AbortController();
+      const sorted = runOutsideAmbientContext(() =>
+        sortInTimeSlices(
+          listing.map((file, position) => ({ ...file, position })),
+          newestFileFirst,
+          controller.signal,
+        )
+      );
+      const created: ListingOrder = {
+        sorted,
+        controller,
+        waiting: 0,
+        settled: false,
+      };
+      // Handled here: an aborted sort has no caller left to see it reject, and
+      // a sort that failed must not answer the next caller on this listing.
+      sorted.then(() => created.settled = true, () => {
+        created.settled = true;
+        if (this.listingOrders.get(listing) === created) {
+          this.listingOrders.delete(listing);
+        }
+      });
+      order = created;
+      this.listingOrders.set(listing, order);
+    }
+    const waited = order;
+    waited.waiting++;
+    try {
+      return await untilAborted(waited.sorted, signal);
+    } finally {
+      waited.waiting--;
+      if (waited.waiting === 0 && !waited.settled) {
+        this.listingOrders.delete(listing);
+        waited.controller.abort();
+      }
+    }
+  }
+
   private newestFirst(
     listing: SharedScanOutcome<ListedOutput[]>,
-    listed: (file: ListedOutput) => boolean,
+    ordered: readonly PositionedOutput[],
     accepted: (output: OutputSummary) => boolean,
     signal: AbortSignal | undefined,
     selectReadable: SelectReadableOutputs | undefined,
   ): OutputsNewestFirst {
-    const tally = currentDiagnosticTally();
-    const ordered: Array<ListedOutput & { position: number }> = [];
-    listing.value.forEach((file, position) => {
-      if (listed(file)) {
-        ordered.push({ ...file, position });
-      } else {
-        tally.add("skipped_by_name");
-      }
-    });
-    ordered.sort((a, b) => {
-      if (a.stamp !== b.stamp) {
-        if (a.stamp === undefined) return -1;
-        if (b.stamp === undefined) return 1;
-        return a.stamp < b.stamp ? 1 : -1;
-      }
-      return a.position - b.position;
-    });
-
     let reportedJoined = false;
     const reportJoined = (joined: boolean) => {
       if (!joined || reportedJoined) return;
@@ -845,7 +992,7 @@ export class YamlOutputRepository implements OutputRepository {
       reportedJoined = true;
     };
     let examined = 0;
-    let chosen: typeof ordered = [];
+    let chosen: PositionedOutput[] = [];
     let chosenAt = 0;
     // Kept for this read: its batches would otherwise parse one shard each.
     const shards: OpenShards = { generation: undefined, rows: new Map() };
@@ -874,7 +1021,11 @@ export class YamlOutputRepository implements OutputRepository {
           ) {
             const files = ordered.slice(examined, examined + chunk);
             examined += files.length;
-            const picked = await chooseReadable(files, selectReadable);
+            const picked = await chooseReadable(
+              files,
+              selectReadable,
+              signal,
+            );
             chosen = [...chosen.slice(chosenAt), ...picked];
             chosenAt = 0;
             chunk *= 2;
@@ -918,7 +1069,7 @@ export class YamlOutputRepository implements OutputRepository {
       signal,
     );
     return {
-      chosen: await chooseReadable(listing.value, selectReadable),
+      chosen: await chooseReadable(listing.value, selectReadable, signal),
       joined: listing.joined,
     };
   }
@@ -990,7 +1141,7 @@ export class YamlOutputRepository implements OutputRepository {
         const typeDir = this.getTypeDir(modelType);
         try {
           const methodEntries = await withScanPermit(
-            "search",
+            "bulk",
             () => readDirSorted(typeDir),
             signal,
           );
@@ -1020,7 +1171,7 @@ export class YamlOutputRepository implements OutputRepository {
         let entries: Deno.DirEntry[];
         try {
           entries = await withScanPermit(
-            "search",
+            "bulk",
             () => readDirSorted(dir),
             signal,
           );
@@ -1077,7 +1228,7 @@ export class YamlOutputRepository implements OutputRepository {
         // warning, and only an I/O error fails the scan.
         try {
           const stat = await withScanPermit(
-            "search",
+            "bulk",
             () => tally.measure("stat", () => Deno.stat(file.path)),
             signal,
           );
@@ -1140,7 +1291,7 @@ export class YamlOutputRepository implements OutputRepository {
           return;
         }
         const opened = withScanPermit(
-          "search",
+          "bulk",
           () =>
             tally.measure(
               "summary_read",
@@ -1320,7 +1471,7 @@ export class YamlOutputRepository implements OutputRepository {
         async (path) => {
           try {
             const info = await withScanPermit(
-              "search",
+              "bulk",
               () => tally.measure("summary_stat", () => Deno.stat(path)),
               signal,
             );
@@ -1351,7 +1502,7 @@ export class YamlOutputRepository implements OutputRepository {
         // scan
         try {
           const content = await withScanPermit(
-            "search",
+            "bulk",
             () => tally.measure("read", () => Deno.readTextFile(path)),
             signal,
           );

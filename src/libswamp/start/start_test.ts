@@ -1343,9 +1343,6 @@ Deno.test("startChooseHarness: sets the workspace up for extra tools, harness fi
   await withTempDir(async (dir) => {
     const f = makeFakes(dir);
     const ws = await trustReady(f);
-    await status(
-      startBack(ctx, f.deps, { workspacePath: ws, taskId: f.taskId! }),
-    );
     const chosen = await status(
       startChooseHarness(ctx, f.deps, {
         workspacePath: ws,
@@ -1367,9 +1364,6 @@ Deno.test("startChooseHarness: refuses an unknown extra tool", async () => {
   await withTempDir(async (dir) => {
     const f = makeFakes(dir);
     const ws = await trustReady(f);
-    await status(
-      startBack(ctx, f.deps, { workspacePath: ws, taskId: f.taskId! }),
-    );
     const events = await collect(
       startChooseHarness(ctx, f.deps, {
         workspacePath: ws,

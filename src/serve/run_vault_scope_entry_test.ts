@@ -158,11 +158,11 @@ async function withHarness(
           const access = currentVaultAccess();
           probes.push({
             scoped: access !== undefined,
-            erp: access && (await access.decide("erp", "read")).allowed,
+            erp: access && (await access.decide("erp", "read", "get")).allowed,
             roomcontrol: access &&
-              (await access.decide("roomcontrol", "read")).allowed,
+              (await access.decide("roomcontrol", "read", "get")).allowed,
           });
-          await access?.check("erp", "read", "password").catch(() => {});
+          await access?.check("erp", "read", "get", "password").catch(() => {});
           return {};
         },
       },

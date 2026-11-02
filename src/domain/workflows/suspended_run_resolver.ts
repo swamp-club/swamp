@@ -24,6 +24,7 @@ import type {
   WorkflowRunRepository,
 } from "./repositories.ts";
 import { createWorkflowRunId } from "./workflow_id.ts";
+import { isUuid } from "../models/model_lookup.ts";
 import { findWorkflowById, findWorkflowByIdOrName } from "./workflow_lookup.ts";
 import { UserError } from "../errors.ts";
 import { quoteShellWord } from "../shell_word.ts";
@@ -150,6 +151,25 @@ export async function resolveSuspendedRun(
     workflow,
     run: suspendedRuns[0],
   };
+}
+
+/** a full run id is its own claim key, lower-cased; anything else is located first */
+export async function suspendedRunClaimKey(
+  workflowRepo: WorkflowRepository,
+  runRepo: WorkflowRunRepository,
+  workflowIdOrName: string,
+  runId: string | undefined,
+  lookup: ResolveSuspendedRunOptions = {},
+): Promise<string> {
+  if (runId !== undefined && isUuid(runId)) return runId.toLowerCase();
+  const located = await resolveSuspendedRun(
+    workflowRepo,
+    runRepo,
+    workflowIdOrName,
+    runId,
+    lookup,
+  );
+  return located.run.id;
 }
 
 export type ResumableRunInfo = SuspendedRunInfo;

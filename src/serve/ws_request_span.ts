@@ -22,8 +22,12 @@ import {
   principalToString,
 } from "../domain/access/principal.ts";
 import { withServerSpan } from "../infrastructure/tracing/mod.ts";
+import {
+  type DiagnosticLagReader,
+  withDiagnosticLag,
+} from "../domain/diagnostics/diagnostic_phase.ts";
 
-export interface EventLoopLagReader {
+export interface EventLoopLagReader extends DiagnosticLagReader {
   maxLagMs(): number | undefined;
 }
 
@@ -70,7 +74,7 @@ export function traceWebSocketRequest(
   }
   return withServerSpan("swamp.serve.request", attributes, async (span) => {
     try {
-      await fn();
+      await withDiagnosticLag(trace.eventLoopLag, fn);
     } finally {
       const lag = trace.eventLoopLag?.maxLagMs();
       if (lag !== undefined) {

@@ -1844,6 +1844,7 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
                 await access.check(
                   vaultName,
                   action,
+                  action === "write" ? "put" : "get",
                   vaultKey,
                   vaultKey === undefined ? { keyUnknown: true } : undefined,
                 );

@@ -251,15 +251,85 @@ export function newWorkspaceNameProblem(
   return null;
 }
 
-/** Workspaces newest first; ones with no update time go last. */
+/** A column the workspace list can be sorted by. */
+export type WorkspaceSortKey = "name" | "created" | "updated";
+
+/** How the workspace list is ordered. */
+export interface WorkspaceOrder {
+  key: WorkspaceSortKey;
+  dir: "asc" | "desc";
+}
+
+/** Newest created first: the list's order until someone picks another. */
+export const DEFAULT_WORKSPACE_ORDER: WorkspaceOrder = {
+  key: "created",
+  dir: "desc",
+};
+
+/** Where the chosen order is kept between visits, in this browser only. */
+export const WORKSPACE_ORDER_KEY = "swamp-start-workspace-order";
+
+/** Reads a stored `key:dir` order, else newest created first. */
+export function parseWorkspaceOrder(value: string | null): WorkspaceOrder {
+  const [key, dir] = (value ?? "").split(":");
+  return (key === "name" || key === "created" || key === "updated") &&
+      (dir === "asc" || dir === "desc")
+    ? { key, dir }
+    : DEFAULT_WORKSPACE_ORDER;
+}
+
+/** The stored form of an order, read back by {@link parseWorkspaceOrder}. */
+export function formatWorkspaceOrder(order: WorkspaceOrder): string {
+  return `${order.key}:${order.dir}`;
+}
+
+/**
+ * The order after a click on a column header: the same column flips, a new
+ * one starts A to Z for names and newest first for dates.
+ */
+export function nextWorkspaceOrder(
+  current: WorkspaceOrder,
+  key: WorkspaceSortKey,
+): WorkspaceOrder {
+  if (current.key === key) {
+    return { key, dir: current.dir === "asc" ? "desc" : "asc" };
+  }
+  return { key, dir: key === "name" ? "asc" : "desc" };
+}
+
+const byName = (a: WorkspaceSummary, b: WorkspaceSummary) =>
+  a.name.localeCompare(b.name, undefined, {
+    numeric: true,
+    sensitivity: "base",
+  });
+
+function timeOf(iso: string | null | undefined): number | null {
+  const t = iso ? Date.parse(iso) : NaN;
+  return Number.isNaN(t) ? null : t;
+}
+
+/**
+ * Workspaces in `order`. Names ignore case and read digits as numbers;
+ * workspaces with no readable date go last either way, and ties fall back
+ * to the name.
+ */
 export function sortWorkspaces(
   workspaces: readonly WorkspaceSummary[],
+  order: WorkspaceOrder = DEFAULT_WORKSPACE_ORDER,
 ): WorkspaceSummary[] {
-  const time = (w: WorkspaceSummary) => {
-    const t = w.updatedAt === null ? NaN : Date.parse(w.updatedAt);
-    return Number.isNaN(t) ? -Infinity : t;
-  };
-  return [...workspaces].sort((a, b) => time(b) - time(a));
+  const sign = order.dir === "asc" ? 1 : -1;
+  if (order.key === "name") {
+    return [...workspaces].sort((a, b) => sign * byName(a, b));
+  }
+  const field = order.key === "created" ? "createdAt" : "updatedAt";
+  return [...workspaces].sort((a, b) => {
+    const ta = timeOf(a[field]);
+    const tb = timeOf(b[field]);
+    if (ta === null || tb === null) {
+      return ta === tb ? byName(a, b) : ta === null ? 1 : -1;
+    }
+    return sign * (ta - tb) || byName(a, b);
+  });
 }
 
 /**
@@ -286,15 +356,21 @@ function relativeTime(
 }
 
 /**
- * A short "updated" phrase: relative for the last week, else the ISO date.
- * Null when the time is missing or unreadable.
+ * A short "updated" phrase: "5m ago", "3h ago" or "2d ago" for the last week,
+ * else the day as {@link createdLabel} gives it. Null when unreadable.
  */
 export function updatedLabel(
   updatedAt: string | null,
   now: Date,
 ): string | null {
-  const when = relativeTime(updatedAt, now);
-  return when === null ? null : `Updated ${when.text}`;
+  const t = updatedAt === null ? NaN : Date.parse(updatedAt);
+  if (Number.isNaN(t)) return null;
+  const minutes = Math.max(0, Math.floor((now.getTime() - t) / 60_000));
+  if (minutes < 1) return "just now";
+  if (minutes < 60) return `${minutes}m ago`;
+  if (minutes < 24 * 60) return `${Math.floor(minutes / 60)}h ago`;
+  if (minutes < 7 * 24 * 60) return `${Math.floor(minutes / (24 * 60))}d ago`;
+  return createdLabel(updatedAt, now);
 }
 
 /**
@@ -399,6 +475,34 @@ export function importProblem(
     return { field: "path", message: "Enter the folder to import" };
   }
   return null;
+}
+
+/**
+ * A folder path short enough for a list row: the home folder as `~`, then
+ * as many trailing folders as fit after `…/`, since the end names the
+ * workspace. A last folder too long on its own is cut in the middle.
+ */
+export function pathLabel(path: string, max: number): string {
+  const home =
+    /^(\/home\/[^/]+|\/Users\/[^/]+|[A-Za-z]:\\Users\\[^\\]+)(?=[\\/]|$)/
+      .exec(path);
+  const short = home ? `~${path.slice(home[0].length)}` : path;
+  if (short.length <= max) return short;
+  const sep = short.includes("\\") && !short.includes("/") ? "\\" : "/";
+  const drive = home ? null : /^[A-Za-z]:(?=\\)/.exec(short)?.[0] ?? null;
+  const parts = (drive ? short.slice(drive.length) : short).split(sep);
+  const root = home ? `~${sep}` : `${drive ?? ""}${sep}`;
+  let tail = parts.pop() ?? "";
+  if (root.length + 2 + tail.length > max) {
+    return `${root}…${sep}${middleEllipsis(tail, max - root.length - 2)}`;
+  }
+  while (parts.length > 1) {
+    const next = `${parts[parts.length - 1]}${sep}${tail}`;
+    if (root.length + 2 + next.length > max) break;
+    tail = next;
+    parts.pop();
+  }
+  return `${root}…${sep}${tail}`;
 }
 
 /**
@@ -612,7 +716,7 @@ const MONTHS = [
   "Dec",
 ];
 
-/** "Created 11 Oct", with the year when it isn't this year. */
+/** "11 Oct", with the year when it isn't this year. */
 export function createdLabel(
   createdAt: string | null | undefined,
   now: Date,
@@ -622,8 +726,8 @@ export function createdLabel(
   if (Number.isNaN(t.getTime())) return null;
   const day = `${t.getDate()} ${MONTHS.at(t.getMonth())}`;
   return t.getFullYear() === now.getFullYear()
-    ? `Created ${day}`
-    : `Created ${day} ${t.getFullYear()}`;
+    ? day
+    : `${day} ${t.getFullYear()}`;
 }
 
 /**
@@ -893,4 +997,105 @@ export function pickFirstTaskIdea(random: number): string {
     Math.max(0, Math.floor(random * FIRST_TASK_IDEAS.length)),
   );
   return FIRST_TASK_IDEAS[index];
+}
+
+/** A request that takes the page one screen back, as Back on it would. */
+export type BackRequest =
+  | "start.workspace.leave"
+  | "start.tasks.show"
+  | "start.new_task.cancel"
+  | "start.back";
+
+type NavStatus = Pick<StartStatus, "screen" | "taskId" | "tasks">;
+
+function hasTasks(status: NavStatus): boolean {
+  return (status.tasks?.length ?? 0) > 0;
+}
+
+/**
+ * Where Back goes from a screen: a new task returns to the workspace's
+ * tasks, a launch step to its task, a launched task to the task list, and a
+ * workspace's first screen to all workspaces. Null where there is no back.
+ */
+export function backRequest(status: NavStatus): BackRequest | null {
+  switch (status.screen) {
+    case "home":
+      return "start.workspace.leave";
+    case "task":
+      if (!hasTasks(status)) return "start.workspace.leave";
+      return status.taskId === undefined
+        ? "start.new_task.cancel"
+        : "start.tasks.show";
+    case "agent":
+    case "trust":
+      return "start.back";
+    case "launched":
+      return "start.tasks.show";
+    default:
+      return null;
+  }
+}
+
+/**
+ * The browser history entry a screen sits on above the workspace list:
+ * 1 inside a workspace, 2 on a task's launch. No forward step climbs more
+ * than one, since Chrome's Back skips entries added without a click between.
+ */
+export function navDepth(status: NavStatus): number {
+  switch (status.screen) {
+    case "home":
+    case "task":
+      return 1;
+    case "agent":
+    case "trust":
+    case "launched":
+      return 2;
+    default:
+      return 0;
+  }
+}
+
+/** How to bring the page's history entries in line with the screen. */
+export type HistorySync =
+  | { kind: "none" }
+  | { kind: "push"; depth: number }
+  | { kind: "go"; delta: number; to: number };
+
+/**
+ * The one history move that puts the page on an entry for `want`, given the
+ * depth of each entry the page made (index 0 is the page's own) and the one
+ * it is on. Up adds a single entry, never several in a row, since Chrome's
+ * Back skips entries added without a click between; down returns to the
+ * nearest earlier entry not above `want`, never past the page's first.
+ */
+export function planHistorySync(
+  entries: readonly number[],
+  at: number,
+  want: number,
+): HistorySync {
+  const here = entries[at] ?? 0;
+  if (want > here) return { kind: "push", depth: want };
+  if (want === here) return { kind: "none" };
+  let to = at - 1;
+  while (to > 0 && (entries[to] ?? 0) > want) to--;
+  to = Math.max(0, to);
+  return { kind: "go", delta: to - at, to };
+}
+
+/**
+ * What a click on a finished step in the rail sends: Workspace leaves for
+ * all workspaces, and Task steps back from launch. A launched task can't go
+ * back to its task, so there Task is not a link.
+ */
+export function railRequest(
+  step: "workspace" | "task",
+  screen: StartStatus["screen"],
+): BackRequest | null {
+  if (step === "workspace") {
+    return screen === "task" || screen === "agent" || screen === "trust" ||
+        screen === "launched"
+      ? "start.workspace.leave"
+      : null;
+  }
+  return screen === "agent" || screen === "trust" ? "start.back" : null;
 }

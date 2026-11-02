@@ -89,6 +89,18 @@ export interface DefinitionRepository {
     id: DefinitionId,
   ): Promise<{ definition: Definition; type: ModelType } | null>;
 
+  // undefined when the repository keeps no index; the index holds every
+  // definition, so null is a final miss
+  findByIdFromIndex?(
+    id: DefinitionId,
+  ): Promise<{ definition: Definition; type: ModelType } | null | undefined>;
+
+  // misses a file rewritten in place to declare the name until its directory
+  // changes
+  findByNameGlobalFromIndex?(
+    name: string,
+  ): Promise<{ definition: Definition; type: ModelType } | null>;
+
   save(type: ModelType, definition: Definition): Promise<void>;
 
   /**

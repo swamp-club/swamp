@@ -97,6 +97,10 @@ export const accessCheckCommand = new Command()
     { required: true },
   )
   .option(
+    "--method <method:string>",
+    "Method to check against method-scoped grants: a behavior method, or a vault verb such as get or put",
+  )
+  .option(
     "--collectives <collectives:string>",
     "Comma-separated collective memberships to simulate for collective: grants and CEL conditions (principal.collectives)",
   )
@@ -167,11 +171,18 @@ export const accessCheckCommand = new Command()
             // sent in the canonical spelling so a server that predates the
             // behavior spelling still reads it.
             resource: canonicalResourceSelectorString(options.on as string),
+            ...(options.method ? { method: options.method as string } : {}),
           },
         },
       );
 
       const result = response as unknown as AccessCheckResult;
+      if (options.method && result.method === undefined) {
+        ctx.logger.warn(
+          "The server predates --method, so it checked {resource} without a method",
+          { resource: options.on as string },
+        );
+      }
       const renderer = createAccessCheckRenderer(ctx.outputMode);
       renderer.render(result);
 
@@ -233,7 +244,10 @@ export const accessCheckCommand = new Command()
         repoContext,
         resource.kind,
         resource.pattern,
-        parseFieldFlags(options.field as string[] | undefined),
+        {
+          ...parseFieldFlags(options.field as string[] | undefined),
+          ...(options.method ? { methodName: options.method as string } : {}),
+        },
         (error) => {
           ctx.logger.warn(
             "Could not look up {resource}; checking it by name only: {error}",
@@ -257,6 +271,7 @@ export const accessCheckCommand = new Command()
         resource: resourceSelectorToString(resource),
         collectives,
         decisions,
+        ...(options.method ? { method: options.method as string } : {}),
       };
 
       const renderer = createAccessCheckRenderer(ctx.outputMode);

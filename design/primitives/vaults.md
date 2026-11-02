@@ -1408,8 +1408,10 @@ Two limits bound which vaults a run may read or write (swamp-club#2676):
 - **Vault grants**, over `swamp serve`: `vault:<name>` grants decide `vault.*`
   requests and every vault operation in a serve run, judged against the
   run's triggering principal. Reserved `_` vaults are refused to serve runs
-  except for access admins. See
-  [access-control § Vaults](../enablers/access-control.md#vaults).
+  except for access admins. A grant's `methods` list names vault verbs
+  (`get`, `put`, ...), so a `put`-only grant cannot read. See
+  [access-control § Vaults](../enablers/access-control.md#vaults) and
+  [§ Method scope](../enablers/access-control.md#method-scope).
 - **A workflow's `vaults:` list**, everywhere, local runs included. See
   [workflows § Vaults Allow-List](./workflows.md#vaults-allow-list).
 

@@ -233,3 +233,32 @@ export function countedKeys(keys: readonly string[]): string[] {
     .map(([key, n]) => n > 1 ? `${key} (x${n})` : key)
     .sort();
 }
+
+/** `open` is the index just past the call's `(`; quoted commas and nested brackets do not split */
+export function callArguments(source: string, open: number): string[] {
+  const args: string[] = [];
+  let depth = 0;
+  let start = open;
+  for (let i = open; i < source.length; i++) {
+    const ch = source[i];
+    if (ch === '"' || ch === "'" || ch === "`") {
+      const quote = ch;
+      for (i++; i < source.length && source[i] !== quote; i++) {
+        if (source[i] === "\\") i++;
+      }
+      continue;
+    }
+    if (ch === "(" || ch === "[" || ch === "{") depth++;
+    else if (ch === ")" || ch === "]" || ch === "}") {
+      if (depth === 0) {
+        args.push(source.slice(start, i).trim());
+        return args.filter((a) => a !== "");
+      }
+      depth--;
+    } else if (ch === "," && depth === 0) {
+      args.push(source.slice(start, i).trim());
+      start = i + 1;
+    }
+  }
+  return args;
+}

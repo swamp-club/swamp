@@ -177,10 +177,11 @@ export class StartSession {
     harness: DetectableAiTool,
     extraTools: readonly DetectableAiTool[] = [],
   ): void {
-    this.require("choose an agent", ["agent"]);
+    // Agent and launch share one screen, so a pick can change at trust.
+    this.require("choose an agent", ["agent", "trust"]);
     const tools = [harness, ...extraTools.filter((t) => t !== harness)];
     this.data = {
-      ...this.data,
+      ...this.withoutTrust(),
       harness,
       tools: [...new Set(tools)],
       step: "trust",
@@ -189,10 +190,7 @@ export class StartSession {
 
   back(): void {
     this.require("go back", ["agent", "trust"]);
-    this.data = {
-      ...this.withoutTrust(),
-      step: this.data.step === "trust" ? "agent" : "task",
-    };
+    this.data = { ...this.withoutTrust(), step: "task" };
   }
 
   confirmTrustAndRecordLaunch(

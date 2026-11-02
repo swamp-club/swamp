@@ -81,6 +81,7 @@ import { isControlPlaneRecordResource } from "../../domain/access/control_plane_
 import {
   tagsChanged,
   vaultKindResource,
+  type VaultMethod,
 } from "../../domain/access/access_resources.ts";
 import {
   isControlPlaneModelType,
@@ -1776,6 +1777,7 @@ export interface VaultRequest {
    */
   readonly existing: AccessResource;
   readonly key?: string;
+  readonly method: VaultMethod;
   /**
    * false when only the existing check may admit: a vault:<name> allow does
    * not, though a deny still refuses; for requests reaching beyond the vault,
@@ -1816,11 +1818,12 @@ function accessPrincipalOf(
 function vaultDenyResources(
   vaultName: string,
   key: string | undefined,
+  method: VaultMethod,
 ): AccessResource[] {
   return [
     vaultAccessResource("vault"),
     vaultAccessResource(vaultName),
-    vaultKindResource(vaultName, key),
+    vaultKindResource(vaultName, key, method),
   ];
 }
 
@@ -1865,7 +1868,13 @@ function decideVaultRequest(
   const accessPrincipal = accessPrincipalOf(caller, subject);
   let denied: VaultOutcome | null = null;
   let vaultAllow: AccessDecision | null = null;
-  for (const resource of vaultDenyResources(request.vaultName, request.key)) {
+  for (
+    const resource of vaultDenyResources(
+      request.vaultName,
+      request.key,
+      request.method,
+    )
+  ) {
     if (sameResource(resource, request.existing)) continue;
     const decision = service.decide(accessPrincipal, request.action, resource);
     if (decision && decision.effect === "deny") {
@@ -1888,7 +1897,11 @@ function decideVaultRequest(
   if (!vaultAllow || request.vaultGrantAdmits === false) return todays;
   return denied ?? {
     outcome: { kind: "allowed", decision: vaultAllow },
-    resource: vaultKindResource(request.vaultName, request.key),
+    resource: vaultKindResource(
+      request.vaultName,
+      request.key,
+      request.method,
+    ),
     admittedBy: "vault",
   };
 }
@@ -2005,6 +2018,7 @@ export function vaultListingDecider(
   socket: WebSocket,
   principal: Principal | null,
   action: Action,
+  method: VaultMethod,
   ctx: ConnectionContext,
   existingAllows: (vaultName: string) => boolean,
 ): (vaultName: string) => boolean {
@@ -2022,7 +2036,7 @@ export function vaultListingDecider(
     if (kept === undefined) {
       let vaultAllows = false;
       let denied = false;
-      for (const resource of vaultDenyResources(vaultName, undefined)) {
+      for (const resource of vaultDenyResources(vaultName, undefined, method)) {
         const decision = service.decide(accessPrincipal, action, resource);
         if (decision && decision.effect === "deny") {
           denied = true;

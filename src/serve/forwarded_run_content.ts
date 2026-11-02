@@ -182,6 +182,14 @@ export async function checkRunRecord(
   return undefined;
 }
 
+function runRecordKey(workflowId: string, runId: string): string {
+  return `workflow-runs/${workflowId.toLowerCase()}/workflow-run-${runId.toLowerCase()}.yaml`;
+}
+
+function sameId(a: string, b: string): boolean {
+  return a.toLowerCase() === b.toLowerCase();
+}
+
 function heldKey(jobName: string, stepName: string): string {
   return JSON.stringify([jobName, stepName]);
 }
@@ -238,7 +246,7 @@ async function heldChildOf(
   }
   const record = await context.prior(
     partition,
-    `workflow-runs/${link.workflowId.toLowerCase()}/workflow-run-${link.runId.toLowerCase()}.yaml`,
+    runRecordKey(link.workflowId, link.runId),
   );
   if (record.kind !== "present") return undefined;
   const child = WorkflowRunSchema.safeParse(parseRecord(record.bytes));
@@ -246,8 +254,8 @@ async function heldChildOf(
   const parent = parseParentRunLink(child.data.parentRun);
   if (
     parent?.kind !== "valid" ||
-    parent.ref.workflowId.toLowerCase() !== run.workflowId ||
-    parent.ref.runId.toLowerCase() !== run.runId ||
+    !sameId(parent.ref.workflowId, run.workflowId) ||
+    !sameId(parent.ref.runId, run.runId) ||
     parent.ref.jobName !== jobName ||
     parent.ref.stepName !== (step.forEachTemplate ?? step.stepName) &&
       parent.ref.stepName !== step.stepName
@@ -319,6 +327,7 @@ async function additionsRefusal(
       !isCallerVaultAuthorized(context.deps.caller, context.deps.requestId, {
         vaultName,
         action: "read",
+        method: "get",
         existing: vaultAccessResource(vaultName),
         key,
       }, ctx)
@@ -360,7 +369,7 @@ async function parentRefusal(
   const { workflowId, runId } = link.ref;
   const parent = await context.prior(
     partitionOf({ kind: "run", workflowId, runId }),
-    `workflow-runs/${workflowId.toLowerCase()}/workflow-run-${runId.toLowerCase()}.yaml`,
+    runRecordKey(workflowId, runId),
   );
   if (parent.kind !== "present") return "its parent run does not exist";
   const parsed = WorkflowRunSchema.safeParse(parseRecord(parent.bytes));
@@ -525,7 +534,7 @@ async function childOutputRefusal(
   }
   const record = await context.prior(
     partition,
-    `workflow-runs/${child.workflowId.toLowerCase()}/workflow-run-${child.runId.toLowerCase()}.yaml`,
+    runRecordKey(child.workflowId, child.runId),
   );
   if (record.kind !== "present") return refusal;
   const parsed = WorkflowRunSchema.safeParse(parseRecord(record.bytes));
@@ -533,8 +542,8 @@ async function childOutputRefusal(
   const parent = parseParentRunLink(parsed.data.parentRun);
   if (
     parent?.kind !== "valid" ||
-    parent.ref.workflowId.toLowerCase() !== run.workflowId ||
-    parent.ref.runId.toLowerCase() !== run.runId ||
+    !sameId(parent.ref.workflowId, run.workflowId) ||
+    !sameId(parent.ref.runId, run.runId) ||
     parent.ref.jobName !== jobName ||
     parent.ref.stepName !== (step.forEachTemplate ?? step.stepName) &&
       parent.ref.stepName !== step.stepName

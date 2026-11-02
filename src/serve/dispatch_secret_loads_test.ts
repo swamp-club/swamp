@@ -117,7 +117,7 @@ function fixture(options: FixtureOptions = {}): Fixture {
   }
   const vault = {
     get: async (vaultName: string, key: string) => {
-      await (currentVaultAccess()?.check(vaultName, "read") ??
+      await (currentVaultAccess()?.check(vaultName, "read", "get") ??
         Promise.resolve());
       reads.push(`${vaultName}/${key}`);
       if (options.gated) {

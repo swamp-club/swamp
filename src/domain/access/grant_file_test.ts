@@ -1295,3 +1295,30 @@ Deno.test("parseSubject: username: is not a subject kind outside grant files", (
     'Invalid subject kind "username"',
   );
 });
+
+Deno.test("parseGrantFile: methods on a workflow grant or an unknown vault verb warn and still load", () => {
+  const content = `
+grants:
+  - subject: user:adam
+    effect: allow
+    actions: [run]
+    resource: "workflow:*"
+    methods: [deploy]
+  - subject: user:adam
+    effect: allow
+    actions: [write]
+    resource: "vault:prod"
+    methods: [put, write]
+  - subject: user:adam
+    effect: allow
+    actions: [write]
+    resource: "vault:dev"
+    methods: [put]
+`;
+  const result = parseGrantFile("methods.yaml", content);
+  assertEquals(result.errors, []);
+  assertEquals(result.entries.length, 3);
+  assertEquals(result.warnings.map((w) => w.entryIndex), [0, 1]);
+  assertEquals(result.warnings[0].message.includes("workflow grant"), true);
+  assertEquals(result.warnings[1].message.includes("'write'"), true);
+});

@@ -20,6 +20,10 @@
 import { assert, assertEquals } from "@std/assert";
 import type { AccessResource } from "../access/access_decision_service.ts";
 import type { Action } from "../access/action.ts";
+import { GrantBasedAccessDecisionService } from "../access/grant_based_access_decision_service.ts";
+import { PolicySnapshot } from "../access/policy_snapshot.ts";
+import { createConditionEvaluator } from "../access/policy_snapshot_loader.ts";
+import type { Grant } from "../models/access/grant_model.ts";
 import { Definition } from "../definitions/definition.ts";
 import { ModelType } from "../models/model_type.ts";
 import {
@@ -994,4 +998,143 @@ Deno.test("authorizeCommit: whether a run is guarded never changes what its puts
       )).ok,
     );
   }
+});
+
+function grantAuthority(grants: Partial<Grant>[]): CallerAuthority {
+  const service = new GrantBasedAccessDecisionService(
+    new PolicySnapshot(
+      grants.map((overrides) => ({
+        id: crypto.randomUUID(),
+        subject: { kind: "user", name: "member" },
+        effect: "allow",
+        actions: ["run"],
+        resource: { kind: "model", pattern: "web" },
+        state: "active",
+        source: "method",
+        createdBy: { kind: "user", id: "admin" },
+        createdAt: "2026-01-01T00:00:00Z",
+        ...overrides,
+      } as Grant)),
+      [],
+      createConditionEvaluator(),
+    ),
+  );
+  return {
+    allows: (action, resource) =>
+      service.decide(
+        {
+          principal: { kind: "user", id: "member" },
+          collectives: [],
+          groups: [],
+        },
+        action,
+        resource,
+      )?.effect === "allow",
+  };
+}
+
+Deno.test("writeAccessOf: only data and output saves are decided as any method, since their commits name none", async () => {
+  const resolver = new FakeResolver();
+  resolver.definitions.set(MODEL_ID, web());
+  for (const kind of INTENT_KINDS) {
+    const intent = sampleIntent(kind);
+    const op = await opFor(intent);
+    if (op === undefined) continue;
+    const required = await writeAccessOf(op, resolver);
+    const expected = intent.kind === "data.save" ||
+      intent.kind === "data.append" || intent.kind === "output.save";
+    assertEquals(required.resource.anyMethod === true, expected, kind);
+  }
+});
+
+Deno.test("authorizeCommit: a methods-scoped run grant admits a data save from the member's run, and a scoped deny still refuses it", async () => {
+  const resolver = new FakeResolver();
+  resolver.definitions.set(MODEL_ID, web());
+  assert(
+    (await authorizeBase(
+      modelPartition(),
+      await save(),
+      resolver,
+      grantAuthority([{ methods: ["deploy"] }]),
+    )).ok,
+  );
+  assertRefused(
+    await authorizeBase(
+      modelPartition(),
+      await save(),
+      resolver,
+      grantAuthority([{}, { effect: "deny", methods: ["deploy"] }]),
+    ),
+    "forbidden",
+    0,
+  );
+});
+
+Deno.test("partitionWriteAccessOf: a behavior or vault upload is decided as any method, so a methods-scoped grant may spend storage", async () => {
+  const resolver = new FakeResolver();
+  resolver.definitions.set(MODEL_ID, web());
+  const model = await partitionWriteAccessOf(modelPartition(), resolver);
+  assertEquals(model.resource.anyMethod, true);
+  const vault = await partitionWriteAccessOf(
+    partitionOf({ kind: "config", definitionKind: "vault", name: "dev" }),
+    resolver,
+  );
+  assertEquals(vault.resource.anyMethod, true);
+  assertEquals(
+    grantAuthority([{
+      actions: ["write"],
+      resource: { kind: "vault", pattern: "dev" },
+      methods: ["put"],
+    }]).allows(vault.action, vault.resource),
+    true,
+  );
+});
+
+Deno.test("authorizeCommit: a vault definition commit names its verb, so a grant scoped to another verb refuses it", async () => {
+  const dev = partitionOf({
+    kind: "config",
+    definitionKind: "vault",
+    name: "dev",
+  });
+  const resolver = new FakeResolver();
+  const create = await putOp({
+    intent: createIntent({
+      kind: "definition.create",
+      definition: { kind: "vault", name: "dev" },
+    }),
+    key: RecordKey.create(
+      "config/vaults/local_encryption/00000000-0000-4000-8000-000000000000.yaml",
+    ),
+    inline: base64("name: dev\ntype: local_encryption\n"),
+    expect: "absent",
+  });
+  const scoped = (methods: string[]) =>
+    grantAuthority([{
+      actions: ["write"],
+      resource: { kind: "vault", pattern: "dev" },
+      methods,
+    }]);
+  assert((await authorizeBase(dev, [create], resolver, scoped(["create"]))).ok);
+  assertRefused(
+    await authorizeBase(dev, [create], resolver, scoped(["edit", "put"])),
+    "forbidden",
+    0,
+  );
+});
+
+Deno.test("readAccessOf: a methods-scoped read grant does not read a behavior's outputs in the changes feed, which name no method", async () => {
+  const resolver = new FakeResolver();
+  resolver.definitions.set(MODEL_ID, web());
+  const output = await putOp({
+    intent: modelIntent({ kind: "output.save", outputId: "o" }),
+    key: RecordKey.create(`outputs/${MODEL_TYPE.normalized}/create/o.yaml`),
+    inline: base64("o"),
+  });
+  const read = await readAccessOf(output, resolver);
+  assert(read);
+  assertEquals(read.resource.anyMethod, undefined);
+  const scoped = grantAuthority([{ actions: ["read"], methods: ["create"] }]);
+  assertEquals(scoped.allows(read.action, read.resource), false);
+  const unscoped = grantAuthority([{ actions: ["read"] }]);
+  assertEquals(unscoped.allows(read.action, read.resource), true);
 });

@@ -28,6 +28,10 @@ import {
   type PhaseTally,
 } from "../../domain/diagnostics/diagnostic_phase.ts";
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
+import {
+  sortInTimeSlices,
+  TimeSlice,
+} from "../../infrastructure/persistence/scan_permits.ts";
 export interface ModelOutputSearchItem {
   id: string;
   definitionId: string;
@@ -337,8 +341,11 @@ export async function* modelOutputSearch(
             })),
         );
 
-        const items: ModelOutputSearchItem[] = [];
+        const items: Array<{ item: ModelOutputSearchItem; startedMs: number }> =
+          [];
+        const slice = new TimeSlice();
         for (const { output, type, modelName: knownName } of inWindow) {
+          if (slice.over) await slice.next();
           const modelName = knownName ??
             await namer.nameOf(type, output.definitionId);
           if (
@@ -347,18 +354,24 @@ export async function* modelOutputSearch(
             modelName !== input.model
           ) continue;
 
-          items.push(
-            toSearchItem(output, type, modelName, input.includeProvenance),
-          );
+          items.push({
+            item: toSearchItem(
+              output,
+              type,
+              modelName,
+              input.includeProvenance,
+            ),
+            startedMs: output.startedAt.getTime(),
+          });
         }
 
-        items.sort(
-          (a, b) =>
-            new Date(b.startedAt).getTime() - new Date(a.startedAt).getTime(),
-        );
+        const sorted = (await sortInTimeSlices(
+          items,
+          (a, b) => b.startedMs - a.startedMs,
+        )).map(({ item }) => item);
         results = input.limit !== undefined
-          ? items.slice(0, input.limit)
-          : items;
+          ? sorted.slice(0, input.limit)
+          : sorted;
       }
 
       await nameWorkflows(deps, results);
@@ -666,7 +679,9 @@ export function definitionNamer(
           string,
           { type: { normalized: string }; definitionId: string }
         >();
+        const slice = new TimeSlice();
         for (const { type, definitionId } of keys) {
+          if (slice.over) await slice.next();
           const key = keyOf(type, definitionId);
           if (!names.has(key) && !wanted.has(key)) {
             wanted.set(key, { type, definitionId });

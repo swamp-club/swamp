@@ -67,17 +67,20 @@ time. Records under the checkout's own `.swamp`, as on a v3 datastore or with no
 datastore, are stat'ed synchronously, because an awaited stat waits a turn of a busy
 loop: on a contended loop 75,000 of them took 5 s awaited and 0.3 s synchronously.
 Records anywhere else, including through a symlink, are in a datastore that may be a
-network mount, so those are awaited, 16 at a time on the scan permits. There a slow
-or hung mount costs the scan, not the event loop, and a busy loop costs that read
-more. A checkout that is itself on a network mount still stats synchronously: there
-a slow mount slows the read, and a hung one holds the loop.
+network mount, so those are awaited on the scan permits, 6 at a time, the share
+long output scans take (lab #4146). There a slow or hung mount costs the scan, not
+the event loop, and a busy loop costs that read more. A checkout that is itself on
+a network mount still stats synchronously: there a slow mount slows the read, and
+a hung one holds the loop.
 
 So that a large read does not hold up the requests beside it, the stats, the shard
 parse and the join of rows to files all yield to the event loop every 4 ms, and
 stop at the next yield once the read is cancelled. A shard is decoded 1 MiB at a
 time, so its size is not limited by what one string can hold. With 75,000 runs in
 one shard, this took a warm read's longest block from about 250 ms to about 170 ms,
-which is the listing's own sort and name matching, and added about 20% to its time.
+which was the listing's own sort and name matching, and added about 20% to its time.
+That sort, and what a search does with the rows it gets, now yield as well (lab
+#4146, in [serve phase telemetry](./serve-phase-telemetry.md)).
 
 ## How it heals
 

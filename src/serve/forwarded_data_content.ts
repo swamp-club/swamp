@@ -172,6 +172,7 @@ async function sensitiveReferenceRefusal(
     isCallerVaultAuthorized(caller, requestId, {
       vaultName,
       action,
+      method: action === "read" ? "get" : "put",
       existing: vaultAccessResource(vaultName),
       key: secretKey,
     }, ctx);

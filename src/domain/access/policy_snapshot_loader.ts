@@ -30,6 +30,7 @@ import {
   type ConditionTypeLiteralReader,
   findGrantSpellingIssues,
 } from "./grant_spelling.ts";
+import { findGrantMethodIssues } from "./grant_methods.ts";
 import type {
   UnifiedDataRepository,
   UnreadableModelRecord,
@@ -685,14 +686,15 @@ export class PolicySnapshotLoader {
         grant.effect,
         grant.resource,
         grant.condition ?? null,
+        grant.methods ?? null,
       ]);
       if (this.#checkedSpellings.get(grant.id) === checkedAs) continue;
       this.#checkedSpellings.set(grant.id, checkedAs);
       for (
-        const finding of findGrantSpellingIssues(
-          grant,
-          this.#readTypeLiterals,
-        )
+        const finding of [
+          ...findGrantSpellingIssues(grant, this.#readTypeLiterals),
+          ...findGrantMethodIssues(grant),
+        ]
       ) {
         logger
           .warn`Grant ${grant.id} (${grant.effect}, source ${grant.source}): ${finding.message}`;

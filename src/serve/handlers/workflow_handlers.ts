@@ -153,7 +153,7 @@ import {
   resolveSuspendedRun,
 } from "../../domain/workflows/suspended_run_resolver.ts";
 import { createWorkflowId } from "../../domain/workflows/workflow_id.ts";
-import { isGuardedRunRecord } from "../../domain/datastore_v3/content_bindings.ts";
+import { isGuardedRunRecord } from "../../domain/workflows/workflow_run.ts";
 import { unclaimedRuns } from "../../domain/workflows/run_claim.ts";
 import {
   NestedRunPendingError,

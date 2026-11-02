@@ -34,6 +34,7 @@ import type { ServerToken } from "../domain/models/access/server_token_model.ts"
 import type { AuditEmitter } from "../domain/serve_audit/audit_emitter.ts";
 import type { AuditEvent } from "../domain/serve_audit/audit_event.ts";
 import {
+  type RunVaultMethod,
   runWithVaultAccess,
   VaultAccessDeniedError,
 } from "../domain/vaults/run_vault_access.ts";
@@ -96,7 +97,13 @@ Deno.test("decideRunVaultAccess: with no vault grant every non-reserved vault is
     grant({ effect: "deny", resource: { kind: "data", pattern: "erp" } }),
   ]);
   for (const action of ["read", "write"] as const) {
-    const decision = decideRunVaultAccess(svc, user(), "erp", action);
+    const decision = decideRunVaultAccess(
+      svc,
+      user(),
+      "erp",
+      action,
+      action === "read" ? "get" : "put",
+    );
     assertEquals(decision.allowed, true);
     assertEquals(decision.rule, "no-vault-grants");
     assertEquals(decision.restricted, false);
@@ -110,12 +117,14 @@ Deno.test("decideRunVaultAccess: a reserved vault is refused unless the principa
     user(),
     "_token-secrets",
     "read",
+    "get",
   );
   assertEquals(refused.allowed, false);
   assertEquals(refused.rule, "reserved");
   assertStringIncludes(refused.reason, "usable by a serve run only");
   assertEquals(
-    decideRunVaultAccess(svc, user("root"), "_token-secrets", "read").allowed,
+    decideRunVaultAccess(svc, user("root"), "_token-secrets", "read", "get")
+      .allowed,
     true,
   );
 });
@@ -129,6 +138,7 @@ Deno.test("decideRunVaultAccess: a vault allow on a reserved vault does not admi
     user(),
     "_token-secrets",
     "read",
+    "get",
   );
   assertEquals(decision.allowed, false);
   assertEquals(decision.rule, "reserved");
@@ -140,7 +150,7 @@ Deno.test("decideRunVaultAccess: a deny-only principal loses just the denied vau
     resource: { kind: "vault", pattern: "erp" },
   });
   const svc = service([deny]);
-  const refused = decideRunVaultAccess(svc, user(), "erp", "read");
+  const refused = decideRunVaultAccess(svc, user(), "erp", "read", "get");
   assertEquals(refused.allowed, false);
   assertEquals(refused.rule, "vault-deny");
   assertEquals(refused.grantId, deny.id);
@@ -148,21 +158,30 @@ Deno.test("decideRunVaultAccess: a deny-only principal loses just the denied vau
     refused.reason,
     `denied by grant ${deny.id}; remove or narrow grant ${deny.id} to allow it`,
   );
-  const other = decideRunVaultAccess(svc, user(), "roomcontrol", "read");
+  const other = decideRunVaultAccess(svc, user(), "roomcontrol", "read", "get");
   assertEquals(other.allowed, true);
   assertEquals(other.rule, "unscoped");
-  assertEquals(decideRunVaultAccess(svc, user(), "erp", "write").allowed, true);
+  assertEquals(
+    decideRunVaultAccess(svc, user(), "erp", "write", "put").allowed,
+    true,
+  );
 });
 
 Deno.test("decideRunVaultAccess: any vault allow scopes the principal for every action", () => {
   const allow = grant();
   const svc = service([allow]);
-  const allowed = decideRunVaultAccess(svc, user(), "roomcontrol", "read");
+  const allowed = decideRunVaultAccess(
+    svc,
+    user(),
+    "roomcontrol",
+    "read",
+    "get",
+  );
   assertEquals(allowed.allowed, true);
   assertEquals(allowed.rule, "vault-allow");
   assertEquals(allowed.restricted, true);
   assertEquals(allowed.grantId, allow.id);
-  const other = decideRunVaultAccess(svc, user(), "erp", "read");
+  const other = decideRunVaultAccess(svc, user(), "erp", "read", "get");
   assertEquals(other.allowed, false);
   assertEquals(other.rule, "vault-scoped");
   assertStringIncludes(other.reason, "vault:erp");
@@ -171,11 +190,11 @@ Deno.test("decideRunVaultAccess: any vault allow scopes the principal for every 
     "add a vault:erp allow grant for read to this principal",
   );
   assertEquals(
-    decideRunVaultAccess(svc, user(), "roomcontrol", "write").allowed,
+    decideRunVaultAccess(svc, user(), "roomcontrol", "write", "put").allowed,
     false,
   );
   assertEquals(
-    decideRunVaultAccess(svc, user("alice"), "erp", "read").allowed,
+    decideRunVaultAccess(svc, user("alice"), "erp", "read", "get").allowed,
     true,
   );
 });
@@ -188,13 +207,23 @@ Deno.test("decideRunVaultAccess: a vault allow scopes through a local group and 
     ],
     [group("bots", ["bot"])],
   );
-  assertEquals(decideRunVaultAccess(svc, user(), "erp", "read").allowed, false);
   assertEquals(
-    decideRunVaultAccess(svc, user("carol", ["ci"]), "erp", "read").allowed,
+    decideRunVaultAccess(svc, user(), "erp", "read", "get").allowed,
     false,
   );
   assertEquals(
-    decideRunVaultAccess(svc, user("carol", ["ci"]), "roomcontrol", "read")
+    decideRunVaultAccess(svc, user("carol", ["ci"]), "erp", "read", "get")
+      .allowed,
+    false,
+  );
+  assertEquals(
+    decideRunVaultAccess(
+      svc,
+      user("carol", ["ci"]),
+      "roomcontrol",
+      "read",
+      "get",
+    )
       .allowed,
     true,
   );
@@ -213,17 +242,23 @@ Deno.test("decideRunVaultAccess: an access admin is never vault-scoped but is re
       resource: { kind: "vault", pattern: "erp" },
     }),
   ]);
-  const other = decideRunVaultAccess(svc, user("root"), "billing", "read");
+  const other = decideRunVaultAccess(
+    svc,
+    user("root"),
+    "billing",
+    "read",
+    "get",
+  );
   assertEquals(other.allowed, true);
   assertEquals(other.rule, "access-admin");
-  const denied = decideRunVaultAccess(svc, user("root"), "erp", "read");
+  const denied = decideRunVaultAccess(svc, user("root"), "erp", "read", "get");
   assertEquals(denied.allowed, false);
   assertEquals(denied.rule, "vault-deny");
 });
 
 Deno.test("decideRunVaultAccess: unavailable memberships fail closed only once vault grants exist", () => {
   assertEquals(
-    decideRunVaultAccess(service([]), null, "erp", "read").allowed,
+    decideRunVaultAccess(service([]), null, "erp", "read", "get").allowed,
     true,
   );
   const decision = decideRunVaultAccess(
@@ -231,6 +266,7 @@ Deno.test("decideRunVaultAccess: unavailable memberships fail closed only once v
     null,
     "erp",
     "read",
+    "get",
   );
   assertEquals(decision.allowed, false);
   assertEquals(decision.rule, "membership-unavailable");
@@ -244,7 +280,7 @@ Deno.test("decideRunVaultAccess: with keyUnknown a refusal that depends on a key
   });
   const svc = service([keyAllow]);
   assertEquals(
-    decideRunVaultAccess(svc, user(), "outputs", "write").rule,
+    decideRunVaultAccess(svc, user(), "outputs", "write", "put").rule,
     "vault-scoped",
   );
   const undetermined = decideRunVaultAccess(
@@ -252,6 +288,7 @@ Deno.test("decideRunVaultAccess: with keyUnknown a refusal that depends on a key
     user(),
     "outputs",
     "write",
+    "put",
     undefined,
     { keyUnknown: true },
   );
@@ -259,15 +296,17 @@ Deno.test("decideRunVaultAccess: with keyUnknown a refusal that depends on a key
   assertEquals(undetermined.undetermined, true);
   assertEquals(undetermined.rule, "key-undetermined");
   assertEquals(
-    decideRunVaultAccess(svc, user(), "outputs", "write", "app-token").allowed,
+    decideRunVaultAccess(svc, user(), "outputs", "write", "put", "app-token")
+      .allowed,
     true,
   );
   assertEquals(
-    decideRunVaultAccess(svc, user(), "outputs", "write", "other").allowed,
+    decideRunVaultAccess(svc, user(), "outputs", "write", "put", "other")
+      .allowed,
     false,
   );
   assertEquals(
-    decideRunVaultAccess(svc, user(), "erp", "write", undefined, {
+    decideRunVaultAccess(svc, user(), "erp", "write", "put", undefined, {
       keyUnknown: true,
     }).rule,
     "vault-scoped",
@@ -287,13 +326,14 @@ Deno.test("decideRunVaultAccess: with keyUnknown a key-conditioned allow for ano
     user(),
     "outputs",
     "write",
+    "put",
     undefined,
     { keyUnknown: true },
   );
   assertEquals(decision.rule, "vault-scoped");
   assertEquals(decision.undetermined, undefined);
   assertEquals(
-    decideRunVaultAccess(svc, user(), "outputs", "read", undefined, {
+    decideRunVaultAccess(svc, user(), "outputs", "read", "get", undefined, {
       keyUnknown: true,
     }).rule,
     "key-undetermined",
@@ -316,17 +356,17 @@ Deno.test("decideRunVaultAccess: a key-conditioned deny through an IdP group is 
   ]);
   const ci = user("bot", ["ci"]);
   assertEquals(
-    decideRunVaultAccess(svc, ci, "outputs", "write").rule,
+    decideRunVaultAccess(svc, ci, "outputs", "write", "put").rule,
     "vault-deny",
   );
   assertEquals(
-    decideRunVaultAccess(svc, ci, "outputs", "write", undefined, {
+    decideRunVaultAccess(svc, ci, "outputs", "write", "put", undefined, {
       keyUnknown: true,
     }).undetermined,
     true,
   );
   assertEquals(
-    decideRunVaultAccess(svc, user(), "outputs", "write").allowed,
+    decideRunVaultAccess(svc, user(), "outputs", "write", "put").allowed,
     true,
   );
 });
@@ -347,17 +387,17 @@ Deno.test("decideRunVaultAccess: a key-conditioned deny through a collective is 
   ]);
   const member: AccessPrincipal = { ...user(), collectives: ["acme"] };
   assertEquals(
-    decideRunVaultAccess(svc, member, "outputs", "write").rule,
+    decideRunVaultAccess(svc, member, "outputs", "write", "put").rule,
     "vault-deny",
   );
   assertEquals(
-    decideRunVaultAccess(svc, member, "outputs", "write", undefined, {
+    decideRunVaultAccess(svc, member, "outputs", "write", "put", undefined, {
       keyUnknown: true,
     }).undetermined,
     true,
   );
   assertEquals(
-    decideRunVaultAccess(svc, user(), "outputs", "write").allowed,
+    decideRunVaultAccess(svc, user(), "outputs", "write", "put").allowed,
     true,
   );
 });
@@ -381,6 +421,7 @@ Deno.test("decideRunVaultAccess: with keyUnknown a deny that holds for every key
     user(),
     "outputs",
     "write",
+    "put",
     undefined,
     { keyUnknown: true },
   );
@@ -405,13 +446,22 @@ Deno.test("decideRunVaultAccess: with keyUnknown and no key condition the decisi
     user(),
     "erp",
     "write",
+    "put",
     undefined,
     options,
   );
   assertEquals(refused.rule, "vault-scoped");
   assertEquals(refused.undetermined, undefined);
   assertEquals(
-    decideRunVaultAccess(svc, user(), "roomcontrol", "read", undefined, options)
+    decideRunVaultAccess(
+      svc,
+      user(),
+      "roomcontrol",
+      "read",
+      "get",
+      undefined,
+      options,
+    )
       .allowed,
     true,
   );
@@ -421,6 +471,7 @@ Deno.test("decideRunVaultAccess: with keyUnknown and no key condition the decisi
       user(),
       "_token-secrets",
       "read",
+      "get",
       undefined,
       options,
     )
@@ -475,11 +526,14 @@ Deno.test("ServeRunVaultPolicy: a token session re-reads its record at most once
     idpGroups: [],
     collectives: [],
   });
-  assertEquals((await policy.decide("erp", "read")).allowed, false);
-  assertEquals((await policy.decide("roomcontrol", "read")).allowed, true);
+  assertEquals((await policy.decide("erp", "read", "get")).allowed, false);
+  assertEquals(
+    (await policy.decide("roomcontrol", "read", "get")).allowed,
+    true,
+  );
   assertEquals(reads, 1);
   now += 10_000;
-  await policy.decide("roomcontrol", "read");
+  await policy.decide("roomcontrol", "read", "get");
   assertEquals(reads, 2);
 });
 
@@ -522,10 +576,13 @@ Deno.test("ServeRunVaultPolicy: a revoked token fails closed once vault grants e
       idpGroups: [],
       collectives: [],
     });
-  assertEquals((await policyFor([]).decide("erp", "read")).allowed, true);
+  assertEquals(
+    (await policyFor([]).decide("erp", "read", "get")).allowed,
+    true,
+  );
   assertEquals(
     (await policyFor([grant({ subject: { kind: "user", name: "x" } })])
-      .decide("erp", "read")).allowed,
+      .decide("erp", "read", "get")).allowed,
     false,
   );
 });
@@ -541,11 +598,11 @@ Deno.test("ServeRunVaultPolicy: decides against the current snapshot on every op
     idpGroups: [],
     collectives: [],
   });
-  assertEquals((await policy.decide("erp", "read")).allowed, true);
+  assertEquals((await policy.decide("erp", "read", "get")).allowed, true);
   loader.decisionService = service([
     grant({ effect: "deny", resource: { kind: "vault", pattern: "erp" } }),
   ]);
-  assertEquals((await policy.decide("erp", "read")).allowed, false);
+  assertEquals((await policy.decide("erp", "read", "get")).allowed, false);
 });
 
 Deno.test("ServeRunVaultPolicy: records the triggering principal and its memberships", () => {
@@ -589,9 +646,12 @@ Deno.test("serviceRunVaultScope: a trigger principal is scoped by its local grou
     },
   }, SCHEDULER_PRINCIPAL);
   assert(scope);
-  assertEquals((await scope.access.decide("erp", "read")).allowed, false);
   assertEquals(
-    (await scope.access.decide("roomcontrol", "read")).allowed,
+    (await scope.access.decide("erp", "read", "get")).allowed,
+    false,
+  );
+  assertEquals(
+    (await scope.access.decide("roomcontrol", "read", "get")).allowed,
     true,
   );
 });
@@ -644,7 +704,7 @@ Deno.test("createRunVaultScope: a refusal is audited once in the secrets categor
       () =>
         runWithVaultAccess(
           scope.access,
-          () => scope.access.check("erp", "read", "k"),
+          () => scope.access.check("erp", "read", "get", "k"),
         ),
       VaultAccessDeniedError,
     );
@@ -680,7 +740,7 @@ Deno.test("createRunVaultScope: a refusal names a user whose name is known", asy
     () =>
       runWithVaultAccess(
         scope.access,
-        () => scope.access.check("erp", "read", "k"),
+        () => scope.access.check("erp", "read", "get", "k"),
       ),
     VaultAccessDeniedError,
   );
@@ -710,9 +770,12 @@ Deno.test("resumeRunVaultScope: a resume is held to the recorded principal and m
   assert(scope);
   assertEquals(scope.runId, "run-1");
   assertEquals(scope.access.triggeringPrincipal?.id, "bot");
-  assertEquals((await scope.access.decide("erp", "read")).allowed, false);
   assertEquals(
-    (await scope.access.decide("roomcontrol", "read")).allowed,
+    (await scope.access.decide("erp", "read", "get")).allowed,
+    false,
+  );
+  assertEquals(
+    (await scope.access.decide("roomcontrol", "read", "get")).allowed,
     true,
   );
 });
@@ -724,7 +787,10 @@ Deno.test("resumeRunVaultScope: a run with no recorded principal fails closed on
     policySnapshotLoader: { decisionService: service([]) },
   }, run);
   assert(without);
-  assertEquals((await without.access.decide("erp", "read")).allowed, true);
+  assertEquals(
+    (await without.access.decide("erp", "read", "get")).allowed,
+    true,
+  );
   assertEquals(without.access.triggeringPrincipal, undefined);
   const withGrants = resumeRunVaultScope({
     authMode: "token",
@@ -735,7 +801,7 @@ Deno.test("resumeRunVaultScope: a run with no recorded principal fails closed on
     },
   }, run);
   assert(withGrants);
-  const decision = await withGrants.access.decide("erp", "read");
+  const decision = await withGrants.access.decide("erp", "read", "get");
   assertEquals(decision.allowed, false);
 });
 
@@ -763,15 +829,18 @@ Deno.test("resumeRunVaultScope: a resume of a token-triggered run revalidates th
   const active = scopeFor(tokenRecord());
   assert(active);
   assertEquals(
-    (await active.access.decide("roomcontrol", "read")).allowed,
+    (await active.access.decide("roomcontrol", "read", "get")).allowed,
     true,
   );
-  assertEquals((await active.access.decide("erp", "read")).allowed, false);
+  assertEquals(
+    (await active.access.decide("erp", "read", "get")).allowed,
+    false,
+  );
 
   const revoked = scopeFor(tokenRecord({ state: "revoked" }));
   assert(revoked);
   assertEquals(
-    (await revoked.access.decide("roomcontrol", "read")).allowed,
+    (await revoked.access.decide("roomcontrol", "read", "get")).allowed,
     false,
   );
 
@@ -782,7 +851,97 @@ Deno.test("resumeRunVaultScope: a resume of a token-triggered run revalidates th
   );
   assert(expired);
   assertEquals(
-    (await expired.access.decide("roomcontrol", "read")).allowed,
+    (await expired.access.decide("roomcontrol", "read", "get")).allowed,
     true,
   );
+});
+
+Deno.test("decideRunVaultAccess: a vault grant scoped to verbs allows only those verbs in a run", () => {
+  const svc = service([
+    grant({
+      actions: ["read", "write"],
+      resource: { kind: "vault", pattern: "outputs" },
+      methods: ["put", "get"],
+    }),
+  ]);
+  const allowed = (action: "read" | "write", method: RunVaultMethod) =>
+    decideRunVaultAccess(svc, user(), "outputs", action, method, "k").allowed;
+  assertEquals(allowed("write", "put"), true);
+  assertEquals(allowed("read", "get"), true);
+  assertEquals(allowed("write", "delete"), false);
+  assertEquals(allowed("write", "annotate"), false);
+  assertEquals(allowed("write", "edit"), false);
+  assertEquals(allowed("read", "list-keys"), false);
+  assertEquals(allowed("read", "describe"), false);
+});
+
+Deno.test("decideRunVaultAccess: a put-only vault grant does not let a run set a refresh hook", () => {
+  const svc = service([
+    grant({
+      actions: ["write"],
+      resource: { kind: "vault", pattern: "outputs" },
+      methods: ["put"],
+    }),
+  ]);
+  const refreshHook = decideRunVaultAccess(
+    svc,
+    user(),
+    "outputs",
+    "write",
+    "edit",
+    "k",
+  );
+  assertEquals(refreshHook.allowed, false);
+  assertEquals(refreshHook.rule, "vault-scoped");
+});
+
+Deno.test("decideRunVaultAccess: a vault deny scoped to a verb refuses that verb and leaves the rest", () => {
+  const svc = service([
+    grant({
+      effect: "deny",
+      actions: ["write"],
+      resource: { kind: "vault", pattern: "outputs" },
+      methods: ["delete"],
+    }),
+  ]);
+  assertEquals(
+    decideRunVaultAccess(svc, user(), "outputs", "write", "delete").allowed,
+    false,
+  );
+  assertEquals(
+    decideRunVaultAccess(svc, user(), "outputs", "write", "put").allowed,
+    true,
+  );
+});
+
+Deno.test("decideRunVaultAccess: with keyUnknown a key-conditioned allow scoped to another verb does not defer the refusal", () => {
+  const svc = service([
+    grant({
+      actions: ["write"],
+      resource: { kind: "vault", pattern: "outputs" },
+      methods: ["delete"],
+      condition: 'key == "x"',
+    }),
+  ]);
+  const put = decideRunVaultAccess(
+    svc,
+    user(),
+    "outputs",
+    "write",
+    "put",
+    undefined,
+    { keyUnknown: true },
+  );
+  assertEquals(put.allowed, false);
+  assertEquals(put.rule, "vault-scoped");
+  const del = decideRunVaultAccess(
+    svc,
+    user(),
+    "outputs",
+    "write",
+    "delete",
+    undefined,
+    { keyUnknown: true },
+  );
+  assertEquals(del.rule, "key-undetermined");
 });

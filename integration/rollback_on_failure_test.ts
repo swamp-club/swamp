@@ -561,3 +561,130 @@ Deno.test("rollbackOnFailure: multi-resource rollback (96-well scenario)", async
     }
   });
 });
+
+async function runNameClash(
+  repoDir: string,
+  rollbackOnFailure: boolean,
+  write: MethodDefinition["execute"],
+) {
+  const catalogDb = join(repoDir, ".swamp", "catalog.db");
+  await Deno.mkdir(join(repoDir, ".swamp"), { recursive: true });
+  const dataRepo = new FileSystemUnifiedDataRepository(
+    repoDir,
+    undefined,
+    new CatalogStore(catalogDb),
+  );
+  const definition = Definition.create({
+    name: "test-rollback",
+    methods: { test: { arguments: {} } },
+  });
+  const method: MethodDefinition = {
+    description: "Writes a file and a resource",
+    rollbackOnFailure,
+    arguments: z.object({}),
+    execute: write,
+  };
+  const result = await new InProcessExecutor(
+    createExecutor(),
+    definition,
+    method,
+    createModelDef(),
+    createContext(repoDir, dataRepo, definition.id),
+    "test",
+  ).execute({
+    protocolVersion: 1,
+    modelType: MODEL_TYPE.normalized,
+    modelId: definition.id,
+    methodName: "test",
+    globalArgs: {},
+    methodArgs: {},
+    definitionMeta: {
+      id: definition.id,
+      name: "test-rollback",
+      version: 1,
+      tags: {},
+    },
+  });
+  const versionsOf = (name: string) =>
+    dataRepo.listVersions(MODEL_TYPE, definition.id, name);
+  const latest = (name: string) =>
+    dataRepo.findByName(MODEL_TYPE, definition.id, name);
+  return { result, versionsOf, latest };
+}
+
+const marker = { marker: "resource", writtenAt: "2026-01-01T00:00:00Z" };
+
+Deno.test("name clash: a resource under a name the run wrote as a file is refused and the file stays the only version", async () => {
+  await withTempDir(async (repoDir) => {
+    const { result, versionsOf, latest } = await runNameClash(
+      repoDir,
+      false,
+      async (_args, ctx) => {
+        const f = await ctx.createFileWriter!("log", "x").writeText("body");
+        const r = await ctx.writeResource!("first", "x", marker);
+        return { dataHandles: [f, r] };
+      },
+    );
+
+    assertEquals(result.status, "error");
+    assertEquals(
+      result.status === "error" ? result.error : undefined,
+      "Duplicate data instance name 'x' (already written as file 'log' in this run)",
+    );
+    assertEquals(await versionsOf("x"), [1]);
+    assertEquals((await latest("x"))?.tags["type"], "file");
+  });
+});
+
+Deno.test("name clash: a file under a name the run wrote as a resource is refused and the resource stays the only version", async () => {
+  await withTempDir(async (repoDir) => {
+    const { result, versionsOf, latest } = await runNameClash(
+      repoDir,
+      false,
+      async (_args, ctx) => {
+        const r = await ctx.writeResource!("first", "x", marker);
+        const f = await ctx.createFileWriter!("log", "x").writeText("body");
+        return { dataHandles: [r, f] };
+      },
+    );
+
+    assertEquals(result.status, "error");
+    assertEquals(await versionsOf("x"), [1]);
+    assertEquals((await latest("x"))?.tags["type"], "resource");
+  });
+});
+
+Deno.test("name clash: distinct names for the file and the resource both commit", async () => {
+  await withTempDir(async (repoDir) => {
+    const { result, versionsOf } = await runNameClash(
+      repoDir,
+      false,
+      async (_args, ctx) => {
+        const f = await ctx.createFileWriter!("log", "x-file").writeText("b");
+        const r = await ctx.writeResource!("first", "x", marker);
+        return { dataHandles: [f, r] };
+      },
+    );
+
+    assertEquals(result.status, "success");
+    assertEquals(await versionsOf("x-file"), [1]);
+    assertEquals(await versionsOf("x"), [1]);
+  });
+});
+
+Deno.test("name clash: rollbackOnFailure discards the first write as well", async () => {
+  await withTempDir(async (repoDir) => {
+    const { result, versionsOf } = await runNameClash(
+      repoDir,
+      true,
+      async (_args, ctx) => {
+        const f = await ctx.createFileWriter!("log", "x").writeText("body");
+        const r = await ctx.writeResource!("first", "x", marker);
+        return { dataHandles: [f, r] };
+      },
+    );
+
+    assertEquals(result.status, "error");
+    assertEquals(await versionsOf("x"), []);
+  });
+});

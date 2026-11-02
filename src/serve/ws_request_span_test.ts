@@ -29,7 +29,12 @@ import {
   isChildOf,
   SpanKind,
   withCapturedSpans,
+  withObservedSpans,
 } from "../infrastructure/tracing/span_test_helpers.ts";
+import {
+  observeDiagnosticPhase,
+  withDiagnosticArea,
+} from "../domain/diagnostics/diagnostic_phase.ts";
 import {
   connectionIdOf,
   type EventLoopLagReader,
@@ -226,5 +231,51 @@ Deno.test("traceWebSocketRequest: a rejecting fn rejects and marks the span ERRO
     assertEquals(span.status.code, SpanStatusCode.ERROR);
     assertEquals(span.status.message, "handler failed");
     assertEquals(span.attributes["swamp.serve.event_loop.lag_max_ms"], 7);
+  });
+});
+
+Deno.test("traceWebSocketRequest: each diagnostic phase the request starts records the lag sampled since it started", async () => {
+  await withObservedSpans(async (spans) => {
+    const asked: number[] = [];
+    await traceWebSocketRequest(
+      makeTrace({
+        eventLoopLag: {
+          maxLagMs: () => 9,
+          maxLagSince: (at) => {
+            asked.push(at);
+            return 9;
+          },
+        },
+      }),
+      () =>
+        withDiagnosticArea(
+          "output_search",
+          () =>
+            observeDiagnosticPhase(
+              "candidate_scan",
+              {},
+              () => Promise.resolve(),
+            ),
+        ),
+    );
+    await traceWebSocketRequest(
+      makeTrace({ eventLoopLag: lagReader(9) }),
+      () =>
+        withDiagnosticArea(
+          "output_search",
+          () => observeDiagnosticPhase("response", {}, () => Promise.resolve()),
+        ),
+    );
+    assertEquals(asked.length, 1);
+    assertEquals(
+      findSpan(spans, "swamp.diagnostic.candidate_scan")
+        .attributes["swamp.diagnostic.event_loop_lag_max_ms"],
+      9,
+    );
+    assertEquals(
+      findSpan(spans, "swamp.diagnostic.response")
+        .attributes["swamp.diagnostic.event_loop_lag_max_ms"],
+      undefined,
+    );
   });
 });

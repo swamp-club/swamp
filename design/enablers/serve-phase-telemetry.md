@@ -1,7 +1,7 @@
 ---
 audience: operators, contributors
 enables: [serve]
-last-verified: 2026-10-27 @ HEAD
+last-verified: 2026-11-02 @ HEAD
 ---
 
 # Serve phase telemetry
@@ -40,6 +40,7 @@ Every phase is a span named `swamp.diagnostic.<phase>` with:
 | `swamp.phase.coverage_truncated`, `swamp.phase.pending_children` | bool, int | As in the remote contract                                                                                   |
 | `swamp.diagnostic.<counter>`                                     | int       | A count of items or attempts (per phase below)                                                              |
 | `swamp.diagnostic.<work>_work_ms`                                | number    | Milliseconds of one kind of work summed across items: **not elapsed time**                                  |
+| `swamp.diagnostic.event_loop_lag_max_ms`                         | number    | In a WebSocket request: the largest event-loop lag sampled while the phase ran                              |
 
 Areas and phases are closed vocabularies, never built from data. A phase is
 exported only inside an area that lists it, or when it is one of the shared
@@ -154,8 +155,13 @@ file's size on disk when it holds invalid byte sequences.
   span (`name_index.entries`, `name_index.relisted`, `name_index.files_parsed`)
   nests under the scan of the lookup that ran it.
 - `global_index` (`scan_root=all`): the check of serve's definition index (lab
-  #3968) that a `global_index` lookup runs before it reads the files declaring
-  the name. It carries the same attributes as `owner_index` below (`cache`,
+  #3968) that a lookup through the index runs before it reads the files
+  declaring the name or id. A `global_index` lookup by name runs one, and so
+  does each lookup by id the index answers (lab #4280): an auto-definition's
+  `findById` or `delete`, a lookup by id across every type, the authorized
+  name of such a lookup, and a UUID tried as a name first. While no
+  definitions directory changed, the check stats each directory and reads no
+  file. It carries the same attributes as `owner_index` below (`cache`,
   `definitions`, `dirs_checked`, `dirs_relisted`, `dirs_joined`,
   `files_parsed`, `files_joined`), and the
   `swamp.serve.definition_index.validate` span nests under it.
@@ -251,7 +257,9 @@ the dashboard), `model.usage.summary` (the dashboard's Models page) or
 `model.method.history.search` request (lab #4056). These requests run in that
 traced span, which records the event-loop lag seen while they ran. The handler
 sets the area, and the area carries the
-request's cancellation, so every phase records `cancel_observed`. The CLI's
+request's cancellation, so every phase records `cancel_observed`. Every phase a
+WebSocket request starts, in this area or any other, also records
+`event_loop_lag_max_ms` (lab #4146, below). The CLI's
 `model output search` runs the same search outside any area and exports none of
 these phases.
 
@@ -320,7 +328,11 @@ file is read.
 A search with a `limit` reads newest first and stops once it holds its results
 (lab #4143; for one model, lab #4174). It orders the listed files by the start
 time in their names, reading first any file whose name is not in the output form, because only
-reading it says when it started. It reads batches of 16 to 1,024, so a search with
+reading it says when it started. The order is sorted in slices of the event loop,
+once per listing (lab #4146, lab #4181): searches sharing a listing share its sort,
+and each then picks its own window from it, in slices too. A search left alone on a
+sort that has not finished stops it when cancelled, and a search after it sorts
+afresh. A search for one model sorts only the files named for its definition. It reads batches of 16 to 1,024, so a search with
 a large `limit` holds up one with a small `limit` only briefly, judges each record
 as `authorization` will, and stops when its `limit`-th result started strictly
 after every file still unread, so outputs started in the same millisecond as that
@@ -353,7 +365,9 @@ Without a `limit`, a search for one model still reads its whole window.
 `model.usage.summary` exports the same phases with `swamp.model.usage.summary`
 as the parent of `candidate_scan`, `definition_names`, `workflow_names` and
 `authorization`. It always reads its whole window, leaving out unread the files
-a restricted caller may not read as a search without a `limit` does. It tallies
+a restricted caller may not read as a search without a `limit` does. Its sort of
+the window and its tally yield to the event loop every 4 ms, as a search without a
+`limit` does (lab #4146). It tallies
 outputs before its final check, so `authorization` also counts `groups`, the
 distinct model and method pairs judged; `items` and `readable` still count
 outputs. `response` counts the model rows in `results`, and `workflow_names`
@@ -371,6 +385,7 @@ covers only the outputs in those rows' recent lists.
 | `files_read`, `bytes_read`                       | Records read                                                                    |
 | `read_work_ms`, `parse_work_ms`                  | Reading and parsing them                                                        |
 | `scans_joined`                                   | 1 when the request shared a scan whose reads another request on it counted      |
+| `event_loop_lag_max_ms`                          | Largest event-loop lag serve sampled while the phase ran (see below)            |
 
 Identical searches running at once share one scan (lab #4074): searches for the
 same model, `since` searches, and searches with neither. Both requests share
@@ -401,10 +416,36 @@ listing's counts and another the reads', each with `scans_joined`.
 Both a `since` search and a search for one model list directories and read
 files concurrently, with at most 16 listings and reads in flight across every
 scan in the process (lab #4058), so their `*_work_ms` values are cumulative
-across concurrent operations and can exceed the phase's duration. Their
-duration is mostly the listing, the turns the event loop gave the scan, and
-waiting for one of the 16 while other requests scan; compare it with the
-request's event-loop lag. A cancelled request replies `cancelled` at once, and
+across concurrent operations and can exceed the phase's duration. Output scans
+take at most 6 of the 16 (lab #4146), the bulk share of the 12 searches may hold,
+so a workflow-run scan or report search beside a long output scan still gets
+permits, and a method run's lookups keep their 4. Their duration is mostly the
+listing, the turns the event loop gave the scan, and waiting for one of the
+permits while other requests scan; compare it with `event_loop_lag_max_ms`.
+
+What a scan does with what it read yields to the event loop every 4 ms (lab
+#4146): the newest-first sort, the choice of files a restricted caller may read,
+a search without a `limit` building and sorting its results, the usage summary's
+tally, and the final authorization and workflow-link redaction loops. At 75,000
+outputs in the window, on a fast machine with a mock policy, that took the longest
+block of a limited search from about 95 ms to under 25 ms, eight concurrent limited
+searches from about 660-740 ms to 50-76 ms, and a search without a `limit` and the
+usage summary from about 190-380 ms to 50-63 ms; a 2,000-run workflow scan running
+beside them went from up to 20 times its idle time to about 3 times. A request that
+walks the listing takes up to about 1.8 times longer while another request runs.
+`output_history_scan_bench.ts` reproduces the concurrent case. The response is
+still one serialization, so a reply without a `limit` over many outputs is a block
+of its own.
+
+`event_loop_lag_max_ms` is the largest lateness of serve's lag sampler, which
+fires every 250 ms and keeps 10 s, among the samples that fired after the phase
+started. It says the loop was held while the phase ran, not that the phase held
+it, can miss a block shorter than the sampling interval, and sees only the last
+10 s of a longer phase. `swamp.serve.request` sets it for the request's whole
+async context, so it appears on the phases of any area a WebSocket request runs,
+such as `step_outputs`. A phase started inside a shared scan's flight does not
+carry it, nor does work outside a WebSocket request: output retention, polling,
+or the CLI. A cancelled request replies `cancelled` at once, and
 its `candidate_scan` ends with outcome `cancelled`. It stops the scan
 (lab #4070) only when it is the last request on it (lab #4074): the scan then
 leaves the queue for the 16, starts no further listing or read, and gives back

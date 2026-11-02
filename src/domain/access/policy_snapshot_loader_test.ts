@@ -958,6 +958,42 @@ Deno.test("PolicySnapshotLoader.load: names each non-canonical type spelling onc
   assertEquals(warnings.filter((w) => w.includes(canonical.id)), []);
 });
 
+Deno.test("PolicySnapshotLoader.load: warns once about methods a grant's kind never matches, and keeps the grant", async () => {
+  const workflow = makeGrant({ methods: ["deploy"] });
+  const vault = makeGrant({
+    actions: ["write"],
+    resource: { kind: "vault", pattern: "prod" },
+    methods: ["write"],
+  });
+  const fine = makeGrant({
+    resource: { kind: "model", pattern: "*" },
+    methods: ["deploy"],
+  });
+  const dataRepo = createMockDataRepo(
+    [
+      { attrs: workflow, modelId: "g1", dataName: "grant-main" },
+      { attrs: vault, modelId: "g2", dataName: "grant-main" },
+      { attrs: fine, modelId: "g3", dataName: "grant-main" },
+    ],
+    [],
+  );
+  const loader = new PolicySnapshotLoader(dataRepo, new EventBus());
+  let snapshot;
+  const warnings = await capturingLoaderWarnings(async () => {
+    snapshot = await loader.load();
+    await loader.load();
+  });
+  await loader.dispose();
+
+  assertEquals(warnings.filter((w) => w.includes(workflow.id)).length, 1);
+  assertEquals(warnings.filter((w) => w.includes(vault.id)).length, 1);
+  assertEquals(warnings.filter((w) => w.includes(fine.id)), []);
+  assertEquals(
+    snapshot!.grantsForSubjects(["user:adam"]).length,
+    3,
+  );
+});
+
 Deno.test("PolicySnapshotLoader.load: reports a spelling again once its grant returns after a revoke", async () => {
   const deny = makeGrant({
     effect: "deny",

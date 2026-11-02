@@ -22,12 +22,15 @@ import {
   agentScreenHeading,
   agentsToggleLabel,
   allTasksLabel,
+  backRequest,
   contentsLabel,
   contentsNames,
   createdLabel,
+  DEFAULT_WORKSPACE_ORDER,
   extraToolsToSend,
   FIRST_TASK_IDEAS,
   firstLine,
+  formatWorkspaceOrder,
   importNameFromPath,
   importProblem,
   initialAgentPick,
@@ -42,10 +45,16 @@ import {
   locationCheckKey,
   middleEllipsis,
   nameFromFolder,
+  navDepth,
   newWorkspaceNameProblem,
+  nextWorkspaceOrder,
   orderExamples,
   parseTokenFromHash,
+  parseWorkspaceOrder,
+  pathLabel,
   pickFirstTaskIdea,
+  planHistorySync,
+  railRequest,
   resumeChecklist,
   resumeGuidance,
   resumeLaunchLabel,
@@ -72,6 +81,7 @@ import type {
   ExamplePrompt,
   StartHarness,
   StartSignals,
+  StartStatus,
   TaskSummary,
   WorkspaceSummary,
 } from "./types.ts";
@@ -290,31 +300,84 @@ Deno.test("newWorkspaceNameProblem: explains an invalid or taken name", () => {
   );
 });
 
-Deno.test("sortWorkspaces: newest first, unknown times last", () => {
+Deno.test("sortWorkspaces: newest created first by default, unknown times last", () => {
   const sorted = sortWorkspaces([
     workspace({ name: "none" }),
-    workspace({ name: "old", updatedAt: "2026-01-01T00:00:00Z" }),
-    workspace({ name: "new", updatedAt: "2026-10-01T00:00:00Z" }),
-    workspace({ name: "bad", updatedAt: "not a date" }),
+    workspace({ name: "old", createdAt: "2026-01-01T00:00:00Z" }),
+    workspace({
+      name: "new",
+      createdAt: "2026-10-01T00:00:00Z",
+      updatedAt: "2025-01-01T00:00:00Z",
+    }),
+    workspace({ name: "bad", createdAt: "not a date" }),
   ]);
-  assertEquals(sorted.map((w) => w.name).slice(0, 2), ["new", "old"]);
+  assertEquals(sorted.map((w) => w.name), ["new", "old", "bad", "none"]);
 });
 
-Deno.test("updatedLabel: relative within a week, else the date", () => {
+Deno.test("sortWorkspaces: oldest first keeps unknown times last", () => {
+  const sorted = sortWorkspaces([
+    workspace({ name: "none" }),
+    workspace({ name: "new", updatedAt: "2026-10-01T00:00:00Z" }),
+    workspace({ name: "old", updatedAt: "2026-01-01T00:00:00Z" }),
+  ], { key: "updated", dir: "asc" });
+  assertEquals(sorted.map((w) => w.name), ["old", "new", "none"]);
+});
+
+Deno.test("sortWorkspaces: by name ignores case and reads numbers", () => {
+  const names = [
+    workspace({ name: "web-10" }),
+    workspace({ name: "Billing" }),
+    workspace({ name: "web-9" }),
+    workspace({ name: "audit" }),
+  ];
+  assertEquals(
+    sortWorkspaces(names, { key: "name", dir: "asc" }).map((w) => w.name),
+    ["audit", "Billing", "web-9", "web-10"],
+  );
+  assertEquals(
+    sortWorkspaces(names, { key: "name", dir: "desc" }).map((w) => w.name),
+    ["web-10", "web-9", "Billing", "audit"],
+  );
+});
+
+Deno.test("parseWorkspaceOrder: round-trips a stored order, else newest first", () => {
+  const order = { key: "updated", dir: "asc" } as const;
+  assertEquals(parseWorkspaceOrder(formatWorkspaceOrder(order)), order);
+  assertEquals(parseWorkspaceOrder(null), DEFAULT_WORKSPACE_ORDER);
+  assertEquals(parseWorkspaceOrder("name"), DEFAULT_WORKSPACE_ORDER);
+  assertEquals(parseWorkspaceOrder("size:asc"), DEFAULT_WORKSPACE_ORDER);
+});
+
+Deno.test("nextWorkspaceOrder: the same column flips, a new one starts at its natural order", () => {
+  assertEquals(
+    nextWorkspaceOrder(DEFAULT_WORKSPACE_ORDER, "created"),
+    { key: "created", dir: "asc" },
+  );
+  assertEquals(
+    nextWorkspaceOrder(DEFAULT_WORKSPACE_ORDER, "name"),
+    { key: "name", dir: "asc" },
+  );
+  assertEquals(
+    nextWorkspaceOrder({ key: "name", dir: "asc" }, "updated"),
+    { key: "updated", dir: "desc" },
+  );
+});
+
+Deno.test("updatedLabel: relative within a week, else the day", () => {
   const now = new Date("2026-10-11T12:00:00Z");
   assertEquals(updatedLabel(null, now), null);
   assertEquals(updatedLabel("nope", now), null);
-  assertEquals(updatedLabel("2026-10-11T11:59:30Z", now), "Updated just now");
+  assertEquals(updatedLabel("2026-10-11T11:59:30Z", now), "just now");
   assertEquals(
     updatedLabel("2026-10-11T11:59:00Z", now),
-    "Updated 1 minute ago",
+    "1m ago",
   );
   assertEquals(
     updatedLabel("2026-10-11T09:00:00Z", now),
-    "Updated 3 hours ago",
+    "3h ago",
   );
-  assertEquals(updatedLabel("2026-10-09T12:00:00Z", now), "Updated 2 days ago");
-  assertEquals(updatedLabel("2026-09-01T12:00:00Z", now), "Updated 2026-09-01");
+  assertEquals(updatedLabel("2026-10-09T12:00:00Z", now), "2d ago");
+  assertEquals(updatedLabel("2026-09-01T12:00:00Z", now), "1 Sep");
 });
 
 Deno.test("splitHarnesses: found ones launchable first, the rest apart", () => {
@@ -586,11 +649,11 @@ Deno.test("createdLabel: day and month, the year only when it differs", () => {
   const now = new Date(2026, 9, 11, 12);
   assertEquals(
     createdLabel(new Date(2026, 9, 3, 9).toISOString(), now),
-    "Created 3 Oct",
+    "3 Oct",
   );
   assertEquals(
     createdLabel(new Date(2025, 11, 30, 9).toISOString(), now),
-    "Created 30 Dec 2025",
+    "30 Dec 2025",
   );
   assertEquals(createdLabel(null, now), null);
   assertEquals(createdLabel("not a date", now), null);
@@ -848,4 +911,131 @@ Deno.test("locationCheckKey: changes with the name or the folder, not surroundin
       locationCheckKey("misty-heron", "~/dev"),
     false,
   );
+});
+
+const TASK: TaskSummary = {
+  id: "t1",
+  title: "t",
+  step: "agent",
+  harness: null,
+  harnessDisplayName: null,
+  createdAt: "2026-10-03T09:00:00.000Z",
+  launchedAt: null,
+};
+
+Deno.test("backRequest: each screen goes back one step toward all workspaces", () => {
+  const tasks = [TASK];
+  assertEquals(backRequest({ screen: "workspace" }), null);
+  assertEquals(backRequest({ screen: "home", tasks }), "start.workspace.leave");
+  assertEquals(backRequest({ screen: "task" }), "start.workspace.leave");
+  assertEquals(
+    backRequest({ screen: "task", taskId: "t1", tasks }),
+    "start.tasks.show",
+  );
+  assertEquals(backRequest({ screen: "task", tasks }), "start.new_task.cancel");
+  assertEquals(backRequest({ screen: "agent", taskId: "t1" }), "start.back");
+  assertEquals(backRequest({ screen: "trust", taskId: "t1" }), "start.back");
+  assertEquals(backRequest({ screen: "launched", tasks }), "start.tasks.show");
+  assertEquals(backRequest({ screen: "sign_in" }), null);
+});
+
+Deno.test("navDepth: Back never climbs, and no forward step climbs more than one", () => {
+  const tasks = [TASK];
+  const cases: Pick<StartStatus, "screen" | "taskId" | "tasks">[] = [
+    { screen: "home", tasks },
+    { screen: "task" },
+    { screen: "task", taskId: "t1", tasks },
+    { screen: "task", tasks },
+    { screen: "agent", taskId: "t1", tasks },
+    { screen: "trust", taskId: "t1", tasks },
+    { screen: "launched", taskId: "t1", tasks },
+  ];
+  const after: Record<string, { screen: "workspace" | "home" | "task" }> = {
+    "start.workspace.leave": { screen: "workspace" },
+    "start.tasks.show": { screen: "home" },
+    "start.new_task.cancel": { screen: "home" },
+    "start.back": { screen: "task" },
+  };
+  for (const status of cases) {
+    const target = after[backRequest(status) ?? ""];
+    const from = navDepth(status);
+    const to = navDepth({ ...target, tasks: status.tasks });
+    assertEquals(to <= from && to >= from - 1, true, status.screen);
+  }
+  const forward: [StartStatus["screen"], StartStatus["screen"]][] = [
+    ["workspace", "task"],
+    ["workspace", "home"],
+    ["home", "task"],
+    ["task", "agent"],
+    ["trust", "launched"],
+  ];
+  for (const [from, to] of forward) {
+    const climb = navDepth({ screen: to }) - navDepth({ screen: from });
+    assertEquals(climb >= 0 && climb <= 1, true, `${from} to ${to}`);
+  }
+  assertEquals(navDepth({ screen: "workspace" }), 0);
+});
+
+Deno.test("railRequest: only steps behind the screen are links, and a launched task's Task is not", () => {
+  assertEquals(railRequest("workspace", "workspace"), null);
+  assertEquals(railRequest("workspace", "task"), "start.workspace.leave");
+  assertEquals(railRequest("workspace", "launched"), "start.workspace.leave");
+  assertEquals(railRequest("task", "task"), null);
+  assertEquals(railRequest("task", "agent"), "start.back");
+  assertEquals(railRequest("task", "trust"), "start.back");
+  assertEquals(railRequest("task", "launched"), null);
+});
+
+Deno.test("pathLabel: home as ~, then the trailing folders that fit", () => {
+  assertEquals(
+    pathLabel("/home/sam/.swamp/workspaces/web", 40),
+    "~/.swamp/workspaces/web",
+  );
+  assertEquals(
+    pathLabel("/Users/sam/code/clients/acme/infra/billing-pipeline", 34),
+    "~/…/acme/infra/billing-pipeline",
+  );
+  assertEquals(
+    pathLabel("/srv/data/swamp/workspaces/deep/nested/docs-site", 30),
+    "/…/deep/nested/docs-site",
+  );
+  assertEquals(
+    pathLabel("C:\\Users\\sam\\work\\clients\\acme\\web", 18),
+    "~\\…\\acme\\web",
+  );
+  const cut = pathLabel("/home/sam/" + "x".repeat(50), 20);
+  assertEquals(cut.length, 20);
+  assertEquals(cut.startsWith("~/…/"), true);
+});
+
+Deno.test("pathLabel: keeps the drive of a Windows path outside home", () => {
+  assertEquals(
+    pathLabel("D:\\work\\clients\\acme\\infra\\web", 18),
+    "D:\\…\\infra\\web",
+  );
+});
+
+Deno.test("planHistorySync: up adds one entry, down returns to the nearest one not above", () => {
+  assertEquals(planHistorySync([0], 0, 0), { kind: "none" });
+  assertEquals(planHistorySync([0], 0, 2), { kind: "push", depth: 2 });
+  assertEquals(planHistorySync([0, 1, 2], 2, 1), {
+    kind: "go",
+    delta: -1,
+    to: 1,
+  });
+  assertEquals(planHistorySync([0, 2], 1, 1), {
+    kind: "go",
+    delta: -1,
+    to: 0,
+  });
+  assertEquals(planHistorySync([0, 1, 2], 2, 0), {
+    kind: "go",
+    delta: -2,
+    to: 0,
+  });
+  assertEquals(planHistorySync([0, 1], 1, 0), {
+    kind: "go",
+    delta: -1,
+    to: 0,
+  });
 });

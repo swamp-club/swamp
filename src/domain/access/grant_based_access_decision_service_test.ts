@@ -731,21 +731,119 @@ Deno.test("decide: grant with empty methods array matches all method names", () 
   assertEquals(result?.effect, "allow");
 });
 
-Deno.test("decide: grant with methods matches when resource has no methodName", () => {
+Deno.test("decide: an allow with methods does not match a request with no methodName", () => {
+  for (
+    const resource of [
+      { kind: "model", pattern: "*" },
+      { kind: "workflow", pattern: "*" },
+      { kind: "data", pattern: "*" },
+      { kind: "access", pattern: "*" },
+      { kind: "vault", pattern: "*" },
+    ] as const
+  ) {
+    const grant = makeGrant({
+      actions: ["admin"],
+      resource,
+      methods: ["read"],
+    });
+    const snapshot = new PolicySnapshot([grant], [], celEvaluator);
+    const service = new GrantBasedAccessDecisionService(snapshot);
+
+    const result = service.decide(makePrincipal("adam"), "admin", {
+      kind: resource.kind,
+      name: "target",
+      fields: { name: "target" },
+    });
+    assertEquals(result, null, resource.kind);
+  }
+});
+
+Deno.test("decide: a deny with methods refuses a request with no methodName", () => {
+  for (
+    const kind of ["model", "workflow", "data", "access", "vault"] as const
+  ) {
+    const deny = makeGrant({
+      effect: "deny",
+      actions: ["read"],
+      resource: { kind, pattern: "*" },
+      methods: ["status"],
+    });
+    const allow = makeGrant({
+      actions: ["read"],
+      resource: { kind, pattern: "*" },
+    });
+    const snapshot = new PolicySnapshot([deny, allow], [], celEvaluator);
+    const service = new GrantBasedAccessDecisionService(snapshot);
+
+    const result = service.decide(makePrincipal("adam"), "read", {
+      kind,
+      name: "target",
+      fields: { name: "target" },
+    });
+    assertEquals(result?.effect, "deny", kind);
+  }
+});
+
+Deno.test("decide: an allow with methods matches a request marked anyMethod", () => {
   const grant = makeGrant({
     actions: ["run"],
     resource: { kind: "model", pattern: "*" },
-    methods: ["read"],
+    methods: ["deploy"],
   });
   const snapshot = new PolicySnapshot([grant], [], celEvaluator);
   const service = new GrantBasedAccessDecisionService(snapshot);
 
-  const result = service.decide(makePrincipal("adam"), "run", {
+  const marked = service.decide(makePrincipal("adam"), "run", {
     kind: "model",
     name: "@acme/deploy",
     fields: { name: "@acme/deploy" },
+    anyMethod: true,
   });
-  assertEquals(result?.effect, "allow");
+  assertEquals(marked?.effect, "allow");
+
+  const otherMethod = service.decide(makePrincipal("adam"), "run", {
+    kind: "model",
+    name: "@acme/deploy",
+    fields: { name: "@acme/deploy", methodName: "destroy" },
+    anyMethod: true,
+  });
+  assertEquals(otherMethod, null);
+});
+
+Deno.test("decide: a scoped admin allow on access:* is not an admin for requests with no method", () => {
+  const grant = makeGrant({
+    actions: ["admin"],
+    resource: { kind: "access", pattern: "*" },
+    methods: ["create"],
+  });
+  const snapshot = new PolicySnapshot([grant], [], celEvaluator);
+  const service = new GrantBasedAccessDecisionService(snapshot);
+
+  const fallback = service.decide(makePrincipal("adam"), "admin", {
+    kind: "access",
+    name: "*",
+    fields: {},
+  });
+  assertEquals(fallback, null);
+
+  const grantCreate = service.decide(makePrincipal("adam"), "admin", {
+    kind: "access",
+    name: "*",
+    fields: { methodName: "create" },
+  });
+  assertEquals(grantCreate?.effect, "allow");
+});
+
+Deno.test("decideAll: a scoped allow does not authorize every resource of the kind", () => {
+  const grant = makeGrant({
+    actions: ["read"],
+    resource: { kind: "model", pattern: "*" },
+    methods: ["status"],
+  });
+  const snapshot = new PolicySnapshot([grant], [], celEvaluator);
+  const service = new GrantBasedAccessDecisionService(snapshot);
+
+  assertEquals(service.decideAll(makePrincipal("adam"), "read", "model"), null);
 });
 
 Deno.test("decide: deny grant with methods blocks matching method", () => {
@@ -2526,4 +2624,35 @@ Deno.test("decide: a dotted deny that may name a model does not reach @ types", 
     })?.grantId;
   assertEquals(decide("web/prod"), deny.id);
   assertEquals(decide("@web/prod"), allow.id);
+});
+
+Deno.test("decide: a vault key condition still evaluates when the request carries its verb", () => {
+  const grant = makeGrant({
+    actions: ["write"],
+    resource: { kind: "vault", pattern: "prod" },
+    methods: ["put"],
+    condition: 'key == "db"',
+  });
+  const snapshot = new PolicySnapshot([grant], [], celEvaluator);
+  const service = new GrantBasedAccessDecisionService(snapshot);
+  const principal = makePrincipal("adam");
+
+  const put = service.decide(principal, "write", {
+    kind: "vault",
+    name: "prod",
+    fields: { name: "prod", key: "db", methodName: "put" },
+  });
+  assertEquals(put?.effect, "allow");
+  const otherKey = service.decide(principal, "write", {
+    kind: "vault",
+    name: "prod",
+    fields: { name: "prod", key: "api", methodName: "put" },
+  });
+  assertEquals(otherKey, null);
+  const del = service.decide(principal, "write", {
+    kind: "vault",
+    name: "prod",
+    fields: { name: "prod", key: "db", methodName: "delete" },
+  });
+  assertEquals(del, null);
 });

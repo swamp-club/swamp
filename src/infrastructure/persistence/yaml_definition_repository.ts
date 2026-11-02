@@ -66,7 +66,10 @@ import {
 } from "./paths.ts";
 import { readDirSorted } from "./sorted_dir_entries.ts";
 import { AutoDefinitionNameIndex } from "./auto_definition_name_index.ts";
-import type { DefinitionNameIndex } from "./definition_id_index.ts";
+import type {
+  DefinitionIdLookup,
+  DefinitionNameIndex,
+} from "./definition_id_index.ts";
 import {
   currentDiagnosticTally,
   startDiagnosticPhase,
@@ -127,6 +130,7 @@ export class YamlDefinitionRepository implements DefinitionRepository {
     { path: string; pathSegments: string[]; primary: boolean }
   >();
   private nameIndex: DefinitionNameIndex | undefined;
+  private idIndex: DefinitionIdLookup | undefined;
 
   constructor(
     private readonly repoDir: string,
@@ -184,7 +188,7 @@ export class YamlDefinitionRepository implements DefinitionRepository {
     // record where the match lives so getPath, delete and save act on the
     // auto-definition file
     if (this.secondaryBaseDir) {
-      const located = await this.locateByIdInDir(
+      const located = await this.locateAutoDefinitionById(
         this.secondaryBaseDir,
         type,
         id,
@@ -202,6 +206,21 @@ export class YamlDefinitionRepository implements DefinitionRepository {
       return located.definition;
     }
     return null;
+  }
+
+  private async locateAutoDefinitionById(
+    secondaryBaseDir: string,
+    type: ModelType,
+    id: DefinitionId,
+  ): Promise<{ definition: Definition; path: string } | null> {
+    if (!this.idIndex) {
+      return await this.locateByIdInDir(secondaryBaseDir, type, id);
+    }
+    const typeDir = join(secondaryBaseDir, type.toDirectoryPath());
+    const match = (await this.idIndex.findAllById(id)).find((found) =>
+      !found.primary && dirname(found.path) === typeDir
+    );
+    return match ? { definition: match.definition, path: match.path } : null;
   }
 
   private async locateByIdInDir(
@@ -229,8 +248,7 @@ export class YamlDefinitionRepository implements DefinitionRepository {
         if (entry.isFile && entry.name.endsWith(".yaml")) {
           const entryPath = join(typeDir, entry.name);
           try {
-            const content = await Deno.readTextFile(entryPath);
-            const data = parseYaml(content) as DefinitionData | null;
+            const data = await readDefinitionData(entryPath);
             if (!data) continue;
             const definition = Definition.fromData(data);
             if (definition.id === id) {
@@ -569,6 +587,32 @@ export class YamlDefinitionRepository implements DefinitionRepository {
   }
 
   /**
+   * serve attaches an index once; a CLI command attaches none and scans a
+   * type's auto-definitions for an id, since they are stored under their name
+   */
+  useIdIndex(index: DefinitionIdLookup): void {
+    if (this.idIndex) {
+      throw new Error("This definition repository already has an id index");
+    }
+    this.idIndex = index;
+  }
+
+  // undefined when no index is attached; the index holds every definition of
+  // every type, so null is a final miss
+  async findByIdFromIndex(
+    id: DefinitionId,
+  ): Promise<{ definition: Definition; type: ModelType } | null | undefined> {
+    if (!this.idIndex) return undefined;
+    const [first] = await this.idIndex.findAllById(id);
+    if (!first) {
+      await this.failIfUnreadableById(id);
+      return null;
+    }
+    this.idToActualPath.set(id, first.path);
+    return { definition: first.definition, type: first.type };
+  }
+
+  /**
    * the index sees a file rewritten in place to declare another name only once
    * its directory changes, so only a caller that accepts that uses this
    */
@@ -829,6 +873,11 @@ export class YamlDefinitionRepository implements DefinitionRepository {
       const found = results.find((entry) => entry.definition.id === id);
       if (found) return found;
     }
+    await this.failIfUnreadableById(id);
+    return null;
+  }
+
+  private async failIfUnreadableById(id: DefinitionId): Promise<void> {
     if (this.secondaryBaseDir && this.unreadableContent) {
       // an auto-definition stored under its id that the datastore could not
       // materialise fails loudly; one under its name cannot be told from its
@@ -846,7 +895,6 @@ export class YamlDefinitionRepository implements DefinitionRepository {
         this.secondaryBaseDir,
       );
     }
-    return null;
   }
 
   async findAllByIdGlobal(
@@ -1196,7 +1244,7 @@ export class YamlDefinitionRepository implements DefinitionRepository {
       const secondaryBaseDir = this.secondaryBaseDir;
       const located = await tally.measure(
         "lookup",
-        () => this.locateByIdInDir(secondaryBaseDir, type, id),
+        () => this.locateAutoDefinitionById(secondaryBaseDir, type, id),
       );
       if (located) {
         pathsToTry.add(located.path);

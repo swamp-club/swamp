@@ -18,7 +18,8 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals } from "@std/assert";
-import { join } from "@std/path";
+import { ensureDir } from "@std/fs";
+import { dirname, join } from "@std/path";
 import { z } from "zod";
 import {
   findDefinitionByIdGlobal,
@@ -28,11 +29,12 @@ import {
   isUuid,
   matchByPartialId,
 } from "./model_lookup.ts";
-import { Definition } from "../definitions/definition.ts";
+import { Definition, type DefinitionId } from "../definitions/definition.ts";
 import type { DefinitionRepository } from "../definitions/repositories.ts";
 import { ModelType } from "./model_type.ts";
 import { modelRegistry } from "./model.ts";
 import { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
+import { DefinitionIdIndex } from "../../infrastructure/persistence/definition_id_index.ts";
 import "./models.ts";
 
 async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
@@ -559,4 +561,211 @@ Deno.test("findDefinitionsByIdGlobal: a string that is not a UUID matches nothin
     findAllByIdGlobal: () => Promise.reject(new Error("must not scan")),
   } as unknown as DefinitionRepository;
   assertEquals(await findDefinitionsByIdGlobal(repo, "prod-db"), []);
+});
+
+function indexedRepository(dir: string) {
+  const repo = new YamlDefinitionRepository(dir);
+  const index = new DefinitionIdIndex(repo);
+  repo.useNameIndex(index);
+  repo.useIdIndex(index);
+  const calls: string[] = [];
+  const findById = repo.findById.bind(repo);
+  repo.findById = (type, id) => {
+    calls.push(`findById:${type.normalized}`);
+    return findById(type, id);
+  };
+  const findByNameGlobal = repo.findByNameGlobal.bind(repo);
+  repo.findByNameGlobal = (name) => {
+    calls.push("findByNameGlobal");
+    return findByNameGlobal(name);
+  };
+  const fromIndex = repo.findByNameGlobalFromIndex.bind(repo);
+  repo.findByNameGlobalFromIndex = (name) => {
+    calls.push("findByNameGlobalFromIndex");
+    return fromIndex(name);
+  };
+  return { repo, calls };
+}
+
+async function writeDefinitionFile(
+  path: string,
+  id: string,
+  name: string,
+  type?: string,
+): Promise<void> {
+  await ensureDir(dirname(path));
+  await Deno.writeTextFile(
+    path,
+    (type ? `type: ${type}\n` : "") + `id: ${id}\nname: ${name}\nversion: 1\n`,
+  );
+}
+
+Deno.test("findDefinitionByIdGlobal: with a definition index, an auto-definition stored under its name is found without a lookup per registered type", async () => {
+  await withTempDir(async (dir) => {
+    const id = crypto.randomUUID();
+    await writeDefinitionFile(
+      join(dir, ".swamp", "auto-definitions", "command", "shell", "x-1.yaml"),
+      id,
+      "x-1",
+      "command/shell",
+    );
+    const { repo, calls } = indexedRepository(dir);
+
+    const found = await findDefinitionByIdGlobal(repo, id);
+
+    assertEquals(found?.definition.name, "x-1");
+    assertEquals(found?.type.normalized, "command/shell");
+    assertEquals(calls, []);
+  });
+});
+
+Deno.test("findDefinitionByIdGlobal: with a definition index, a copied id resolves to the first file in scan order, as findByIdGlobal does", async () => {
+  await withTempDir(async (dir) => {
+    const id = crypto.randomUUID();
+    await writeDefinitionFile(
+      join(dir, "models", "command", "shell", "copy.yaml"),
+      id,
+      "copy",
+      "command/shell",
+    );
+    await writeDefinitionFile(
+      join(dir, "models", "aws", "ec2", "original.yaml"),
+      id,
+      "original",
+      "aws/ec2",
+    );
+    const { repo } = indexedRepository(dir);
+    const walked = new YamlDefinitionRepository(dir);
+
+    const found = await findDefinitionByIdGlobal(repo, id);
+    const scanned = await walked.findByIdGlobal(id as DefinitionId);
+
+    assertEquals(found?.definition.name, scanned?.definition.name);
+    assertEquals(found?.type.normalized, scanned?.type.normalized);
+  });
+});
+
+Deno.test("findDefinitionByIdGlobal: without a definition index, falls back to a lookup per registered type", async () => {
+  await withTempDir(async (dir) => {
+    const id = crypto.randomUUID();
+    await writeDefinitionFile(
+      join(dir, ".swamp", "auto-definitions", "command", "shell", "x-1.yaml"),
+      id,
+      "x-1",
+      "command/shell",
+    );
+    const repo = new YamlDefinitionRepository(dir);
+    let lookups = 0;
+    const findById = repo.findById.bind(repo);
+    repo.findById = (type, defId) => {
+      lookups++;
+      return findById(type, defId);
+    };
+
+    const found = await findDefinitionByIdGlobal(repo, id);
+
+    assertEquals(found?.definition.name, "x-1");
+    assertEquals(lookups > 0, true);
+  });
+});
+
+Deno.test("findDefinitionByIdGlobal: with an expected name, looks the name up through the definition index and still rejects another id", async () => {
+  await withTempDir(async (dir) => {
+    const id = crypto.randomUUID();
+    await writeDefinitionFile(
+      join(dir, ".swamp", "auto-definitions", "command", "shell", "x-1.yaml"),
+      id,
+      "x-1",
+      "command/shell",
+    );
+    const { repo, calls } = indexedRepository(dir);
+
+    assertEquals(
+      (await findDefinitionByIdGlobal(repo, id, "x-1"))?.definition.name,
+      "x-1",
+    );
+    assertEquals(
+      await findDefinitionByIdGlobal(repo, crypto.randomUUID(), "x-1"),
+      null,
+    );
+    assertEquals(calls, [
+      "findByNameGlobalFromIndex",
+      "findByNameGlobalFromIndex",
+    ]);
+  });
+});
+
+Deno.test("findDefinitionByIdOrName: a UUID is tried as a name through the definition index; any other name keeps the walk", async () => {
+  await withTempDir(async (dir) => {
+    const id = crypto.randomUUID();
+    await writeDefinitionFile(
+      join(dir, ".swamp", "auto-definitions", "command", "shell", "x-1.yaml"),
+      id,
+      "x-1",
+      "command/shell",
+    );
+    const { repo, calls } = indexedRepository(dir);
+
+    assertEquals(
+      (await findDefinitionByIdOrName(repo, id))?.definition.name,
+      "x-1",
+    );
+    assertEquals(calls, ["findByNameGlobalFromIndex"]);
+
+    calls.length = 0;
+    assertEquals(
+      (await findDefinitionByIdOrName(repo, "x-1"))?.definition.id,
+      id as DefinitionId,
+    );
+    assertEquals(calls, ["findByNameGlobal"]);
+  });
+});
+
+Deno.test("findDefinitionByIdOrName: a definition named with a UUID still wins over the definition with that id", async () => {
+  await withTempDir(async (dir) => {
+    const id = crypto.randomUUID();
+    await writeDefinitionFile(
+      join(dir, "models", "command", "shell", "by-id.yaml"),
+      id,
+      "by-id",
+      "command/shell",
+    );
+    await writeDefinitionFile(
+      join(dir, "models", "command", "shell", `${id}.yaml`),
+      crypto.randomUUID(),
+      id,
+      "command/shell",
+    );
+    const { repo } = indexedRepository(dir);
+
+    assertEquals(
+      (await findDefinitionByIdOrName(repo, id))?.definition.name,
+      id,
+    );
+  });
+});
+
+Deno.test("findDefinitionByIdGlobal: with a definition index, a miss is final, with no lookup per registered type and no walk", async () => {
+  await withTempDir(async (dir) => {
+    await writeDefinitionFile(
+      join(dir, ".swamp", "auto-definitions", "command", "shell", "x-1.yaml"),
+      crypto.randomUUID(),
+      "x-1",
+      "command/shell",
+    );
+    const { repo, calls } = indexedRepository(dir);
+    let walks = 0;
+    const findByIdGlobal = repo.findByIdGlobal.bind(repo);
+    repo.findByIdGlobal = (id) => {
+      walks++;
+      return findByIdGlobal(id);
+    };
+
+    assertEquals(
+      await findDefinitionByIdGlobal(repo, crypto.randomUUID()),
+      null,
+    );
+    assertEquals(calls, []);
+    assertEquals(walks, 0);
+  });
 });

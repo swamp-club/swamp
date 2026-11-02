@@ -849,6 +849,8 @@ export interface AccessCheckResponse {
   collectives: string[];
   groups: string[];
   decisions: Record<string, unknown>[];
+  /** The method checked; absent when none was, or from a server that predates it. */
+  method?: string;
   /** The server's approval policy; absent from servers that predate it. */
   approveRequiresExplicitGrant?: boolean;
   /** The server's signal policy; absent from servers that predate it. */

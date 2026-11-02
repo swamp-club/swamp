@@ -21,6 +21,7 @@ import { getLogger } from "@logtape/logtape";
 import { join, resolve } from "@std/path";
 import { parse as parseYaml } from "@std/yaml";
 import { z } from "zod";
+import { findGrantMethodIssues } from "./grant_methods.ts";
 import { type Action, ActionSchema } from "./action.ts";
 import { type Effect, EffectSchema } from "./effect.ts";
 import {
@@ -306,6 +307,14 @@ export function parseGrantFile(
           { effect: raw.effect, resource, condition: raw.condition },
           readTypeLiterals,
         )
+      ) {
+        warnings.push({ filename, entryIndex: i, message: finding.message });
+      }
+      for (
+        const finding of findGrantMethodIssues({
+          resource,
+          methods: raw.methods,
+        })
       ) {
         warnings.push({ filename, entryIndex: i, message: finding.message });
       }

@@ -221,7 +221,10 @@ interface Harness {
 
 async function withHarness(
   fn: (h: Harness) => Promise<void>,
-  options: { markDirty?: (path?: string) => Promise<void> } = {},
+  options: {
+    markDirty?: (path?: string) => Promise<void>;
+    onVault?: (h: { dispatches: DispatchRegistry; plane: DataPlane }) => void;
+  } = {},
 ): Promise<void> {
   const tempDir = await Deno.makeTempDir({ prefix: "swamp-data-plane-test" });
   try {
@@ -260,10 +263,12 @@ async function withHarness(
       },
       // The writer only touches the vault for sensitive-field specs, which
       // these tests do not declare — an empty stub satisfies the wiring.
-      createVaultService: () =>
-        Promise.resolve(
+      createVaultService: () => {
+        options.onVault?.({ dispatches, plane });
+        return Promise.resolve(
           {} as unknown as import("../domain/vaults/vault_service.ts").VaultService,
-        ),
+        );
+      },
     });
     await fn({
       plane,
@@ -1610,5 +1615,103 @@ Deno.test("DataPlane: writtenVersions waits for a write still running before rep
     assertEquals((await streaming)?.status, 200);
 
     assertEquals((await reported).map((v) => v.dataName), ["log"]);
+  });
+});
+
+async function writeFileOverPlane(h: Harness, name: string): Promise<void> {
+  const open = await h.plane.handle(
+    request("/data/writers", {
+      method: "POST",
+      body: JSON.stringify({ specName: "log", name }),
+    }),
+  );
+  assertEquals(open?.status, 200);
+  const { writerId } = await open!.json();
+  const content = await h.plane.handle(
+    request(`/data/writers/${writerId}/content`, {
+      method: "POST",
+      body: "file body",
+    }),
+  );
+  assertEquals(content?.status, 200);
+}
+
+function writeResourceOverPlane(h: Harness, name: string) {
+  return h.plane.handle(
+    request("/data/resource", {
+      method: "POST",
+      body: JSON.stringify({
+        specName: "result",
+        name,
+        data: { value: "resource" },
+      }),
+    }),
+  );
+}
+
+Deno.test("DataPlane: a resource under a name the dispatch wrote as a file is a 400 and saves nothing", async () => {
+  await withHarness(async (h) => {
+    h.dispatches.register(activeDispatch());
+    await writeFileOverPlane(h, "x");
+
+    const clash = await writeResourceOverPlane(h, "x");
+    assertEquals(clash?.status, 400);
+    assertStringIncludes(
+      await clash!.text(),
+      "Duplicate data instance name 'x' (already written as file 'log' in this run)",
+    );
+    assertEquals(h.stored.get(`${MODEL_TYPE.normalized}/m-1/x`)?.version, 1);
+  });
+});
+
+Deno.test("DataPlane: a file writer under a name the dispatch wrote as a resource is refused at open", async () => {
+  await withHarness(async (h) => {
+    h.dispatches.register(activeDispatch());
+    assertEquals((await writeResourceOverPlane(h, "x"))?.status, 200);
+
+    const open = await h.plane.handle(
+      request("/data/writers", {
+        method: "POST",
+        body: JSON.stringify({ specName: "log", name: "x" }),
+      }),
+    );
+    assertEquals(open?.status, 400);
+    assertStringIncludes(
+      await open!.text(),
+      "already written as resource 'result' in this run",
+    );
+    assertEquals(h.plane.openWriterCount, 0);
+    assertEquals(h.stored.get(`${MODEL_TYPE.normalized}/m-1/x`)?.version, 1);
+  });
+});
+
+Deno.test("DataPlane: a released dispatch's data names no longer clash", async () => {
+  await withHarness(async (h) => {
+    h.dispatches.register(activeDispatch());
+    await writeFileOverPlane(h, "x");
+
+    h.plane.releaseDispatch("d-1");
+    assertEquals((await writeResourceOverPlane(h, "x"))?.status, 200);
+  });
+});
+
+Deno.test("DataPlane: a dispatch released while its write waits keeps no data name record", async () => {
+  await withHarness(async (h) => {
+    h.dispatches.register(activeDispatch());
+    assertEquals((await writeResourceOverPlane(h, "x"))?.status, 200);
+
+    h.dispatches.register(activeDispatch());
+    const open = await h.plane.handle(
+      request("/data/writers", {
+        method: "POST",
+        body: JSON.stringify({ specName: "log", name: "x" }),
+      }),
+    );
+    assertEquals(open?.status, 200);
+  }, {
+    onVault: ({ dispatches, plane }) => {
+      dispatches.unregister("w1", "d-1");
+      plane.releaseDispatch("d-1");
+    },
   });
 });

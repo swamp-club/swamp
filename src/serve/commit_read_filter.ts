@@ -31,7 +31,6 @@ import {
 } from "../domain/datastore_v3/commit_authorization.ts";
 import type { CommitChange } from "../domain/datastore_v3/commit_store.ts";
 import type { Op } from "../domain/datastore_v3/op.ts";
-import { isGuardedRunRecord } from "../domain/datastore_v3/content_bindings.ts";
 import {
   type PartitionKey,
   partitionOf,
@@ -42,7 +41,10 @@ import type { Action } from "../domain/access/action.ts";
 import { findDefinitionByIdGlobal } from "../domain/models/model_lookup.ts";
 import type { ModelType } from "../domain/models/model_type.ts";
 import { findWorkflowById } from "../domain/workflows/workflow_lookup.ts";
-import { WorkflowRunSchema } from "../domain/workflows/workflow_run.ts";
+import {
+  isGuardedRunRecord,
+  WorkflowRunSchema,
+} from "../domain/workflows/workflow_run.ts";
 import type { V3Datastore } from "../infrastructure/datastore_v3/v3_datastore.ts";
 import {
   type AccessCaller,
