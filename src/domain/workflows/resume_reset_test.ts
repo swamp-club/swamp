@@ -2056,4 +2056,5 @@ Deno.test("planFailedRunResume: --from at the step before the forEach template a
   const { wf, run } = fleetRun();
   const plan = planFailedRunResume(wf, run, { step: "prep" });
   assertEquals(sortRefs(plan.steps), ["fleet/prep", ...FLEET_RESET].sort());
+  assertEquals(sortRefs(plan.tracked), ["fleet/prep", ...FLEET_RESET].sort());
 });

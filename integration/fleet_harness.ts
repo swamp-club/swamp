@@ -318,9 +318,16 @@ export class Fleet implements AsyncDisposable {
 
   static async start(options: FleetOptions = {}): Promise<Fleet> {
     const dir = await Deno.makeTempDir({ prefix: "swamp-fleet-" });
+    // Whatever was set up before a failure is torn down with the temp dir,
+    // so a failed start leaves no listener or open catalog behind.
+    let repo:
+      | Awaited<ReturnType<typeof requireInitializedRepoUnlocked>>
+      | undefined;
+    let gateway: WorkerGateway | undefined;
+    let server: Deno.HttpServer | undefined;
     try {
       await initRepo(dir);
-      const repo = await requireInitializedRepoUnlocked({
+      repo = await requireInitializedRepoUnlocked({
         repoDir: dir,
         outputMode: "log",
       });
@@ -341,7 +348,7 @@ export class Fleet implements AsyncDisposable {
         captureEnvironment: () => ({}),
       });
       const unverified = new Set<string>();
-      const gateway = new WorkerGateway({
+      gateway = new WorkerGateway({
         repoDir: repo.repoDir,
         repoContext,
         capabilityService,
@@ -373,7 +380,7 @@ export class Fleet implements AsyncDisposable {
       });
       dispatchService.setOnDispatchEnd((id) => dataPlane.releaseDispatch(id));
       await sweepStaleRecords({ repoContext });
-      const server = Deno.serve(
+      server = Deno.serve(
         { port: 0, hostname: "127.0.0.1", onListen: () => {} },
         async (req) =>
           (await dataPlane.handle(req)) ??
@@ -406,6 +413,11 @@ export class Fleet implements AsyncDisposable {
         unverified,
       );
     } catch (error) {
+      setRemoteStepDispatcher(null);
+      gateway?.dispose();
+      await server?.shutdown();
+      await gateway?.settled();
+      repo?.repoContext.catalogStore.close();
       await removeDir(dir);
       throw error;
     }
@@ -511,7 +523,9 @@ export class Fleet implements AsyncDisposable {
     );
     if (!run) {
       throw new Error(
-        `workflow ${name} did not complete: ${JSON.stringify(error)}`,
+        `workflow ${name} did not complete: ${
+          error instanceof Error ? error.message : JSON.stringify(error)
+        }`,
       );
     }
     return run;
@@ -615,9 +629,10 @@ export class Fleet implements AsyncDisposable {
 
   async [Symbol.asyncDispose](): Promise<void> {
     setRemoteStepDispatcher(null);
-    for (const worker of this.workers.values()) worker.release(true);
     try {
+      // Stop new dispatches first, then let any held one finish.
       this.gateway.dispose();
+      for (const worker of this.workers.values()) worker.release(true);
       await this.#server.shutdown();
       await this.gateway.settled();
       await this.dispatchService.settled();

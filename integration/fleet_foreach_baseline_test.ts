@@ -186,10 +186,20 @@ async function runOneAtATime(
     worker.behavior = { kind: "hold" };
   }
   const running = fleet.runWorkflow(workflowName);
+  // A run that ends early (a refused workflow, say) fails the test with its
+  // own error instead of a timeout waiting for a dispatch.
+  let ended: unknown = null;
+  running.then(
+    () => ended = new Error("the run ended before every dispatch arrived"),
+    (error) => ended = error,
+  );
   const held = () =>
     [...fleet.workers.values()].reduce((n, w) => n + w.heldCount, 0);
   for (let released = 0; released < expected; released++) {
-    await waitFor(() => held() > 0, `dispatch ${released + 1} to arrive`);
+    await waitFor(() => {
+      if (ended) throw ended;
+      return held() > 0;
+    }, `dispatch ${released + 1} to arrive`);
     assertEquals(held(), 1, `in flight at dispatch ${released + 1}`);
     [...fleet.workers.values()].find((w) => w.heldCount > 0)!.release();
   }
