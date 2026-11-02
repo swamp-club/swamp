@@ -636,11 +636,11 @@ export interface ModelDefinition<
   extensionFilesRoot?: string;
 
   /**
-   * declared additionalFiles from the manifest; only these are shipped to
-   * remote workers. Undefined for built-in types and directories without a
-   * manifest.yaml.
+   * reads the manifest's declared additionalFiles as they are now; only these
+   * ship to remote workers. Undefined for built-in types and directories
+   * without a manifest.yaml.
    */
-  extensionAdditionalFiles?: string[];
+  readExtensionAdditionalFiles?: () => Promise<string[]>;
 
   /**
    * scoped name of the providing extension, set by the loader at registration;

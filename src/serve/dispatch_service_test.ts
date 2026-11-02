@@ -430,7 +430,8 @@ Deno.test("DispatchService: an edited asset ships under a new fingerprint with t
       ...builtinModelDef,
       bundleSourceFactory: () => Promise.resolve("export const model = 1;"),
       extensionFilesRoot: filesRoot,
-      extensionAdditionalFiles: ["a.txt", "missing.txt"],
+      readExtensionAdditionalFiles: () =>
+        Promise.resolve(["a.txt", "missing.txt"]),
     };
     await h.service.executeRemote(stepRequest({ modelDef: extensionDef }));
     await Deno.writeTextFile(join(filesRoot, "a.txt"), "v2");
@@ -459,6 +460,62 @@ Deno.test("DispatchService: an edited asset ships under a new fingerprint with t
   } finally {
     await Deno.remove(filesRoot, { recursive: true }).catch(() => {});
   }
+});
+
+Deno.test("DispatchService: a file newly declared in the manifest ships on the next dispatch without re-registration", async () => {
+  const filesRoot = await Deno.makeTempDir();
+  try {
+    await Deno.writeTextFile(join(filesRoot, "a.py"), "a");
+    await Deno.writeTextFile(join(filesRoot, "b.py"), "b");
+    let declared = ["a.py"];
+    const h = createHarness();
+    const extensionDef: ModelDefinition = {
+      ...builtinModelDef,
+      bundleSourceFactory: () => Promise.resolve("export const model = 1;"),
+      extensionFilesRoot: filesRoot,
+      readExtensionAdditionalFiles: () => Promise.resolve(declared),
+    };
+    await h.service.executeRemote(stepRequest({ modelDef: extensionDef }));
+    declared = ["a.py", "b.py"];
+    await h.service.executeRemote(stepRequest({ modelDef: extensionDef }));
+
+    const [first, second] = h.dispatchCalls.map((c) =>
+      c.params.bundleFingerprint
+    );
+    assertEquals(second === first, false);
+    assertEquals(h.bundles.get(first)?.additionalFiles, ["a.py"]);
+    const latest = h.bundles.get(second);
+    assertEquals(latest?.additionalFiles, ["a.py", "b.py"]);
+    assertEquals(
+      latest?.assetHashes,
+      new Map([
+        ["a.py", await hashAssetBytes(new TextEncoder().encode("a"))],
+        ["b.py", await hashAssetBytes(new TextEncoder().encode("b"))],
+      ]),
+    );
+  } finally {
+    await Deno.remove(filesRoot, { recursive: true }).catch(() => {});
+  }
+});
+
+Deno.test("DispatchService: a manifest that declares nothing now still dispatches, under the JS-only fingerprint with no assets", async () => {
+  const h = createHarness();
+  const js = "export const model = 1;";
+  const extensionDef: ModelDefinition = {
+    ...builtinModelDef,
+    bundleSourceFactory: () => Promise.resolve(js),
+    extensionFilesRoot: "/ext/files",
+    readExtensionAdditionalFiles: () => Promise.resolve([]),
+  };
+  await h.service.executeRemote(stepRequest({
+    modelDef: { ...extensionDef, readExtensionAdditionalFiles: undefined },
+  }));
+  await h.service.executeRemote(stepRequest({ modelDef: extensionDef }));
+  const [jsOnly, declaredNothing] = h.dispatchCalls.map((c) =>
+    c.params.bundleFingerprint
+  );
+  assertEquals(declaredNothing, jsOnly);
+  assertEquals(h.bundles.get(declaredNothing)?.assetHashes, undefined);
 });
 
 Deno.test("DispatchService: a bundle that cannot be built fails the step and is retried by the next dispatch (swamp-club#3594)", async () => {

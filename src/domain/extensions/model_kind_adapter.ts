@@ -683,10 +683,8 @@ function validateUserCollective(rawType: string): string | undefined {
 
 interface ExtensionAssets {
   filesRoot: string;
-  additionalFiles: string[];
+  manifestPath: string;
 }
-
-const extensionAssetsCache = new Map<string, ExtensionAssets | undefined>();
 
 function resolveExtensionAssets(
   sourcePath: string,
@@ -695,9 +693,6 @@ function resolveExtensionAssets(
   let currentDir = dirname(sourcePath);
   const root = resolve("/");
   while (true) {
-    const cached = extensionAssetsCache.get(currentDir);
-    if (cached !== undefined) return cached;
-
     const manifestPath = join(currentDir, "manifest.yaml");
     try {
       Deno.lstatSync(manifestPath);
@@ -708,20 +703,7 @@ function resolveExtensionAssets(
         `/${SWAMP_DATA_DIR}/config/pulled-extensions/`,
       );
       const filesRoot = isPulled ? join(currentDir, "files") : currentDir;
-
-      let additionalFiles: string[] = [];
-      try {
-        const content = Deno.readTextFileSync(manifestPath);
-        const manifest = parseExtensionManifest(content);
-        additionalFiles = manifest.additionalFiles;
-      } catch {
-        logger
-          .warn`Failed to parse manifest at ${manifestPath} for additionalFiles; defaulting to empty`;
-      }
-
-      const result: ExtensionAssets = { filesRoot, additionalFiles };
-      extensionAssetsCache.set(currentDir, result);
-      return result;
+      return { filesRoot, manifestPath };
     } catch {
       // Not here; walk up.
     }
@@ -732,6 +714,25 @@ function resolveExtensionAssets(
     currentDir = parent;
   }
   return undefined;
+}
+
+/**
+ * read on every call so a dispatch ships what the manifest declares now; an
+ * unreadable manifest declares nothing, as it would after a restart
+ */
+function createAdditionalFilesReader(
+  manifestPath: string,
+): () => Promise<string[]> {
+  return async () => {
+    try {
+      const content = await Deno.readTextFile(manifestPath);
+      return parseExtensionManifest(content).additionalFiles;
+    } catch {
+      logger
+        .warn`Failed to parse manifest at ${manifestPath} for additionalFiles; defaulting to empty`;
+      return [];
+    }
+  };
 }
 
 /**
@@ -871,7 +872,9 @@ export const modelKindAdapter: KindAdapter = {
       context.repoDir,
     );
     modelDef.extensionFilesRoot = assets?.filesRoot;
-    modelDef.extensionAdditionalFiles = assets?.additionalFiles;
+    modelDef.readExtensionAdditionalFiles = assets
+      ? createAdditionalFilesReader(assets.manifestPath)
+      : undefined;
     modelDef.extensionName = context.extensionName;
     modelDef.sourceFingerprint = context.sourceFingerprint;
 
@@ -917,7 +920,9 @@ export const modelKindAdapter: KindAdapter = {
       context.repoDir,
     );
     modelDef.extensionFilesRoot = assets?.filesRoot;
-    modelDef.extensionAdditionalFiles = assets?.additionalFiles;
+    modelDef.readExtensionAdditionalFiles = assets
+      ? createAdditionalFilesReader(assets.manifestPath)
+      : undefined;
     modelDef.extensionName = context.extensionName;
     modelDef.sourceFingerprint = context.sourceFingerprint;
 

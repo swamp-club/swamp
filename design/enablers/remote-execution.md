@@ -1210,7 +1210,10 @@ itself; the step fails until serve registers the definition again (a reload or
 restart for a pulled extension, the next run's refresh for a repo-local one). A
 bundle already built for the definition keeps shipping, since it is the code
 serve runs. Assets are read at each dispatch, as serve's own runs read them, so
-an edited asset ships under a new fingerprint. The data plane serves an asset
+an edited asset ships under a new fingerprint. So is the manifest's
+`additionalFiles` list: a file newly declared there ships on the next dispatch
+without a reload or restart, and a manifest that no longer parses declares
+nothing, as it would after a restart. The data plane serves an asset
 only while its bytes match the hash in the fingerprint, and answers 409 for one
 changed between the dispatch and the fetch; the listing route lists only the
 assets the fingerprint hashed.
