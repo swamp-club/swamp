@@ -1960,7 +1960,7 @@ export function resolveSignalWaitSupport(
     return {
       supported: false,
       reason:
-        "in a serve-mode checkout such a run executes on serve, so use --server, or a trigger or schedule",
+        "in team mode such a run executes on serve, so use --server, or a trigger or schedule",
     };
   }
   const bucket = options?.v3 === undefined

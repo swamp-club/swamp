@@ -51,6 +51,7 @@ import {
   resolveServeStartupSettings,
   ROOT_CONTROL_PLANE_IMPORT_PREFIXES,
   shouldWarnGroupRefreshIgnored,
+  teamModeManagedConfigWarning,
   validateDashboardSessionOrigin,
   validateNoAuthApiRequest,
   validateWebSocketOrigin,
@@ -365,6 +366,29 @@ Deno.test("parseDatastorePollInterval: rejects zero and bad formats", () => {
     UserError,
     "Invalid duration format",
   );
+});
+
+Deno.test("teamModeManagedConfigWarning: a v3 datastore without managedConfig warns and names the migration", () => {
+  const warning = teamModeManagedConfigWarning("v3", undefined);
+  assertStringIncludes(warning ?? "", "Team mode needs managedConfig");
+  assertStringIncludes(warning ?? "", "swamp datastore config migrate");
+  assertStringIncludes(warning ?? "", "runs serve starts itself");
+  assertStringIncludes(warning ?? "", "a serve no member writes through");
+  assertEquals(teamModeManagedConfigWarning("v3", false) !== undefined, true);
+});
+
+Deno.test("teamModeManagedConfigWarning: only managedConfig exactly true keeps a v3 serve quiet", () => {
+  assertEquals(teamModeManagedConfigWarning("v3", true), undefined);
+  // an unresolved expression is not true, so managed config is not on
+  assertEquals(
+    teamModeManagedConfigWarning("v3", "${{ env.MANAGED }}") !== undefined,
+    true,
+  );
+});
+
+Deno.test("teamModeManagedConfigWarning: a v2 datastore never warns", () => {
+  assertEquals(teamModeManagedConfigWarning("v2", undefined), undefined);
+  assertEquals(teamModeManagedConfigWarning("v2", true), undefined);
 });
 
 const DEFAULT_GROUP_REFRESH_MS = 4 * 60 * 60 * 1000;

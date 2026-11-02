@@ -1657,6 +1657,10 @@ runner against their will.
 - `initiatedBy` and `triggerSource`, which are the member's report: the commit
   stamp says who wrote the record.
 
+- what a waiting gate shows its approver beyond one wait: it is frozen while
+  the wait is open, but a retry clears the decision and opens a new wait, which
+  shows what the member's record says then.
+
 So a member-driven run's record can show a gate passed with no decision on it, or
 a nested step succeeded with no child. That is what it means: the member reported
 it, and the commit stamp says who. Nothing outside that run acts on it.
@@ -1664,7 +1668,7 @@ it, and the commit stamp says who. Nothing outside that run acts on it.
 **For a gate that must bind its runner, run the workflow on serve** (`--server`, a
 trigger or a schedule, optionally on workers).
 
-**Signals in a serve-mode checkout.** A run that waits for a signal runs on serve.
+**Signals in team mode.** A run that waits for a signal runs on serve.
 In a serve-mode checkout, a workflow with a signal wait is refused before it starts,
 because serve can deliver a signal only to a wait it registered itself. A forwarded
 record names no signal wait, so nothing a member reports reaches serve's wait

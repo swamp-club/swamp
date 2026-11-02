@@ -1405,10 +1405,15 @@ function notSettledError(
   );
 }
 
+export const CANCEL_SERVER_DESCRIPTION =
+  "Run through a 'swamp serve' server (ws:// or http://) instead of locally; no local repo required (env: SWAMP_SERVE_URL or SWAMP_SERVER_URL; in a checkout whose datastore is format 3, only this flag runs it on serve, except that in team mode a run this checkout did not start is cancelled on serve without it; the env makes serve its datastore's upstream). For proxy/tunnel pass-through headers see SWAMP_SERVE_EXTRA_HEADERS.";
+
 export const workflowCancelCommand = withRemoteOptions(
   new Command()
     .name("cancel")
-    .description("Cancel a running workflow run")
+    .description(
+      "Cancel a running workflow run. In team mode, a run this checkout did not start is cancelled on serve, with or without --server",
+    )
     .example(
       "Cancel latest running run",
       "swamp workflow cancel my-workflow",
@@ -1440,10 +1445,11 @@ export const workflowCancelCommand = withRemoteOptions(
     )
     .option(
       "--run <run_id:string>",
-      "Target a specific run ID (required with --server). In a serve-mode checkout, a run this checkout did not start is cancelled on serve",
+      "Target a specific run ID (required with --server). In team mode, a run this checkout did not start is cancelled on serve",
     )
     .option("--all", "Cancel all running workflow runs")
     .option("--reason <reason:string>", "Reason for cancellation"),
+  { server: CANCEL_SERVER_DESCRIPTION },
 ).action(
   async function (
     options: AnyOptions,

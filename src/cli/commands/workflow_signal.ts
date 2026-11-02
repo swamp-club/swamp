@@ -45,6 +45,7 @@ import {
 } from "../../domain/workflows/signal_refused_user_error.ts";
 import type { SwampError } from "../../libswamp/errors.ts";
 import {
+  DECIDED_ON_SERVE_OPTION_TEXTS,
   formatCommandTarget,
   requestNewerServerResponse,
   resolveServerTokenFromOptions,
@@ -409,7 +410,7 @@ export const workflowSignalCommand = withRemoteOptions(
   new Command()
     .name("signal")
     .description(
-      "Send a JSON message to a workflow step that waits for a signal",
+      "Send a JSON message to a workflow step that waits for a signal. In team mode it goes to serve, which holds every wait: a workflow that waits for a signal is refused in a team member's checkout before it starts, so run it with --server, or from a trigger or schedule",
     )
     .example(
       "Answer a wait",
@@ -449,6 +450,7 @@ export const workflowSignalCommand = withRemoteOptions(
       "--idempotency-key <key:string>",
       "Names this signal across retries (1-128 letters, digits, '.', ':', '-', '_'): one sent again with the same key after it was received is answered with the first, and is not delivered or held twice",
     ),
+  DECIDED_ON_SERVE_OPTION_TEXTS,
 )
   .action(async function (options: AnyOptions, waitId?: string) {
     const cliCtx = createContext(options as GlobalOptions, [

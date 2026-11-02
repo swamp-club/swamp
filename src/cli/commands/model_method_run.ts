@@ -244,7 +244,7 @@ Errors follow the --json envelope and exit codes in 'swamp --help'. Error codes 
     model_not_found          No ${syntax.surface} matches the given name
     unknown_model_type       The @type prefix does not match any installed type
     unknown_method           The ${syntax.surface} does not define the requested method
-    evaluation_not_checked   A serve-mode checkout could not confirm the last evaluation to replay (--last-evaluated)
+    evaluation_not_checked   In team mode, this checkout could not confirm the last evaluation to replay (--last-evaluated)
     no_evaluated_definition  No evaluated definition exists (use --last-evaluated)
     evaluated_cache_may_hold_secrets
                              Cached evaluation from an older swamp may hold secrets;
@@ -270,7 +270,7 @@ The lock wait defaults to 60 seconds. Set the SWAMP_LOCK_TIMEOUT_MS environment 
     )
     .option(
       "--last-evaluated",
-      "Skip CEL evaluation, use previously evaluated definition. In a serve-mode checkout, an evaluation written by anyone but this member or serve is not used: the run evaluates again, without its stored inputs",
+      "Skip CEL evaluation, use previously evaluated definition. In team mode, an evaluation written by anyone but this member or serve is not used: the run evaluates again, without its stored inputs",
       { default: false },
     )
     .option("--input <value:string>", "Input values (key=value or JSON)", {

@@ -3456,7 +3456,7 @@ takes over on this host. A cancel never answers with
 owners stopped, it says what it stopped and what to do next (swamp-club#4295).
 
 **Which process cancel stops.** A run record is data: a v2 S3 or GCS datastore
-syncs it between members' checkouts, and a team-mode checkout takes it from
+syncs it between members' checkouts, and a serve-mode checkout takes it from
 serve's feed, so its `pid` is whatever its writer put there, and a pid from
 another machine names nothing here. Cancel therefore stops a process only when
 this checkout's own run tracker vouches for it (`trackedOwner`,
