@@ -55,13 +55,23 @@ defineModel({
       kind: "action",
       arguments: z.object({
         echo: z.string(),
-        mode: z.enum(["normal", "hang", "clash"]).default("normal"),
+        mode: z.enum(["normal", "hang", "clash", "fail", "fail-before-write"])
+          .default("normal"),
       }),
       execute: async (args, context: MethodContext) => {
         const input = args as {
           echo: string;
-          mode: "normal" | "hang" | "clash";
+          mode: "normal" | "hang" | "clash" | "fail" | "fail-before-write";
         };
+        if (input.mode === "fail-before-write") {
+          throw new Error(`Command exited with code 1: ${input.echo}`);
+        }
+        if (input.mode === "fail") {
+          await context.writeResource!("result", "result-failed", {
+            echo: "diagnostic before the exit",
+          });
+          throw new Error(`Command exited with code 1: ${input.echo}`);
+        }
         if (input.mode === "clash") {
           const file = await context.createFileWriter!("log", "clash-x")
             .writeAll(new TextEncoder().encode("file body"));

@@ -73,6 +73,7 @@ import { EventBus } from "../../domain/events/event_bus.ts";
 import type { ModelUpdated } from "../../domain/events/types.ts";
 import type { DataHandle } from "../../domain/models/model.ts";
 import { generateDataId } from "../../domain/data/data_id.ts";
+import { withRemoteOutputs } from "../../domain/remote/remote_dispatch.ts";
 import { reportRegistry } from "../../domain/reports/report_registry.ts";
 import type { ActiveRun } from "../../domain/models/active_run.ts";
 import type { RunTrackerRepository } from "../../domain/models/run_tracker_repository.ts";
@@ -2324,6 +2325,67 @@ Deno.test("modelMethodRun: tells onWrittenVersions what a failed run wrote, its 
     "report-swamp-method-summary/1",
     "report-swamp-method-summary-json/1",
     "remote-state/3",
+  ], "failed"]]);
+});
+
+Deno.test("modelMethodRun: a failed remote run publishes the worker's writtenVersions alone, not its recovered handles", async () => {
+  const definition = createTestDefinition("test-model", "run");
+  const modelDef = createTestModelDef("run");
+  const durable = {
+    dataId: generateDataId(),
+    name: "result",
+    specName: "result",
+    kind: "resource" as const,
+    version: 2,
+    size: 42,
+    tags: {},
+    metadata: { contentType: "application/json" },
+  } as DataHandle;
+  const ephemeral = {
+    ...durable,
+    dataId: generateDataId(),
+    name: "scratch",
+    metadata: { ...durable.metadata, lifetime: "ephemeral" },
+  } as DataHandle;
+  const error = withRemoteOutputs(
+    Object.assign(new Error("Command exited with code 1"), {
+      dataHandles: [durable, ephemeral],
+      writtenVersions: [{
+        modelType: "test/model",
+        modelId: definition.id,
+        dataName: "result",
+        version: 2,
+        dataId: durable.dataId,
+      }],
+    }),
+    [durable, ephemeral].map((h) => ({
+      dataId: h.dataId,
+      version: h.version,
+      name: h.name,
+      specName: h.specName,
+      type: "resource" as const,
+    })),
+  ) as Error;
+  const told: [readonly WrittenVersion[], string][] = [];
+  const deps: ModelMethodRunDeps = {
+    ...createTestDeps(definition, modelDef),
+    createExecutionService: () => createFailingExecutionService(error),
+    outputRepo: createFakeOutputRepo(),
+    onWrittenVersions: (versions, outcome) => told.push([versions, outcome]),
+  };
+
+  await collect<ModelMethodRunEvent>(
+    modelMethodRun(
+      createLibSwampContext(),
+      deps,
+      createTestInput("test-model", "run"),
+    ),
+  );
+
+  assertEquals(writtenNames(told), [[[
+    "report-swamp-method-summary/1",
+    "report-swamp-method-summary-json/1",
+    "result/2",
   ], "failed"]]);
 });
 

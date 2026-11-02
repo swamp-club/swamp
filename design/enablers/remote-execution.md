@@ -870,7 +870,14 @@ Lines the method wrote to the console on the worker come back in the dispatch
 result's `logs`; `DispatchService` turns them into `output` events too, for a
 failed dispatch as well as a successful one. They arrive only once the dispatch
 returns, so a step's console lines follow all of its streamed lines in the log
-rather than interleaving with them. The worker scrubs both with its own
+rather than interleaving with them. A failed dispatch's result also names the
+outputs the method wrote before it threw: `DispatchService` attaches them to
+the error it throws, and `MethodExecutionService` rebuilds them from the
+datastore as the error's `dataHandles`, as for an in-process failure, so the
+failed step, its output record and the failure's method-summary report list
+them. What is published after the failure is still only the data plane's
+`writtenVersions`, which leave out ephemeral data. A dispatch whose worker was
+lost has no result and so names no outputs. The worker scrubs both with its own
 `SecretRedactor` before they leave: it is seeded with the dispatched
 `secretValues`, and its vault proxy adds every value `resolveSecret` returns,
 so a secret the method learns while it runs is masked where it is first

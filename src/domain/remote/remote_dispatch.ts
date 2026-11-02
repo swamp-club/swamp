@@ -150,6 +150,41 @@ export interface RemoteStepResult {
   workerName?: string;
 }
 
+/**
+ * carries the outputs a failed dispatch wrote, so the step records them as it
+ * does a local failure's; an error that cannot take the property is returned
+ * unchanged
+ */
+export function withRemoteOutputs(
+  error: unknown,
+  outputs: readonly DispatchOutput[],
+): unknown {
+  if (outputs.length === 0) return error;
+  if (typeof error !== "object" || error === null) return error;
+  try {
+    Object.defineProperty(error, "remoteOutputs", {
+      value: [...outputs],
+      configurable: true,
+      writable: true,
+    });
+  } catch {
+    // A frozen error keeps what it has.
+  }
+  return error;
+}
+
+export function remoteOutputsOf(error: unknown): DispatchOutput[] {
+  if (typeof error !== "object" || error === null) return [];
+  const outputs = (error as { remoteOutputs?: unknown }).remoteOutputs;
+  if (!Array.isArray(outputs)) return [];
+  return outputs.filter((o): o is DispatchOutput =>
+    typeof o === "object" && o !== null &&
+    typeof o.dataId === "string" && typeof o.name === "string" &&
+    typeof o.specName === "string" && typeof o.version === "number" &&
+    (o.type === "resource" || o.type === "file")
+  );
+}
+
 export interface RemoteStepDispatcher {
   executeRemote(request: RemoteStepRequest): Promise<RemoteStepResult>;
   releaseAffinity(key: string): void;

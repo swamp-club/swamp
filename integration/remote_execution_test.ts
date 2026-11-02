@@ -48,9 +48,23 @@ import { VaultSecretBag } from "../src/domain/vaults/vault_secret_bag.ts";
 import { SecretBagRegistry } from "../src/domain/vaults/secret_bag_registry.ts";
 import { ModelType } from "../src/domain/models/model_type.ts";
 import type { RpcStreamEvent } from "../src/domain/remote/protocol.ts";
+import {
+  remoteOutputsOf,
+  setRemoteStepDispatcher,
+} from "../src/domain/remote/remote_dispatch.ts";
+import { Definition } from "../src/domain/definitions/definition.ts";
+import {
+  DefaultMethodExecutionService,
+  recoveredDataHandles,
+} from "../src/domain/models/method_execution_service.ts";
+import type { MethodContext } from "../src/domain/models/model.ts";
+import { createExtensionCelEnvironment } from "../src/infrastructure/cel/cel_evaluator.ts";
 
 import "../src/domain/models/models.ts";
-import { initializeLogging } from "../src/infrastructure/logging/logger.ts";
+import {
+  getRunLogger,
+  initializeLogging,
+} from "../src/infrastructure/logging/logger.ts";
 
 await initializeLogging({});
 
@@ -584,6 +598,140 @@ Deno.test({
             .tags.type,
           "file",
         );
+      } finally {
+        workerStop.abort();
+        if (workerDone) await workerDone.catch(() => {});
+        await orchestrator.shutdown();
+      }
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "remote execution: a method that writes and then fails on a worker returns what it wrote with its error",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    await withTempDir(async (dir) => {
+      const orchestrator = await startOrchestrator(dir);
+      const workerStop = new AbortController();
+      let workerDone: Promise<WorkerExitResult> | null = null;
+      try {
+        const token = await orchestrator.mintToken("fail-worker");
+        workerDone = runWorker({
+          url: orchestrator.serverUrl,
+          token,
+          labels: { tier: "it" },
+          swampVersion: "test",
+          cacheDir: join(dir, "worker-cache"),
+          signal: workerStop.signal,
+          runnerCommand: TEST_RUNNER_COMMAND,
+        });
+        await waitFor(
+          () => orchestrator.gateway.workers().length === 1,
+          "worker enrollment",
+        );
+        const repo = orchestrator.repoContext.unifiedDataRepo;
+        const secret = `s3cret-${crypto.randomUUID()}`;
+
+        const failed = await assertRejects(
+          () =>
+            orchestrator.dispatchService.executeRemote({
+              ...remoteStepRequest({
+                methodArgs: { echo: secret, mode: "fail" },
+              }),
+              redactorSeeds: [secret],
+            }),
+          Error,
+          "Command exited with code 1",
+        );
+        assertEquals(failed.message.includes(secret), false);
+        const outputs = remoteOutputsOf(failed);
+        assertEquals(outputs.map((o) => [o.name, o.specName, o.type]), [
+          ["result-failed", "result", "resource"],
+        ]);
+        const record = await repo.findByName(
+          IT_TYPE,
+          IT_DEFINITION_ID,
+          "result-failed",
+        );
+        assertEquals(outputs[0].version, record!.version);
+        assertEquals(outputs[0].dataId, String(record!.id));
+
+        const noWrite = await assertRejects(
+          () =>
+            orchestrator.dispatchService.executeRemote(
+              remoteStepRequest({
+                methodArgs: { echo: "early", mode: "fail-before-write" },
+              }),
+            ),
+          Error,
+          "Command exited with code 1",
+        );
+        assertEquals(remoteOutputsOf(noWrite), []);
+
+        // as an in-process failure's do
+        setRemoteStepDispatcher(orchestrator.dispatchService);
+        try {
+          const definition = Definition.create({
+            id: IT_DEFINITION_ID,
+            name: "remote-it-def",
+            globalArguments: {},
+          });
+          const context: MethodContext = {
+            signal: new AbortController().signal,
+            repoDir: dir,
+            modelType: IT_TYPE,
+            modelId: definition.id,
+            globalArgs: {},
+            definition: {
+              id: definition.id,
+              name: definition.name,
+              version: definition.version,
+              tags: definition.tags,
+            },
+            methodName: "run",
+            logger: getRunLogger(definition.name, "run", crypto.randomUUID()),
+            dataRepository: repo,
+            definitionRepository: orchestrator.repoContext.definitionRepo,
+            extensionFile: () => {
+              throw new Error("extensionFile is not used by a remote step");
+            },
+            createCelEnvironment: createExtensionCelEnvironment,
+            placement: { labels: { tier: "it" } },
+          };
+          definition.setMethodArguments("run", {
+            echo: "via the step",
+            mode: "fail",
+          });
+          const stepError = await assertRejects(
+            () =>
+              new DefaultMethodExecutionService().executeWorkflow(
+                definition,
+                modelRegistry.get(IT_TYPE)!,
+                "run",
+                context,
+              ),
+            Error,
+            "Command exited with code 1",
+          );
+          const handles = recoveredDataHandles(stepError);
+          assertEquals(handles.map((h) => [h.name, h.specName]), [
+            ["result-failed", "result"],
+          ]);
+          const latest = await repo.findByName(
+            IT_TYPE,
+            IT_DEFINITION_ID,
+            "result-failed",
+          );
+          assertEquals(handles[0].version, latest!.version);
+          assertEquals(handles[0].metadata.ownerDefinition, {
+            ...latest!.ownerDefinition,
+          });
+        } finally {
+          setRemoteStepDispatcher(null);
+        }
       } finally {
         workerStop.abort();
         if (workerDone) await workerDone.catch(() => {});

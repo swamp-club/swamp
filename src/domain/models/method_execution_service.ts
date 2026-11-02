@@ -88,6 +88,7 @@ import {
   getRemoteStepDispatcher,
   isRemoteOnlyMode,
   type LegacyStepDelivery,
+  remoteOutputsOf,
   type RemoteStepResult,
 } from "../remote/remote_dispatch.ts";
 import type { RpcStreamEvent } from "../remote/protocol.ts";
@@ -1051,6 +1052,36 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
   }
 
   /**
+   * the outputs a failed dispatch wrote become the error's dataHandles, as an
+   * in-process failure's do; an output that cannot be rebuilt is skipped so the
+   * method's own error is what the step reports
+   */
+  async #attachRemoteFailureHandles(
+    context: MethodContext,
+    error: unknown,
+  ): Promise<void> {
+    const outputs = remoteOutputsOf(error);
+    if (outputs.length === 0) return;
+    const handles: DataHandle[] = [];
+    for (const output of outputs) {
+      try {
+        handles.push(await this.#rebuildRemoteHandle(context, output));
+      } catch (rebuildError) {
+        const message = rebuildError instanceof Error
+          ? rebuildError.message
+          : String(rebuildError);
+        context.logger.warn(
+          "Could not record output {name} of the failed remote method: {error}",
+          { name: output.name, error: redacted(message, context.redactor) },
+        );
+      }
+    }
+    if (handles.length > 0) {
+      (error as Record<string, unknown>).dataHandles = handles;
+    }
+  }
+
+  /**
    * arguments travel with sentinels in place plus the reference behind each, no
    * value; a version 6 worker loads them itself, a version 5 worker gets the
    * legacyDelivery frame, built only once a worker is chosen
@@ -1997,15 +2028,21 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
           // remote placement runs only the method body on a worker; output
           // records stay at the orchestrator, and pre-flight checks are skipped
           // because they cannot see worker-local state
-          const remoteResult = await this.#executeRemotely(
-            context,
-            executionRequest,
-            modelDef,
-            currentDefinition,
-            methodName,
-            remoteDelivery!,
-            placeData,
-          );
+          let remoteResult: RemoteStepResult;
+          try {
+            remoteResult = await this.#executeRemotely(
+              context,
+              executionRequest,
+              modelDef,
+              currentDefinition,
+              methodName,
+              remoteDelivery!,
+              placeData,
+            );
+          } catch (error) {
+            await this.#attachRemoteFailureHandles(context, error);
+            throw error;
+          }
           // rebuild full handles from the persisted records: downstream
           // consumers read metadata like ownerDefinition, which the wire-thin
           // dispatch outputs do not carry

@@ -69,9 +69,10 @@ import {
   RpcChannel,
   RpcError,
 } from "../domain/remote/rpc_channel.ts";
-import type {
-  LegacyStepDelivery,
-  RemoteStepRequest,
+import {
+  type LegacyStepDelivery,
+  remoteOutputsOf,
+  type RemoteStepRequest,
 } from "../domain/remote/remote_dispatch.ts";
 
 const MODEL_TYPE = ModelType.create("swamp/dispatch-test");
@@ -636,6 +637,61 @@ Deno.test("DispatchService: remote method error keeps the worker's marked paths 
   assertEquals(errorPaths(error), [path]);
 });
 
+const FAILED_OUTPUT = {
+  dataId: "d-failed",
+  version: 3,
+  name: "result",
+  specName: "result",
+  type: "resource" as const,
+};
+
+Deno.test("DispatchService: a remote method error carries the outputs the worker wrote before failing", async () => {
+  const h = createHarness();
+  h.setBehavior(() =>
+    Promise.resolve({
+      status: "error",
+      error: "Command exited with code 1",
+      outputs: [FAILED_OUTPUT],
+      logs: [],
+      durationMs: 1,
+    })
+  );
+  const error = await assertRejects(
+    () => h.service.executeRemote(stepRequest()),
+    Error,
+    "Command exited with code 1",
+  );
+  assertEquals(remoteOutputsOf(error), [FAILED_OUTPUT]);
+  assertEquals(
+    h.transitions.map((t) => t.methodName),
+    ["acquire", "fail"],
+  );
+});
+
+Deno.test("DispatchService: a coded remote method error keeps its class, code and paths alongside the outputs", async () => {
+  const h = createHarness();
+  const path = "/srv/acme/diag";
+  h.setBehavior(() =>
+    Promise.resolve({
+      status: "error",
+      error: `failed reading ${path}`,
+      errorCode: "diag_failed",
+      errorPaths: [path],
+      outputs: [FAILED_OUTPUT],
+      logs: [],
+      durationMs: 1,
+    })
+  );
+  const error = await assertRejects(
+    () => h.service.executeRemote(stepRequest()),
+    UserError,
+    "failed reading",
+  );
+  assertEquals(error.code, "diag_failed");
+  assertEquals(errorPaths(error), [path]);
+  assertEquals(remoteOutputsOf(error), [FAILED_OUTPUT]);
+});
+
 Deno.test("DispatchService: no-match placement queues then times out", async () => {
   const h = createHarness({ queueTimeoutMs: 100 });
   await assertRejects(
@@ -777,11 +833,13 @@ Deno.test("DispatchService: write-then-drop fails the run", async () => {
     return Promise.reject(new ChannelClosedError("control socket closed"));
   });
 
-  await assertRejects(
+  const error = await assertRejects(
     () => h.service.executeRemote(stepRequest()),
     Error,
     "write-then-drop",
   );
+  // no result arrived, so there are no outputs to tell apart from a real exit
+  assertEquals(remoteOutputsOf(error), []);
   assertEquals(
     h.transitions.map((t) => t.methodName),
     ["acquire", "mark_writes", "fail"],

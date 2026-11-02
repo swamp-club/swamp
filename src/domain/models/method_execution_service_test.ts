@@ -42,6 +42,7 @@ import {
   type RemoteStepRequest,
   setRemoteOnlyMode,
   setRemoteStepDispatcher,
+  withRemoteOutputs,
 } from "../remote/remote_dispatch.ts";
 import { fromResourceHandle } from "../data/data_record_mapper.ts";
 import { createExtensionCelEnvironment } from "../../infrastructure/cel/cel_evaluator.ts";
@@ -3909,6 +3910,152 @@ Deno.test("executeWorkflow - placed step with a vanished output record fails lou
       Error,
       "was not found in the datastore",
     );
+  } finally {
+    setRemoteStepDispatcher(null);
+  }
+});
+
+function failedRemoteFixture(): {
+  written: Data;
+  repo: UnifiedDataRepository;
+} {
+  const written = Data.create({
+    name: "result",
+    contentType: "application/json",
+    lifetime: "infinite",
+    garbageCollection: 10,
+    tags: { type: "resource", specName: "result" },
+    ownerDefinition: { ownerType: "model-method", ownerRef: "remote-def" },
+    version: 4,
+    size: 2,
+  });
+  const repo: UnifiedDataRepository = {
+    ...createMockDataRepoWithData([written]),
+    findByName: (_type, _modelId, dataName, version) =>
+      Promise.resolve(
+        dataName === "result" && version === 4 ? written : null,
+      ),
+  };
+  return { written, repo };
+}
+
+Deno.test("executeWorkflow - a failed placed step's error carries the handles the worker wrote, rebuilt from the datastore", async () => {
+  const service = new DefaultMethodExecutionService();
+  const model = createTestModel({});
+  const definition = Definition.create({
+    name: "remote-def",
+    methods: { start: { arguments: {} } },
+  });
+  const { written, repo } = failedRemoteFixture();
+  setRemoteStepDispatcher({
+    executeRemote: () =>
+      Promise.reject(withRemoteOutputs(
+        new UserError("Command exited with code 1", "exit_code"),
+        [{
+          dataId: String(written.id),
+          version: 4,
+          name: "result",
+          specName: "result",
+          type: "resource" as const,
+        }],
+      )),
+    releaseAffinity: () => {},
+  });
+  try {
+    const { repo: outputRepo, saved } = createMockOutputRepo();
+    const { context } = createTestContext({
+      modelType: model.type,
+      dataRepository: repo,
+      outputRepository: outputRepo,
+      placement: { target: "w1" },
+    });
+    const error = await assertRejects(
+      () => service.executeWorkflow(definition, model, "start", context),
+      UserError,
+      "Command exited with code 1",
+    );
+    assertEquals(error.code, "exit_code");
+    const handles = recoveredDataHandles(error);
+    assertEquals(handles.map((h) => [h.name, h.version, h.specName]), [
+      ["result", 4, "result"],
+    ]);
+    assertEquals(handles[0].metadata.ownerDefinition.ownerType, "model-method");
+    assertEquals(saved[saved.length - 1].output.status, "failed");
+  } finally {
+    setRemoteStepDispatcher(null);
+  }
+});
+
+Deno.test("executeWorkflow - a failed placed step reports its own error when a written output cannot be rebuilt", async () => {
+  const service = new DefaultMethodExecutionService();
+  const model = createTestModel({});
+  const definition = Definition.create({
+    name: "remote-def",
+    methods: { start: { arguments: {} } },
+  });
+  const { written, repo } = failedRemoteFixture();
+  setRemoteStepDispatcher({
+    executeRemote: () =>
+      Promise.reject(withRemoteOutputs(
+        new Error("Command exited with code 2"),
+        [
+          {
+            dataId: crypto.randomUUID(),
+            version: 9,
+            name: "ghost",
+            specName: "result",
+            type: "resource" as const,
+          },
+          {
+            dataId: String(written.id),
+            version: 4,
+            name: "result",
+            specName: "result",
+            type: "resource" as const,
+          },
+        ],
+      )),
+    releaseAffinity: () => {},
+  });
+  try {
+    const { context } = createTestContext({
+      modelType: model.type,
+      dataRepository: repo,
+      placement: { target: "w1" },
+    });
+    const error = await assertRejects(
+      () => service.executeWorkflow(definition, model, "start", context),
+      Error,
+      "Command exited with code 2",
+    );
+    assertEquals(recoveredDataHandles(error).map((h) => h.name), ["result"]);
+  } finally {
+    setRemoteStepDispatcher(null);
+  }
+});
+
+Deno.test("executeWorkflow - a failed placed step with no written outputs carries no handles", async () => {
+  const service = new DefaultMethodExecutionService();
+  const model = createTestModel({});
+  const definition = Definition.create({
+    name: "remote-def",
+    methods: { start: { arguments: {} } },
+  });
+  setRemoteStepDispatcher({
+    executeRemote: () => Promise.reject(new Error("worker lost")),
+    releaseAffinity: () => {},
+  });
+  try {
+    const { context } = createTestContext({
+      modelType: model.type,
+      placement: { target: "w1" },
+    });
+    const error = await assertRejects(
+      () => service.executeWorkflow(definition, model, "start", context),
+      Error,
+      "worker lost",
+    );
+    assertEquals("dataHandles" in error, false);
   } finally {
     setRemoteStepDispatcher(null);
   }

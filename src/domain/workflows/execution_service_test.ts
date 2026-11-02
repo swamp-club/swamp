@@ -18468,6 +18468,7 @@ async function runStepUnderLockHook(
   execute: ModelDefinition["methods"][string]["execute"] = () =>
     Promise.resolve({}),
   resources: ModelDefinition["resources"] = {},
+  labels?: Record<string, string>,
 ): Promise<{
   error: unknown;
   outputs: import("../models/model_output.ts").ModelOutput[];
@@ -18528,6 +18529,7 @@ async function runStepUnderLockHook(
       const step = Step.create({
         name: "step",
         task: StepTask.model(definition.name, methodName),
+        labels,
       });
       let error: unknown;
       try {
@@ -21979,6 +21981,85 @@ Deno.test("DefaultStepExecutor: a step that succeeded fails when its versions ca
   const { error } = await runStepUnderLockHook(() => lock.hook, "execute");
 
   assertEquals(error, UNPUBLISHED);
+});
+
+Deno.test("DefaultStepExecutor: a failed remote step records what the worker wrote, and its flush publishes only the worker's writtenVersions", async () => {
+  const { setRemoteStepDispatcher, withRemoteOutputs } = await import(
+    "../remote/remote_dispatch.ts"
+  );
+  const { Data } = await import("../data/data.ts");
+  const lock = recordingLockHook();
+  setRemoteStepDispatcher({
+    executeRemote: async (request) => {
+      const write = async (
+        name: string,
+        lifetime: "infinite" | "ephemeral",
+      ) => {
+        const data = Data.create({
+          name,
+          contentType: "application/json",
+          lifetime,
+          garbageCollection: 5,
+          tags: { type: "resource", specName: name },
+          ownerDefinition: { ownerType: "model-method", ownerRef: "locked" },
+        });
+        const { version } = await request.dataRepo!.save(
+          request.modelType,
+          request.modelId,
+          data,
+          new TextEncoder().encode("{}"),
+        );
+        return { data, version };
+      };
+      const result = await write("result", "infinite");
+      const scratch = await write("scratch", "ephemeral");
+      throw withRemoteOutputs(
+        Object.assign(new Error("Command exited with code 1"), {
+          // the data plane leaves ephemeral writes out of these
+          writtenVersions: [{
+            modelType: request.modelType.normalized,
+            modelId: request.modelId,
+            dataName: "result",
+            version: result.version,
+            dataId: String(result.data.id),
+          }],
+        }),
+        [result, scratch].map(({ data, version }) => ({
+          dataId: String(data.id),
+          version,
+          name: data.name,
+          specName: data.name,
+          type: "resource" as const,
+        })),
+      );
+    },
+    releaseAffinity: () => {},
+  });
+  try {
+    const { error, outputs } = await runStepUnderLockHook(
+      () => lock.hook,
+      "execute",
+      undefined,
+      undefined,
+      { pool: "test" },
+    );
+
+    assert(error instanceof Error);
+    assertStringIncludes(error.message, "Command exited with code 1");
+    const failed = outputs.find((o) => o.status === "failed");
+    assertExists(failed);
+    assertEquals(
+      failed.artifacts.dataArtifacts.map((a) => a.name).sort(),
+      ["result", "scratch"],
+    );
+    assertEquals(lock.written.length, 1);
+    assertEquals(
+      (lock.written[0] ?? []).map((w) => [w.dataName, w.version]),
+      [["result", 1]],
+    );
+  } finally {
+    setRemoteStepDispatcher(null);
+  }
 });
 
 const LOCK_LOST = new ModelLockLostError([{

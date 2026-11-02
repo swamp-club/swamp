@@ -366,7 +366,10 @@ import {
   SpanStatusCode,
 } from "../../infrastructure/tracing/mod.ts";
 import { extractSensitiveFieldValues } from "../models/sensitive_field_extractor.ts";
-import { getRemoteStepDispatcher } from "../remote/remote_dispatch.ts";
+import {
+  getRemoteStepDispatcher,
+  remoteOutputsOf,
+} from "../remote/remote_dispatch.ts";
 import {
   bindRunProgress,
   currentRunProgress,
@@ -2245,6 +2248,9 @@ export class DefaultStepExecutor implements StepExecutor {
     // versions a worker wrote before its step failed reach this process only on
     // the error
     const failedRemoteWrites: WrittenVersion[] = [];
+    // a failed dispatch's handles are shown on the step but published only
+    // through failedRemoteWrites, which leave out ephemeral data
+    const unpublishedRemoteHandles = new Set<string>();
     let stepFailed = false;
     // Undefined when a hook took locks without naming them.
     let heldLockIds: readonly string[] | LentLocks | undefined = [];
@@ -2446,6 +2452,16 @@ export class DefaultStepExecutor implements StepExecutor {
           );
         }
 
+        // before handleMethodFailure, which adds the handles to savedArtifacts
+        // and may throw before returning
+        for (const version of writtenVersionsOf(error)) {
+          failedRemoteWrites.push(version);
+        }
+        if (remoteOutputsOf(error).length > 0) {
+          for (const handle of recoveredDataHandles(error)) {
+            unpublishedRemoteHandles.add(`${handle.dataId}@${handle.version}`);
+          }
+        }
         await this.handleMethodFailure({
           task: narrowedTask,
           ctx,
@@ -2465,9 +2481,6 @@ export class DefaultStepExecutor implements StepExecutor {
           output,
           savedArtifacts,
         });
-        for (const version of writtenVersionsOf(error)) {
-          failedRemoteWrites.push(version);
-        }
         stepFailed = true;
         // the step's failure, its events and the run record read the message
         // from what is thrown here
@@ -2476,7 +2489,11 @@ export class DefaultStepExecutor implements StepExecutor {
     } finally {
       if (flushLock) {
         const written: WrittenVersion[] = [
-          ...savedArtifacts.map((artifact) => ({
+          ...savedArtifacts.filter((artifact) =>
+            !unpublishedRemoteHandles.has(
+              `${artifact.dataId}@${artifact.version}`,
+            )
+          ).map((artifact) => ({
             modelType: modelType.normalized,
             modelId: evaluatedDefinition.id,
             dataName: artifact.name,

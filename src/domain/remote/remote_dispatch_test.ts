@@ -17,8 +17,14 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
-import { isRemoteOnlyMode, setRemoteOnlyMode } from "./remote_dispatch.ts";
+import { assertEquals, assertStrictEquals } from "@std/assert";
+import {
+  isRemoteOnlyMode,
+  remoteOutputsOf,
+  setRemoteOnlyMode,
+  withRemoteOutputs,
+} from "./remote_dispatch.ts";
+import type { DispatchOutput } from "./protocol.ts";
 
 Deno.test("setRemoteOnlyMode: defaults to false", () => {
   setRemoteOnlyMode(false);
@@ -36,4 +42,42 @@ Deno.test("setRemoteOnlyMode: can be disabled after enabling", () => {
   assertEquals(isRemoteOnlyMode(), true);
   setRemoteOnlyMode(false);
   assertEquals(isRemoteOnlyMode(), false);
+});
+
+const output: DispatchOutput = {
+  dataId: "d-1",
+  version: 2,
+  name: "result",
+  specName: "result",
+  type: "resource",
+};
+
+Deno.test("withRemoteOutputs: round-trips the outputs on the same error", () => {
+  const error = new Error("boom");
+  const carried = withRemoteOutputs(error, [output]);
+  assertStrictEquals(carried, error);
+  assertEquals(remoteOutputsOf(carried), [output]);
+  assertEquals(Object.keys(error).includes("remoteOutputs"), false);
+});
+
+Deno.test("withRemoteOutputs: an empty list attaches nothing", () => {
+  const error = new Error("boom");
+  withRemoteOutputs(error, []);
+  assertEquals("remoteOutputs" in error, false);
+  assertEquals(remoteOutputsOf(error), []);
+});
+
+Deno.test("withRemoteOutputs: a primitive or frozen error is returned unchanged", () => {
+  assertEquals(withRemoteOutputs("boom", [output]), "boom");
+  const frozen = Object.freeze(new Error("boom"));
+  assertStrictEquals(withRemoteOutputs(frozen, [output]), frozen);
+  assertEquals(remoteOutputsOf(frozen), []);
+});
+
+Deno.test("remoteOutputsOf: drops entries without the fields an output is identified by", () => {
+  const error = Object.assign(new Error("boom"), {
+    remoteOutputs: [output, { name: "x" }, null, { ...output, type: "other" }],
+  });
+  assertEquals(remoteOutputsOf(error), [output]);
+  assertEquals(remoteOutputsOf(undefined), []);
 });
