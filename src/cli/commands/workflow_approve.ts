@@ -95,7 +95,11 @@ export function renderApproveResult(
   const target = remote ? formatCommandTarget({ server: remote.server }) : "";
   if (!remote?.serveResuming) {
     writeOutput(
-      `After approval: swamp workflow resume ${
+      `${
+        data.ownerResumes === true
+          ? "If you started this run"
+          : "After approval"
+      }: swamp workflow resume ${
         quoteShellWord(data.workflowName)
       } --run ${data.runId}${target}`,
     );

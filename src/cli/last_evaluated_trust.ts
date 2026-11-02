@@ -71,22 +71,20 @@ const realDeps: LastEvaluatedDeps = {
 };
 
 /** The advice for an evaluation set aside, by why it was. */
-function adviceFor(error: unknown, knowsMember: boolean): string {
-  if (error instanceof UserError && error.code === EVALUATION_OTHER_WRITER) {
-    return knowsMember
-      ? `${error.message} Evaluate it from this checkout to replay your own.`
-      : `${error.message} This checkout cannot tell which writes are yours: a token from the environment names no member, so only serve's own evaluations replay.`;
-  }
-  return `Could not check who wrote the last evaluation: ${
-    error instanceof Error ? error.message : String(error)
-  }`;
+function adviceFor(error: UserError, knowsMember: boolean): string {
+  return knowsMember
+    ? `${error.message} Evaluate it from this checkout to replay your own.`
+    : `${error.message} This checkout cannot tell which writes are yours: a token from the environment names no member, so only serve's own evaluations replay.`;
 }
 
 /**
  * Whether a run may use its last evaluation. `read` loads it through the trust
  * it is given. A checkout not written through serve answers true without
- * reading; a read that cannot vouch for the evaluation answers false, and says
- * so in both output modes.
+ * reading. An evaluation another member wrote answers false, and says so in both
+ * output modes. Any other failure refuses: the caller asked for an exact replay,
+ * and a fresh evaluation could run different inputs.
+ *
+ * @throws UserError when it cannot tell who wrote the evaluation
  */
 export async function lastEvaluatedStands(
   repoDir: string,
@@ -106,6 +104,16 @@ export async function lastEvaluatedStands(
     await read(await deps.trust(repoDir, repos, principal));
     return true;
   } catch (error) {
+    if (
+      !(error instanceof UserError && error.code === EVALUATION_OTHER_WRITER)
+    ) {
+      throw new UserError(
+        `Could not check who wrote the last evaluation, so it was not replayed: ${
+          error instanceof Error ? error.message : String(error)
+        }. Run again, or without --last-evaluated.`,
+        "evaluation_not_checked",
+      );
+    }
     const advice = adviceFor(error, knowsMember);
     if (outputMode === "json") {
       console.error(JSON.stringify({

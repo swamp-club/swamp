@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals, assertStringIncludes } from "@std/assert";
+import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
 import { UserError } from "../domain/errors.ts";
 import {
   EVALUATION_OTHER_WRITER,
@@ -137,19 +137,23 @@ Deno.test("lastEvaluatedStands: the advice fits the cause, and a read that fails
     JSON.parse(written[0]).reason,
     "token from the environment",
   );
+});
 
-  const [failed, failure] = await stderrOf(() =>
-    lastEvaluatedStands(
-      "/r",
-      REPOS,
-      "json",
-      () => Promise.reject(new Error("disk full")),
-      deps(),
-    )
-  );
-  assertEquals(failed, false);
-  assertStringIncludes(JSON.parse(failure[0]).reason, "Could not check");
-  assertStringIncludes(JSON.parse(failure[0]).reason, "disk full");
+Deno.test("lastEvaluatedStands: any other failure refuses, since a fresh evaluation could run different inputs", async () => {
+  for (const mode of ["json", "log"] as const) {
+    const error = await assertRejects(
+      () =>
+        lastEvaluatedStands(
+          "/r",
+          REPOS,
+          mode,
+          () => Promise.reject(new Error("disk full")),
+          deps(),
+        ),
+      UserError,
+    );
+    assertStringIncludes(error.message, "disk full");
+  }
 });
 
 Deno.test("lastEvaluatedStands: in log mode it prints no JSON", async () => {
@@ -158,7 +162,10 @@ Deno.test("lastEvaluatedStands: in log mode it prints no JSON", async () => {
       "/r",
       REPOS,
       "log",
-      () => Promise.reject(new Error("disk full")),
+      () =>
+        Promise.reject(
+          new UserError("Another member wrote it.", EVALUATION_OTHER_WRITER),
+        ),
       deps(),
     )
   );

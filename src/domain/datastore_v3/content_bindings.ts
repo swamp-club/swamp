@@ -264,7 +264,9 @@ export function judgeRunRecord(context: RunRecordContext): RunRecordJudgement {
     return refuse("its log file is not the run's own log");
   }
   if (before !== undefined && isServeDrivenRun(before)) {
-    return refuse("serve drives this run, so it takes no forwarded record");
+    return refuse(
+      "serve drives this run, so it takes no forwarded record: resume it with --server",
+    );
   }
   if (
     after.instanceId !== undefined && after.instanceId !== before?.instanceId

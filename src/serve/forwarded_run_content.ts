@@ -260,7 +260,10 @@ async function heldChildOf(
   jobName: string,
   step: StepRunData,
 ): Promise<HeldChildRun | undefined> {
-  const link = step.nestedRun as { workflowId?: unknown; runId?: unknown };
+  const link = step.nestedRun as
+    | { workflowId?: unknown; runId?: unknown }
+    | null;
+  if (link === null || typeof link !== "object") return undefined;
   if (typeof link.workflowId !== "string" || typeof link.runId !== "string") {
     return undefined;
   }

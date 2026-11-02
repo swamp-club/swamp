@@ -1563,7 +1563,10 @@ runner against their will.
 
 1. **No forged decisions.** A decision (approval, rejection, signal outcome,
    cancel) exists only if serve's handler made it, under the decider's own grant.
-   A forwarded record cannot create, change or drop one.
+   A forwarded record cannot create, change or drop one. A cancel a caller makes
+   through serve is decided on their grant, recorded and stamped; what the run's
+   record says afterwards is a status, which is out of scope, so the member driving
+   the run can report past it.
 2. **Runs serve drives take no forwarded record at all.** On those runs, gates do
    bind. A run is serve-driven when its record has a triggering principal or names
    an instance as owner; only serve records either.
@@ -1589,6 +1592,13 @@ it, and the commit stamp says who. Nothing outside that run acts on it.
 
 **For a gate that must bind its runner, run the workflow on serve** (`--server`, a
 trigger or a schedule, optionally on workers).
+
+**Keyed signals in a serve-mode checkout.** A member-driven run's wait and key
+claim live in that member's checkout, so serve holds no claim for the key.
+`workflow signal --key` answers that no wait holds it, or, where the step set
+`acceptEarly`, holds the signal on serve, where that run never takes it. Signal a
+member-driven wait by its id (`swamp workflow waits`), which works from any
+checkout. A serve-driven wait takes a key as before.
 
 **Limits of the marker.** On a v3 serve, a run a CLI drove directly against the
 datastore also counts as member-driven, so its owner resumes it. A v2 datastore

@@ -601,18 +601,6 @@ export interface ApprovalOutcome {
 }
 
 /**
- * Resumes a run in the background once an approval has decided its last
- * gate, when the workflow's auto-resume policy allows it. Returns whether a
- * resume was launched.
- *
- * The run is addressed by the workflow name and run id that the approval
- * resolved, never by the caller's request fields. It is charged to the
- * approver's principal. A refused launch or a failed resume is logged and
- * audited, since no client is listening to this run. A refused launch leaves
- * the run as it was; the logged message says what to do next, such as the
- * cancel command when the workflow changed shape since the run.
- */
-/**
  * Whether serve may act on a run's reported state without a caller asking it to
  * run it. A member-driven run's state is that member's report: resuming it here
  * would run later steps with someone else's authority on inputs they reported,
@@ -644,6 +632,18 @@ export async function ownerResumesRun(
   return run !== null && !serveMayActOnRun(ctx, run);
 }
 
+/**
+ * Resumes a run in the background once an approval has decided its last
+ * gate, when the workflow's auto-resume policy allows it. Returns whether a
+ * resume was launched.
+ *
+ * The run is addressed by the workflow name and run id that the approval
+ * resolved, never by the caller's request fields. It is charged to the
+ * approver's principal. A refused launch or a failed resume is logged and
+ * audited, since no client is listening to this run. A refused launch leaves
+ * the run as it was; the logged message says what to do next, such as the
+ * cancel command when the workflow changed shape since the run.
+ */
 export async function autoResumeAfterApproval(
   ctx: ConnectionContext,
   outcome: ApprovalOutcome,

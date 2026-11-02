@@ -1039,7 +1039,7 @@ export const workflowCancelCommand = withRemoteOptions(
       }
       if (options.all) {
         throw new UserError(
-          "--all cannot be combined with a run sent to a server",
+          "--all cannot be combined with --run: pass one or the other",
         );
       }
       const token = await resolveServerTokenFromOptions(
