@@ -6331,7 +6331,7 @@ Deno.test("createResourceWriter: a resource write that fails before saving frees
   assertEquals(writes, ["x"]);
 });
 
-Deno.test("createFileWriterFactory: a file write that fails before saving frees its name for another kind", async () => {
+Deno.test("createFileWriterFactory: a file writer keeps its name after a failed write, since it can be retried", async () => {
   const { repo, writes } = createNameRecordingRepo();
   const failing: UnifiedDataRepository = {
     ...repo,
@@ -6347,6 +6347,10 @@ Deno.test("createFileWriterFactory: a file write that fails before saving frees 
     Error,
     "disk full",
   );
-  await writeResource("item", "x", { value: "resource" });
-  assertEquals(writes, ["x"]);
+  await assertRejects(
+    () => writeResource("item", "x", { value: "resource" }),
+    UserError,
+    "already written as file 'log'",
+  );
+  assertEquals(writes, []);
 });

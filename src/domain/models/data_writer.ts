@@ -2481,7 +2481,9 @@ export function createFileWriterFactory(
       },
     };
 
-    const settle = outputNames?.claim(instanceName, "file", specName);
+    // never settled: a file writer can be retried, or allocate a version
+    // before finalize fails, so its name stays held for the run
+    outputNames?.claim(instanceName, "file", specName);
     const writer = new DefaultDataWriter(
       repo,
       modelType,
@@ -2499,7 +2501,7 @@ export function createFileWriterFactory(
     // to writeAll and writeStream delegates to finalize, so wrapping those too
     // would record each handle twice.
     writer.writeAll = async (content: Uint8Array) => {
-      const handle = await settledBy(() => settle, originalWriteAll(content));
+      const handle = await originalWriteAll(content);
       handles.push(handle);
       const receipt = writer.getDeferredReceipt();
       if (receipt) {
@@ -2509,7 +2511,7 @@ export function createFileWriterFactory(
     };
 
     writer.finalize = async () => {
-      const handle = await settledBy(() => settle, originalFinalize());
+      const handle = await originalFinalize();
       handles.push(handle);
       const receipt = writer.getDeferredReceipt();
       if (receipt) {
