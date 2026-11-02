@@ -693,7 +693,24 @@ The cost is churn. Every busy/idle flip and lease change is a new version, and
 behaviors **declare retention up front**: bounded `garbageCollection` version
 counts (worker 20; token, lease, pending-dispatch 10; fleet-probe 1), with
 `lifetime: "infinite"` on all but the fleet probe
-(`src/domain/models/worker/*_model.ts`).
+(`src/domain/models/worker/*_model.ts`). `swamp data gc` (or automatic
+retention) trims the history to those counts; until it runs, every version
+stays on disk.
+
+A status change records only that version. `WorkerStatusLedger`
+(`src/serve/worker_status_ledger.ts`) writes the gateway's status changes
+(busy, idle, draining, disconnected, unverified, and a reconnect's status)
+instead of running `swamp/worker` `set_status`. It reads the worker's `state`
+record, applies the transition the method also uses (`nextWorkerState` in
+`worker_model.ts`) and writes the next version through the same resource
+reader and writer, in a root unit of work with no push, as `StepLeaseLedger`
+does for leases. A method run also saves an output record, a run log and an
+evaluated definition, and a dispatch changes status twice, so before
+swamp-club#4285 those grew with the number of dispatches. Until a worker's
+definition exists a change runs as the method, which resolves it. The method
+stays the interface for `swamp behavior run`. Its outputs expire after a day
+(`outputLifetime: "1d"`), which also bounds the backlog older serves left
+behind.
 
 **Worker, token and bookkeeping reaping:** `WorkerGcService` runs on the serve
 side 5 minutes after serve starts and then hourly (default grace period 24 h),

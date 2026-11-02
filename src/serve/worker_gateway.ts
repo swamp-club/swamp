@@ -72,6 +72,11 @@ import {
 } from "../domain/diagnostics/diagnostic_phase.ts";
 import { isUnreadableContentError } from "../domain/datastore/unreadable_content.ts";
 import { TransitionTail } from "./transition_tail.ts";
+import {
+  methodRunnerWorkerStatusStore,
+  WorkerStatusLedger,
+  type WorkerStatusStore,
+} from "./worker_status_ledger.ts";
 import { parseUntrustedOrThrow } from "../domain/untrusted_parse.ts";
 import { SERVE_NOT_LEADER_CODE } from "../domain/datastore_v3/serve_leader.ts";
 
@@ -288,6 +293,7 @@ export class WorkerGateway {
   readonly #sessions: SessionCredentialService;
   readonly #graceWindowMs: number;
   readonly #runModelMethod: ModelMethodRunner;
+  readonly #workerStatus: WorkerStatusStore;
   readonly #findTokenDefinitionId: (
     tokenName: string,
   ) => Promise<string | null>;
@@ -312,6 +318,12 @@ export class WorkerGateway {
     this.#graceWindowMs = options.graceWindowMs ?? DEFAULT_GRACE_WINDOW_MS;
     this.#runModelMethod = options.runModelMethod ??
       ((input) => this.#defaultRunModelMethod(input));
+    this.#workerStatus = options.runModelMethod
+      ? methodRunnerWorkerStatusStore(options.runModelMethod)
+      : new WorkerStatusLedger(
+        options.repoContext,
+        methodRunnerWorkerStatusStore(this.#runModelMethod),
+      );
     this.#findTokenDefinitionId = options.findTokenDefinitionId ??
       (async (tokenName) =>
         (await options.repoContext.definitionRepo.findByName(
@@ -543,16 +555,14 @@ export class WorkerGateway {
       // dispatch twice.
       options?.onRegistered?.();
       if (!unverified) {
-        await this.#recordTransition("worker_busy", () =>
-          this.#runModelMethod({
-            typeArg: WORKER_MODEL_TYPE.normalized,
-            definitionName: workerDefinitionName(name),
-            methodName: "set_status",
-            inputs: {
+        await this.#recordTransition(
+          "worker_busy",
+          () =>
+            this.#workerStatus.recordStatus(name, {
               status: "busy",
               activeDispatchIds: [...entry.activeDispatchIds],
-            },
-          }));
+            }),
+        );
       }
 
       const dispatchCredential = this.#sessions.issueForDispatch(
@@ -612,13 +622,7 @@ export class WorkerGateway {
           entry.status = "idle";
           await this.#recordTransition(
             "worker_idle",
-            () =>
-              this.#runModelMethod({
-                typeArg: WORKER_MODEL_TYPE.normalized,
-                definitionName: workerDefinitionName(name),
-                methodName: "set_status",
-                inputs: { status: "idle" },
-              }),
+            () => this.#workerStatus.recordStatus(name, { status: "idle" }),
           ).catch((error: unknown) => {
             logger.warn("Failed to record idle status for {worker}: {error}", {
               worker: name,
@@ -629,14 +633,9 @@ export class WorkerGateway {
           await this.#recordTransition(
             "worker_busy",
             () =>
-              this.#runModelMethod({
-                typeArg: WORKER_MODEL_TYPE.normalized,
-                definitionName: workerDefinitionName(name),
-                methodName: "set_status",
-                inputs: {
-                  status: "busy",
-                  activeDispatchIds: [...entry.activeDispatchIds],
-                },
+              this.#workerStatus.recordStatus(name, {
+                status: "busy",
+                activeDispatchIds: [...entry.activeDispatchIds],
               }),
           ).catch((error: unknown) => {
             logger.warn(
@@ -826,22 +825,22 @@ export class WorkerGateway {
         existing.channel = state.channel;
         existing.capacity = capacity;
         existing.protocolVersion = params.protocolVersion;
-        await runPreparing({
-          typeArg: WORKER_MODEL_TYPE.normalized,
-          definitionName: workerDefinitionName(workerName),
-          methodName: "set_status",
-          inputs: initialStatus === "unverified"
-            ? {
-              status: "unverified",
-              activeDispatchIds: [...existing.activeDispatchIds],
-            }
-            : existing.activeDispatchIds.length > 0
-            ? {
-              status: "busy",
-              activeDispatchIds: [...existing.activeDispatchIds],
-            }
-            : { status: "idle" },
-        });
+        await preparing(() =>
+          this.#workerStatus.recordStatus(
+            workerName,
+            initialStatus === "unverified"
+              ? {
+                status: "unverified",
+                activeDispatchIds: [...existing.activeDispatchIds],
+              }
+              : existing.activeDispatchIds.length > 0
+              ? {
+                status: "busy",
+                activeDispatchIds: [...existing.activeDispatchIds],
+              }
+              : { status: "idle" },
+          )
+        );
       } else {
         await runPreparing({
           typeArg: WORKER_MODEL_TYPE.normalized,
@@ -979,13 +978,10 @@ export class WorkerGateway {
     if (!entry || entry.status === "draining") return;
     logger.info("Worker {worker} is draining", { worker: workerName });
     entry.status = "draining";
-    await this.#recordTransition("worker_draining", () =>
-      this.#runModelMethod({
-        typeArg: WORKER_MODEL_TYPE.normalized,
-        definitionName: workerDefinitionName(workerName),
-        methodName: "set_status",
-        inputs: { status: "draining" },
-      }));
+    await this.#recordTransition(
+      "worker_draining",
+      () => this.#workerStatus.recordStatus(workerName, { status: "draining" }),
+    );
     this.#options.onWorkerDraining?.(this.#snapshot(entry));
   }
 
@@ -1005,13 +1001,7 @@ export class WorkerGateway {
 
     const recordDisconnect = this.#recordTransition(
       "worker_disconnected",
-      () =>
-        this.#runModelMethod({
-          typeArg: WORKER_MODEL_TYPE.normalized,
-          definitionName: workerDefinitionName(name),
-          methodName: "set_status",
-          inputs: { status: "disconnected" },
-        }),
+      () => this.#workerStatus.recordStatus(name, { status: "disconnected" }),
     );
     recordDisconnect.catch((error: unknown) => {
       logger.warn(
@@ -1155,11 +1145,8 @@ export class WorkerGateway {
    */
   async #recordDisconnected(workerName: string): Promise<void> {
     try {
-      await this.#runModelMethod({
-        typeArg: WORKER_MODEL_TYPE.normalized,
-        definitionName: workerDefinitionName(workerName),
-        methodName: "set_status",
-        inputs: { status: "disconnected" },
+      await this.#workerStatus.recordStatus(workerName, {
+        status: "disconnected",
       });
     } catch (error) {
       logger.warn("Failed to record disconnect for {worker}: {error}", {
@@ -1219,11 +1206,8 @@ export class WorkerGateway {
           await this.#recordTransition("verify_passed", async () => {
             entry.status = "idle";
             entry.verifyFailureReason = undefined;
-            await this.#runModelMethod({
-              typeArg: "swamp/worker",
-              definitionName: workerDefinitionName(workerName),
-              methodName: "set_status",
-              inputs: { status: "idle" },
+            await this.#workerStatus.recordStatus(workerName, {
+              status: "idle",
             });
           });
           const snap = this.#snapshot(entry);
@@ -1233,15 +1217,10 @@ export class WorkerGateway {
       } else {
         await this.#recordTransition("verify_failed", async () => {
           entry.verifyFailureReason = probeResult.failureReason;
-          await this.#runModelMethod({
-            typeArg: "swamp/worker",
-            definitionName: workerDefinitionName(workerName),
-            methodName: "set_status",
-            inputs: {
-              status: "unverified",
-              activeDispatchIds: [...entry.activeDispatchIds],
-              verifyFailureReason: probeResult.failureReason,
-            },
+          await this.#workerStatus.recordStatus(workerName, {
+            status: "unverified",
+            activeDispatchIds: [...entry.activeDispatchIds],
+            verifyFailureReason: probeResult.failureReason,
           });
         });
         logger.warn(
@@ -1255,15 +1234,10 @@ export class WorkerGateway {
       const reason = error instanceof Error ? error.message : String(error);
       await this.#recordTransition("verify_failed", async () => {
         entry.verifyFailureReason = reason;
-        await this.#runModelMethod({
-          typeArg: "swamp/worker",
-          definitionName: workerDefinitionName(workerName),
-          methodName: "set_status",
-          inputs: {
-            status: "unverified",
-            activeDispatchIds: [...entry.activeDispatchIds],
-            verifyFailureReason: reason,
-          },
+        await this.#workerStatus.recordStatus(workerName, {
+          status: "unverified",
+          activeDispatchIds: [...entry.activeDispatchIds],
+          verifyFailureReason: reason,
         });
       }).catch((persistError: unknown) => {
         logger.warn(

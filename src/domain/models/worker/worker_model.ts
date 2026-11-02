@@ -67,13 +67,15 @@ export const WorkerStateSchema = z.object({
 
 export type WorkerState = z.infer<typeof WorkerStateSchema>;
 
-const STATE_DATA_NAME = "state-main";
+export const WORKER_STATE_DATA_NAME = "state-main";
 
-async function readState(context: MethodContext): Promise<WorkerState> {
-  const raw = await context.readResource!(STATE_DATA_NAME);
+export function parseStoredWorkerState(
+  definitionName: string,
+  raw: Record<string, unknown> | null,
+): WorkerState {
   if (raw === null) {
     throw new Error(
-      `Worker '${context.definition.name}' has no recorded state — enroll first`,
+      `Worker '${definitionName}' has no recorded state — enroll first`,
     );
   }
   return WorkerStateSchema.parse(raw);
@@ -116,37 +118,59 @@ async function enroll(
     capacity: args.capacity,
     activeDispatchIds: [],
   };
-  const handle = await context.writeResource!("state", STATE_DATA_NAME, state);
+  const handle = await context.writeResource!(
+    "state",
+    WORKER_STATE_DATA_NAME,
+    state,
+  );
   return { dataHandles: [handle] };
 }
 
-const SetStatusArgsSchema = z.object({
+export const SetStatusArgsSchema = z.object({
   status: WorkerStatusSchema,
   dispatchId: z.string().optional(),
   activeDispatchIds: z.array(z.string()).optional(),
   verifyFailureReason: z.string().optional(),
 });
 
-async function setStatus(
-  args: z.infer<typeof SetStatusArgsSchema>,
-  context: MethodContext,
-): Promise<MethodResult> {
-  const current = await readState(context);
-  const now = new Date().toISOString();
+export type SetStatusArgs = z.infer<typeof SetStatusArgsSchema>;
+
+// the set_status method and serve's WorkerStatusLedger both apply this, so their records match
+export function nextWorkerState(
+  current: WorkerState,
+  args: SetStatusArgs,
+  now: Date,
+): WorkerState {
+  const at = now.toISOString();
   const dispatchIds = args.activeDispatchIds ?? current.activeDispatchIds ?? [];
-  const state: WorkerState = {
+  return {
     ...current,
     status: args.status,
-    lastSeenAt: now,
+    lastSeenAt: at,
     activeDispatchIds: args.status === "idle" || args.status === "disconnected"
       ? []
       : dispatchIds,
-    ...(args.status === "disconnected" ? { disconnectedAt: now } : {}),
+    ...(args.status === "disconnected" ? { disconnectedAt: at } : {}),
     verifyFailureReason: args.status === "unverified"
       ? args.verifyFailureReason
       : undefined,
   };
-  const handle = await context.writeResource!("state", STATE_DATA_NAME, state);
+}
+
+async function setStatus(
+  args: SetStatusArgs,
+  context: MethodContext,
+): Promise<MethodResult> {
+  const current = parseStoredWorkerState(
+    context.definition.name,
+    await context.readResource!(WORKER_STATE_DATA_NAME),
+  );
+  const state = nextWorkerState(current, args, new Date());
+  const handle = await context.writeResource!(
+    "state",
+    WORKER_STATE_DATA_NAME,
+    state,
+  );
   return { dataHandles: [handle] };
 }
 
@@ -177,6 +201,8 @@ export const workerModel: ModelDefinition = defineModel({
       kind: "update",
       arguments: SetStatusArgsSchema,
       execute: setStatus,
+      // serve writes status via WorkerStatusLedger; this bounds direct runs and its fallback
+      outputLifetime: "1d",
     },
   },
 });

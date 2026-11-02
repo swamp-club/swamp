@@ -17,8 +17,13 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals, assertRejects } from "@std/assert";
-import { WORKER_MODEL_TYPE, workerModel } from "./worker_model.ts";
+import { assertEquals, assertRejects, assertThrows } from "@std/assert";
+import {
+  nextWorkerState,
+  parseStoredWorkerState,
+  WORKER_MODEL_TYPE,
+  workerModel,
+} from "./worker_model.ts";
 import { createInMemoryWorkerContext } from "./worker_test_helpers.ts";
 
 const enrollArgs = {
@@ -145,4 +150,66 @@ Deno.test("workerModel: every status change is a new version (history)", async (
   );
   await workerModel.methods.set_status.execute({ status: "idle" }, context);
   assertEquals(versions.get("state-main"), 3);
+});
+
+const storedWorker = {
+  name: "ci-runner-3",
+  instanceUuid: "uuid-1",
+  tokenName: "ci-runner-3",
+  status: "busy" as const,
+  labels: { region: "us-east" },
+  platform: "linux",
+  arch: "x86_64",
+  swampVersion: "1.0.0",
+  protocolVersion: 1,
+  enrolledAt: "2026-11-01T00:00:00.000Z",
+  lastSeenAt: "2026-11-01T00:00:00.000Z",
+  capacity: 2,
+  activeDispatchIds: ["d-1"],
+};
+
+Deno.test("nextWorkerState: busy keeps the given dispatch ids and stamps lastSeenAt", () => {
+  const now = new Date("2026-11-02T10:00:00.000Z");
+  const next = nextWorkerState(
+    storedWorker,
+    { status: "busy", activeDispatchIds: ["d-1", "d-2"] },
+    now,
+  );
+  assertEquals(next, {
+    ...storedWorker,
+    status: "busy",
+    lastSeenAt: now.toISOString(),
+    activeDispatchIds: ["d-1", "d-2"],
+    verifyFailureReason: undefined,
+  });
+});
+
+Deno.test("nextWorkerState: unverified keeps its failure reason, and the next status drops it", () => {
+  const now = new Date("2026-11-02T10:00:00.000Z");
+  const unverified = nextWorkerState(
+    storedWorker,
+    { status: "unverified", verifyFailureReason: "probe failed" },
+    now,
+  );
+  assertEquals(unverified.verifyFailureReason, "probe failed");
+  assertEquals(unverified.activeDispatchIds, ["d-1"]);
+  const idle = nextWorkerState(unverified, { status: "idle" }, now);
+  assertEquals(idle.verifyFailureReason, undefined);
+  assertEquals(idle.activeDispatchIds, []);
+});
+
+Deno.test("parseStoredWorkerState: nothing stored names the worker's definition", () => {
+  assertThrows(
+    () => parseStoredWorkerState("worker-ci-runner-3", null),
+    Error,
+    "Worker 'worker-ci-runner-3' has no recorded state",
+  );
+  assertEquals(
+    parseStoredWorkerState("worker-ci-runner-3", { ...storedWorker }),
+    storedWorker,
+  );
+});
+
+Deno.test("workerModel: set_status output records expire after a day", () => {
+  assertEquals(workerModel.methods.set_status.outputLifetime, "1d");
 });

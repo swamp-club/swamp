@@ -103,10 +103,12 @@ behind other gateway transitions happens before that span starts: it is the
 `swamp.transition.wait` span between the two, and the transition's
 `swamp.transition.queue_wait_ms` and `swamp.transition.queue_depth`. The
 transition span has a status but no `swamp.outcome`; the request span has both.
-Inside the transition, the token definition lookup, the token record read and
-the two method runs (redeem, then the worker's `enroll` or `set_status`) are in
-the area. Each method run is a `swamp.model.method.run` span whose phases are
-below.
+Inside the transition, the token definition lookup, the token record read,
+redeem's method run and the worker's record are in the area. A new worker's
+record is the `enroll` method run. A reconnecting worker's is a status write,
+a `swamp.serve.worker_status.write` span with `swamp.worker.status`, not a
+`set_status` method run (swamp-club#4285). Each method run is a
+`swamp.model.method.run` span whose phases are below.
 
 | Phase               | Parent                             | Attributes                                                                                                                                                                                                    |
 | ------------------- | ---------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |

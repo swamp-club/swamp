@@ -279,6 +279,9 @@ const PINNED_SERVE_ROOT_ENTRY_POINTS: readonly string[] = [
   // step-lease transitions are written directly rather than as method runs, so
   // they are staged into the dispatching run's root, whose push carries them
   "src/serve/step_lease_ledger.ts: StepLeaseLedger",
+  // worker status changes are written directly rather than as method runs:
+  // staged into a dispatching run's root, and otherwise sent to the hook
+  "src/serve/worker_status_ledger.ts: WorkerStatusLedger",
   // model.validate: model checks receive the hooked repositories.
   "src/serve/handlers/model_handlers.ts: handleModelValidate",
   // extension handlers' lockfile transaction: one root with no push per
