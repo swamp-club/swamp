@@ -179,6 +179,8 @@ export async function createDatastoreStatusDeps(
      * config names, which it does not read
      */
     readonly config?: DatastoreConfig;
+    /** a serve-mode checkout's health is serve's, not the storage's */
+    readonly verifyHealth?: DatastoreStatusDeps["verifyHealth"];
   } = {},
 ): Promise<DatastoreStatusDeps> {
   await datastoreTypeRegistry.ensureLoaded();
@@ -202,7 +204,7 @@ export async function createDatastoreStatusDeps(
       ? { describeCommitLog: options.describeCommitLog }
       : {}),
     loadConfig: () => options.config ?? datastoreResolver.config(),
-    verifyHealth: async (config: DatastoreConfig) => {
+    verifyHealth: options.verifyHealth ?? (async (config: DatastoreConfig) => {
       if (isCustomDatastoreConfig(config)) {
         await datastoreTypeRegistry.ensureTypeLoaded(config.type);
         const typeInfo = datastoreTypeRegistry.get(config.type);
@@ -220,7 +222,7 @@ export async function createDatastoreStatusDeps(
         const verifier = new FilesystemDatastoreVerifier(config.path);
         return await verifier.verify();
       }
-    },
+    }),
     getDirectories: (config: DatastoreConfig) => [
       ...getDatastoreDirectories(config),
     ],

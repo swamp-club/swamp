@@ -61,6 +61,18 @@ import {
 const logger = getSwampLogger(["error"]);
 
 /**
+ * a forwarded request lost at the leader: the domain error's flag, or serve's
+ * reply details on the thin-client path; only a literal true is copied
+ */
+function forwardedInFlight(err: Error): boolean {
+  if ((err as { code?: unknown }).code !== SERVE_NOT_LEADER_CODE) return false;
+  if ((err as { inFlight?: unknown }).inFlight === true) return true;
+  const details = (err as { details?: unknown }).details;
+  return typeof details === "object" && details !== null &&
+    (details as { inFlight?: unknown }).inFlight === true;
+}
+
+/**
  * code and stack are optional, so consumers must tolerate their absence;
  * specific UserError subclasses add structured fields.
  */
@@ -88,6 +100,7 @@ export function buildErrorJson(
       ? "lock_timeout"
       : maybeCode;
   }
+  if (forwardedInFlight(err)) data.inFlight = true;
   if (err instanceof AuthGateBlockedError) {
     // Why the auth gate blocked, as data: `kind` plus any retry or age hint,
     // so scripts and agents can branch without parsing the message.

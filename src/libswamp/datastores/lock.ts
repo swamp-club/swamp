@@ -160,6 +160,8 @@ export interface DatastoreLockStatusDeps {
     | { leases: readonly ServeLeaseStatusData[]; truncated: boolean }
     | undefined
   >;
+  /** serve is the only source of the answer, so a failed listing fails */
+  serveLeasesRequired?: boolean;
 }
 
 export async function* datastoreLockStatus(
@@ -197,6 +199,7 @@ export async function* datastoreLockStatus(
       try {
         served = await deps.listServeLeases?.();
       } catch (error) {
+        if (deps.serveLeasesRequired === true) throw error;
         ctx.logger
           .warn`Could not list the leases serve holds: ${
           error instanceof Error ? error.message : String(error)
@@ -476,6 +479,29 @@ export function createDatastoreLockStatusDeps(
   return {
     inspectGlobalLock: () => globalLock.inspect(),
     scanModelLocks: () => scanModelLocks(config.path, config.namespace),
+  };
+}
+
+/**
+ * a checkout written through serve binds no storage: it has no datastore-wide
+ * lock, and its behaviors' locks are serve's leases
+ */
+export function createServeMemberLockStatusDeps(
+  listServeLeases: NonNullable<DatastoreLockStatusDeps["listServeLeases"]>,
+): DatastoreLockStatusDeps {
+  return {
+    inspectGlobalLock: () => Promise.resolve(null),
+    scanModelLocks: () => Promise.resolve([]),
+    listServeLeases,
+    serveLeasesRequired: true,
+  };
+}
+
+/** never touches serve's writer lease or the caller's own leases */
+export function createServeMemberLockReleaseDeps(): DatastoreLockReleaseDeps {
+  return {
+    inspectLock: () => Promise.resolve(null),
+    forceRelease: () => Promise.resolve(false),
   };
 }
 

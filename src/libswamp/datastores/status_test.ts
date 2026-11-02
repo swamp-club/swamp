@@ -361,3 +361,23 @@ Deno.test("createDatastoreStatusDeps: a serve-mode checkout describes its own co
   const without = await createDatastoreStatusDeps(resolver);
   assertEquals(without.loadConfig(), named);
 });
+
+Deno.test("createDatastoreStatusDeps: a serve-mode checkout on a bucket reports serve's health and never looks up the datastore extension (swamp-club#4281)", async () => {
+  const bucket: DatastoreConfig = {
+    type: "@swamp/s3-datastore-not-installed",
+    config: { bucket: "b" },
+    datastorePath: "/tmp/the-copy",
+    cachePath: "/tmp/the-copy",
+  } as DatastoreConfig;
+  const resolver = new DefaultDatastorePathResolver("/tmp/repo", bucket);
+  const deps = await createDatastoreStatusDeps(resolver, {
+    config: bucket,
+    verifyHealth: () =>
+      Promise.resolve({ healthy: true, message: "serve", latencyMs: 1 }),
+  });
+  assertEquals(await deps.verifyHealth(bucket), {
+    healthy: true,
+    message: "serve",
+    latencyMs: 1,
+  });
+});

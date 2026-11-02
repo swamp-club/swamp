@@ -4750,6 +4750,30 @@ Deno.test("validateServerRequest accepts run.gc with retention options", () => {
   );
 });
 
+Deno.test("validateServerRequest accepts run.gc with a retention of 0, as --older-than 0m sends", () => {
+  assertEquals(
+    typeof validateServerRequest({
+      type: "run.gc",
+      id: "r1",
+      payload: { workflowRunRetentionDays: 0, outputRetentionDays: 0 },
+    }),
+    "object",
+  );
+});
+
+Deno.test("validateServerRequest refuses run.gc with a negative retention", () => {
+  for (const field of ["workflowRunRetentionDays", "outputRetentionDays"]) {
+    assertEquals(
+      typeof validateServerRequest({
+        type: "run.gc",
+        id: "r1",
+        payload: { [field]: -1 },
+      }),
+      "string",
+    );
+  }
+});
+
 Deno.test("validateServerRequest accepts datastore.namespace.list", () => {
   assertEquals(
     typeof validateServerRequest({

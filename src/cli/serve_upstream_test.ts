@@ -384,6 +384,8 @@ Deno.test("serveUpstreamRunsLocally: the data plane runs locally with serve as i
       ["vault", "get"],
       ["report", "search"],
       ["summarise"],
+      ["extension", "pull"],
+      ["extension", "install"],
     ]
   ) {
     assertEquals(serveUpstreamRunsLocally(path), true, path.join(" "));

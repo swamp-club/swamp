@@ -19,16 +19,26 @@
 
 import "../src/domain/models/models.ts";
 import { assertEquals } from "@std/assert";
+import { Command } from "@cliffy/command";
+import { datastoreLockCommand } from "../src/cli/commands/datastore_lock.ts";
+import { datastoreStatusCommand } from "../src/cli/commands/datastore_status.ts";
+import {
+  resetImplicitServeRouting,
+  setImplicitServeRouting,
+} from "../src/cli/remote_run.ts";
+import { serveUpstreamRunsLocally } from "../src/cli/serve_upstream.ts";
 import { waitFor } from "@swamp-club/swamp-testing";
 import { initializeLogging } from "../src/infrastructure/logging/logger.ts";
 import type { ModelType } from "../src/domain/models/model_type.ts";
 import {
   type Client,
+  endCommand,
   latestOf,
   readCommand,
   type Scratch,
   type Serve,
   serveEnv,
+  withClientEnv,
   withScratch,
 } from "./serve_upstream_fixtures.ts";
 import type {
@@ -211,6 +221,91 @@ Deno.test({
       );
       assertEquals(saved, oneTo(2 * INTERLEAVED));
       assertEquals(await landedVersions(serve), oneTo(2 * INTERLEAVED));
+    });
+  },
+});
+
+/** the JSON documents a command printed, one per console.log call */
+async function datastoreCommandJson(
+  scratch: Scratch,
+  serve: Serve,
+  client: Client,
+  args: readonly string[],
+): Promise<unknown[]> {
+  const root = new Command()
+    .globalOption("--json", "JSON output")
+    .command(
+      "datastore",
+      new Command()
+        .command("lock", datastoreLockCommand)
+        .command("status", datastoreStatusCommand),
+    );
+  const printed: unknown[] = [];
+  // As startup does for a format-3 checkout.
+  setImplicitServeRouting(
+    !serveUpstreamRunsLocally(["datastore", ...args.slice(0, 1)]),
+  );
+  const log = console.log;
+  console.log = (...values: unknown[]) => {
+    printed.push(JSON.parse(values.map(String).join(" ")));
+  };
+  try {
+    await withClientEnv(
+      scratch,
+      serveEnv(serve, "alice-token"),
+      ["datastore", ...args.slice(0, 1)],
+      () =>
+        root.parse([
+          "datastore",
+          ...args,
+          "--json",
+          "--repo-dir",
+          client.repoDir,
+        ]),
+    );
+  } finally {
+    console.log = log;
+    resetImplicitServeRouting();
+    await endCommand();
+  }
+  return printed;
+}
+
+Deno.test({
+  name:
+    "serve upstream locks: a member on a bucket reads lock status, releases and reports health through serve, never its storage (swamp-club#4281)",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    await withScratch(async (scratch) => {
+      const serve = await scratch.serve();
+      const bucket = scratch.bucket();
+      const member = await scratch.client("a", { bucket });
+
+      const status = await datastoreCommandJson(scratch, serve, member, [
+        "lock",
+        "status",
+      ]);
+      assertEquals(status.at(-1), {
+        held: false,
+        datastoreType: bucket.typeName,
+      });
+
+      const released = await datastoreCommandJson(scratch, serve, member, [
+        "lock",
+        "release",
+        "--force",
+      ]);
+      assertEquals(released, [{ released: false, reason: "no lock held" }]);
+
+      const health = await datastoreCommandJson(scratch, serve, member, [
+        "status",
+      ]);
+      const reported = health.at(-1) as Record<string, unknown>;
+      assertEquals(reported.healthy, true, JSON.stringify(reported));
+      assertEquals(reported.type, bucket.typeName);
+
+      assertEquals(bucket.touched(), []);
     });
   },
 });

@@ -1266,3 +1266,42 @@ Deno.test("exitCodeForError: returns 1 for a commit part of which had landed bef
   assertEquals(exitCodeForError(error), 1);
   assertEquals(exitCodeForError(error.afterStepsRan()), 1);
 });
+
+Deno.test("buildErrorJson: a forwarded request lost in flight says inFlight", () => {
+  const result = buildErrorJson(
+    new ServeNotLeaderError(undefined, false, true),
+  );
+  assertEquals(result.code, "serve_not_leader");
+  assertEquals(result.inFlight, true);
+});
+
+Deno.test("buildErrorJson: a refusal before forwarding has no inFlight", () => {
+  const result = buildErrorJson(new ServeNotLeaderError(undefined));
+  assertEquals(result.code, "serve_not_leader");
+  assertEquals("inFlight" in result, false);
+});
+
+Deno.test("buildErrorJson: inFlight is copied only as a literal true from serve_not_leader details", () => {
+  const withDetails = (code: string, details: unknown) =>
+    Object.assign(new UserError("refused", code), { details });
+  assertEquals(
+    buildErrorJson(withDetails("serve_not_leader", { inFlight: true }))
+      .inFlight,
+    true,
+  );
+  for (
+    const [code, details] of [
+      ["serve_not_leader", { inFlight: "true" }],
+      ["serve_not_leader", { inFlight: 1 }],
+      ["serve_not_leader", null],
+      ["serve_not_leader", [true]],
+      ["handler_failed", { inFlight: true }],
+    ] as const
+  ) {
+    assertEquals(
+      "inFlight" in buildErrorJson(withDetails(code, details)),
+      false,
+      `${code} ${JSON.stringify(details)}`,
+    );
+  }
+});

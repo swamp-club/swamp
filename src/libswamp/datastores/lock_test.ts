@@ -27,6 +27,8 @@ import { createLibSwampContext } from "../context.ts";
 import {
   createDatastoreLockStatusDeps,
   createServeLeaseReleaseDeps,
+  createServeMemberLockReleaseDeps,
+  createServeMemberLockStatusDeps,
   datastoreLockRelease,
   type DatastoreLockReleaseDeps,
   type DatastoreLockReleaseEvent,
@@ -806,4 +808,61 @@ Deno.test("modelSpecTypeMatches: a --behavior spec acts only on a behavior of th
   assertEquals(modelSpecTypeMatches("AWS-EC2", "aws-ec2"), true);
   assertEquals(modelSpecTypeMatches("gcp-vm", "aws-ec2"), false);
   assertEquals(modelSpecTypeMatches("", "aws-ec2"), false);
+});
+
+Deno.test("datastoreLockStatus: a member checkout reports serve's leases and no datastore-wide lock (swamp-club#4281)", async () => {
+  const lease = {
+    lockKey: "data/aws/ec2/0b6c4bb4-9d61-4f0c-9a43-6f0c1f7b2a01/.lock",
+    heldBy: "caller" as const,
+    expiresAt: "2026-11-02T12:00:30.000Z",
+  };
+  const events = await collect(
+    datastoreLockStatus(
+      createLibSwampContext(),
+      createServeMemberLockStatusDeps(() =>
+        Promise.resolve({ leases: [lease], truncated: false })
+      ),
+      { datastoreType: "@swamp/s3-datastore", isFilesystemDatastore: false },
+    ),
+  );
+  assertEquals(events, [
+    { kind: "serve_lease", data: lease },
+    {
+      kind: "completed",
+      data: {
+        held: false,
+        info: undefined,
+        datastoreType: "@swamp/s3-datastore",
+      },
+    },
+  ]);
+});
+
+Deno.test("datastoreLockStatus: a member checkout whose serve cannot list its leases fails, since serve is its only answer (swamp-club#4281)", async () => {
+  const unreachable = new Error("serve unreachable");
+  await assertRejects(
+    () =>
+      collect(
+        datastoreLockStatus(
+          createLibSwampContext(),
+          createServeMemberLockStatusDeps(() => Promise.reject(unreachable)),
+          { datastoreType: "filesystem", isFilesystemDatastore: false },
+        ),
+      ),
+    Error,
+    "serve unreachable",
+  );
+});
+
+Deno.test("datastoreLockRelease: a member checkout without --behavior releases nothing (swamp-club#4281)", async () => {
+  const events = await collect(
+    datastoreLockRelease(
+      createLibSwampContext(),
+      createServeMemberLockReleaseDeps(),
+      {},
+    ),
+  );
+  assertEquals(events, [
+    { kind: "completed", data: { released: false, reason: "no lock held" } },
+  ]);
 });

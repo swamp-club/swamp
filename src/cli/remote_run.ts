@@ -1357,10 +1357,7 @@ async function* singleConnectionStream(
           if (cancelSent || message.error.code === "cancelled") {
             throw new DOMException("Run was cancelled", "AbortError");
           }
-          throw new UserError(
-            formatServerError(message.error),
-            message.error.code,
-          );
+          throw new ServerResponseError(message.error);
         }
         if (message.type === "run.elsewhere") {
           return {
