@@ -1354,13 +1354,14 @@ export async function requireInitializedRepoReadOnly(
     ...factoryConfig,
   });
 
+  markForwardedRunRecords(repoContext, v3);
+
   // A read shows what a wait record says of a step, such as the receipt of
   // a signal no resume has applied yet (swamp-club#3110). Only a filesystem
   // or v3 datastore's records are read here: a v2 custom datastore's store
   // pulls its namespace when it opens, and this path neither syncs nor holds
   // the lock. The store is given without the save hook `attachSignalWaits`
   // installs, so the context writes no wait record.
-  markForwardedRunRecords(repoContext, v3);
   if (!isCustomDatastoreConfig(datastoreConfig) || v3 !== undefined) {
     repoContext.signalWaits = resolveSignalWaitSupport(
       datastoreConfig,
@@ -2325,7 +2326,7 @@ export function resolveSignalWaitSupport(
     return {
       supported: false,
       reason:
-        "a run that waits for a signal runs on serve in team mode: run it with --server, or from a trigger or schedule",
+        "in a serve-mode checkout such a run executes on serve, so use --server, or a trigger or schedule",
     };
   }
   const bucket = options?.v3 === undefined

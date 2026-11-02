@@ -39,6 +39,7 @@ import {
 import { createLibSwampContext } from "../context.ts";
 import { SignalWait } from "../../domain/workflows/signal_wait.ts";
 import {
+  createWorkflowHistoryGetDeps,
   nestedWaitView,
   workflowHistoryGet,
   type WorkflowHistoryGetDeps,
@@ -895,4 +896,20 @@ Deno.test("workflowHistoryGet: reads signal waits in a child span only for a sus
     );
     assertEquals(spans.some((s) => s.name === SIGNAL_WAITS_SPAN), false);
   });
+});
+
+Deno.test("createWorkflowHistoryGetDeps: the run repository it builds carries the forwarded flag, so a forged link shows as no child (swamp-club#4245)", () => {
+  const flagOf = (forwarded?: boolean) =>
+    (createWorkflowHistoryGetDeps(
+      "/nonexistent",
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      forwarded,
+    ).nestedLink?.runRepo as { recordsAreForwarded?: boolean } | undefined)
+      ?.recordsAreForwarded;
+  assertEquals(flagOf(true), true);
+  assertEquals(flagOf(), undefined);
 });

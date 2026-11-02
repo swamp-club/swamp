@@ -980,6 +980,7 @@ export async function handleWorkflowHistoryGet(
           dataReadPolicy(socket, ctx, principal, controller.signal),
           ctx.repoContext.signalWaits,
           ctx.repoContext.unreadableContent,
+          ctx.repoContext.takesForwardedRunRecords,
         ),
         retentionWatermarks: ctx.repoContext.retentionWatermarks,
       };

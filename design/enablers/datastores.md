@@ -5259,12 +5259,7 @@ able to remove an uncommitted copy.
   chunks. The moved records are not in the v3 datastore: bringing them in
   needs migrating records to v3 (Phase 6). For every other v3 case, `--repair`
   stays refused.
-- **Links are not followed on a report.** Where records are forwarded (a v3 serve or
-a serve-mode checkout) a child is a parent's only if it links back. The path that
-accepts a child with no back-link on what the parent's record says, for one saved
-by an older binary, is off (`recordsAreForwarded`).
-
-**Known limit.** A checkout that already has v3 state, is switched back to
+- **Known limit.** A checkout that already has v3 state, is switched back to
   a v2 `.swamp.yaml`, writes records, and then returns to v3 is not checked
   again. The check is for the first open only, so that later opens cost
   nothing. Like setup, it checks the default datastore directories, whatever
@@ -6704,6 +6699,11 @@ The content-derived decisions (`tag`, expression reads, vault reads) are made
 before the forwarded lock, as serve's handlers make theirs before they save;
 under the lock serve re-decides access, a run record's additions among it, and
 checks that no record the content was judged against moved.
+
+**Links are not followed on a report.** Where records are forwarded (a v3 serve or
+a serve-mode checkout) a child is a parent's only if it links back. The path that
+accepts a child with no back-link on what the parent's record says, for one saved by
+an older binary, is off (`recordsAreForwarded`).
 
 **Known limit.** A retry whose preparation fails restores the run from a snapshot
 that still holds the cleared decision. That record is refused, since serve no

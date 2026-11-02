@@ -148,12 +148,16 @@ export async function checkRunRecord(
   // A run id names one run: some lookups and deletes select by it alone, so a
   // first record reusing one would reach the run that holds it, in any workflow.
   if (before === undefined) {
-    const holder = await ctx.repoContext.workflowRunRepo.findGlobalById(
-      createWorkflowRunId(intent.run.runId),
-    );
-    if (holder !== null && holder.workflowId !== intent.run.workflowId) {
+    const isOurs = async () => {
+      const holder = await ctx.repoContext.workflowRunRepo.findGlobalById(
+        createWorkflowRunId(intent.run.runId),
+      );
+      return holder === null || holder.workflowId === intent.run.workflowId;
+    };
+    if (!(await isOurs())) {
       return refused(op, "its run id is another workflow's run");
     }
+    context.recheckUnderLock(isOurs);
   }
   const children = await heldChildren(
     context,

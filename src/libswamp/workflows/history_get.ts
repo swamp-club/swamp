@@ -220,6 +220,12 @@ export function createWorkflowHistoryGetDeps(
    * v3 read model could not materialise fails loudly (swamp-club#3617).
    */
   unreadableContent?: UnreadableContentLookup,
+  /**
+   * The repository context's flag: this builds its own run repository, and a
+   * forwarded record's link is shown only if its child links back
+   * (swamp-club#4245).
+   */
+  recordsAreForwarded?: boolean,
 ): WorkflowHistoryGetDeps {
   const dsPath = (subdir: string): string | undefined =>
     datastoreResolver?.resolvePath(subdir);
@@ -233,6 +239,7 @@ export function createWorkflowHistoryGetDeps(
     undefined,
     unreadableContent,
   );
+  runRepo.recordsAreForwarded = recordsAreForwarded;
   return {
     isPartialId,
     nestedLink: { runRepo, workflowRepo },

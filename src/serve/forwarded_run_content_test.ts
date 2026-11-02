@@ -219,10 +219,11 @@ Deno.test("checkRunRecord: what a record adds is decided again under the lock, s
   const rechecks: (() => Promise<boolean>)[] = [];
   c.recheckUnderLock = (check) => rechecks.push(check);
   assertEquals(await checkRunRecord(c, op), undefined);
-  assertEquals(rechecks.length, 1);
-  assertEquals(await rechecks[0](), true);
+  // The run id, then what the record adds.
+  assertEquals(rechecks.length, 2);
+  assertEquals(await rechecks[1](), true);
   allowed.pop();
-  assertEquals(await rechecks[0](), false);
+  assertEquals(await rechecks[1](), false);
 });
 
 Deno.test("checkRunRecord: a nested step's decision is its child's, when that child links back", async () => {
@@ -473,4 +474,19 @@ Deno.test("checkRunRecord: a first record cannot reuse a run id another workflow
   assert(
     await first("66666666-7777-4888-8999-aaaaaaaaaaaa") !== undefined,
   );
+});
+
+Deno.test("checkRunRecord: a run id taken while a first record waits for the lock refuses the commit (swamp-club#4245)", async () => {
+  const op = await runPut("run.create", record());
+  const { context: c } = context({}, ["run", "read"]);
+  let holder: { workflowId: string } | null = null;
+  (c.deps.ctx.repoContext as unknown as {
+    workflowRunRepo: { findGlobalById: () => Promise<unknown> };
+  }).workflowRunRepo = { findGlobalById: () => Promise.resolve(holder) };
+  const rechecks: (() => Promise<boolean>)[] = [];
+  c.recheckUnderLock = (check) => rechecks.push(check);
+  assertEquals(await checkRunRecord(c, op), undefined);
+  assertEquals(await rechecks[0](), true);
+  holder = { workflowId: "66666666-7777-4888-8999-aaaaaaaaaaaa" };
+  assertEquals(await rechecks[0](), false);
 });

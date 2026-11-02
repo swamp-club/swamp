@@ -157,7 +157,9 @@ export function v3EvaluationTrust(
     }
     if (untrusted === "forwarded" && ownPrincipal !== undefined) {
       throw new UserError(
-        `Another member wrote the last evaluation of ${what}.`,
+        ownPrincipal === ""
+          ? `Serve did not write the last evaluation of ${what}.`
+          : `Another member wrote the last evaluation of ${what}.`,
         EVALUATION_OTHER_WRITER,
       );
     }
