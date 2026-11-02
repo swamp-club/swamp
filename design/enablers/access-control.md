@@ -1017,23 +1017,32 @@ that out; serve's other lookups by name still read the definitions themselves. A
 definition file serve cannot read fails those steps' lookups, as it fails the
 owner check, until it is fixed or removed. Each request first checks the stat of
 every definition directory. A directory whose stat moved, or was less than 2 s
-old when it was last listed, is listed again, and only its files whose own stat
-moved (or was that recent when read) are read. Deciding when a stat is taken
-keeps a write that lands in the same clock tick as a listing from hiding behind
-a stat that only later looks old. The request then stats each owner's file, and
+old when it was last listed, is listed again. The listing stats its files and
+reads only those whose own stat moved (or was that recent when read), except a
+regular file named after the name it declares (`<name>.yaml`, as a save names a
+definition whose name is filename-safe) whose stat was settled: that file is kept without a stat (swamp-club#4307),
+so a write costs a stat of the files it added, not of every file beside them.
+Deciding when a stat is taken keeps a write that lands in the same clock tick as
+a listing from hiding behind a stat that only later looks old. The request then stats each owner's file, and
 reads it only when that stat moved, was less than 2 s old, reports neither a
 ctime nor an inode, or the file is a symlink (swamp-club#4231). A rewrite moves the stat's mtime, ctime, size or inode,
 so owners are judged on the names and tags stored now. Creating, removing or renaming a definition file moves its
-directory's stat, so a change by any process is seen by the next request:
-swamp's saves and a v3 datastore's pulls replace a file by renaming a new one
-over it, and a datastore extension's pull that creates a file is seen the same
-way. A file that failed to parse, a file a lookup found rewritten, and a
+directory's stat, so a new or removed file is seen by the next request, whichever
+process wrote it. swamp's saves and a v3 datastore's pulls replace a file by
+renaming a new one over it, and a datastore extension's pull creates one. A kept
+file replaced under its own name is seen by a lookup of the id or name it
+declared before, which reads it, and by the next lookup by id that finds nothing,
+which first stats every kept file; otherwise within 30 s, since a request at
+least 30 s after the last such pass stats every kept file. A file that failed to
+parse, a file a lookup found rewritten, and a
 symlinked definition (whose target may sit in another directory) are stat'ed on
-every request, so changes to them made in place are seen too. One change waits
-for the directory's next change, or for a lookup of the id the file declared: a
-regular file that declares an id, overwritten in place to declare another (by
-hand, or by a datastore extension that overwrites files in place). Until then
-the file is not an owner of its new id, which fails open: a deny that this copy
+every request, so changes to them made in place are seen too. Two changes wait.
+A kept file replaced to declare an id another file declares, or a name it is not
+stored under, waits up to 30 s. A regular file that declares an id, overwritten
+in place to declare another (by hand, or by a datastore extension that
+overwrites files in place), waits for its directory's next change and then up to
+30 s, or for a lookup of the id it declared. Until then the file is not an owner
+of its new id, which fails open: a deny that this copy
 would bring, by its name or its tags, does not apply. Making that change needs
 write access to the definitions, which can change any owner's file itself, so
 it grants nothing more. A filesystem that does not update directory mtimes

@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
+import { assert, assertEquals } from "@std/assert";
 import { ensureDir } from "@std/fs";
 import { dirname, join, relative } from "@std/path";
 import fc from "fast-check";
@@ -168,7 +168,51 @@ function describe(
   ) => [f.type.normalized, f.definition.name, f.definition.tags]);
 }
 
-async function assertMatchesScan(clockAhead: number, numRuns: number) {
+// swept: the clock passes the reverify interval before each round, so every
+// kept file is stat'ed; unswept: only a lookup by id that misses stats them;
+// fixed: the clock stands still, for stats that must stay too recent
+type Sweep = "swept" | "unswept" | "fixed";
+
+const REVERIFY_INTERVAL_MS = 30_000;
+
+/**
+ * rewriting a name-derived file to declare another name is the documented gap:
+ * save() writes a renamed definition to another file instead
+ */
+function isDocumentedGap(
+  roots: string[],
+  op: Op,
+  declared: Map<string, string | undefined>,
+): boolean {
+  if (op.kind !== "write") return false;
+  const path = join(roots[op.root], op.typeDir, op.file);
+  const name = declared.get(path);
+  return name !== undefined && op.file === `${name}.yaml` && op.name !== name;
+}
+
+function track(
+  roots: string[],
+  op: Op,
+  declared: Map<string, string | undefined>,
+): void {
+  const dir = join(roots[op.root], op.typeDir);
+  if (op.kind === "write") declared.set(join(dir, op.file), op.name);
+  else if (op.kind === "break") declared.set(join(dir, op.file), undefined);
+  else if (op.kind === "remove") declared.delete(join(dir, op.file));
+  else if (op.kind === "removeDir") {
+    for (const path of [...declared.keys()]) {
+      if (path === dir || !relative(dir, path).startsWith("..")) {
+        declared.delete(path);
+      }
+    }
+  }
+}
+
+async function assertMatchesScan(
+  clockAhead: number,
+  numRuns: number,
+  sweep: Sweep = "swept",
+) {
   await fc.assert(
     fc.asyncProperty(
       fc.array(opArb, { minLength: 1, maxLength: 12 }),
@@ -185,11 +229,19 @@ async function assertMatchesScan(clockAhead: number, numRuns: number) {
             roots[0],
             roots[1],
           );
+          let skew = 0;
           const index = new DefinitionIdIndex(repo, {
-            now: () => Date.now() + clockAhead,
+            now: () => Date.now() + clockAhead + skew,
+            reverifyIntervalMs: REVERIFY_INTERVAL_MS,
           });
+          const declared = new Map<string, string | undefined>();
           for (const op of ops) {
+            if (sweep === "unswept" && isDocumentedGap(roots, op, declared)) {
+              continue;
+            }
             await apply(roots, op);
+            track(roots, op, declared);
+            if (sweep === "swept") skew += REVERIFY_INTERVAL_MS;
             const all = await repo.findAllIncludingAutoGlobal();
             const view = await index.begin();
             for (const id of IDS) {
@@ -198,10 +250,23 @@ async function assertMatchesScan(clockAhead: number, numRuns: number) {
               );
               // The second answers from what the first left behind.
               for (let lookup = 0; lookup < 2; lookup++) {
-                assertEquals(
-                  describe(await view.findAllById(id as DefinitionId)),
-                  expected,
+                const owners = describe(
+                  await view.findAllById(id as DefinitionId),
                 );
+                const found = describe(await index.findAllById(id));
+                // Unswept, a kept file that now declares an id another file
+                // declares is not found until the sweep: it fails open.
+                if (sweep === "unswept" && expected.length > 1) {
+                  const known = expected.map((e) => JSON.stringify(e));
+                  for (const owner of [...owners, ...found]) {
+                    assert(known.includes(JSON.stringify(owner)));
+                  }
+                  // an empty answer runs the miss pass, so some owner is found
+                  assert(owners.length > 0 && found.length > 0);
+                  continue;
+                }
+                assertEquals(owners, expected);
+                assertEquals(found, expected);
               }
             }
             for (const name of [...NAMES, "missing"]) {
@@ -235,14 +300,17 @@ Deno.test("DefinitionIdIndex: after any sequence of writes, removals and in-plac
   await assertMatchesScan(60_000, 50);
 });
 
+Deno.test("DefinitionIdIndex: without a sweep, answers every id a single file declares and every name as a scan does, a lookup by id that misses stating the kept files", async () => {
+  await assertMatchesScan(60_000, 50, "unswept");
+});
+
 Deno.test("DefinitionIdIndex: answers as a scan does while every stat is too recent to trust", async () => {
-  await assertMatchesScan(0, 20);
+  await assertMatchesScan(0, 20, "fixed");
 });
 
 Deno.test("DefinitionIdIndex: a regular file overwritten in place to declare another id is not an owner of it until its directory changes", async () => {
-  // The one change the index leaves to the next listing of a directory, and
-  // it fails open; see DefinitionIdIndex. If this starts failing because it
-  // is seen at once, the documented limit can be dropped.
+  // The documented limit, which fails open; if this starts failing because the
+  // change is seen at once, the limit can be dropped.
   const dir = await Deno.makeTempDir();
   try {
     const roots = [

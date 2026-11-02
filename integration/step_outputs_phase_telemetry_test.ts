@@ -573,6 +573,7 @@ Deno.test("step_outputs phases: a request exports catalog_open, output_walk and 
       definitionFiles(3),
     );
     assertEquals(int(index, "swamp.diagnostic.files_joined"), 0);
+    assertEquals(int(index, "swamp.diagnostic.files_verified"), 0);
     // The check's definition reads count in its own phase, the per-id owner
     // reads (writer and secrets) in the walk, apart from output content.
     assertEquals(int(index, "swamp.diagnostic.files_read"), definitionFiles(3));
@@ -613,6 +614,7 @@ Deno.test("step_outputs phases: a request exports catalog_open, output_walk and 
     const warm = phase(requests(again)[0], "owner_index");
     assertEquals(str(warm, "swamp.diagnostic.cache"), "warm");
     assertEquals(int(warm, "swamp.diagnostic.files_parsed"), 0);
+    assertEquals(int(warm, "swamp.diagnostic.files_verified"), 0);
   });
 });
 
