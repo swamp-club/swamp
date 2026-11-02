@@ -24,6 +24,7 @@ import {
   assertStringIncludes,
 } from "@std/assert";
 import { configure, type LogRecord, reset } from "@logtape/logtape";
+import { waitFor } from "@swamp-club/swamp-testing";
 import {
   FRAME_TOO_LARGE,
   MAX_RPC_FRAME_BYTES,
@@ -388,8 +389,7 @@ Deno.test("RpcChannel: a frame exactly at the limit is sent", async () => {
     method: "fit",
     params: {},
   }));
-  await new Promise((resolve) => setTimeout(resolve, 0));
-  assertEquals(sent.length, 1);
+  await waitFor(() => sent.length === 1, "the at-limit reply to be sent");
   assertEquals(new TextEncoder().encode(sent[0]).byteLength, SMALL_LIMIT);
   assertEquals(frameTypes(sent), ["rpc.response"]);
 });

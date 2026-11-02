@@ -2005,7 +2005,9 @@ Non-goals for v1:
   socket that exceeds `MAX_RPC_FRAME_BYTES` (a single `readOutput`, a
   `worker.dispatch` result, or `queryData` from a version 5 or 6 worker) fails
   that call with `frame_too_large`. The data-plane read routes load their whole
-  result in serve's memory before streaming it; they do not page.
+  result in serve's memory before streaming it; they do not page, and the
+  worker's unary read deadline (`DATA_PLANE_TIMEOUT_MS`, 60 s) covers the whole
+  streamed reply.
 - **No in-flight resume.** A dispatch that loses its control socket is
   re-dispatched from scratch if no write had landed
   (`src/serve/dispatch_service.ts`); partial progress on the worker is lost.

@@ -1949,3 +1949,16 @@ Deno.test("DataPlane: /data/outputs refuses the single-record read shapes", asyn
     assertEquals(h.workerReadCalls, []);
   });
 });
+
+Deno.test("DataPlane: /data/outputs fails loudly when the verb returns something other than a list", async () => {
+  await withHarness(async (h) => {
+    h.dispatches.register(activeDispatch());
+    const response = await h.plane.handle(
+      postJson("/data/outputs", { modelType: "t" }),
+    );
+    assertEquals(response?.status, 500);
+    assertStringIncludes(await response!.text(), "did not return a list");
+  }, {
+    workerReads: { readOutput: () => Promise.resolve({ result: { id: "x" } }) },
+  });
+});

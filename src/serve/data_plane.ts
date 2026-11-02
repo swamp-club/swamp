@@ -692,7 +692,10 @@ export class DataPlane {
           dispatchId: dispatch.dispatchId,
         }),
     ) as { result: unknown };
-    return ndjsonResponse(Array.isArray(reply.result) ? reply.result : []);
+    if (!Array.isArray(reply.result)) {
+      throw new DataPlaneError(500, "Output list read did not return a list");
+    }
+    return ndjsonResponse(reply.result);
   }
 
   async #readArtifact(
