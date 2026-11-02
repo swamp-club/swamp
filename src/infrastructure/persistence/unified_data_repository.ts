@@ -101,6 +101,7 @@ import {
   type UnifiedDataRepository,
 } from "../../domain/data/repositories.ts";
 import { garbageCollectionToColumn } from "../../domain/data/data_metadata.ts";
+import { assertKindContinues } from "../../domain/data/data_kind.ts";
 import { computeLatestFlags } from "../../domain/data/data_query_service.ts";
 import {
   isRestatement,
@@ -1207,16 +1208,7 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
       kind: "write",
       path: this.getDataNameDir(type, modelId, data.name),
     }, async () => {
-      const existing = await this.findByName(type, modelId, data.name);
-      if (existing) {
-        if (!existing.isOwnedBy(data.ownerDefinition)) {
-          throw new OwnershipValidationError(
-            data.name,
-            existing.ownerDefinition,
-            data.ownerDefinition,
-          );
-        }
-      }
+      await this.assertWritable(type, modelId, data);
 
       const { version: newVersion, priorVersions } = await this
         .atomicAllocateVersionDir(
@@ -1317,16 +1309,7 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
       kind: "write",
       path: this.getDataNameDir(type, modelId, data.name),
     }, async () => {
-      const existing = await this.findByName(type, modelId, data.name);
-      if (existing) {
-        if (!existing.isOwnedBy(data.ownerDefinition)) {
-          throw new OwnershipValidationError(
-            data.name,
-            existing.ownerDefinition,
-            data.ownerDefinition,
-          );
-        }
-      }
+      await this.assertWritable(type, modelId, data);
 
       const checksum = await this.computeChecksum(content);
       const { version: newVersion } = await this.atomicAllocateVersionDir(
@@ -2178,16 +2161,7 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
       kind: "write",
       path: this.getDataNameDir(type, modelId, data.name),
     }, async () => {
-      const existing = await this.findByName(type, modelId, data.name);
-      if (existing) {
-        if (!existing.isOwnedBy(data.ownerDefinition)) {
-          throw new OwnershipValidationError(
-            data.name,
-            existing.ownerDefinition,
-            data.ownerDefinition,
-          );
-        }
-      }
+      await this.assertWritable(type, modelId, data);
 
       const { version: newVersion, priorVersions } = await this
         .atomicAllocateVersionDir(
@@ -3271,6 +3245,31 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
       dataNameDir,
       sync === undefined ? undefined : (dir) => this.syncDir(sync, dir),
     );
+  }
+
+  /**
+   * ownership is checked against a rename marker's target, as reads resolve
+   * it; the kind against the stored latest, which a marker resets
+   */
+  private async assertWritable(
+    type: ModelType,
+    modelId: string,
+    data: Data,
+  ): Promise<void> {
+    const version = await this.getLatestVersion(type, modelId, data.name);
+    if (version === null) return;
+    const latest = await this.findByName(type, modelId, data.name, version);
+    const owner = latest?.isRenamed
+      ? await this.findByName(type, modelId, data.name)
+      : latest;
+    if (owner && !owner.isOwnedBy(data.ownerDefinition)) {
+      throw new OwnershipValidationError(
+        data.name,
+        owner.ownerDefinition,
+        data.ownerDefinition,
+      );
+    }
+    assertKindContinues(latest, data, modelId);
   }
 
   private async atomicAllocateVersionDir(

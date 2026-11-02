@@ -22,6 +22,7 @@ import { dirname } from "@std/path";
 import { ensureDirSync } from "@std/fs";
 import { getLogger } from "@logtape/logtape";
 import type { SharedDatastoreWriteTracker } from "./shared_datastore_write_tracker.ts";
+import { RECORD_KIND_TAG } from "../../domain/data/data.ts";
 
 const logger = getLogger(["swamp", "persistence", "catalog"]);
 
@@ -91,6 +92,18 @@ export interface CatalogVersionKey {
   is_latest: number;
   size: number;
   model_name: string;
+}
+
+export interface CatalogVersionKind {
+  type_normalized: string;
+  model_id: string;
+  data_name: string;
+  version: number;
+  model_name: string;
+  data_type: string;
+  spec_name: string;
+  lifecycle: string;
+  record_kind: string;
 }
 
 export interface CatalogAgedRow {
@@ -916,6 +929,20 @@ export class CatalogStore {
        FROM catalog WHERE ${clauses.join(" AND ")}
        ORDER BY type_normalized, model_id, data_name, version`,
     ).all(...params) as unknown as CatalogVersionKey[];
+  }
+
+  /** published versions with the tags that name their kind, for doctor datastores */
+  versionKinds(namespace: string): CatalogVersionKind[] {
+    return this.db.prepare(
+      `SELECT type_normalized, model_id, data_name, version, model_name,
+              data_type, spec_name, lifecycle,
+              COALESCE(json_extract(tags, ?), '') AS record_kind
+       FROM catalog WHERE namespace = ? AND is_pending = 0
+       ORDER BY type_normalized, model_id, data_name, version`,
+    ).all(
+      `$."${RECORD_KIND_TAG}"`,
+      namespace,
+    ) as unknown as CatalogVersionKind[];
   }
 
   rowsCreatedBefore(

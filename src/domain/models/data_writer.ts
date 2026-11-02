@@ -27,6 +27,7 @@ import {
   RESERVED_TAG_PREFIX,
 } from "../data/mod.ts";
 import type { DataId, OwnerDefinition } from "../data/mod.ts";
+import { RECORD_KIND_TAG } from "../data/data.ts";
 import type {
   DeferredWriteReceipt,
   UnifiedDataRepository,
@@ -1444,12 +1445,7 @@ export const SENSITIVE_FIELDS_TAG = "_swamp.sensitiveFields";
 export const SENSITIVE_FIELDS_VERSION_TAG = "_swamp.sensitiveFieldsVersion";
 export const SENSITIVE_FIELDS_VERSION = "1";
 
-/**
- * stamped by both writers after every override and under the reserved prefix,
- * so no user source sets it; records without it keep the schema fallback in
- * getSensitiveFieldsForResolution
- */
-export const RECORD_KIND_TAG = "_swamp.kind";
+export { RECORD_KIND_TAG };
 
 export const SENSITIVE_FIELDS_ALL = "*";
 

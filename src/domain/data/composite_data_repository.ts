@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import type { Data } from "./data.ts";
+import { assertKindContinues } from "./data_kind.ts";
 import type { DataId } from "./data_id.ts";
 import type { ModelType, ModelTypeInput } from "../models/model_type.ts";
 import { coerceModelType } from "../models/model_type.ts";
@@ -57,6 +58,27 @@ export class CompositeUnifiedDataRepository implements UnifiedDataRepository {
     return data.lifetime === "ephemeral" ? this.ephemeral : this.persistent;
   }
 
+  /**
+   * each store checks a name's history it holds; this covers a name whose
+   * writes move between the stores with its lifetime
+   */
+  private async assertKindAcrossStores(
+    type: ModelType,
+    modelId: string,
+    data: Data,
+  ): Promise<void> {
+    const other = this.routeWrite(data) === this.ephemeral
+      ? this.persistent
+      : this.ephemeral;
+    const version = other.getLatestVersionSync(type, modelId, data.name);
+    if (version === null) return;
+    assertKindContinues(
+      await other.findByName(type, modelId, data.name, version),
+      data,
+      modelId,
+    );
+  }
+
   private recordDeferredIssuer(
     repo: UnifiedDataRepository,
     type: ModelType,
@@ -94,13 +116,14 @@ export class CompositeUnifiedDataRepository implements UnifiedDataRepository {
     }
   }
 
-  save(
+  async save(
     type: ModelType,
     modelId: string,
     data: Data,
     content: Uint8Array,
   ): Promise<{ version: number }> {
-    return this.routeWrite(data).save(type, modelId, data, content);
+    await this.assertKindAcrossStores(type, modelId, data);
+    return await this.routeWrite(data).save(type, modelId, data, content);
   }
 
   append(
@@ -128,6 +151,7 @@ export class CompositeUnifiedDataRepository implements UnifiedDataRepository {
       syncContent?: (file: Deno.FsFile) => Promise<void>;
     }
   > {
+    await this.assertKindAcrossStores(type, modelId, data);
     const repo = this.routeWrite(data);
     const allocated = await repo.allocateVersion(type, modelId, data, options);
     if (options?.deferred) {
@@ -582,6 +606,7 @@ export class CompositeUnifiedDataRepository implements UnifiedDataRepository {
     data: Data,
     content: Uint8Array,
   ): Promise<DeferredWriteReceipt> {
+    await this.assertKindAcrossStores(type, modelId, data);
     const repo = this.routeWrite(data);
     const receipt = await repo.saveDeferred(type, modelId, data, content);
     this.recordDeferredIssuer(

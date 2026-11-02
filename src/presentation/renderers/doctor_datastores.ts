@@ -19,19 +19,21 @@
 
 import { bold, dim, green, red, yellow } from "@std/fmt/colors";
 import { join } from "@std/path";
-import type {
-  DoctorDatastoresEvent,
-  RepairCatalogDuplicateLatestEvent,
-  RepairCatalogIndexEvent,
-  RepairDatastoreFormatMarkerEvent,
-  RepairDatastoresEvent,
-  RepairPreV3RecordsEvent,
-  RepairUnmigratedDataEvent,
-  RepairUnpushedFilesEvent,
-  RepairUnreadableVersionsEvent,
-  UnreadableRecordRepair,
-  UnreadableVersionsSummary,
-  V3ContentSummary,
+import {
+  type DoctorDatastoresEvent,
+  MIXED_KIND_NAMES_LISTED,
+  type MixedKindNamesSummary,
+  type RepairCatalogDuplicateLatestEvent,
+  type RepairCatalogIndexEvent,
+  type RepairDatastoreFormatMarkerEvent,
+  type RepairDatastoresEvent,
+  type RepairPreV3RecordsEvent,
+  type RepairUnmigratedDataEvent,
+  type RepairUnpushedFilesEvent,
+  type RepairUnreadableVersionsEvent,
+  type UnreadableRecordRepair,
+  type UnreadableVersionsSummary,
+  type V3ContentSummary,
 } from "../../libswamp/datastores/doctor_datastores.ts";
 import { describeUnreadableVersionReason } from "../../domain/data/unreadable_data_version.ts";
 import {
@@ -178,6 +180,35 @@ export function v3ContentDetailLines(summary: V3ContentSummary): string[] {
     }
     more(summary.tornChunks, summary.torn.length);
   }
+  return lines;
+}
+
+export function mixedKindNamesDetailLines(
+  summary: MixedKindNamesSummary,
+): string[] {
+  const lines: string[] = [`\n${red("Data names holding both kinds:")}`];
+  for (const name of summary.names.slice(0, MIXED_KIND_NAMES_LISTED)) {
+    const versions = name.versions.map((v) =>
+      `v${v.version} ${v.kind} '${escapeControlCharacters(v.specName)}'`
+    ).join(", ");
+    lines.push(
+      `  ${
+        bold(escapeControlCharacters(
+          `${name.modelName || name.modelId}/${name.dataName}`,
+        ))
+      }: ${versions}`,
+    );
+  }
+  if (summary.mixedNames > MIXED_KIND_NAMES_LISTED) {
+    lines.push(
+      dim(`    … and ${summary.mixedNames - MIXED_KIND_NAMES_LISTED} more`),
+    );
+  }
+  lines.push(
+    dim(
+      "\n  Read a hidden version with 'swamp data get <model> <name> --version <n>', then delete the name with 'swamp data delete' before writing it again.",
+    ),
+  );
   return lines;
 }
 
@@ -401,6 +432,12 @@ class LogDoctorDatastoresRenderer implements DoctorDatastoresRenderer {
           );
         }
 
+        if (data.mixedKindNamesFinding) {
+          writeOutput(
+            mixedKindNamesDetailLines(data.mixedKindNamesFinding).join("\n"),
+          );
+        }
+
         if (data.retentionFinding) {
           writeOutput(retentionDetailLines(data.retentionFinding).join("\n"));
         }
@@ -472,6 +509,7 @@ class JsonDoctorDatastoresRenderer implements DoctorDatastoresRenderer {
                 null,
               unreadableVersionsFinding: data.unreadableVersionsFinding ??
                 null,
+              mixedKindNamesFinding: data.mixedKindNamesFinding ?? null,
               retentionFinding: data.retentionFinding ?? null,
               v3ContentFinding: data.v3ContentFinding ?? null,
               v3KeptLineagesFinding: data.v3KeptLineagesFinding ?? null,

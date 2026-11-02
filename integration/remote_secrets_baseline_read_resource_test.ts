@@ -544,8 +544,11 @@ Deno.test({
             resource.attributes!,
             ["password"],
           );
+          // straight to the ephemeral store: the composite refuses a file over
+          // the persistent resource, and the verifier must still refuse one
+          // an older binary left there
           const { createFileWriter } = createFileWriterFactory(
-            repo,
+            ephemeral.repo,
             f.typeA,
             f.modelIdA,
             {

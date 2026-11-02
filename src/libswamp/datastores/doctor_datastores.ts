@@ -52,6 +52,7 @@ import {
   type RetentionCheckSummary,
 } from "./retention_check.ts";
 import type { UnreadableDataVersion } from "../../domain/data/unreadable_data_version.ts";
+import type { MixedKindDataName } from "../../domain/data/mixed_kind_data_name.ts";
 
 export interface DatastoreHealthFinding {
   check: string;
@@ -130,6 +131,27 @@ export function unreadableVersionsFindingMessage(
     `empty or short, as an unclean shutdown leaves them.${dark} ` +
     `Run 'swamp doctor datastores --repair' to preview rolling each record ` +
     `back to its last readable version.`;
+}
+
+export const MIXED_KIND_NAMES_LISTED = 20;
+
+export interface MixedKindNamesSummary {
+  mixedNames: number;
+  names: ReadonlyArray<MixedKindDataName>;
+}
+
+export function mixedKindNamesFindingMessage(
+  names: ReadonlyArray<MixedKindDataName>,
+): string {
+  if (names.length === 0) {
+    return "No data name holds versions of both kinds";
+  }
+  const listed = names.map((n) => `${n.modelName || n.modelId}/${n.dataName}`);
+  return `${names.length} data name(s) hold both file and resource versions, ` +
+    `so the older kind is missing from swamp data list and type queries ` +
+    `(${firstOf(listed, names.length)}). Read a hidden version with ` +
+    `'swamp data get <model> <name> --version <n>', then delete the name ` +
+    `with 'swamp data delete' before writing it again.`;
 }
 
 function recordKeyOf(
@@ -261,6 +283,7 @@ export interface DoctorDatastoresData {
   unpushedFilesFinding?: UnpushedFilesFinding;
   catalogCompletenessFinding?: CatalogCompletenessSummary;
   unreadableVersionsFinding?: UnreadableVersionsSummary;
+  mixedKindNamesFinding?: MixedKindNamesSummary;
   retentionFinding?: RetentionCheckSummary;
   v3ContentFinding?: V3ContentSummary;
   v3KeptLineagesFinding?: V3KeptLineageFinding[];
@@ -303,6 +326,8 @@ export interface DoctorDatastoresDeps {
    * checkCatalogCompleteness it never issues a data query.
    */
   checkUnreadableVersions?: () => Promise<UnreadableDataVersion[]>;
+  /** read-only over the catalog; like checkCatalogCompleteness it never issues a data query */
+  checkMixedKindNames?: () => Promise<MixedKindDataName[]>;
   checkRetention?: () => Promise<RetentionCheckSummary>;
   checkV3Content?: (config: DatastoreConfig) => Promise<V3ContentSummary>;
   checkV3Filter?: (config: DatastoreConfig) => Promise<string | undefined>;
@@ -514,6 +539,27 @@ export async function* doctorDatastores(
         });
       }
 
+      let mixedKindNamesFinding: MixedKindNamesSummary | undefined;
+      if (deps.checkMixedKindNames) {
+        let names: MixedKindDataName[] | undefined;
+        let failure: string | undefined;
+        try {
+          names = await deps.checkMixedKindNames();
+        } catch (error) {
+          failure = error instanceof Error ? error.message : String(error);
+        }
+        if (names !== undefined && names.length > 0) {
+          mixedKindNamesFinding = { mixedNames: names.length, names };
+        }
+        healthFindings.push({
+          check: "mixed_kind_names",
+          passed: names !== undefined && names.length === 0,
+          message: names === undefined
+            ? `Could not check data names for versions of both kinds: ${failure}`
+            : mixedKindNamesFindingMessage(names),
+        });
+      }
+
       // advisory: a failure is reported in the finding and the scan goes on
       if (isCustom && deps.checkUnpushedFiles) {
         try {
@@ -720,6 +766,7 @@ export async function* doctorDatastores(
           ...(unpushedFilesFinding ? { unpushedFilesFinding } : {}),
           catalogCompletenessFinding,
           ...(unreadableVersionsFinding ? { unreadableVersionsFinding } : {}),
+          ...(mixedKindNamesFinding ? { mixedKindNamesFinding } : {}),
           ...(retentionFinding ? { retentionFinding } : {}),
           ...(v3ContentFinding ? { v3ContentFinding } : {}),
           ...(v3KeptLineagesFinding ? { v3KeptLineagesFinding } : {}),

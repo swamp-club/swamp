@@ -205,6 +205,14 @@ component, so `writeResource("summary", "bixu", ...)` and
   Data output validation failed: Duplicate data instance name 'bixu'
   ```
 
+- **Other kind than an earlier run** (a file over a name an earlier run wrote as
+  a resource, or the reverse): the write throws
+  `Duplicate data instance name 'bixu' (version 1 was written as resource 'summary'; delete it with swamp data delete <model> bixu before writing it as a file)`
+  and allocates no version. A spec change that keeps the kind is allowed. To
+  change a name's kind on purpose, run the `swamp data delete` the error names,
+  then write again. `swamp doctor datastores` lists names that already hold both
+  kinds (check `mixed_kind_names`).
+
 **Fix:** Use unique instance names across all specs within a method. Prefix with
 the spec name or another distinguishing value:
 

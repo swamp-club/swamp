@@ -36,15 +36,17 @@ import {
 } from "./unified_data_repository.ts";
 import { type CatalogRow, CatalogStore } from "./catalog_store.ts";
 import { Data } from "../../domain/data/mod.ts";
-import { RESTATES_TAG } from "../../domain/data/data.ts";
+import { RECORD_KIND_TAG, RESTATES_TAG } from "../../domain/data/data.ts";
 import { createNamespace, SOLO_NAMESPACE } from "../../domain/data/mod.ts";
 import { ModelType } from "../../domain/models/model_type.ts";
-import type {
-  RenameForward,
-  UnreadableModelRecord,
+import {
+  OwnershipValidationError,
+  type RenameForward,
+  type UnreadableModelRecord,
 } from "../../domain/data/repositories.ts";
 import { computeLatestFlags } from "../../domain/data/data_query_service.ts";
 import { UserError } from "../../domain/errors.ts";
+import { DataKindConflictError } from "../../domain/data/data_kind.ts";
 import { PathTraversalError } from "./safe_path.ts";
 import {
   observeDiagnosticPhase,
@@ -4847,3 +4849,208 @@ Deno.test("save: write-time pruning does not count a restatement toward the cap 
     }
   }
 });
+
+function kindData(name: string, kind: "file" | "resource", spec: string): Data {
+  return Data.create({
+    name,
+    contentType: kind === "file" ? "text/plain" : "application/json",
+    lifetime: "infinite",
+    garbageCollection: 100,
+    tags: { type: kind, specName: spec, [RECORD_KIND_TAG]: kind },
+    ownerDefinition: owner,
+  });
+}
+
+Deno.test("save: a version of another kind than the latest is refused and allocates nothing (swamp-club#4302)", async () => {
+  await withTempRepo(async (repo) => {
+    await repo.save(
+      testType,
+      "m",
+      kindData("x", "file", "blob"),
+      bytes("file"),
+    );
+    const error = await assertRejects(
+      () =>
+        repo.save(
+          testType,
+          "m",
+          kindData("x", "resource", "meta"),
+          bytes("{}"),
+        ),
+      DataKindConflictError,
+    );
+    assertStringIncludes(error.message, "version 1 was written as file 'blob'");
+    assertEquals(await repo.listVersions(testType, "m", "x"), [1]);
+    assertEquals(
+      (await repo.findByName(testType, "m", "x"))?.tags[RECORD_KIND_TAG],
+      "file",
+    );
+  });
+});
+
+Deno.test("saveDeferred and allocateVersion: a file after a resource is refused before a version is allocated (swamp-club#4302)", async () => {
+  await withTempRepo(async (repo) => {
+    await repo.save(
+      testType,
+      "m",
+      kindData("x", "resource", "meta"),
+      bytes("{}"),
+    );
+    await assertRejects(
+      () =>
+        repo.saveDeferred(
+          testType,
+          "m",
+          kindData("x", "file", "blob"),
+          bytes("f"),
+        ),
+      DataKindConflictError,
+    );
+    await assertRejects(
+      () =>
+        repo.allocateVersion(testType, "m", kindData("x", "file", "blob"), {
+          deferred: true,
+        }),
+      DataKindConflictError,
+    );
+    assertEquals(await repo.listVersions(testType, "m", "x"), [1]);
+  });
+});
+
+Deno.test("save: the same kind under another spec is a new version (swamp-club#4302)", async () => {
+  await withTempRepo(async (repo) => {
+    await repo.save(testType, "m", kindData("x", "resource", "a"), bytes("{}"));
+    const { version } = await repo.save(
+      testType,
+      "m",
+      kindData("x", "resource", "b"),
+      bytes("{}"),
+    );
+    assertEquals(version, 2);
+  });
+});
+
+Deno.test("save: after a delete a name may be written as another kind (swamp-club#4302)", async () => {
+  await withTempRepo(async (repo) => {
+    const file = kindData("x", "file", "blob");
+    const { version } = await repo.save(testType, "m", file, bytes("f"));
+    await repo.save(
+      testType,
+      "m",
+      file.withDeletionMarker({ version: version + 1 }),
+      bytes("{}"),
+    );
+    await repo.save(
+      testType,
+      "m",
+      kindData("x", "resource", "meta"),
+      bytes("{}"),
+    );
+    assertEquals(
+      (await repo.findByName(testType, "m", "x"))?.tags[RECORD_KIND_TAG],
+      "resource",
+    );
+
+    await repo.save(testType, "m", kindData("y", "file", "blob"), bytes("f"));
+    await repo.delete(testType, "m", "y");
+    await repo.save(
+      testType,
+      "m",
+      kindData("y", "resource", "meta"),
+      bytes("{}"),
+    );
+    assertEquals(
+      (await repo.findByName(testType, "m", "y"))?.tags[RECORD_KIND_TAG],
+      "resource",
+    );
+  });
+});
+
+Deno.test("save: a renamed name keeps its ownership check and starts a new kind history (swamp-club#4302)", async () => {
+  await withTempRepo(async (repo) => {
+    await repo.save(testType, "m", kindData("old", "file", "blob"), bytes("f"));
+    await repo.rename(testType, "m", "old", "new");
+    await assertRejects(
+      () =>
+        repo.save(
+          testType,
+          "m",
+          Data.create({
+            name: "old",
+            contentType: "application/json",
+            lifetime: "infinite",
+            garbageCollection: 100,
+            tags: { type: "resource", [RECORD_KIND_TAG]: "resource" },
+            ownerDefinition: { ownerType: "manual", ownerRef: "someone" },
+          }),
+          bytes("{}"),
+        ),
+      OwnershipValidationError,
+    );
+    await repo.save(
+      testType,
+      "m",
+      kindData("old", "resource", "meta"),
+      bytes("{}"),
+    );
+    assertEquals(
+      (await repo.findByName(testType, "m", "new"))?.tags[RECORD_KIND_TAG],
+      "file",
+    );
+  });
+});
+
+Deno.test("save: a legacy version is checked through its type tag, and one whose spec overrode the tag is not (swamp-club#4302)", async () => {
+  await withTempRepo(async (repo) => {
+    await repo.save(
+      testType,
+      "m",
+      makeJsonDataTagged("legacy", "file"),
+      bytes("f"),
+    );
+    await assertRejects(
+      () =>
+        repo.save(
+          testType,
+          "m",
+          kindData("legacy", "resource", "meta"),
+          bytes("{}"),
+        ),
+      DataKindConflictError,
+    );
+
+    await repo.save(
+      testType,
+      "m",
+      makeJsonDataTagged("session", "agent-session"),
+      bytes("{}"),
+    );
+    await repo.save(
+      testType,
+      "m",
+      kindData("session", "file", "blob"),
+      bytes("f"),
+    );
+    await assertRejects(
+      () =>
+        repo.save(
+          testType,
+          "m",
+          kindData("session", "resource", "meta"),
+          bytes("{}"),
+        ),
+      DataKindConflictError,
+    );
+  });
+});
+
+function makeJsonDataTagged(name: string, type: string): Data {
+  return Data.create({
+    name,
+    contentType: "application/json",
+    lifetime: "infinite",
+    garbageCollection: 100,
+    tags: { type },
+    ownerDefinition: owner,
+  });
+}

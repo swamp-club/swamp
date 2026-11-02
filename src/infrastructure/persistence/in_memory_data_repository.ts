@@ -19,6 +19,7 @@
 
 import { Data, isReservedDataName } from "../../domain/data/data.ts";
 import type { DataId } from "../../domain/data/data_id.ts";
+import { assertKindContinues } from "../../domain/data/data_kind.ts";
 import { generateDataId } from "../../domain/data/data_id.ts";
 import {
   coerceModelType,
@@ -250,16 +251,7 @@ export class InMemoryUnifiedDataRepository implements UnifiedDataRepository {
       );
     }
 
-    const existing = this.findByNameSync(type, modelId, data.name);
-    if (existing) {
-      if (!existing.isOwnedBy(data.ownerDefinition)) {
-        throw new OwnershipValidationError(
-          data.name,
-          existing.ownerDefinition,
-          data.ownerDefinition,
-        );
-      }
-    }
+    this.assertWritable(type, modelId, data);
 
     const priorVersions = this.listVersionsSync(type, modelId, data.name);
     const newVersion = this.nextVersion(type, modelId, data.name);
@@ -344,16 +336,7 @@ export class InMemoryUnifiedDataRepository implements UnifiedDataRepository {
       );
     }
 
-    const existing = this.findByNameSync(type, modelId, data.name);
-    if (existing) {
-      if (!existing.isOwnedBy(data.ownerDefinition)) {
-        throw new OwnershipValidationError(
-          data.name,
-          existing.ownerDefinition,
-          data.ownerDefinition,
-        );
-      }
-    }
+    this.assertWritable(type, modelId, data);
 
     const priorVersions = this.listVersionsSync(type, modelId, data.name);
     const newVersion = this.nextVersion(type, modelId, data.name);
@@ -446,16 +429,7 @@ export class InMemoryUnifiedDataRepository implements UnifiedDataRepository {
       );
     }
 
-    const existing = this.findByNameSync(type, modelId, data.name);
-    if (existing) {
-      if (!existing.isOwnedBy(data.ownerDefinition)) {
-        throw new OwnershipValidationError(
-          data.name,
-          existing.ownerDefinition,
-          data.ownerDefinition,
-        );
-      }
-    }
+    this.assertWritable(type, modelId, data);
 
     const newVersion = this.nextVersion(type, modelId, data.name);
     this.ensureBudget(content.length);
@@ -983,6 +957,26 @@ export class InMemoryUnifiedDataRepository implements UnifiedDataRepository {
   ): Data | null {
     this.ensureNotDisposed();
     return this.findByNameWithDepth(type, modelId, dataName, version, 0);
+  }
+
+  /**
+   * ownership is checked against a rename marker's target, as reads resolve
+   * it; the kind against the stored latest, which a marker resets
+   */
+  private assertWritable(type: ModelType, modelId: string, data: Data): void {
+    const existing = this.findByNameSync(type, modelId, data.name);
+    if (existing && !existing.isOwnedBy(data.ownerDefinition)) {
+      throw new OwnershipValidationError(
+        data.name,
+        existing.ownerDefinition,
+        data.ownerDefinition,
+      );
+    }
+    const version = this.getLatestVersionNumber(type, modelId, data.name);
+    const latest = version === null
+      ? undefined
+      : this.dataMap.get(dataKey(type.normalized, modelId, data.name, version));
+    assertKindContinues(latest, data, modelId);
   }
 
   private findByNameWithDepth(

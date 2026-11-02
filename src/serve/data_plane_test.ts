@@ -38,6 +38,7 @@ import type { ModelDefinition } from "../domain/models/model.ts";
 import type { RepositoryContext } from "../infrastructure/persistence/repository_factory.ts";
 import type { UnifiedDataRepository } from "../domain/data/repositories.ts";
 import type { Data } from "../domain/data/data.ts";
+import { assertKindContinues } from "../domain/data/data_kind.ts";
 import { generateDataId } from "../domain/data/data_id.ts";
 import { SOLO_NAMESPACE } from "../domain/data/namespace.ts";
 import { CompositeUnifiedDataRepository } from "../domain/data/composite_data_repository.ts";
@@ -1692,6 +1693,34 @@ Deno.test("DataPlane: a released dispatch's data names no longer clash", async (
 
     h.plane.releaseDispatch("d-1");
     assertEquals((await writeResourceOverPlane(h, "x"))?.status, 200);
+  });
+});
+
+Deno.test("DataPlane: a later dispatch writing a resource under a name an earlier one wrote as a file gets the repository's refusal as a 400 (swamp-club#4302)", async () => {
+  await withHarness(async (h) => {
+    let prior: Data | null = null;
+    const allocate = h.repo.allocateVersion.bind(h.repo);
+    h.repo.allocateVersion = ((...args: Parameters<typeof allocate>) => {
+      prior = args[2];
+      return allocate(...args);
+    }) as typeof allocate;
+    const save = h.repo.save.bind(h.repo);
+    h.repo.save = ((...args: Parameters<typeof save>) => {
+      assertKindContinues(prior, args[2], args[1]);
+      return save(...args);
+    }) as typeof save;
+
+    h.dispatches.register(activeDispatch());
+    await writeFileOverPlane(h, "x");
+    h.plane.releaseDispatch("d-1");
+
+    const clash = await writeResourceOverPlane(h, "x");
+    assertEquals(clash?.status, 400);
+    assertStringIncludes(
+      await clash!.text(),
+      "Duplicate data instance name 'x' (version 1 was written as file 'log'",
+    );
+    assertEquals(h.stored.get(`${MODEL_TYPE.normalized}/m-1/x`)?.version, 1);
   });
 });
 

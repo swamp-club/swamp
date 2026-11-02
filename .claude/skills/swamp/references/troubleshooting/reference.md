@@ -54,6 +54,7 @@ reach for it last.
 | v3 record unreadable / marker lost after crash       | Tier 1 → `swamp doctor datastores`                          |
 | Record reads `content: {}` / not found after crash   | Tier 1 → `swamp doctor datastores --repair`                 |
 | Data `datastore setup` migrated never reached S3/GCS | Tier 1 → `swamp doctor datastores --repair` (preview, `-y`) |
+| A data version missing from `data list` / type query | Tier 1 → `swamp doctor datastores` (`mixed_kind_names`)     |
 | Run stuck in "running" / orphaned after crash        | Tier 1 → `swamp run doctor --fix`                           |
 | "Is anything running right now?"                     | Tier 1 → `swamp run history --active`                       |
 | Command errored — message is clear                   | Tier 2 → read it, fix the named issue                       |
