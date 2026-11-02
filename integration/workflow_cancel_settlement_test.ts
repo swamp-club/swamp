@@ -72,6 +72,7 @@ await initializeLogging({});
 const untracked = {
   runTracker: {
     findAllRunning: () => [],
+    findById: () => null,
   } as unknown as RunTrackerRepository,
   outputRepo: {
     findByIds: () => Promise.resolve(new Map()),

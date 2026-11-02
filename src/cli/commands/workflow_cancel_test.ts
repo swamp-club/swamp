@@ -56,6 +56,8 @@ import {
   SERVER_CANCEL_TIMEOUT_MS,
   serverCancelFailure,
   serverCancelRejection,
+  splitForeignRuns,
+  trackedOwner,
 } from "./workflow_cancel.ts";
 import { RUN_CANCEL_GRACE_MS } from "../../serve/suspended_run_cancel.ts";
 import { DatabaseSync } from "node:sqlite";
@@ -94,12 +96,42 @@ const noSnapshot = () => Promise.resolve(null);
 const untracked = {
   runTracker: {
     findAllRunning: () => [],
+    findById: () => null,
   } as unknown as RunTrackerRepository,
   outputRepo: {
     findByIds: () => Promise.resolve(new Map()),
     save: () => Promise.reject(new Error("unexpected output save")),
   } as MethodRunOutputs,
 };
+
+/**
+ * Cancel deps whose run tracker holds the row a run's own local owner
+ * registered: `pidOf(runId)` is the pid this checkout started (or resumed)
+ * the run under, or undefined for a run it never started. `workflow run`
+ * registers the row and `workflow resume` hands it over, so a test of a
+ * process this checkout drives says which pid that is (swamp-club#4274).
+ */
+function ownedBy(
+  pidOf: (runId: string) => number | undefined,
+  opts: { hostname?: string; instanceId?: string } = {},
+) {
+  return {
+    ...untracked,
+    runTracker: {
+      findAllRunning: () => [],
+      findById: (runId: string) => {
+        const pid = pidOf(runId);
+        return pid === undefined ? null : ActiveRun.createWorkflowRun({
+          id: runId,
+          workflowName: "test-workflow",
+          pid,
+          hostname: opts.hostname ?? hostname(),
+          instanceId: opts.instanceId,
+        });
+      },
+    } as unknown as RunTrackerRepository,
+  };
+}
 
 function makeRun(
   overrides: {
@@ -314,7 +346,7 @@ Deno.test("cancelLocalRun: keeps the record the owner cancelled and records the 
         runRepo,
         findEvaluatedWorkflow: noSnapshot,
         runClaims: unclaimedRuns,
-        ...untracked,
+        ...ownedBy(() => OWNER_PID),
         killProcess: async (pid) => {
           killed.push(pid);
           await runRepo.save(
@@ -357,7 +389,7 @@ Deno.test("cancelLocalRun: leaves a record the owner finished as failed or succe
           runRepo,
           findEvaluatedWorkflow: noSnapshot,
           runClaims: unclaimedRuns,
-          ...untracked,
+          ...ownedBy(() => OWNER_PID),
           killProcess: async () => {
             await runRepo.save(workflowId, ownerFinal);
             return true;
@@ -389,7 +421,7 @@ Deno.test("cancelLocalRun: fails the work a stopped owner left running and cance
         runRepo,
         findEvaluatedWorkflow: noSnapshot,
         runClaims: unclaimedRuns,
-        ...untracked,
+        ...ownedBy(() => OWNER_PID),
         killProcess: async () => {
           await runRepo.save(
             workflowId,
@@ -455,7 +487,7 @@ Deno.test("cancelLocalRun: settles a dead owner's run against the workflow's ste
         runRepo,
         findEvaluatedWorkflow: noSnapshot,
         runClaims: unclaimedRuns,
-        ...untracked,
+        ...ownedBy(() => OWNER_PID),
         killProcess: async () => {
           await runRepo.save(
             workflowId,
@@ -493,7 +525,7 @@ Deno.test("cancelLocalRun: gives the owner the cleanup grace before it is killed
       runRepo,
       findEvaluatedWorkflow: noSnapshot,
       runClaims: unclaimedRuns,
-      ...untracked,
+      ...ownedBy(() => OWNER_PID),
       killProcess: (_pid, { maxWaitMs }) => {
         waits.push(maxWaitMs);
         return Promise.resolve(true);
@@ -526,7 +558,7 @@ Deno.test("cancelLocalRun: stops the owner first, then settles the stored record
           return result;
         },
       },
-      ...untracked,
+      ...ownedBy(() => OWNER_PID),
       killProcess: () => {
         order.push("kill");
         return Promise.resolve(true);
@@ -573,7 +605,7 @@ Deno.test("cancelLocalRun: stops a process that took the run over before the cla
         runRepo,
         findEvaluatedWorkflow: noSnapshot,
         runClaims: unclaimedRuns,
-        ...untracked,
+        ...ownedBy(() => RESUMER_PID),
         liveness: {
           hostname: hostname(),
           isDead: (pid) => killed.includes(pid),
@@ -620,7 +652,7 @@ Deno.test("cancelLocalRun: keeps the record a taken-over run's process saved whe
         runRepo,
         findEvaluatedWorkflow: noSnapshot,
         runClaims: unclaimedRuns,
-        ...untracked,
+        ...ownedBy(() => RESUMER_PID),
         liveness: {
           hostname: hostname(),
           isDead: (pid) => killed.includes(pid),
@@ -663,7 +695,7 @@ Deno.test("cancelLocalRun: gives up, saving nothing, when the run keeps being ta
           runRepo,
           findEvaluatedWorkflow: noSnapshot,
           runClaims: unclaimedRuns,
-          ...untracked,
+          ...ownedBy(() => nextPid),
           liveness: {
             hostname: hostname(),
             isDead: (pid) => killed.includes(pid),
@@ -711,7 +743,7 @@ Deno.test("cancelAllLocalRuns: stops a process that took a listed run over befor
         runRepo,
         findEvaluatedWorkflow: noSnapshot,
         runClaims: unclaimedRuns,
-        ...untracked,
+        ...ownedBy(() => RESUMER_PID),
         liveness: {
           hostname: hostname(),
           isDead: (pid) => killed.includes(pid),
@@ -893,7 +925,7 @@ Deno.test("cancelAllLocalRuns: a run its stopped owner cancelled counts as cance
         runRepo,
         findEvaluatedWorkflow: noSnapshot,
         runClaims: claimsStuckOn(snapshot.id),
-        ...untracked,
+        ...ownedBy(() => OWNER_PID),
         // The owner saves its own cancelled record while handling SIGTERM.
         killProcess: async () => {
           await runRepo.save(
@@ -1020,7 +1052,7 @@ Deno.test("cancelAllLocalRuns: stops a process that owns several runs once", asy
         runRepo,
         findEvaluatedWorkflow: noSnapshot,
         runClaims: unclaimedRuns,
-        ...untracked,
+        ...ownedBy(() => OWNER_PID),
         killProcess: (pid) => {
           killed.push(pid);
           return Promise.resolve(true);
@@ -1060,7 +1092,7 @@ Deno.test("cancelAllLocalRuns: stops different owners together", async () => {
         runRepo,
         findEvaluatedWorkflow: noSnapshot,
         runClaims: unclaimedRuns,
-        ...untracked,
+        ...ownedBy((id) => snapshots.find((run) => run.id === id)?.pid),
         killProcess: async (pid) => {
           started.push(pid);
           if (started.length === 2) bothStarted();
@@ -1100,7 +1132,7 @@ Deno.test("cancelAllLocalRuns: counts only runs that ended cancelled", async () 
         runRepo,
         findEvaluatedWorkflow: noSnapshot,
         runClaims: unclaimedRuns,
-        ...untracked,
+        ...ownedBy(() => OWNER_PID),
         killProcess: async () => {
           await runRepo.save(
             workflowId,
@@ -2269,4 +2301,260 @@ Deno.test("foreignRunServer: a run this checkout does not drive goes to serve; i
   } finally {
     await Deno.remove(repoDir, { recursive: true }).catch(() => {});
   }
+});
+
+// swamp-club#4274: a run record is data a v2 S3/GCS datastore syncs between
+// members and a team-mode checkout takes from serve's feed, so cancel stops
+// only a process this checkout's own run tracker names.
+
+const HERE = { hostname: hostname() };
+
+/** Runs `fn` with a real run tracker in a fresh temp dir. */
+async function withTracker(
+  fn: (tracker: RunTrackerStore) => Promise<void> | void,
+): Promise<void> {
+  await withTempDir(async (dir) => {
+    const tracker = RunTrackerStore.fromSwampDir(dir);
+    try {
+      await fn(tracker);
+    } finally {
+      tracker.close();
+    }
+  });
+}
+
+function workflowRow(
+  id: string,
+  pid: number,
+  opts: { hostname?: string; instanceId?: string } = {},
+): ActiveRun {
+  return ActiveRun.createWorkflowRun({
+    id,
+    workflowName: "test-workflow",
+    pid,
+    hostname: opts.hostname ?? hostname(),
+    instanceId: opts.instanceId,
+  });
+}
+
+Deno.test("trackedOwner: only a running or interrupted local workflow row under the record's pid says stop", async () => {
+  await withTracker((tracker) => {
+    const verdict = (pid: number | undefined, id: string) =>
+      trackedOwner({ id: id as WorkflowRun["id"], pid }, tracker, HERE).kind;
+
+    // No other process named.
+    assertEquals(verdict(undefined, "r-none"), "none");
+    assertEquals(verdict(Deno.pid, "r-none"), "none");
+    // No row: the pid names nothing this checkout started.
+    assertEquals(verdict(OWNER_PID, "r-missing"), "untracked");
+
+    tracker.register(workflowRow("r-running", OWNER_PID));
+    assertEquals(verdict(OWNER_PID, "r-running"), "stop");
+    // The record names a pid the row does not.
+    assertEquals(verdict(OWNER_PID + 7, "r-running"), "mismatch");
+
+    tracker.register(workflowRow("r-interrupted", OWNER_PID));
+    tracker.complete("r-interrupted", "interrupted");
+    assertEquals(verdict(OWNER_PID, "r-interrupted"), "stop");
+
+    tracker.register(workflowRow("r-suspended", OWNER_PID));
+    tracker.complete("r-suspended", "suspended");
+    assertEquals(verdict(OWNER_PID, "r-suspended"), "mismatch");
+
+    tracker.register(workflowRow("r-other-host", OWNER_PID, {
+      hostname: `not-${hostname()}`,
+    }));
+    assertEquals(verdict(OWNER_PID, "r-other-host"), "untracked");
+
+    tracker.register(workflowRow("r-serve", OWNER_PID, {
+      instanceId: "serve-1",
+    }));
+    assertEquals(verdict(OWNER_PID, "r-serve"), "serveOwned");
+
+    tracker.register(ActiveRun.createModelMethodRun({
+      id: "r-method",
+      modelType: "test/model",
+      definitionId: "def-1",
+      methodName: "run",
+      pid: OWNER_PID,
+      hostname: hostname(),
+    }));
+    assertEquals(verdict(OWNER_PID, "r-method"), "untracked");
+  });
+});
+
+Deno.test("cancelLocalRun and cancelAllLocalRuns: never kill a pid only a run record names, and settle the run (swamp-club#4274)", async () => {
+  for (const mode of ["single", "all"] as const) {
+    for (const ownerAlive of [false, true]) {
+      await withTempDir(async (dir) => {
+        const runRepo = new YamlWorkflowRunRepository(dir);
+        const workflowId = createWorkflowId(WORKFLOW_ID);
+        const run = WorkflowRun.fromData(snapshotData(crypto.randomUUID()));
+        await runRepo.save(workflowId, run);
+        const killed: number[] = [];
+        const deps = {
+          runRepo,
+          findEvaluatedWorkflow: noSnapshot,
+          runClaims: unclaimedRuns,
+          ...untracked,
+          // A live forged pid also covers the take-over check under the
+          // claim, which re-reads the record and finds it still running.
+          liveness: { hostname: hostname(), isDead: () => !ownerAlive },
+          killProcess: (pid: number) => {
+            killed.push(pid);
+            return Promise.resolve(true);
+          },
+        };
+        if (mode === "single") {
+          const result = await cancelLocalRun(
+            run,
+            WORKFLOW,
+            "No longer needed",
+            deps,
+          );
+          assertEquals(result?.status, "cancelled");
+        } else {
+          const result = await cancelAllLocalRuns(
+            [{ run, workflow: WORKFLOW }],
+            "No longer needed",
+            deps,
+          );
+          assertEquals(result.cancelled.map((c) => c.runId), [run.id]);
+        }
+        assertEquals(killed, [], `${mode}, owner alive: ${ownerAlive}`);
+        assertEquals(
+          (await runRepo.findById(workflowId, run.id))?.status,
+          "cancelled",
+        );
+      });
+    }
+  }
+});
+
+Deno.test("cancelLocalRun: a row from another host, or under another pid that never hands over, does not vouch for the record's pid, and the run is settled (swamp-club#4274)", async () => {
+  // Under another pid: this checkout started the run, then another machine
+  // resumed it, so the record names that machine's pid, which may happen to
+  // be live here (a container's pid 1). The row is never handed over.
+  const cases = [
+    {
+      name: "another host",
+      deps: ownedBy(() => OWNER_PID, { hostname: `not-${hostname()}` }),
+    },
+    { name: "another pid", deps: ownedBy(() => OWNER_PID + 7) },
+  ];
+  for (const { name, deps } of cases) {
+    await withTempDir(async (dir) => {
+      const runRepo = new YamlWorkflowRunRepository(dir);
+      const workflowId = createWorkflowId(WORKFLOW_ID);
+      const run = WorkflowRun.fromData(snapshotData(crypto.randomUUID()));
+      await runRepo.save(workflowId, run);
+      const killed: number[] = [];
+      const result = await cancelLocalRun(run, WORKFLOW, "No longer needed", {
+        runRepo,
+        findEvaluatedWorkflow: noSnapshot,
+        runClaims: unclaimedRuns,
+        ...deps,
+        liveness: { hostname: hostname(), isDead: () => false },
+        killProcess: (pid) => {
+          killed.push(pid);
+          return Promise.resolve(true);
+        },
+      });
+      assertEquals(result?.status, "cancelled", name);
+      assertEquals(killed, [], name);
+    });
+  }
+});
+
+Deno.test("cancelLocalRun: stops a local resume whose row is handed over while cancel waits for it (swamp-club#4274)", async () => {
+  await withTempDir(async (dir) => {
+    const runRepo = new YamlWorkflowRunRepository(dir);
+    const workflowId = createWorkflowId(WORKFLOW_ID);
+    const runId = crypto.randomUUID();
+    const snapshot = WorkflowRun.fromData(suspendedData(runId));
+    // The resume saved its pid; its row still names the old owner for the
+    // first reads, then is handed over, as handOverTrackerRow does just
+    // after the resume releases the claim.
+    const RESUMER_PID = Deno.pid + 2;
+    await runRepo.save(
+      workflowId,
+      WorkflowRun.fromData(snapshotData(runId, RESUMER_PID)),
+    );
+    let reads = 0;
+    const killed: number[] = [];
+    const result = await cancelLocalRun(
+      snapshot,
+      WORKFLOW,
+      "No longer needed",
+      {
+        runRepo,
+        findEvaluatedWorkflow: noSnapshot,
+        runClaims: unclaimedRuns,
+        ...ownedBy(() => (++reads > 2 ? RESUMER_PID : OWNER_PID)),
+        liveness: {
+          hostname: hostname(),
+          isDead: (pid) => killed.includes(pid),
+        },
+        killProcess: (pid) => {
+          killed.push(pid);
+          return Promise.resolve(true);
+        },
+      },
+    );
+    assertEquals(killed, [RESUMER_PID]);
+    assertEquals(result?.status, "cancelled");
+  });
+});
+
+Deno.test("cancelLocalRun: a forged record stripped of its instance id never reaches the pid of a serve the tracker names (swamp-club#4274)", async () => {
+  await withTempDir(async (dir) => {
+    const runRepo = new YamlWorkflowRunRepository(dir);
+    const workflowId = createWorkflowId(WORKFLOW_ID);
+    const SERVE_PID = Deno.pid + 2;
+    // The record names no instance, so it does not read as serve-owned.
+    const run = WorkflowRun.fromData(
+      snapshotData(crypto.randomUUID(), SERVE_PID),
+    );
+    assertEquals(isServeOwnedRun(run), false);
+    await runRepo.save(workflowId, run);
+    const killed: number[] = [];
+    await assertRejects(
+      () =>
+        cancelLocalRun(run, WORKFLOW, "No longer needed", {
+          runRepo,
+          findEvaluatedWorkflow: noSnapshot,
+          runClaims: unclaimedRuns,
+          // A local serve drives the run: its row carries serve's instance.
+          ...ownedBy(() => SERVE_PID, { instanceId: "serve-1" }),
+          liveness: { hostname: hostname(), isDead: () => false },
+          killProcess: (pid) => {
+            killed.push(pid);
+            return Promise.resolve(true);
+          },
+        }),
+      RunNotCancelledError,
+      "was taken over by a serve instance",
+    );
+    assertEquals(killed, []);
+    assertEquals(
+      (await runRepo.findById(workflowId, run.id))?.status,
+      "running",
+    );
+  });
+});
+
+Deno.test("splitForeignRuns: in serve mode, runs the tracker does not hold are another member's; outside it every run is the checkout's", async () => {
+  await withTracker((tracker) => {
+    tracker.register(workflowRow("own-run", OWNER_PID));
+    const runs = [
+      { run: { id: "own-run" as WorkflowRun["id"] } },
+      { run: { id: "their-run" as WorkflowRun["id"] } },
+    ];
+    const serve = splitForeignRuns(runs, tracker, true);
+    assertEquals(serve.own.map(({ run }) => run.id), ["own-run"]);
+    assertEquals(serve.foreign.map(({ run }) => run.id), ["their-run"]);
+    const local = splitForeignRuns(runs, tracker, false);
+    assertEquals(local.own.map(({ run }) => run.id), ["own-run", "their-run"]);
+    assertEquals(local.foreign, []);
+  });
 });

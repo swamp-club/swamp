@@ -272,6 +272,28 @@ export function foreignRunServer(
   }
 }
 
+/**
+ * Splits the runs `--all` acts on into this checkout's own and, in a
+ * serve-mode checkout, those it did not start (swamp-club#4274). The latter
+ * are another member's: their cancel is a decision serve makes, so `--all`
+ * leaves them for `--run`, which sends the cancel to serve. Outside serve
+ * mode every run is the checkout's to settle; whether its process is
+ * stopped is decided per run by {@link trackedOwner}.
+ */
+export function splitForeignRuns<T extends { run: Pick<WorkflowRun, "id"> }>(
+  runs: readonly T[],
+  runTracker: Pick<RunTrackerRepository, "findById">,
+  serveMode: boolean,
+): { own: T[]; foreign: T[] } {
+  if (!serveMode) return { own: [...runs], foreign: [] };
+  const own: T[] = [];
+  const foreign: T[] = [];
+  for (const entry of runs) {
+    (runTracker.findById(entry.run.id) === null ? foreign : own).push(entry);
+  }
+  return { own, foreign };
+}
+
 export function isServeOwnedRun(run: WorkflowRun): boolean {
   return run.instanceId !== undefined;
 }
@@ -331,15 +353,109 @@ function workflowNameOf(
   return workflow?.name ?? run.workflowName;
 }
 
-/** The pid of the process to stop for `run`, if another process owns it. */
-function ownerPidToStop(run: WorkflowRun): number | undefined {
-  return run.pid && run.pid !== Deno.pid ? run.pid : undefined;
+/**
+ * What this checkout's run tracker says about the process a run's record
+ * names (swamp-club#4274). A run record is data that a v2 S3/GCS datastore
+ * syncs between members and a team-mode checkout takes from serve's feed, so
+ * its `pid` and `instanceId` are whatever its writer put there. The tracker
+ * is this checkout's own record of the processes it started, never synced,
+ * so it alone decides which process cancel may stop.
+ *
+ * - `none`: the record names no other process.
+ * - `stop`: a workflow row of this run on this host, not serve's, running
+ *   (or `interrupted` by a reaper that judged it on heartbeat age alone)
+ *   under the record's pid. This is the only verdict cancel kills on.
+ * - `serveOwned`: a serve instance drives the run, so its pid is the serve
+ *   process. The row decides, not the record's `instanceId`.
+ * - `mismatch`: a row of this run on this host that does not name the
+ *   record's pid as its running owner: a local resume whose first save
+ *   landed before its row was handed over, or a run another machine
+ *   resumed. See {@link awaitRowHandOver}.
+ * - `untracked`: no row of this run on this host. The pid names no process
+ *   this checkout started.
+ */
+export type TrackedOwner =
+  | { kind: "none" }
+  | { kind: "stop"; pid: number }
+  | { kind: "serveOwned" }
+  | { kind: "mismatch" }
+  | { kind: "untracked" };
+
+export function trackedOwner(
+  run: Pick<WorkflowRun, "id" | "pid">,
+  runTracker: Pick<RunTrackerRepository, "findById">,
+  liveness: Pick<OwnerLiveness, "hostname" | "instanceId">,
+): TrackedOwner {
+  const pid = run.pid;
+  if (!pid || pid === Deno.pid) return { kind: "none" };
+  const row = runTracker.findById(run.id);
+  if (
+    row === null || row.runKind !== "workflow" ||
+    !row.isLocalTo(liveness.hostname, liveness.instanceId)
+  ) {
+    return { kind: "untracked" };
+  }
+  if (row.isServeOwned) return { kind: "serveOwned" };
+  if (
+    row.pid === pid &&
+    (row.status === "running" || row.status === "interrupted")
+  ) {
+    return { kind: "stop", pid };
+  }
+  return { kind: "mismatch" };
+}
+
+/** The pid cancel stops for `run`: only one the run tracker vouches for. */
+function ownerPidToStop(
+  run: WorkflowRun,
+  runTracker: Pick<RunTrackerRepository, "findById">,
+  liveness: Pick<OwnerLiveness, "hostname" | "instanceId">,
+): number | undefined {
+  const owner = trackedOwner(run, runTracker, liveness);
+  return owner.kind === "stop" ? owner.pid : undefined;
 }
 
 /** Whether cancel will wait on a live process to stop for `run`. */
-function waitsOnOwner(run: WorkflowRun): boolean {
-  const pid = ownerPidToStop(run);
+function waitsOnOwner(
+  run: WorkflowRun,
+  runTracker: Pick<RunTrackerRepository, "findById">,
+  liveness: OwnerLiveness = localOwnerLiveness(),
+): boolean {
+  const pid = ownerPidToStop(run, runTracker, liveness);
   return pid !== undefined && isProcessAlive(pid);
+}
+
+/**
+ * How long cancel waits for a local resume to hand a run's tracker row to
+ * itself. The resume does so in the statement after it releases the run's
+ * claim, so the wait only spans a scheduler gap; a row that still does not
+ * name the record's pid after it belongs to a run resumed on another
+ * machine.
+ */
+export const ROW_HAND_OVER_WAIT_MS = 1_000;
+const ROW_HAND_OVER_POLL_MS = 25;
+
+/**
+ * Re-reads `run`'s tracker row for up to {@link ROW_HAND_OVER_WAIT_MS} while
+ * it is a `mismatch`, and returns the first other verdict, or `mismatch`
+ * when the row never changes (swamp-club#4274).
+ */
+async function awaitRowHandOver(
+  run: Pick<WorkflowRun, "id" | "pid">,
+  runTracker: Pick<RunTrackerRepository, "findById">,
+  liveness: Pick<OwnerLiveness, "hostname" | "instanceId">,
+): Promise<TrackedOwner> {
+  const deadline = Date.now() + ROW_HAND_OVER_WAIT_MS;
+  for (;;) {
+    const owner = trackedOwner(run, runTracker, liveness);
+    if (owner.kind !== "mismatch" || Date.now() >= deadline) return owner;
+    await new Promise((resolve) => setTimeout(resolve, ROW_HAND_OVER_POLL_MS));
+  }
+}
+
+function serveTookOverMessage(runId: string): string {
+  return `Run ${runId} was taken over by a serve instance and was not cancelled. ` +
+    `Use --server to cancel it: swamp workflow cancel --run ${runId} --server <url>`;
 }
 
 async function stopOwner(
@@ -481,10 +597,15 @@ async function settleCancelledRun(
     runRepo,
     findEvaluatedWorkflow,
     runClaims,
+    runTracker,
     liveness = localOwnerLiveness(),
   }: Pick<
     CancelLocalRunDeps,
-    "runRepo" | "findEvaluatedWorkflow" | "runClaims" | "liveness"
+    | "runRepo"
+    | "findEvaluatedWorkflow"
+    | "runClaims"
+    | "runTracker"
+    | "liveness"
   >,
 ): Promise<WorkflowRun | TakenOver | null> {
   const workflowId = workflowIdOf(run, workflow);
@@ -493,21 +614,43 @@ async function settleCancelledRun(
     if (!current) {
       return null;
     }
-    const owner = ownerPidToStop(current);
+    const pid = current.pid;
     if (
-      current.status === "running" && owner !== undefined &&
-      !stopped.has(owner) && !liveness.isDead(owner)
+      current.status === "running" && pid && pid !== Deno.pid &&
+      !stopped.has(pid) && !liveness.isDead(pid)
     ) {
       // A serve instance resumed the run. Its pid is the server's own, which
       // drives every other run it has: it is never stopped from here.
       if (isServeOwnedRun(current)) {
         throw new RunNotCancelledError(
-          `Run ${run.id} was taken over by a serve instance and was not cancelled. ` +
-            `Use --server to cancel it: swamp workflow cancel --run ${run.id} --server <url>`,
+          serveTookOverMessage(run.id),
           current.status,
         );
       }
-      return { takenOverBy: owner };
+      // The record's pid is stopped only when this checkout's tracker says
+      // the process is the run's (swamp-club#4274).
+      let owner = trackedOwner(current, runTracker, liveness);
+      // A local resume hands its row over just after it releases the claim,
+      // so a row still under the old owner may be about to name the
+      // record's pid. A row that never does is a run resumed on another
+      // machine: its pid names nothing here, and it is settled.
+      if (owner.kind === "mismatch") {
+        owner = await awaitRowHandOver(current, runTracker, liveness);
+      }
+      switch (owner.kind) {
+        case "stop":
+          return { takenOverBy: owner.pid };
+        case "serveOwned":
+          throw new RunNotCancelledError(
+            serveTookOverMessage(run.id),
+            current.status,
+          );
+        case "mismatch":
+        case "untracked":
+        case "none":
+          // No process of this checkout's: the record is settled.
+          break;
+      }
     }
     if (current.isCancellable) {
       cancelAndSettle(
@@ -548,7 +691,11 @@ export async function cancelLocalRun(
   { killProcess = killProcessTree, ...deps }: CancelLocalRunDeps,
 ): Promise<WorkflowRun | null> {
   const stopped = new Set<number>();
-  const pid = ownerPidToStop(run);
+  const pid = ownerPidToStop(
+    run,
+    deps.runTracker,
+    deps.liveness ?? localOwnerLiveness(),
+  );
   if (pid !== undefined) {
     await stopOwner(pid, killProcess);
     await closeStoppedOwnerRuns(pid, new Set([run.id]), reason, deps);
@@ -631,8 +778,9 @@ export async function cancelAllLocalRuns(
   { killProcess = killProcessTree, ...deps }: CancelLocalRunDeps,
 ): Promise<CancelAllResult> {
   const pids = new Set<number>();
+  const liveness = deps.liveness ?? localOwnerLiveness();
   for (const { run } of runs) {
-    const pid = ownerPidToStop(run);
+    const pid = ownerPidToStop(run, deps.runTracker, liveness);
     if (pid !== undefined) pids.add(pid);
   }
   await Promise.all([...pids].map((pid) => stopOwner(pid, killProcess)));
@@ -977,6 +1125,99 @@ export async function resolveLocalCancelTarget(
   return { run: latestRun(activeRuns), workflow };
 }
 
+/**
+ * Sends the cancel of `runId` to serve and reports its answer: for --run
+ * with --server, and in a serve-mode checkout for a run this checkout did
+ * not start (swamp-club#4245, #4274).
+ */
+async function cancelOnServe(
+  cliCtx: ReturnType<typeof createContext>,
+  options: AnyOptions,
+  server: string,
+  runId: string,
+): Promise<void> {
+  const token = await resolveServerTokenFromOptions(
+    server,
+    options,
+  );
+  const cancelUrl = buildCancelUrl(server, runId);
+  const request = buildServerCancelRequest(
+    cancelUrl,
+    token,
+    options.reason as string | undefined,
+  );
+  const body = await sendServerCancel(
+    server,
+    runId,
+    request,
+    getEnvCaCerts(),
+  );
+  if (
+    body.status !== "cancelled" &&
+    body.status !== "cancellation_requested"
+  ) {
+    throw new UserError(
+      (body.message as string | undefined) ??
+        `Failed to cancel run ${runId}: ${body.status}`,
+    );
+  }
+  // The reason the server applied; an older serve reports none.
+  const recordedReason = typeof body.reason === "string"
+    ? body.reason
+    : undefined;
+  if (options.reason && recordedReason === undefined) {
+    cliCtx.logger
+      .warn`The server did not confirm the reason; it may predate cancel reasons over HTTP`;
+  }
+  // What became of the nested runs the cancelled run waited on
+  // (swamp-club#2736, #2867). An older serve reports none, or only the
+  // ones left unfinished.
+  const remoteNested: Partial<NestedCascadeResult> = {
+    ...(Array.isArray(body.cancelledNestedRuns) &&
+        body.cancelledNestedRuns.length > 0
+      ? {
+        cancelledNestedRuns: body
+          .cancelledNestedRuns as CascadedNestedRunData[],
+      }
+      : {}),
+    ...(Array.isArray(body.stopRequestedNestedRuns) &&
+        body.stopRequestedNestedRuns.length > 0
+      ? {
+        stopRequestedNestedRuns: body
+          .stopRequestedNestedRuns as CascadedNestedRunData[],
+      }
+      : {}),
+    ...(Array.isArray(body.detachedNestedRuns) &&
+        body.detachedNestedRuns.length > 0
+      ? {
+        detachedNestedRuns: body
+          .detachedNestedRuns as DetachedNestedRunData[],
+      }
+      : {}),
+  };
+  if (cliCtx.outputMode === "json") {
+    console.log(JSON.stringify({
+      runId: body.executionId ?? runId,
+      status: body.status,
+      ...(recordedReason !== undefined ? { reason: recordedReason } : {}),
+      ...remoteNested,
+    }));
+  } else {
+    if (body.status === "cancelled") {
+      cliCtx.logger.info`Cancelled run ${runId} on server`;
+    } else {
+      cliCtx.logger
+        .warn`Cancellation requested for run ${runId} on server (run may still be active — check health endpoint to confirm)`;
+    }
+    if (recordedReason !== undefined) {
+      cliCtx.logger.info`Reason: ${recordedReason}`;
+    }
+    renderNestedCascade(cliCtx, remoteNested, {
+      server: options.server as string | undefined,
+    });
+  }
+}
+
 export const workflowCancelCommand = withRemoteOptions(
   new Command()
     .name("cancel")
@@ -1042,87 +1283,7 @@ export const workflowCancelCommand = withRemoteOptions(
           "--all is not supported when cancelling on serve: pass --run alone",
         );
       }
-      const token = await resolveServerTokenFromOptions(
-        server,
-        options,
-      );
-      const cancelUrl = buildCancelUrl(server, options.run as string);
-      const request = buildServerCancelRequest(
-        cancelUrl,
-        token,
-        options.reason as string | undefined,
-      );
-      const body = await sendServerCancel(
-        server,
-        options.run as string,
-        request,
-        getEnvCaCerts(),
-      );
-      if (
-        body.status !== "cancelled" &&
-        body.status !== "cancellation_requested"
-      ) {
-        throw new UserError(
-          (body.message as string | undefined) ??
-            `Failed to cancel run ${options.run as string}: ${body.status}`,
-        );
-      }
-      const runId = options.run as string;
-      // The reason the server applied; an older serve reports none.
-      const recordedReason = typeof body.reason === "string"
-        ? body.reason
-        : undefined;
-      if (options.reason && recordedReason === undefined) {
-        cliCtx.logger
-          .warn`The server did not confirm the reason; it may predate cancel reasons over HTTP`;
-      }
-      // What became of the nested runs the cancelled run waited on
-      // (swamp-club#2736, #2867). An older serve reports none, or only the
-      // ones left unfinished.
-      const remoteNested: Partial<NestedCascadeResult> = {
-        ...(Array.isArray(body.cancelledNestedRuns) &&
-            body.cancelledNestedRuns.length > 0
-          ? {
-            cancelledNestedRuns: body
-              .cancelledNestedRuns as CascadedNestedRunData[],
-          }
-          : {}),
-        ...(Array.isArray(body.stopRequestedNestedRuns) &&
-            body.stopRequestedNestedRuns.length > 0
-          ? {
-            stopRequestedNestedRuns: body
-              .stopRequestedNestedRuns as CascadedNestedRunData[],
-          }
-          : {}),
-        ...(Array.isArray(body.detachedNestedRuns) &&
-            body.detachedNestedRuns.length > 0
-          ? {
-            detachedNestedRuns: body
-              .detachedNestedRuns as DetachedNestedRunData[],
-          }
-          : {}),
-      };
-      if (cliCtx.outputMode === "json") {
-        console.log(JSON.stringify({
-          runId: body.executionId ?? runId,
-          status: body.status,
-          ...(recordedReason !== undefined ? { reason: recordedReason } : {}),
-          ...remoteNested,
-        }));
-      } else {
-        if (body.status === "cancelled") {
-          cliCtx.logger.info`Cancelled run ${runId} on server`;
-        } else {
-          cliCtx.logger
-            .warn`Cancellation requested for run ${runId} on server (run may still be active — check health endpoint to confirm)`;
-        }
-        if (recordedReason !== undefined) {
-          cliCtx.logger.info`Reason: ${recordedReason}`;
-        }
-        renderNestedCascade(cliCtx, remoteNested, {
-          server: options.server as string | undefined,
-        });
-      }
+      await cancelOnServe(cliCtx, options, server, options.run as string);
       return;
     }
 
@@ -1180,12 +1341,7 @@ export const workflowCancelCommand = withRemoteOptions(
       const localRuns = activeRuns.filter(({ run }) => !isServeOwnedRun(run));
       const serveRuns = activeRuns.filter(({ run }) => isServeOwnedRun(run));
 
-      const stopping = localRuns.filter(({ run }) => waitsOnOwner(run))
-        .length;
-      if (stopping > 0 && cliCtx.outputMode !== "json") {
-        cliCtx.logger
-          .info`Stopping ${stopping} run(s); waiting up to ${STOP_GRACE_SECONDS}s for cleanup steps to finish (cancel again to stop immediately)`;
-      }
+      const serveMode = implicitServeUrl() !== undefined;
 
       const {
         cancelled,
@@ -1193,6 +1349,7 @@ export const workflowCancelCommand = withRemoteOptions(
         deleted,
         claimTimedOut,
         nested,
+        foreign,
         ...settled
       } =
         // In a root unit of work with no push, so the run saves stage into
@@ -1205,7 +1362,20 @@ export const workflowCancelCommand = withRemoteOptions(
             withRunTracker(
               repoDir,
               async (runTracker) => {
-                const result = await cancelAllLocalRuns(localRuns, reason, {
+                const { own, foreign } = splitForeignRuns(
+                  localRuns,
+                  runTracker,
+                  serveMode,
+                );
+                const liveness = localOwnerLiveness();
+                const stopping = own.filter(({ run }) =>
+                  waitsOnOwner(run, runTracker, liveness)
+                ).length;
+                if (stopping > 0 && cliCtx.outputMode !== "json") {
+                  cliCtx.logger
+                    .info`Stopping ${stopping} run(s); waiting up to ${STOP_GRACE_SECONDS}s for cleanup steps to finish (cancel again to stop immediately)`;
+                }
+                const result = await cancelAllLocalRuns(own, reason, {
                   runRepo,
                   findEvaluatedWorkflow,
                   runTracker,
@@ -1224,9 +1394,11 @@ export const workflowCancelCommand = withRemoteOptions(
                 });
                 const nested = emptyNestedCascade();
                 const cancelledIds = new Set(
-                  result.cancelled.map((entry) => entry.runId),
+                  result.cancelled.map((entry) =>
+                    entry.runId
+                  ),
                 );
-                for (const { run } of localRuns) {
+                for (const { run } of own) {
                   if (!cancelledIds.has(run.id)) continue;
                   const ended = await runRepo
                     .findById(createWorkflowId(run.workflowId), run.id)
@@ -1234,7 +1406,11 @@ export const workflowCancelCommand = withRemoteOptions(
                   if (!ended) continue;
                   mergeNestedCascade(nested, await cascade(ended));
                 }
-                return { ...result, nested: nestedCascadeFields(nested) };
+                return {
+                  ...result,
+                  nested: nestedCascadeFields(nested),
+                  foreign,
+                };
               },
             ),
         );
@@ -1251,11 +1427,15 @@ export const workflowCancelCommand = withRemoteOptions(
         })),
       ];
 
-      const serveSkipped = serveRuns.map(({ run, workflow }) => ({
+      const skippedFields = ({ run, workflow }: LocalCancelTarget) => ({
         runId: run.id,
         workflowName: workflowNameOf(run, workflow),
         status: run.status,
-      }));
+      });
+      const serveSkipped = serveRuns.map(skippedFields);
+      // Runs another member started, in a serve-mode checkout: their cancel
+      // is serve's to decide (swamp-club#4274).
+      const foreignSkipped = foreign.map(skippedFields);
 
       if (cliCtx.outputMode === "json") {
         console.log(JSON.stringify({
@@ -1263,7 +1443,7 @@ export const workflowCancelCommand = withRemoteOptions(
           finished,
           deleted,
           notCancelled,
-          skipped: serveSkipped,
+          skipped: [...serveSkipped, ...foreignSkipped],
           count: cancelled.length,
           reason,
           ...nested,
@@ -1310,10 +1490,18 @@ export const workflowCancelCommand = withRemoteOptions(
               .warn`  ${entry.workflowName} (${entry.runId}): ${entry.status}`;
           }
         }
+        if (foreignSkipped.length > 0) {
+          cliCtx.logger
+            .warn`Skipped ${foreignSkipped.length} run(s) this checkout did not start — cancel these individually via --run <id>, which sends the cancel to serve`;
+          for (const entry of foreignSkipped) {
+            cliCtx.logger
+              .warn`  ${entry.workflowName} (${entry.runId}): ${entry.status}`;
+          }
+        }
         if (
           cancelled.length === 0 && finished.length === 0 &&
           deleted.length === 0 && notCancelled.length === 0 &&
-          serveSkipped.length === 0
+          serveSkipped.length === 0 && foreignSkipped.length === 0
         ) {
           cliCtx.logger.info("No active workflow runs found to cancel.");
         }
@@ -1346,9 +1534,12 @@ export const workflowCancelCommand = withRemoteOptions(
       );
     }
 
-    if (waitsOnOwner(run) && cliCtx.outputMode !== "json") {
-      cliCtx.logger
-        .info`Stopping run ${run.id}; waiting up to ${STOP_GRACE_SECONDS}s for cleanup steps to finish (cancel again to stop immediately)`;
+    // In a serve-mode checkout a run this checkout did not start is
+    // cancelled on serve, as `--run` does for it (swamp-club#4274).
+    const foreignServer = foreignRunServer(run.id, repoDir);
+    if (foreignServer !== undefined) {
+      await cancelOnServe(cliCtx, options, foreignServer, run.id);
+      return;
     }
 
     const previousStatus = run.status;
@@ -1361,6 +1552,12 @@ export const workflowCancelCommand = withRemoteOptions(
         withRunTracker(
           repoDir,
           async (runTracker) => {
+            if (
+              waitsOnOwner(run, runTracker) && cliCtx.outputMode !== "json"
+            ) {
+              cliCtx.logger
+                .info`Stopping run ${run.id}; waiting up to ${STOP_GRACE_SECONDS}s for cleanup steps to finish (cancel again to stop immediately)`;
+            }
             const finalRun = await cancelLocalRun(run, workflow, reason, {
               runRepo,
               findEvaluatedWorkflow,

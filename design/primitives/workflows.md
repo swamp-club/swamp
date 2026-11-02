@@ -3444,6 +3444,32 @@ method-run record it left `running` with the same error its step gets
 on this host as `cancelled` with the reason (`closeStoppedOwnerRuns`,
 `src/cli/commands/workflow_cancel.ts`). An owner still alive is left alone.
 
+**Which process cancel stops.** A run record is data: a v2 S3 or GCS datastore
+syncs it between members' checkouts, and a team-mode checkout takes it from
+serve's feed, so its `pid` is whatever its writer put there, and a pid from
+another machine names nothing here. Cancel therefore stops a process only when
+this checkout's own run tracker vouches for it (`trackedOwner`,
+`src/cli/commands/workflow_cancel.ts`, swamp-club#4274): a workflow row of the
+run, from this host, not serve's, `running` or `interrupted` under the record's
+pid. The tracker is local and never synced, and `workflow resume` hands the row
+to the resuming process, so a run this checkout started or resumed is stopped
+as before. A pid only the record names is never signalled:
+
+- outside serve mode the run is settled as a run whose owner is gone. Its owner
+  elsewhere keeps running and may report past the cancel, so cancel a run from
+  the checkout that started it. Two checkouts on one machine sharing a
+  filesystem datastore no longer stop each other's runs either;
+- in a serve-mode checkout a cancel by workflow name sends it to serve, as
+  `--run` does, and `--all` reports it under `skipped`, to be cancelled with
+  `--run`;
+- a row that serve owns refuses the cancel with the `--server` hint, whatever
+  the record says;
+- a row of the run under another pid is either a local resume whose first save
+  came just before it handed the row over (it does so right after releasing the
+  run's claim) or a run another machine resumed. Cancel re-reads the row for up
+  to `ROW_HAND_OVER_WAIT_MS` (1s): a row that comes to name the record's pid is
+  the resume's, which is stopped; one that never does is settled as above.
+
 **On Windows** Deno turns a SIGTERM sent to another process into
 `TerminateProcess`, so cancel sends a stop request instead
 (`sendGracefulStop`, `src/infrastructure/process/process_kill.ts`): it sets a
