@@ -22,6 +22,10 @@ import { createContext, type GlobalOptions } from "../context.ts";
 import { consumeStream } from "../../libswamp/stream.ts";
 import { createAuthDeps } from "../../libswamp/auth/whoami.ts";
 import { subscriptionStatus } from "../../libswamp/subscription/status.ts";
+import {
+  createAccountNoticeDeps,
+  refreshAccountNotices,
+} from "../../libswamp/account_notices/notice.ts";
 import { createLibSwampContext } from "../../libswamp/context.ts";
 import { createSubscriptionStatusRenderer } from "../../presentation/renderers/subscription_status.ts";
 import { loadIdentity } from "../load_identity.ts";
@@ -55,7 +59,11 @@ export const subscriptionStatusCommand = new Command()
     });
 
     const renderer = createSubscriptionStatusRenderer(cliCtx.outputMode);
-    await consumeStream(subscriptionStatus(ctx, deps), renderer.handlers());
+    const noticeDeps = createAccountNoticeDeps({ identity });
+    await consumeStream(
+      subscriptionStatus(ctx, deps, () => refreshAccountNotices(noticeDeps)),
+      renderer.handlers(),
+    );
 
     cliCtx.logger.debug("Subscription status command completed");
   });

@@ -124,7 +124,7 @@ const HAS_INVISIBLE_RE = new RegExp(INVISIBLE_RE.source);
  * emoji sequences and Persian and Indic scripts, and they cannot reorder text;
  * body and title only
  */
-const PROSE_INVISIBLE_RE =
+export const PROSE_INVISIBLE_RE =
   /[\u061c\u200b\u200e\u200f\u202a-\u202e\u2060\u2066-\u2069\ufeff]/g;
 const ULID_RE = /^[0-9A-HJKMNP-TV-Z]{26}$/i;
 
@@ -145,7 +145,7 @@ export function sanitizeInboxBody(text: string): string {
  * cut on code points so a character outside the BMP is never split into half a
  * surrogate pair
  */
-function sanitizeLine(
+export function sanitizeLine(
   text: string,
   maxLength: number,
   invisible: RegExp = INVISIBLE_RE,

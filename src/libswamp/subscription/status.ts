@@ -19,6 +19,7 @@
 
 import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
+import type { AccountNoticeView } from "../account_notices/notice.ts";
 import {
   type AuthDeps,
   rollUpPlanName,
@@ -43,6 +44,8 @@ export interface SubscriptionStatusView {
   entitlementsReported: boolean;
   collectives: WhoamiCollectiveEntitlement[];
   billingUrl: string;
+  // absent when the request failed, so a failure never reads as no notices
+  notices?: AccountNoticeView[];
 }
 
 export type SubscriptionStatusEvent =
@@ -86,12 +89,26 @@ function toView(identity: WhoamiIdentity): SubscriptionStatusView {
 export async function* subscriptionStatus(
   ctx: LibSwampContext,
   deps: AuthDeps,
+  notices?: () => Promise<AccountNoticeView[] | null>,
 ): AsyncIterable<SubscriptionStatusEvent> {
-  for await (const event of whoami(ctx, deps)) {
-    if (event.kind === "completed") {
-      yield { kind: "completed", status: toView(event.identity) };
-    } else {
-      yield event;
+  // asked alongside whoami and awaited on every path; it never rejects
+  const pending = notices?.() ?? Promise.resolve(null);
+  try {
+    for await (const event of whoami(ctx, deps)) {
+      if (event.kind === "completed") {
+        const found = await pending;
+        yield {
+          kind: "completed",
+          status: {
+            ...toView(event.identity),
+            ...(found !== null ? { notices: found } : {}),
+          },
+        };
+      } else {
+        yield event;
+      }
     }
+  } finally {
+    await pending;
   }
 }

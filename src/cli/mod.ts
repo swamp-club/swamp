@@ -247,6 +247,17 @@ import {
   showInboxNotice,
   startInboxPoll,
 } from "../libswamp/inbox/notice.ts";
+import {
+  accountNoticeEligibility,
+  finishAccountNotice,
+} from "./account_notice_gate.ts";
+import {
+  type AccountNoticeDeps,
+  type AccountNoticePoll,
+  createAccountNoticeDeps,
+  showAccountNotice,
+  startAccountNoticePoll,
+} from "../libswamp/account_notices/notice.ts";
 import { UpdatePreferencesFileRepository } from "../infrastructure/update/update_preferences_file_repository.ts";
 import { AutoupdateLogFileRepository } from "../infrastructure/update/autoupdate_log_file_repository.ts";
 import {
@@ -2399,14 +2410,23 @@ async function runInvocation(
   processLockHolderMarker.publish();
 
   // decided after publish, so a nested run sees the chain it inherited
+  const noticeCommandPath = commandTree
+    ? resolveTelemetryInvocation(commandTree, args, []).commandPath ?? []
+    : [];
+  const nestedRun = processLockHolderMarker.ancestorPids().size > 0;
   const inbox = inboxNoticeEligibility({
-    commandPath: commandTree
-      ? resolveTelemetryInvocation(commandTree, args, []).commandPath ?? []
-      : [],
+    commandPath: noticeCommandPath,
     gateTiming,
     gatePassed: gateOutcome?.kind === "pass",
-    nested: processLockHolderMarker.ancestorPids().size > 0,
+    nested: nestedRun,
     disabledByEnv: inboxNoticeDisabledByEnv(),
+  });
+  const accountNotice = accountNoticeEligibility({
+    commandPath: noticeCommandPath,
+    gateTiming,
+    gatePassed: gateOutcome?.kind === "pass",
+    nested: nestedRun,
+    hook: hookMode || isDispatchRunnerCommand(commandInfo),
   });
 
   // hook commands skip this: a null marker gives the default info log level and
@@ -2675,6 +2695,8 @@ async function runInvocation(
   // serves the poll and the notice; only the poll needs the client identity
   let inboxDeps: InboxNoticeDeps | null = null;
   let inboxPoll: InboxPoll | null = null;
+  let accountNoticeDeps: AccountNoticeDeps | null = null;
+  let accountNoticePoll: AccountNoticePoll | null = null;
   try {
     if (inbox.poll || inbox.notice) {
       inboxDeps = createInboxNoticeDeps({
@@ -2683,6 +2705,15 @@ async function runInvocation(
     }
     if (inbox.poll && inboxDeps) {
       inboxPoll = await startInboxPoll(inboxDeps);
+    }
+    // a fast run polls only while an ended trial is cached; the policy decides
+    if (accountNotice.eligible) {
+      accountNoticeDeps = createAccountNoticeDeps({
+        identity: await loadIdentity(),
+      });
+      accountNoticePoll = await startAccountNoticePoll(accountNoticeDeps, {
+        slowCommand: accountNotice.slowCommand,
+      });
     }
 
     // Cliffy would take the token after an empty --title= as its value, so
@@ -2907,6 +2938,19 @@ async function runInvocation(
           }
         }
       }
+
+      // last, and outside the update check's env guard, so nothing hides it
+      await finishAccountNotice({
+        poll: accountNoticePoll,
+        eligible: accountNotice.eligible,
+        outputMode: getOutputModeFromArgs(args),
+        quiet: quietRequested,
+        succeeded: commandSucceeded(Deno.exitCode),
+        show: () =>
+          accountNoticeDeps
+            ? showAccountNotice(accountNoticeDeps)
+            : Promise.resolve(null),
+      });
     });
   } catch (error) {
     // release the datastore lock even on failure. flushDatastoreSync can throw,
@@ -2930,6 +2974,14 @@ async function runInvocation(
     await finishInboxNotice({
       poll: inboxPoll,
       notice: false,
+      outputMode: getOutputModeFromArgs(args),
+      quiet: quietRequested,
+      succeeded: false,
+      show: () => Promise.resolve(null),
+    });
+    await finishAccountNotice({
+      poll: accountNoticePoll,
+      eligible: false,
       outputMode: getOutputModeFromArgs(args),
       quiet: quietRequested,
       succeeded: false,

@@ -32,6 +32,10 @@ import type { SwampError } from "../errors.ts";
 import { validationFailed } from "../errors.ts";
 
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
+import {
+  createAccountNoticeDeps,
+  refreshAccountNotices,
+} from "../account_notices/notice.ts";
 
 export const CLI_CLIENT_ID = "swamp-cli";
 
@@ -145,6 +149,8 @@ export interface AuthLoginDeps {
     collectives?: string[];
   }) => Promise<void>;
   getHostname: () => string;
+  // best effort and bounded; never throws
+  refreshAccountNotices?: () => Promise<void>;
 }
 
 async function readLine(prompt: string): Promise<string> {
@@ -372,6 +378,9 @@ export function createAuthLoginDeps(
     },
     saveCredentials: (credentials) => repo.save(credentials),
     getHostname: () => Deno.hostname?.() ?? "unknown",
+    refreshAccountNotices: async () => {
+      await refreshAccountNotices(createAccountNoticeDeps({ identity }));
+    },
   };
 }
 
@@ -540,6 +549,8 @@ export async function* authLogin(
           apiKey: apiKey.key,
         },
       };
+      // after success is reported, so a slow fetch never delays it
+      await deps.refreshAccountNotices?.();
     })(),
   );
 }

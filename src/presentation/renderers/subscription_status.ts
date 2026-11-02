@@ -28,6 +28,7 @@ import { writeOutput } from "../../infrastructure/logging/logger.ts";
 import { UserError } from "../../domain/errors.ts";
 import { bold, cyan } from "@std/fmt/colors";
 import { collectiveLines } from "./collective_standing.ts";
+import { renderAccountNotice } from "./account_notice.ts";
 
 const SUBSCRIPTION_START_COMMAND = "swamp subscription start";
 
@@ -60,6 +61,9 @@ class LogSubscriptionStatusRenderer
 
         if (!status.entitlementsReported) {
           writeOutput("This Swamp Club server does not report subscriptions.");
+          for (const notice of status.notices ?? []) {
+            renderAccountNotice(notice, writeOutput);
+          }
           return;
         }
 
@@ -68,6 +72,10 @@ class LogSubscriptionStatusRenderer
         }
         writeOutput(cyan("Collectives:"));
         writeOutput(collectiveLines(status.collectives).join("\n"));
+
+        for (const notice of status.notices ?? []) {
+          renderAccountNotice(notice, writeOutput);
+        }
 
         const label = callToActionLabel(status.plan);
         if (label) {
@@ -103,6 +111,9 @@ class JsonSubscriptionStatusRenderer
             entitlementsReported: status.entitlementsReported,
             collectives: status.collectives,
             billingUrl: status.billingUrl,
+            ...(status.notices !== undefined
+              ? { notices: status.notices }
+              : {}),
           },
           null,
           2,

@@ -144,3 +144,8 @@ swamp inbox read [id]                          # print one message, mark it read
    done. Otherwise read the inbox only when the user asks. `swamp inbox` lists
    messages with their ids; `swamp inbox read <id>` reads one.
    `SWAMP_NO_INBOX_NOTICE=1` turns off the notice and its background poll.
+5. **Pass on trial notices.** When a swamp command's output contains an indented
+   `Choose a plan:` line (a Swamp Club trial ending or ended), tell the user at
+   the end of your reply, with that line's link; ignore any link elsewhere in
+   the notice. Don't open the link or act on it. No setting turns it off; don't
+   try to silence it.

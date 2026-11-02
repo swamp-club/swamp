@@ -36,6 +36,13 @@ import {
   type Sleep,
 } from "./rate_limit.ts";
 import type { GenesisPass } from "../../domain/quest/genesis_pass.ts";
+import {
+  type AccountNoticesResult,
+  MAX_ACCOUNT_NOTICES_BODY_BYTES,
+  NOTICES_REQUIRE_USER,
+  parseAccountNotices,
+  parseAccountNoticesErrorCode,
+} from "./account_notice_schemas.ts";
 import type { IdentityCheckOutcome } from "../../domain/auth/auth_gate_policy.ts";
 import { sanitizeFieldText } from "../../domain/vaults/vault_config_fields.ts";
 import {
@@ -66,6 +73,46 @@ const MARK_READ_BATCH_SIZE = 100;
 async function readJson(res: Response): Promise<unknown> {
   try {
     return await res.json();
+  } catch (error) {
+    if (error instanceof SyntaxError) return undefined;
+    throw error;
+  }
+}
+
+const TOO_LARGE: unique symbol = Symbol("too large");
+
+// stops once over the cap: an untrusted server can't make it hold a large body
+async function readCappedJson(
+  res: Response,
+  maxBytes: number,
+): Promise<unknown | typeof TOO_LARGE> {
+  const declared = Number(res.headers.get("content-length"));
+  if (Number.isFinite(declared) && declared > maxBytes) {
+    await res.body?.cancel();
+    return TOO_LARGE;
+  }
+  if (!res.body) return undefined;
+  const reader = res.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.length;
+    if (total > maxBytes) {
+      await reader.cancel();
+      return TOO_LARGE;
+    }
+    chunks.push(value);
+  }
+  const bytes = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.length;
+  }
+  try {
+    return JSON.parse(new TextDecoder().decode(bytes));
   } catch (error) {
     if (error instanceof SyntaxError) return undefined;
     throw error;
@@ -1211,6 +1258,84 @@ export class SwampClubClient {
       const summary = parseInboxSummary(await readJson(res));
       if (!summary) return failed("malformed response");
       return { kind: "ok", summary, etag: res.headers.get("etag") };
+    } catch {
+      return failed("connection failed");
+    }
+  }
+
+  // bypasses the shared fetch helper so a Retry-After sleep can't hold teardown
+  async accountNotices(
+    apiKey: string,
+    signal: AbortSignal,
+  ): Promise<AccountNoticesResult> {
+    let headers: Headers;
+    try {
+      headers = mergeIdentityHeaders(this.identity, {
+        "x-api-key": apiKey,
+        "Accept": "application/json",
+      });
+    } catch {
+      return { kind: "failed", reason: "invalid request header" };
+    }
+    const doFetch = this.options.fetch ?? globalThis.fetch;
+    let res: Response;
+    try {
+      res = await doFetch(`${this.serverUrl}/api/v1/account/notices`, {
+        method: "GET",
+        headers,
+        // a redirect could carry x-api-key to another host
+        redirect: "error",
+        signal,
+      });
+    } catch (error) {
+      const reason = signal.aborted ||
+          (error instanceof DOMException &&
+            (error.name === "TimeoutError" || error.name === "AbortError"))
+        ? "timeout"
+        : "connection failed";
+      return { kind: "failed", reason };
+    }
+
+    const status = res.status;
+    const failed = (reason: string): AccountNoticesResult => ({
+      kind: "failed",
+      reason: signal.aborted ? "timeout" : reason,
+    });
+    try {
+      if (status === 401) {
+        await res.body?.cancel();
+        return { kind: "rejected" };
+      }
+      if (status === 403) {
+        // only swamp-club's own body means a collective key
+        const body = await readCappedJson(res, MAX_ACCOUNT_NOTICES_BODY_BYTES);
+        return body !== TOO_LARGE &&
+            parseAccountNoticesErrorCode(body) === NOTICES_REQUIRE_USER
+          ? { kind: "unavailable" }
+          : failed(`HTTP ${status}`);
+      }
+      if (status === 404) {
+        await res.body?.cancel();
+        return { kind: "unsupported" };
+      }
+      if (status === 429) {
+        const retryAfterSeconds = parseRetryAfter(
+          res.headers.get("retry-after"),
+        );
+        await res.body?.cancel();
+        return retryAfterSeconds !== undefined
+          ? { kind: "backoff", retryAfterSeconds }
+          : { kind: "backoff" };
+      }
+      if (!res.ok) {
+        await res.body?.cancel();
+        return failed(`HTTP ${status}`);
+      }
+      const body = await readCappedJson(res, MAX_ACCOUNT_NOTICES_BODY_BYTES);
+      if (body === TOO_LARGE) return failed("response too large");
+      const notices = parseAccountNotices(body);
+      if (!notices) return failed("malformed response");
+      return { kind: "ok", notices };
     } catch {
       return failed("connection failed");
     }

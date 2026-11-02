@@ -74,7 +74,7 @@ export interface CreateInboxNoticeDepsOptions {
   identity?: ClientIdentity;
 }
 
-function waitOrAbort(ms: number, signal: AbortSignal): Promise<void> {
+export function waitOrAbort(ms: number, signal: AbortSignal): Promise<void> {
   return new Promise((resolve) => {
     if (signal.aborted) {
       resolve();

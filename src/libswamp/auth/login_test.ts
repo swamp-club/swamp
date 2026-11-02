@@ -853,3 +853,27 @@ Deno.test("authLogin: device flow reports expiry during a poll request as timed 
     assertEquals(last.error.message, "Device authorization timed out");
   }
 });
+
+Deno.test("authLogin: refreshes account notices after the login is saved and reported", async () => {
+  const order: string[] = [];
+  const deps = makeDeps({
+    saveCredentials: () => {
+      order.push("save");
+      return Promise.resolve();
+    },
+    refreshAccountNotices: () => {
+      order.push("refresh");
+      return Promise.resolve();
+    },
+  });
+  for await (
+    const event of authLogin(
+      createLibSwampContext(),
+      deps,
+      makeInput({ useBrowserFlow: false, username: "u", password: "p" }),
+    )
+  ) {
+    if (event.kind === "completed") order.push("completed");
+  }
+  assertEquals(order, ["save", "completed", "refresh"]);
+});

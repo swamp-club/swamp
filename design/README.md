@@ -105,6 +105,7 @@ Write in plain English:
 | [agent-sessions](./surfaces/agent-sessions.md)   | Agent session record: schema, discovery, versions |
 | [auth-gate](./surfaces/auth-gate.md)             | Account requirement, signed proofs, fail-open     |
 | [inbox](./surfaces/inbox.md)                     | Inbox API contract and how the CLI uses it        |
+| [account-notices](./surfaces/account-notices.md) | Trial ending / ended notices from Swamp Club      |
 | [start](./surfaces/start.md)                     | Get started: workspaces, tasks, launching agents  |
 | [local-dashboard](./surfaces/local-dashboard.md) | The dashboard on local repos, no serve running    |
 | [workspace](./surfaces/workspace.md)             | The workspace registry and `swamp workspace`      |

@@ -327,3 +327,58 @@ Deno.test("billingUrl: a collective opens its own billing page, slug encoded", (
     "https://swamp-club.com/billing",
   );
 });
+
+const endedNotice = {
+  kind: "trial-ended" as const,
+  slug: "keeb",
+  name: "keeb",
+  personal: true,
+  billingUrl: "https://swamp-club.com/billing",
+};
+
+Deno.test("subscriptionStatus: carries the trial notices swamp-club reported", async () => {
+  const events = await collect<SubscriptionStatusEvent>(
+    subscriptionStatus(
+      createLibSwampContext(),
+      makeDeps({}),
+      () => Promise.resolve([endedNotice]),
+    ),
+  );
+  const last = events.at(-1);
+  assertEquals(
+    last?.kind === "completed" ? last.status.notices : "missing",
+    [endedNotice],
+  );
+});
+
+Deno.test("subscriptionStatus: a failed notices request leaves the field out, never empty", async () => {
+  const events = await collect<SubscriptionStatusEvent>(
+    subscriptionStatus(
+      createLibSwampContext(),
+      makeDeps({}),
+      () => Promise.resolve(null),
+    ),
+  );
+  const last = events.at(-1);
+  assertEquals(
+    last?.kind === "completed" && "notices" in last.status,
+    false,
+  );
+});
+
+Deno.test("subscriptionStatus: the notices request is awaited even when whoami fails", async () => {
+  let settled = false;
+  const events = await collect<SubscriptionStatusEvent>(
+    subscriptionStatus(
+      createLibSwampContext(),
+      makeDeps({ credentials: null }),
+      async () => {
+        await Promise.resolve();
+        settled = true;
+        return null;
+      },
+    ),
+  );
+  assertEquals(events.at(-1)?.kind, "error");
+  assertEquals(settled, true);
+});
