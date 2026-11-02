@@ -1119,8 +1119,19 @@ Deno.test("handleModelOutputSearch and handleModelMethodHistorySearch: with a de
           scanLookups: undefined,
         },
       ];
+      let moved = Date.UTC(2020, 0, 1);
       for (const { run, authorizationLookups, scanLookups } of requests) {
         reads.clear();
+        // a file whose stat has not moved is answered without a read, so
+        // moving them has each request read its owners
+        for (const owner of [kept, hidden]) {
+          moved += 1_000;
+          await Deno.utime(
+            definitionRepo.getPath(EDIT_TEST_TYPE, owner.id),
+            new Date(moved),
+            new Date(moved),
+          );
+        }
         await withObservedSpans(async (spans) => {
           const socket = createMockSocket();
           await run(socket);
@@ -1234,6 +1245,16 @@ async function withHeldDefinitionReads(
       racyWindowMs: 0,
     });
     await definitionIndex.begin();
+    // a file whose stat has not moved is answered without a read, so moving
+    // them has a request read its owners
+    const moved = new Date(Date.UTC(2020, 0, 1));
+    for (const owner of owners) {
+      await Deno.utime(
+        definitionRepo.getPath(EDIT_TEST_TYPE, owner.id),
+        moved,
+        moved,
+      );
+    }
 
     // Held only after the index's first check, which reads every file.
     const reads = {
@@ -1280,6 +1301,119 @@ async function withHeldDefinitionReads(
     }
   });
 }
+
+Deno.test("handleModelOutputSearch: with a definition index, a repeat request reads no definition file, and a change to an owner reaches the next request, a deny on its tags included (swamp-club#4231)", async () => {
+  await withTempDir(async (dir) => {
+    const definitionRepo = new YamlDefinitionRepository(dir);
+    const outputRepo = new YamlOutputRepository(dir);
+    const owner = await saveEditModel(definitionRepo, "first");
+    await outputRepo.save(
+      EDIT_TEST_TYPE,
+      "execute",
+      ModelOutput.create({
+        definitionId: owner.id,
+        methodName: "execute",
+        status: "succeeded",
+        startedAt: new Date("2026-01-01T00:00:00Z"),
+        provenance: {
+          definitionHash: "h",
+          modelVersion: "1",
+          triggeredBy: "manual",
+        },
+      }),
+    );
+    // Settled at once, so only a stat that moved has a request read a file.
+    const definitionIndex = new DefinitionIdIndex(definitionRepo, {
+      racyWindowMs: 0,
+    });
+    await definitionIndex.begin();
+    const ctx: ConnectionContext = {
+      ...createPolicyEditCtx(dir, definitionRepo, [
+        grant({ actions: ["read"] }),
+        grant({
+          effect: "deny",
+          actions: ["read"],
+          condition: 'tags.env == "prod"',
+        }),
+      ]),
+      definitionIndex,
+      repoContext: {
+        definitionRepo,
+        outputRepo,
+        workflowRepo: new YamlWorkflowRepository(dir),
+      } as unknown as ConnectionContext["repoContext"],
+    };
+    modelRegistry.register({
+      type: EDIT_TEST_TYPE,
+      version: "2026.01.01.1",
+      methods: {},
+    });
+
+    const search = async () => {
+      let result: { names: unknown[]; filesRead: unknown } | undefined;
+      await withObservedSpans(async (spans) => {
+        const socket = createMockSocket();
+        await handleModelOutputSearch(
+          socket,
+          ctx,
+          "req-search",
+          new AbortController(),
+          EDITOR,
+          {},
+        );
+        const [response] = frames(socket);
+        result = {
+          names: response.payload.data.results.map((
+            r: { modelName?: string },
+          ) => r.modelName),
+          filesRead: findSpan(spans, "swamp.diagnostic.definition_names")
+            .attributes["swamp.diagnostic.files_read"],
+        };
+      });
+      return result!;
+    };
+    const path = definitionRepo.getPath(EDIT_TEST_TYPE, owner.id);
+    const yamlWith = (name: string, env: string) =>
+      stringifyYaml({
+        id: owner.id,
+        name,
+        version: 1,
+        tags: { env },
+        globalArguments: {},
+      });
+
+    try {
+      // Warm from the index's first check, and stays so.
+      for (let request = 0; request < 2; request++) {
+        assertEquals(await search(), {
+          names: ["first"],
+          filesRead: undefined,
+        });
+      }
+
+      // Rewritten in place: the directory's stat does not move.
+      await Deno.writeTextFile(path, yamlWith("renamed", "dev"));
+      assertEquals(await search(), { names: ["renamed"], filesRead: 1 });
+      assertEquals(await search(), {
+        names: ["renamed"],
+        filesRead: undefined,
+      });
+
+      await Deno.writeTextFile(path, yamlWith("renamed", "prod"));
+      assertEquals((await search()).names, []);
+
+      // Renamed over, as swamp's saves and a datastore's pulls replace a file.
+      await Deno.writeTextFile(`${path}.tmp`, yamlWith("renamed", "qa"));
+      await Deno.rename(`${path}.tmp`, path);
+      assertEquals((await search()).names, ["renamed"]);
+
+      await Deno.remove(path);
+      assertEquals((await search()).names, [undefined]);
+    } finally {
+      modelRegistry.invalidateType(EDIT_TEST_TYPE);
+    }
+  });
+});
 
 Deno.test("handleModelOutputSearch: looks up the definitions naming its outputs at most 8 at a time, each once, and names each output after its own (swamp-club#4150)", async () => {
   await withHeldDefinitionReads(

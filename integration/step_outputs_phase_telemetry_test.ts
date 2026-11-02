@@ -34,7 +34,10 @@ import { FileSystemUnifiedDataRepository } from "../src/infrastructure/persisten
 import { YamlWorkflowRunRepository } from "../src/infrastructure/persistence/yaml_workflow_run_repository.ts";
 import type { YamlDefinitionRepository } from "../src/infrastructure/persistence/yaml_definition_repository.ts";
 import { DefinitionIdIndex } from "../src/infrastructure/persistence/definition_id_index.ts";
-import { statRecord } from "../src/infrastructure/persistence/workflow_run_index.ts";
+import {
+  fingerprintOf,
+  statRecord,
+} from "../src/infrastructure/persistence/workflow_run_index.ts";
 import { Definition } from "../src/domain/definitions/definition.ts";
 import { ModelType } from "../src/domain/models/model_type.ts";
 import { Workflow } from "../src/domain/workflows/workflow.ts";
@@ -317,6 +320,7 @@ async function withFixture(
       readGrant("data", "data", "writer"),
     ];
     const snapshot = new PolicySnapshot(grants, []);
+    let lstats = 0;
     const ctx = {
       repoDir: dir,
       repoContext,
@@ -359,6 +363,19 @@ async function withFixture(
           stats.set(path, (stats.get(path) ?? 0) + 1);
           for (const wake of statWaiters.splice(0)) wake();
           return found;
+        },
+        // a stat that moves at every lookup keeps owners read, which these
+        // tests count, cancel and fail
+        lstat: async (path) => {
+          const info = await Deno.lstat(path);
+          const fingerprint = fingerprintOf(info);
+          return {
+            isSymlink: info.isSymlink,
+            fingerprint: fingerprint && {
+              ...fingerprint,
+              ctimeMs: (fingerprint.ctimeMs ?? 0) - ++lstats,
+            },
+          };
         },
       }),
     } as unknown as ConnectionContext;

@@ -813,7 +813,7 @@ const indexedHistoryGrants = () => [
   grantFor("data", "data", "*"),
 ];
 
-Deno.test("handleWorkflowHistoryGet: reads only the owners' definition files per request, however many definitions there are and however many requests overlap", async () => {
+Deno.test("handleWorkflowHistoryGet: reads no definition file after its one listing while none changes, however many definitions there are and however many requests overlap (swamp-club#4231)", async () => {
   await withHistoryRepo(async (dir) => {
     const workflow = await seedHistoryRun(dir);
     const { ctx, counts } = await makeIndexedHistoryCtx(
@@ -828,15 +828,15 @@ Deno.test("handleWorkflowHistoryGet: reads only the owners' definition files per
       stdout: "hello",
       apiKey: "not-for-you",
     });
-    assertEquals(counts.reads, 52 + 2);
+    assertEquals(counts.reads, 52);
 
     for (let i = 0; i < 5; i++) await historyGet(ctx, searchPrincipal);
-    assertEquals(counts.reads, 54 + 5 * 2);
+    assertEquals(counts.reads, 52);
 
     await Promise.all(
       Array.from({ length: 10 }, () => historyGet(ctx, searchPrincipal)),
     );
-    assertEquals(counts.reads, 64 + 10 * 2);
+    assertEquals(counts.reads, 52);
     assertEquals(counts.scans, 0);
   });
 });

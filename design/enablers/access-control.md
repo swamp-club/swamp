@@ -963,8 +963,9 @@ refused.
 
 Serve finds an id's owners through a definition index it keeps between requests
 (`DefinitionIdIndex`, swamp-club#3968), instead of reading every definition,
-auto-definitions included, on each request. The index records only which file
-declares which id and which name. A direct-type workflow step in serve looks its
+auto-definitions included, on each request. The index records which file
+declares which id and which name, and for each regular file the name, type and
+tags naming and authorizing read of it. A direct-type workflow step in serve looks its
 definition name up across every type in the same index (swamp-club#4037), so a
 step whose definition does not exist yet does not read every definition to find
 that out; serve's other lookups by name still read the definitions themselves. A
@@ -974,9 +975,10 @@ every definition directory. A directory whose stat moved, or was less than 2 s
 old when it was last listed, is listed again, and only its files whose own stat
 moved (or was that recent when read) are read. Deciding when a stat is taken
 keeps a write that lands in the same clock tick as a listing from hiding behind
-a stat that only later looks old. The request then reads each owner's file
-itself, so owners are judged on the names and tags
-stored now. Creating, removing or renaming a definition file moves its
+a stat that only later looks old. The request then stats each owner's file, and
+reads it only when that stat moved, was less than 2 s old, reports neither a
+ctime nor an inode, or the file is a symlink (swamp-club#4231). A rewrite moves the stat's mtime, ctime, size or inode,
+so owners are judged on the names and tags stored now. Creating, removing or renaming a definition file moves its
 directory's stat, so a change by any process is seen by the next request:
 swamp's saves and a v3 datastore's pulls replace a file by renaming a new one
 over it, and a datastore extension's pull that creates a file is seen the same
