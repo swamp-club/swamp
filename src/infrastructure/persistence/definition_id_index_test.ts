@@ -1639,13 +1639,17 @@ Deno.test("DefinitionIdIndex: a pass that began before a relist kept a file agai
 
     const gate = Promise.withResolvers<void>();
     stats.hold(a, gate.promise);
-    const before = stats.of(a);
-    const missing = view.findAllById(crypto.randomUUID() as DefinitionId);
-    await waitFor(() => stats.of(a) > before, "the pass stats a.yaml");
-    await writeDefinition(join(typeDir, "d.yaml"), crypto.randomUUID(), "d");
-    await index.begin();
-    gate.resolve();
-    assertEquals(await missing, []);
+    try {
+      const before = stats.of(a);
+      const missing = view.findAllById(crypto.randomUUID() as DefinitionId);
+      await waitFor(() => stats.of(a) > before, "the pass stats a.yaml");
+      await writeDefinition(join(typeDir, "d.yaml"), crypto.randomUUID(), "d");
+      await index.begin();
+      gate.resolve();
+      assertEquals(await missing, []);
+    } finally {
+      gate.resolve();
+    }
 
     const kept = stats.of(b);
     await withCapturedSpans(async (spans) => {
@@ -1803,14 +1807,17 @@ Deno.test("DefinitionIdIndex: a pass whose read another pass overtook leaves the
     const view = await index.begin();
     const gate = Promise.withResolvers<void>();
     held = gate.promise;
-    const overtaken = view.findAllById(crypto.randomUUID() as DefinitionId);
-    await reading.promise;
-
     const newer = crypto.randomUUID();
-    await replaceDefinition(path, newer, "x");
-    assertEquals(await owners(index, crypto.randomUUID()), []);
-    gate.resolve();
-    assertEquals(await overtaken, []);
+    try {
+      const overtaken = view.findAllById(crypto.randomUUID() as DefinitionId);
+      await reading.promise;
+      await replaceDefinition(path, newer, "x");
+      assertEquals(await owners(index, crypto.randomUUID()), []);
+      gate.resolve();
+      assertEquals(await overtaken, []);
+    } finally {
+      gate.resolve();
+    }
 
     await withCapturedSpans(async (spans) => {
       assertEquals((await owners(index, newer)).map((o) => o.name), ["x"]);
@@ -1874,18 +1881,23 @@ Deno.test("DefinitionIdIndex: a pass overtaken by an owner lookup's older read l
     const view = await index.begin();
 
     const lookup = hold();
-    const owner = view.findAllById(first as DefinitionId);
-    await lookup.reached;
-    const second = crypto.randomUUID();
-    await replaceDefinition(path, second, "a");
-    await index.begin();
     const pass = hold();
-    const missing = owners(index, crypto.randomUUID());
-    await pass.reached;
-    lookup.release();
-    assertEquals((await owner).map((o) => o.definition.name), ["a"]);
-    pass.release();
-    assertEquals(await missing, []);
+    const second = crypto.randomUUID();
+    try {
+      const owner = view.findAllById(first as DefinitionId);
+      await lookup.reached;
+      await replaceDefinition(path, second, "a");
+      await index.begin();
+      const missing = owners(index, crypto.randomUUID());
+      await pass.reached;
+      lookup.release();
+      assertEquals((await owner).map((o) => o.definition.name), ["a"]);
+      pass.release();
+      assertEquals(await missing, []);
+    } finally {
+      lookup.release();
+      pass.release();
+    }
 
     assertEquals((await owners(index, second)).map((o) => o.name), ["a"]);
   });
@@ -1960,6 +1972,119 @@ Deno.test("DefinitionIdIndex: a sweep that fails is run again by the next check"
         ),
         ["sweep"],
       );
+    });
+  });
+});
+
+Deno.test("DefinitionIdIndex: a file a lookup found gone and that is then created again under its name is found by name at the next check", async () => {
+  await withTempDir(async (dir) => {
+    const { auto, index } = fixture(dir);
+    const typeDir = join(auto, "test", "a");
+    const path = join(typeDir, "foo.yaml");
+    const first = crypto.randomUUID();
+    await writeDefinition(path, first, "foo");
+    await writeDefinition(
+      join(typeDir, "bar.yaml"),
+      crypto.randomUUID(),
+      "bar",
+    );
+    await index.begin();
+    await writeDefinition(
+      join(typeDir, "baz.yaml"),
+      crypto.randomUUID(),
+      "baz",
+    );
+    const view = await index.begin();
+
+    await Deno.remove(path);
+    await bump(typeDir);
+    assertEquals(await view.findAllById(first as DefinitionId), []);
+    const second = crypto.randomUUID();
+    await writeDefinition(path, second, "foo");
+
+    assertEquals<string | undefined>(
+      (await index.findByName("foo"))?.definition.id,
+      second,
+    );
+    assertEquals((await owners(index, second)).map((o) => o.name), ["foo"]);
+    await withCapturedSpans(async (spans) => {
+      await index.begin();
+      const validate = findSpan(spans, "swamp.serve.definition_index.validate");
+      assertEquals(validate.attributes["definition_index.definitions"], 3);
+    });
+  });
+});
+
+Deno.test("DefinitionIdIndex: an owner lookup whose read a pass overtook leaves the pass's keys, so the file is found by the id it declares now", async () => {
+  await withTempDir(async (dir) => {
+    const path = join(dir, ".swamp", "auto-definitions", "test", "a", "a.yaml");
+    const { auto, source, hold } = heldReads(dir, path);
+    const index = new DefinitionIdIndex(source, {
+      now: () => Date.now() + 60_000,
+    });
+    const first = crypto.randomUUID();
+    await writeDefinition(path, first, "a");
+    await writeDefinition(
+      join(auto, "test", "a", "b.yaml"),
+      crypto.randomUUID(),
+      "b",
+    );
+    await index.begin();
+    await replaceDefinition(path, first, "a");
+    const view = await index.begin();
+
+    const lookup = hold();
+    const second = crypto.randomUUID();
+    try {
+      const owner = view.findAllById(first as DefinitionId);
+      await lookup.reached;
+      await replaceDefinition(path, second, "a");
+      await index.begin();
+      assertEquals(await owners(index, crypto.randomUUID()), []);
+      lookup.release();
+      assertEquals((await owner).map((o) => o.definition.name), ["a"]);
+    } finally {
+      lookup.release();
+    }
+
+    assertEquals((await owners(index, second)).map((o) => o.name), ["a"]);
+  });
+});
+
+Deno.test("DefinitionIdIndex.findByName: a kept file a lookup finds swapped for a symlink is read as a symlink on every later check", async () => {
+  await withTempDir(async (dir) => {
+    await withTempDir(async (outside) => {
+      const typeDir = join(dir, ".swamp", "auto-definitions", "test", "a");
+      const path = join(typeDir, "a.yaml");
+      const { source, reads } = heldReads(dir, path);
+      // a directory whose stat a swap does not move
+      let frozen: RecordFingerprint = {
+        mtimeMs: Date.UTC(2020, 0, 1),
+        size: 4096,
+        ctimeMs: Date.UTC(2020, 0, 1),
+        ino: 1,
+      };
+      const index = new DefinitionIdIndex(source, {
+        now: () => Date.now() + 60_000,
+        stat: (p) => p === typeDir ? Promise.resolve(frozen) : statRecord(p),
+      });
+      await writeDefinition(path, crypto.randomUUID(), "a");
+      await index.begin();
+      frozen = { ...frozen, mtimeMs: frozen.mtimeMs + 1_000 };
+      await index.begin();
+
+      const elsewhere = join(outside, "a.yaml");
+      await Deno.writeTextFile(elsewhere, yamlOf(crypto.randomUUID(), "a"));
+      await Deno.remove(path);
+      await Deno.symlink(elsewhere, path, { type: "file" });
+      const before = reads.length;
+      assertEquals(await index.findByName("a"), null);
+      await index.begin();
+      await index.begin();
+
+      const after = reads.slice(before);
+      assert(after.length >= 2);
+      assertEquals(after.filter((isSymlink) => !isSymlink), []);
     });
   });
 });

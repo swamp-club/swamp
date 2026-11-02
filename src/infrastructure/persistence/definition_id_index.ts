@@ -750,7 +750,7 @@ export class DefinitionIdIndex
       // Gone since it was listed (the view lasts the whole request): it owns
       // nothing, and is no broken definition to warn about.
       if (!dir || !file || live === null) {
-        this.#unindex(file ?? { id, name: undefined }, path);
+        this.#forget(file ?? { id, name: undefined }, path);
         continue;
       }
       const settled = this.#settled(live.fingerprint, statAt) ?? undefined;
@@ -763,6 +763,7 @@ export class DefinitionIdIndex
         found.push(copyOf(file.owner));
         continue;
       }
+      const generation = file.generation;
       const read = await this.#source.readDefinitionFile(
         path,
         [...dir.segments],
@@ -774,8 +775,13 @@ export class DefinitionIdIndex
         // would index the file under a name it no longer declares; a symlink's
         // own stat says nothing of its target, so none is kept
         if (!live.isSymlink && this.#isCurrent(path, file)) {
-          file.fingerprint = settled;
-          this.#reassign(path, file, read);
+          // Overtaken while it read, by a read that may be newer: the next
+          // check stats it and reads again.
+          if (file.generation !== generation) file.fingerprint = undefined;
+          else {
+            file.fingerprint = settled;
+            this.#reassign(path, file, read);
+          }
         }
         continue;
       }
@@ -832,7 +838,7 @@ export class DefinitionIdIndex
       // Gone since it was listed (the view lasts the whole request): it owns
       // nothing, and is no broken definition to warn about.
       if (!dir || !file || live === null) {
-        this.#unindex(file ?? { id: key.id, name: key.name }, path);
+        this.#forget(file ?? { id: key.id, name: key.name }, path);
         continue;
       }
       const read = await this.#source.readDefinitionFile(
@@ -933,8 +939,8 @@ export class DefinitionIdIndex
   }
 
   /**
-   * an entry both listings hold as the same object stays indexed as it is:
-   * #reassign keeps the maps in step with a current entry's keys
+   * an entry both listings hold as the same object is not unindexed: #reassign
+   * keeps the maps in step with a current entry's keys
    */
   #commit(
     path: string,
@@ -963,9 +969,8 @@ export class DefinitionIdIndex
     for (const [name, file] of dir.files) {
       if (carried.has(name)) file.carriedAt = stamp;
       else file.verifiedAt = stamp;
-      if (previous?.files.get(name) !== file) {
-        this.#index(file, join(path, name));
-      }
+      // a no-op for an entry still indexed; one a lookup unindexed comes back
+      this.#index(file, join(path, name));
     }
     if (carried.size > 0) this.#lastCarry = stamp;
     this.#dirs.set(path, dir);
@@ -994,6 +999,7 @@ export class DefinitionIdIndex
   ): void {
     this.#unindex(file, path);
     file.generation++;
+    file.isSymlink = isSymlink;
     file.id = found?.definition.id;
     file.name = found?.definition.name;
     file.owner = found && !isSymlink ? ownerOf(found) : undefined;
@@ -1014,6 +1020,20 @@ export class DefinitionIdIndex
   ): void {
     if (removePath(this.#pathsById, file.id, path)) this.#definitions--;
     removePath(this.#pathsByName, file.name, path);
+  }
+
+  // a file a lookup found gone: a file created under its name is read at the
+  // next listing, never kept with the gone one's keys
+  #forget(
+    file: {
+      id: string | undefined;
+      name: string | undefined;
+      fingerprint?: RecordFingerprint | undefined;
+    },
+    path: string,
+  ): void {
+    this.#unindex(file, path);
+    if ("fingerprint" in file) file.fingerprint = undefined;
   }
 }
 
@@ -1055,7 +1075,7 @@ async function inBatches<T>(
 
 /**
  * a file swamp saved under the name it declares: a save of another definition
- * creates another file, so only its id can change under this file name
+ * creates another file, so a save changes only its id under this file name
  */
 function isNameDerived(fileName: string, file: IndexedFile): boolean {
   return !file.isSymlink && file.id !== undefined &&

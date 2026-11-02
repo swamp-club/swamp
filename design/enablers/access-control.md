@@ -974,8 +974,8 @@ owner check, until it is fixed or removed. Each request first checks the stat of
 every definition directory. A directory whose stat moved, or was less than 2 s
 old when it was last listed, is listed again. The listing stats its files and
 reads only those whose own stat moved (or was that recent when read), except a
-regular file named after the name it declares (`<name>.yaml`, as every save names
-it) whose stat was settled: that file is kept without a stat (swamp-club#4307),
+regular file named after the name it declares (`<name>.yaml`, as a save names a
+definition whose name is filename-safe) whose stat was settled: that file is kept without a stat (swamp-club#4307),
 so a write costs a stat of the files it added, not of every file beside them.
 Deciding when a stat is taken keeps a write that lands in the same clock tick as
 a listing from hiding behind a stat that only later looks old. The request then stats each owner's file, and
