@@ -133,8 +133,8 @@ export function createDataPruneDeps(
     workflowRunRepo,
   );
 
-  // isModelLive must use this per-item lookup, which resolves models and
-  // auto-definitions; others would flag auto-definition models orphaned.
+  // isModelLive must resolve models and auto-definitions alike; a lookup of
+  // models only would flag auto-definition models orphaned.
   const autoDefDir = dsPath(SWAMP_SUBDIRS.autoDefinitions);
   const definitionRepo = injectedDefinitionRepo ??
     new YamlDefinitionRepository(
@@ -161,15 +161,17 @@ export function createDataPruneDeps(
     return defType.toDirectoryPath() === type.toDirectoryPath();
   };
 
-  // serve injects its indexed repository, whose findById needs no snapshot
+  // serve injects its indexed repository, whose lookups need no snapshot; a
+  // miss is live when some definition with the id declares the type, as below
   const definitionLiveness = (): IsModelLive => {
     if (injectedDefinitionRepo) {
       return async (type, modelId) => {
-        const definition = await definitionRepo.findById(
-          type,
-          createDefinitionId(modelId),
-        );
-        return definition !== null && declaredTypeMatches(definition, type);
+        const id = createDefinitionId(modelId);
+        const definition = await definitionRepo.findById(type, id);
+        if (definition === null) {
+          return await definitionRepo.declaresTypeById(id, type);
+        }
+        return declaredTypeMatches(definition, type);
       };
     }
     // taken at the first lookup, after the data is listed, so it holds every

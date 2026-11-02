@@ -35,6 +35,7 @@ import {
 } from "../src/domain/definitions/definition.ts";
 import { FileSystemUnifiedDataRepository } from "../src/infrastructure/persistence/unified_data_repository.ts";
 import { YamlDefinitionRepository } from "../src/infrastructure/persistence/yaml_definition_repository.ts";
+import { DefinitionIdIndex } from "../src/infrastructure/persistence/definition_id_index.ts";
 import { CatalogStore } from "../src/infrastructure/persistence/catalog_store.ts";
 import {
   DefaultDataLifecycleService,
@@ -684,4 +685,41 @@ Deno.test("Data Prune: each pass looks definitions up from when it starts, readi
     );
     assertEquals(await deps.findOrphanedData(), []);
   });
+});
+
+Deno.test("Data Prune: an injected repository keeps data under the type a retyped definition declares, with or without serve's id index", async () => {
+  for (const indexed of [true, false]) {
+    await withTempDir(async (repoDir) => {
+      const autoRoot = swampPath(repoDir, SWAMP_SUBDIRS.autoDefinitions);
+      const oldType = ModelType.create("test/old-type");
+      const newType = ModelType.create("test/new-type");
+      const id = crypto.randomUUID();
+      await writeDefinitionFile(
+        autoRoot,
+        oldType.toDirectoryPath(),
+        "retyped.yaml",
+        definitionYaml(id, "retyped", "Test.New-Type"),
+      );
+      const dataRepo = openDataRepo(repoDir);
+      await writeData(dataRepo, oldType, id, "before", 1);
+      await writeData(dataRepo, newType, id, "after", 2);
+      const definitionRepo = new YamlDefinitionRepository(repoDir);
+      if (indexed) {
+        definitionRepo.useIdIndex(new DefinitionIdIndex(definitionRepo));
+      }
+
+      const orphans = await createDataPruneDeps(
+        repoDir,
+        undefined,
+        undefined,
+        definitionRepo,
+      ).findOrphanedData();
+
+      assertEquals(
+        orphans.map((o) => [o.type.toDirectoryPath(), o.modelId]),
+        [[oldType.toDirectoryPath(), id]],
+        indexed ? "indexed" : "walked",
+      );
+    });
+  }
 });

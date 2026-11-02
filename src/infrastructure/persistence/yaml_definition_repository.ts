@@ -945,7 +945,8 @@ export class YamlDefinitionRepository implements DefinitionRepository {
 
   /**
    * the scan keeps a definition whose declared type is invalid, records no
-   * paths or hints, and ignores unreadableContent
+   * paths or hints, and ignores unreadableContent; an id-named symlink leaving
+   * the repository raises where findById would read it
    */
   async snapshotById(): Promise<DefinitionByIdSnapshot> {
     const roots = [this.baseDir, this.secondaryBaseDir].filter((dir) =>
@@ -988,17 +989,19 @@ export class YamlDefinitionRepository implements DefinitionRepository {
           firstIn(autoDir, id, false);
       },
       declaresType: (id, type) =>
-        (byId.get(id) ?? []).some((file) => {
-          if (!("definition" in file.read)) return false;
-          const declared = file.read.definition?.type;
-          if (declared === undefined) return false;
-          try {
-            return ModelType.create(declared).normalized === type.normalized;
-          } catch {
-            return false;
-          }
-        }),
+        (byId.get(id) ?? []).some((file) =>
+          "definition" in file.read && file.read.definition !== null &&
+          declaresType(file.read.definition, type)
+        ),
     };
+  }
+
+  /** through the id index when one is attached, otherwise a walk */
+  async declaresTypeById(id: DefinitionId, type: ModelType): Promise<boolean> {
+    const found = this.idIndex
+      ? await this.idIndex.findAllById(id)
+      : await this.findAllByIdGlobal(id);
+    return found.some(({ definition }) => declaresType(definition, type));
   }
 
   private async collectSnapshotFiles(
@@ -1721,6 +1724,16 @@ export class YamlDefinitionRepository implements DefinitionRepository {
     if (dir === this.getTypeDir(type)) return true;
     return this.secondaryBaseDir !== undefined &&
       dir === join(this.secondaryBaseDir, type.toDirectoryPath());
+  }
+}
+
+// an invalid declared type declares nothing
+function declaresType(definition: Definition, type: ModelType): boolean {
+  if (definition.type === undefined) return false;
+  try {
+    return ModelType.create(definition.type).normalized === type.normalized;
+  } catch {
+    return false;
   }
 }
 

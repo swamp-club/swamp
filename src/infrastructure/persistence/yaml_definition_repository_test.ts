@@ -4409,6 +4409,23 @@ Deno.test({
         outside,
         autoLegacy,
       ]);
+
+      const outsideLegacy = crypto.randomUUID() as DefinitionId;
+      await writeAt(
+        join(dir, "outside", "legacy.yaml"),
+        plainDefinitionYaml(outsideLegacy, "outside-legacy"),
+      );
+      await Deno.symlink(
+        join(dir, "outside", "legacy.yaml"),
+        join(fixture.primaryDir, t, `${outsideLegacy}.yaml`),
+        { type: "file" },
+      );
+      assertEquals(
+        (await fixture.repo().findById(testType, outsideLegacy))?.name,
+        "outside-legacy",
+      );
+      const snapshot = await fixture.repo().snapshotById();
+      assertThrows(() => snapshot.find(testType, outsideLegacy));
     });
   },
 });
