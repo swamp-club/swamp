@@ -57,9 +57,11 @@ export interface ReplicaVerification {
   /** Why it failed; present only when `ok` is false. */
   readonly error?: string;
   /**
-   * The newest snapshot (Litestream level 9) the replica held when the
-   * check started, by its max TXID; absent when it was not known, and in
-   * verdicts recorded before swamp-club#4261.
+   * The newest snapshot (Litestream level 9) the check's restore read
+   * through, by its max TXID: the replica's newest when the check started,
+   * if it is at or below `txid`. Absent when it was not known or was newer,
+   * and in verdicts recorded before swamp-club#4261; then the next known
+   * snapshot counts as new, which costs one more check.
    */
   readonly snapshotTxid?: string;
 }

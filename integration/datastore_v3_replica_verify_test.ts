@@ -336,6 +336,23 @@ Deno.test({
       );
       await sidecarGone(env);
       assertEquals(await verifyLeftovers(paths), []);
+
+      // A verdict names only a snapshot its restore read through: one newer
+      // than the restored TXID is left out, so the next check sees it as new.
+      const { lineageFence, txid } = (await readCopyState(paths))!;
+      const check = (snapshotTxid: string) =>
+        verifyReplica({
+          paths,
+          lineageFence,
+          replicaType: "file",
+          binary: LITESTREAM_BINARY!,
+          now: () => Date.now(),
+          signal: AbortSignal.timeout(30_000),
+          snapshotTxid,
+        });
+      const newer = (BigInt(`0x${txid}`) + 1n).toString(16).padStart(16, "0");
+      assertEquals((await check(newer))?.snapshotTxid, undefined);
+      assertEquals((await check(txid))?.snapshotTxid, txid);
     });
   },
 });
@@ -497,6 +514,8 @@ Deno.test({
     "v3 replica check: the restore goes beside commits.db, not under /tmp, and a restore that fails or is cancelled leaves nothing (swamp-club#4261)",
   ignore: Deno.build.os === "windows",
   async fn() {
+    // Under /tmp: the replication paths include a control socket, and
+    // macOS TMPDIR is too long for one.
     const dir = await Deno.realPath(
       await Deno.makeTempDir({ dir: "/tmp", prefix: "swamp-verify-where-" }),
     );

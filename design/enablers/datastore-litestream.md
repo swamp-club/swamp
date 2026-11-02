@@ -1805,8 +1805,10 @@ published head), falling back to the latest state when compaction merged
 that TXID's files away, with the same integrity and schema checks, into a
 temp file beside `commits.db` that it then deletes. It records the verdict
 in `replica-verify.json` beside `lineage.json`: the lineage, the TXID,
-when, whether it restored, and (since swamp-club#4261) the newest snapshot
-the replica held when the check started.
+when, whether it restored, and (since swamp-club#4261) the snapshot its
+restore read through: the replica's newest when the check started, if it
+is at or below that TXID. A newer one, written after the writer's last
+acknowledgement, is left out, so the next check sees it as new.
 
 - **When (swamp-club#4261).** Only when the writer has acknowledged a TXID
   the last verdict on this lineage does not cover, and only on one of these

@@ -34,6 +34,7 @@
  */
 
 import type { ReplicaVerification } from "../../../domain/datastore_v3/replica_verification.ts";
+import { normalizeTxid } from "../../../domain/datastore_v3/published_lineage.ts";
 import {
   restoreAndCheck,
   V3RestoredDatabaseCorruptError,
@@ -59,6 +60,24 @@ const VERDICT_ERROR_CHARS = 400;
  */
 export const VERIFY_DEADLINE_MS = 30 * 60 * 1000;
 
+/**
+ * The snapshot a restore at `txid` reads through, as a verdict records it:
+ * only one at or below that TXID. A newer one, written after the writer's
+ * last acknowledgement, is read only by later restores, so the verdict
+ * leaves it out and the next check sees it as new.
+ */
+function coveredSnapshot(
+  snapshotTxid: string | undefined,
+  txid: string,
+): { snapshotTxid?: string } {
+  const snapshot = normalizeTxid(snapshotTxid);
+  const restored = normalizeTxid(txid);
+  return snapshot !== undefined && restored !== undefined &&
+      snapshot <= restored
+    ? { snapshotTxid: snapshot }
+    : {};
+}
+
 function shortened(message: string): string {
   return message.length <= VERDICT_ERROR_CHARS
     ? message
@@ -78,8 +97,9 @@ export interface VerifyReplicaRequest {
   /** {@link VERIFY_DEADLINE_MS} when absent. */
   readonly deadlineMs?: number;
   /**
-   * The replica's newest snapshot when the check started, recorded in the
-   * verdict (swamp-club#4261); absent when it was not known.
+   * The replica's newest snapshot when the check started (swamp-club#4261),
+   * recorded in the verdict when it is at or below the restored TXID;
+   * absent when it was not known.
    */
   readonly snapshotTxid?: string;
 }
@@ -99,11 +119,11 @@ export async function verifyReplica(
   if (copy === undefined || copy.lineageFence !== lineageFence) {
     return undefined;
   }
-  // Beside the copy, in the directory only this user may use (swamp-club#4261).
+  // Beside the copy (swamp-club#4261), in the shared directory a supervisor
+  // trusts only when this user owns it and nobody else can write to it: the
+  // restored file holds what `commits.db` beside it holds.
   const temp = verifyTempPath(paths);
-  const snapshot = request.snapshotTxid !== undefined
-    ? { snapshotTxid: request.snapshotTxid }
-    : {};
+  const snapshot = coveredSnapshot(request.snapshotTxid, copy.txid);
   try {
     let verdict: ReplicaVerification;
     try {
