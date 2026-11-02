@@ -19,16 +19,9 @@
 
 import { parse } from "@std/jsonc";
 
-/**
- * The names of a Deno project config, in the order Deno picks one when a
- * directory holds both (swamp-club#3612).
- */
+/** listed in the order Deno picks one when a directory holds both */
 export const DENO_CONFIG_FILE_NAMES = ["deno.json", "deno.jsonc"] as const;
 
-/**
- * A Deno project config read as Deno reads it — JSON with comments and
- * trailing commas — or undefined when it is not an object.
- */
 export function parseDenoConfig(
   text: string,
 ): Record<string, unknown> | undefined {
@@ -38,10 +31,6 @@ export function parseDenoConfig(
     : undefined;
 }
 
-/**
- * The config at `path`, or undefined when it cannot be read or parsed, or
- * is not an object.
- */
 export async function readDenoConfig(
   path: string,
 ): Promise<Record<string, unknown> | undefined> {

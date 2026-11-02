@@ -20,18 +20,15 @@
 import { UserError } from "../errors.ts";
 
 /**
- * The Lab sources the CLI can file an issue against. A source says what an
- * issue is raised against; it is a separate field from the issue type, so the
- * `platform` source has nothing to do with the admin-only `platform` type.
+ * the filing source is a separate field from the issue type; the platform
+ * source has nothing to do with the admin-only platform type
  */
 export const ISSUE_FILING_SOURCES = ["swamp", "platform"] as const;
 
 export type IssueFilingSource = typeof ISSUE_FILING_SOURCES[number];
 
-/** The source a report is filed with when none is chosen. */
 export const DEFAULT_ISSUE_FILING_SOURCE: IssueFilingSource = "swamp";
 
-/** `value` as a filing source, or a UserError naming the accepted values. */
 export function parseIssueFilingSource(value: string): IssueFilingSource {
   const source = ISSUE_FILING_SOURCES.find((known) => known === value);
   if (source === undefined) {

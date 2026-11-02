@@ -103,10 +103,9 @@ Deno.test("detectAgentHarness: codex via CODEX_SANDBOX=seatbelt", () => {
   assertEquals(result.agentSessionDetected, true);
 });
 
-// Codex env_clear()s before each shell-tool spawn and only re-adds sandbox
-// markers. When a user disables sandboxing entirely, no codex-identifying
-// env var survives — this test codifies that blind spot so future
-// contributors don't try to invent more signals without upstream cooperation.
+// codex clears its env before each shell spawn and re-adds only sandbox
+// markers, so unsandboxed codex is undetectable; this test codifies that blind
+// spot
 Deno.test(
   "detectAgentHarness: codex without sandbox is undetectable",
   () => {
@@ -178,9 +177,6 @@ Deno.test("detectAgentHarness: ignores keys outside the whitelist", () => {
 });
 
 Deno.test("RELEVANT_ENV_VARS contains every key any signal references", () => {
-  // Cross-checks the contract that callers can trust the export to project
-  // Deno.env safely. If a future PR adds a signal but forgets to update the
-  // whitelist, this test catches the drift.
   const expected = new Set([
     "CLAUDECODE",
     "CLAUDE_CODE_ENTRYPOINT",

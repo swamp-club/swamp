@@ -21,15 +21,9 @@ import { TOKEN_SECRETS_VAULT_NAME } from "./control_plane_vault_provider.ts";
 
 const VAULT_NAME_PATTERN = /^[a-z][a-z0-9-]*$/;
 
-/**
- * The vault naming rule, phrased for error messages.
- */
 export const VAULT_NAME_RULE =
   "Vault names must start with a lowercase letter and contain only lowercase letters, numbers, and hyphens.";
 
-/**
- * Whether `swamp vault create` accepts this name.
- */
 export function isValidVaultName(name: string): boolean {
   return VAULT_NAME_PATTERN.test(name);
 }
@@ -43,10 +37,6 @@ export function isReservedVaultName(name: string): boolean {
   return name.startsWith("_");
 }
 
-/**
- * Explains why a reserved vault name is unavailable. Written to follow a
- * sentence that names the vault, such as "Vault '_x' not found."
- */
 export function reservedVaultNameMessage(name: string): string {
   if (name === TOKEN_SECRETS_VAULT_NAME) {
     return `It is swamp's reserved control-plane vault for token secrets and ` +
@@ -59,11 +49,6 @@ export function reservedVaultNameMessage(name: string): string {
     `and cannot be created with 'swamp vault create'.`;
 }
 
-/**
- * Tells the user how to create a missing vault. Suggests `swamp vault create`
- * with their name only when that command would accept it. Callers explain
- * reserved names with {@link reservedVaultNameMessage} before reaching here.
- */
 export function vaultCreateHint(name: string): string {
   if (isValidVaultName(name)) {
     return `Create a vault using: swamp vault create <type> ${name}`;

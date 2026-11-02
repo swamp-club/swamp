@@ -490,7 +490,6 @@ const aliceDeny: Partial<Grant> = {
   resource: { kind: "workflow", pattern: "@acme/secret-*" },
 };
 
-/** A store that keeps its grants, so reconcile sees what it wrote. */
 function createStatefulStore(seed: StoredGrant[]): FileGrantStore & {
   written: Map<string, Grant>;
 } {
@@ -545,7 +544,7 @@ async function reconcileOnce(
 }
 
 Deno.test("GrantsDirectoryPoller: keeps the grants of a file with invalid YAML while other files reconcile", async () => {
-  // A mis-indented deny file must not revoke its deny (swamp-club#2823).
+  // a mis-indented deny file must not revoke its deny
   await withTempDir(async (dir) => {
     const grantsDir = join(dir, "grants");
     await ensureDir(grantsDir);
@@ -1273,7 +1272,6 @@ Deno.test("GrantsDirectoryPoller: a deferred reconcile applies nothing and is tr
         commitReconcile: async (reconcile) => {
           if (!leads) {
             deferred++;
-            // The node takes the lead after a few deferred polls.
             if (deferred >= 3) leads = true;
             return "deferred";
           }
@@ -1295,7 +1293,6 @@ Deno.test("GrantsDirectoryPoller: reconcileNow applies the sources as they are n
     await Deno.writeTextFile(join(grantsDir, "team.yaml"), VALID_GRANT_YAML);
     const store = createMockFileGrantStore();
     const mock = createMockLoader();
-    // Never started: a node in manual reload mode that takes the lead.
     const poller = new GrantsDirectoryPoller({
       grantsDir,
       fileGrantStore: store,

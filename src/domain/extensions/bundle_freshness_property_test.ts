@@ -17,10 +17,8 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// The fingerprint over a source's recorded modules (swamp-club#3385) is a
-// function of the set of files and their contents: the order the module
-// graph lists them in, and any repeats, must not change it, or a rebundle
-// that lists the same graph differently would look like an edit.
+// the source fingerprint depends only on the set of files and their contents,
+// so the order and repeats of the module graph listing must not change it
 
 import { assertEquals } from "@std/assert";
 import { join } from "@std/path";
@@ -32,7 +30,6 @@ import {
 
 const FILE_COUNT = 6;
 
-/** An index list over the fixture files, in any order, with repeats. */
 const arbListing = fc.array(fc.nat({ max: FILE_COUNT - 1 }), {
   minLength: 1,
   maxLength: 3 * FILE_COUNT,
@@ -53,7 +50,6 @@ Deno.test("computeSourceFingerprint: the recorded modules' order and repeats do 
     await Deno.writeTextFile(entry, "export const e = 0;");
     const files: string[] = [];
     for (let i = 0; i < FILE_COUNT; i++) {
-      // Half the files sit outside the boundary dir, one never exists.
       const file = join(dir, i % 2 ? "lib" : "models", `m${i}.ts`);
       if (i !== FILE_COUNT - 1) {
         await Deno.writeTextFile(file, `export const m${i} = ${i};`);

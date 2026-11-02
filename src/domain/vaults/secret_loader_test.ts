@@ -37,10 +37,6 @@ import { checkSecretReference } from "./secret_reference_check.ts";
 import { VaultSecretBag } from "./vault_secret_bag.ts";
 import { VaultService } from "./vault_service.ts";
 
-/**
- * A vault service over mock vault `v` holding `secrets`, recording each
- * read that returned a value.
- */
 function mockVault(secrets: Record<string, string>) {
   const reads: { key: string; caller?: string }[] = [];
   const service = new class extends VaultService {

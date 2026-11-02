@@ -24,8 +24,6 @@ import { setProcessArgumentParsePolicy } from "../untrusted_parse.ts";
 
 const validationService = new InputValidationService();
 
-// Basic type validation tests
-
 Deno.test("InputValidationService.validate passes for valid string input", () => {
   const schema: InputsSchema = {
     properties: {
@@ -93,8 +91,6 @@ Deno.test("InputValidationService.validate validates boolean type", () => {
   assertEquals(invalidResult.valid, false);
 });
 
-// Required field tests
-
 Deno.test("InputValidationService.validate fails for missing required field", () => {
   const schema: InputsSchema = {
     properties: {
@@ -120,8 +116,6 @@ Deno.test("InputValidationService.validate passes when required field present", 
   const result = validationService.validate({ environment: "dev" }, schema);
   assertEquals(result.valid, true);
 });
-
-// Enum validation tests
 
 Deno.test("InputValidationService.validate passes for valid enum value", () => {
   const schema: InputsSchema = {
@@ -155,8 +149,6 @@ Deno.test("InputValidationService.validate fails for invalid enum value", () => 
     'environment must be one of: "dev", "staging", "production"',
   );
 });
-
-// Array validation tests
 
 Deno.test("InputValidationService.validate validates array type", () => {
   const schema: InputsSchema = {
@@ -261,8 +253,6 @@ Deno.test("InputValidationService.validate validates uniqueItems", () => {
   assertEquals(invalidResult.errors[0].message, "items must have unique items");
 });
 
-// Object validation tests
-
 Deno.test("InputValidationService.validate validates object type", () => {
   const schema: InputsSchema = {
     properties: {
@@ -333,8 +323,6 @@ Deno.test("InputValidationService.validate validates additionalProperties false"
   );
 });
 
-// Default value tests
-
 Deno.test("InputValidationService.applyDefaults applies default values", () => {
   const schema: InputsSchema = {
     properties: {
@@ -361,8 +349,6 @@ Deno.test("InputValidationService.applyDefaults preserves provided values", () =
   );
   assertEquals(result.environment, "production");
 });
-
-// getMissingRequiredInputs tests
 
 Deno.test("InputValidationService.getMissingRequiredInputs returns missing fields", () => {
   const schema: InputsSchema = {
@@ -405,8 +391,6 @@ Deno.test("InputValidationService.getMissingRequiredInputs returns empty when al
   assertEquals(missing.length, 0);
 });
 
-// Multiple error tests
-
 Deno.test("InputValidationService.validate reports multiple errors", () => {
   const schema: InputsSchema = {
     properties: {
@@ -427,8 +411,6 @@ Deno.test("InputValidationService.validate reports multiple errors", () => {
   assertEquals(result.valid, false);
   assertEquals(result.errors.length, 3);
 });
-
-// Complex nested validation
 
 Deno.test("InputValidationService.validate handles complex nested structures", () => {
   const schema: InputsSchema = {
@@ -478,8 +460,6 @@ Deno.test("InputValidationService.validate handles complex nested structures", (
   assertEquals(invalidResult.valid, false);
 });
 
-// validateProvided tests
-
 Deno.test("InputValidationService.validateProvided skips the required check", () => {
   const schema: InputsSchema = {
     properties: {
@@ -491,7 +471,6 @@ Deno.test("InputValidationService.validateProvided skips the required check", ()
 
   const result = validationService.validateProvided({ replicas: 3 }, schema);
   assertEquals(result, { valid: true, errors: [] });
-  // validate() still reports the missing required input.
   assertEquals(validationService.validate({ replicas: 3 }, schema).errors, [
     { path: "environment", message: "environment is required" },
   ]);
@@ -607,7 +586,6 @@ Deno.test("InputValidationService.validate does not treat Object.prototype names
     validationService.validate({ detail: {} }, schema).errors,
     [{ path: "detail.valueOf", message: "detail.valueOf is required" }],
   );
-  // toString is inherited by `properties`, which does not declare it.
   assertEquals(
     validationService.validate(
       { detail: { valueOf: 1, toString: "x" } },
@@ -619,8 +597,6 @@ Deno.test("InputValidationService.validate does not treat Object.prototype names
     }],
   );
 });
-
-// Untrusted argument policy (swamp-club#3862)
 
 function withUntrustedPolicy(fn: () => void): void {
   const restore = setProcessArgumentParsePolicy("untrusted");

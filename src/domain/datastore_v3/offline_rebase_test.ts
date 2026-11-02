@@ -38,7 +38,6 @@ const T0 = Date.parse("2026-10-30T10:00:00.000Z");
 const iso = (ms: number) => new Date(ms).toISOString();
 const MINUTE = 60_000;
 
-/** A history holding versions 1 and 2 of `name`, both committed at T0. */
 async function historyWithTwo(name = "state"): Promise<FixtureHistory> {
   const history = new FixtureHistory();
   for (const version of [1, 2]) {
@@ -52,7 +51,6 @@ async function historyWithTwo(name = "state"): Promise<FixtureHistory> {
   return history;
 }
 
-/** An offline save of `version` of `name`, run at `executedAt`. */
 async function offlineSave(
   txnId: string,
   name: string,
@@ -78,7 +76,6 @@ async function offlineSave(
 
 Deno.test("rebaseOfflineCommits: renumbers past versions written meanwhile and keeps the txnId", async () => {
   const history = await historyWithTwo();
-  // Written offline as version 2, which another checkout took meanwhile.
   const offline = await offlineSave("off-1", "state", 2, T0 + 30 * MINUTE);
   const [result] = await rebaseOfflineCommits(
     [offline],
@@ -113,7 +110,6 @@ Deno.test("rebaseOfflineCommits: keeps a version already above the high-water ma
 
 Deno.test("rebaseOfflineCommits: inside the window the current latest is restated above the rebased version", async () => {
   const history = await historyWithTwo();
-  // Observed 3 minutes after version 2 was committed: not clearly later.
   const offline = await offlineSave("off-1", "state", 2, T0 + 3 * MINUTE);
   const [result] = await rebaseOfflineCommits(
     [offline],
@@ -149,7 +145,6 @@ Deno.test("rebaseOfflineCommits: a write observed clearly earlier does not becom
 
 Deno.test("rebaseOfflineCommits: the clock offset decides an otherwise ambiguous write", async () => {
   const history = await historyWithTwo();
-  // By its own clock 3 minutes later; serve's clock ran 10 minutes ahead.
   const offline = await offlineSave(
     "off-1",
     "state",
@@ -169,7 +164,6 @@ Deno.test("rebaseOfflineCommits: the clock offset decides an otherwise ambiguous
 
 Deno.test("rebaseOfflineCommits: a restatement is judged by its source's time, not its own commit", async () => {
   const history = await historyWithTwo();
-  // A first flush, two hours later, restates version 2 as version 4.
   const first = await offlineSave("off-1", "state", 2, T0 + 1 * MINUTE);
   const [restating] = await rebaseOfflineCommits(
     [first],
@@ -178,8 +172,6 @@ Deno.test("rebaseOfflineCommits: a restatement is judged by its source's time, n
     { encodeMetadata },
   );
   await history.land(restating, iso(T0 + 120 * MINUTE));
-  // Observed 30 minutes after version 2: newer, though older than the
-  // restatement's commit.
   const second = await offlineSave("off-2", "state", 3, T0 + 30 * MINUTE);
   const [result] = await rebaseOfflineCommits(
     [second],
@@ -197,7 +189,6 @@ Deno.test("rebaseOfflineCommits: a compacted source falls back to its createdAt"
     seq: 1,
     txnId: "online-1",
     at: iso(T0),
-    // The writer's clock ran 30 minutes ahead of serve's.
     ops: await saveOps({
       name: "state",
       version: 1,
@@ -205,7 +196,6 @@ Deno.test("rebaseOfflineCommits: a compacted source falls back to its createdAt"
     }),
   }));
   const offline = await offlineSave("off-1", "state", 1, T0 + 10 * MINUTE);
-  // Judged by its commit time, T0, the offline write is clearly later.
   const [kept] = await rebaseOfflineCommits(
     [offline],
     history.partition,
@@ -222,7 +212,6 @@ Deno.test("rebaseOfflineCommits: a compacted source falls back to its createdAt"
     { encodeMetadata },
   );
   if (compacted.kind !== "rebased") throw new Error(compacted.kind);
-  // With the commit gone, only createdAt is left: the write is earlier.
   assertEquals(compacted.latest[0].kind, "restated");
 });
 
@@ -279,7 +268,6 @@ Deno.test("rebaseOfflineCommits: a forged restates tag names a version, never a 
     at: iso(T0),
     ops: await saveOps({ name: "state", version: 1, createdAt: iso(T0) }),
   }));
-  // Version 2 claims to restate version 1 but was committed later.
   history.append(fixtureCommit({
     seq: 2,
     txnId: "online-2",
@@ -299,7 +287,6 @@ Deno.test("rebaseOfflineCommits: a forged restates tag names a version, never a 
     { encodeMetadata },
   );
   if (result.kind !== "rebased") throw new Error(result.kind);
-  // Judged against version 1's own commit time, T0: 10 minutes later wins.
   assertEquals(result.latest[0].kind, "rebased");
 });
 
@@ -354,7 +341,6 @@ Deno.test("rebaseOfflineCommits: restating is skipped when disabled, unknown or 
 Deno.test("rebaseOfflineCommits: commits rebased together never share a version, and an append follows its version", async () => {
   const history = await historyWithTwo();
   const first = await offlineSave("off-1", "state", 3, T0 + 30 * MINUTE);
-  // A later offline commit appends to the version the first one wrote.
   const changes = fixtureChanges();
   const appendMeta = metadata("state", 3);
   const appended = await toOps(changes.writeVersion({ kind: "data.append" }, {
@@ -370,7 +356,6 @@ Deno.test("rebaseOfflineCommits: commits rebased together never share a version,
     executedAt: iso(T0 + 31 * MINUTE),
     ops: appended,
   });
-  // Meanwhile serve took version 3.
   history.append(fixtureCommit({
     seq: history.nextSeq,
     txnId: "online-3",
@@ -396,7 +381,6 @@ Deno.test("rebaseOfflineCommits: commits rebased together never share a version,
     .filter((op) => op.kind === "data-version")
     .map((op) => op.kind === "data-version" ? op.metadata.version : 0);
   assertEquals(appendedVersions, [4]);
-  // Serve's version 3 was not touched by the append.
   assertEquals(
     history.partition.record(fixtureChanges().dataKey("state", 3, "raw")),
     servesThree,
@@ -411,7 +395,6 @@ Deno.test("rebaseOfflineCommits: a removal whose target is gone rejects the whol
     executedAt: iso(T0 + 10 * MINUTE),
     ops: await toOps(fixtureChanges().removeVersion("data.delete", "state", 1)),
   });
-  // Another checkout removed version 1 meanwhile.
   history.append(fixtureCommit({
     seq: history.nextSeq,
     txnId: "online-del",

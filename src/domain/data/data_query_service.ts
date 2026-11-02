@@ -77,16 +77,10 @@ import type { Data } from "./data.ts";
 import { fromRow } from "./data_record_mapper.ts";
 import { garbageCollectionToColumn } from "./data_metadata.ts";
 
-// The query view port, re-exported beside the service that takes it.
 export { type QueryProgram, type QueryView, QueryViewRefusal };
 
 const logger = getLogger(["swamp", "domain", "data", "query"]);
 
-/**
- * The refusal for a model-matching call where no resolver is wired, naming
- * the function as typed: `model()`, or `behavior()` for a query that calls
- * only the behavior spelling (swamp-club#3410).
- */
 function modelUnavailable(ast: ASTNode): UserError {
   const fn = modelFunctionAsTyped(ast);
   const noun = fn === MODEL_FUNCTION ? "model" : "behavior";
@@ -97,23 +91,17 @@ function modelUnavailable(ast: ASTNode): UserError {
   );
 }
 
-/**
- * The model-matching function a message names: `model` unless the AST calls
- * only `behavior`.
- */
 function modelFunctionAsTyped(ast: ASTNode): string {
   const called = calledModelFunctions(ast);
   return called.length === 1 ? called[0] : MODEL_FUNCTION;
 }
 
-/** Rename hops data query follows, as an unversioned repository read does. */
 const MAX_RENAME_HOPS = 5;
 
 function renameKey(namespace: string, type: string, modelId: string): string {
   return `${namespace}\0${type}\0${modelId}`;
 }
 
-/** Whether a select expression calls model() in any form. */
 function collectModelReferencesLenient(selectAst: ASTNode): boolean {
   try {
     return collectModelReferences(selectAst).length > 0;
@@ -132,19 +120,9 @@ function latestRunUnavailable(): UserError {
 }
 
 /**
- * Sets `is_latest` and `is_step_latest` on each row to match the semantics
- * of `CatalogStore.upsertNewVersion`:
- *
- * - `is_latest`: exactly one row per (namespace, type, model, name) group,
- *   the highest version, whatever its step_name.
- * - `is_step_latest`: model-method rows (step_name = "") are demoted by ANY
- *   higher version (model-method or workflow-step), so they keep the flag
- *   only when they are the absolute highest version in the group.
- *   Workflow-step rows (step_name != "") are demoted by higher versions
- *   with the same step_name or by higher model-method versions. Above the
- *   highest model-method version, each step_name keeps its own latest.
- *
- * The highest row always gets both flags.
+ * mirrors CatalogStore.upsertNewVersion: is_latest is the highest version per
+ * group; model-method rows keep is_step_latest only at the top, step rows per
+ * step_name above the top model-method version
  */
 export function computeLatestFlags(rows: CatalogRow[]): void {
   const groups = new Map<string, CatalogRow[]>();
@@ -194,65 +172,40 @@ export function computeLatestFlags(rows: CatalogRow[]): void {
   }
 }
 
-/**
- * Resolves the workflow named in a `latestRun("<workflow>")` query call to
- * the id of its most recent run, or null when it has no runs. Throws a
- * UserError when the workflow is unknown or the caller may not read it.
- */
 export type LatestWorkflowRunResolver = (
   workflow: string,
 ) => Promise<string | null>;
 
-/** The run each `latestRun` workflow resolved to for one query. */
 type LatestRuns = ReadonlyMap<string, string | null>;
 
 const NO_LATEST_RUNS: LatestRuns = new Map();
 
-/** The definition data is stored under, as a `model()` call resolved it. */
 export interface ResolvedModelReference {
-  /** The definition's normalized model type, as the catalog stores it. */
   modelType: string;
-  /** The definition id. */
   modelId: string;
 }
 
-/**
- * Resolves the model named in a `model("<name or id>")` query call to the
- * definition its data is stored under, as `swamp data get <model>` does.
- * Throws a UserError when the model is unknown or the caller may not read
- * it.
- */
 export type ModelReferenceResolver = (
   idOrName: string,
 ) => Promise<ResolvedModelReference>;
 
-/** The definition each `model()` reference resolved to for one query. */
 type ResolvedModels = ReadonlyMap<string, ResolvedModelReference>;
 
 const NO_MODELS: ResolvedModels = new Map();
 
 export interface DataQueryOptions {
   limit?: number;
-  /** CEL projection expression. When set, results are projected and returned as unknown[]. */
   select?: string;
-  /** Force-load JSON attributes even when the predicate doesn't reference them. */
   loadAttributes?: boolean;
   /**
-   * Replace the implicit latest-only filter with latest-per-step: when the
-   * predicate does not open history, match each workflow step's latest
-   * version of a data name (`is_step_latest`) instead of the single latest
-   * (`is_latest`). Only the CEL collection helpers `findBySpec` and
-   * `findByTag` set this, so every step's output stays visible
-   * (swamp-club#1761). Records of an older step's latest report
-   * `isLatest: false`.
+   * only findBySpec and findByTag set this, so every step's output stays
+   * visible; records of an older step's latest report isLatest: false
    */
   latestPerStep?: boolean;
   /**
-   * Populate each record's `path` with its local content path (default
-   * false). Applied as each row's record is built, so predicates and select
-   * projections see "" unless the caller opts in. Only the CEL data.*
-   * namespace opts in; results that leave the process (serve, workers) must
-   * not.
+   * off by default so predicates and projections see an empty path; only the
+   * CEL data.* namespace opts in, never results that leave the process (serve,
+   * workers)
    */
   includeContentPath?: boolean;
   /**
@@ -261,119 +214,71 @@ export interface DataQueryOptions {
    */
   include?: (record: DataRecord) => Promise<boolean>;
   /**
-   * Stored model types whose records are never matched, whatever the
-   * predicate says. They are compared as stored strings, so pass every form
-   * a type can be stored under (bare and `@`-prefixed). The CEL data.*
-   * namespace passes CONTROL_PLANE_STORED_TYPES so expressions can never read
-   * control-plane records (swamp-club#2756).
+   * compared as stored strings, so pass every stored form (bare and
+   * @-prefixed); the CEL data.* namespace passes control-plane types so
+   * expressions can never read those records
    */
   excludeModelTypes?: readonly string[];
   /**
-   * Resolves `latestRun("<workflow>")` calls in the predicate and select.
-   * Passed per call, so each caller decides whose workflows may be resolved;
-   * without it a query that calls latestRun fails (swamp-club#2957).
+   * passed per call so each caller decides whose workflows may be resolved;
+   * without it a query that calls latestRun fails
    */
   latestRunResolver?: LatestWorkflowRunResolver;
   /**
-   * Resolves `model("<name or id>")` calls in the predicate. Passed per
-   * call, so each caller decides whose models may be resolved; without it a
-   * query that calls model fails (swamp-club#2960).
+   * passed per call so each caller decides whose models may be resolved;
+   * without it a query that calls model fails
    */
   modelResolver?: ModelReferenceResolver;
   /**
-   * The expression-facing query view (design/enablers/typed-secrets.md
-   * Section 6.2): the typed `data.query` accessor passes one, so its
-   * predicate and projection read tagged sensitive fields as Secrets and a
-   * refusal propagates as a {@link QueryViewRefusal}. Absent on every other
-   * path, which reads records as stored. A composite service forwards it to
-   * each of its services.
+   * expression-facing view: tagged sensitive fields read as Secrets and a
+   * refusal propagates as QueryViewRefusal; absent on every other path, which
+   * reads records as stored
    */
   view?: QueryView;
-  /**
-   * Orders the matches by `createdAt` or a tag's value, with the row
-   * identity as the tie-break, instead of catalog order (swamp-club#4177).
-   * Only {@link DataQueryService.query} and
-   * {@link DataQueryService.queryPage} take it.
-   */
   sort?: QuerySort;
-  /**
-   * With `sort`, matches only rows after this position: the keyset cursor
-   * of the previous page's last row.
-   */
   after?: QueryCursorPosition;
 }
 
-/** A page of {@link DataQueryService.queryPage} results. */
 export interface DataQueryPage {
   results: DataRecord[] | unknown[];
-  /**
-   * With a sort, the position of the last returned row, for the next
-   * page's cursor. Absent when nothing was returned or there is no sort.
-   */
   last?: QueryCursorPosition;
 }
 
-/** Options for {@link DataQueryService.getLatestRecord}. */
 export interface LatestRecordOptions {
-  /** See {@link DataQueryOptions.includeContentPath}. */
   includeContentPath?: boolean;
-  /** See {@link DataQueryOptions.excludeModelTypes}. */
   excludeModelTypes?: readonly string[];
 }
 
-/**
- * Domain service for querying data artifacts using CEL predicates.
- *
- * Queries iterate over a SQLite metadata catalog, evaluate a parsed CEL
- * predicate against each row, and optionally lazy-load JSON content for
- * predicates that reference `attributes`.
- */
 /**
  * Most foreign bodies a service keeps. A serve process keeps one service for
  * its lifetime, so the cache must not grow with every record ever read.
  */
 const FOREIGN_CONTENT_CACHE_ENTRIES = 256;
 
-/** What {@link DataQueryService} matched for a predicate, before projection. */
 interface MatchResult {
   records: DataRecord[];
   selectParsed?: (ctx: Record<string, unknown>) => unknown;
-  /** Whether the select expression reads the items' bytes. */
   selectReadsContent: boolean;
-  /** Whether the select expression reads the items' `attributes`. */
   selectReadsAttributes: boolean;
   /**
-   * Rows whose predicate read `content` although their content type is not
-   * text, as metadata-only records, in evaluation order. `matchesBefore`
-   * counts the records matched before the row. They are never matches; the
-   * caller raises {@link BinaryContentPredicateError} for one it may read.
+   * rows whose predicate read content of a non-text type; never matches, the
+   * caller raises BinaryContentPredicateError for one it may read
    */
   violations: Array<{ record: DataRecord; matchesBefore: number }>;
-  /** Whether matching stopped at the limit, so more rows may match. */
   hitLimit: boolean;
-  /**
-   * With a sort, each record's sort value and row identity, in step with
-   * `records`; empty without one.
-   */
   positions: QueryCursorPosition[];
 }
 
-/** A record's content as a projection sees it; see `projectedContent`. */
 interface ProjectedContent {
   content: unknown;
   contentEncoding: ContentEncoding | null;
 }
 
-/**
- * Whether `segment` is one path component that stays where it is put: not
- * empty, not `.` or `..`, and holding no separator or NUL.
- */
 function isSafePathSegment(segment: string): boolean {
   return segment !== "" && segment !== "." && segment !== ".." &&
     !/[/\\\0]/.test(segment);
 }
 
-/** Identifies one version of one data item in the catalog. */
 function catalogRowKey(row: CatalogRow): string {
   return [
     row.namespace,
@@ -387,19 +292,12 @@ function catalogRowKey(row: CatalogRow): string {
 export interface DataQueryServiceOptions {
   filterStaleRows?: boolean;
   /**
-   * Whether a catalog not marked populated is filled by walking the data
-   * directory. True by default. A v3 repository context passes false: its
-   * catalog is the read model's, which the context catches up before any
-   * query and which marks it populated itself (swamp-club#3279).
+   * false for a v3 repository context: its catalog is the read model's, which
+   * the context catches up and marks populated before any query
    */
   backfill?: boolean;
 }
 
-/**
- * The environment the query service parses and evaluates in. Exported so
- * the refusal coverage fitness test builds the query view from the same
- * base the service uses.
- */
 export function createQueryEnvironment(): Environment {
   return new Environment({
     unlistedVariablesAreDyn: true,
@@ -424,19 +322,6 @@ export class DataQueryService {
     this.queryEnv = createQueryEnvironment();
   }
 
-  /**
-   * Direct indexed lookup for the latest version of a specific data item.
-   *
-   * Uses a three-tier strategy to avoid a full catalog backfill:
-   * 1. Try the indexed SQL lookup first — if the catalog is populated or the
-   *    row exists from a write-through update, return immediately.
-   * 2. If the catalog is not populated and the row exists but its content
-   *    is gone (stale row after invalidate()), fall through. On a
-   *    lazy-hydration datastore the content check downloads the raw file.
-   * 3. If the catalog is not populated and no row exists (or row was stale),
-   *    run a scoped backfill for just this (modelName, dataName) pair, then
-   *    retry the indexed lookup.
-   */
   async getLatestRecord(
     modelName: string,
     dataName: string,
@@ -455,14 +340,11 @@ export class DataQueryService {
         options?.excludeModelTypes,
       );
 
-    // If a full backfill is already in-flight, await it — it will populate
-    // everything including our target.
     if (!populated && this.backfillPromise) {
       await this.backfillPromise;
       return await this.buildRecordFromRow(latestRow(), includePath);
     }
 
-    // Tier 1: try the indexed SQL lookup.
     const row = latestRow();
     if (row) {
       if (populated) {
@@ -476,39 +358,29 @@ export class DataQueryService {
         }
         return await this.buildRecordFromRow(row, includePath);
       }
-      // Catalog not populated, so the row may predate a pull or another
-      // repository's write. Prefer the version the on-disk latest marker
-      // names (swamp-club#2858).
+      // catalog not populated, so the row may predate a pull or another
+      // repository's write; prefer the version the on-disk latest marker names
       const current = this.refreshFromLatestMarker(row);
       if (current) return await this.buildRecordFromRow(current, includePath);
-      // Verify the data still exists to guard against stale rows left
-      // behind after invalidate().
+      // guards against stale rows left behind after invalidate()
       if (await this.rowHasContent(row)) {
         return await this.buildRecordFromRow(row, includePath);
       }
-      // Stale row — fall through to scoped backfill
     }
 
     if (populated) return null;
 
-    // Tier 2: scoped backfill for just this (modelName, dataName) pair.
     await this.scopedBackfill(modelName, dataName);
     const freshRow = latestRow();
     if (!freshRow) return null;
-    // Verify the row points to real data (it may be the same stale row
-    // that triggered the scoped backfill).
     if (!(await this.rowHasContent(freshRow))) return null;
     return await this.buildRecordFromRow(freshRow, includePath);
   }
 
   /**
-   * When the on-disk latest marker names a newer (or older) version than
-   * `row`, upserts that version into the catalog and returns its row.
-   * Returns null when the row is current, when the data is gone or the
-   * marker names a rename marker (the caller's content check handles that),
-   * or when the row belongs to another namespace, whose data is not in this
-   * repository's layout. A deletion marker is served like any other version,
-   * as write-through and backfill index it (swamp-club#3698).
+   * returns null when the row is current, the data is gone, the marker names a
+   * rename marker, or the row is another namespace's; a deletion marker is
+   * served like any other version
    */
   private refreshFromLatestMarker(row: CatalogRow): CatalogRow | null {
     if (row.namespace !== this.dataRepo.namespace) return null;
@@ -526,12 +398,9 @@ export class DataQueryService {
       latest,
     );
     if (!data || data.isRenamed) return null;
-    // Rows above the marker whose version is gone from disk (another
-    // repository deleted it) would otherwise outrank the marker's version in
-    // upsertNewVersion, which orders by version (swamp-club#2520). A higher
-    // promoted version still on disk means the marker lags — the catalog row
-    // stands. An unpromoted deferred write does not count: it holds neither
-    // flag, and the removal's recompute skips pending rows.
+    // rows above the marker gone from disk would outrank its version in
+    // upsertNewVersion; a higher promoted version still on disk means the
+    // marker lags, so the row stands. Unpromoted deferred writes do not count
     const higherWhere =
       "namespace = ? AND type_normalized = ? AND model_id = ? AND data_name = ? AND version > ?";
     const higherParams = [
@@ -566,8 +435,8 @@ export class DataQueryService {
       gone,
       computeLatestFlags,
     );
-    // Read the flags after the removal: it recomputes them, which can flag a
-    // higher row that is still on disk (swamp-club#2975).
+    // read the flags after the removal: it recomputes them, which can flag a
+    // higher row that is still on disk
     const higherOnDisk = [
       ...this.catalogStore.iterateFiltered(
         `${higherWhere} AND (is_latest = 1 OR is_step_latest = 1)`,
@@ -581,11 +450,8 @@ export class DataQueryService {
   }
 
   /**
-   * Whether a catalog row's content still exists. Uses the async read so a
-   * lazy-hydration datastore — which syncs metadata only — fetches the raw
-   * file instead of the row being mistaken for a stale one (swamp-club#2288).
-   * Without a hydrate hook this is the same local read as before, so a row
-   * whose data was deleted, or whose write never finished, is still stale.
+   * uses the async read so a lazy-hydration datastore, which syncs metadata
+   * only, fetches the raw file instead of the row being mistaken for stale
    */
   private async rowHasContent(row: CatalogRow): Promise<boolean> {
     const content = await this.dataRepo.getContent(
@@ -598,12 +464,8 @@ export class DataQueryService {
   }
 
   /**
-   * Throws when `specName` names several latest data items of a model.
-   *
-   * @param resolved - The type and id the caller found the record under.
-   *   Rows with the same id under another type are what a retyped model left
-   *   behind — data prune reclaims them as orphaned — so they are not peers
-   *   (swamp-club#2501).
+   * rows with the same id under another type are left by a retyped model (data
+   * prune reclaims them as orphaned), so they are not peers
    */
   checkSpecNameAmbiguity(
     specName: string,
@@ -636,12 +498,6 @@ export class DataQueryService {
     }
   }
 
-  /**
-   * Data names of the latest records written under `specName` for a model,
-   * newest first. Reads the same rows as {@link checkSpecNameAmbiguity}; used
-   * to explain a `data.latest()` miss whose argument was a spec name rather
-   * than a data name.
-   */
   latestDataNamesForSpec(
     modelName: string,
     specName: string,
@@ -662,12 +518,9 @@ export class DataQueryService {
   }
 
   /**
-   * Maps the row {@link getLatestRecord} found, after making its content
-   * local and current: `fromRow` reads it synchronously, so a body a
-   * metadata-only pull left absent or stale would otherwise come back as
-   * empty or old attributes (swamp-club#3179). Only rows of this
-   * repository's namespace have a content file here to ensure; another
-   * namespace's row gets its attributes from the remote (swamp-club#3306).
+   * makes content local and current first: fromRow reads synchronously, so an
+   * absent or stale body would read as empty or old attributes. Other
+   * namespaces get attributes from the remote
    */
   private async buildRecordFromRow(
     row: CatalogRow | null,
@@ -679,8 +532,8 @@ export class DataQueryService {
     try {
       await this.ensureRowContent(row);
     } catch (error) {
-      // A record the v3 datastore could not materialise fails the lookup
-      // with its code instead of reading as empty (swamp-club#3617).
+      // a record the v3 datastore could not materialise fails the lookup with
+      // its code instead of reading as empty
       if (isUnreadableContentError(error)) throw error;
       logger
         .debug`Could not hydrate ${row.model_name}/${row.data_name}@v${row.version}: ${
@@ -693,12 +546,9 @@ export class DataQueryService {
   }
 
   /**
-   * Fills the attributes of a JSON record of another namespace, whose content
-   * is never in this repository's own layout, through the repository's
-   * foreign content fetcher. A missing body or a failed fetch leaves the
-   * attributes empty and is tried again on the next read, so one transient
-   * failure never empties a record for the life of the process; a record the
-   * datastore could not materialise fails the read (swamp-club#3691).
+   * a missing body or failed fetch leaves attributes empty and is retried on
+   * the next read, so one transient failure never empties a record for the
+   * process life; an unmaterialisable record fails the read
    */
   private async hydrateForeignRecord(record: DataRecord): Promise<void> {
     if (
@@ -717,12 +567,8 @@ export class DataQueryService {
   }
 
   /**
-   * The bytes of a record of another namespace (see
-   * {@link isForeignNamespace}), read through the repository's foreign
-   * content fetcher, or null when there is no fetcher, the record is this
-   * repository's own, or the body is missing or could not be fetched. A body
-   * is fetched once per service. A fetch that finds the record unreadable
-   * (swamp-club#3617) is rethrown rather than read as absent.
+   * a body is fetched once per service; a fetch that finds the record
+   * unreadable is rethrown rather than read as absent
    */
   private async foreignContent(
     record: DataRecord,
@@ -731,11 +577,9 @@ export class DataQueryService {
     if (!fetcher || !isForeignNamespace(record.namespace, this.dataRepo)) {
       return null;
     }
-    // The row is the other namespace's to write, so its fields are checked
-    // before they name a file: none may step out of that namespace's own
-    // data tree, whatever the datastore does with the path. The solo
-    // namespace is the empty segment, reached only by a fetcher that reads
-    // it (isForeignNamespace).
+    // the row is another namespace's to write, so no field may step out of that
+    // namespace's data tree; the solo namespace is the empty segment, reached
+    // only by a fetcher that reads it
     if (
       (record.namespace !== "" && !isSafePathSegment(record.namespace)) ||
       !record.modelType.split("/").every(isSafePathSegment) ||
@@ -756,8 +600,8 @@ export class DataQueryService {
     try {
       bytes = await fetcher(record.namespace, relPath);
     } catch (error) {
-      // A record the datastore could not materialise fails the read with its
-      // code instead of reading as empty (swamp-club#3691).
+      // a record the datastore could not materialise fails the read with its
+      // code instead of reading as empty
       if (isUnreadableContentError(error)) throw error;
       logger
         .debug`Could not fetch ${record.namespace}:${record.modelName}/${record.name}@v${record.version}: ${
@@ -777,13 +621,6 @@ export class DataQueryService {
     return bytes;
   }
 
-  /**
-   * Makes a row's content file local and not shorter than the row's size,
-   * through the repository's content-ensuring step. Only rows of this
-   * repository's namespace have a content file here; a repository without
-   * the step (a test double) is left as it is. Undefined when nothing was
-   * ensured.
-   */
   private async ensureRowContent(
     row: CatalogRow,
   ): Promise<ContentAvailability | undefined> {
@@ -833,10 +670,6 @@ export class DataQueryService {
     }
   }
 
-  /**
-   * Ensures the catalog is populated, triggering a backfill if needed.
-   * Reuses the same backfill-coalescing logic as query().
-   */
   async ensurePopulated(): Promise<void> {
     if (this.catalogStore.isPopulated()) return;
     if (this.backfillPromise) {
@@ -852,12 +685,6 @@ export class DataQueryService {
     }
   }
 
-  /**
-   * Returns the spec-name counterpart of a predicate that matches one data
-   * instance name exactly (see {@link buildSpecNameFallback}), or null when
-   * the predicate has no such equality or does not parse. Callers run it to
-   * tell a user who queried by spec name where their data is.
-   */
   specNameFallback(predicate: string): SpecNameFallback | null {
     try {
       return buildSpecNameFallback(
@@ -869,15 +696,9 @@ export class DataQueryService {
   }
 
   /**
-   * Queries data artifacts matching a CEL predicate.
-   * Triggers backfill if the catalog is not yet populated.
-   * Attributes are returned as stored: vault references in sensitive fields
-   * are never resolved here. Callers that need the secret resolve it
-   * themselves, recording it in the run's RunSensitiveValues. Under a
-   * {@link QueryView} the predicate and the projection read tagged fields
-   * through the view instead (typed-secrets Section 6.2), and records
-   * answered without a select are still returned as stored for the caller
-   * to adapt.
+   * attributes are returned as stored: vault references in sensitive fields are
+   * never resolved here; callers needing the secret resolve it and record it in
+   * RunSensitiveValues
    */
   async query(
     predicate: string,
@@ -886,11 +707,6 @@ export class DataQueryService {
     return (await this.runQuery(predicate, options)).results;
   }
 
-  /**
-   * {@link query}, also returning the position of the last returned row
-   * when the query is sorted, so the caller can build the next page's
-   * cursor. The position is taken from the catalog row, before projection.
-   */
   queryPage(
     predicate: string,
     options?: DataQueryOptions,
@@ -898,7 +714,6 @@ export class DataQueryService {
     return this.runQuery(predicate, options);
   }
 
-  /** The body of {@link query} and {@link queryPage}; never overridden. */
   private async runQuery(
     predicate: string,
     options?: DataQueryOptions,
@@ -910,12 +725,9 @@ export class DataQueryService {
     await this.ensurePopulated();
     let results: DataRecord[] | unknown[];
     let last: QueryCursorPosition | undefined;
-    // Apply the limit to returned records, so neither hidden records nor
-    // stale catalog rows dropped during hydration shorten a page: match in
-    // growing batches until the limit is met or the matches run out, never
-    // the whole catalog when a limit is set. Without include, the first
-    // batch is the limit itself, so a query with no stale rows takes one
-    // pass, as it always has (swamp-club#2985).
+    // limit applies to returned records so hidden or stale rows never shorten a
+    // page: match in growing batches until met, never the whole catalog;
+    // without include the first batch is the limit
     const include = options?.include;
     const limit = options?.limit ?? Infinity;
     let batch = Number.isFinite(limit)
@@ -934,12 +746,9 @@ export class DataQueryService {
         tried,
         models,
       );
-      // Walk violations and matches in the order they were evaluated, and
-      // stop where the accepted page fills, so a violation is raised only
-      // where an unfiltered query with no stale rows would have reached it.
-      // A violation the caller may not read is dropped like any other hidden
-      // record, so the error never names, or reveals, an item outside the
-      // caller's reach.
+      // walk violations and matches in evaluation order and stop where the page
+      // fills; a violation the caller may not read is dropped so the error
+      // never names an item outside their reach
       const accepted: DataRecord[] = [];
       let lastAccepted: QueryCursorPosition | undefined;
       let nextViolation = 0;
@@ -965,17 +774,14 @@ export class DataQueryService {
           lastAccepted = matched.positions[i];
         }
       }
-      // Stale rows dropped during hydration can shorten a batch, so only
-      // stopping short of the batch limit means the matches ran out. A wider
-      // batch re-matches from the start; `tried` keeps it from downloading a
-      // body twice, and the widening only happens when stale rows or include
-      // shortened the page.
+      // stale rows dropped during hydration can shorten a batch, so only
+      // stopping short of the batch limit means matches ran out; a wider batch
+      // re-matches from the start and tried prevents re-downloads
       if (
         accepted.length >= limit || batch === undefined || !matched.hitLimit
       ) {
-        // Before projection, so a select that reads attributes sees them, and
-        // after include, so a record the caller may not read is never fetched.
-        // A select that reads no attributes fetches nothing.
+        // before projection so a select that reads attributes sees them, after
+        // include so a record the caller may not read is never fetched
         if (!matched.selectParsed || matched.selectReadsAttributes) {
           for (const record of accepted) {
             await this.hydrateForeignRecord(record);
@@ -996,12 +802,6 @@ export class DataQueryService {
     return last ? { results, last } : { results };
   }
 
-  /**
-   * Queries data artifacts matching a CEL predicate (sync version).
-   * Used by CEL expression evaluation which must be synchronous.
-   * Triggers sync backfill if the catalog is not yet populated.
-   * Like query(), returns attributes as stored.
-   */
   querySync(
     predicate: string,
     options?: DataQueryOptions,
@@ -1030,10 +830,6 @@ export class DataQueryService {
     );
   }
 
-  /**
-   * Resolves each distinct workflow the predicate and select pass to
-   * `latestRun`, once per query, through the caller's resolver.
-   */
   private async resolveLatestRuns(
     predicate: string,
     options?: DataQueryOptions,
@@ -1052,7 +848,6 @@ export class DataQueryService {
     return latestRuns;
   }
 
-  /** The workflows `latestRun` is called with in a predicate and select. */
   private latestRunWorkflows(predicateAst: ASTNode, select?: string): string[] {
     const workflows = new Set(collectLatestRunWorkflows(predicateAst));
     if (select) {
@@ -1065,9 +860,8 @@ export class DataQueryService {
   }
 
   /**
-   * An environment where `latestRun` returns the runs resolved for this
-   * query. A clone, so the shared environment — and every concurrent
-   * query — never sees another query's runs.
+   * a clone, so the shared environment and concurrent queries never see another
+   * query's runs
    */
   private latestRunEnv(
     workflows: string[],
@@ -1086,9 +880,8 @@ export class DataQueryService {
   }
 
   /**
-   * Resolves each distinct model the predicate passes to `model`, once per
-   * query, through the caller's resolver. Field references are validated
-   * first, so an invalid predicate never costs a definition lookup.
+   * field references are validated first, so an invalid predicate never costs a
+   * definition lookup
    */
   private async resolveModels(
     predicate: string,
@@ -1108,14 +901,9 @@ export class DataQueryService {
   }
 
   /**
-   * Resolves the rename forwards a latest-only `name == "<old>"` predicate
-   * follows: for each model the catalog records a forward from `dataName`
-   * under, the name an unversioned repository read of `dataName` ends at,
-   * keyed by namespace, type and model id. The catalog only nominates
-   * models; each hop is decided by the name's rename marker on disk, exactly
-   * as `data get` reads it, so a forward that a later write or delete
-   * (here or on another machine) ended is never followed. A chain that loops
-   * or runs past {@link MAX_RENAME_HOPS} resolves to nothing.
+   * the catalog only nominates models; each hop is decided by the rename marker
+   * on disk as data get reads it, so a forward that a later write or delete
+   * ended is never followed. Loops resolve to nothing
    */
   private resolveRenameForwards(
     dataName: string,
@@ -1154,12 +942,6 @@ export class DataQueryService {
     return targets;
   }
 
-  /**
-   * The name an unversioned read of `dataName` ends at by following its
-   * rename markers on disk, or null when it has no marker, the chain loops,
-   * or it runs past {@link MAX_RENAME_HOPS}. Throws when a marker cannot be
-   * read.
-   */
   private followRenameMarkers(
     modelType: ModelType,
     modelId: string,
@@ -1193,25 +975,9 @@ export class DataQueryService {
   }
 
   /**
-   * {@link executeMatch} for the async query path, with lazy content
-   * hydrated. Matching is synchronous and reads bodies with getContentSync,
-   * which cannot download, so a lazily-synced row would evaluate and return
-   * with empty attributes where `data get` downloads its content. Each pass
-   * collects the own-namespace rows whose needed body was missing, downloads
-   * them through the async getContent, and matches again while a download
-   * succeeded. Rows `include` rejects are never downloaded, so a caller
-   * cannot make the server fetch content it may not read. A download error
-   * fails the query, as it fails `data get`.
-   *
-   * A row that matched while empty can stop matching once downloaded, so a
-   * later pass can reach rows a limit hid from an earlier one. Only then —
-   * a pass after a download reaching rows not yet tried — is the limit it
-   * collects under doubled, so a predicate like `!has(attributes.x)` takes
-   * log(rows / limit) passes rather than one per limit window. Bodies
-   * downloaded because their rows are returned leave the match set as it
-   * was, so a metadata predicate downloads only the rows within the limit.
-   * A pass that collected under a raised limit is followed by one at the
-   * caller's limit. Each row is tried once, so the loop ends.
+   * sync matching cannot download, so lazy rows would return empty attributes;
+   * download missing bodies of rows include accepts, rematch, and double the
+   * limit only when a pass reaches untried rows
    */
   private async matchWithHydration(
     predicate: string,
@@ -1239,8 +1005,8 @@ export class DataQueryService {
           options?.include &&
           !(await options.include(this.rowToRecord(row, false, false, false)))
         ) continue;
-        // The row's own size catches a local body a metadata-only pull left
-        // shorter than the row (swamp-club#3178).
+        // the row's own size catches a local body a metadata-only pull left
+        // shorter than the row
         if ((await this.ensureRowContent(row)) === "missing") continue;
         if (await this.rowHasContent(row)) hydrated = true;
       }
@@ -1262,12 +1028,6 @@ export class DataQueryService {
     }
   }
 
-  /**
-   * Matches and hydrates records for a predicate, and parses the select
-   * expression — loading whatever it needs — without applying it. Own-
-   * namespace rows whose needed body is not on local disk are added to
-   * `missingContent` when given.
-   */
   private executeMatch(
     predicate: string,
     options?: DataQueryOptions,
@@ -1288,10 +1048,9 @@ export class DataQueryService {
         ? () => missingContent.set(catalogRowKey(row), row)
         : undefined;
 
-    // An expression-facing query evaluates in its view's environment, where
-    // a tagged field is a Secret with its refusals (typed-secrets Section
-    // 6.2). Every parse below uses that base, so the program evaluated when
-    // the predicate opens history, which is this first parse, has them too.
+    // an expression-facing query evaluates in its view's environment, where a
+    // tagged field is a Secret with its refusals; every parse uses that base,
+    // including the first, which decides whether history opens
     const view = options?.view;
     const base = view ? view.environment(this.queryEnv) : this.queryEnv;
 
@@ -1302,7 +1061,6 @@ export class DataQueryService {
     const rootIds = collectRootIdentifiers(userAst);
     validateFieldReferences(rootIds);
 
-    // A query calling latestRun parses in an environment that has it.
     let env = base;
     const latestRunWorkflows = this.latestRunWorkflows(
       userAst,
@@ -1313,9 +1071,9 @@ export class DataQueryService {
       userParsed = env.parse(predicate);
     }
 
-    // A query calling model parses in an environment where model() matches
-    // the row being evaluated against its resolved definition. The row is
-    // local to this call, so concurrent queries never see each other's.
+    // model() matches the row being evaluated against its resolved definition;
+    // the row is local to this call, so concurrent queries never see each
+    // other's
     let currentRow: CatalogRow | null = null;
     const modelReferences = collectModelReferences(userAst);
     if (options?.select) {
@@ -1339,8 +1097,7 @@ export class DataQueryService {
           currentRow.type_normalized === target.modelType &&
           currentRow.model_id === target.modelId;
       };
-      // model() and its behavior spelling behavior() (swamp-club#3410) are
-      // one function under two names.
+      // model() and behavior() are one function under two names
       env = env === base ? env.clone() : env;
       for (const fn of MODEL_FUNCTIONS) {
         env = env.registerFunction(`${fn}(string): bool`, matchesModel);
@@ -1348,15 +1105,9 @@ export class DataQueryService {
       userParsed = env.parse(predicate);
     }
 
-    // Implicit latest-only: unless the predicate references `version` or
-    // `isLatest` at root, restrict results to rows where is_latest is true.
-    // Callers opt into history by mentioning either field (e.g. `version ==
-    // 2`, `version >= 0`, `isLatest == false`). String literals like
-    // `name == "version-report"` do not trigger the opt-out because
-    // collectRootIdentifiers walks the AST rather than the source text.
-    // With latestPerStep the SQL pushdown below filters on is_step_latest
-    // instead, and the CEL `isLatest == true` term is left out because an
-    // older step's latest has isLatest false.
+    // unless the predicate references version or isLatest at root, restrict to
+    // latest rows; the AST walk means string literals do not opt out.
+    // latestPerStep filters on is_step_latest and omits isLatest == true
     const opensHistory = rootIds.some((id) => HISTORY_OPT_IN_FIELDS.has(id));
     const latestPerStep = options?.latestPerStep ?? false;
     const effectivePredicate = opensHistory || latestPerStep
@@ -1367,7 +1118,6 @@ export class DataQueryService {
       : env.parse(effectivePredicate);
     const filterAst = parsed.ast as ASTNode;
 
-    // Parse select expression if provided
     let selectParsed: ((ctx: Record<string, unknown>) => unknown) | undefined;
     if (options?.select) {
       selectParsed = env.parse(options.select) as unknown as (
@@ -1375,11 +1125,9 @@ export class DataQueryService {
       ) => unknown;
     }
 
-    // Detect attributes and content usage — union filter and select expression.
-    // content is aliased to attributes for JSON records in the CEL context,
-    // so referencing content also requires loading attributes. Only the
-    // filter needs content loaded while matching: a select that reads it gets
-    // the bytes in project(), after the caller's include has run.
+    // content is aliased to attributes for JSON records, so referencing content
+    // also loads attributes; only the filter needs content while matching, a
+    // select reads it in project() after include
     const needsContent = referencesContent(filterAst);
     let needsAttributes = options?.loadAttributes ??
       (referencesAttributes(filterAst) || needsContent);
@@ -1477,7 +1225,6 @@ export class DataQueryService {
     const latestRunWorkflow = extractWorkflowRunIdLatestRun(userAst);
     if (latestRunWorkflow !== null) {
       const runId = latestRuns.get(latestRunWorkflow) ?? null;
-      // A workflow with no runs: no row can equal its latest run.
       if (runId === null) {
         return {
           records: [],
@@ -1493,8 +1240,6 @@ export class DataQueryService {
       whereParams.push(runId);
     }
 
-    // A sorted query reads rows in its order, from after its cursor; each
-    // row's position is kept for the next page's cursor.
     const sort = options?.sort;
     const sortKeys = new WeakMap<CatalogRow, string>();
     const sortedRows = (order: CatalogSortOrder) => {
@@ -1534,9 +1279,8 @@ export class DataQueryService {
       ],
     });
 
-    // Iterate catalog rows and evaluate predicate.
-    // CEL reserves "namespace" as an identifier, so we expose an "ns" alias
-    // via a prototype-chain overlay — the record itself is not mutated.
+    // CEL reserves namespace as an identifier, so an ns alias is exposed
+    // through a prototype-chain overlay; the record itself is not mutated
     const results: DataRecord[] = [];
     const violations: Array<{ record: DataRecord; matchesBefore: number }> = [];
     let hitLimit = false;
@@ -1553,10 +1297,9 @@ export class DataQueryService {
         )
       ) continue;
       const record = this.rowToRecord(row, false, false, includePath);
-      // attributes/content are read from disk only when evaluation touches
-      // them or the row matches, so rows rejected by metadata terms never
-      // read their body (swamp-club#2122). The load outcome — record or
-      // error — is memoized per row; nothing is cached across queries.
+      // attributes and content are read from disk only when evaluation touches
+      // them or the row matches; the load outcome is memoized per row, nothing
+      // is cached across queries
       let full: DataRecord | undefined;
       let loadFailed = false;
       let loadError: unknown;
@@ -1579,16 +1322,15 @@ export class DataQueryService {
         }
         return full;
       };
-      // `content` in a predicate is text; reading it on a binary item is an
-      // error (swamp-club#2959). The check uses the catalog's content type, so
-      // no bytes are read to make it.
+      // content in a predicate is text; reading it on a binary item is an
+      // error, checked by catalog content type so no bytes are read
       let readBinaryContent = false;
       const ctx = Object.create(
         record as unknown as Record<string, unknown>,
       ) as Record<string, unknown>;
       ctx["ns"] = record.namespace;
-      // The behavior spelling of modelName (swamp-club#3410); not a field of
-      // DataRecord, so output never carries it.
+      // the behavior spelling of modelName; not a DataRecord field, so output
+      // never carries it
       ctx["behaviorName"] = record.modelName;
       if (
         nameLiteral !== null &&
@@ -1622,11 +1364,9 @@ export class DataQueryService {
               (isJsonMediaType(loaded.contentType) ||
                 loaded.content === loaded.attributes)
             ) {
-              // JSON, as fromRow decides it (parameters included) or by the
-              // aliased object it leaves at content, reads the view when the
-              // view adapted the record. A record the view answers as stored
-              // (another namespace's, or an untagged one) keeps today's
-              // content, as the raw branch below reads it.
+              // a view-adapted record's JSON content reads the view; a record
+              // the view answers as stored (another namespace's or untagged)
+              // keeps the raw content
               const viewed = loadViewed();
               if (viewed !== loaded) return viewed.attributes;
             }
@@ -1673,13 +1413,9 @@ export class DataQueryService {
       }
     }
 
-    // Hydrate matched records with attributes when the predicate didn't
-    // require them for filtering. Only applies to non-projected results —
-    // projections handle attribute loading via AST analysis above.
-    // When filterStaleRows is enabled, rows whose backing file is absent
-    // are dropped during hydration — a stale catalog row with isLatest=true
-    // and empty content is worse than a missing row because it wins [0]
-    // selection (swamp-club#1737).
+    // hydrate matched records when the predicate did not need attributes; with
+    // filterStaleRows, rows whose backing file is absent are dropped, since a
+    // stale isLatest row with empty content would win [0] selection
     if (needsHydration) {
       let writeIndex = 0;
       // keptBefore[i] counts the records kept before results[i], so a
@@ -1698,9 +1434,8 @@ export class DataQueryService {
           try {
             Deno.statSync(contentPath);
           } catch {
-            // The async path ensures it, which fails loudly when the v3
-            // datastore could not materialise it (swamp-club#3617); absent
-            // content stays dropped.
+            // the async path ensures it, which fails loudly when the v3
+            // datastore could not materialise it; absent content stays dropped
             reportMissing(row)?.();
             logger
               .debug`Skipping stale catalog row ${row.model_name}/${row.data_name}@v${row.version}: backing file absent`;
@@ -1736,21 +1471,14 @@ export class DataQueryService {
     };
   }
 
-  /**
-   * Applies a select projection to matched records.
-   * Per-record errors (e.g. missing attribute keys) produce null instead of
-   * failing the entire query, so partial results are still useful.
-   */
   private project(
     results: DataRecord[],
     selectParsed: ((ctx: Record<string, unknown>) => unknown) | undefined,
     contents: Map<DataRecord, ProjectedContent> | undefined,
     options?: DataQueryOptions,
   ): DataRecord[] | unknown[] {
-    // Apply projection if select expression provided.
-    // Per-record errors (e.g. missing attribute keys) produce null instead of
-    // failing the entire query, so partial results are still useful.
-    // The ns alias must be available in select expressions too.
+    // per-record errors produce null instead of failing the whole query; the ns
+    // alias must be available in select expressions too
     if (selectParsed) {
       const view = options?.view;
       const select = options?.select ?? "";
@@ -1763,15 +1491,9 @@ export class DataQueryService {
           selectCtx["behaviorName"] = r.modelName;
           const projected = contents?.get(r);
           if (view) {
-            // Every row's projection runs through the view; what its
-            // context reads depends on the view's answer. The record is
-            // viewed on first read, after hydration rebuilt it. When the
-            // view adapted it, its JSON content, by media type (parameters
-            // included) or by the aliased object, reads the viewed
-            // attributes. A record the view answers as stored (another
-            // namespace's, or an untagged one) reads as the raw branches
-            // below read it, its projected content null where its bytes are
-            // not on this host.
+            // Every projection runs through the view, viewing the record on
+            // first read after hydration; a record the view answers as stored
+            // reads raw.
             let viewed: DataRecord | undefined;
             const loadViewed = (): DataRecord => {
               if (!viewed) viewed = view.record(r);
@@ -1832,20 +1554,9 @@ export class DataQueryService {
   }
 
   /**
-   * A record's content as a projection sees it (swamp-club#2959): JSON as its
-   * parsed attributes, anything else as UTF-8 text when the bytes are valid
-   * UTF-8 and base64 otherwise, the same representation `data get` returns
-   * (a leading UTF-8 byte-order mark is dropped, as there). Content whose
-   * bytes are not on this host — any item from another namespace in a shared
-   * datastore, or a non-JSON item whose body cannot be read — is null, so it
-   * is never mistaken for empty content. A row stamped with the empty
-   * namespace (written before the repository set one) is this repository's
-   * own, and is read like any other, unless the repository's fetcher reads
-   * the solo namespace (see {@link isForeignNamespace}). The async
-   * {@link projectedContents} reads another namespace's bytes through the
-   * fetcher instead.
-   *
-   * Returns undefined when the answer needs the item's bytes.
+   * JSON as parsed attributes, else UTF-8 text or base64 as data get returns;
+   * content not on this host is null, never mistaken for empty. Undefined when
+   * the answer needs the bytes
    */
   private projectedContentWithoutBytes(
     record: DataRecord,
@@ -1859,7 +1570,6 @@ export class DataQueryService {
     return undefined;
   }
 
-  /** Represents read bytes, or their absence, as projected content. */
   private encodeProjected(bytes: Uint8Array | null): ProjectedContent {
     return bytes
       ? encodeContent(bytes)
@@ -1867,8 +1577,8 @@ export class DataQueryService {
   }
 
   /**
-   * The projected content of `record`, read synchronously from local disk
-   * (the querySync path, which cannot download lazily-synced bodies).
+   * read synchronously from local disk; the querySync path cannot download
+   * lazily-synced bodies
    */
   private projectedContent(record: DataRecord): ProjectedContent {
     const known = this.projectedContentWithoutBytes(record);
@@ -1891,14 +1601,9 @@ export class DataQueryService {
   }
 
   /**
-   * The projected content of each record a select that reads content will
-   * see, for the async query path. Bodies are read with the async getContent,
-   * which downloads a lazily-synced body the way `data get` does
-   * (swamp-club#2962). Only records that passed the caller's include reach
-   * here, so no body is read or downloaded for one the caller may not read.
-   * A download error fails the query, as it fails `data get`. Another
-   * namespace's body is read through a v3 checkout's foreign content
-   * fetcher (swamp-club#3691), and is null otherwise.
+   * bodies are read with async getContent, which downloads a lazily-synced body
+   * as data get does; only records that passed include reach here, so nothing
+   * is read for one the caller may not read
    */
   private async projectedContents(
     records: DataRecord[],
@@ -1944,12 +1649,6 @@ export class DataQueryService {
     return contents;
   }
 
-  /**
-   * The projected content of another namespace's record, as
-   * {@link projectedContentWithoutBytes} and {@link encodeProjected} give an
-   * own record's: a JSON body as its parsed attributes, any other as its
-   * encoded bytes, and null when the body cannot be read.
-   */
   private async projectedForeignContent(
     record: DataRecord,
   ): Promise<ProjectedContent> {
@@ -1992,10 +1691,8 @@ export class DataQueryService {
 
   private async backfillAsync(): Promise<void> {
     if (!this.backfill) return;
-    // Read before walking the disk; see CatalogStore.markPopulated.
-    // The walk is in name order at every level (see
-    // FileSystemUnifiedDataRepository.findAllGlobal), so the rows below get
-    // the same rowids on every filesystem (swamp-club#3066).
+    // generation is read before walking the disk; the walk is in name order at
+    // every level so rows get the same rowids on every filesystem
     const generation = this.catalogStore.generation();
     const renames: RenameForward[] = [];
     const allData = await this.dataRepo.findAllGlobal({ renames });
@@ -2016,17 +1713,14 @@ export class DataQueryService {
       group.push(item);
     }
 
-    // Gather every row we want to write, THEN commit them to SQLite in one
-    // batch. Historical metadata.yaml reads are async and slow; interleaving
-    // them with individual SQLite writes would hold the database in a
-    // partially-populated state across many fsyncs and, on large repos,
-    // produces "database is locked" under contention.
+    // gather all rows, then commit to SQLite in one batch; interleaving slow
+    // async metadata reads with single writes leaves the database partly
+    // populated and hits 'database is locked' under contention
     const rows: CatalogRow[] = [];
     for (const [, items] of byType) {
       for (const { data: latest, modelType, modelId } of items) {
-        // Rows mirror write-through: a deletion marker is a version like any
-        // other (save() indexes it), while a rename marker is projected into
-        // catalog_renames, never as a row (swamp-club#3698).
+        // rows mirror write-through: a deletion marker is a version like any
+        // other, while a rename marker goes into catalog_renames, never a row
         if (latest.isRenamed) continue;
         const versions = await this.dataRepo.listVersions(
           modelType,
@@ -2035,12 +1729,9 @@ export class DataQueryService {
         );
         if (versions.length === 0) continue;
         for (const version of versions) {
-          // A version above the one the latest marker names was never
-          // published: the marker only moves forward, and delete, rename and
-          // GC remove the versions above it when they lower it. Such a
-          // directory is a save that died before moving the marker, or a
-          // write still in flight that publishes its own row, so a rebuilt
-          // catalog agrees with reads through the marker (swamp-club#4134).
+          // a version above the one the latest marker names was never published
+          // (a save that died, or a write in flight that publishes its own
+          // row), so a rebuilt catalog agrees with reads through the marker
           if (version > latest.version) continue;
           try {
             const data = version === latest.version
@@ -2084,10 +1775,8 @@ export class DataQueryService {
 
   private backfillSync(): void {
     if (!this.backfill) return;
-    // Read before walking the disk; see CatalogStore.markPopulated.
-    // The walk is in name order at every level (see
-    // FileSystemUnifiedDataRepository.findAllGlobal), so the rows below get
-    // the same rowids on every filesystem (swamp-club#3066).
+    // generation is read before walking the disk; the walk is in name order at
+    // every level so rows get the same rowids on every filesystem
     const generation = this.catalogStore.generation();
     const renames: RenameForward[] = [];
     const allData = this.dataRepo.findAllGlobalSync({ renames });
@@ -2109,7 +1798,6 @@ export class DataQueryService {
     const rows: CatalogRow[] = [];
     for (const [, items] of byType) {
       for (const { data: latest, modelType, modelId } of items) {
-        // Deletion markers are rows; see backfillAsync.
         if (latest.isRenamed) continue;
         const versions = this.dataRepo.listVersionsSync(
           modelType,
@@ -2118,7 +1806,6 @@ export class DataQueryService {
         );
         if (versions.length === 0) continue;
         for (const version of versions) {
-          // Unpublished versions are left out; see backfillAsync.
           if (version > latest.version) continue;
           try {
             const data = version === latest.version
@@ -2154,7 +1841,6 @@ export class DataQueryService {
     this.catalogStore.markPopulated(generation);
   }
 
-  /** Merges the rename markers a backfill walk found into the catalog. */
   private recordRenameForwards(renames: readonly RenameForward[]): void {
     const namespace = this.dataRepo.namespace;
     this.catalogStore.mergeRenames(

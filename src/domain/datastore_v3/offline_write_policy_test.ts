@@ -114,8 +114,6 @@ Deno.test("decideOfflineWork: a lease within the skew of its end, or past it, is
 });
 
 Deno.test("decideOfflineWork: serve's clock decides, through the recorded offset", () => {
-  // Serve runs 30 minutes ahead: a lease ending in 20 minutes by its clock
-  // has already ended.
   assertEquals(
     decideOfflineWork(
       method("update"),

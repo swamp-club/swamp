@@ -17,16 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Type compatibility test for @swamp-club/swamp-testing report types.
- *
- * Verifies that the testing package's report types remain structurally
- * compatible with swamp's canonical types. The testing package uses
- * simplified repository interfaces (TestDataRepository, TestDefinitionRepository)
- * so we verify scope-discriminated fields and ReportResult rather than
- * full context assignability.
- */
-
 import type {
   ReportResult as CanonicalReportResult,
   ReportScope as CanonicalReportScope,
@@ -43,20 +33,17 @@ import type {
   WorkflowReportContext as TestingWorkflowReportContext,
 } from "../../../packages/testing/report_types.ts";
 
-// ReportResult: verify fields match.
 function _checkReportResultFields(result: TestingReportResult) {
   const _markdown: CanonicalReportResult["markdown"] = result.markdown;
   const _json: CanonicalReportResult["json"] = result.json;
   void [_markdown, _json];
 }
 
-// ReportScope: verify the testing type's values match canonical.
 function _checkReportScope(scope: TestingReportScope) {
   const _canonical: CanonicalReportScope = scope;
   void _canonical;
 }
 
-// MethodReportContext: verify scope-specific fields match canonical.
 function _checkMethodReportContextFields(ctx: TestingMethodReportContext) {
   const _scope: CanonicalMethodReportContext["scope"] = ctx.scope;
   const _modelId: CanonicalMethodReportContext["modelId"] = ctx.modelId;
@@ -72,7 +59,6 @@ function _checkMethodReportContextFields(ctx: TestingMethodReportContext) {
     ctx.methodArgs;
   const _repoDir: string = ctx.repoDir;
 
-  // definition sub-fields
   const _defId: string = ctx.definition.id;
   const _defName: string = ctx.definition.name;
   const _defVersion: number = ctx.definition.version;
@@ -94,7 +80,6 @@ function _checkMethodReportContextFields(ctx: TestingMethodReportContext) {
   ];
 }
 
-// WorkflowReportContext: verify scope-specific fields match canonical.
 function _checkWorkflowReportContextFields(ctx: TestingWorkflowReportContext) {
   const _scope: CanonicalWorkflowReportContext["scope"] = ctx.scope;
   const _workflowId: CanonicalWorkflowReportContext["workflowId"] =
@@ -107,7 +92,6 @@ function _checkWorkflowReportContextFields(ctx: TestingWorkflowReportContext) {
     ctx.workflowStatus;
   const _inputs: CanonicalWorkflowReportContext["inputs"] = ctx.inputs;
 
-  // stepExecutions sub-fields
   if (ctx.stepExecutions.length > 0) {
     const step = ctx.stepExecutions[0];
     const _jobName: string = step.jobName;

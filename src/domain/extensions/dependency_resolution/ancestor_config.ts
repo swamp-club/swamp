@@ -17,20 +17,10 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * What push refuses from above swamp's boundary (swamp-club#3971): a
- * config Deno would discover there and use to resolve one of the
- * extension's bare imports, and a package Deno would read from a
- * node_modules there. Push passes `--no-config`, so neither reaches the
- * bundle; the refusal names the file and the fix rather than leaving the
- * import to fail.
- */
-
 import { resolve, SEPARATOR, SEPARATOR_PATTERN } from "@std/path";
 import type { AncestorConfig } from "./extension_project.ts";
 import { readConfigImports, resolveBareImport } from "./import_map.ts";
 
-/** The package a bare specifier names: `@scope/name` or `name`. */
 function packageNameOf(specifier: string): string {
   const parts = specifier.split("/");
   return specifier.startsWith("@") ? parts.slice(0, 2).join("/") : parts[0];
@@ -61,10 +51,8 @@ async function packageJsonDependencyNames(path: string): Promise<Set<string>> {
 }
 
 /**
- * The bare specifiers an ancestor config would resolve: those its
- * deno.json `imports` map, or whose package its package.json declares. A
- * workspace root above the boundary applies to its member whatever it
- * maps, so every specifier counts and none need be written.
+ * a workspace root above the boundary applies to its member whatever it maps,
+ * so every specifier counts
  */
 export async function ancestorConfigResolves(
   ancestor: AncestorConfig,
@@ -85,7 +73,6 @@ export async function ancestorConfigResolves(
   }
 }
 
-/** The refusal for an ancestor config, naming it, what it maps and the fix. */
 export function ancestorConfigRefusal(
   ancestor: AncestorConfig,
   resolves: readonly string[],
@@ -118,11 +105,9 @@ function isSameOrUnder(path: string, root: string): boolean {
 }
 
 /**
- * The package directories from `packageDirs` whose node_modules sits above
- * the boundary: a node_modules inside the repository serves the extension, a
- * hoisted monorepo install included, one above it does not. `boundaries`
- * spells the one boundary more than one way, as given and as its real path,
- * since Deno reports an installed package by its real path.
+ * a node_modules inside the repository serves the extension, one above does
+ * not; boundaries lists the as-given and real path since Deno reports installed
+ * packages by real path
  */
 export function nodeModulesAboveBoundary(
   packageDirs: readonly string[],
@@ -134,7 +119,6 @@ export function nodeModulesAboveBoundary(
   ).sort();
 }
 
-/** The refusal for packages read from a node_modules above the repository. */
 export function ancestorNodeModulesRefusal(
   packageDirs: readonly string[],
   repoDir: string,

@@ -317,7 +317,6 @@ Deno.test("applyPollOutcome: an answer sent before the stop leaves the stop in p
     const after = applyPollOutcome(stopped, outcome, T0 + MINUTE);
     assertEquals(after.schedule.stop, { reason: "rejected", at: T0 });
   }
-  // Sent at or after the stop: the key works.
   for (
     const outcome of [
       { kind: "ok", snapshot: snapshot({ fetchedAt: T0 }) },
@@ -345,7 +344,6 @@ Deno.test("applyPollOutcome: an older snapshot never replaces a newer one", () =
     T0 + 20,
   );
   assertEquals(after.snapshot, newer);
-  // Still a poll: the schedule moves on.
   assertEquals(after.schedule.lastPolledAt, T0 + 20);
   const later = snapshot({ unread: 3, fetchedAt: T0 + 15 });
   assertEquals(

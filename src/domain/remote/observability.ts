@@ -19,7 +19,6 @@
 
 import { withRunPhase } from "./run_progress.ts";
 
-/** Versioned, transport-independent observations of remote execution. */
 export const EXECUTION_TELEMETRY_VERSION = 1;
 
 export interface TraceCarrier {

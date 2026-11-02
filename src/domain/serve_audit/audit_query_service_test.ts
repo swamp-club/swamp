@@ -203,8 +203,6 @@ Deno.test("AuditQueryService.verify: detects tampering", async () => {
   assertEquals(result.valid, false);
 });
 
-// queryStream tests
-
 function createMultiDateStore(
   eventsByDate: Map<string, ChainedAuditEvent[]>,
 ): AuditStore {
@@ -493,8 +491,6 @@ Deno.test("AuditQueryService.queryStream: yields nothing for empty store", async
   }
   assertEquals(batches.length, 0);
 });
-
-// verifyHmac tests
 
 async function makeHmacKeyRegistry() {
   const raw = await generateHmacKeyBytes();

@@ -18,15 +18,9 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * Which workflow job a stored job of a run belongs to.
- *
- * A job named with an expression (`site-${{ inputs.region }}`) is stored
- * under its evaluated name (`site-west`), so it cannot be found by name. A
- * name whose expressions only read the run's inputs is evaluated against the
- * inputs the run stored. Otherwise the job is paired by position: evaluation
- * keeps every job and their order, so the run stores job `i` of the workflow
- * as its job `i` while the workflow's jobs still line up with the run's
- * (swamp-club#3815).
+ * an expression-named job is stored under its evaluated name; one reading only
+ * run inputs is evaluated against the stored inputs, otherwise paired by
+ * position since evaluation keeps every job and their order
  */
 
 import {
@@ -39,18 +33,14 @@ import type { JobRun, WorkflowRun } from "./workflow_run.ts";
 
 const INPUT_REFERENCE = /^inputs((?:\.[A-Za-z_][A-Za-z0-9_]*)+)$/;
 
-/**
- * A name written with an expression is stored evaluated, so it cannot be
- * compared with a stored record before the workflow is evaluated.
- */
 export function evaluatedName(name: string): boolean {
   return name.includes("${{");
 }
 
 /**
- * Whether `stored` could be what the expression-named `template` became: it
- * holds the literal text around the expressions, in order. A linear scan,
- * so a long name cannot make it backtrack.
+ * whether stored could be what the expression-named template became: it holds
+ * the literal text around the expressions, in order; a linear scan, so a long
+ * name cannot backtrack
  */
 function fits(template: string, stored: string): boolean {
   const parts: string[] = [];
@@ -74,10 +64,6 @@ function fits(template: string, stored: string): boolean {
   return stored.length - last.length >= at && stored.endsWith(last);
 }
 
-/**
- * The name `template` evaluates to when each of its expressions only reads
- * a scalar of the run's stored `inputs`, else undefined.
- */
 function nameFromInputs(
   template: string,
   inputs: Readonly<Record<string, unknown>>,
@@ -104,15 +90,9 @@ function nameFromInputs(
 }
 
 /**
- * Pairs each expression-named workflow job with the name of the stored job
- * it evaluated to, keyed by the job's name in the workflow. A job whose name
- * evaluates, from the run's inputs, to a stored job's name is paired with
- * that job wherever it now stands. Any other is paired by position, which
- * needs the workflow's jobs to line up with the run's: the same number,
- * every literal job at its stored position, and each stored name fitting the
- * literal text around the expressions. Returns undefined when a job cannot
- * be paired, or when two would share a stored job. An empty map means the
- * workflow has no expression-named job.
+ * pairs by evaluating from stored inputs, else by position, which needs the
+ * same job count, literal jobs at their stored positions and each stored name
+ * fitting the literal text; undefined when unpairable
  */
 export function pairExpressionJobs(
   workflow: Workflow,
@@ -150,11 +130,6 @@ export function pairExpressionJobs(
   return pairs;
 }
 
-/**
- * The workflow job the stored job `jobRun` belongs to: the literal job of
- * that name, else the expression-named job paired with it. Undefined when
- * no job is, or when `pairs` could not be made.
- */
 export function workflowJobOf(
   workflow: Workflow,
   jobRun: JobRun,
@@ -170,19 +145,9 @@ export function workflowJobOf(
 }
 
 /**
- * Why a resume cannot walk `run` with `resolved`, the workflow evaluated for
- * the resume: an expression-named job of `workflow` evaluated to a name the
- * run does not have, or, for a job paired with a stored job in `resetJobs`
- * (the stored jobs a failed run's reset reaches), to a name other than that
- * job. `pairs` is the pairing the reset was planned with
- * ({@link pairExpressionJobs} over the run as taken over), not one made
- * again from inputs a resume has since merged in (a value its name reads, other than an input, changed since the run).
- * Resume finds each job's record by its evaluated name, so it would reset
- * one job and walk another. A job the reset does not reach is walked by
- * whatever stored job its name evaluates to, as before; position alone
- * cannot tell two expression-named jobs of the same shape apart, so their
- * pairing is not held against them. Evaluation keeps the jobs and their
- * order, so `resolved` job `i` is `workflow` job `i`.
+ * resume finds each job's record by its evaluated name, so a reset-reached job
+ * evaluating to another name than its paired stored job would reset one job and
+ * walk another; pairs are the ones the reset was planned with
  */
 export function evaluatedJobMismatch(
   workflow: Workflow,

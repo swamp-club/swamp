@@ -24,10 +24,6 @@ export interface TelemetryFlushResult {
   reason?: string;
 }
 
-/**
- * Port for sending telemetry events to a remote endpoint.
- * Implemented by infrastructure adapters (e.g. HttpTelemetrySender).
- */
 export interface TelemetrySender {
   sendBatch(
     entries: TelemetryEntry[],

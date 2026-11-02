@@ -33,7 +33,6 @@ export const SubjectKindSchema = z.enum([
 
 export type SubjectKind = z.infer<typeof SubjectKindSchema>;
 
-/** Joins quoted items as `"a", "b", or "c"` for error messages. */
 function describeAlternatives(items: readonly string[]): string {
   const quoted = items.map((item) => `"${item}"`);
   return `${quoted.slice(0, -1).join(", ")}, or ${quoted[quoted.length - 1]}`;

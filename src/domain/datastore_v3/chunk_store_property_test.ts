@@ -48,7 +48,6 @@ Deno.test("ChunkStore: random content written and read back is identical, with a
         );
         assert(again.equals(ref));
         assertEquals(storage.chunks.size, chunks);
-        // Every part but the last is a full chunk.
         const sizes = ref.parts?.map((p) => p.size) ?? [ref.size];
         assert(sizes.slice(0, -1).every((size) => size === maxChunkBytes));
         assert(
@@ -95,7 +94,6 @@ Deno.test("ChunkStore.refOf: cuts content exactly as write does, however it is s
           found.parts.map(({ sha256, size }) => ({ sha256, size })),
           ref.parts ?? [{ sha256: ref.sha256, size: ref.size }],
         );
-        // Offsets tile the content.
         let offset = 0;
         for (const part of found.parts) {
           assertEquals(part.offset, offset);

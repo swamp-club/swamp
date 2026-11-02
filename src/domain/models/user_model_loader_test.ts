@@ -38,7 +38,6 @@ import { ExtensionRepository } from "../../infrastructure/persistence/extension_
 import { LockfileRepository } from "../../infrastructure/persistence/lockfile_repository.ts";
 import { withMockedCommand } from "@swamp-club/swamp-testing";
 
-/** W1b/(a-2): construct an ExtensionRepository wrapping a test catalog. */
 function makeRepoForCatalog(
   catalog: ExtensionCatalogStore,
   repoRoot: string,
@@ -62,10 +61,8 @@ import { createDefinitionId } from "../definitions/definition.ts";
 import { configure, getLogger, type LogRecord, reset } from "@logtape/logtape";
 import type { DenoRuntime } from "../runtime/deno_runtime.ts";
 
-// Import models barrel to ensure command/shell is registered for extension test
 import "./models.ts";
 
-/** Test DenoRuntime that returns the current deno binary path. */
 const testDenoRuntime: DenoRuntime = {
   ensureDeno: () => Promise.resolve(Deno.execPath()),
   getDenoEnv: () => Deno.env.toObject(),
@@ -75,17 +72,11 @@ function createTestLoader(): ExtensionLoader {
   return new ExtensionLoader(testDenoRuntime, modelKindAdapter);
 }
 
-/**
- * Stored result from mock data writer.
- */
 interface MockWriterResult {
   handle: DataHandle;
   content: Uint8Array;
 }
 
-/**
- * Creates mock writeResource and createFileWriter functions that store written content in memory.
- */
 function createMockWriters(): {
   writeResource: (
     specName: string,
@@ -194,9 +185,6 @@ function createMockWriters(): {
   return { writeResource, createFileWriter, getResults };
 }
 
-/**
- * Creates a mock UnifiedDataRepository for testing.
- */
 function createMockDataRepo(): UnifiedDataRepository {
   return {
     namespace: SOLO_NAMESPACE,
@@ -263,9 +251,6 @@ function createMockDataRepo(): UnifiedDataRepository {
   };
 }
 
-/**
- * Creates a mock DefinitionRepository for testing.
- */
 function createMockDefinitionRepo(): DefinitionRepository {
   return {
     findById: () => Promise.resolve(null),
@@ -280,9 +265,6 @@ function createMockDefinitionRepo(): DefinitionRepository {
   };
 }
 
-/**
- * Creates a test MethodContext with mocked repositories.
- */
 function createTestContext(
   modelType: ModelType,
 ): { context: MethodContext; getResults: () => MockWriterResult[] } {
@@ -308,8 +290,6 @@ function createTestContext(
   return { context, getResults };
 }
 
-// Helper to create a temporary directory with model files.
-// Supports nested paths like "aws/ec2_start.ts" — parent dirs are created as needed.
 async function withTempModels(
   models: Record<string, string>,
   fn: (dir: string) => Promise<void>,
@@ -383,7 +363,6 @@ export const notAModel = { foo: "bar" };
     const loader = createTestLoader();
     const result = await loader.load(dir);
 
-    // Files without model/extension exports are now silently skipped
     assertEquals(result.loaded.length, 0);
     assertEquals(result.extended.length, 0);
     assertEquals(result.failed.length, 0);
@@ -453,14 +432,12 @@ export const model = {
 
       assertEquals(result.loaded.length, 1);
       assertEquals(result.loaded[0], "model.ts");
-      // Test file should not appear in failed either
       assertEquals(result.failed.length, 0);
     },
   );
 });
 
 Deno.test("UserModelLoader prevents duplicate type registration", async () => {
-  // Test that two models with the same type fail on the second one
   const ts = crypto.randomUUID().slice(0, 8);
   const typeId = `@user/duplicate-${ts}`;
   const model1 = `
@@ -518,7 +495,6 @@ export const model = {
       const loader = createTestLoader();
       const result = await loader.load(dir);
 
-      // First model should load, second should fail as duplicate
       assertEquals(result.loaded.length, 1);
       assertEquals(result.failed.length, 1);
       assertEquals(result.failed[0].file, "zzz_second.ts");
@@ -570,7 +546,6 @@ export const model = {
 
     assertEquals(result.loaded.length, 1);
 
-    // Get the registered model and execute its method
     const modelDef = modelRegistry.get(typeId);
     assertEquals(modelDef !== undefined, true);
 
@@ -580,14 +555,12 @@ export const model = {
       context,
     );
 
-    // Verify the dataHandles are passed through
     assertEquals(methodResult.dataHandles !== undefined, true);
     assertEquals(methodResult.dataHandles!.length, 1);
 
     const handle = methodResult.dataHandles![0];
     assertEquals(handle.name, "data");
 
-    // Verify content was written via mock writer
     const results = getResults();
     assertEquals(results.length, 1);
     const content = JSON.parse(new TextDecoder().decode(results[0].content));
@@ -638,7 +611,6 @@ export const model = {
     const modelDef = modelRegistry.get(typeId);
     assertEquals(modelDef !== undefined, true);
 
-    // Verify the method has an arguments schema (inherited from model)
     assertEquals(
       modelDef!.methods.run.arguments !== undefined,
       true,
@@ -703,7 +675,6 @@ export const model = {
 
       assertEquals(result.loaded.length, 2);
       assertEquals(result.failed.length, 0);
-      // Files should be sorted alphabetically
       assertEquals(result.loaded[0], "model_a.ts");
       assertEquals(result.loaded[1], "model_b.ts");
     },
@@ -758,7 +729,6 @@ export const model = {
       context,
     );
 
-    // Verify empty dataHandles are passed through
     assertEquals(methodResult.dataHandles !== undefined, true);
     assertEquals(methodResult.dataHandles!.length, 0);
   });
@@ -812,12 +782,9 @@ export const model = {
       context,
     );
 
-    // Verify dataHandles is undefined when not provided
     assertEquals(methodResult.dataHandles, undefined);
   });
 });
-
-// --- Recursive discovery tests ---
 
 Deno.test("UserModelLoader discovers nested files with correct relative paths", async () => {
   const ts = crypto.randomUUID().slice(0, 8);
@@ -876,7 +843,6 @@ export const model = {
 
       assertEquals(result.loaded.length, 2);
       assertEquals(result.failed.length, 0);
-      // Sorted alphabetically: "aws/ec2_start.ts" < "echo_audit.ts"
       assertEquals(result.loaded[0], join("aws", "ec2_start.ts"));
       assertEquals(result.loaded[1], "echo_audit.ts");
     },
@@ -956,8 +922,6 @@ export const model = {
   );
 });
 
-// --- Extension tests ---
-
 Deno.test("UserModelLoader loads extension with single method in array", async () => {
   const ts = crypto.randomUUID().slice(0, 8);
   const modelCode = `
@@ -1008,7 +972,6 @@ export const extension = {
       assertEquals(result.extended[0], "ext_audit.ts");
       assertEquals(result.failed.length, 0);
 
-      // Verify the method was added
       const modelDef = modelRegistry.get(`@user/ext-single-${ts}`);
       assertEquals(modelDef !== undefined, true);
       assertEquals("write" in modelDef!.methods, true);
@@ -1182,7 +1145,6 @@ export const model = {
   },
 };
 `;
-  // Two array elements with same method name
   const extCode = `
 import { z } from "npm:zod@4";
 export const extension = {
@@ -1271,7 +1233,6 @@ export const extension = {
       assertEquals(result.extended.length, 1);
 
       const modelDef = modelRegistry.get(`@user/ext-inherit-schema-${ts}`);
-      // Extension method should have arguments schema inherited from target model
       assertEquals(
         modelDef!.methods.audit.arguments !== undefined,
         true,
@@ -1281,7 +1242,6 @@ export const extension = {
 });
 
 Deno.test("UserModelLoader extension of built-in command/shell type works", async () => {
-  // command/shell is registered via the models barrel import at the top
   const extCode = `
 import { z } from "npm:zod@4";
 export const extension = {
@@ -1303,7 +1263,6 @@ export const extension = {
     assertEquals(result.extended.length, 1);
     assertEquals(result.failed.length, 0);
 
-    // The built-in command/shell should still have its original methods
     const shellDef = modelRegistry.get("command/shell");
     assertEquals(shellDef !== undefined, true);
     assertEquals("execute" in shellDef!.methods, true);
@@ -1382,8 +1341,6 @@ export const extension = {
 
 Deno.test("UserModelLoader two-pass ordering: user model registered before extension targets it", async () => {
   const ts = crypto.randomUUID().slice(0, 8);
-  // Extension file sorts before model file alphabetically,
-  // but two-pass loading should process models first
   const modelCode = `
 import { z } from "npm:zod@4";
 export const model = {
@@ -1421,7 +1378,6 @@ export const extension = {
 };
 `;
 
-  // "aaa_ext.ts" sorts before "zzz_model.ts" to prove ordering doesn't matter
   await withTempModels(
     { "zzz_model.ts": modelCode, "aaa_ext.ts": extCode },
     async (dir) => {
@@ -1506,7 +1462,6 @@ export const extension = {
       const handle = methodResult.dataHandles![0];
       assertEquals(handle.name, "data");
 
-      // Verify content written via mock writer
       const results = getResults();
       assertEquals(results.length, 1);
       const content = JSON.parse(
@@ -1644,8 +1599,6 @@ export const extension = {
   );
 });
 
-// --- resources/files validation tests ---
-
 Deno.test("UserModelLoader registers user-declared resources", async () => {
   const typeId = `@user/custom-specs-${crypto.randomUUID().slice(0, 8)}`;
   const modelCode = `
@@ -1690,20 +1643,16 @@ export const model = {
     const modelDef = modelRegistry.get(typeId);
     assertEquals(modelDef !== undefined, true);
 
-    // User "data" resource spec is registered
     assertEquals(
       modelDef!.resources!["data"].description,
       "Custom data spec",
     );
-    // "metrics" resource is also registered
     assertEquals(
       modelDef!.resources!["metrics"].description,
       "Metrics output",
     );
   });
 });
-
-// --- Namespace validation tests ---
 
 Deno.test("UserModelLoader accepts non-@ prefixed model", async () => {
   const typeId = `mycompany/mymodel-${crypto.randomUUID().slice(0, 8)}`;
@@ -2260,11 +2209,9 @@ export class ProxmoxClient {
     const loader = createTestLoader();
     const result = await loader.load(dir);
 
-    // Should load only the valid model
     assertEquals(result.loaded.length, 1);
     assertEquals(result.loaded[0], join("models", "server.ts"));
 
-    // Library files should be silently skipped (not in failed list)
     assertEquals(result.failed.length, 0);
   });
 });
@@ -2303,11 +2250,9 @@ export type Status = "running" | "stopped" | "error";
     const loader = createTestLoader();
     const result = await loader.load(dir);
 
-    // Should load only the valid model
     assertEquals(result.loaded.length, 1);
     assertEquals(result.loaded[0], join("models", "my_model", "mod.ts"));
 
-    // Type-only files should be silently skipped (not in failed list)
     assertEquals(result.failed.length, 0);
   });
 });
@@ -2337,11 +2282,9 @@ export const model = {
     prefix: "swamp_cache_test_models_",
   });
   try {
-    // Write initial files
     await Deno.writeTextFile(join(modelsDir, "helper.ts"), helperCode);
     await Deno.writeTextFile(join(modelsDir, "model.ts"), modelCode);
 
-    // First load — populates cache
     const loader1 = new ExtensionLoader(
       testDenoRuntime,
       modelKindAdapter,
@@ -2349,24 +2292,19 @@ export const model = {
     );
     await loader1.load(modelsDir);
 
-    // Read the cached bundle content (namespaced by baseDir hash)
     const ns = bundleNamespace(modelsDir, repoDir);
     const bundlePath = join(repoDir, ".swamp", "bundles", ns, "model.js");
     const cachedBundle1 = await Deno.readTextFile(bundlePath);
 
-    // Modify only the dependency (not the entry point)
     await Deno.writeTextFile(
       join(modelsDir, "helper.ts"),
       `export const greeting = "goodbye";`,
     );
-    // Bump mtime past the cached bundle's 1s-granularity timestamp instead
-    // of sleeping.
+    // bump mtime past the cached bundle's 1s-granularity timestamp instead of
+    // sleeping
     const bumped = new Date(Date.now() + 5_000);
     await Deno.utime(join(modelsDir, "helper.ts"), bumped, bumped);
 
-    // Second load — should detect dependency change and rebundle
-    // (registration will fail since type is already registered, but
-    //  bundleWithCache runs before registration, so the bundle updates)
     const loader2 = new ExtensionLoader(
       testDenoRuntime,
       modelKindAdapter,
@@ -2374,7 +2312,6 @@ export const model = {
     );
     await loader2.load(modelsDir);
 
-    // The bundle should have been regenerated with the new dependency content
     const cachedBundle2 = await Deno.readTextFile(bundlePath);
     assertEquals(cachedBundle1 !== cachedBundle2, true);
   } finally {
@@ -2447,7 +2384,6 @@ export const model = {
     assertEquals(result.loaded[0], "ts_syntax_model.ts");
     assertEquals(result.failed.length, 0);
 
-    // Verify the model actually works by executing it
     const modelDef = modelRegistry.get(typeId);
     assertEquals(modelDef !== undefined, true);
 
@@ -2466,8 +2402,6 @@ export const model = {
     assertEquals(content.retries, 3);
   });
 });
-
-// --- kind propagation tests ---
 
 Deno.test("UserModelLoader propagates method kind from model definition", async () => {
   const typeId = `@user/kind-model-${crypto.randomUUID().slice(0, 8)}`;
@@ -2560,11 +2494,9 @@ export function helper() { return "helper"; }
       const loader = createTestLoader();
       const result = await loader.load(dir);
 
-      // The entry model should load successfully
       assertEquals(result.loaded.length, 1);
       assertEquals(result.loaded[0], "entry.ts");
 
-      // _lib/helper.ts should NOT appear in failed or loaded
       for (const failure of result.failed) {
         assertEquals(
           failure.file.includes("_lib"),
@@ -2610,11 +2542,9 @@ export const model = {
   const dbPath = join(repoDir, ".swamp", "_extension_catalog.db");
 
   try {
-    // Write initial files
     await Deno.writeTextFile(join(modelsDir, "helper.ts"), helperCode);
     await Deno.writeTextFile(join(modelsDir, "model.ts"), modelCode);
 
-    // First buildIndex — bootstraps the catalog from a full import
     const catalog1 = new ExtensionCatalogStore(dbPath);
     const repository1 = makeRepoForCatalog(catalog1, repoDir);
     const loader1 = new ExtensionLoader(
@@ -2627,22 +2557,19 @@ export const model = {
     await loader1.buildIndex(modelsDir);
     catalog1.close();
 
-    // Read the cached bundle content
     const ns = bundleNamespace(modelsDir, repoDir);
     const bundlePath = join(repoDir, ".swamp", "bundles", ns, "model.js");
     const cachedBundle1 = await Deno.readTextFile(bundlePath);
 
-    // Modify only the dependency (not the entry point)
     await Deno.writeTextFile(
       join(modelsDir, "helper.ts"),
       `export const greeting = "goodbye";`,
     );
-    // Bump mtime past the cached bundle's 1s-granularity timestamp instead
-    // of sleeping.
+    // bump mtime past the cached bundle's 1s-granularity timestamp instead of
+    // sleeping
     const bumped = new Date(Date.now() + 5_000);
     await Deno.utime(join(modelsDir, "helper.ts"), bumped, bumped);
 
-    // Second buildIndex — catalog is populated, should detect dep change
     const catalog2 = new ExtensionCatalogStore(dbPath);
     const repository2 = makeRepoForCatalog(catalog2, repoDir);
     const loader2 = new ExtensionLoader(
@@ -2655,14 +2582,12 @@ export const model = {
     const result = await loader2.buildIndex(modelsDir);
     catalog2.close();
 
-    // The bundle should have been regenerated with the new dependency content
     const cachedBundle2 = await Deno.readTextFile(bundlePath);
     assertNotEquals(
       cachedBundle1,
       cachedBundle2,
       "Bundle should be regenerated when transitive dependency changes",
     );
-    // model.ts should appear in the loaded list (it was rebundled)
     assertEquals(result.loaded.length > 0, true);
   } finally {
     await Deno.remove(repoDir, { recursive: true });
@@ -2671,12 +2596,9 @@ export const model = {
 });
 
 Deno.test("UserModelLoader buildIndex rebundles when source content changes with preserved mtime (#125)", async () => {
-  // Issue #125 — under atomic-rename saves, rsync --times, and some editors
-  // the source file ends up with an mtime that does NOT strictly exceed the
-  // cached bundle's mtime, so the old mtime-based freshness check served a
-  // stale bundle. This test exercises exactly that sequence with Deno.utime
-  // (cross-platform equivalent of `touch -t`) and verifies the
-  // content-fingerprint freshness check catches it.
+  // atomic-rename saves and rsync --times can leave a source mtime not newer
+  // than the cached bundle, so freshness must come from a content fingerprint,
+  // not mtime
   const ts = crypto.randomUUID().slice(0, 8);
   const typeId = `@user/preserved-mtime-${ts}`;
   const v1 = `
@@ -2744,11 +2666,10 @@ export const model = {
       "V1 marker should be present in initial bundle",
     );
 
-    // Capture the original source mtime before the edit.
     const origMtime = (await Deno.stat(sourcePath)).mtime!;
 
-    // Swap content, then restore the original mtime — the #125 trigger.
-    // The restored mtime keeps source mtime <= bundle mtime without sleeping.
+    // restoring the original mtime keeps source mtime <= bundle mtime without
+    // sleeping
     await Deno.writeTextFile(sourcePath, v2);
     await Deno.utime(sourcePath, origMtime, origMtime);
 
@@ -2798,9 +2719,8 @@ export const model = {
 
 Deno.test("UserModelLoader bundleWithCache preserves cached bundle on unexpected failure", async () => {
   const ts = crypto.randomUUID().slice(0, 8);
-  // Model that imports a nonexistent npm package — will fail to bundle.
-  // Uses npm: prefix (not a bare specifier) so isExpectedBundleFailure
-  // returns false — this is an "unexpected" failure path.
+  // an npm: import that cannot resolve, not a bare specifier, so
+  // isExpectedBundleFailure returns false and this is an unexpected failure
   const brokenModelCode = `
 import { z } from "npm:zod@4";
 import { something } from "npm:nonexistent-package-xyz-swamp-test-${ts}@999";
@@ -2818,7 +2738,6 @@ export const model = {
 };
 `;
 
-  // A valid model to produce the initial cached bundle
   const validModelCode = `
 import { z } from "npm:zod@4";
 
@@ -2843,7 +2762,6 @@ export const model = {
   });
 
   try {
-    // Write valid model, load to produce cached bundle
     await Deno.writeTextFile(join(modelsDir, "model.ts"), validModelCode);
     const loader1 = new ExtensionLoader(
       testDenoRuntime,
@@ -2856,16 +2774,12 @@ export const model = {
     const bundlePath = join(repoDir, ".swamp", "bundles", ns, "model.js");
     const cachedBundle1 = await Deno.readTextFile(bundlePath);
 
-    // Replace with broken model (no bare specifiers, no deno.json →
-    // unexpected failure)
     await Deno.writeTextFile(join(modelsDir, "model.ts"), brokenModelCode);
-    // Bump mtime past the cached bundle's 1s-granularity timestamp instead
-    // of sleeping, so the loader attempts a rebundle.
+    // bump mtime past the cached bundle's 1s-granularity timestamp instead of
+    // sleeping, so the loader attempts a rebundle
     const bumped = new Date(Date.now() + 5_000);
     await Deno.utime(join(modelsDir, "model.ts"), bumped, bumped);
 
-    // Load again — should fall back to cached bundle.
-    // The broken code should NOT appear in the bundle.
     const loader2 = new ExtensionLoader(
       testDenoRuntime,
       modelKindAdapter,
@@ -2875,13 +2789,11 @@ export const model = {
 
     const cachedBundle2 = await Deno.readTextFile(bundlePath);
 
-    // The bundle content should be preserved (old valid bundle, not broken)
     assertEquals(
       cachedBundle1,
       cachedBundle2,
       "Bundle content should be preserved on unexpected failure",
     );
-    // Verify the bundle doesn't contain the broken import
     assertEquals(
       cachedBundle2.includes("nonexistent-package"),
       false,
@@ -2894,11 +2806,8 @@ export const model = {
 });
 
 /**
- * Runs buildIndex twice over one model file whose bundle already exists:
- * once to populate the catalog, then again after the source changes, so the
- * second pass takes the reconcile path (rebundleAndUpdateCatalog). Every
- * `deno bundle` attempt fails through a mocked Deno.Command, so no process
- * is spawned. Only the second pass's logs are captured.
+ * runs buildIndex twice so the second pass takes the reconcile path; every deno
+ * bundle attempt fails through a mocked Deno.Command, so no process is spawned
  */
 async function reconcileAfterSourceChange(args: {
   pulled: boolean;
@@ -2926,7 +2835,6 @@ export const model = {
   },
 };
 `;
-  // A bare specifier with no deno.json makes the failure an expected one.
   const v2 = args.addBareImport
     ? `import { helper } from "bare-helper-${ts}";\n${v1}`
     : `${v1}// changed\n`;
@@ -3073,10 +2981,6 @@ Deno.test("UserModelLoader buildIndex: expected rebundle failure warns once that
 });
 
 Deno.test("UserModelLoader buildIndex: unchanged content does not rebundle even with new mtime", async () => {
-  // Prior to #125 the freshness rule was mtime-only, so writing identical
-  // content with a new mtime would trigger a spurious rebundle. After the
-  // switch to content fingerprints, rewriting the source with the same
-  // bytes must NOT change the cached bundle even when mtime advances.
   const ts = crypto.randomUUID().slice(0, 8);
   const modelCode = `
 import { z } from "npm:zod@4";
@@ -3121,9 +3025,8 @@ export const model = {
     const cachedBundle = await Deno.readTextFile(bundlePath);
     const bundleMtimeBefore = (await Deno.stat(bundlePath)).mtime!.getTime();
 
-    // Rewrite the source with identical content but advance its mtime
-    // (simulates touch or save-without-changes). Bump mtime explicitly
-    // past the bundle's 1s-granularity timestamp instead of sleeping.
+    // identical content with an advanced mtime, bumped past the bundle's
+    // 1s-granularity timestamp instead of sleeping
     await Deno.writeTextFile(join(modelsDir, "model.ts"), modelCode);
     const bumped = new Date(Date.now() + 5_000);
     await Deno.utime(join(modelsDir, "model.ts"), bumped, bumped);
@@ -3166,7 +3069,6 @@ export const model = {
 });
 
 Deno.test("UserModelLoader: accepts optional DatastorePathResolver", () => {
-  // Verify the constructor accepts a resolver without errors
   const mockResolver = {
     localPath: (...segments: string[]) => join("/repo/.swamp", ...segments),
     datastorePath: (...segments: string[]) => join("/cache/path", ...segments),
@@ -3182,7 +3084,6 @@ Deno.test("UserModelLoader: accepts optional DatastorePathResolver", () => {
     }),
   };
 
-  // Should construct without error with resolver
   const loaderWithResolver = new ExtensionLoader(
     testDenoRuntime,
     modelKindAdapter,
@@ -3191,7 +3092,6 @@ Deno.test("UserModelLoader: accepts optional DatastorePathResolver", () => {
   );
   assertNotEquals(loaderWithResolver, undefined);
 
-  // Should construct without error without resolver (backward compat)
   const loaderWithoutResolver = new ExtensionLoader(
     testDenoRuntime,
     modelKindAdapter,
@@ -3246,11 +3146,9 @@ export const model = {
   const dbPath = join(repoDir, ".swamp", "_extension_catalog.db");
 
   try {
-    // Write model A in the primary dir, model B in the extra source dir
     await Deno.writeTextFile(join(modelsDir, "model_a.ts"), modelCodeA);
     await Deno.writeTextFile(join(sourceDirB, "model_b.ts"), modelCodeB);
 
-    // First buildIndex — only primary dir, no additional sources
     const catalog1 = new ExtensionCatalogStore(dbPath);
     const repository1 = makeRepoForCatalog(catalog1, repoDir);
     const loader1 = new ExtensionLoader(
@@ -3263,7 +3161,6 @@ export const model = {
     await loader1.buildIndex(modelsDir);
     catalog1.close();
 
-    // Model A should be registered, model B should not
     assertEquals(
       modelRegistry.has(`@user/source-a-${ts}`),
       true,
@@ -3275,7 +3172,6 @@ export const model = {
       "model B should NOT be registered (not in any source dir yet)",
     );
 
-    // Second buildIndex — now include the extra source dir
     const catalog2 = new ExtensionCatalogStore(dbPath);
     const repository2 = makeRepoForCatalog(catalog2, repoDir);
     const loader2 = new ExtensionLoader(
@@ -3290,7 +3186,6 @@ export const model = {
     });
     catalog2.close();
 
-    // Model B should now be discovered and registered
     assertEquals(
       modelRegistry.has(`@user/source-b-${ts}`),
       true,
@@ -3310,10 +3205,8 @@ export const model = {
 
 Deno.test("UserModelLoader buildIndex: catalog extracts type from export block, not from decoy properties", async () => {
   const ts = crypto.randomUUID().slice(0, 8);
-  // Model with a decoy `type: "decoy"` in a helper call BEFORE the
-  // actual `export const model = { type: "@test/real-..." }`.
-  // Guards against naive type-extraction that picks the first `type:` literal
-  // instead of the one inside the real `export const model` object.
+  // a decoy type: literal in a helper before the real model export guards
+  // against type extraction that takes the first type: it sees
   const modelCode = `
 import { z } from "npm:zod@4";
 
@@ -3345,7 +3238,6 @@ export const model = {
   try {
     await Deno.writeTextFile(join(modelsDir, "decoy_model.ts"), modelCode);
 
-    // First buildIndex bootstraps the catalog
     const catalog = new ExtensionCatalogStore(dbPath);
     const repository = makeRepoForCatalog(catalog, repoDir);
     const loader = new ExtensionLoader(
@@ -3359,7 +3251,6 @@ export const model = {
 
     assertEquals(result.failed.length, 0);
 
-    // Verify the catalog stored the REAL type, not the decoy
     const entry = catalog.findByType(`@test/real-${ts}`, "model");
     assertNotEquals(
       entry,
@@ -3368,7 +3259,6 @@ export const model = {
     );
     assertEquals(entry!.version, "2026.04.06.1");
 
-    // Verify the decoy type is NOT in the catalog
     const decoyEntry = catalog.findByType(`decoy-${ts}`, "model");
     assertEquals(
       decoyEntry,
@@ -3382,12 +3272,6 @@ export const model = {
     await Deno.remove(modelsDir, { recursive: true });
   }
 });
-
-// Tests for attachPendingExtensionsForType and the buildIndex post-loop
-// retry (issue 123). The primitive and its two call sites close the gap
-// between code paths that eagerly-register a base type and the
-// loadSingleType/importAndExtendBundle flow that would otherwise attach
-// extensions targeting it.
 
 function makePendingAttachFixture(typeSlug: string) {
   const ts = crypto.randomUUID().slice(0, 8);
@@ -3448,8 +3332,6 @@ Deno.test("attachPendingExtensionsForType: attaches a single pending extension",
       repository,
     );
     await loader.buildIndex(modelsDir);
-    // Simulate a pending extension: its member is gone and it is not
-    // recorded as attached (load() marks what it attaches, swamp-club#2562).
     const base = modelRegistry.get(typeId);
     if (base) delete base.methods.pending;
     removeAttachedExtensionsForType(typeId);
@@ -3530,7 +3412,6 @@ export const extension = {
     );
     await loader.buildIndex(modelsDir);
 
-    // Simulate pending extensions: members gone, attach record cleared.
     const base = modelRegistry.get(typeId);
     if (base) {
       delete base.methods.alpha;
@@ -3620,7 +3501,6 @@ Deno.test("attachPendingExtensionsForType: is idempotent when all methods alread
       repository,
     );
     await loader.buildIndex(modelsDir);
-    // loadModels Pass 2 inside buildIndex already attached "pending".
     assertEquals("pending" in modelRegistry.get(typeId)!.methods, true);
 
     await loader.attachPendingExtensionsForType(typeId);
@@ -3657,11 +3537,9 @@ Deno.test("attachPendingExtensionsForType: no-op when base is not registered", a
 });
 
 Deno.test("buildIndex post-loop attach: extension attaches after model file rebundles (order model-first)", async () => {
-  // The order that findStaleFiles returns files is filesystem-dependent.
-  // This test pins down the case where a stale model file is processed
-  // BEFORE its stale extension file — the in-loop attach would find no
-  // catalog row for the extension, but the post-loop attach succeeds
-  // because every catalog row exists by the time it runs.
+  // findStaleFiles order is filesystem-dependent; a stale model processed
+  // before its stale extension finds no catalog row in-loop, so only the
+  // post-loop attach succeeds
   const ts = crypto.randomUUID().slice(0, 8);
   const typeId = `@user/buildindex-order-${ts}`;
   const modelCode = (marker: string) => `
@@ -3693,9 +3571,6 @@ export const extension = {
 `;
 
   const repoDir = await Deno.makeTempDir({ prefix: "swamp_bidx_repo_" });
-  // a_base.ts sorts before b_ext.ts so the stale-files walk hits the
-  // model first. This lets the test reproduce the order-dependent bug
-  // the post-loop attach was built to fix.
   const modelsDir = await Deno.makeTempDir({ prefix: "swamp_bidx_models_" });
   const dbPath = join(repoDir, ".swamp", "_extension_catalog.db");
 
@@ -3748,25 +3623,9 @@ export const extension = {
 });
 
 Deno.test("UserModelLoader: registerLazyFromCatalog skips ValidationFailed rows (swamp-club#209)", async () => {
-  // After a schema-invalid extension goes through rebundleAndUpdateCatalog,
-  // the catalog row carries state='ValidationFailed' with empty
-  // type_normalized. The fingerprint match terminates the rebundle loop
-  // (verified at the catalog/freshness layer), but the registry must
-  // not be polluted with the broken row — registerLazyFromCatalog has
-  // to filter on state.
-  //
-  // The reader migrated from `validation_failed` to `state` per W1a
-  // (issue swamp-club#211); this test follows.
-  //
-  // Drives the registration path directly via a seeded catalog rather
-  // than going through buildIndex. The buildIndex path bumps into
-  // Deno's per-process import cache: rewriting the source file on
-  // disk and re-importing the same bundlePath returns the previously
-  // cached module, masking the parse failure inside a single test
-  // process. Production runs are fresh subprocesses without that cache,
-  // which is why the bug manifests there but not via in-process
-  // integration tests. The fix's actual surface is the catalog row
-  // shape + the registration filter — both unit-testable.
+  // drives registration from a seeded catalog because Deno's per-process import
+  // cache masks a rewritten source in buildIndex; the filter on state must keep
+  // broken rows out of the registry
   const ts = crypto.randomUUID().slice(0, 8);
   const healthy = `
 import { z } from "npm:zod@4";
@@ -3795,7 +3654,6 @@ export const model = {
   try {
     await Deno.writeTextFile(join(modelsDir, "healthy.ts"), healthy);
 
-    // Cold-start populates the catalog with the healthy model.
     const catalog1 = new ExtensionCatalogStore(dbPath);
     const repository1 = makeRepoForCatalog(catalog1, repoDir);
     const loader1 = new ExtensionLoader(
@@ -3807,8 +3665,6 @@ export const model = {
     );
     await loader1.buildIndex(modelsDir);
 
-    // Inject a ValidationFailed row to simulate what
-    // markCatalogValidationFailed would write after a schema break.
     const ns = bundleNamespace(modelsDir, repoDir);
     const brokenSourcePath = join(modelsDir, "broken.ts");
     catalog1.upsert({
@@ -3825,9 +3681,6 @@ export const model = {
     });
     catalog1.close();
 
-    // Re-open and find both rows. findByKind must return BOTH —
-    // ADV-1 invariant: findStaleFiles needs to see the broken row to
-    // terminate the rebundle loop on a stable broken source.
     const catalog2 = new ExtensionCatalogStore(dbPath);
     const repository2 = makeRepoForCatalog(catalog2, repoDir);
     const allRows = catalog2.findByKind("model");
@@ -3842,10 +3695,6 @@ export const model = {
     assertNotEquals(healthyRow, undefined, "Healthy row must be in findByKind");
     assertEquals(healthyRow?.state, "Indexed");
 
-    // Drive registerLazyFromCatalog. The healthy type registers; the
-    // broken row (empty type_normalized + state='ValidationFailed') must
-    // NOT register. Use a fresh loader so the lazy registration path
-    // runs against a clean registry view of the populated catalog.
     const loader2 = new ExtensionLoader(
       testDenoRuntime,
       modelKindAdapter,
@@ -3855,9 +3704,6 @@ export const model = {
     );
     await loader2.buildIndex(modelsDir);
 
-    // After buildIndex, the healthy type is registered. The empty
-    // type_normalized of the broken row never reaches the registry —
-    // ModelType.create("") would throw, but the filter prevents that.
     const healthyTypeName = `@user/issue209-healthy-${ts}`;
     assertNotEquals(
       modelRegistry.has(healthyTypeName)
@@ -3874,23 +3720,9 @@ export const model = {
 });
 
 Deno.test("UserModelLoader buildIndex: missing cached bundle is detected and recreated (swamp-club#212)", async () => {
-  // Reproduces the swamp-club#212 user repro end-to-end:
-  //   1. buildIndex populates catalog + writes bundle.
-  //   2. The bundle file is deleted out-of-band (manual rm, partial GC, etc.).
-  //   3. Re-running buildIndex previously failed with `NotFound` at
-  //      importBundleByPath because findStaleFiles only compared source
-  //      content fingerprint and never noticed the bundle was gone.
-  // The freshness gate now stats `bundle_path` for every fingerprint-fresh
-  // row and falls through to rebundleAndUpdateCatalog when the file is
-  // missing. This test asserts no ENOENT and that the bundle is on disk
-  // again after the second buildIndex.
-  //
-  // Note on Deno's per-process import cache: re-importing the same file
-  // URL within a single test process serves the cached module, so this
-  // test can't assert anything about the *contents* of the recovered
-  // module — only that recovery happened (no throw + bundle restored).
-  // Production runs are fresh subprocesses without that cache, which is
-  // why the bug manifests there.
+  // Deno's per-process import cache serves the old module on re-import, so this
+  // asserts only that recovery happened (no throw, bundle restored), not the
+  // module contents
   const ts = crypto.randomUUID().slice(0, 8);
   const typeId = `@user/missing-bundle-${ts}`;
   const modelCode = `
@@ -3920,7 +3752,6 @@ export const model = {
   try {
     await Deno.writeTextFile(join(modelsDir, "model.ts"), modelCode);
 
-    // Cold-start populates the catalog and writes the bundle.
     const catalog1 = new ExtensionCatalogStore(dbPath);
     const repository1 = makeRepoForCatalog(catalog1, repoDir);
     const loader1 = new ExtensionLoader(
@@ -3941,11 +3772,8 @@ export const model = {
       "Cold-start must write the bundle to disk",
     );
 
-    // Simulate the user's rm.
     await Deno.remove(bundlePath);
 
-    // Second buildIndex must NOT throw NotFound — the freshness gate
-    // detects the missing bundle and triggers rebundleAndUpdateCatalog.
     const catalog2 = new ExtensionCatalogStore(dbPath);
     const repository2 = makeRepoForCatalog(catalog2, repoDir);
     const loader2 = new ExtensionLoader(
@@ -3958,7 +3786,6 @@ export const model = {
     const result = await loader2.buildIndex(modelsDir);
     catalog2.close();
 
-    // Bundle is restored on disk and the rebundle landed in `loaded`.
     assertEquals(
       await Deno.stat(bundlePath).then(() => true).catch(() => false),
       true,
@@ -3980,16 +3807,8 @@ export const model = {
   }
 });
 
-// ===== Pin 1 (W2) =====
-//
-// `bundleAndIndexOne` is the public per-file entry point that
-// InstallExtensionService calls during install to build the Extension
-// aggregate's Sources. The whole point of moving type-extraction
-// synchronously to install time is that I-Repo-1 fires when the
-// lifecycle service calls `repository.save(extension)` — NOT when the
-// loader sneaks a row in via `catalog.upsert`. If a future refactor
-// inadvertently re-adds an upsert to this path, I-Repo-1 silently stops
-// firing at install time. The next two tests are the regression net.
+// bundleAndIndexOne must not upsert catalog rows: install writes them through
+// repository.save(extension), where the repository invariant fires
 
 Deno.test(
   "UserModelLoader.bundleAndIndexOne: returns model metadata without writing catalog rows (Pin 1)",
@@ -4048,7 +3867,6 @@ export const model = {
         baseDir: modelsDir,
       });
 
-      // Pin 1: catalog row count must be unchanged.
       const after = catalog.findAll().length;
       assertEquals(
         after,
@@ -4056,7 +3874,6 @@ export const model = {
         "Pin 1: bundleAndIndexOne must NOT write catalog rows",
       );
 
-      // Returns the metadata the lifecycle service needs.
       assertNotEquals(result, null);
       assertEquals(result?.kind, "model");
       assertEquals(result?.typeNormalized, typeId.toLowerCase());
@@ -4153,9 +3970,6 @@ export const model = {
         repository,
       );
 
-      // Use bundleAndIndexOne to create the bundle file on disk
-      // WITHOUT registering in the registry. This gives us a valid
-      // bundle we can load lazily.
       const sourcePath = join(modelsDir, "model.ts");
       const result = await loader.bundleAndIndexOne({
         absolutePath: sourcePath,
@@ -4164,9 +3978,6 @@ export const model = {
       });
       assertNotEquals(result, null);
 
-      // Simulate a warm-start: catalog has a row, registry has only
-      // a lazy entry (not fully loaded). This is the state a new
-      // process sees after a prior buildIndex populated the catalog.
       catalog.upsert({
         type_normalized: result!.typeNormalized,
         kind: "model",
@@ -4197,10 +4008,9 @@ export const model = {
         "type should be registered as lazy",
       );
 
-      // KindAdapter.hasType must return true for lazy entries,
-      // but isFullyLoaded must return false. This distinction
-      // prevents importAndRegisterBundle from early-returning
-      // before the bundle is actually imported (35-UAT cascade).
+      // hasType is true for lazy entries but isFullyLoaded is false, so
+      // importAndRegisterBundle does not return early before the bundle is
+      // imported
       assertEquals(
         modelKindAdapter.hasType(result!.typeNormalized),
         true,
@@ -4212,7 +4022,6 @@ export const model = {
         "isFullyLoaded must return false for lazy entries",
       );
 
-      // loadSingleType must promote lazy → fully loaded
       await loader.loadSingleType(result!.typeNormalized);
       const promoted = modelRegistry.get(result!.typeNormalized);
       assertNotEquals(
@@ -4240,9 +4049,6 @@ export const model = {
     }
   },
 );
-
-// Regression tests for swamp-club#318 / #123: the fingerprint-aware
-// tracking set that replaced allExtensionMethodsAttached.
 
 Deno.test("attachPendingExtensionsForType: idempotent across two code paths (issue #123 regression)", async () => {
   const ts = crypto.randomUUID().slice(0, 8);
@@ -4294,8 +4100,6 @@ export const extension = {
       repository,
     );
 
-    // Path A: buildIndex registers the base and attaches the extension
-    // via the post-loop attachPendingExtensionsForType.
     await loader.buildIndex(modelsDir);
     assertEquals(
       "extra" in modelRegistry.get(typeId)!.methods,
@@ -4303,9 +4107,6 @@ export const extension = {
       "Extension must be attached after buildIndex",
     );
 
-    // Path B: explicit attachPendingExtensionsForType (simulates
-    // hotLoadModels' post-load attachment loop). Must be a no-op —
-    // the tracking set should prevent a duplicate extend() call.
     await loader.attachPendingExtensionsForType(typeId);
     assertEquals(
       "extra" in modelRegistry.get(typeId)!.methods,
@@ -4383,8 +4184,6 @@ export const extension = {
       repository,
     );
 
-    // Simulate the hotLoadModels sequence:
-    // 1. load() discovers and attaches the extension via processSecondaryExport
     const loadResult = await loader.load(modelsDir);
     assertEquals(loadResult.failed.length, 0, "load must not fail");
     assertEquals(
@@ -4393,12 +4192,8 @@ export const extension = {
       "Extension must be attached after load",
     );
 
-    // 2. Populate the catalog so attachPendingExtensionsForType can find it
     await loader.buildIndex(modelsDir);
 
-    // 3. attachPendingExtensionsForType tries to re-attach the same
-    //    extension. importAndExtendBundle must treat "already exists"
-    //    as idempotent — no failures, no warnings.
     await loader.attachPendingExtensionsForType(typeId);
 
     assertEquals(
@@ -4493,10 +4288,8 @@ export const extension = {
     );
     catalog1.close();
 
-    // Add extension B — a new file targeting the same base type.
-    // The base model file is unchanged, so only ext_b.ts is stale.
-    // buildIndex must still trigger attachment for the target type
-    // because a stale secondary export was processed.
+    // only ext_b.ts is stale, yet buildIndex must still attach for the target
+    // type because a stale secondary export was processed
     await Deno.writeTextFile(join(modelsDir, "ext_b.ts"), extBCode);
 
     const catalog2 = new ExtensionCatalogStore(dbPath);
@@ -4595,8 +4388,6 @@ export const extension = {
       "Extension must be attached after buildIndex",
     );
 
-    // resetLoadedFlag doesn't clear models — extensions remain attached.
-    // The tracking set should correctly report this.
     modelRegistry.resetLoadedFlag();
 
     await loader.attachPendingExtensionsForType(typeId);

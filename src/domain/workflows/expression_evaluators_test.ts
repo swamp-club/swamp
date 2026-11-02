@@ -39,16 +39,14 @@ import { VaultSecretBag } from "../vaults/vault_secret_bag.ts";
 import { SecretBagRegistry } from "../vaults/secret_bag_registry.ts";
 import { ProvenanceMap } from "../expressions/provenance_map.ts";
 
-/** The reference every secret of these tests stands for. */
 const REF = { vaultName: "v", key: "k" };
 
 function emptyContext(): ExpressionContext {
   return { model: {}, env: {} };
 }
 
-// Stub evaluator that lets tests deterministically inject errors. The
-// real CelEvaluator is used for normal cases; this stub is reserved
-// for asserting strict-vs-lenient error handling.
+// stub that injects errors deterministically, reserved for strict-vs-lenient
+// error handling; other cases use the real CelEvaluator
 class ThrowingEvaluator implements CelExpressionEvaluator {
   evaluate(): unknown {
     throw new Error("sync stub does not evaluate");
@@ -60,10 +58,6 @@ class ThrowingEvaluator implements CelExpressionEvaluator {
     return { valid: true };
   }
 }
-
-// ---------------------------------------------------------------------------
-// WorkflowExpressionEvaluator — strict
-// ---------------------------------------------------------------------------
 
 Deno.test("WorkflowExpressionEvaluator: returns workflow unchanged when no expressions", async () => {
   const evaluator = new WorkflowExpressionEvaluator(new CelEvaluator());
@@ -177,9 +171,7 @@ Deno.test("WorkflowExpressionEvaluator: skips runtime expressions (vault/env)", 
     emptyContext(),
     "unrestricted",
   );
-  // Runtime expressions are not counted.
   assertEquals(result.expressionsEvaluated, 0);
-  // And remain raw on the returned workflow.
   assertStringIncludes(
     result.workflow.description ?? "",
     "vault.get",
@@ -299,9 +291,7 @@ Deno.test("WorkflowExpressionEvaluator: skips forEach.in expressions (must remai
     emptyContext(),
     "unrestricted",
   );
-  // forEach.in is skipped; self.* in the step name is also skipped.
   assertEquals(result.expressionsEvaluated, 0);
-  // And the forEach.in remains as a raw string for forEach expansion later.
   const step = result.workflow.jobs[0].steps[0];
   assertEquals(step.forEach?.in, "${{ ['dev', 'prod'] }}");
 });
@@ -398,7 +388,6 @@ Deno.test("WorkflowExpressionEvaluator: preserves raw assert CEL even when its l
   });
 });
 
-/** A workflow whose step names and one input read `inputs.secret`. */
 function secretNamedWorkflow(): Workflow {
   return Workflow.create({
     name: "secret-names",
@@ -461,7 +450,6 @@ Deno.test("WorkflowExpressionEvaluator: in a typed run a sentinel spliced into a
     "p-sensitive-v.k-eu",
     "sensitive-v.k",
   ]);
-  // The input still carries the sentinel the step's passes bind back.
   assertEquals(passwordOf(result.workflow), sentinel);
 });
 
@@ -520,8 +508,6 @@ Deno.test("WorkflowExpressionEvaluator: STRICT — per-expression eval error pro
     "forced eval failure",
   );
 });
-
-// Another templating system's text in step arguments (swamp-club#2528).
 
 function foreignWorkflow(task: StepTask, description?: string): Workflow {
   return Workflow.create({
@@ -585,7 +571,6 @@ Deno.test("WorkflowExpressionEvaluator: leaves another templating system's text 
       text: "${{ matrix.os }}",
     },
   ]);
-  // The text is still the author's: nothing was spliced over it as data.
   assertEquals(
     result.provenance.hasDataAtOrBelow(
       "jobs[0].steps[0].task.globalArgs.env.SHA",
@@ -601,7 +586,6 @@ Deno.test("WorkflowExpressionEvaluator: reports another templating system's text
       StepTask.model("m", "run", {
         os: "${{ self.h + matrix.os }}",
         sha: "${{ has(steps.first.outputs) ? github.sha : 'n' }}",
-        // Deferred, but swamp's own: nothing to report.
         host: "${{ self.h }}",
       }),
     ),
@@ -628,7 +612,6 @@ Deno.test("WorkflowExpressionEvaluator: reports another templating system's text
 });
 
 Deno.test("WorkflowExpressionEvaluator: an error other than the unknown foreign root still throws", async () => {
-  // The expression mentions a foreign root, but that is not why it failed.
   const forced = new WorkflowExpressionEvaluator(new ThrowingEvaluator());
   await assertRejects(
     () =>
@@ -642,7 +625,6 @@ Deno.test("WorkflowExpressionEvaluator: an error other than the unknown foreign 
     Error,
     "forced eval failure",
   );
-  // The swamp side of a mixed expression fails first.
   const evaluator = new WorkflowExpressionEvaluator(new CelEvaluator());
   await assertRejects(
     () =>
@@ -680,10 +662,8 @@ Deno.test("WorkflowExpressionEvaluator: a failed swamp expression in step argume
 Deno.test("WorkflowExpressionEvaluator: another templating system's text outside step arguments still throws", async () => {
   const evaluator = new WorkflowExpressionEvaluator(new CelEvaluator());
   const rejected = [
-    // What the step runs.
     foreignWorkflow(StepTask.model("${{ github.repository }}", "run")),
     foreignWorkflow(StepTask.model("m", "${{ github.job }}")),
-    // A whole-field record expression.
     foreignWorkflow(
       StepTask.fromData({
         type: "model_method",
@@ -692,9 +672,7 @@ Deno.test("WorkflowExpressionEvaluator: another templating system's text outside
         inputs: "${{ github.event }}",
       }),
     ),
-    // Outside any task.
     foreignWorkflow(StepTask.model("m", "run"), "${{ github.sha }}"),
-    // The same text in an argument and in the target fails on the target.
     foreignWorkflow(
       StepTask.model("${{ github.sha }}", "run", { sha: "${{ github.sha }}" }),
     ),
@@ -707,8 +685,6 @@ Deno.test("WorkflowExpressionEvaluator: another templating system's text outside
     );
   }
 });
-
-// Only known foreign roots pass through step arguments (swamp-club#3400).
 
 Deno.test("WorkflowExpressionEvaluator: an unlisted root in step arguments throws Unknown variable", async () => {
   const evaluator = new WorkflowExpressionEvaluator(new CelEvaluator());
@@ -789,7 +765,6 @@ Deno.test("WorkflowExpressionEvaluator: does not report deferred text that reads
   const result = await evaluator.evaluate(
     foreignWorkflow(
       StepTask.model("m", "run", {
-        // Fails when the step runs, so it is not passed through.
         os: "${{ self.h + nonexistent.os }}",
         sha: "${{ self.h + github.sha }}",
       }),
@@ -814,10 +789,8 @@ Deno.test("findForeignTaskText: separates step arguments from what a run must re
       methodName: "run",
       inputs: {
         sha: "${{ github.sha }}",
-        // Swamp's own namespaces are never foreign, bound or not.
         version: "${{ inputs.version }}",
         out: "${{ steps.build.outputs.sha }}",
-        // Neither swamp's nor a known foreign root.
         run: "${{ nonexistent.variable }}",
         region: "${{ github.ref + input.region }}",
       },
@@ -856,10 +829,6 @@ Deno.test("findForeignTaskText: separates step arguments from what a run must re
   });
 });
 
-// ---------------------------------------------------------------------------
-// DefinitionExpressionEvaluator — lenient
-// ---------------------------------------------------------------------------
-
 Deno.test("DefinitionExpressionEvaluator: returns definition unchanged when no expressions", async () => {
   const evaluator = new DefinitionExpressionEvaluator(new CelEvaluator());
   const def = Definition.create({
@@ -882,7 +851,6 @@ Deno.test("DefinitionExpressionEvaluator: skips runtime expressions (vault/env)"
     },
   });
   const result = await evaluator.evaluate(def, emptyContext(), "unrestricted");
-  // Vault remains raw — resolved at runtime by the executor.
   assertEquals(
     result.definition.getMethodArguments("run"),
     { token: "${{ vault.get('v', 'tok') }}" },
@@ -898,7 +866,6 @@ Deno.test("DefinitionExpressionEvaluator: LENIENT — per-expression eval error 
       run: { arguments: { thing: "${{ inputs.thing }}" } },
     },
   });
-  // No throw despite the evaluator rejecting every async call.
   const result = await evaluator.evaluate(def, emptyContext(), "unrestricted");
   // The expression is left raw, and the failure is returned so the caller
   // can fail the step if the method it runs uses the value.
@@ -1068,10 +1035,6 @@ Deno.test("DefinitionExpressionEvaluator: self.globalArguments sees evaluated gl
   assertEquals(context.self?.globalArguments, rawGlobals);
 });
 
-// ---------------------------------------------------------------------------
-// DefinitionExpressionEvaluator — authored-expression gate (swamp-club#2172)
-// ---------------------------------------------------------------------------
-
 Deno.test("DefinitionExpressionEvaluator: refuses an expression absent from the authored set", async () => {
   const evaluator = new DefinitionExpressionEvaluator(new CelEvaluator());
   // Stands in for a direct-execution definition synthesised from step inputs
@@ -1117,15 +1080,6 @@ Deno.test("DefinitionExpressionEvaluator: resolves an authored expression and re
   );
 });
 
-// ---------------------------------------------------------------------------
-// Task target deferral (swamp-club#2304)
-//
-// The target defers for either of two independent reasons: it reads step
-// output, or its step carries a guard. The four combinations below pin both
-// conditions and the case where neither applies.
-// ---------------------------------------------------------------------------
-
-/** Narrows a step's task data to the model_method form and returns its target. */
 function targetOf(
   step: { task: { data: { type: string } } },
 ): string | undefined {
@@ -1134,7 +1088,6 @@ function targetOf(
   return (data as { modelIdOrName?: string }).modelIdOrName;
 }
 
-/** A one-step workflow whose task target and guard are supplied by the test. */
 function targetOnlyWorkflow(target: string, guard?: string): Workflow {
   return Workflow.create({
     name: "target-deferral",
@@ -1237,9 +1190,8 @@ Deno.test("target deferral: a guard on one step does not defer another step's ta
 });
 
 Deno.test("target deferral: the direct-execution form defers its modelName too", async () => {
-  // ADV-5 called modelName the riskier half: it names a definition to
-  // auto-create, and every guarded step in the repo's own verification
-  // workflow uses this form with a run-id-based name.
+  // modelName is the riskier half: it names a definition to auto-create, so the
+  // direct-execution form defers it too
   const workflow = Workflow.create({
     name: "direct-execution-target",
     inputs: {
@@ -1285,22 +1237,10 @@ Deno.test("target deferral: the direct-execution form defers its modelName too",
     return (data as { modelName?: string }).modelName;
   };
 
-  // Guarded defers; unguarded still resolves at run start, and the shared
-  // expression text does not leak across them.
   assertEquals(nameOf(evaluated.jobs[0].steps[0]), "${{ inputs.name }}");
   assertEquals(nameOf(evaluated.jobs[0].steps[1]), "picked");
 });
 
-// ---------------------------------------------------------------------------
-// Nested workflow targets and the steps namespace (swamp-club#2351)
-//
-// A driver step that picks the next workflow from a record an earlier step
-// wrote had its workflowIdOrName evaluated at run start, before that record
-// existed — silently taking the orValue fallback, or a previous run's value.
-// A steps.* reference failed the whole run with "Unknown variable: steps".
-// ---------------------------------------------------------------------------
-
-/** Returns a nested workflow step's target. */
 function workflowTargetOf(step: Step): string {
   const data = step.task.data;
   if (data.type !== "workflow") throw new Error("not a workflow task");
@@ -1361,9 +1301,8 @@ Deno.test("target deferral: a guard defers a nested workflow target but not an u
 });
 
 Deno.test("target deferral: an input identical to a deferred workflow target stays deferred", async () => {
-  // The reporter's collision: the input shares the target's text. Before the
-  // fix the target evaluated at run start and substitution, keyed on the raw
-  // text, wrote the same stale value into the input.
+  // the input shares the target's text; substitution keyed on raw text must not
+  // write a stale run-start value into the input
   const expression = "${{ data.latest('driver', 'next').attributes.workflow }}";
   const evaluated = await evaluateWith(Workflow.create({
     name: "workflow-target-collision",
@@ -1385,8 +1324,8 @@ Deno.test("target deferral: an input identical to a deferred workflow target sta
 });
 
 Deno.test("steps namespace: steps.* references stay raw at run start instead of failing the run", async () => {
-  // The namespace only exists once the run does; evaluating it here used to
-  // throw "Unknown variable: steps" and kill the run before any step ran.
+  // the steps namespace only exists once the run does, so steps.* references
+  // stay raw at run start
   const input = "${{ steps.write.status }}";
   const target = "${{ steps.write.status == 'succeeded' ? 'next' : 'retry' }}";
   const evaluated = await evaluateWith(Workflow.create({
@@ -1437,7 +1376,6 @@ Deno.test("createTaskTargetDeferral: defers only task targets, by step-output de
     celExpression,
   });
 
-  // Guarded step: its target defers, its other fields do not.
   assertEquals(
     isDeferred(
       location("jobs[0].steps[0].task.workflowIdOrName", "inputs.name"),
@@ -1448,7 +1386,6 @@ Deno.test("createTaskTargetDeferral: defers only task targets, by step-output de
     isDeferred(location("jobs[0].steps[0].task.inputs.x", "inputs.name")),
     false,
   );
-  // Unguarded step: only a step-output dependency defers its target.
   assertEquals(
     isDeferred(location("jobs[0].steps[1].task.modelIdOrName", "inputs.name")),
     false,
@@ -1464,13 +1401,8 @@ Deno.test("createTaskTargetDeferral: defers only task targets, by step-output de
   );
 });
 
-// ---------------------------------------------------------------------------
-// Sensitive values spliced by evaluation (swamp-club#2171)
-// ---------------------------------------------------------------------------
-
 const SECRET = "Pl41n-s3cret";
 
-/** A context whose inputs hold a value the run recorded as sensitive. */
 function sensitiveContext(): ExpressionContext {
   const values = new RunSensitiveValues();
   values.addSecret(SECRET, { vaultName: "prod", key: "api-token" });

@@ -19,9 +19,6 @@
 
 import { z } from "zod";
 
-/**
- * The parts of a Zod v4 definition the requirement walk reads.
- */
 interface ZodDef {
   type?: string;
   shape?: Record<string, z.ZodTypeAny>;
@@ -36,7 +33,6 @@ function getSchemaDef(schema: z.ZodTypeAny): ZodDef | undefined {
   return (schema as unknown as { _zod?: { def?: ZodDef } })._zod?.def;
 }
 
-/** Wrappers that parse an arguments object as their inner schema does. */
 const PASS_THROUGH_WRAPPERS = new Set([
   "optional",
   "nullable",
@@ -45,29 +41,9 @@ const PASS_THROUGH_WRAPPERS = new Set([
 ]);
 
 /**
- * The top-level argument names an arguments schema cannot do without: the
- * keys whose absence makes the arguments fail to parse (swamp-club#3873).
- *
- * Zod's parser decides, not its JSON Schema: which keys `z.toJSONSchema`
- * lists as `required` changes with the Zod version (4.5 started listing
- * `z.preprocess` fields and `.catch()` around a transform), while what the
- * schema accepts does not. Each field of the object a step's arguments
- * reach is parsed on its own with its key absent, and is required when that
- * fails or throws. Optional, defaulted and `.catch()` fields, and a
- * preprocess that turns a missing value into a valid one, are not required;
- * a coerced field (`z.coerce.number()`) is. A rule on the enclosing object
- * (a cross-field "a or b") never makes a single field required: it is left
- * to the runtime parse.
- *
- * Only the side of a pipe that takes the step's arguments is walked — a
- * pipe's output side names keys its input side produces (swamp-club#3681).
- * A top-level `z.preprocess` runs first, and its fields are judged against
- * what it produces for an empty input. Unions, records and other shapes
- * with no fields of their own report nothing.
- *
- * Deciding this runs the schema's own preprocesses, coercions, refinements
- * and transforms against a missing value, with no time bound, as the
- * runtime parse runs them against the step's arguments.
+ * top-level keys whose absence makes the arguments fail to parse, judged by
+ * parsing each field alone with its key absent, not by JSON Schema, whose
+ * required list varies with the Zod version
  */
 export async function requiredArgumentNames(
   schema: z.ZodTypeAny,
@@ -75,10 +51,6 @@ export async function requiredArgumentNames(
   return [...await requiredKeys(schema, {})];
 }
 
-/**
- * The keys of `schema` a step must supply, when the arguments object the
- * schema sees is `input` — empty, or what a preprocess made of empty.
- */
 async function requiredKeys(
   schema: z.ZodTypeAny,
   input: Record<string, unknown>,

@@ -67,9 +67,6 @@ import {
 } from "../expressions/provenance_map.ts";
 import { withWrittenReferenceRanges } from "../expressions/persisted_evaluation.ts";
 
-/**
- * Zod schema for an approval decision recorded on a manual_approval step.
- */
 export const ApprovalDecisionSchema = z.object({
   approved: z.boolean(),
   reason: z.string().optional(),
@@ -90,80 +87,46 @@ export const AssertResultSchema = z.object({
 export type AssertResultData = z.infer<typeof AssertResultSchema>;
 
 /**
- * Why a step did not run.
- *
- * A bare `skipped` status cannot distinguish a step a path guard correctly
- * excluded from one an operator deselected for a subset re-run, and both
- * reach CI as the same skip count. Recording the cause — and, for a guard,
- * the expression that decided it — is what lets an attestation say which
- * it was.
- *
- * A discriminated union rather than one object with an optional
- * `expression`: only a guard has an expression to report, and a flat shape
- * would happily validate `{ kind: "dependency", expression: "..." }`, which
- * describes nothing that can occur. Making it unrepresentable is cheaper
- * than a comment asking readers not to do it.
+ * a discriminated union so only a guard carries an expression; a flat shape
+ * would validate a dependency skip with an expression, which describes nothing
+ * that can occur
  */
 export const StepSkipReasonSchema = z.discriminatedUnion("kind", [
   z.object({
-    /** The step's own `guard` expression evaluated truthy. */
     kind: z.literal("guarded"),
-    /** The evaluated guard expression, when one was recorded. */
     expression: z.string().optional(),
   }),
   z.object({
-    /** A `dependsOn` condition on the step was not satisfied. */
     kind: z.literal("dependency"),
   }),
   z.object({
-    /** The step's job was skipped, so the step never became eligible. */
     kind: z.literal("job_skipped"),
   }),
 ]);
 
-/**
- * Type representing why a step was skipped.
- */
 export type StepSkipReasonData = z.infer<typeof StepSkipReasonSchema>;
 
 /**
- * Why a step failed, when the failure is structural rather than the step's
- * own outcome. `workflow_changed`: a failed-run resume reset the step, then
- * its job finished without running it, because the workflow or a forEach
- * collection changed since the run. A retry would fail the same way.
+ * workflow_changed: a failed-run resume reset the step, then its job finished
+ * without running it because the workflow or a forEach collection changed; a
+ * retry would fail the same way
  */
 export const StepFailureKindSchema = z.enum(["workflow_changed"]);
 
-/**
- * Type representing a structural step failure.
- */
 export type StepFailureKind = z.infer<typeof StepFailureKindSchema>;
 
-/**
- * The error a stranded step fails with. See {@link JobRun.failStrandedResetSteps}.
- */
 export const STRANDED_STEP_ERROR =
   "Not run: the workflow or a forEach collection changed since the run. Start a new run.";
 
 /**
- * The error a step fails with when the run's signal aborted while it ran, or
- * before it started in a level the abort interrupted. See
- * {@link JobRun.cancelPendingSteps}; a resume runs a step that never started
- * ({@link StepRun.settledByAbort}).
+ * also set for a step in a level the abort interrupted before it started; a
+ * resume runs a step that never started
  */
 export const CANCELLED_STEP_ERROR = "cancelled";
 
-/**
- * The error a step fails with when the process running it stopped before the
- * step finished, and a cancel settled the record it left. See
- * `cancelAndSettle` in abort_settlement.ts.
- */
 export const OWNER_STOPPED_STEP_ERROR =
   "cancelled: the process running this step stopped before the step finished";
 
-/**
- * Zod schema for step run.
- */
 export const StepRunSchema = z.object({
   stepName: z.string().min(1),
   status: z.enum([
@@ -171,9 +134,8 @@ export const StepRunSchema = z.object({
     "running",
     "waiting_approval",
     "waiting",
-    // A wait whose registration and outcome live in the control-plane store
-    // (swamp-club#3093). A binary that predates it cannot parse the status,
-    // so it refuses the run instead of settling the wait from the record.
+    // a binary that predates control-plane waits cannot parse this status, so
+    // it refuses the run instead of settling the wait from the record
     "waiting_signal",
     "succeeded",
     "failed",
@@ -189,9 +151,8 @@ export const StepRunSchema = z.object({
   allowedFailure: z.boolean().optional(),
   approvalDecision: ApprovalDecisionSchema.optional(),
   approvalPrompt: z.string().optional(),
-  // Seconds the gate was requested with. The step run holds it because a
-  // step expanded by forEach has no step of its name in the definition
-  // (swamp-club#3218).
+  // the step run holds the gate timeout because a step expanded by forEach has
+  // no step of its name in the definition
   approvalTimeout: z.number().positive().optional(),
   assertResult: AssertResultSchema.optional(),
   forEachTemplate: z.string().optional(),
@@ -200,27 +161,17 @@ export const StepRunSchema = z.object({
   failureKind: StepFailureKindSchema.optional(),
   settledByAbort: z.boolean().optional(),
   stoppedByAbort: z.boolean().optional(),
-  // The child run a nested workflow step waits on (swamp-club#2736). Kept as
-  // read and validated in the domain (see parseNestedRunLink), so a malformed
-  // value never makes the run unloadable and is written back unchanged.
+  // kept as read and validated in the domain, so a malformed value never makes
+  // the run unloadable and is written back unchanged
   nestedRun: z.unknown().optional(),
-  // Set when the run ended while this step still waited on its child run,
-  // leaving the child suspended on its own.
   detachedNestedRun: z.boolean().optional(),
-  // The wait a `waiting_signal` step holds (`waiting` in a run suspended
-  // before swamp-club#3093), or held before it settled. Kept as read
-  // and validated in the domain (see parseStoredWait), as nestedRun is.
+  // kept as read and validated in the domain (see parseStoredWait), as
+  // nestedRun is
   wait: z.unknown().optional(),
 });
 
-/**
- * Type representing step run data.
- */
 export type StepRunData = z.infer<typeof StepRunSchema>;
 
-/**
- * Zod schema for job run.
- */
 export const JobRunSchema = z.object({
   jobName: z.string().min(1),
   status: z.enum([
@@ -239,15 +190,8 @@ export const JobRunSchema = z.object({
   steps: z.array(StepRunSchema),
 });
 
-/**
- * Type representing job run data.
- */
 export type JobRunData = z.infer<typeof JobRunSchema>;
 
-/**
- * The principal that triggered a serve run and the memberships captured at
- * run start (swamp-club#2676).
- */
 export const TriggeringPrincipalSchema = z.object({
   kind: z.enum(["user", "worker", "service"]),
   id: z.string().min(1),
@@ -263,9 +207,6 @@ export const TriggeringPrincipalSchema = z.object({
   }),
 });
 
-/**
- * Zod schema for workflow run.
- */
 export const WorkflowRunSchema = z.object({
   id: z.string().uuid(),
   workflowId: z.string().uuid(),
@@ -287,40 +228,30 @@ export const WorkflowRunSchema = z.object({
   pid: z.number().int().positive().optional(),
   tags: z.record(z.string(), z.string()).default({}),
   references: z.record(z.string(), z.string()).optional(),
-  // Effective workflow inputs captured when a run suspends, so post-resume
-  // steps can resolve `inputs.*`. Optional for backward compatibility with
-  // runs persisted before this field existed.
+  // captured when a run suspends so post-resume steps can resolve inputs.*;
+  // optional for runs persisted before this field existed
   inputs: InputRecordSchema.optional(),
-  // Key NAMES of inputs supplied at resume time, recorded for audit. Values are
-  // deliberately NOT persisted to avoid writing secrets (e.g. a freshly minted
-  // auth key) to the plaintext run record.
+  // key names only: values are deliberately not persisted, to keep secrets such
+  // as a freshly minted auth key out of the plaintext run record
   resumeInputs: z.array(z.string()).optional(),
-  // Runtime expressions (env, vault) a parent workflow authored and passed in
-  // through `inputs` unresolved. Persisted so a direct resume of this run can
-  // admit them as provenance; the child's own YAML cannot reconstruct them.
+  // persisted so a direct resume can admit them as provenance; the child's own
+  // YAML cannot reconstruct what a parent passed in unresolved
   inheritedExpressions: z.array(z.string()).optional(),
   deferredExpressions: z.array(DeferredExpressionSchema).optional(),
-  // Where data sits in `inputs` (swamp-club#3205): ranges and paths only, so
-  // a resume knows which input text came from the caller. Absent on runs
-  // recorded before it existed.
+  // ranges and paths only, so a resume knows which input text came from the
+  // caller
   inputsProvenance: ProvenanceMapDataSchema.optional(),
-  // The same map in the written record's own coordinates, where `inputs`
-  // holds vault references in place of sensitive values, so a typed resume
-  // restores references in place and aligns exactly (typed-secrets 4.4).
-  // Absent on runs recorded before it existed, which a typed resume treats
-  // fail-closed: an input string holding a reference is whole data.
+  // absent on older runs, which a typed resume treats fail-closed: an input
+  // string holding a reference is whole data
   persistedInputsProvenance: ProvenanceMapDataSchema.optional(),
-  // Started with --last-evaluated: its steps ran the evaluated cache, whose
-  // source may differ from the workflow on disk (swamp-club#3583). Absent on
-  // other runs and on runs recorded before it existed.
+  // its steps ran the evaluated cache, whose source may differ from the
+  // workflow on disk
   replayedEvaluatedCache: z.literal(true).optional(),
   initiatedBy: z.string().optional(),
   instanceId: z.string().optional(),
-  // The pid and instance id the run had before a resume took it over, kept
-  // while the resume drives the run and restored when the run leaves
-  // running. `pid` and `instanceId` name the live process only while it runs;
-  // otherwise they name the run's owner, which cancel routing and supersede
-  // read.
+  // pid and instanceId name the live process only while it runs, otherwise the
+  // run's owner, which cancel routing and supersede read; kept while a resume
+  // drives the run and restored when it leaves running
   ownerBeforeResume: z.object({
     pid: z.number().int().positive().optional(),
     instanceId: z.string().optional(),
@@ -328,53 +259,35 @@ export const WorkflowRunSchema = z.object({
   triggerSource: z.string().optional(),
   failedStep: z.string().optional(),
   failureReason: z.string().optional(),
-  // Where the record holds vault references in place of sensitive values
-  // read through expressions, and the format they were written in. Absent in
-  // runs written before sensitive values were kept off disk.
   writtenReferences: z.array(WrittenReferenceSchema).optional(),
   sensitiveFormat: z.number().int().positive().optional(),
   stepProgress: z.object({
     completed: z.number().int().nonnegative(),
     total: z.number().int().nonnegative(),
   }).optional(),
-  // Derived on save: the run is suspended with every approval gate decided,
-  // so it is waiting for a resume rather than an approval.
+  // derived on save: suspended with every approval gate decided, so waiting for
+  // a resume rather than an approval
   awaitingResume: z.boolean().optional(),
-  // Suspended by a recovery and not resumed since: the steps it reset wait
-  // for someone to resume the run, so serve does not continue it.
+  // the steps a recovery reset wait for someone to resume the run, so serve
+  // does not continue it
   recovered: z.boolean().optional(),
   runPlan: z.object({
     fingerprint: z.string(),
     evaluatedWorkflowId: z.string().optional(),
     definitionFingerprint: z.string().optional(),
   }).optional(),
-  // On a nested workflow's run: the parent step that started it
-  // (swamp-club#2736). Validated in the domain, as nestedRun is.
   parentRun: z.unknown().optional(),
-  // The principal that triggered a serve run and its memberships at run
-  // start (swamp-club#2676). A resume is held to it, never to the resumer.
-  // Absent on local runs and on runs written before it existed.
+  // a resume is held to this principal, never to the resumer
   triggeringPrincipal: TriggeringPrincipalSchema.optional(),
-  // The vaults the run's `vaults:` lists allowed at run start (their
-  // intersection, a parent's included). A resume is held to this list and
-  // the workflow's current one, so an edit can narrow a suspended run but
-  // never widen it. Absent when no list applied, and on older runs.
+  // a resume is held to this list and the workflow's current one, so an edit
+  // can narrow a suspended run but never widen it
   allowedVaults: z.array(z.string()).optional(),
 });
 
-/**
- * Type representing workflow run data (output — tags always present).
- */
 export type WorkflowRunData = z.infer<typeof WorkflowRunSchema>;
 
-/**
- * Type representing workflow run input data (tags optional for backward compat).
- */
 export type WorkflowRunInput = z.input<typeof WorkflowRunSchema>;
 
-/**
- * StepRun tracks the execution state of a single step.
- */
 export class StepRun {
   constructor(
     readonly stepName: string,
@@ -401,9 +314,6 @@ export class StepRun {
     private _errorCode: string | undefined = undefined,
   ) {}
 
-  /**
-   * Creates a pending step run.
-   */
   static pending(
     stepName: string,
     forEachTemplate?: string,
@@ -424,9 +334,6 @@ export class StepRun {
     );
   }
 
-  /**
-   * Reconstructs a StepRun from persisted data.
-   */
   static fromData(data: StepRunData): StepRun {
     const validated = StepRunSchema.parse(data);
     return new StepRun(
@@ -479,16 +386,10 @@ export class StepRun {
     return this._output;
   }
 
-  /**
-   * Gets the data artifacts produced by this step.
-   */
   get dataArtifacts(): ReadonlyArray<DataArtifactRef> {
     return this._dataArtifacts;
   }
 
-  /**
-   * Whether this step's failure was allowed (not propagated to the job).
-   */
   get allowedFailure(): boolean {
     return this._allowedFailure;
   }
@@ -501,7 +402,6 @@ export class StepRun {
     return this._approvalPrompt;
   }
 
-  /** Seconds the waiting gate was requested with, when it has a deadline. */
   get approvalTimeout(): number | undefined {
     return this._approvalTimeout;
   }
@@ -514,92 +414,58 @@ export class StepRun {
     return this._forEachTemplate;
   }
 
-  /**
-   * Why this step was skipped. Undefined unless {@link status} is `skipped`.
-   */
   get skipReason(): StepSkipReasonData | undefined {
     return this._skipReason;
   }
 
-  /**
-   * True while a failed-run resume has reset this step and it has not left
-   * pending since. Persisted, so a resume that suspends again keeps it.
-   */
+  /** persisted, so a resume that suspends again keeps it */
   get resetByResume(): boolean {
     return this._resetByResume;
   }
 
-  /**
-   * Why the step failed, when the failure is structural. Undefined otherwise.
-   */
   get failureKind(): StepFailureKind | undefined {
     return this._failureKind;
   }
 
   /**
-   * True when the run's abort settled this step without starting it
-   * (cancelled, or skipped on its `dependsOn` or its job's), so that cleanup
-   * gated on it could run, or when the run's cleanup skipped it on its
-   * `dependsOn` or its job's, possibly on work the abort settled. Persisted:
-   * a resume resets such a step to pending and runs it, as it would have run
-   * had the abort left it pending (see {@link WorkflowRun.reopenAbortedWork}).
+   * persisted: a resume resets such a step to pending and runs it, as if the
+   * abort had left it pending
    */
   get settledByAbort(): boolean {
     return this._settledByAbort;
   }
 
   /**
-   * True when the step failed while it was in flight with the run's abort
-   * fired: the abort stopped its work, so its outcome is ambiguous. Persisted:
-   * interrupting the run marks such a step unknown, as it does a step still
-   * running, so a recovery reopens it (see {@link WorkflowRun.interrupt}).
+   * the abort stopped its work so its outcome is ambiguous; persisted so
+   * interrupting the run marks it unknown and a recovery reopens it
    */
   get stoppedByAbort(): boolean {
     return this._stoppedByAbort;
   }
 
-  /**
-   * The child run this nested workflow step waits on, or waited on before it
-   * settled. A malformed link reads as `broken` and is never followed.
-   */
+  /** a malformed link reads as broken and is never followed */
   get nestedRun(): RunLink<NestedRunRef> | undefined {
     return this._nestedRun;
   }
 
-  /**
-   * True while the step waits on a suspended child run rather than on an
-   * approval gate of its own.
-   */
   get isNestedWait(): boolean {
     return this._status === "waiting_approval" &&
       this._nestedRun !== undefined;
   }
 
-  /**
-   * True when the run ended while this step still waited on its child run.
-   */
   get detachedNestedRun(): boolean {
     return this._detachedNestedRun;
   }
 
-  /**
-   * The wait this step holds, or held before it settled. A malformed wait
-   * reads as undefined and never accepts a signal.
-   */
+  /** a malformed wait reads as undefined and never accepts a signal */
   get signalWait(): SignalWait | undefined {
     return this._wait?.kind === "valid" ? this._wait.wait : undefined;
   }
 
-  /**
-   * True while the step is paused on a wait for a signal.
-   */
   get isSignalWait(): boolean {
     return this._status === "waiting_signal" || this._status === "waiting";
   }
 
-  /**
-   * Records an approval or rejection decision on this step.
-   */
   recordApprovalDecision(decision: ApprovalDecisionData): void {
     this._approvalDecision = decision;
   }
@@ -608,16 +474,10 @@ export class StepRun {
     this._assertResult = result;
   }
 
-  /**
-   * Marks this step's failure as allowed.
-   */
   markAllowedFailure(): void {
     this._allowedFailure = true;
   }
 
-  /**
-   * Adds a data artifact reference to this step.
-   */
   addDataArtifact(artifact: DataArtifactRef): void {
     this._dataArtifacts.push({ ...artifact });
   }
@@ -645,91 +505,53 @@ export class StepRun {
     this._wait = undefined;
   }
 
-  /**
-   * Marks a pending step as reset by a failed-run resume. Cleared when the
-   * step leaves pending.
-   */
   markResetByResume(): void {
     this._resetByResume = true;
   }
 
-  /**
-   * Clears a reset marker left by an earlier resume.
-   */
   clearResetMarker(): void {
     this._resetByResume = false;
   }
 
-  /**
-   * Fails a step whose job finished without running it after a failed-run
-   * resume reset it. The failure is structural, so it is never allowed.
-   */
   failStranded(): void {
     this.fail(STRANDED_STEP_ERROR);
     this._allowedFailure = false;
     this._failureKind = "workflow_changed";
   }
 
-  /**
-   * Fails a step the run's abort stopped while it was in flight, marked
-   * {@link stoppedByAbort}.
-   */
   failStoppedByAbort(error: string, code?: string): void {
     this.fail(error, code);
     this._stoppedByAbort = true;
   }
 
-  /**
-   * Fails a step the run's abort left unstarted with
-   * {@link CANCELLED_STEP_ERROR}, marked {@link settledByAbort}.
-   */
   cancelUnstarted(): void {
     this.fail(CANCELLED_STEP_ERROR);
     this._settledByAbort = true;
   }
 
-  /**
-   * Skips a step the run's abort left unstarted, or one its cleanup skipped
-   * on its `dependsOn`, marked {@link settledByAbort}.
-   */
   skipUnstarted(reason: StepSkipReasonData): void {
     this.skip(reason);
     this._settledByAbort = true;
   }
 
-  /**
-   * Fails a manual approval the run's cancellation left undecided
-   * (`waiting_approval`) with {@link CANCELLED_STEP_ERROR}, marked
-   * {@link settledByAbort} like a step the abort settled without starting.
-   * Any other status is left alone.
-   */
   cancelUndecidedApproval(): void {
     if (this._status !== "waiting_approval") return;
     this.fail(CANCELLED_STEP_ERROR);
     this._settledByAbort = true;
   }
 
-  /**
-   * Fails a wait the run's cancellation left unsignalled with
-   * {@link CANCELLED_STEP_ERROR}, marked {@link settledByAbort} like an
-   * undecided approval. Any other status is left alone.
-   */
   cancelOpenWait(): void {
     if (!this.isSignalWait) return;
     this.fail(CANCELLED_STEP_ERROR);
     this._settledByAbort = true;
   }
 
-  /**
-   * Marks the step as waiting for a signal on `wait`.
-   */
   waitForSignal(wait: SignalWait): void {
     this._status = "waiting_signal";
     this._resetByResume = false;
     this._wait = { kind: "valid", wait };
   }
 
-  /** Whether this step can take the stored outcome, without changing it. */
   canApplyWaitOutcome(outcome: WaitOutcome): boolean {
     const wait = this.signalWait;
     if (!this.isSignalWait || !wait || outcome.waitId !== wait.id) return false;
@@ -739,17 +561,8 @@ export class StepRun {
   }
 
   /**
-   * Settles this step's wait from its stored outcome, the only way a wait
-   * ends. An accepted signal succeeds the step with the payload and the
-   * receipt as its output; a timeout fails it with
-   * {@link WAIT_TIMEOUT_STEP_ERROR}; a cancel fails it as
-   * {@link cancelOpenWait} does.
-   *
-   * The outcome was read from a store other writers can reach, so its
-   * payload is checked against the schema this step captured before it is
-   * kept. Returns false, changing nothing, when the step is not waiting,
-   * its wait cannot be read, the outcome names another wait, or the payload
-   * is not one the wait accepts.
+   * the outcome comes from a store other writers can reach, so its payload is
+   * checked against the schema this step captured before it is kept
    */
   applyWaitOutcome(outcome: WaitOutcome): boolean {
     if (!this.canApplyWaitOutcome(outcome)) return false;
@@ -762,8 +575,8 @@ export class StepRun {
         this.succeed({
           type: "wait_for_signal",
           payload: validation.payload,
-          // The wait keeps the receipt as stored; the output has the
-          // documented shape (swamp-club#3214).
+          // the wait keeps the receipt as stored while the output has the
+          // documented shape
           signal: receiptForCaller(outcome.receipt),
         });
         return true;
@@ -777,11 +590,6 @@ export class StepRun {
     }
   }
 
-  /**
-   * Fails a waiting step whose stored wait cannot be read with
-   * {@link WAIT_UNREADABLE_STEP_ERROR}: nothing can signal it and it has no
-   * deadline to pass. Returns false, changing nothing, for any other step.
-   */
   failUnreadableWait(): boolean {
     if (!this.isSignalWait || this.signalWait) return false;
     this.fail(WAIT_UNREADABLE_STEP_ERROR);
@@ -789,10 +597,8 @@ export class StepRun {
   }
 
   /**
-   * Fails a waiting step whose wait holds an outcome that cannot be read or
-   * applied with {@link WAIT_UNREADABLE_STEP_ERROR}. The outcome is written
-   * once, so nothing will ever settle the wait another way. Returns false,
-   * changing nothing, for a step that is not waiting.
+   * the outcome is written once, so nothing will ever settle the wait another
+   * way
    */
   failUnusableOutcome(): boolean {
     if (!this.isSignalWait) return false;
@@ -800,20 +606,12 @@ export class StepRun {
     return true;
   }
 
-  /**
-   * Marks the step as running.
-   */
   start(): void {
     this._status = "running";
     this._startedAt = new Date();
     this._resetByResume = false;
   }
 
-  /**
-   * Marks the step as waiting for manual approval. `timeout` is the seconds
-   * the gate stays open, counted from when the step started; a gate that
-   * waits again takes the timeout of the new wait.
-   */
   waitForApproval(prompt?: string, timeout?: number): void {
     this._status = "waiting_approval";
     this._resetByResume = false;
@@ -823,39 +621,23 @@ export class StepRun {
     this._approvalTimeout = timeout;
   }
 
-  /**
-   * Marks a nested workflow step as waiting on its suspended child run.
-   */
   waitForNestedRun(ref: NestedRunRef): void {
     this._status = "waiting_approval";
     this._resetByResume = false;
     this._nestedRun = { kind: "valid", ref: { ...ref } };
   }
 
-  /**
-   * Fails a nested workflow step whose child run's approval was rejected,
-   * recording the child gate's decision so a retry refuses the step as a
-   * rejected approval.
-   */
   rejectNested(decision: ApprovalDecisionData, error: string): void {
     this._approvalDecision = { ...decision };
     this.fail(error);
   }
 
-  /**
-   * Fails a nested workflow step whose run ended while the step still waited
-   * on its child run. The child stays suspended on its own. Marked
-   * {@link settledByAbort}, so a resume of the run starts the step afresh.
-   */
   detachNestedRun(error: string): void {
     this.fail(error);
     this._settledByAbort = true;
     this._detachedNestedRun = true;
   }
 
-  /**
-   * Marks the step as succeeded.
-   */
   succeed(output?: unknown): void {
     this._status = "succeeded";
     this._completedAt = new Date();
@@ -865,9 +647,6 @@ export class StepRun {
     }
   }
 
-  /**
-   * Marks the step as failed.
-   */
   fail(error: string, code?: string): void {
     this._status = "failed";
     this._completedAt = new Date();
@@ -876,10 +655,6 @@ export class StepRun {
     this._resetByResume = false;
   }
 
-  /**
-   * Marks the step as unknown — the step was in-flight when the process
-   * crashed and its outcome is ambiguous.
-   */
   markUnknown(error?: string): void {
     this._status = "unknown";
     this._completedAt = new Date();
@@ -891,11 +666,9 @@ export class StepRun {
   }
 
   /**
-   * Marks the step as skipped.
-   *
-   * `reason` is optional so older callers keep compiling, but every
-   * production skip site supplies one — a skip with no recorded cause is
-   * exactly the ambiguity this field exists to remove.
+   * reason is optional so older callers compile, but every production skip site
+   * supplies one: a skip with no recorded cause is the ambiguity this field
+   * removes
    */
   skip(reason?: StepSkipReasonData): void {
     this._status = "skipped";
@@ -906,9 +679,6 @@ export class StepRun {
     }
   }
 
-  /**
-   * Converts to plain data for persistence.
-   */
   toData(): StepRunData {
     const data: StepRunData = {
       stepName: this.stepName,
@@ -968,9 +738,6 @@ export class StepRun {
   }
 }
 
-/**
- * JobRun tracks the execution state of a job and its steps.
- */
 export class JobRun implements TriggerEvaluationContext {
   private _forEachMappings = new Map<string, readonly string[]>();
 
@@ -982,17 +749,11 @@ export class JobRun implements TriggerEvaluationContext {
     private _steps: StepRun[],
   ) {}
 
-  /**
-   * Creates a pending job run with pending steps.
-   */
   static pending(jobName: string, stepNames: string[]): JobRun {
     const steps = stepNames.map((name) => StepRun.pending(name));
     return new JobRun(jobName, "pending", undefined, undefined, steps);
   }
 
-  /**
-   * Reconstructs a JobRun from persisted data.
-   */
   static fromData(data: JobRunData): JobRun {
     const validated = JobRunSchema.parse(data);
     const steps = validated.steps.map((s) => StepRun.fromData(s));
@@ -1022,11 +783,9 @@ export class JobRun implements TriggerEvaluationContext {
   }
 
   /**
-   * Gets the status of a step by name (for TriggerEvaluationContext).
-   *
-   * When `ref` is a forEach template name, aggregates the expanded steps'
-   * statuses: failed if any failed, succeeded if all succeeded, skipped if
-   * all skipped, running if any still in progress.
+   * for a forEach template name, aggregates the expanded steps: failed if any
+   * failed, succeeded if all succeeded, skipped if all skipped, running if any
+   * in progress
    */
   getStatus(ref: string): RunStatus | undefined {
     const direct = this._steps.find((s) => s.stepName === ref)?.status;
@@ -1053,35 +812,20 @@ export class JobRun implements TriggerEvaluationContext {
     return "succeeded";
   }
 
-  /**
-   * Gets a step run by name.
-   */
   getStep(name: string): StepRun | undefined {
     return this._steps.find((s) => s.stepName === name);
   }
 
-  /**
-   * Adds a new expanded step (from forEach) to the job run.
-   * The step is created in pending state.
-   */
   addExpandedStep(stepName: string): void {
-    // Only add if not already present
     if (!this._steps.find((s) => s.stepName === stepName)) {
       this._steps.push(StepRun.pending(stepName));
     }
   }
 
   /**
-   * Replaces a forEach step's template entry with pending StepRuns for each
-   * expanded step name. Called after forEach.in resolves at job start so
-   * the persisted job run reflects the actual set of steps that will run,
-   * rather than leaving the un-executed template alongside the expansions.
-   *
-   * If the template has already been replaced in a prior call (for example
-   * when an expanded step was lazily added via {@link addExpandedStep}),
-   * this method leaves existing entries in place and only inserts missing
-   * expanded names. When `expandedNames` is empty the template is removed
-   * outright — an empty forEach result means no steps run.
+   * called after forEach.in resolves so the persisted job reflects the steps
+   * that will run; an existing replacement is left and only missing names
+   * inserted; empty expansion removes the template
    */
   replaceExpandedSteps(
     templateName: string,
@@ -1100,9 +844,9 @@ export class JobRun implements TriggerEvaluationContext {
         insertions.push(StepRun.pending(name, templateName));
       }
     }
-    // Edit in place (callers may hold the `steps` array) without spreading
-    // `insertions` into splice: a forEach can expand to more steps than fit
-    // in a spread call (swamp-club#2565).
+    // edit in place since callers may hold the steps array, and never spread
+    // insertions into splice: a forEach can expand to more steps than fit in a
+    // spread call
     const after = this._steps.splice(templateIndex);
     after.shift();
     for (const step of insertions) this._steps.push(step);
@@ -1110,10 +854,8 @@ export class JobRun implements TriggerEvaluationContext {
   }
 
   /**
-   * Records the mapping from a forEach template step name to its expanded
-   * step names so {@link getStatus} can aggregate their statuses. Called
-   * by the execution service after forEach expansion on every run
-   * (including resume), so the mapping does not need to be persisted.
+   * the execution service registers this after every forEach expansion, resume
+   * included, so the mapping need not be persisted
    */
   registerForEachExpansion(
     templateName: string,
@@ -1122,10 +864,6 @@ export class JobRun implements TriggerEvaluationContext {
     this._forEachMappings.set(templateName, expandedNames);
   }
 
-  /**
-   * True when the step's guard skipped it, or, for a forEach template, every
-   * iteration's guard did.
-   */
   skippedByGuard(ref: string): boolean {
     const names = this.getStep(ref)
       ? [ref]
@@ -1134,10 +872,7 @@ export class JobRun implements TriggerEvaluationContext {
       names.every((name) => this.getStep(name)?.skipReason?.kind === "guarded");
   }
 
-  /**
-   * True when {@link registerForEachExpansion} recorded a mapping for the
-   * template. A run loaded from storage has none until one is registered.
-   */
+  /** a run loaded from storage has none until one is registered */
   hasForEachExpansion(templateName: string): boolean {
     return this._forEachMappings.has(templateName);
   }
@@ -1148,47 +883,29 @@ export class JobRun implements TriggerEvaluationContext {
     this._completedAt = undefined;
   }
 
-  /**
-   * Marks the job as running.
-   */
   start(): void {
     this._status = "running";
     this._startedAt = new Date();
   }
 
-  /**
-   * Marks the job as succeeded.
-   */
   succeed(): void {
     this._status = "succeeded";
     this._completedAt = new Date();
   }
 
-  /**
-   * Marks the job as failed.
-   */
   fail(): void {
     this._status = "failed";
     this._completedAt = new Date();
   }
 
-  /**
-   * Marks the job as unknown — its outcome is ambiguous: the job was
-   * in-flight when the process crashed, or a cancellation left it with only
-   * guarded steps whose guards never decided.
-   */
   markUnknown(): void {
     this._status = "unknown";
     this._completedAt = new Date();
   }
 
-  /**
-   * Marks the job as skipped.
-   */
   skip(): void {
     this._status = "skipped";
     this._completedAt = new Date();
-    // Skip all pending steps
     for (const step of this._steps) {
       if (step.status === "pending") {
         step.skip({ kind: "job_skipped" });
@@ -1197,12 +914,9 @@ export class JobRun implements TriggerEvaluationContext {
   }
 
   /**
-   * Fails every step a failed-run resume reset that the job finished without
-   * running (a stranded step), and returns them. Called when the job's walk
-   * ends, unless the run suspended or was cancelled. A tracked reset step
-   * that the current workflow no longer produces, such as an iteration
-   * dropped from a smaller forEach collection, would otherwise stay pending
-   * in a job reported succeeded.
+   * a tracked reset step the current workflow does not produce, such as an
+   * iteration dropped from a smaller collection, would otherwise stay pending
+   * in a job reported succeeded
    */
   failStrandedResetSteps(): StepRun[] {
     const stranded = this._steps.filter((step) => step.resetByResume);
@@ -1213,13 +927,9 @@ export class JobRun implements TriggerEvaluationContext {
   }
 
   /**
-   * Fails each named step that is still `pending` with
-   * {@link CANCELLED_STEP_ERROR}, and returns them. Called for the steps of a
-   * level the run's abort interrupted: a step queued behind a concurrency
-   * limit never started, and would otherwise stay pending, so a `failed` or
-   * `completed` condition on it could never be met. Each is marked
-   * {@link StepRun.settledByAbort}, so a resume runs it. Steps in any other
-   * status are left alone.
+   * a step queued behind a concurrency limit never started and would stay
+   * pending, so a failed or completed condition on it could never be met;
+   * marked settledByAbort so a resume runs it
    */
   cancelPendingSteps(stepNames: Iterable<string>): StepRun[] {
     const cancelled: StepRun[] = [];
@@ -1233,12 +943,6 @@ export class JobRun implements TriggerEvaluationContext {
     return cancelled;
   }
 
-  /**
-   * Skips a job whose `dependsOn` is unmet, the run's abort having left it
-   * unstarted or its cleanup having reached it, as {@link skip} does, but
-   * marks each step it skips {@link StepRun.settledByAbort}, so a resume
-   * walks the job again.
-   */
   skipNotStarted(): void {
     for (const step of this._steps) {
       if (step.status === "pending") {
@@ -1249,14 +953,9 @@ export class JobRun implements TriggerEvaluationContext {
   }
 
   /**
-   * Settles a job that never started because the run's abort interrupted its
-   * level, once its steps are settled. While any step is still `pending` (a
-   * guarded step whose guard never decided), the job stays `pending`: nothing
-   * in it ran, so a step cancelled beside it is no evidence of failure, and
-   * neither `succeeded`, `failed`, `completed` nor `skipped` may hold for it.
-   * Otherwise it fails when any step failed and is skipped when every step
-   * was skipped. Its settled steps are marked {@link StepRun.settledByAbort},
-   * so a resume walks the job again. Any other job status is left alone.
+   * while any step is still pending the job stays pending: nothing in it ran,
+   * so a cancelled sibling is no evidence of failure; settled steps are marked
+   * settledByAbort so a resume walks the job again
    */
   settleNotStarted(): void {
     if (this._status !== "pending") return;
@@ -1269,16 +968,9 @@ export class JobRun implements TriggerEvaluationContext {
   }
 
   /**
-   * Settles a job a resume inherited as `running` (from the suspension, or
-   * left running by a failed run) and never started because its abort kept
-   * the job from its level, once its pending steps are settled. It fails
-   * when a step failed without its failure being allowed, as a job that
-   * finishes its walk does; otherwise it is `unknown` while a step is
-   * unfinished (a guarded step left `pending`, or one still `running` or
-   * `waiting_approval`), since its outcome is ambiguous; otherwise it
-   * succeeds. Like {@link settleNotStarted}, its settled steps are marked
-   * {@link StepRun.settledByAbort}, so a resume walks the job again. Any
-   * other job status is left alone.
+   * fails when a step failed without its failure being allowed, is unknown
+   * while a step is unfinished since its outcome is ambiguous, else succeeds;
+   * settled steps are marked settledByAbort
    */
   settleNotResumed(): void {
     if (this._status !== "running") return;
@@ -1295,21 +987,12 @@ export class JobRun implements TriggerEvaluationContext {
     }
   }
 
-  /**
-   * True when the run's abort left work in this job for a resume to run: a
-   * step it settled without starting ({@link StepRun.settledByAbort}), or a
-   * guarded step it left undecided (`pending`) in a job it ended `unknown`.
-   * See {@link WorkflowRun.reopenAbortedWork}.
-   */
   get holdsAbortedWork(): boolean {
     return this._steps.some((step) => step.settledByAbort) ||
       (this._status === "unknown" &&
         this._steps.some((step) => step.status === "pending"));
   }
 
-  /**
-   * Converts to plain data for persistence.
-   */
   toData(): JobRunData {
     return {
       jobName: this.jobName,
@@ -1321,85 +1004,53 @@ export class JobRun implements TriggerEvaluationContext {
   }
 }
 
-/**
- * A failed step recorded on a run, as returned by
- * {@link WorkflowRun.failedSteps}.
- */
 export interface FailedStepRef {
   jobName: string;
   stepName: string;
-  /** The workflow step this expanded forEach iteration came from. */
   forEachTemplate?: string;
-  /** True when the step is a manual approval that was rejected. */
   approvalRejected: boolean;
-  /** Set when the failure is structural. See {@link StepFailureKind}. */
   failureKind?: StepFailureKind;
 }
 
-/**
- * One stored step record: step names are unique only within a job.
- */
 export interface StepRunRef {
   readonly jobName: string;
   readonly stepName: string;
 }
 
 /**
- * A string that identifies a step of a job. JSON quotes both names, so no
- * character either holds (an evaluated job name can hold any) makes two
- * distinct pairs share a key.
+ * JSON quotes both names, so no character either holds (an evaluated job name
+ * can hold any) makes two distinct pairs share a key
  */
 export function stepRunKey(ref: StepRunRef): string {
   return JSON.stringify([ref.jobName, ref.stepName]);
 }
 
-/**
- * A step waiting for a signal, as returned by
- * {@link WorkflowRun.findSignalWaits}.
- */
 export interface SignalWaitRef {
   readonly jobName: string;
   readonly stepName: string;
-  /** Undefined when the stored wait cannot be read. */
   readonly wait: SignalWait | undefined;
 }
 
-/**
- * A nested workflow step that waits on its child run, as returned by
- * {@link WorkflowRun.findNestedWaits}.
- */
 export interface NestedWaitRef {
   readonly jobName: string;
   readonly stepName: string;
   readonly link: RunLink<NestedRunRef>;
 }
 
-/**
- * A child run a nested workflow step still waited on when its run ended, as
- * returned by {@link WorkflowRun.detachedNestedRuns}.
- */
 export interface DetachedNestedRunRef {
   readonly jobName: string;
   readonly stepName: string;
   readonly child: NestedRunRef;
 }
 
-/**
- * The process driving a run: its pid, and the serve instance id when serve
- * drives it. A run with no instance id is owned by a local CLI process.
- */
+/** a run with no instance id is owned by a local CLI process */
 export interface RunOwner {
   readonly pid: number;
   readonly instanceId?: string;
 }
 
-/**
- * WorkflowRun is an aggregate root that tracks the execution state of a workflow.
- */
 export class WorkflowRun implements TriggerEvaluationContext {
-  /** See {@link captureInputsProvenance}. */
   private _inputsProvenance: ProvenanceMap | undefined;
-  /** See {@link persistedInputsProvenance}. */
   private _persistedInputsProvenance: ProvenanceMap | undefined;
   private _replayedEvaluatedCache = false;
 
@@ -1450,55 +1101,40 @@ export class WorkflowRun implements TriggerEvaluationContext {
   ) {}
 
   /**
-   * The run's record of sensitive values, attached for the lifetime of the
-   * process driving the run. Never persisted; see {@link toPersistedData}.
+   * attached for the lifetime of the process driving the run and never
+   * persisted
    */
   private _sensitiveValues: RunSensitiveValues | undefined = undefined;
 
-  /** Attaches the run's record of sensitive values resolved for expressions. */
   attachSensitiveValues(values: RunSensitiveValues): void {
     this._sensitiveValues = values;
   }
 
   /**
-   * A value field of this run as it is shown: every recorded sensitive value
-   * masked and, in a typed run, every sentinel the run issued, whatever it
-   * stands for and without reading it. The one display view the run events
-   * and the run view share (typed-secrets 4.4, design Section 7.1); the
-   * value itself when no record is attached.
+   * masks every recorded sensitive value and, in a typed run, every sentinel
+   * issued, without reading it; the one display view the run events and run
+   * view share
    */
   mask<T>(value: T): T {
     return (this._sensitiveValues?.masked(value) ?? value) as T;
   }
 
-  /**
-   * The run's inputs with sensitive values masked, for output shown to users
-   * or written with reports.
-   */
   maskedInputs(): Record<string, unknown> {
     return this.mask(this._inputs) as Record<string, unknown>;
   }
 
-  /** Where the stored record holds references, as loaded. */
   get writtenReferences(): readonly WrittenReference[] {
     return this._writtenReferences;
   }
 
-  /** The stored record's sensitive-value format, as loaded. */
   get sensitiveFormat(): number | undefined {
     return this._sensitiveFormat;
   }
 
   /**
-   * The data to write to disk. With the run's record attached, every
-   * recorded sensitive value at a value position (inputs, deferred binding
-   * values, approval prompts, step errors and assert text, the failure
-   * reason) is written as the vault reference it came from, and the inputs
-   * map is written again in the written inputs' own coordinates
-   * (`persistedInputsProvenance`): exact through the reference text each
-   * sentinel stands for, and with every written reference marked data.
-   * Without a record (a process that only changes status), the stored data
-   * and its references are written back unchanged.
+   * with the run's record attached, sensitive values at value positions are
+   * written as the vault reference they came from; without one (a status-only
+   * process) stored data and references are written back unchanged
    */
   toPersistedData(): WorkflowRunData {
     const data = this.toData();
@@ -1537,9 +1173,6 @@ export class WorkflowRun implements TriggerEvaluationContext {
     };
   }
 
-  /**
-   * Creates a new WorkflowRun from a workflow, initializing all jobs and steps as pending.
-   */
   static create(
     workflow: Workflow,
     tags?: Record<string, string>,
@@ -1574,9 +1207,6 @@ export class WorkflowRun implements TriggerEvaluationContext {
     );
   }
 
-  /**
-   * Reconstructs a WorkflowRun from persisted data.
-   */
   static fromData(data: WorkflowRunInput): WorkflowRun {
     const validated = WorkflowRunSchema.parse(data);
     const jobs = validated.jobs.map((j) => JobRun.fromData(j));
@@ -1639,29 +1269,19 @@ export class WorkflowRun implements TriggerEvaluationContext {
     return this._initiatedBy;
   }
 
-  /**
-   * The principal that triggered the run and its memberships at run start,
-   * when a serve run recorded them (swamp-club#2676).
-   */
   get triggeringPrincipal(): RunTriggeringPrincipal | undefined {
     return this._triggeringPrincipal;
   }
 
-  /** Records who triggered the run; resumes are held to this principal. */
   recordTriggeringPrincipal(principal: RunTriggeringPrincipal): void {
     this._triggeringPrincipal = structuredClone(principal);
   }
 
-  /**
-   * The vaults the run's `vaults:` lists allowed when it started, when a
-   * list applied. A resume is held to it as well as to the workflow's
-   * current list.
-   */
+  /** a resume is held to this list as well as to the workflow's current one */
   get allowedVaults(): readonly string[] | undefined {
     return this._allowedVaults;
   }
 
-  /** Records the vaults the run's `vaults:` lists allow at run start. */
   recordAllowedVaults(vaults: Iterable<string>): void {
     this._allowedVaults = [...vaults];
   }
@@ -1694,18 +1314,10 @@ export class WorkflowRun implements TriggerEvaluationContext {
     return this._pid;
   }
 
-  /**
-   * On a nested workflow's run, the parent step that started it. A
-   * malformed link reads as `broken` and is never followed.
-   */
   get parentRun(): RunLink<ParentRunRef> | undefined {
     return this._parentRun;
   }
 
-  /**
-   * Records the parent step that starts this run as a nested workflow.
-   * Called once, before the run starts.
-   */
   recordParentRun(ref: ParentRunRef): void {
     this._parentRun = {
       kind: "valid",
@@ -1717,59 +1329,34 @@ export class WorkflowRun implements TriggerEvaluationContext {
     return this._jobs;
   }
 
-  /**
-   * Gets the data artifacts produced at workflow scope (e.g. by workflow-scope
-   * reports), independent of any single step.
-   */
   get workflowDataArtifacts(): ReadonlyArray<DataArtifactRef> {
     return this._workflowDataArtifacts;
   }
 
-  /**
-   * Adds a workflow-scope data artifact reference to this run.
-   */
   addWorkflowDataArtifact(artifact: DataArtifactRef): void {
     this._workflowDataArtifacts.push({ ...artifact });
   }
 
-  /**
-   * Gets the log file path for this run.
-   */
   get logFile(): string | undefined {
     return this._logFile;
   }
 
-  /**
-   * Gets the tags associated with this run.
-   */
   get tags(): Readonly<Record<string, string>> {
     return this._tags;
   }
 
-  /**
-   * Sets the log file path for this run.
-   */
   setLogFile(path: string): void {
     this._logFile = path;
   }
 
-  /**
-   * Gets the status of a job by name (for TriggerEvaluationContext).
-   */
   getStatus(ref: string): RunStatus | undefined {
     return this._jobs.find((j) => j.jobName === ref)?.status;
   }
 
-  /**
-   * Gets a job run by name.
-   */
   getJob(name: string): JobRun | undefined {
     return this._jobs.find((j) => j.jobName === name);
   }
 
-  /**
-   * Marks the workflow run as started and records the owning process ID.
-   */
   start(pid?: number, instanceId?: string): void {
     this._status = "running";
     this._startedAt = new Date();
@@ -1794,24 +1381,15 @@ export class WorkflowRun implements TriggerEvaluationContext {
     this.releaseOwnership();
   }
 
-  /**
-   * True while the run can still be cancelled: it is pending, running or
-   * suspended. A finished run (succeeded, failed, cancelled or interrupted)
-   * keeps its record.
-   */
   get isCancellable(): boolean {
     return this._status === "pending" || this._status === "running" ||
       this._status === "suspended";
   }
 
   /**
-   * Marks the workflow run as cancelled with an optional reason. Changes only
-   * the run's status: its jobs and steps are settled by `cancelAndSettle`
-   * (abort_settlement.ts), the only production caller.
-   *
-   * Deliberately no-ops unless {@link isCancellable}, so that late
-   * cancellation signals don't corrupt an already-finalized run.
-   * This differs from ModelOutput.markCancelled which throws on terminal states.
+   * no-ops unless cancellable so late cancellation signals cannot corrupt a
+   * finalized run; unlike ModelOutput.markCancelled it does not throw on
+   * terminal states
    */
   endAsCancelled(reason?: string): void {
     if (!this.isCancellable) {
@@ -1827,16 +1405,9 @@ export class WorkflowRun implements TriggerEvaluationContext {
   }
 
   /**
-   * Records that data the run's steps wrote never reached the datastore: a
-   * v3 commit refused the partition holding it (decision 7 of "v3 domain
-   * model", swamp-club#3257). Each step whose data artifacts name one of
-   * `refused` (by data id and version) fails with `reason`, its job fails,
-   * and a run that had succeeded fails, so the record the run commits
-   * afterwards names no refused data as a success. A suspended or cancelled
-   * run keeps its status, since that is its outcome; only its steps fail. A
-   * step that already failed keeps its error. Workflow-scope report artifacts that name
-   * refused data fail the run too. Returns the steps it failed; a run that
-   * names none is unchanged.
+   * steps naming data a v3 commit refused fail, and so do their job and a
+   * succeeded run, so the committed record names no refused data as a success;
+   * a suspended or cancelled run keeps its status
    */
   failStepsNamingRefusedData(
     refused: readonly { readonly dataId: string; readonly version: number }[],
@@ -1864,12 +1435,6 @@ export class WorkflowRun implements TriggerEvaluationContext {
     return failed;
   }
 
-  /**
-   * Records why an already-cancelled run was cancelled. Only sets the
-   * cancel_reason tag; no-ops unless the run is cancelled, so it never
-   * changes a run's status. An empty reason is ignored, as in
-   * endAsCancelled().
-   */
   recordCancelReason(reason: string): void {
     if (this._status !== "cancelled" || !reason) {
       return;
@@ -1878,12 +1443,9 @@ export class WorkflowRun implements TriggerEvaluationContext {
   }
 
   /**
-   * Ends the run as interrupted. A step still `running` is marked unknown,
-   * and so is a step the run's abort stopped in flight
-   * ({@link StepRun.stoppedByAbort}): a run serve's shutdown aborted has
-   * already failed it, but its outcome is as ambiguous as a running step's
-   * (swamp-club#3369). A job still `running`, or one that ended holding such
-   * a step, is marked unknown, so a recovery reopens both.
+   * a step the abort stopped in flight is already failed but as ambiguous as a
+   * running one, so it is marked unknown too, and its job, so a recovery
+   * reopens both
    */
   interrupt(reason: string): void {
     if (
@@ -1916,13 +1478,9 @@ export class WorkflowRun implements TriggerEvaluationContext {
   }
 
   /**
-   * Interrupts a `running` run whose owning process died, as read back from
-   * storage. A step's start is saved before it runs, but a record written
-   * by a swamp that did not save step starts (or a kill that beat the save)
-   * shows the step that was in flight as `pending`. So in a job left
-   * `running` with no step recorded `running`, every `pending` step is
-   * marked unknown as well: recovery then asks before re-running it rather
-   * than assuming it never started.
+   * a kill that beat the step-start save shows the in-flight step as pending,
+   * so in a running job with no running step every pending step is marked
+   * unknown and recovery asks before re-running it
    */
   interruptOrphaned(reason: string): void {
     if (this._status === "running") {
@@ -1943,9 +1501,6 @@ export class WorkflowRun implements TriggerEvaluationContext {
     this.interrupt(reason);
   }
 
-  /**
-   * Returns the names of all steps currently in `unknown` status.
-   */
   unknownSteps(): string[] {
     const result: string[] = [];
     for (const job of this._jobs) {
@@ -1959,9 +1514,8 @@ export class WorkflowRun implements TriggerEvaluationContext {
   }
 
   /**
-   * The steps {@link unknownSteps} would name once {@link interruptOrphaned}
-   * ran, without changing the run: what `workflow recover` would ask to be
-   * acknowledged for this run as it stands (swamp-club#3882).
+   * what workflow recover would ask to be acknowledged for this run as it
+   * stands, without changing the run
    */
   unknownStepsIfOrphaned(): string[] {
     const ended = this._status === "succeeded" || this._status === "failed" ||
@@ -1985,11 +1539,6 @@ export class WorkflowRun implements TriggerEvaluationContext {
     return result;
   }
 
-  /**
-   * Resets all `unknown` steps to `pending` for recovery re-execution.
-   * Also resets their containing jobs if those jobs are in `unknown` status.
-   * Only valid on interrupted runs.
-   */
   resetUnknownStepsForRecovery(): void {
     if (this._status !== "interrupted") {
       throw new Error(
@@ -2012,20 +1561,16 @@ export class WorkflowRun implements TriggerEvaluationContext {
   }
 
   /**
-   * True while the run is suspended by a recovery and has not been resumed
-   * since. Its reset steps had an unknown outcome, so only a resume someone
-   * asks for runs them again: serve never continues such a run by itself.
+   * the reset steps had an unknown outcome, so only a resume someone asks for
+   * runs them again: serve never continues such a run by itself
    */
   get awaitsResumeAfterRecovery(): boolean {
     return this._status === "suspended" && this._recovered;
   }
 
   /**
-   * The run plan identity captured at run start. Contains the fingerprint
-   * of the evaluated workflow, an optional reference to the persisted snapshot,
-   * and the fingerprint of the definition as loaded from disk before
-   * evaluation. Recovery compares the definition fingerprint, since the
-   * evaluated one also changes with the run's inputs.
+   * recovery compares the definition fingerprint, since the evaluated one also
+   * changes with the run's inputs
    */
   get runPlan():
     | {
@@ -2045,18 +1590,10 @@ export class WorkflowRun implements TriggerEvaluationContext {
     this._runPlan = { fingerprint, evaluatedWorkflowId, definitionFingerprint };
   }
 
-  /**
-   * Records the effective workflow inputs on this run. Called at run
-   * creation so every run persists its inputs, and again at suspend
-   * so resume-time steps can resolve `inputs.*`.
-   */
   captureInputs(inputs: Record<string, unknown>): void {
     this._inputs = inputs;
   }
 
-  /**
-   * Marks the workflow run as suspended (waiting for manual approval).
-   */
   suspend(inputs?: Record<string, unknown>): void {
     this._status = "suspended";
     if (inputs) {
@@ -2065,57 +1602,34 @@ export class WorkflowRun implements TriggerEvaluationContext {
     this.releaseOwnership();
   }
 
-  /**
-   * The effective workflow inputs for this run.
-   */
   get inputs(): Readonly<Record<string, unknown>> {
     return this._inputs;
   }
 
-  /**
-   * Records runtime expressions a parent workflow authored into this run's
-   * inputs, so a resume can restore the provenance a fresh run inherited.
-   */
   captureInheritedExpressions(expressions: Iterable<string>): void {
     this._inheritedExpressions = [...expressions];
   }
 
-  /**
-   * Records where data sits in this run's inputs, so a resume treats the
-   * same input text as data that a fresh run did (swamp-club#3205).
-   */
   captureInputsProvenance(provenance: ProvenanceMap): void {
     this._inputsProvenance = provenance;
   }
 
-  /**
-   * Records that the run replays the evaluated cache (`--last-evaluated`):
-   * its steps ran what the cache held, not the workflow on disk.
-   */
   recordReplayedEvaluatedCache(): void {
     this._replayedEvaluatedCache = true;
   }
 
-  /** Whether the run replays the evaluated cache (`--last-evaluated`). */
   get replayedEvaluatedCache(): boolean {
     return this._replayedEvaluatedCache;
   }
 
-  /** Where data sits in `inputs`; undefined for runs recorded before it. */
   get inputsProvenance(): ProvenanceMap | undefined {
     return this._inputsProvenance;
   }
 
-  /**
-   * Where data sits in the stored record's `inputs`, in the written form's
-   * own coordinates, as loaded (typed-secrets 4.4); undefined for runs
-   * recorded before it existed.
-   */
   get persistedInputsProvenance(): ProvenanceMap | undefined {
     return this._persistedInputsProvenance;
   }
 
-  /** Capture durable parent scopes so resume does not borrow child bindings. */
   captureDeferredExpressions(expressions: readonly DeferredExpression[]): void {
     this._deferredExpressions = structuredClone([...expressions]);
   }
@@ -2124,22 +1638,18 @@ export class WorkflowRun implements TriggerEvaluationContext {
     return this._deferredExpressions;
   }
 
-  /** Authored expressions inherited from a parent or evaluated cache. */
   get inheritedExpressions(): ReadonlyArray<string> {
     return this._inheritedExpressions;
   }
 
-  /**
-   * The key names of inputs supplied across resume invocations, for audit.
-   * Values are never recorded.
-   */
+  /** key names only, never values */
   get resumeInputs(): ReadonlyArray<string> {
     return this._resumeInputs;
   }
 
   /**
-   * Records the key names of inputs supplied at resume time. Appends and
-   * de-duplicates so multiple resume cycles accumulate a complete audit trail.
+   * appends and de-duplicates so multiple resume cycles accumulate a complete
+   * audit trail
    */
   recordResumeInputs(keys: string[]): void {
     for (const key of keys) {
@@ -2149,10 +1659,6 @@ export class WorkflowRun implements TriggerEvaluationContext {
     }
   }
 
-  /**
-   * Resumes a suspended workflow run without overwriting startedAt. The
-   * resuming process becomes the run's owner.
-   */
   resumeFromSuspended(owner: RunOwner): void {
     this._status = "running";
     this._completedAt = undefined;
@@ -2160,10 +1666,6 @@ export class WorkflowRun implements TriggerEvaluationContext {
     this.takeOwnership(owner);
   }
 
-  /**
-   * Resumes a failed workflow run without overwriting startedAt. The
-   * resuming process becomes the run's owner.
-   */
   resumeFromFailed(owner: RunOwner): void {
     this._status = "running";
     this._completedAt = undefined;
@@ -2171,11 +1673,9 @@ export class WorkflowRun implements TriggerEvaluationContext {
   }
 
   /**
-   * Records the process that now drives the run. The instance id is replaced,
-   * not merged: a local resume of a run serve started clears it, so cancel
-   * treats the run as local and stops the resuming process. The run's owner
-   * is kept aside until the run leaves running (see
-   * {@link releaseOwnership}); an owner already kept aside is not replaced.
+   * the instance id is replaced, not merged, so a local resume of a
+   * serve-started run clears it and cancel stops the resuming process; an owner
+   * already kept aside is not replaced
    */
   private takeOwnership(owner: RunOwner): void {
     this._ownerBeforeResume ??= {
@@ -2187,9 +1687,8 @@ export class WorkflowRun implements TriggerEvaluationContext {
   }
 
   /**
-   * Hands the run back to the owner a resume took it from, once no process
-   * drives it: a run that suspends again is cancelled and superseded as its
-   * owner's run, not as the resume's.
+   * a run that suspends again is cancelled and superseded as its original
+   * owner's run, not as the resume's
    */
   private releaseOwnership(): void {
     if (this._ownerBeforeResume === undefined) return;
@@ -2199,18 +1698,9 @@ export class WorkflowRun implements TriggerEvaluationContext {
   }
 
   /**
-   * Resets steps for a failed-run resume (--from or retry). `stepsToReset`
-   * lists the persisted step records (including forEach-expanded names), each
-   * by its job, that should be reset to pending — the entry step plus all its
-   * transitive downstream dependents. A record of the same name in another
-   * job is left alone: step names are unique only within a job. The caller
-   * (see `planFailedRunResume`) computes this list using the workflow
-   * definition and the step dependency graph.
-   *
-   * Each `tracked` record is marked as reset by this resume, after any
-   * marker an earlier resume left is cleared. A job that finishes with a
-   * marked step still pending fails it (see
-   * {@link JobRun.failStrandedResetSteps}).
+   * a same-named record in another job is left alone since step names are
+   * unique only within a job; a marked step still pending when its job finishes
+   * is failed
    */
   resetForResumeFrom(
     stepsToReset: readonly StepRunRef[],
@@ -2240,12 +1730,9 @@ export class WorkflowRun implements TriggerEvaluationContext {
   }
 
   /**
-   * Reopens the work the run's abort left unfinished, for any resume, so it
-   * runs as it would have had the abort left it pending: every step the
-   * abort settled without starting ({@link StepRun.settledByAbort}) is reset
-   * to pending, record by record, and a finished job that
-   * {@link JobRun.holdsAbortedWork} is reset to pending too, so the resume
-   * walks it. Records with the same name in other jobs are left alone.
+   * resets abort-settled steps and the jobs holding them to pending so the
+   * resume walks them as if the abort had left them pending; same-named records
+   * in other jobs are left alone
    */
   reopenAbortedWork(): void {
     for (const job of this._jobs) {
@@ -2264,10 +1751,8 @@ export class WorkflowRun implements TriggerEvaluationContext {
   }
 
   /**
-   * Lists, in stored order, every step whose status is `failed` and whose
-   * recorded `allowedFailure` is not set. The recorded value already
-   * reflects `allowFailure` and the assertion severity threshold in force
-   * when the run failed.
+   * the recorded allowedFailure already reflects allowFailure and the assertion
+   * severity threshold in force when the run failed
    */
   failedSteps(): FailedStepRef[] {
     const result: FailedStepRef[] = [];
@@ -2291,11 +1776,6 @@ export class WorkflowRun implements TriggerEvaluationContext {
     return result;
   }
 
-  /**
-   * Finds the approval gate of this run that is waiting for a decision. A
-   * nested workflow step waiting on its child run is not a gate: see
-   * {@link findNestedWaits}.
-   */
   findWaitingApprovalStep(): { jobName: string; stepName: string } | undefined {
     for (const job of this._jobs) {
       for (const step of job.steps) {
@@ -2307,11 +1787,6 @@ export class WorkflowRun implements TriggerEvaluationContext {
     return undefined;
   }
 
-  /**
-   * Lists, in stored order, the steps waiting for a signal, with the wait
-   * each holds. A waiting step whose wait cannot be read is listed without
-   * one.
-   */
   findSignalWaits(): SignalWaitRef[] {
     const result: SignalWaitRef[] = [];
     for (const job of this._jobs) {
@@ -2328,9 +1803,8 @@ export class WorkflowRun implements TriggerEvaluationContext {
   }
 
   /**
-   * The first step waiting for a signal on a wait still open at `now`. A
-   * wait past its deadline, or one that cannot be read, is not open: a
-   * resume settles it.
+   * a wait past its deadline or one that cannot be read is not open: a resume
+   * settles it
    */
   findOpenSignalWait(
     now: Date,
@@ -2343,10 +1817,6 @@ export class WorkflowRun implements TriggerEvaluationContext {
     return undefined;
   }
 
-  /**
-   * Lists, in stored order, the nested workflow steps waiting on a suspended
-   * child run.
-   */
   findNestedWaits(): NestedWaitRef[] {
     const result: NestedWaitRef[] = [];
     for (const job of this._jobs) {
@@ -2363,10 +1833,6 @@ export class WorkflowRun implements TriggerEvaluationContext {
     return result;
   }
 
-  /**
-   * The child runs nested workflow steps still waited on when this run
-   * ended. Each child was left suspended on its own.
-   */
   detachedNestedRuns(): DetachedNestedRunRef[] {
     const result: DetachedNestedRunRef[] = [];
     for (const job of this._jobs) {
@@ -2384,19 +1850,17 @@ export class WorkflowRun implements TriggerEvaluationContext {
   }
 
   /**
-   * Settles every nested workflow step still waiting on its child run as
-   * the run ends, and fails a job left with nothing else to finish. Only
-   * this run changes: cancelling the children is the caller's cascade
-   * (swamp-club#2867). Not called on interrupt, since an interrupted run is
-   * recovered and keeps waiting.
+   * changes only this run, since cancelling the children is the caller's
+   * cascade; not called on interrupt, because an interrupted run is recovered
+   * and keeps waiting
    */
   detachNestedWaits(): void {
     for (const job of this._jobs) {
       let detached = false;
       for (const step of job.steps) {
         if (!step.isNestedWait) continue;
-        // The child's own state is not read here: it may have finished
-        // since this run last looked at it.
+        // the child's own state is not read here: it may have finished since
+        // this run last looked
         const child = step.nestedRun?.kind === "valid"
           ? `run ${step.nestedRun.ref.runId} of nested workflow "${step.nestedRun.ref.workflowName}"`
           : "its nested workflow run";
@@ -2418,9 +1882,6 @@ export class WorkflowRun implements TriggerEvaluationContext {
     }
   }
 
-  /**
-   * Converts to plain data for persistence.
-   */
   toData(): WorkflowRunData {
     const data: WorkflowRunData = {
       id: this.id,
@@ -2455,8 +1916,8 @@ export class WorkflowRun implements TriggerEvaluationContext {
     if (this._inheritedExpressions.length > 0) {
       data.inheritedExpressions = [...this._inheritedExpressions];
     }
-    // Written even when nothing is data, so an absent map always means a
-    // run recorded before provenance existed.
+    // written even when nothing is data, so an absent map always means a run
+    // recorded before provenance existed
     if (this._replayedEvaluatedCache) {
       data.replayedEvaluatedCache = true;
     }
@@ -2529,11 +1990,8 @@ export class WorkflowRun implements TriggerEvaluationContext {
   }
 
   /**
-   * True when the run is suspended, no gate is still waiting for a decision
-   * and no step waits on a nested run or for a signal: the run needs a
-   * resume to continue. A wait past its deadline still counts as waiting.
-   * Whether a nested wait's child has finished is derived from the child
-   * (see NestedRunLink), never stored here.
+   * a wait past its deadline still counts as waiting; whether a nested wait's
+   * child finished is derived from the child, never stored here
    */
   isAwaitingResume(): boolean {
     return this._status === "suspended" &&
@@ -2543,11 +2001,8 @@ export class WorkflowRun implements TriggerEvaluationContext {
   }
 
   /**
-   * The step the run reports as failed, and its error: the first failed
-   * step in stored order whose failure was not allowed. A step the run's end
-   * settled without running it (a sibling gate of a rejected one, a step its
-   * abort never started) reports the run's end, not why it ended, so it is
-   * named only when no other step failed.
+   * a step settled by the run's end without running reports the end, not why it
+   * ended, so it is named only when no other step failed
    */
   failureInfo(): {
     failedStep: string | undefined;
@@ -2556,8 +2011,8 @@ export class WorkflowRun implements TriggerEvaluationContext {
     let settled: StepRun | undefined;
     for (const job of this._jobs) {
       for (const step of job.steps) {
-        // A step detached when the run ended reports the run's end, not why
-        // it ended.
+        // a step detached when the run ended reports the run's end, not why it
+        // ended
         if (
           step.status !== "failed" || step.allowedFailure ||
           step.detachedNestedRun

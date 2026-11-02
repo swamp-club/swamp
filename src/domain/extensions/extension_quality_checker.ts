@@ -26,7 +26,6 @@ import type { RegistryCheckNotRunCause } from "./extension_publish_checks.ts";
 import { plainDenoEnv } from "../runtime/deno_plain_env.ts";
 import { readDenoConfig } from "./deno_config.ts";
 
-/** A quality issue found during checking. */
 export interface QualityIssue {
   check:
     | "fmt"
@@ -36,10 +35,6 @@ export interface QualityIssue {
     | "upgrade-chain"
     | "version-bump-upgrade";
   output: string;
-  /**
-   * version-drift only: why the check could not compare against the
-   * registry. Absent on a drift finding and on every other check.
-   */
   cause?: VersionDriftNotComparedCause;
 }
 
@@ -60,62 +55,41 @@ export function qualityCheckLabel(check: QualityIssue["check"]): string {
   }
 }
 
-/** Result of the quality check. */
 export interface QualityCheckResult {
   passed: boolean;
   issues: QualityIssue[];
 }
 
 /**
- * Strips comments, string/template literals and regex literals from source
- * code, preserving newlines so line numbers remain stable. Handles
- * multi-line block comments, template literal interpolation (`${...}`), and
- * nested template literals correctly. A `/` starts a regex literal where an
- * operand is expected, so a backtick or `/*` inside a regex does not open a
- * template or comment that blanks the code after it (swamp-club#2876). A
- * regex literal cannot span a line, so a misread `/` affects at most the
- * rest of its line.
- *
- * Returns a string of the same length and line count as the input, where
- * non-code regions are replaced with spaces, so an offset in the result
- * indexes the same character in the source.
+ * blanks comments, strings and regexes with spaces, keeping length and newlines
+ * so offsets and line numbers hold; a / opens a regex only where an operand is
+ * expected, and a regex cannot span a line
  */
 export function stripCommentsAndStrings(source: string): string {
   const result: string[] = [];
   let i = 0;
-  // Stack for tracking template literal nesting depth.
-  // Each entry is a brace depth counter for the current `${}` expression.
   const templateStack: number[] = [];
-  // Whether a `/` here starts a regex literal rather than dividing: true
-  // where an operand is expected. `word` is the identifier being read, so a
-  // keyword such as `return` can allow one.
   let regexAllowed = true;
   let word = "";
-  // After a template literal body, the template either ended (an operand)
-  // or entered a `${` expression (where an operand is expected).
   const afterTemplateBody = (depthBefore: number) => {
     regexAllowed = templateStack.length > depthBefore;
     word = "";
   };
 
   while (i < source.length) {
-    // Inside a template expression (`${...}`), track brace depth
     if (templateStack.length > 0) {
       const depth = templateStack[templateStack.length - 1];
 
       if (source[i] === "}") {
         if (depth === 0) {
-          // Closing the `${}` expression — back to template literal body
           result.push(" ");
           i++;
           templateStack.pop();
-          // Now skip template body until next `${` or closing backtick
           const depthBefore = templateStack.length;
           i = skipTemplateBody(source, i, result, templateStack);
           afterTemplateBody(depthBefore);
           continue;
         }
-        // Nested brace inside the expression
         templateStack[templateStack.length - 1]--;
         result.push(" ");
         i++;
@@ -132,12 +106,8 @@ export function stripCommentsAndStrings(source: string): string {
         word = "";
         continue;
       }
-
-      // Inside a template expression, code is real — but we still need to
-      // handle strings/comments/nested templates within the expression
     }
 
-    // Single-line comment
     if (source[i] === "/" && i + 1 < source.length && source[i + 1] === "/") {
       result.push(" ", " ");
       i += 2;
@@ -148,7 +118,6 @@ export function stripCommentsAndStrings(source: string): string {
       continue;
     }
 
-    // Block comment
     if (source[i] === "/" && i + 1 < source.length && source[i + 1] === "*") {
       result.push(" ", " ");
       i += 2;
@@ -161,14 +130,12 @@ export function stripCommentsAndStrings(source: string): string {
           i += 2;
           break;
         }
-        // Preserve newlines for line number stability
         result.push(source[i] === "\n" ? "\n" : " ");
         i++;
       }
       continue;
     }
 
-    // Double-quoted string
     if (source[i] === '"') {
       result.push(" ");
       i++;
@@ -191,7 +158,6 @@ export function stripCommentsAndStrings(source: string): string {
       continue;
     }
 
-    // Single-quoted string
     if (source[i] === "'") {
       result.push(" ");
       i++;
@@ -214,7 +180,6 @@ export function stripCommentsAndStrings(source: string): string {
       continue;
     }
 
-    // Template literal
     if (source[i] === "`") {
       result.push(" ");
       i++;
@@ -224,7 +189,6 @@ export function stripCommentsAndStrings(source: string): string {
       continue;
     }
 
-    // Regex literal
     if (source[i] === "/" && regexAllowed) {
       const end = regexLiteralEnd(source, i);
       if (end !== -1) {
@@ -252,7 +216,6 @@ export function stripCommentsAndStrings(source: string): string {
   return result.join("");
 }
 
-/** Keywords after which a `/` starts a regex literal rather than dividing. */
 const REGEX_PRECEDING_KEYWORDS = new Set([
   "await",
   "case",
@@ -271,9 +234,8 @@ const REGEX_PRECEDING_KEYWORDS = new Set([
 ]);
 
 /**
- * The index just past the regex literal starting at `start`, or -1 when
- * the line ends first (then the `/` was not a regex after all). A `/`
- * inside a character class does not end the literal.
+ * index just past the regex, or -1 if the line ends first (not a regex); a /
+ * inside a character class does not end it
  */
 function regexLiteralEnd(source: string, start: number): number {
   let inClass = false;
@@ -295,13 +257,6 @@ function regexLiteralEnd(source: string, start: number): number {
   return -1;
 }
 
-/**
- * Skips through a template literal body, blanking out literal text and
- * preserving newlines. Stops when the closing backtick is found or when
- * a `${` expression is entered (pushing onto templateStack).
- *
- * @returns The new index position after processing.
- */
 function skipTemplateBody(
   source: string,
   i: number,
@@ -309,7 +264,6 @@ function skipTemplateBody(
   templateStack: number[],
 ): number {
   while (i < source.length) {
-    // Escaped character
     if (source[i] === "\\") {
       result.push(" ");
       i++;
@@ -319,7 +273,6 @@ function skipTemplateBody(
       }
       continue;
     }
-    // Template expression — enter it
     if (
       source[i] === "$" && i + 1 < source.length &&
       source[i + 1] === "{"
@@ -329,7 +282,6 @@ function skipTemplateBody(
       templateStack.push(0);
       return i;
     }
-    // End of template literal
     if (source[i] === "`") {
       result.push(" ");
       i++;
@@ -341,29 +293,22 @@ function skipTemplateBody(
   return i;
 }
 
-/**
- * The config arguments for `deno fmt` / `deno lint` over extension files:
- * the project's `deno.json` when there is one, Deno's defaults otherwise.
- * Every caller (push, quality, fmt) uses this, so they agree on the rules.
- */
+/** every caller (push, quality, fmt) uses this so they agree on the rules */
 export function denoToolConfigArgs(denoConfigPath?: string): string[] {
   return denoConfigPath ? ["--config", denoConfigPath] : ["--no-config"];
 }
 
 /**
- * Lint rules swamp never applies to extension code. Swamp requires explicit
- * `npm:` / `jsr:` import prefixes (the registry scorer cannot resolve bare
- * specifiers), and Deno's recommended `no-import-prefix` rule, applied when a
- * project config is present, forbids exactly those.
+ * swamp requires explicit npm:/jsr: prefixes (the registry scorer cannot
+ * resolve bare specifiers), which no-import-prefix forbids
  */
 export const EXTENSION_LINT_RULE_EXCLUDES: readonly string[] = [
   "no-import-prefix",
 ];
 
 /**
- * The project's own `lint.rules.exclude` from its `deno.json` or
- * `deno.jsonc`, read as JSONC as Deno reads it (swamp-club#3612): `[]` when
- * the config sets none, undefined when the file cannot be read or parsed.
+ * read as JSONC the way Deno reads it: [] when the config sets none, undefined
+ * when the file cannot be read or parsed
  */
 async function projectLintExcludes(
   denoConfigPath: string,
@@ -378,13 +323,9 @@ async function projectLintExcludes(
 }
 
 /**
- * The `deno lint` arguments for extension code, before the file list.
- *
- * `--rules-exclude` on the command line replaces the config's
- * `lint.rules.exclude` rather than adding to it, so the project's own
- * exclusions are passed along with {@link EXTENSION_LINT_RULE_EXCLUDES}.
- * When the config cannot be read or parsed, no exclusion is passed and the
- * config lints exactly as written.
+ * --rules-exclude on the command line replaces the config's lint.rules.exclude,
+ * so the project's own exclusions are passed along too; if the config is
+ * unreadable no exclusion is passed
  */
 export async function extensionLintArgs(
   denoConfigPath?: string,
@@ -405,21 +346,6 @@ export async function extensionLintArgs(
   ];
 }
 
-/**
- * Checks extension TypeScript files for formatting and lint issues.
- *
- * Runs `deno fmt --check` and `deno lint` on all `.ts` files. When a
- * `denoConfigPath` is provided, uses `--config <path>` so the project's
- * own lint/fmt rules apply; otherwise uses `--no-config` for default rules.
- * Lint never applies {@link EXTENSION_LINT_RULE_EXCLUDES}.
- * Both checks run even if the first fails, so all issues are reported in
- * a single pass.
- *
- * @param files - All extension files (non-.ts files are filtered out)
- * @param denoPath - Path to the deno binary
- * @param denoConfigPath - Optional absolute path to a deno.json project config
- * @returns Quality check result with pass/fail and any issues
- */
 export async function checkExtensionQuality(
   files: string[],
   denoPath: string,
@@ -453,7 +379,6 @@ export async function checkExtensionQuality(
     }
   }
 
-  // Check formatting
   const plainEnv = plainDenoEnv(denoEnv ?? Deno.env.toObject());
   const fmtCommand = new Deno.Command(denoPath, {
     args: [
@@ -474,7 +399,6 @@ export async function checkExtensionQuality(
     issues.push({ check: "fmt", output });
   }
 
-  // Check linting
   const lintCommand = new Deno.Command(denoPath, {
     args: [...(await extensionLintArgs(denoConfigPath)), ...tsFiles],
     stdout: "piped",
@@ -495,22 +419,16 @@ export async function checkExtensionQuality(
   };
 }
 
-/** Published model metadata from the registry. */
 export interface PublishedModelVersion {
   fileName: string;
   version: string;
 }
 
-/** Published extension state from the registry. */
 export interface PublishedExtensionState {
   manifestVersion: string;
   models: PublishedModelVersion[];
 }
 
-/**
- * Why the version-drift check had nothing to compare against. The causes
- * other than never-published are the ones the dry-run registry checks use.
- */
 export type VersionDriftNotComparedCause =
   | "never-published"
   | Extract<
@@ -518,39 +436,24 @@ export type VersionDriftNotComparedCause =
     "no-credentials" | "authentication-failed" | "registry-unavailable"
   >;
 
-/**
- * The outcome of looking up an extension's last-published version: the
- * published state, or why there is none to compare against.
- */
 export type PublishedLookup =
   | { kind: "found"; state: PublishedExtensionState }
-  /** The registry has no version of the extension. */
   | { kind: "never-published" }
   | { kind: "no-credentials" }
-  /** The registry rejected the stored credentials. */
   | { kind: "authentication-failed"; reason: string }
-  /** The lookup itself failed — no network, a server error. */
   | { kind: "registry-unavailable"; reason: string };
 
 const UPGRADE_CHECK_SKIPPED =
   "; the version-bump upgrade check was skipped too";
 
-/** Drops a sentence's closing period so a clause can follow it. */
 function withoutFinalPeriod(text: string): string {
   return text.endsWith(".") ? text.slice(0, -1) : text;
 }
 
 /**
- * Advisory check — warns on version drift but never blocks.
- *
- * Compares current model versions against the registry's last-published
- * version. Warns when a model version moved but the manifest version
- * did not.
- *
- * When there is no published state to compare against, says why rather
- * than silently skipping, and records the cause: a first publish is
- * expected, but missing or rejected credentials and a failed lookup are
- * named so they do not read as one.
+ * advisory, never blocks; with nothing to compare it says why and records the
+ * cause, so missing credentials or a failed lookup do not read as a first
+ * publish
  */
 export async function checkVersionConsistency(
   manifestVersion: string,
@@ -645,12 +548,6 @@ export async function checkVersionConsistency(
   return issues;
 }
 
-/**
- * Validates that each model file's upgrade chain terminates at its
- * declared version. Blocks push when upgrades are present but the last
- * toVersion does not match the model version. Files without upgrades
- * (new models) pass cleanly.
- */
 export async function checkUpgradeChainConsistency(
   modelFiles: string[],
 ): Promise<QualityIssue[]> {
@@ -694,11 +591,8 @@ export async function checkUpgradeChainConsistency(
 }
 
 /**
- * Checks for model files that have a version field but no upgrades array.
- * This catches the case where a version was bumped but no upgrade entry
- * was added — existing instances would be stranded at their old
- * typeVersion. Only meaningful when the extension version is being bumped
- * from a previously published baseline.
+ * a bumped version with no upgrade entry strands existing instances at their
+ * old typeVersion; only meaningful when bumping from a published baseline
  */
 export async function checkVersionBumpWithoutUpgrade(
   modelFiles: string[],

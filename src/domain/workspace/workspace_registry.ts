@@ -19,38 +19,24 @@
 
 import { markErrorPaths, UserError } from "../errors.ts";
 
-/**
- * How a workspace came to be registered: made new by Swamp, or an existing
- * repo registered where it was.
- */
 export type WorkspaceOrigin = "created" | "imported";
 
-/** One registered workspace. */
 export interface WorkspaceEntry {
   readonly name: string;
-  /** Absolute path of the workspace folder. */
   readonly path: string;
   readonly createdAt: string;
   /**
-   * How the workspace was registered. Unset on entries written before it
-   * was recorded; those are told apart by where the folder is (see
-   * `isImportedWorkspace`).
+   * unset on entries written before it was recorded; those are told apart by
+   * where the folder is (see isImportedWorkspace)
    */
   readonly origin?: WorkspaceOrigin;
   /**
-   * When the user confirmed, on this machine, that agents may work in the
-   * folder. Kept here, in the config dir, and never read from the workspace:
-   * a cloned repo can carry any session state it likes.
+   * kept in the config dir and never read from the workspace, since a cloned
+   * repo can carry any session state it likes
    */
   readonly trustedAt?: string;
 }
 
-/**
- * Every workspace Swamp knows about on this machine. Names and paths are
- * unique; registering the same name at the same path again changes nothing.
- * It also remembers the agent the user last picked for a task, so the next
- * task, in any workspace, starts with that agent selected.
- */
 export class WorkspaceRegistry {
   private constructor(
     private entries: WorkspaceEntry[],
@@ -70,12 +56,10 @@ export class WorkspaceRegistry {
     return registry;
   }
 
-  /** The agent (a harness id) the user last picked for a task, if any. */
   lastAgent(): string | undefined {
     return this.agent;
   }
 
-  /** Remembers the agent picked for a task; true when that changed it. */
   rememberAgent(id: string): boolean {
     if (this.agent === id) return false;
     this.agent = id;
@@ -90,7 +74,6 @@ export class WorkspaceRegistry {
     return this.entries.find((e) => e.name === name);
   }
 
-  /** Adds a workspace; true when it was new. */
   register(entry: WorkspaceEntry): boolean {
     const byName = this.get(entry.name);
     if (byName) {
@@ -115,15 +98,10 @@ export class WorkspaceRegistry {
     return true;
   }
 
-  /** True when the user confirmed trust for the workspace at `path`. */
   isTrusted(path: string): boolean {
     return this.entries.some((e) => e.path === path && e.trustedAt);
   }
 
-  /**
-   * Records that the user trusts the workspace at `path`; true when that
-   * changed anything (false for an unregistered or already trusted path).
-   */
   markTrusted(path: string, at: string): boolean {
     const entry = this.entries.find((e) => e.path === path);
     if (!entry || entry.trustedAt) return false;
@@ -133,7 +111,6 @@ export class WorkspaceRegistry {
     return true;
   }
 
-  /** Removes a workspace; true when it was registered. */
   remove(name: string): boolean {
     const before = this.entries.length;
     this.entries = this.entries.filter((e) => e.name !== name);
@@ -141,18 +118,12 @@ export class WorkspaceRegistry {
   }
 }
 
-/** Stores the registry. */
 export interface WorkspaceRegistryRepository {
   /**
-   * The registry, or null when none has been written yet. Throws a
-   * UserError (code `registry_unreadable`) when one exists but can't be
-   * read; that is never reported as missing.
+   * throws registry_unreadable when a registry exists but cannot be read; that
+   * is never reported as missing
    */
   load(): Promise<WorkspaceRegistry | null>;
-  /**
-   * Runs `change` on the current registry (an empty one when none exists)
-   * under the registry's lock, and saves the result. Throws, writing
-   * nothing, when the stored registry can't be read.
-   */
+  /** throws, writing nothing, when the stored registry cannot be read */
   update<T>(change: (registry: WorkspaceRegistry) => T): Promise<T>;
 }

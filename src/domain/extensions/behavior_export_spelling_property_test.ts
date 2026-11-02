@@ -17,11 +17,9 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// export const behavior is the other spelling of export const model
-// (swamp-club#3338): every reader of a model source must read the two the
-// same, or a behavior-spelled extension would reach the registry catalog,
-// the catalog-gap check or the loader's type extraction differently from
-// its model-spelled twin.
+// behavior is another spelling of export const model; every reader of a model
+// source must treat both alike so a behavior-spelled extension matches its
+// model-spelled twin
 
 import { assertEquals } from "@std/assert";
 import { join } from "@std/path";
@@ -31,7 +29,6 @@ import { modelCatalogGap } from "./model_catalog_gap.ts";
 import { modelKindAdapter } from "./model_kind_adapter.ts";
 import { declaresExport } from "./export_declaration.ts";
 
-/** Every `export const model` declaration respelled as `behavior`. */
 const respell = (source: string): string =>
   source.replaceAll(
     /export(\s+)const(\s+)model(\s*[=:])/g,
@@ -208,7 +205,6 @@ Deno.test("behavior spelling: a lone behavior config without methods is not a de
     const source of [
       'export const behavior = { type: "retry", retries: 3 };\n',
       'export const behavior = { type: "retry" };\nconst methods = {};\n',
-      // A methods property in a different binding does not count.
       'export const behavior = { type: "@acme/retry", version: "1" };\nexport const handlers = { methods: [] };\n',
     ]
   ) {

@@ -74,7 +74,6 @@ import { CelEvaluator } from "../../infrastructure/cel/cel_evaluator.ts";
 import { findVaultGetCalls } from "./vault_reference_extractor.ts";
 import { assertMethodArgumentsEvaluated } from "./unresolved_expression_guard.ts";
 
-/** The reference every secret of these tests stands for. */
 const REF = { vaultName: "v", key: "k" };
 
 Deno.test("deferChildInputs: late vault selectors round-trip as constants without capturing other resume inputs", async () => {
@@ -104,7 +103,6 @@ Deno.test("deferChildInputs: late vault selectors round-trip as constants withou
       const [call] = findVaultGetCalls(record.expression);
       assertEquals(evaluator.evaluate(call[3], {}), vault);
       assertEquals(evaluator.evaluate(call[6], {}), key);
-      // Data-origin expression text cannot enter the binding pass.
       const data = service.deferChildInputs(
         { token: expression },
         context,
@@ -210,18 +208,14 @@ async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
     await fn(dir);
   } finally {
     if (Deno.build.os === "windows") {
-      // Best-effort: EBUSY can fire when V8 hasn't GC'd native
-      // sqlite handles yet. Temp dir is ephemeral, OS reclaims.
+      // EBUSY can fire on Windows when V8 has not GC'd native sqlite handles;
+      // the temp dir is ephemeral so the error is ignored
       await Deno.remove(dir, { recursive: true }).catch(() => {});
     } else {
       await Deno.remove(dir, { recursive: true });
     }
   }
 }
-
-// ============================================================================
-// containsVaultExpression
-// ============================================================================
 
 Deno.test("containsVaultExpression returns true for vault-only expressions", () => {
   assertEquals(containsVaultExpression("vault.get(aws, myKey)"), true);
@@ -277,7 +271,6 @@ Deno.test("containsVaultExpression counts every read of the vault namespace", ()
 });
 
 Deno.test("containsVaultExpression sees a vault.get after a raw string's escaped quote", () => {
-  // cel-js ends r'a\'b' after the b, so the vault.get is code, not text.
   assertEquals(
     containsVaultExpression("r'a\\'b' + vault.get('v', 'k')"),
     true,
@@ -306,10 +299,6 @@ Deno.test("containsVaultExpression returns true for quoted args with spaces", ()
   );
 });
 
-// ============================================================================
-// containsEnvExpression
-// ============================================================================
-
 Deno.test("containsEnvExpression returns true for env references", () => {
   assertEquals(containsEnvExpression("env.FOO"), true);
   assertEquals(containsEnvExpression("env.HOME"), true);
@@ -331,13 +320,10 @@ Deno.test("containsEnvExpression returns false for non-env expressions", () => {
 });
 
 Deno.test("containsEnvExpression returns false for env-like but not env", () => {
-  // "environment" should not match because \b word boundary prevents it
   assertEquals(containsEnvExpression("environment.X"), false);
   assertEquals(containsEnvExpression("myenv.FOO"), false);
-  // Member access on another namespace is not the env map.
   assertEquals(containsEnvExpression("inputs.env"), false);
   assertEquals(containsEnvExpression("self.env + '-suffix'"), false);
-  // Dotted continuation too: the old `\benv\.` regex wrongly deferred this to runtime.
   assertEquals(containsEnvExpression("self.env.region"), false);
 });
 
@@ -346,16 +332,14 @@ Deno.test("containsEnvExpression ignores env inside string literals", () => {
   assertEquals(containsEnvExpression("self.tags['env']"), false);
   assertEquals(containsEnvExpression('"env" + self.name'), false);
   assertEquals(containsEnvExpression('"a\\"env" + self.name'), false);
-  // A real reference next to a literal is still runtime.
   assertEquals(containsEnvExpression('env["env"]'), true);
   assertEquals(containsEnvExpression('"prefix" + env.FOO'), true);
   assertEquals(containsVaultExpression('"vault.get(" + self.name'), false);
 });
 
 Deno.test("containsEnvExpression returns true for every form of env access", () => {
-  // The persist-phase context carries the process environment, so any form
-  // that is not classified as runtime would be evaluated there. The
-  // bracket-index form was the confirmed bypass of the first fix.
+  // the persist-phase context carries the process environment, so any env
+  // access form not classified as runtime would be evaluated there
   assertEquals(containsEnvExpression("env['SECRET']"), true);
   assertEquals(containsEnvExpression('env["SECRET"]'), true);
   assertEquals(containsEnvExpression("[env][0].SECRET"), true);
@@ -374,7 +358,6 @@ Deno.test("containsEnvExpression ignores a macro-bound variable named env", () =
   );
   assertEquals(containsEnvExpression("self.a.filter(env, env.on)"), false);
   assertEquals(containsEnvExpression("self.a.exists_one(env, env)"), false);
-  // The bound name only shadows inside the macro's own arguments.
   assertEquals(containsEnvExpression("env.list.map(env, env)"), true);
   assertEquals(
     containsEnvExpression("self.a.filter(env, env.on).map(e, env)"),
@@ -384,15 +367,11 @@ Deno.test("containsEnvExpression ignores a macro-bound variable named env", () =
 });
 
 Deno.test("containsEnvExpression handles triple-quoted, raw and bytes string literals", () => {
-  // A naive single-quote regex pairs the quotes of `"""..."""` wrongly and
-  // can swallow a real env reference as string content.
   assertEquals(
     containsEnvExpression('"""prefix " suffix""" + env.DEMO + "suffix"'),
     true,
   );
   assertEquals(containsEnvExpression("'''a ' b''' + env.X"), true);
-  // As in cel-js, a backslash skips the next character in a raw string too,
-  // so the raw string here is `a\"b` and env.X is code.
   assertEquals(containsEnvExpression('r"a\\"b" + env.X'), true);
   assertEquals(containsEnvExpression('"""env""" + self.name'), false);
   assertEquals(containsEnvExpression("'''env.X''' + self.name"), false);
@@ -408,10 +387,6 @@ Deno.test("containsEnvExpression ignores `env` as an optional or spaced member n
     true,
   );
 });
-
-// ============================================================================
-// containsRuntimeExpression
-// ============================================================================
 
 Deno.test("containsRuntimeExpression returns true for vault expressions", () => {
   assertEquals(
@@ -442,15 +417,6 @@ Deno.test("containsRuntimeExpression returns false for model/self/inputs", () =>
   assertEquals(containsRuntimeExpression("inputs.param"), false);
 });
 
-// ============================================================================
-// evaluateDefinition — ternary expression regression (#814)
-// ============================================================================
-
-// Regression test for issue #814: a ternary in globalArguments must resolve
-// when the condition input is provided, even if one branch input is absent.
-// Before the fix the regex pre-check treated all referenced inputs as required,
-// so the whole expression was skipped and the globalArgument stayed as a raw
-// ${{ }} string.
 Deno.test("evaluateDefinition: ternary in globalArguments resolves when condition input provided and one branch input absent", async () => {
   await withTempDir(async (repoDir) => {
     const definitionRepo = new YamlDefinitionRepository(repoDir);
@@ -478,15 +444,13 @@ Deno.test("evaluateDefinition: ternary in globalArguments resolves when conditio
       definition,
       type,
       new RunSensitiveValues(),
-      { transport: "wan", tailnet_host: "100.64.0.1" }, // lan_host deliberately absent
+      { transport: "wan", tailnet_host: "100.64.0.1" },
     );
 
     assertEquals(result.definition.globalArguments.host, "100.64.0.1");
   });
 });
 
-// Confirms the original #653 fix still works: a directly-referenced missing
-// input leaves the expression unresolved rather than throwing.
 Deno.test("evaluateDefinition: directly-missing input in globalArguments stays unresolved", async () => {
   await withTempDir(async (repoDir) => {
     const definitionRepo = new YamlDefinitionRepository(repoDir);
@@ -513,10 +477,9 @@ Deno.test("evaluateDefinition: directly-missing input in globalArguments stays u
       definition,
       type,
       new RunSensitiveValues(),
-      { instanceName: "test-instance" }, // cidrBlock deliberately absent
+      { instanceName: "test-instance" },
     );
 
-    // run is resolved, unusedArg stays as a raw expression
     assertEquals(result.definition.globalArguments.run, "echo test-instance");
     assertStringIncludes(
       result.definition.globalArguments.unusedArg as string,
@@ -575,7 +538,6 @@ Deno.test("evaluateDefinition: records failed expressions with their reason and 
       failed.get("${{ model.ghost.resource.state.main.attributes }}")!.message,
       "Behavior ghost has no resource data",
     );
-    // Validation tells this gap from an invalid expression by its class.
     assertEquals(
       failed.get("${{ model.ghost.resource.state.main.attributes }}") instanceof
         MissingModelDataError,
@@ -586,7 +548,6 @@ Deno.test("evaluateDefinition: records failed expressions with their reason and 
       false,
     );
 
-    // Evaluation stays lenient: failures keep their raw text.
     const args = result.definition.getMethodArguments("execute");
     assertEquals(args.missingKey, "${{ inputs.cfg.nope }}");
     assertEquals(args.ok, 2);
@@ -632,8 +593,6 @@ Deno.test("evaluateDefinition: self.globalArguments in a method argument sees th
     assertEquals(result.definition.globalArguments.target, "web-a");
     const args = result.definition.getMethodArguments("execute");
     assertEquals(args.run, "echo web-a static");
-    // A global argument that failed is copied as its raw text, which is
-    // itself a recorded failure — so the guard catches the copy too.
     assertEquals(args.copyBroken, "${{ inputs.host.nope }}");
     assertEquals(
       result.failedExpressions!.has("${{ inputs.host.nope }}"),
@@ -692,7 +651,6 @@ Deno.test("evaluateDefinition: container interpolation and CEL refusals stay pen
           copy.getMethodArguments("copied").value,
           `before ${raw} after`,
         );
-        // A whole-field occurrence of the same raw still carries a container.
         const whole = copy.getMethodArguments("whole").value;
         assertEquals(Array.isArray(whole), shape === "array");
         const leaf = Array.isArray(whole)
@@ -772,10 +730,6 @@ Deno.test("evaluateDefinition: a runtime global argument copied via self.globalA
     );
   });
 });
-
-// ============================================================================
-// resolveAllExpressionsInData — CEL + runtime two-pass seam (swamp-club#291)
-// ============================================================================
 
 function makeContext(
   overrides: Partial<ExpressionContext> = {},
@@ -939,10 +893,6 @@ Deno.test("resolveAllExpressionsInData: env-only resolution does not register se
   });
 });
 
-// ============================================================================
-// run.* namespace
-// ============================================================================
-
 Deno.test("resolveAllExpressionsInData: resolves run.id from context", async () => {
   await withTempDir(async (repoDir) => {
     const definitionRepo = new YamlDefinitionRepository(repoDir);
@@ -1025,16 +975,6 @@ Deno.test("resolveAllExpressionsInData: resolves run.tags nested access", async 
     assertEquals(result.environment, "staging");
   });
 });
-
-// ============================================================================
-// Invalid-CEL-in-prose tolerance (swamp-club#291 follow-up)
-//
-// When the ${{ ... }} sequence appears inside prose (a plan body, an issue
-// description, a method-input string that documents expression syntax), the
-// inner CEL is often syntactically invalid (e.g. `env.*`, `vault.get(...)`).
-// These must be left as raw text rather than failing the surrounding call,
-// otherwise any model whose inputs round-trip such prose becomes unrunnable.
-// ============================================================================
 
 Deno.test("evaluateData: leaves invalid-CEL prose unchanged", async () => {
   await withTempDir(async (repoDir) => {
@@ -1156,10 +1096,6 @@ Deno.test("resolveRuntimeExpressionsInDefinition: leaves invalid env.* prose in 
   });
 });
 
-// ============================================================================
-// evaluateDefinition — nested globalArguments
-// ============================================================================
-
 Deno.test("evaluateDefinition: resolves expressions in nested globalArguments objects and arrays", async () => {
   await withTempDir(async (repoDir) => {
     const definitionRepo = new YamlDefinitionRepository(repoDir);
@@ -1207,14 +1143,6 @@ Deno.test("evaluateDefinition: resolves expressions in nested globalArguments ob
   });
 });
 
-// ============================================================================
-// evaluateDefinition — definition scanning (swamp-club#2123)
-// ============================================================================
-
-/**
- * Counts full-repository walks so tests can assert on work avoided rather
- * than on elapsed time.
- */
 class CountingDefinitionRepository extends YamlDefinitionRepository {
   findAllGlobalCalls = 0;
 
@@ -1355,10 +1283,6 @@ Deno.test("evaluateAllDefinitions: walks the repository once", async () => {
   });
 });
 
-// ============================================================================
-// collectAuthoredExpressions — provenance for the runtime pass
-// ============================================================================
-
 Deno.test("collectAuthoredExpressions: collects vault and env expressions", () => {
   const authored = collectAuthoredExpressions({
     a: "${{ vault.get('v', 'k') }}",
@@ -1411,10 +1335,6 @@ Deno.test("collectAuthoredExpressions: collects mixed vault and CEL expressions"
 
   assertEquals(authored.has("${{ vault.get('v', inputs.key) }}"), true);
 });
-
-// ============================================================================
-// Authored-expression gate — swamp-club#2172
-// ============================================================================
 
 Deno.test("resolveRuntimeExpressionsInDefinition: resolves an env expression the author wrote", async () => {
   await withTempDir(async (repoDir) => {
@@ -1512,7 +1432,6 @@ Deno.test("resolveRuntimeExpressionsInDefinition: with a method, resolves the gl
             arguments: {
               // Fails the pass whenever it is evaluated.
               key: `\${{ env.${unset} }}`,
-              // The raw text the run method resolves, kept as authored here.
               shared: "${{ env.SWAMP_TEST_SCOPED }}",
             },
           },
@@ -1542,7 +1461,6 @@ Deno.test("resolveRuntimeExpressionsInDefinition: with a method, resolves the gl
       );
       assertEquals(scoped.failedExpressions, undefined);
 
-      // No method named: the global arguments alone.
       const globalsOnly = await service.resolveRuntimeExpressionsInDefinition(
         definition,
         undefined,
@@ -1556,8 +1474,6 @@ Deno.test("resolveRuntimeExpressionsInDefinition: with a method, resolves the gl
         "${{ env.SWAMP_TEST_SCOPED }}-run",
       );
 
-      // Without the option the whole definition is the pass's, and the
-      // other method's expression fails it.
       await assertRejects(
         () =>
           service.resolveRuntimeExpressionsInDefinition(
@@ -1612,7 +1528,6 @@ Deno.test("resolveRuntimeExpressionsInDefinition: keepUnevaluated leaves only th
           unset,
         );
 
-        // A decision of false fails the pass with the error, as the default.
         await assertRejects(
           () =>
             service.resolveRuntimeExpressionsInDefinition(
@@ -1657,7 +1572,6 @@ Deno.test("resolveRuntimeExpressionsInData: resolves only the deferred bindings 
     const originalToObject = Deno.env.toObject;
     Deno.env.toObject = () => ({ HOME: "runtime-home" });
     try {
-      // A parent passed two runtime inputs; only `home` resolves.
       const home = { id: crypto.randomUUID(), expression: "${{ env.HOME }}" };
       const broken = {
         id: crypto.randomUUID(),
@@ -1678,7 +1592,6 @@ Deno.test("resolveRuntimeExpressionsInData: resolves only the deferred bindings 
       });
       const authored = new Set([reads("home").value, reads("unused").value]);
 
-      // The unused input's vault lookup never runs.
       assertEquals(
         await service.resolveRuntimeExpressionsInData(
           reads("home"),
@@ -1688,7 +1601,6 @@ Deno.test("resolveRuntimeExpressionsInData: resolves only the deferred bindings 
         ),
         { value: "runtime-home:runtime-home" },
       );
-      // Reading it still fails.
       await assertRejects(() =>
         service.resolveRuntimeExpressionsInData(
           reads("unused"),
@@ -1708,9 +1620,8 @@ Deno.test("resolveAllExpressionsInData: refuses a runtime expression its own CEL
     const definitionRepo = new YamlDefinitionRepository(repoDir);
     const service = new ExpressionEvaluationService(definitionRepo, repoDir);
     await withMockedEnv({ SWAMP_TEST_SPLICED: "leaked-secret" }, async () => {
-      // `note` holds attacker-controlled text; CEL splices it into `run`, and
-      // the runtime pass must not then treat it as a definition-source
-      // expression. This is swamp-club#2172 in miniature.
+      // note holds attacker-controlled text; CEL splices it into run, and the
+      // runtime pass must not then treat it as a definition-source expression
       const result = await service.resolveAllExpressionsInData(
         { run: "echo ${{ inputs.note }}" },
         makeContext({
@@ -1777,7 +1688,6 @@ Deno.test("evaluateDataTracked: passes another templating system's text through 
     );
     assertEquals(result.data, { sha: "${{ github.sha }}", region: "eu" });
 
-    // The default is strict, as for placement and every other caller.
     await assertRejects(
       () =>
         service.evaluateDataTracked(
@@ -1789,7 +1699,6 @@ Deno.test("evaluateDataTracked: passes another templating system's text through 
       Error,
       "Unknown variable: github",
     );
-    // So does a foreign expression that fails on its swamp side.
     await assertRejects(
       () =>
         service.evaluateDataTracked(
@@ -1804,7 +1713,6 @@ Deno.test("evaluateDataTracked: passes another templating system's text through 
         ),
       Error,
     );
-    // A failed swamp expression throws either way.
     await assertRejects(
       () =>
         service.evaluateDataTracked(
@@ -1825,8 +1733,6 @@ Deno.test("evaluateDataTracked: an unlisted root fails even when asked to pass t
     const service = new ExpressionEvaluationService(definitionRepo, repoDir);
     const cases: [string, string][] = [
       ["${{ nonexistent.variable }}", "Unknown variable: nonexistent"],
-      // CEL stops at the known root; the unlisted one still fails it, and
-      // is the one the error names.
       ["${{ github.sha + nonexistent.x }}", "Unknown variable: nonexistent"],
     ];
     for (const [text, message] of cases) {
@@ -2028,9 +1934,6 @@ Deno.test("resolveRuntimeExpressionsInDefinition: supplies missing model self fi
   });
 });
 
-// ============================================================================
-// buildRuntimeContext
-
 Deno.test("buildRuntimeContext: loads the model namespace only when a remaining expression reads it", async () => {
   await withTempDir(async (repoDir) => {
     const definitionRepo = new YamlDefinitionRepository(repoDir);
@@ -2123,13 +2026,8 @@ Deno.test("resolveRuntimeExpressionsInData: resolves vault.get from the managed 
   });
 });
 
-// ============================================================================
-// Sensitive values read through expressions (swamp-club#2171)
-// ============================================================================
-
 const SENSITIVE = "Pl41n-s3cret";
 
-/** A context whose data.latest returns a recorded sensitive value, counting reads. */
 function sensitiveDataContext(reads: { count: number }): ExpressionContext {
   const values = new RunSensitiveValues();
   values.addSecret(SENSITIVE, { vaultName: "prod", key: "api-token" });
@@ -2213,16 +2111,10 @@ Deno.test("resolveRuntimeExpressionsInDefinition: sanitizes mixed runtime expres
     const run = args.run as string;
     assertEquals(run.includes(SENSITIVE), true);
     assertEquals(bag.resolveRaw(run), `/tmp/test-home-mixed:${SENSITIVE}`);
-    // self.globalArguments is bound to the real value, not the sentinel.
     assertEquals(args.len, `/tmp/test-home-mixed:${SENSITIVE.length}`);
   });
 });
 
-// ============================================================================
-// Rejected-expression warnings quote the raw text verbatim (swamp-club#3321)
-// ============================================================================
-
-/** Runs `fn` with the expression warnings captured, as messages. */
 async function capturingExpressionWarnings(
   fn: () => void,
 ): Promise<string[]> {
@@ -2285,7 +2177,6 @@ Deno.test("partitionAuthoredAt: the data-content warning quotes the raw expressi
   }
 });
 
-/** A run that could not read `key` from `infra` for its `ticket` field. */
 function unreadRun(key: string): { values: RunSensitiveValues; raw: string } {
   const raw = `\${{ vault.get('infra', '${key}') }}`;
   const values = new RunSensitiveValues();
@@ -2349,10 +2240,6 @@ Deno.test("partitionAuthored: a reference the run never tried to read keeps the 
   assertStringIncludes(messages[0], "arrived as data content");
 });
 
-// ============================================================================
-// Refusals of text the author wrote on purpose stay silent (swamp-club#3402)
-// ============================================================================
-
 const LITERAL_OF_VERSION = "${{ literal('${{ inputs.version }}') }}";
 const VERSION = "${{ inputs.version }}";
 const GITHUB_SHA = "${{ github.sha }}";
@@ -2404,13 +2291,9 @@ Deno.test("partitionAuthored: refuses another templating system's text without a
 Deno.test("partitionAuthored: still warns for swamp text no authored constant produced (swamp-club#3402)", async () => {
   for (
     const authored of [
-      // A constant that produces other text.
       "${{ literal('${{ inputs.other }}') }}",
-      // Reads a binding, so its output is not the author's alone.
       "${{ inputs.prefix + '${{ inputs.version }}' }}",
-      // A bare assertion predicate is not a `${{ }}` constant.
       "literal('${{ inputs.version }}')",
-      // A constant that fails to evaluate is skipped.
       "${{ now() }}",
     ]
   ) {
@@ -2514,15 +2397,6 @@ Deno.test("resolveRuntimeExpressionsInData: a sentinel an earlier pass issued re
   });
 });
 
-// ============================================================================
-// Loading at delivery (typed-secrets 2.3): the runtime pass checks and
-// issues references; each inline destination loads what it receives.
-// ============================================================================
-
-/**
- * An evaluator over a mock vault `v` holding `secrets`, which answers has(),
- * recording every value read and existence check its vault service serves.
- */
 function countingEvaluator(
   repoDir: string,
   secrets: Record<string, string>,
@@ -2579,7 +2453,6 @@ Deno.test("resolveRuntimeExpressionsInDefinition: checks each vault.get referenc
       entries.map((entry) => "location" in entry && entry.location),
       ["globalArguments.token:1:1", "methods.run.arguments.cmd:1:1"],
     );
-    // Delivery loads them, once per reference.
     const loaded = await service.secretLoader(undefined).load(
       secretBag,
       executed.toData(),
@@ -2686,10 +2559,6 @@ Deno.test("resolveAllExpressionsInData: a typed routing destination refuses befo
   });
 });
 
-// ============================================================================
-// typed secrets (3.5): the run's registry selects the evaluator
-// ============================================================================
-
 Deno.test("resolveRuntimeExpressionsInDefinition: a typed run evaluates vault.get as the CEL function, checks each reference and issues a sentinel, reading no value", async () => {
   await withTempDir(async (repoDir) => {
     const { service, reads, checks } = countingEvaluator(repoDir, {
@@ -2730,8 +2599,6 @@ Deno.test("resolveRuntimeExpressionsInDefinition: a typed run evaluates vault.ge
     );
     assertStringIncludes(locations[0], "globalArguments.token");
     assertStringIncludes(locations[1], "methods.run.arguments.cmd");
-    // The composition left CEL as text around the sentinel, and a delivery
-    // loads it once.
     const loaded = await service.secretLoader(undefined).load(
       secretBag,
       executed.toData(),
@@ -2888,8 +2755,6 @@ Deno.test("resolveRuntimeExpressionsInData: a typed run keeps a step context's o
     });
     const registry = new SecretBagRegistry();
     const reference = "${{ vault.get('v', 'token') }}";
-    // A mutable literal: the record schema's form and the context's both
-    // take it.
     const sources = [{
       path: [] as string[],
       records: [{
@@ -2906,8 +2771,6 @@ Deno.test("resolveRuntimeExpressionsInData: a typed run keeps a step context's o
       { status: "succeeded", outputs: { password: reference, user: "u" } },
       sources,
     );
-    // A parent record whose expression reads the parent's tagged output;
-    // its captured steps carry the sources in their persisted form.
     const record = {
       id: crypto.randomUUID(),
       expression: "${{ env.HOME + ':' + steps.seed.outputs.password }}",
@@ -2940,14 +2803,10 @@ Deno.test("resolveRuntimeExpressionsInData: a typed run keeps a step context's o
         context,
         authored,
       ) as Record<string, string>;
-      // The plain field reads through the bindings as before.
       assertEquals(resolved.plain, "runtime-home:u");
-      // This pass is a delivery: the sentinel each path issued is loaded at
-      // its end, once per reference, so the loaded value shows the tagged
-      // field was a Secret on both paths, where reference text would have
-      // stayed text: the context's own steps kept their sources, and the
-      // record's came back from the persisted form. A data-origin reference
-      // is authorized, never probed.
+      // this pass is a delivery, so the loaded value shows the tagged field was
+      // a Secret on both paths; a data-origin reference is authorized, never
+      // probed
       assertEquals(resolved.own, "runtime-home:s3cret-token");
       assertEquals(
         resolved.viaRecord,
@@ -2957,7 +2816,6 @@ Deno.test("resolveRuntimeExpressionsInData: a typed run keeps a step context's o
       assertEquals(reads, ["token"]);
       assertEquals(checks, []);
     });
-    // The context's step context is untouched and still carries its sources.
     assertEquals(stepOutputSourcesOf(context.steps!.seed), sources);
     assertEquals(context.steps!.seed.outputs!.password, reference);
   });

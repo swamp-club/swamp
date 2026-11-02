@@ -35,26 +35,16 @@ import { RegistryUnavailableError } from "./registry_unavailable_error.ts";
 
 const logger = getLogger(["swamp", "extensions", "auto-resolver"]);
 
-/**
- * Port: information about an extension from the registry.
- */
 export interface ExtensionLookupInfo {
   name: string;
   description: string;
   latestVersion: string | null;
 }
 
-/**
- * Port: search result entry from the registry.
- */
 export interface ExtensionSearchResultEntry {
   name: string;
 }
 
-/**
- * Port: interface for looking up extensions in a registry.
- * Decouples the domain service from the HTTP client.
- */
 export interface ExtensionLookupPort {
   getExtension(name: string): Promise<ExtensionLookupInfo | null>;
   searchExtensions(params: {
@@ -62,51 +52,20 @@ export interface ExtensionLookupPort {
     collective?: string;
     perPage?: number;
   }): Promise<{ extensions: ExtensionSearchResultEntry[] }>;
-  /**
-   * The content metadata the registry published for the extension's
-   * latest version, without installing it. Optional: a lookup without it
-   * simply cannot describe a type before install (swamp-club#3003).
-   */
+  /** optional: a lookup without it cannot describe a type before install */
   getLatestVersionDetail?(
     name: string,
   ): Promise<{ contentMetadata: ExtensionContentMetadata | null } | null>;
 }
 
-/**
- * Port: result of installing an extension.
- */
 export interface ExtensionInstallResultInfo {
   version: string;
 }
 
 /**
- * Result describing the on-disk state of a pulled extension.
- *
- * - `missing`: no lockfile entry, or the per-extension directory does
- *   not exist. The auto-resolver should proceed to install. When a lockfile
- *   entry exists but the directory is absent (a fresh checkout, since
- *   `.swamp/pulled-extensions` is gitignored), `lockedVersion` carries the
- *   pinned version that will be installed — so progress output reports the
- *   version that actually lands, not registry-latest (swamp-club#465).
- * - `intact`: lockfile entry exists, the directory exists, and every
- *   file listed in the lockfile is present on disk. `installedVersion` is
- *   the lockfile version. `loadFailures` is true when a source under the
- *   extension's directory failed to bundle or validate, false when none
- *   did, and absent when the adapter cannot tell. With failures (or
- *   unknown), the cause is local — see
- *   `AutoResolveOutputPort.alreadyInstalledButFailed`. Without, the
- *   extension loaded but does not provide the type — see
- *   `AutoResolveOutputPort.installedWithoutType` (swamp-club#2476).
- * - `truncated`: lockfile entry + directory both exist, but one or more
- *   files the lockfile lists are absent from disk. This is the
- *   "present but incomplete" state that looks installed to a directory
- *   stat but produces `Unknown <kind> type` errors downstream. See
- *   swamp-club#133.
- * - `legacy`: lockfile-declared source files exist but the current
- *   per-extension root does not. Auto-resolution must not migrate this
- *   layout because doing so can delete tracked files as an implicit side effect.
- *   Skill dirs the entry records never count: they are current-layout
- *   wherever they are, and install writes the skill back into them.
+ * missing may carry lockedVersion so progress shows the pinned version;
+ * truncated looks installed but lacks listed files; legacy is never migrated
+ * here since that can delete tracked files
  */
 export type InstallationInspection =
   | { state: "missing"; lockedVersion?: string }
@@ -119,20 +78,7 @@ export type InstallationInspection =
   | { state: "truncated"; path: string; missing: string[] }
   | { state: "legacy"; paths: string[] };
 
-/**
- * Port: interface for installing extensions and hot-loading them.
- * Decouples the domain service from the CLI install infrastructure.
- */
 export interface ExtensionInstallerPort {
-  /**
-   * Inspects the on-disk state of a pulled extension. The domain
-   * service uses the inspection return to pick the right branch:
-   * install (missing), surface the "local edits" error (intact), or
-   * surface the "truncated tree" error (truncated). Carries the
-   * install path on the non-missing variants so the domain service
-   * can include it in error output without reaching into
-   * infrastructure.
-   */
   inspectInstallation(
     extensionName: string,
   ): Promise<InstallationInspection>;
@@ -142,34 +88,21 @@ export interface ExtensionInstallerPort {
   hotLoadDatastores(): Promise<void>;
   hotLoadWebhooks(): Promise<void>;
   /**
-   * Checks whether any local source extension that failed to index
-   * (`BundleBuildFailed` or `ValidationFailed`) contains the given
-   * type string in its source file. Used by the auto-resolver to
-   * distinguish a local indexing failure from a genuinely untrusted
-   * registry collective (swamp-club#1672).
+   * distinguishes a local indexing failure from an untrusted registry
+   * collective
    */
   failedLocalSourceMatchesType(typeNormalized: string): boolean;
-  /**
-   * Runs `fn` while holding a lock that serializes auto-installs across
-   * processes sharing the repository (swamp-club#2571).
-   */
+  /** serializes auto-installs across processes sharing the repository */
   withInstallLock<T>(fn: () => Promise<T>): Promise<T>;
-  /** Whether `normalizedType` is registered in any type registry. */
   providesType(normalizedType: string): Promise<boolean>;
   /**
-   * How many behavior types the named extension provides that are
-   * registered now, loaded or lazy, whoever loaded them; undefined when the
-   * installer cannot tell. Without an answer the installed line reports the
-   * types this resolution's hot-load loaded itself, which is 0 when another
-   * caller loaded them first (swamp-club#3911).
+   * undefined when the installer cannot tell; the installed line then reports
+   * only types this hot-load loaded, which is 0 when another caller loaded them
+   * first
    */
   registeredModelCount?(extensionName: string): number | undefined;
 }
 
-/**
- * Port: interface for rendering auto-resolution output.
- * Decouples the domain service from the presentation layer.
- */
 export interface AutoResolveOutputPort {
   searching(type: string): void;
   installing(
@@ -181,20 +114,13 @@ export interface AutoResolveOutputPort {
   notFound(type: string): void;
   networkError(type: string, error: string): void;
   /**
-   * Emitted when auto-resolution finds an extension on disk but refuses
-   * to re-install it because local edits may be preventing the type
-   * from registering. Gives the user the file path and the explicit
-   * opt-in command to reset to the registry version.
+   * emitted instead of re-installing an extension on disk, because local edits
+   * may be preventing the type from registering
    */
   alreadyInstalledButFailed(extension: string, path: string): void;
   /**
-   * Emitted when auto-resolution finds an intact extension whose sources
-   * all loaded, yet it does not provide the requested type — typically
-   * because the installed version predates the one that added it. Also
-   * emitted when a fresh install does not provide the type
-   * (swamp-club#3246).
-   * `newerVersion` is set when the registry has a newer version than the
-   * one installed, which may provide the type. See swamp-club#2476.
+   * also emitted when a fresh install lacks the type; newerVersion is set when
+   * the registry has a newer version that may provide it
    */
   installedWithoutType(
     extension: string,
@@ -203,12 +129,8 @@ export interface AutoResolveOutputPort {
     newerVersion: string | undefined,
   ): void;
   /**
-   * Emitted when auto-resolution finds a pulled extension directory
-   * that is incomplete — the lockfile says certain files should be
-   * present but they are missing on disk. Distinct from
-   * `alreadyInstalledButFailed` (which covers intact-but-fails-to-load):
-   * here the tree itself is broken, so the user needs to re-pull with
-   * `--force` to repair. See swamp-club#133.
+   * the tree itself is broken (lockfile files missing), unlike
+   * alreadyInstalledButFailed, so the user must re-pull with --force
    */
   alreadyInstalledTruncated(
     extension: string,
@@ -216,33 +138,24 @@ export interface AutoResolveOutputPort {
     missing: string[],
   ): void;
   /**
-   * Emitted when an extension's lockfile tracks files at a legacy location.
-   * Auto-resolution refuses to migrate these files; the user must explicitly
-   * run extension pull to accept the migration.
+   * auto-resolution refuses to migrate a legacy location; the user must run
+   * extension pull to accept the migration
    */
   legacyInstallation(extension: string, paths: string[]): void;
   /**
-   * Emitted when a referenced `@collective/*` type cannot auto-resolve
-   * because its collective is not trusted (swamp-club#465). Membership
-   * collectives are not trusted by default; this surfaces the actionable
-   * `swamp extension trust add <collective>` opt-in instead of letting the
-   * caller fail with an opaque "unknown type" error.
+   * membership collectives are not trusted by default; this surfaces the swamp
+   * extension trust add opt-in instead of an opaque unknown type error
    */
   collectiveNotTrusted(collective: string, type: string): void;
   /**
-   * Emitted when a type cannot be resolved and a local source extension
-   * that provides it failed to index. Surfaces the real cause (bundling
-   * or validation failure) with actionable `swamp doctor extensions`
-   * guidance instead of the misleading `collectiveNotTrusted` hint
-   * (swamp-club#1672).
+   * surfaces the real local failure with swamp doctor extensions guidance
+   * instead of the misleading collectiveNotTrusted hint
    */
   localSourceFailed(type: string): void;
   noStableVersion(extension: string): void;
   /**
-   * Emitted when another process held the install lock for longer than
-   * this one would wait, so the type is reported as busy rather than
-   * unregistered. `holder` names that process, or is null when the lock
-   * file could not be read (swamp-club#3656).
+   * another process held the install lock longer than this one would wait;
+   * holder is null when the lock file could not be read
    */
   installBusy(
     type: string,
@@ -252,12 +165,8 @@ export interface AutoResolveOutputPort {
   ): void;
 }
 
-/** The process holding the install lock, as its lock file records it. */
 export type InstallLockHolder = Pick<LockInfo, "holder" | "hostname" | "pid">;
 
-/**
- * Configuration for the ExtensionAutoResolver.
- */
 export interface ExtensionAutoResolverConfig {
   allowedCollectives: string[];
   extensionLookup: ExtensionLookupPort;
@@ -265,33 +174,23 @@ export interface ExtensionAutoResolverConfig {
   output: AutoResolveOutputPort;
 }
 
-/**
- * Domain service for automatically resolving unknown model/vault types
- * by searching the extension registry, installing matching extensions,
- * and hot-loading them into the live registries.
- */
 export class ExtensionAutoResolver {
   private readonly config: ExtensionAutoResolverConfig;
   /**
-   * Resolutions running now, keyed by type without its leading `@`, so the
-   * two spellings serve's direct-type path tries share one. A caller that
-   * finds its type here awaits it rather than failing (swamp-club#3911).
+   * keyed by type without its leading @ so serve's two spellings share one; a
+   * caller finding its type here awaits it rather than failing
    */
   private readonly inFlight = new Map<string, Promise<boolean>>();
-  /** Set in the async chain of a running resolution. */
   private readonly insideResolution = new AsyncLocalStorage<true>();
   /**
-   * Runs the inspect, install and hot-load of an auto-install, once the
-   * install lock is held. `swamp serve` sets it so an install takes its
-   * turn with the per-run refresh of local models and hot-reload, which
-   * rebundle the same sources (swamp-club#3911).
+   * serve sets it so an install takes its turn with the per-run refresh of
+   * local models and hot-reload, which rebundle the same sources
    */
   private installScheduler: <T>(fn: () => Promise<T>) => Promise<T> = (fn) =>
     fn();
   /**
-   * Collectives already warned about as untrusted this process, so multiple
-   * types from the same untrusted collective surface the
-   * `swamp extension trust add` hint once rather than once per type.
+   * several types from one untrusted collective show the trust hint once, not
+   * once per type
    */
   private readonly warnedUntrusted = new Set<string>();
 
@@ -311,13 +210,9 @@ export class ExtensionAutoResolver {
   }
 
   /**
-   * Describes a type from the registry's published content metadata
-   * without installing anything: the same candidate lookup `resolve`
-   * uses, then the latest version's metadata. Returns null whenever the
-   * answer is unknown — the collective is not trusted (so `resolve` would
-   * refuse it anyway), no extension provides the type, the lookup port
-   * cannot fetch version detail, or the request fails. Callers treat null
-   * as "check after install instead" (swamp-club#3003).
+   * returns null whenever the answer is unknown (untrusted collective, no
+   * provider, no version detail, failed request); callers check after install
+   * instead
    */
   async describeTypeInRegistry(
     normalizedType: string,
@@ -345,13 +240,6 @@ export class ExtensionAutoResolver {
     }
   }
 
-  /**
-   * Attempts to resolve an unknown type by finding and installing
-   * the extension that provides it.
-   *
-   * Returns true if resolution succeeded (extension installed and loaded),
-   * false otherwise.
-   */
   async resolve(normalizedType: string): Promise<boolean> {
     const key = normalizedType.startsWith("@")
       ? normalizedType.slice(1)
@@ -368,7 +256,6 @@ export class ExtensionAutoResolver {
       return await running;
     }
 
-    // Check if the collective is allowlisted
     const collective = this.extractCollective(normalizedType);
     if (!collective) {
       logger.debug`Cannot extract collective from type ${normalizedType}`;
@@ -408,18 +295,10 @@ export class ExtensionAutoResolver {
     }
   }
 
-  /**
-   * Extracts the collective name from a normalized type string.
-   * e.g., "@swamp/aws/ec2/instance" -> "swamp"
-   *        "swamp/echo" -> "swamp"
-   */
   private extractCollective(normalizedType: string): string | undefined {
     return typeCollective(normalizedType);
   }
 
-  /**
-   * Core resolution logic: direct lookup, then search fallback.
-   */
   private async doResolve(
     normalizedType: string,
     collective: string,
@@ -453,16 +332,12 @@ export class ExtensionAutoResolver {
     }
   }
 
-  /**
-   * Installs an extension and hot-loads its models/vaults into live registries.
-   */
   private async installAndLoad(
     extensionName: string,
     normalizedType: string,
   ): Promise<boolean> {
     const { extensionLookup, extensionInstaller, output } = this.config;
 
-    // Get extension info for display
     const extInfo = await extensionLookup.getExtension(extensionName);
     if (!extInfo) return false;
 
@@ -521,19 +396,15 @@ export class ExtensionAutoResolver {
   ): Promise<boolean> {
     const { extensionInstaller, output } = this.config;
 
-    // Inspect the on-disk state before deciding to install. Issue #121
-    // introduced the "never overwrite on-disk extensions without --force"
-    // rule to protect user WIP; swamp-club#133 extended that rule to
-    // cover the truncated case (present but incomplete) with a distinct
-    // error because the misleading "Unknown <kind> type" fallback was
-    // hiding the real cause.
+    // inspect first: on-disk extensions are never overwritten without --force,
+    // and a truncated tree gets its own error because the Unknown type fallback
+    // hid the real cause
     const inspection = await extensionInstaller.inspectInstallation(
       extensionName,
     );
     if (inspection.state === "intact") {
-      // Another process may have installed the extension after this one
-      // loaded its registries: load it before blaming the install
-      // (swamp-club#2571).
+      // another process may have installed the extension after this one loaded
+      // its registries: load it before blaming the install
       const adopted = await this.hotLoadAll();
       if (await extensionInstaller.providesType(normalizedType)) {
         output.installed(
@@ -543,9 +414,9 @@ export class ExtensionAutoResolver {
         );
         return true;
       }
-      // Only blame local edits when a source actually failed to load (or
-      // the adapter cannot tell). An install that loaded cleanly but lacks
-      // the type is usually an older version (swamp-club#2476).
+      // blame local edits only when a source failed to load or the adapter
+      // cannot tell; a clean load that lacks the type is usually an older
+      // version
       if (inspection.loadFailures === false) {
         output.installedWithoutType(
           extensionName,
@@ -570,16 +441,12 @@ export class ExtensionAutoResolver {
       output.legacyInstallation(extensionName, inspection.paths);
       return false;
     }
-    // inspection.state === "missing" — proceed to install. Report the version
-    // that will actually be installed: the lockfile-pinned version when one
-    // exists (the installer honors it), otherwise registry-latest. Without
-    // this the progress line would announce latest while a pinned older
-    // version is what lands (swamp-club#465).
+    // report the lockfile-pinned version the installer honors, else
+    // registry-latest, so the progress line matches what lands
     const versionToInstall = inspection.lockedVersion ?? version;
 
     output.installing(extensionName, versionToInstall, extInfo.description);
 
-    // Install the extension
     let installResult: ExtensionInstallResultInfo | null;
     try {
       installResult = await extensionInstaller.install(extensionName);
@@ -591,12 +458,11 @@ export class ExtensionAutoResolver {
 
     if (!installResult) return false;
 
-    // Hot-load newly installed models, vaults, datastores, and webhooks
     const newModelsCount = await this.hotLoadAll();
 
-    // A direct candidate is matched by name alone, and a lookup without
-    // version detail keeps an unchecked search hit, so the install may not
-    // provide the type: say so rather than claim success (swamp-club#3246).
+    // a direct candidate is matched by name alone and a lookup without version
+    // detail keeps an unchecked hit, so the install may lack the type: say so
+    // rather than claim success
     if (!await extensionInstaller.providesType(normalizedType)) {
       output.installedWithoutType(
         extensionName,
@@ -629,7 +495,6 @@ export class ExtensionAutoResolver {
     );
   }
 
-  /** Hot-loads every kind; returns the number of models loaded. */
   private async hotLoadAll(): Promise<number> {
     const { extensionInstaller } = this.config;
     const newModelsCount = await extensionInstaller.hotLoadModels();
@@ -639,10 +504,6 @@ export class ExtensionAutoResolver {
     return newModelsCount;
   }
 
-  /**
-   * Checks if an error is a network-level error: a registry that could not
-   * answer, or a lookup that failed before reaching one.
-   */
   private isNetworkError(error: unknown): boolean {
     if (error instanceof RegistryUnavailableError) {
       return true;
@@ -663,11 +524,6 @@ export class ExtensionAutoResolver {
   }
 }
 
-/**
- * Returns `latest` when both versions are CalVer and `latest` is newer than
- * `installed`; undefined otherwise, including for grandfathered lockfile
- * entries whose version is missing or not CalVer.
- */
 function newerVersionThan(
   installed: string | undefined,
   latest: string,
@@ -680,10 +536,6 @@ function newerVersionThan(
     : undefined;
 }
 
-/**
- * Extracts the collective name from a normalized type string.
- * e.g., "@swamp/aws/ec2/instance" -> "swamp", "swamp/echo" -> "swamp"
- */
 export function typeCollective(normalizedType: string): string | undefined {
   if (ModelType.isUserNamespace(normalizedType)) {
     return ModelType.getUserNamespace(normalizedType);
@@ -693,14 +545,6 @@ export function typeCollective(normalizedType: string): string | undefined {
   return normalizedType.slice(0, firstSlash);
 }
 
-/**
- * Builds candidate extension names for a type by trying the full type first,
- * then stripping trailing segments.
- * For "@swamp/aws/ec2/instance":
- *   ["@swamp/aws/ec2/instance", "@swamp/aws/ec2", "@swamp/aws"]
- * For "@keeb/mongodb-datastore":
- *   ["@keeb/mongodb-datastore"]
- */
 export function extensionCandidateNames(normalizedType: string): string[] {
   const candidates: string[] = [];
 
@@ -725,15 +569,12 @@ export function extensionCandidateNames(normalizedType: string): string[] {
   return candidates;
 }
 
-/** How many search hits the fallback checks for the type (swamp-club#3246). */
 const SEARCH_CANDIDATE_LIMIT = 5;
 
 /**
- * Whether published content metadata lists `normalizedType` among its
- * models, vaults, datastores or webhooks. Both sides are compared in
- * `ModelType` normalized form: the metadata carries types as written in the
- * extension source (`@acme/Azure.Firewall`), while the resolver receives
- * them normalized (`@acme/azure/firewall`).
+ * metadata carries types as written in source (@acme/Azure.Firewall) while the
+ * resolver has them normalized (@acme/azure/firewall), so both sides are
+ * compared normalized
  */
 export function contentMetadataProvidesType(
   metadata: ExtensionContentMetadata,
@@ -752,7 +593,6 @@ export function contentMetadataProvidesType(
   );
 }
 
-/** The `ModelType` normalized form of `type`, or null when it has none. */
 function normalizedTypeOrNull(type: string): string | null {
   try {
     return ModelType.create(type).normalized;
@@ -762,14 +602,9 @@ function normalizedTypeOrNull(type: string): string | null {
 }
 
 /**
- * Finds the registry extension that provides a type: a direct lookup of each
- * candidate name first, then a search within the type's collective.
- *
- * Search ranks by words, so its hits are only guesses: the fallback returns
- * the highest-ranked hit whose latest version's published metadata lists the
- * type (swamp-club#3246). A lookup that cannot fetch version detail keeps the
- * first hit; the resolver checks the type after install instead.
- * Returns null when neither finds one.
+ * search ranks by words, so hits are guesses: return the top hit whose latest
+ * metadata lists the type; without version detail keep the first hit and check
+ * after install
  */
 export async function findExtensionForType(
   normalizedType: string,
@@ -784,7 +619,6 @@ export async function findExtensionForType(
     }
   }
 
-  // Convert type to search terms: "@swamp/aws/ec2/instance" -> "aws ec2 instance"
   let searchTerms = normalizedType;
   if (searchTerms.startsWith("@")) {
     searchTerms = searchTerms.slice(1);
@@ -819,26 +653,17 @@ export async function findExtensionForType(
   return null;
 }
 
-/**
- * Standalone helper function for resolving model types at choke points.
- *
- * Checks the registry first (sync fast path), then falls back to
- * auto-resolution if a resolver is available.
- */
 export async function resolveModelType(
   type: string | ModelType,
   resolver: ExtensionAutoResolver | null,
 ): Promise<ModelDefinition | undefined> {
-  // Try lazy loading first — the type may be indexed but not imported yet
   await modelRegistry.ensureTypeLoaded(type);
   const def = modelRegistry.get(type);
   if (def) return def;
 
-  // Internal types (swamp/grant, swamp/server-token, etc.) are registered
-  // without the @ prefix, but the CLI prefixes @ for direct type execution.
-  // Check the stripped form against the internal allow list before triggering
-  // auto-resolution — these types are compiled into the binary and must
-  // never cause a registry fetch.
+  // internal types are registered without @ but the CLI adds it; check the
+  // stripped form first since they are compiled in and must never cause a
+  // registry fetch
   const normalized = typeof type === "string"
     ? ModelType.create(type).normalized
     : type.normalized;
@@ -858,17 +683,10 @@ export async function resolveModelType(
   return modelRegistry.get(type);
 }
 
-/**
- * Standalone helper function for resolving vault types at choke points.
- *
- * Checks the vault type registry first (sync fast path), then falls back
- * to auto-resolution if a resolver is available.
- */
 export async function resolveVaultType(
   type: string,
   resolver: ExtensionAutoResolver | null,
 ): Promise<boolean> {
-  // Try lazy loading first — the type may be indexed but not imported yet
   await vaultTypeRegistry.ensureTypeLoaded(type);
   if (vaultTypeRegistry.has(type)) return true;
   if (!resolver) return false;
@@ -877,24 +695,16 @@ export async function resolveVaultType(
   return await resolver.resolve(type);
 }
 
-/**
- * Standalone helper function for resolving datastore types at choke points.
- *
- * Checks the datastore type registry first (sync fast path), then falls back
- * to auto-resolution if a resolver is available.
- */
 export async function resolveDatastoreType(
   type: string,
   resolver: ExtensionAutoResolver | null,
 ): Promise<boolean> {
-  // Try lazy loading first — the type may be indexed but not imported yet
   await datastoreTypeRegistry.ensureTypeLoaded(type);
   if (datastoreTypeRegistry.has(type)) return true;
   if (!resolver) return false;
   if (!type.startsWith("@")) return false;
 
-  // Named: a fresh checkout installs its datastore extension here, on v2
-  // and v3 alike (swamp-club#3803).
+  // named span: a fresh checkout installs its datastore extension here
   return await withSpan(
     "swamp.extension.auto_resolve",
     { "swamp.extension.type": type },
@@ -902,17 +712,10 @@ export async function resolveDatastoreType(
   );
 }
 
-/**
- * Standalone helper function for resolving webhook types at choke points.
- *
- * Checks the webhook type registry first (sync fast path), then falls back
- * to auto-resolution if a resolver is available.
- */
 export async function resolveWebhookType(
   type: string,
   resolver: ExtensionAutoResolver | null,
 ): Promise<boolean> {
-  // Try lazy loading first — the type may be indexed but not imported yet
   await webhookTypeRegistry.ensureTypeLoaded(type);
   if (webhookTypeRegistry.has(type)) return true;
   if (!resolver) return false;

@@ -18,10 +18,8 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * Model type spellings in grants that differ from the spelling types are
- * stored in (swamp-club#3130). A deny matches its type in any spelling; an
- * allow and a condition literal match only as written, so a non-canonical
- * spelling there matches no type. Each finding names the canonical spelling.
+ * a deny matches its type in any spelling; an allow and a condition literal
+ * match only as written, so a non-canonical spelling there matches no type
  */
 
 import {
@@ -38,29 +36,19 @@ import {
   resourceSelectorToString,
 } from "./resource_selector.ts";
 
-/**
- * A string literal a grant condition compares with the resource's type:
- * `modelType` on a model, `name` on an access resource. `exact` for `==`,
- * `!=` and `in`, `prefix` for `startsWith`, `fragment` for `endsWith` and
- * `contains`.
- */
 export interface ConditionTypeLiteral {
   readonly literal: string;
   readonly match: "exact" | "prefix" | "fragment";
 }
 
-/** Reads the type literals of a condition; [] when it cannot be parsed. */
 export type ConditionTypeLiteralReader = (
   condition: string,
   kind: ResourceKind,
 ) => ConditionTypeLiteral[];
 
 export interface GrantSpellingFinding {
-  /** Which part of the grant is spelled non-canonically. */
   readonly part: "selector" | "condition";
-  /** The spelling as written. */
   readonly written: string;
-  /** The spelling types are stored in. */
   readonly canonical: string;
   readonly message: string;
 }
@@ -71,7 +59,6 @@ export interface SpelledGrant {
   readonly condition?: string;
 }
 
-/** Lowercase, with `::`, `.` and whitespace folded to `/`, nothing trimmed. */
 function foldTypeFragment(fragment: string): string {
   return fragment.toLowerCase().replace(/::/g, "/").replace(/\s+/g, "/")
     .replace(/\./g, "/").replace(/\/+/g, "/");
@@ -81,7 +68,6 @@ function stripAt(value: string): string {
   return value.replace(/^[@/]+/, "");
 }
 
-/** Whether a bare prefix (or exact name) names a control-plane type. */
 function namesControlPlaneType(bare: string, prefix: boolean): boolean {
   return CONTROL_PLANE_MODEL_TYPES.some((type) =>
     prefix ? type.startsWith(bare) : type === bare
@@ -89,9 +75,8 @@ function namesControlPlaneType(bare: string, prefix: boolean): boolean {
 }
 
 /**
- * The canonical form of an access selector pattern that names a
- * control-plane type, or null when it names none. Control-plane records are
- * authorized under the bare type (`swamp/grant`), never with an `@`.
+ * control-plane records are authorized under the bare type (swamp/grant), never
+ * with an @
  */
 function canonicalAccessPattern(pattern: string): string | null {
   if (pattern === "*") return null;
@@ -104,9 +89,8 @@ function canonicalAccessPattern(pattern: string): string | null {
 }
 
 /**
- * A value as shown in a finding. Single quotes, so a value with spaces stays
- * visible and log output, which double-quotes the whole message, does not
- * escape them.
+ * single quotes, so a value with spaces stays visible and log output, which
+ * double-quotes the whole message, does not escape them
  */
 function shown(value: string): string {
   return `'${value}'`;
@@ -137,9 +121,9 @@ function selectorFinding(grant: SpelledGrant): GrantSpellingFinding | null {
         shown(canonicalSelector)
       } to grant on those types (as written it matches only ${names})`;
   } else {
-    // A pattern that may be written for model names, which match only as
-    // written: respelling it would drop those models, so a deny is not told
-    // to respell, and an allow is given both readings.
+    // a pattern that may be written for model names matches only as written:
+    // respelling would drop those models, so a deny is not told to respell and
+    // an allow gets both readings
     message = grant.effect === "deny"
       ? `${
         shown(written)
@@ -226,10 +210,6 @@ function conditionFindings(
   return findings;
 }
 
-/**
- * Every non-canonical type spelling in a grant's selector and condition.
- * Without a literal reader only the selector is checked.
- */
 export function findGrantSpellingIssues(
   grant: SpelledGrant,
   readTypeLiterals?: ConditionTypeLiteralReader,

@@ -39,26 +39,18 @@ import {
 import { coerceMethodArgs } from "./zod_type_coercion.ts";
 
 /**
- * The destination policy of a method's arguments
- * (design/enablers/typed-secrets.md Sections 6.3 and 7.1), applied by the
- * method boundary before any secret is loaded. A field a behavior type marks
- * `.meta({ secrets: "refuse" })` takes no secret anywhere in its value; the
- * decision reads the sentinels the run issued, never a value. The metadata
- * sits beside `sensitive`, and the walker that reads one reads the other.
+ * destination policy applied by the method boundary before any secret is
+ * loaded: a field marked secrets: refuse takes no secret anywhere in its value;
+ * the decision reads issued sentinels, never a value
  */
 
 /**
- * A destination that takes no secret was handed one, before any load
- * (design/enablers/typed-secrets.md Sections 6.3 and 7.1). The message
- * names the destination, the reference and where it was written or read,
- * never a value or a sentinel, in the shape every reference error takes:
- * `<what failed> (at <path>): <reason>`. The code is the stable
- * `secret_destination_refused` an expression refusal carries, in the text
- * too: a boundary that rewraps the error keeps its message, not its class.
+ * the message names destination, reference and location, never a value or
+ * sentinel. The stable code secret_destination_refused is in the text too,
+ * since a rewrapping boundary keeps the message, not the class.
  */
 export class SecretDestinationRefusedError extends UserError {
   constructor(
-    /** The destination as a user reads it: `method argument 'workingDir'`. */
     readonly destination: string,
     /** The secret's reference; absent for an entry a worker rebuilt. */
     readonly reference: SecretReference | undefined,
@@ -78,7 +70,6 @@ export class SecretDestinationRefusedError extends UserError {
   }
 }
 
-/** The one value of the `secrets` metadata key: the field refuses secrets. */
 export const REFUSE_SECRETS = "refuse";
 
 /**
@@ -94,10 +85,6 @@ function isSensitive(meta: FieldMetadata): boolean {
   return Boolean(meta.sensitive);
 }
 
-/**
- * The first sentinel of the run anywhere in `value`, at any depth. A value
- * that contains itself is entered once.
- */
 function firstOccurrenceIn(
   value: unknown,
   secrets: SecretOccurrences,
@@ -116,12 +103,9 @@ function firstOccurrenceIn(
 }
 
 /**
- * Refuses a secret of the run anywhere in a value under a field `schema`
- * marks `.meta({ secrets: "refuse" })`: a scalar, a nested field, a list or
- * map element, or text composed around a sentinel, found by the same walk
- * that finds sensitive fields. A sentinel-shaped string the run did not
- * issue is ordinary data. `where` names the destination family in the
- * error, as in `method argument 'workingDir'`.
+ * refuses a run secret anywhere in a value under a refusing field, including
+ * text composed around a sentinel. A sentinel-shaped string the run did not
+ * issue is ordinary data.
  */
 export function refuseSecretsInRefusingFields(
   schema: z.ZodTypeAny,
@@ -152,13 +136,9 @@ export function refuseSecretsInRefusingFields(
 }
 
 /**
- * Fails when a field of `schema` is marked both `sensitive` and
- * `secrets: "refuse"`, read across the field's whole wrapper chain, with a
- * union or intersection member read as part of its field. A list element or
- * a record value is a field of its own, so a `sensitive` list whose elements
- * refuse is two fields, not one conflict. A sensitive field is delivered to a
- * vault; a refusing field never receives a secret; one field cannot be both,
- * so the schema is wrong. `owner` says whose schema, for the message.
+ * fails when one field is both sensitive and secrets: refuse, since a sensitive
+ * field goes to a vault and a refusing field never receives a secret. List
+ * elements and record values are fields of their own.
  */
 export function assertNoSensitiveRefuseConflict(
   schema: z.ZodTypeAny | undefined,
@@ -182,10 +162,6 @@ export function assertNoSensitiveRefuseConflict(
   }
 }
 
-/**
- * Checks every argument schema of a behavior type at registration, so a
- * conflicting schema fails before the type can run.
- */
 export function assertModelSecretsMetadataValid(
   model: Pick<ModelDefinition, "type" | "globalArguments" | "methods">,
 ): void {
@@ -202,7 +178,6 @@ export function assertModelSecretsMetadataValid(
   }
 }
 
-/** What one delivery attempt refuses before it loads anything. */
 export interface SecretDestinationStage {
   modelDef: ModelDefinition;
   /**
@@ -211,13 +186,11 @@ export interface SecretDestinationStage {
    * are then checked.
    */
   method?: MethodDefinition;
-  /** The definition's global arguments as written, sentinels in place. */
   globalArguments: Record<string, unknown>;
   /**
-   * The method's arguments as `unresolvedMethodArgs` carries them: the raw
-   * method arguments over the raw global arguments that hold no unresolved
-   * expression, built by the boundary. The stage coerces them as validation
-   * will before any policy reads them.
+   * raw method arguments over raw global arguments holding no unresolved
+   * expression; the stage coerces them as validation will before any policy
+   * reads them
    */
   mergedArguments: Record<string, unknown>;
   registry: SecretBagRegistry;
@@ -226,21 +199,16 @@ export interface SecretDestinationStage {
 }
 
 /**
- * The destination stage of a delivery attempt (Section 6.3, before the
- * load): a secret in a refusing global argument, then in a refusing field of
- * the merged arguments the method will see (a superset of what its schema
- * validates for a record-schema method, erring toward refusal, since the
- * method still receives the merge through `unresolvedMethodArgs`), then the
- * method's own `refuseSecretDestinations` hook, for local placement only. A
- * run that issued no sentinel has nothing to refuse.
+ * refuses a secret in a refusing global argument, then in a refusing field of
+ * the merged arguments (a superset of the schema, erring toward refusal), then
+ * via the method's hook for local placement. No sentinel, nothing to refuse.
  */
 export function refuseSecretDestinations(stage: SecretDestinationStage): void {
   if (stage.registry.isEmpty) return;
   const secrets = secretOccurrencesOf(stage.registry);
-  // Read as validation will: an argument authored as a JSON string for an
-  // object, record or list field is parsed by `coerceMethodArgs` before Zod
-  // sees it, so a sentinel it holds, in a key or a value, is read here too.
-  // Sentinels hold only JSON-safe characters, so parsing keeps them intact.
+  // read as validation will: JSON-string arguments are parsed before Zod sees
+  // them, so a sentinel inside is read too; sentinels hold only JSON-safe
+  // characters, so parsing keeps them intact
   const globalArguments = stage.modelDef.globalArguments
     ? coerceMethodArgs(stage.globalArguments, stage.modelDef.globalArguments)
     : stage.globalArguments;

@@ -45,7 +45,6 @@ const arbChunk = fc.oneof(
   ),
 );
 
-/** Escapes text so it is the body of a template literal, with no interpolation. */
 function templateBody(text: string): string {
   return text.replace(/[\\`]/g, "\\$&").replace(/\$\{/g, "\\${");
 }

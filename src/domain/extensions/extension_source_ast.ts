@@ -18,29 +18,23 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * Parsing and syntax-tree helpers shared by the extension safety rules that
- * read source as code rather than text (`dynamic_code_detector.ts`,
- * `deno_command_detector.ts`). Extension source is parsed once with the
- * shared configuration (`parseExtensionModule`); a file that does not parse
- * yields `null`, and each rule falls back to its own text check.
+ * a file that does not parse yields null, and each rule falls back to its own
+ * text check
  */
 
 import { parseExtensionModule } from "@swamp-club/extension-scoring/source";
 
-/** The parts of a Babel AST node the safety rules read. */
 export interface AstNode {
   type: string;
   [key: string]: unknown;
 }
 
-/** A node on the walk stack, linked to its parent. */
 export interface Visit {
   node: AstNode;
   key: string;
   parent: Visit | null;
 }
 
-// Global objects: a member of one is a global (`globalThis.eval`).
 const GLOBAL_OBJECTS = new Set([
   "globalThis",
   "window",
@@ -53,7 +47,6 @@ const GLOBAL_OBJECTS = new Set([
 
 export const MAX_CHAIN = 64;
 
-// Keys that hold TypeScript types, which are erased at runtime.
 const TYPE_KEYS = new Set([
   "typeAnnotation",
   "returnType",
@@ -64,7 +57,6 @@ const TYPE_KEYS = new Set([
   "predicate",
 ]);
 
-// Keys that never hold child nodes worth walking.
 const SKIP_KEYS = new Set([
   "loc",
   "start",
@@ -78,10 +70,9 @@ const SKIP_KEYS = new Set([
   "tokens",
 ]);
 
-// TypeScript nodes with no runtime code. Every other node, including TS
-// nodes not listed here, is walked, so an unknown node resolves toward
-// flagging. TSQualifiedName is deliberately absent: `import e = a.b` is a
-// runtime assignment, and inside types it sits under a skipped node anyway.
+// every node not listed is walked, so an unknown node resolves toward flagging;
+// TSQualifiedName is absent on purpose: `import e = a.b` is a runtime
+// assignment
 const TYPE_ONLY_NODES = new Set([
   "TSInterfaceDeclaration",
   "TSTypeAliasDeclaration",
@@ -118,17 +109,10 @@ export function isNode(value: unknown): value is AstNode {
 
 function isTypeOnly(node: AstNode): boolean {
   if (TYPE_ONLY_NODES.has(node.type)) return true;
-  // The remaining type nodes: TSStringKeyword, TSUnionType, TSFunctionType
-  // and so on. Runtime TS nodes are expressions or declarations.
   return node.type.startsWith("TS") &&
     (node.type.endsWith("Type") || node.type.endsWith("Keyword"));
 }
 
-/**
- * Parses extension source as a module, or returns null when it does not
- * parse. `path` picks the syntax (see `parseExtensionModule`); without one
- * the source is read as TypeScript.
- */
 export function parseExtensionSource(
   source: string,
   options?: { path?: string },
@@ -136,20 +120,15 @@ export function parseExtensionSource(
   return parseModule(source, options)?.program ?? null;
 }
 
-/** A comment the parser found, and where it starts. */
 export interface SourceComment {
-  /** `CommentLine` for `// ...`, `CommentBlock` for a block comment. */
   type: string;
-  /** The text after `//`, or between the block comment's delimiters. */
   value: string;
-  /** The 0-based offset of the comment's first character in the source. */
   start: number;
 }
 
 /**
- * Parses source as {@link parseExtensionSource} does, and also returns the
- * comments the parser found, so a caller can tell a real comment from
- * comment-like text inside a string or template literal.
+ * also returns the parser's comments so a caller can tell a real comment from
+ * comment-like text inside a string or template literal
  */
 export function parseExtensionSourceWithComments(
   source: string,
@@ -220,14 +199,12 @@ export function isCall(node: AstNode | undefined): boolean {
     node?.type === "OptionalCallExpression";
 }
 
-/** The name of a non-computed member's property, or a literal computed key. */
 export function memberName(member: AstNode | undefined): string | undefined {
   const property = child(member, "property");
   if (member?.computed === true) return literalKey(property);
   return property?.type === "Identifier" ? str(property, "name") : undefined;
 }
 
-/** A string literal, or a template literal with no substitutions. */
 export function literalKey(node: AstNode | undefined): string | undefined {
   if (!node) return undefined;
   if (node.type === "StringLiteral") return str(node, "value");
@@ -245,7 +222,6 @@ export function literalKey(node: AstNode | undefined): string | undefined {
   return undefined;
 }
 
-/** Strips TS casts and parentheses: `(globalThis as any)` → `globalThis`. */
 export function unwrap(node: AstNode | undefined): AstNode | undefined {
   let current = node;
   for (let i = 0; i < MAX_CHAIN && current; i++) {
@@ -255,15 +231,10 @@ export function unwrap(node: AstNode | undefined): AstNode | undefined {
   return current;
 }
 
-/** The name is a global object's (`globalThis`, `self`, `window`, ...). */
 export function isGlobalName(name: string | undefined): boolean {
   return name !== undefined && GLOBAL_OBJECTS.has(name);
 }
 
-/**
- * The expression is a global object: a global name, a cast of one, or a
- * chain of them (`globalThis.self`).
- */
 export function isGlobalObject(node: AstNode | undefined): boolean {
   let current = unwrap(node);
   for (let i = 0; i < MAX_CHAIN && current; i++) {
@@ -286,7 +257,6 @@ export type Role =
   | "label"
   | "reference";
 
-/** How an identifier is used. */
 export function identifierRole(visit: Visit): Role {
   const parent = visit.parent?.node;
   const key = visit.key;
@@ -350,7 +320,6 @@ export function identifierRole(visit: Visit): Role {
   return "reference";
 }
 
-/** The identifier is the operand of `typeof`. */
 export function isTypeofOperand(visit: Visit): boolean {
   const parent = visit.parent?.node;
   return parent?.type === "UnaryExpression" && visit.key === "argument" &&
@@ -358,10 +327,8 @@ export function isTypeofOperand(visit: Visit): boolean {
 }
 
 /**
- * Walks every runtime node of `program` depth-first, calling `visit` on each
- * with its parent chain. TypeScript type nodes are skipped. The walk uses an
- * explicit stack, because `extension pull` runs it on untrusted archive
- * sources.
+ * uses an explicit stack because extension pull runs it on untrusted archive
+ * sources
  */
 export function walkRuntimeNodes(
   program: AstNode,
@@ -389,12 +356,9 @@ export function walkRuntimeNodes(
 }
 
 /**
- * Positions of `source` by `\n` alone. Babel also breaks lines at `\r`,
- * U+2028 and U+2029, but the analyzer, the other line checks and the
- * acceptance parser split on `\n`, so a line comes from an offset here
- * rather than from Babel's `loc`, or a file saved with other line
- * terminators could move a finding or a comment-site barrier off its line
- * or past the last one.
+ * lines break on \n alone, as in the analyzer, other line checks and acceptance
+ * parser, so a file with other terminators cannot move a finding or
+ * comment-site barrier off its line
  */
 export class LineIndex {
   private readonly newlines: number[] = [];
@@ -409,9 +373,7 @@ export class LineIndex {
     }
   }
 
-  /** The 1-based line and column of a 0-based offset. */
   position(offset: number): { line: number; column: number } {
-    // The number of newlines before `offset`.
     let low = 0;
     let high = this.newlines.length;
     while (low < high) {

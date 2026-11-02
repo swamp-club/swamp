@@ -25,24 +25,16 @@ import type { UnifiedDataRepository } from "../data/repositories.ts";
 import type { DefinitionRepository } from "../definitions/repositories.ts";
 import { resolveExtensionFile } from "../extensions/extension_file_resolver.ts";
 
-/**
- * Base fields shared by all report contexts.
- */
 interface BaseReportContext {
   repoDir: string;
   logger: Logger;
   dataRepository: UnifiedDataRepository;
   definitionRepository: DefinitionRepository;
-  /** The git commit sha of the swamp repo at execution time */
   swampSha?: string;
 
   /**
-   * Redacts fields marked `{ sensitive: true }` in the model type's Zod schema.
-   * Returns a deep clone with sensitive values replaced by "***".
-   * If the model type has no schema, returns args unchanged.
-   *
-   * @param args - The arguments object to redact
-   * @param argsKind - Which schema to use: "global" or "method"
+   * returns a deep clone with sensitive values replaced by ***; args are
+   * returned unchanged when the model type has no schema
    */
   redactSensitiveArgs?(
     args: Record<string, unknown>,
@@ -50,10 +42,6 @@ interface BaseReportContext {
   ): Record<string, unknown>;
 }
 
-/**
- * Lightweight description of a data output spec for report consumers.
- * Mirrors the shape produced by `toMethodDescribeData()` in schema_helpers.
- */
 export interface OutputSpecInfo {
   specName: string;
   kind: "resource" | "file";
@@ -62,9 +50,6 @@ export interface OutputSpecInfo {
   contentType?: string;
 }
 
-/**
- * Context provided to method-scope reports.
- */
 export interface MethodReportContext extends BaseReportContext {
   scope: "method";
   modelType: ModelType;
@@ -81,28 +66,20 @@ export interface MethodReportContext extends BaseReportContext {
   executionStatus: "succeeded" | "failed";
   errorMessage?: string;
   dataHandles: DataHandle[];
-  /** Output spec schemas from the model type definition. */
   outputSpecs?: OutputSpecInfo[];
   /**
-   * What the run recorded about where it came from: the definition hash,
-   * model version, trigger, initiator and, for a workflow step, the
-   * workflow run and step. The same record `swamp behavior history get`
-   * shows (swamp-club#3722).
+   * where the run came from: definition hash, model version, trigger, initiator
+   * and, for a workflow step, the workflow run and step; the same record swamp
+   * behavior history get shows
    */
   provenance?: ExecutionProvenance;
   /**
-   * Resolve a path to an asset declared in the extension's
-   * `additionalFiles` manifest field. Same semantics as
-   * `MethodContext.extensionFile`. Always populated by
-   * `buildMethodReportContext`; throws a typed `UserError` at call time
-   * when the model is not shipped via an extension manifest.
+   * behaves like MethodContext.extensionFile; throws a typed UserError at
+   * call time when the model is not shipped via an extension manifest
    */
   extensionFile: (relPath: string) => string;
 }
 
-/**
- * Context provided to model-scope reports.
- */
 export interface ModelReportContext extends BaseReportContext {
   scope: "model";
   modelType: ModelType;
@@ -119,34 +96,25 @@ export interface ModelReportContext extends BaseReportContext {
   executionStatus: "succeeded" | "failed";
   errorMessage?: string;
   dataHandles: DataHandle[];
-  /** Output spec schemas from the model type definition. */
   outputSpecs?: OutputSpecInfo[];
   /**
-   * What the run recorded about where it came from: the definition hash,
-   * model version, trigger, initiator and, for a workflow step, the
-   * workflow run and step. The same record `swamp behavior history get`
-   * shows (swamp-club#3722).
+   * where the run came from: definition hash, model version, trigger, initiator
+   * and, for a workflow step, the workflow run and step; the same record swamp
+   * behavior history get shows
    */
   provenance?: ExecutionProvenance;
 }
 
 /**
- * Why a step did not run, as reports see it.
- *
- * Structurally identical to `StepSkipReasonData`, which the workflows
- * bounded context owns. It is restated here rather than imported because
- * workflows already depends on reports, and the reverse edge would close a
- * cycle the architecture ratchet rejects — this is the published language
- * between the two, not a second definition of the concept.
+ * restated rather than imported from workflows' StepSkipReasonData, because
+ * workflows already depends on reports and the reverse edge would close a cycle
+ * the architecture ratchet rejects
  */
 export interface StepSkipReasonInfo {
   kind: "dependency" | "guarded" | "job_skipped";
   expression?: string;
 }
 
-/**
- * Context provided to workflow-scope reports.
- */
 export interface WorkflowReportContext extends BaseReportContext {
   scope: "workflow";
   workflowId: string;
@@ -168,26 +136,18 @@ export interface WorkflowReportContext extends BaseReportContext {
     globalArgs: Record<string, unknown>;
     errorMessage?: string;
     /**
-     * Why the step did not run. Populated only when `status` is `skipped`;
-     * a report that prints a bare skip count cannot tell a guard-excluded
-     * step from a deselected one without it.
+     * populated only when status is skipped; without it a report's skip count
+     * cannot tell a guard-excluded step from a deselected one
      */
     skipReason?: StepSkipReasonInfo;
   }>;
 }
 
-/**
- * Discriminated union of all report context types.
- */
 export type ReportContext =
   | MethodReportContext
   | ModelReportContext
   | WorkflowReportContext;
 
-/**
- * Common dependencies shared across all MethodReportContext construction sites.
- * These come from the runtime environment (repositories, logging, repo path).
- */
 export interface CommonReportContextDeps {
   repoDir: string;
   logger: Logger;
@@ -196,9 +156,6 @@ export interface CommonReportContextDeps {
   swampSha?: string;
 }
 
-/**
- * Per-invocation data specific to a single method execution.
- */
 export interface MethodReportInvocation {
   modelType: ModelType;
   modelId: string;
@@ -215,18 +172,13 @@ export interface MethodReportInvocation {
   errorMessage?: string;
   dataHandles: DataHandle[];
   outputSpecs?: OutputSpecInfo[];
-  /** The run's recorded provenance, taken from its ModelOutput. */
   provenance: ExecutionProvenance;
   extensionFilesRoot?: string;
 }
 
 /**
- * Single factory for MethodReportContext construction. All production sites
- * must route through this function — the architecture guard test in
- * report_context_arch_test.ts enforces this.
- *
- * Note: `redactSensitiveArgs` is deliberately absent from both input types.
- * It is injected after construction by the report execution service.
+ * all production sites route through this; redactSensitiveArgs is absent from
+ * the input types and injected afterward by the report execution service
  */
 export function buildMethodReportContext(
   common: CommonReportContextDeps,

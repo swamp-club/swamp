@@ -225,7 +225,6 @@ Deno.test("DuplicateTypeUserError: unsettled message says the next install or re
       "finish: the next `swamp extension` install or removal will finish it, " +
       `or name the install journal to resolve by hand. ${RM_RECOVERY}`,
   );
-  // The lockfile path is in the JSON outcome, not the log-mode message.
   assertEquals(err.message.includes(lockfilePath), false);
   assertEquals(err.rollback, rollback);
   assertEquals(err.rolledBack, false);
@@ -266,8 +265,6 @@ Deno.test("DuplicateTypeUserError: marks both canonical paths (swamp-club#2830)"
   ]);
 });
 
-// -- swamp-club#2876: occupants with no extension identity ---------------
-
 const UNATTRIBUTED = {
   extensionName: "",
   extensionVersion: "",
@@ -307,7 +304,6 @@ Deno.test("DuplicateTypeUserError: an unattributed occupant gets no empty extens
   );
   assert(!err.message.includes("swamp extension rm"));
   assert(!err.message.includes(" @ at "));
-  // The JSON fields keep their shape.
   assertEquals(err.existing.extensionName, "");
 });
 

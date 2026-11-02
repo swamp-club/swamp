@@ -212,15 +212,12 @@ Deno.test("reliesOnVaultFallback: true only when a sensitive output names no vau
     ]),
     false,
   );
-  // An empty override name is ignored, so the field still falls back.
   assertEquals(
     reliesOnVaultFallback({ c: spec(unnamedField) }, [
       { specName: "c", vaultName: "" },
     ]),
     true,
   );
-  // A sensitiveOutput spec falls back for the fields only known at write time,
-  // even when every declared sensitive field names its own vault.
   assertEquals(
     reliesOnVaultFallback(
       { c: spec(namedField, { sensitiveOutput: true }) },

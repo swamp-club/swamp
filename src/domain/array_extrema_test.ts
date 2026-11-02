@@ -20,7 +20,7 @@
 import { assertEquals } from "@std/assert";
 import { maxOf, minOf } from "./array_extrema.ts";
 
-/** Above the ~125k-element ceiling where `Math.max(...values)` throws. */
+/** above the element count where Math.max(...values) throws */
 const LARGE = 200_000;
 
 Deno.test("maxOf: returns undefined for no values", () => {

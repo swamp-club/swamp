@@ -52,8 +52,8 @@ Deno.test("isZodSchemaLike: rejects null, undefined, primitives", () => {
 Deno.test("isZodSchemaLike: rejects plain objects without zod shape", () => {
   assertEquals(isZodSchemaLike({}), false);
   assertEquals(isZodSchemaLike({ type: "string" }), false);
-  assertEquals(isZodSchemaLike({ parse: () => {} }), false); // missing _def
-  assertEquals(isZodSchemaLike({ _def: {} }), false); // missing parse/safeParse
+  assertEquals(isZodSchemaLike({ parse: () => {} }), false);
+  assertEquals(isZodSchemaLike({ _def: {} }), false);
 });
 
 Deno.test("isZodSchemaLike: rejects when parse/safeParse are not functions", () => {

@@ -17,18 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Environment snapshot for remote dispatch (see design/enablers/remote-execution.md,
- * "The execution environment").
- *
- * The orchestrator snapshots its environment and ships it with every
- * dispatch; the worker overlays it onto its own base environment for the
- * duration of the step. A fixed denylist of process-identity and
- * host-runtime variables is never shipped — those describe *where the
- * process is running*, which is precisely what remote execution changes.
- * The denylist is pinned here and versioned with REMOTE_PROTOCOL_VERSION.
- */
-
 import { NESTED_GATE_PASS_ENV } from "../auth/nested_gate_pass.ts";
 import {
   SWAMP_LOCK_ANCESTOR_PIDS,
@@ -36,10 +24,8 @@ import {
   SWAMP_LOCK_HOLDER_TOKENS,
 } from "../datastore/lock_holder_marker.ts";
 
-/** An immutable name→value capture of environment variables. */
 export type EnvironmentSnapshot = Readonly<Record<string, string>>;
 
-// W3C trace context variables. A process started with these joins that trace.
 const TRACE_CONTEXT_VARS: readonly string[] = ["TRACEPARENT", "TRACESTATE"];
 
 // Worker control-plane credentials that must never reach a dispatch runner.
@@ -81,9 +67,8 @@ const DENYLIST_PREFIXES: readonly string[] = [
 ];
 
 /**
- * True when an environment variable must never be shipped to a worker.
- * Names compare case-insensitively because Windows environment variable
- * names are case-insensitive.
+ * names compare case-insensitively because Windows environment variable names
+ * are
  */
 export function isDeniedEnvVar(name: string): boolean {
   const upper = name.toUpperCase();
@@ -94,10 +79,8 @@ export function isDeniedEnvVar(name: string): boolean {
 }
 
 /**
- * Capture a shippable snapshot of the given environment, dropping every
- * denylisted variable. With an `allow` list (serve's `dispatch-env-allow`),
- * only the named variables ship, still minus the denylist; an empty list
- * ships nothing. Names compare case-insensitively, like the denylist.
+ * an allow list ships only the named variables, still minus the denylist; an
+ * empty list ships nothing; names compare case-insensitively
  */
 export function captureEnvironmentSnapshot(
   env: Record<string, string>,
@@ -117,9 +100,8 @@ export function captureEnvironmentSnapshot(
 }
 
 /**
- * Parse serve's comma-separated `dispatch-env-allow` value. Undefined means
- * the option is unset (the full snapshot ships); an empty value is an
- * empty allowlist (nothing ships).
+ * undefined means the option is unset (the full snapshot ships); an empty value
+ * is an empty allowlist (nothing ships)
  */
 export function parseDispatchEnvAllow(
   raw: string | undefined,
@@ -130,10 +112,6 @@ export function parseDispatchEnvAllow(
   );
 }
 
-/**
- * Strip worker control-plane credentials from an environment record so they
- * are not inherited by dispatch runner child processes.
- */
 export function stripWorkerCredentials(
   env: Record<string, string>,
 ): Record<string, string> {
@@ -147,11 +125,8 @@ export function stripWorkerCredentials(
 }
 
 /**
- * Strip inherited W3C trace context (`TRACEPARENT`, `TRACESTATE`, matched
- * case-insensitively) from an environment record. A dispatch runner joins a
- * trace only through its dispatch's own trace headers; context inherited from
- * the worker's environment, or from an orchestrator that still ships it,
- * would put every untraced dispatch into one long-lived trace.
+ * a runner joins a trace only through its dispatch's own trace headers;
+ * inherited context would put every untraced dispatch into one long-lived trace
  */
 export function stripInheritedTraceContext(
   env: Record<string, string>,
@@ -167,38 +142,14 @@ export function stripInheritedTraceContext(
 
 const SWAMP_PREFIX = "SWAMP_";
 
-/**
- * True when an environment variable is a SWAMP_* runtime variable.
- * Used by {@link createSafeMethodEnv} to strip swamp auth and config
- * vars from the environment inherited by method-spawned child processes.
- */
 export function isSwampEnvVar(name: string): boolean {
   return name.toUpperCase().startsWith(SWAMP_PREFIX);
 }
 
 /**
- * The SWAMP_* variables a method child may inherit, because a swamp it runs
- * needs them to act as a nested swamp under this one. None is a
- * credential: the account key, its file and its signin token stay stripped
- * (swamp-club#2032).
- *
- * - SWAMP_NESTED_GATE_PASS: this run's signed proof and pid, so a nested
- *   swamp passes the auth gate without a key (design/surfaces/auth-gate.md,
- *   "Nested runs").
- * - SWAMP_LOCK_ANCESTOR_PIDS: the pids of every swamp above the child,
- *   ending with this one, so a nested swamp skips the per-model locks they
- *   hold instead of waiting on them.
- * - SWAMP_LOCK_HOLDER_PID: the pid of the nearest swamp that has taken a
- *   per-model lock (this one once it has, else the value it inherited), for
- *   older nested swamps that read only this name.
- * - SWAMP_LOCK_HOLDER_TOKENS: the locks held for the run that started the
- *   child, by those swamps or handed to them over a worker dispatch or a
- *   `--server` request. The child skips exactly these, so it still waits on
- *   those swamps' other runs' locks. Inherited here; the shell model adds
- *   this run's own entry per spawn.
- *
- *   All three: design/enablers/datastores.md, "Parent-Process Lock
- *   Awareness". A fitness test pins the list.
+ * SWAMP_* variables a nested swamp needs to act under this one; none is a
+ * credential, so the account key, its file and signin token stay stripped; a
+ * fitness test pins the list
  */
 export const NESTED_SWAMP_ENV_VARS: readonly string[] = [
   NESTED_GATE_PASS_ENV,
@@ -208,16 +159,9 @@ export const NESTED_SWAMP_ENV_VARS: readonly string[] = [
 ];
 
 /**
- * Build a safe environment for child processes spawned by method code
- * (the shell model, or extension code using Deno.Command directly).
- *
- * Strips all SWAMP_* variables — auth tokens, server URLs, worker
- * credentials, and config overrides — so external tools never inherit
- * swamp's own credentials. Process-identity vars (HOME, PATH, SHELL, …)
- * are preserved because the child runs on the same host.
- *
- * Pass `allow` to opt specific SWAMP_* names back in when a child
- * genuinely needs one (exact, case-sensitive match).
+ * strips all SWAMP_* so external tools never inherit swamp credentials;
+ * identity vars (HOME, PATH) stay; allow opts names back in by exact,
+ * case-sensitive match
  */
 export function createSafeMethodEnv(
   env: Record<string, string>,
@@ -234,10 +178,8 @@ export function createSafeMethodEnv(
 }
 
 /**
- * Overlay a shipped snapshot onto a worker's base environment. The snapshot
- * wins for every variable it carries; denylisted names are dropped even if a
- * (non-conforming) peer shipped them, so the worker host's own values always
- * survive for process-identity variables.
+ * the snapshot wins, but denylisted names are dropped even if a non-conforming
+ * peer shipped them, so the worker host's own identity values survive
  */
 export function overlayEnvironment(
   base: Record<string, string>,

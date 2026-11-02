@@ -30,7 +30,6 @@ import {
 
 const REF = { vaultName: "v", key: "k" };
 
-/** Refusing fields inside list elements and record values, beside a free one. */
 const schema = z.object({
   items: z.array(
     z.object({ x: z.string().meta({ secrets: "refuse" }), y: z.string() }),
@@ -55,7 +54,6 @@ interface Slot {
   set: (args: Args, value: string) => void;
 }
 
-/** Every string slot of `args`, saying whether its field refuses secrets. */
 function slotsOf(args: Args): Slot[] {
   const slots: Slot[] = [{ refusing: false, set: (a, v) => a.free = v }];
   args.items.forEach((_, i) => {

@@ -21,12 +21,6 @@ import { assert, assertEquals, assertThrows } from "@std/assert";
 import fc from "fast-check";
 import { coerceModelType, ModelType } from "./model_type.ts";
 
-/**
- * A deliberately wide alphabet: letters in both cases, digits, hyphens,
- * underscores, '@', every separator the normalizer collapses ('/', '.', ':',
- * space, tab, newline) and a handful of non-ASCII characters (including
- * 'İ', whose lowercase form expands to two code points).
- */
 const WIDE_CHARS = [
   ..."abcdefghijklmnopqrstuvwxyz",
   ..."ABCDEFGHIJKLMNOPQRSTUVWXYZ",
@@ -52,27 +46,23 @@ const ALNUM_CHARS = [
   ..."0123456789",
 ];
 
-/** Arbitrary strings over the wide alphabet — no filter, anything goes. */
 const arbWideString = fc.stringOf(fc.constantFrom(...WIDE_CHARS), {
   maxLength: 24,
 });
 
 /**
- * Strings guaranteed to survive normalization: an alphanumeric character is
- * spliced into the middle, so the normalized form can never be empty. This
- * replaces the old filter that re-implemented the production normalize regex.
+ * an alphanumeric character is spliced into the middle so the normalized form
+ * is never empty
  */
 const arbNormalizableInput = fc
   .tuple(arbWideString, fc.constantFrom(...ALNUM_CHARS), arbWideString)
   .map(([prefix, alnum, suffix]) => prefix + alnum + suffix);
 
-/** Strings made only of characters the normalizer collapses to separators. */
 const arbSeparatorOnlyString = fc.stringOf(
   fc.constantFrom("/", ".", " ", "\t", "\n"),
   { minLength: 1, maxLength: 12 },
 );
 
-/** A path segment with no separator characters in it. */
 const arbSegment = fc.stringOf(fc.constantFrom(...ALNUM_CHARS, "-", "_"), {
   minLength: 1,
   maxLength: 10,
@@ -106,7 +96,6 @@ Deno.test("property: normalization is idempotent", () => {
       const first = ModelType.create(s);
       const second = ModelType.create(first.normalized);
       assertEquals(second.normalized, first.normalized);
-      // A third pass cannot drift either.
       assertEquals(
         ModelType.create(second.normalized).normalized,
         first.normalized,
@@ -138,7 +127,6 @@ Deno.test("property: equality is by normalized form", () => {
       const mtA = ModelType.create(a);
       const mtB = ModelType.create(b);
       assertEquals(mtA.equals(mtB), mtA.normalized === mtB.normalized);
-      // Equality survives re-normalizing either side.
       assertEquals(mtA.equals(ModelType.create(mtA.normalized)), true);
     }),
     { numRuns: 300 },
@@ -158,7 +146,6 @@ Deno.test("property: toNormalized and toDirectoryPath match normalized", () => {
       assertEquals(mt.toNormalized(), mt.normalized);
       assertEquals(mt.toDirectoryPath(), mt.normalized);
       assertEquals(mt.toString(), mt.raw);
-      // coerceModelType is the identity on an existing ModelType.
       assertEquals(coerceModelType(mt), mt);
       assertEquals(coerceModelType(s).normalized, mt.normalized);
     }),
@@ -189,8 +176,6 @@ Deno.test("property: getSegmentCount ignores empty segments and the '@' prefix",
         const joined = segments.join("/");
         const noisy = `/${segments.join("//")}/`;
         assertEquals(ModelType.getSegmentCount(noisy), segments.length);
-        // "@ns/a" and "ns/a" have the same segment count — the '@' marks the
-        // namespace, it is not a segment of its own.
         assertEquals(
           ModelType.getSegmentCount(`@${joined}`),
           ModelType.getSegmentCount(joined),
@@ -231,7 +216,6 @@ Deno.test("property: getUserNamespace is undefined without an '@' prefix", () =>
 });
 
 Deno.test("property: getUserNamespace of a bare '@' is the empty string", () => {
-  // Documents the edge: "@" is a user namespace with an empty namespace name.
   assertEquals(ModelType.getUserNamespace("@"), "");
   assertEquals(ModelType.getSegmentCount("@"), 0);
 });
@@ -280,7 +264,6 @@ Deno.test("property: isReservedCollective matches whole segments only", () => {
       arbSegment,
       fc.array(arbSegment, { maxLength: 2 }),
       (reserved, suffix, rest) => {
-        // "swampish/foo" is not reserved — only an exact first segment is.
         const extended = `${reserved}${suffix}`;
         fc.pre(extended !== "swamp" && extended !== "si");
         assertEquals(

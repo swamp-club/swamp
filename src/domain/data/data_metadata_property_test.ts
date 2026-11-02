@@ -34,7 +34,6 @@ const UNITS = ["h", "m", "d", "w", "mo", "y"] as const;
 
 const arbUnit = fc.constantFrom(...UNITS);
 
-/** Suffixes that are not duration units. */
 const arbNonUnit = fc
   .stringOf(fc.constantFrom(..."xqzbkv".split("")), {
     minLength: 1,
@@ -182,7 +181,6 @@ Deno.test("property: bare numbers and bare units pass through unchanged", () => 
   );
 });
 
-/** Every garbage collection policy the schema accepts. */
 const arbGarbageCollection = fc.oneof(
   fc.integer({ min: 1, max: Number.MAX_SAFE_INTEGER }),
   fc.tuple(fc.integer({ min: 1, max: 99999 }), arbUnit).map(([n, unit]) =>

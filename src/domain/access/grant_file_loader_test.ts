@@ -134,7 +134,7 @@ Deno.test("checkServeGrantFiles: an invalid entry is an error, a misspelled type
     const check = checkServeGrantFiles(
       await readServeGrantFiles(repoDir, OPTIONS),
     );
-    // Forward slashes on every platform, Windows included (swamp-club#3245).
+    // forward slashes on every platform, Windows included
     assertEquals(check.errors.map((e) => e.file), ["grants/bad.yaml"]);
     assertEquals(check.warnings.length, 1);
     assertEquals(check.warnings[0].file, "grants/spelled.yaml");

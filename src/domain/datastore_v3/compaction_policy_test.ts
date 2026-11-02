@@ -67,13 +67,11 @@ Deno.test("compactionBound: without a cutoff it is now; a cutoff folds no commit
     compactionBound(POLICY, now).toISOString(),
     "2026-10-12T00:10:00.000Z",
   );
-  // A cutoff older than the period bounds the fold.
   assertEquals(
     compactionBound(POLICY, now, new Date("2026-10-12T00:05:00.000Z"))
       .toISOString(),
     "2026-10-12T00:05:00.000Z",
   );
-  // A cutoff inside the period is held back to it.
   assertEquals(
     compactionBound(POLICY, now, new Date("2026-10-12T00:09:30.000Z"))
       .toISOString(),

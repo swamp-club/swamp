@@ -17,13 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * The project an extension is bundled under: its Deno config, or the
- * package.json project its bare imports resolve through, and the lockfile
- * the bundle runs against. The one place push, quality, fmt and the loader
- * look for them (swamp-club#3969).
- */
-
 import { getLogger } from "@logtape/logtape";
 import { dirname, globToRegExp, join, resolve, SEPARATOR } from "@std/path";
 import { DENO_CONFIG_FILE_NAMES, readDenoConfig } from "../deno_config.ts";
@@ -32,46 +25,25 @@ import { isBareSpecifier } from "./specifier.ts";
 
 const logger = getLogger(["swamp", "extensions", "project"]);
 
-/**
- * Where the bundler finds an extension's dependencies: a Deno config
- * (deno.json or deno.jsonc), else a package.json project's directory, else
- * neither.
- */
 export interface ExtensionProject {
   denoConfigPath?: string;
   packageJsonDir?: string;
-  /**
-   * The workspace root whose `workspace` lists the directory of
-   * `denoConfigPath`, inside swamp's boundary. Deno reads the root's lock
-   * for every member, so push does too (swamp-club#3971).
-   */
   workspaceRootConfigPath?: string;
   /**
-   * Run Deno with `--no-config`: set by push, quality and fmt when the
-   * extension has no Deno config inside the boundary, so no config Deno
-   * would discover above it applies (swamp-club#3971).
+   * --no-config is set when the extension has no Deno config inside the
+   * boundary, so no config Deno would discover above it applies
    */
   noConfig?: boolean;
-  /**
-   * The configs Deno would use from above swamp's boundary: with no Deno
-   * config inside it, the first deno.json or deno.jsonc above it, and with
-   * no package.json project either, the first package.json; with a Deno
-   * config, a workspace root above the boundary that lists it. Push refuses
-   * the ones that would shape the bundle (swamp-club#3971).
-   */
   ancestorConfigs?: AncestorConfig[];
 }
 
-/** A config above swamp's boundary that Deno would use. */
 export interface AncestorConfig {
   path: string;
   kind: "deno-config" | "package-json" | "workspace-root";
 }
 
-/** How a project resolves its bare imports. */
 export type ExtensionProjectMode = "deno-config" | "package-json" | "none";
 
-/** A project's mode: a Deno config wins over a package.json. */
 export function extensionProjectMode(
   project: ExtensionProject,
 ): ExtensionProjectMode {
@@ -87,12 +59,9 @@ function isSameOrUnder(path: string, root: string): boolean {
 }
 
 /**
- * Where the `deno.json` / `package.json` walk up from the manifest stops.
- * A manifest inside the repo walks to the repo dir, as it always has, so a
- * monorepo's root config still applies to an extension pushed with
- * `--extensions-dir` at a sub-directory. A manifest outside the repo walks
- * to the extensions root that contains it, never further; the manifest's
- * own directory when neither contains it.
+ * a manifest inside the repo walks to the repo dir so a monorepo root config
+ * still applies; one outside walks only to its extensions root, else its own
+ * directory
  */
 export function projectConfigBoundary(
   manifestDir: string,
@@ -107,13 +76,11 @@ export function projectConfigBoundary(
   return dir;
 }
 
-/** How far a config walk goes up from its start. */
 export interface ConfigWalkBoundary {
-  /** The directory the walk stops at; the filesystem root when absent. */
   dir?: string;
   /**
-   * Whether `dir` itself is searched. Push, quality and fmt search it;
-   * the loader stops below the repository, and below the filesystem root.
+   * push, quality and fmt search dir itself; the loader stops below the
+   * repository
    */
   inclusive: boolean;
 }
@@ -127,12 +94,7 @@ function existsSync(path: string, fileOnly: boolean): boolean {
   }
 }
 
-/**
- * The first of `fileNames` walking up from `startDir` within `boundary`,
- * the earlier name winning in one directory; undefined when none is found.
- * An inclusive walk counts only a file; the loader's walk counts any entry,
- * as it always has.
- */
+/** an inclusive walk counts only files; the loader's walk counts any entry */
 function findUpward(
   startDir: string,
   fileNames: readonly string[],
@@ -156,11 +118,6 @@ function findUpward(
   }
 }
 
-/**
- * The project Deno config: the first `deno.json` or `deno.jsonc` walking up
- * from `startDir` within `boundary`, `deno.json` winning in one directory
- * as it does for Deno.
- */
 export function findDenoConfig(
   startDir: string,
   boundary: ConfigWalkBoundary,
@@ -168,10 +125,6 @@ export function findDenoConfig(
   return findUpward(startDir, DENO_CONFIG_FILE_NAMES, boundary);
 }
 
-/**
- * The directory of the first `package.json` walking up from `startDir` to
- * `boundaryDir` (inclusive), or undefined when there is none.
- */
 export function findPackageJsonDir(
   startDir: string,
   boundaryDir: string,
@@ -183,10 +136,6 @@ export function findPackageJsonDir(
   return path === undefined ? undefined : dirname(path);
 }
 
-/**
- * The config the loader bundles a source file under: the nearest
- * `deno.json` or `deno.jsonc` above it, stopping below `repoDir`.
- */
 export function findLoaderDenoConfig(
   absolutePath: string,
   repoDir: string | null | undefined,
@@ -197,38 +146,20 @@ export function findLoaderDenoConfig(
   });
 }
 
-/**
- * Whether `source` imports a bare name in any import form: static,
- * side-effect, dynamic or re-export (see {@link scanImportSites}). A module
- * that does not parse imports none; the bundler reports its syntax error.
- * `path` picks TypeScript, JavaScript or JSX.
- */
 export function hasBareImport(source: string, path?: string): boolean {
   return (scanImportSites(source, path) ?? []).some((site) =>
     isBareSpecifier(site.specifier)
   );
 }
 
-/** What {@link detectExtensionProject} reads of an extension. */
 export interface DetectExtensionProjectInput {
   manifestDir: string;
   extensionsRoot: string;
   repoDir: string;
-  /**
-   * The entry points whose bare `from` imports make a package.json beside
-   * the extension its project; read in order until one has one.
-   */
   entryPoints: readonly string[];
-  /** Entry points not to read (reached through a symlink). */
   skip?: ReadonlySet<string>;
 }
 
-/**
- * The project push, quality and fmt bundle an extension under: the Deno
- * config walking up from the manifest to {@link projectConfigBoundary};
- * without one, the package.json project walking the same way, when an
- * entry point imports a bare name with `from`; else neither.
- */
 export async function detectExtensionProject(
   input: DetectExtensionProjectInput,
 ): Promise<ExtensionProject> {
@@ -281,11 +212,6 @@ async function packageJsonProject(
   return undefined;
 }
 
-/**
- * The configs Deno would discover above `boundary`: the nearest deno.json
- * or deno.jsonc, and with `withPackageJson` the nearest package.json, each
- * walking up from the boundary's parent to the filesystem root.
- */
 export function findAncestorConfigs(
   boundary: string,
   withPackageJson: boolean,
@@ -304,10 +230,6 @@ export function findAncestorConfigs(
   return found;
 }
 
-/**
- * The members a workspace root's `workspace` field lists, as written: an
- * array of paths, or an object with a `members` array.
- */
 function workspaceMembers(config: Record<string, unknown>): string[] {
   const field = config.workspace;
   const members = Array.isArray(field)
@@ -320,10 +242,6 @@ function workspaceMembers(config: Record<string, unknown>): string[] {
     : [];
 }
 
-/**
- * Whether a workspace member pattern names `memberDir`, as Deno matches it:
- * a path from the root, with or without `./` and a trailing `/`, or a glob.
- */
 export function workspaceListsMember(
   rootDir: string,
   pattern: string,
@@ -336,12 +254,8 @@ export function workspaceListsMember(
 }
 
 /**
- * The workspace root a Deno config is a member of: the nearest deno.json or
- * deno.jsonc above the config's directory that has a `workspace` field,
- * when it lists that directory. Deno stops at that config too: one that
- * does not list the member is ignored with a warning, and no workspace
- * further up applies. Undefined when there is none, or it does not list
- * the member.
+ * Deno stops at the nearest config with a workspace field: if it does not list
+ * the member it is ignored and no workspace further up applies
  */
 export async function findWorkspaceRoot(
   denoConfigPath: string,
@@ -370,13 +284,8 @@ export async function findWorkspaceRoot(
 }
 
 /**
- * The lockfile the bundler honours for this project, following
- * `denoProjectArgs` in src/domain/models/bundle.ts: with a deno.json or
- * deno.jsonc (read as JSONC, as Deno reads it), its `lock` setting or else
- * the deno.lock beside it; in package.json mode, the deno.lock in that
- * directory; otherwise none, since the bundler runs with `--no-lock`. A
- * workspace member's lock is its workspace root's, as Deno reads it. The
- * dependency audit reads this lock.
+ * mirrors denoProjectArgs in bundle.ts: no config or package.json project means
+ * --no-lock; a workspace member's lock is its root's
  */
 export async function configuredLockPath(
   project: ExtensionProject,
@@ -400,10 +309,6 @@ export async function configuredLockPath(
   return undefined;
 }
 
-/**
- * The lock a config's `lock` setting names: null for `lock: false`, a path
- * resolved from the config's directory, or undefined when it sets none.
- */
 function configLockSetting(
   configPath: string,
   config: Record<string, unknown>,
@@ -420,11 +325,7 @@ function configLockSetting(
   return undefined;
 }
 
-/**
- * A workspace member's own lock, which Deno ignores in favour of the
- * root's: the lock its `lock` setting names, else a deno.lock beside it on
- * disk. Undefined outside a workspace, or when the member has none.
- */
+/** Deno ignores a workspace member's own lock in favour of the root's */
 export async function ignoredMemberLockPath(
   project: ExtensionProject,
 ): Promise<string | undefined> {
@@ -441,12 +342,9 @@ export async function ignoredMemberLockPath(
 }
 
 /**
- * The lockfile push bundles `--frozen` against and leaves untouched: the
- * lock the bundler honours when it exists on disk; otherwise none, so the
- * bundle runs `--no-lock` and creates no lock. A config this reader cannot
- * parse may set its own lock, which it cannot see, so the `deno.lock`
- * beside it is used when present rather than bundling without the lock the
- * project has.
+ * a config this reader cannot parse may set its own lock, so the deno.lock
+ * beside it is used when present rather than bundling without the project's
+ * lock
  */
 export async function frozenLockPath(
   project: ExtensionProject,

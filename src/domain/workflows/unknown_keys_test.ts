@@ -34,7 +34,6 @@ const JOB_KEYS = [
   "queueTimeout",
 ];
 
-/** Runs a hook through a schema and returns the data or the issues it adds. */
 function run(
   hook: ReturnType<typeof rejectUnknownKeys>,
   data: unknown,
@@ -48,7 +47,6 @@ function run(
   };
 }
 
-/** The single issue a hook reports for `data`. */
 function onlyIssue(
   hook: ReturnType<typeof rejectUnknownKeys>,
   data: unknown,

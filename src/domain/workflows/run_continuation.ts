@@ -18,37 +18,23 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * Whether a suspended run can continue without anyone deciding anything
- * more (swamp-club#3108).
- *
- * A signal settles a wait by creating its outcome record and never changes
- * the run record, so the run record alone cannot say that a run's waits are
- * settled: {@link WorkflowRun.isAwaitingResume} stays false while any wait is
- * on it. The answer needs the run record and the outcome records together,
- * which is why it lives here and not on the run.
+ * a signal settles a wait by creating its outcome and never changes the run
+ * record, so the run record alone cannot say its waits are settled
  */
 
 import type { SignalWaitStore } from "./signal_wait_store.ts";
 import type { WorkflowRun } from "./workflow_run.ts";
 
-/** Why a run cannot continue yet. */
 export type ContinuationBlock =
-  /** The run is not suspended. */
   | "not_suspended"
-  /** Saved suspended while other steps still ran: something still drives it. */
   | "steps_running"
-  /** A manual approval gate is still undecided. */
   | "gate_undecided"
-  /** A step waits on a nested run. Such a run is never continued here. */
   | "nested_run"
-  /** A wait for a signal has no outcome. */
   | "wait_unsettled"
-  /** A wait, or its outcome, cannot be read. */
   | "wait_unreadable"
   /**
-   * A wait was cancelled. Only a run being saved as ended cancels its
-   * waits, so a suspended record with one is a copy from before the run
-   * ended, or a run whose ending save failed: neither is continued.
+   * only a run being saved as ended cancels its waits, so a suspended record
+   * with one is a stale copy or a failed ending save: neither is continued
    */
   | "run_ended";
 
@@ -62,13 +48,6 @@ function blocked(reason: ContinuationBlock): ContinuationVerdict {
   return { kind: "blocked", reason };
 }
 
-/**
- * Decides whether `run` can be resumed as it stands: suspended, with no step
- * still running, no gate undecided, no step waiting on a nested run, and a
- * signal or a timeout as the outcome of every wait for a signal. Read from
- * the run record as given; the caller answers for how current that record
- * is, except that a cancelled wait is itself proof the record is behind.
- */
 export async function decideContinuation(
   run: WorkflowRun,
   outcomes: Pick<SignalWaitStore, "findOutcome">,

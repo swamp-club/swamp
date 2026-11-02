@@ -577,8 +577,6 @@ Deno.test("findLiteralSensitiveGlobalArgs: returns [] for undefined schema or ar
 });
 
 Deno.test("findLiteralSensitiveGlobalArgs: returns [] for a non-object schema (schema-level residual)", () => {
-  // A standalone record schema has no sensitive metadata on its values, so
-  // nothing is detected.
   const schema = z.record(z.string(), z.string());
 
   assertEquals(
@@ -732,8 +730,6 @@ Deno.test("buildSensitiveArgRemediations: never contains the secret value", () =
 
   const remediations = buildSensitiveArgRemediations(["apiKey"], schema);
 
-  // The builder only ever receives field paths, never values — assert the
-  // rendered guidance carries no secret material.
   const serialized = JSON.stringify(remediations);
   assertEquals(serialized.includes("SUPERSECRET"), false);
   assertStringIncludes(remediations[0].expression, "vault.get");
@@ -774,7 +770,6 @@ Deno.test("findLiteralSensitiveGlobalArgs: allows expressions that read somethin
       "${{ '' }}",
       "${{ null }}",
       "${{ literal('') }}",
-      // Text that does not parse never evaluates to a value.
       "${{ not cel ( }}",
     ]
   ) {
@@ -788,15 +783,12 @@ Deno.test("findLiteralSensitiveGlobalArgs: allows expressions that read somethin
 
 Deno.test("findLiteralSensitiveGlobalArgs: a }} inside a string does not end the expression", () => {
   const schema = z.object({ apiKey: z.string().meta({ sensitive: true }) });
-  // One expression reading env; nothing outside it.
   assertEquals(
     findLiteralSensitiveGlobalArgs(schema, {
       apiKey: "${{ env.A + '}}' }}",
     }),
     [],
   );
-  // An unterminated string keeps the first }} boundary, so the text after it
-  // is a literal secret.
   assertEquals(
     findLiteralSensitiveGlobalArgs(schema, {
       apiKey: '${{ "abc }} secret',
@@ -885,8 +877,6 @@ Deno.test("findLiteralSensitiveGlobalArgs: flags a literal in a sensitive field 
 });
 
 Deno.test("findLiteralSensitiveGlobalArgs: a union member that also accepts the value does not hide a sensitive one", () => {
-  // The loose member parses this value before expressions are resolved; the
-  // strict member, which marks the password, does not.
   const schema = z.object({
     auth: z.union([
       z.object({
@@ -1000,7 +990,6 @@ Deno.test("buildSensitiveArgRemediations: builds a vault key from a record key h
 });
 
 Deno.test("findLiteralSensitiveGlobalArgs: a vault reference does not hide a literal under a dotted record key", () => {
-  // Written as plain dot paths, both values would read users.a.b.c.
   const schema = z.object({
     users: z.record(
       z.string(),
@@ -1182,7 +1171,6 @@ Deno.test("findLiteralSensitiveGlobalArgs: a non-string scalar is not checked ag
       port: 8080,
       mode: "a",
     }),
-    // A string fits every scalar member, the sensitive number included.
     ["mode"],
   );
   assertEquals(
@@ -1227,7 +1215,6 @@ Deno.test("findLiteralSensitiveGlobalArgs: a plain union is narrowed by the lite
     }),
     ["cred.value"],
   );
-  // A tag that names no member, or is still an expression, keeps both.
   for (const kind of ["other", "${{ inputs.kind }}", undefined]) {
     assertEquals(
       findLiteralSensitiveGlobalArgs(schema, {
@@ -1239,7 +1226,6 @@ Deno.test("findLiteralSensitiveGlobalArgs: a plain union is narrowed by the lite
 });
 
 Deno.test("findLiteralSensitiveGlobalArgs: a tag another member requires does not drop a member that tolerates it", () => {
-  // `.catch()` lets the first member accept any kind, so it stays a candidate.
   const schema = z.object({
     cred: z.union([
       z.object({
@@ -1342,11 +1328,9 @@ Deno.test("findLiteralSensitiveGlobalArgs: flags a scalar given for an array of 
   const schema = z.object({
     tokens: z.array(z.string().meta({ sensitive: true })),
   });
-  // `--global-arg tokens=hunter2`, without `:json`.
   assertEquals(findLiteralSensitiveGlobalArgs(schema, { tokens: "hunter2" }), [
     "tokens",
   ]);
-  // One expression that resolves to the whole array stores no cleartext.
   assertEquals(
     findLiteralSensitiveGlobalArgs(schema, { tokens: VAULT_REF }),
     [],
@@ -1422,7 +1406,6 @@ Deno.test("redactSensitiveValues: masks values inside array elements, record val
     accounts: { "eu.west": { token: "***" } },
     auth: { kind: "token", token: "***" },
   });
-  // The input is left as it was.
   assertEquals(data, nestedSecrets());
 });
 
@@ -1463,7 +1446,6 @@ Deno.test("redactSensitiveValues: does not add a key for an absent field named l
 
 Deno.test("redactSensitiveValues and extractSensitiveFieldValues: a schema that marks nothing is answered without reading the value", () => {
   const schema = z.object({ region: z.string(), list: z.array(z.string()) });
-  // Reading any property of this value throws.
   const data = new Proxy({}, {
     get: () => {
       throw new Error("value was read");
@@ -1608,7 +1590,6 @@ Deno.test("holdsRuntimeExpression: true while an expression that reads a root, o
   );
   assertEquals(holdsRuntimeExpression("${{ inputs.key }}"), true);
   assertEquals(holdsRuntimeExpression("${{ not valid ( }}"), true);
-  // Resolved text, a constant expression, and no expression at all.
   assertEquals(holdsRuntimeExpression("Bearer hunter2"), false);
   assertEquals(holdsRuntimeExpression("${{ literal('hunter2') }}"), false);
   assertEquals(holdsRuntimeExpression("${{ 'hunter2' }}"), false);
@@ -1770,8 +1751,6 @@ Deno.test("extractSensitiveFieldValues: a sensitive array or scalar the schema d
     extractSensitiveFieldValues(z.object({ a: z.string() }), "not-a-record"),
     [],
   );
-  // A value of the wrong shape for a schema that marks something is
-  // collected whole, as findValuesWithMetadata reports it.
   assertEquals(extractSensitiveFieldValues(z.object({ a: secret }), "x"), [
     "x",
   ]);
@@ -1848,8 +1827,6 @@ Deno.test("maskRefusedIssues: an issue at, under or above a sensitive position i
     [["creds"], 'Unrecognized keys: "count", "***"'],
     [["creds"], "Invalid input: expected object, received object"],
   ]);
-  // What the failing check received, and whatever the schema's code set,
-  // travel no further.
   for (const found of masked) {
     assertEquals(Object.keys(found), ["code", "path", "message"]);
   }
@@ -1876,8 +1853,6 @@ Deno.test("maskRefusedIssues: an issue at, under or above a sensitive position i
       [["count"], "Too small: expected number to be >=1"],
     ],
   );
-  // A superRefine on an enclosing node may set an issue's fields too, so a
-  // described issue says nothing a field could spell.
   const superRefined = z.object({ token: secret, count: z.number() })
     .superRefine(() => {});
   assertEquals(
@@ -1892,7 +1867,6 @@ Deno.test("maskRefusedIssues: an issue at, under or above a sensitive position i
     ]).map((found) => [found.path, found.message]),
     [[["count"], "Invalid input"], [["count"], "Invalid input"]],
   );
-  // A schema marked at its root holds the value whole.
   const whole = z.object({ a: z.string() }).meta({ sensitive: true });
   assertEquals(
     maskRefusedIssues(whole, { a: "x" }, [issue(["a"], "a is x")]).map((
@@ -1971,9 +1945,6 @@ Deno.test("extractSensitiveFieldValues: with delivered, the values a transform, 
     ),
     ["HUNTER2", "prod"],
   );
-  // A plain value a transform writes under a sensitive field's input name
-  // is not that field: read through the field's path, it is left out as
-  // from the whole.
   const swap = inner.transform(({ secret, label }) => ({
     secret: label,
     label: secret,
@@ -2054,8 +2025,6 @@ Deno.test("extractSensitiveFieldValues: with delivered, the values a transform, 
     ),
     ["HUNTER2", "hunter2", "prod"],
   );
-  // A literal key the transform's code writes is an identifier, not a
-  // secret, while the value it holds is taken (swamp-club#3754).
   assertEquals(
     delivered(
       inner.transform(({ secret }) => ({
@@ -2086,7 +2055,6 @@ Deno.test("extractSensitiveFieldValues: with delivered, the values a transform, 
     ).sort(),
     ["4321", "HUNTER2"],
   );
-  // A value a schema node marks itself is collected whatever the input holds.
   assertEquals(
     extractDeliveredSensitiveValues(
       z.object({ password: secret, user: z.string() }),
@@ -2095,10 +2063,9 @@ Deno.test("extractSensitiveFieldValues: with delivered, the values a transform, 
     ),
     ["admin"],
   );
-  // Under a position the schema itself marks, a key the parse introduced is
-  // taken, since a transform may have derived it from the value; a key the
-  // schema declares is a field name and is left out, as a refusal leaves it
-  // out (swamp-club#3753).
+  // under a position the schema marks, a key the parse introduced is taken
+  // since a transform may derive it from the value; a key the schema declares
+  // is a field name and is left out
   const marking = z.object({ raw: z.string(), region: z.string().optional() })
     .transform((x) => ({
       tokens: {
@@ -2119,8 +2086,6 @@ Deno.test("extractSensitiveFieldValues: with delivered, the values a transform, 
     ).sort(),
     ["HUNTER2", "hunter2-made", "made-v"],
   );
-  // Read as stored, the renamed shape holds nothing the schema can name,
-  // which is why a parse's output is read with `delivered`.
   assertEquals(
     extractSensitiveFieldValues(
       inner.transform(({ secret, label }) => ({ token: secret, label })),
@@ -2128,8 +2093,6 @@ Deno.test("extractSensitiveFieldValues: with delivered, the values a transform, 
     ),
     [],
   );
-  // A transform beside the field, or enclosing nothing sensitive, adds
-  // nothing.
   assertEquals(
     delivered(
       z.object({ secret, other: z.string().transform((s) => `${s}!`) }),
@@ -2153,7 +2116,6 @@ Deno.test("extractRefusedSensitiveValues: text the input holds only at positions
       : extractRefusedSensitiveValues(schema, input, result.error.issues)
         .sort();
   };
-  // A refinement above the position receives the whole object.
   assertEquals(
     refused(
       z.object({ token: secret, env: z.string(), region: z.string() }).refine(
@@ -2164,8 +2126,6 @@ Deno.test("extractRefusedSensitiveValues: text the input holds only at positions
     ),
     ["hunter2-long"],
   );
-  // A strict object's unrecognized key is refused at the root, with the
-  // whole object as its input.
   assertEquals(
     refused(z.strictObject({ token: secret, env: z.string() }), {
       token: "hunter2-long",
@@ -2174,8 +2134,6 @@ Deno.test("extractRefusedSensitiveValues: text the input holds only at positions
     }),
     ["hunter2-long"],
   );
-  // Under a transform, what the transform made of the value is registered
-  // and the plain value it passed through is not.
   assertEquals(
     refused(
       z.object({
@@ -2186,8 +2144,6 @@ Deno.test("extractRefusedSensitiveValues: text the input holds only at positions
     ),
     ["HUNTER2-LONG"],
   );
-  // A field name the schema declares is not a secret, though a transform
-  // made the object that holds it.
   assertEquals(
     refused(
       z.object({ raw: z.string() }).transform((x) => ({
@@ -2197,7 +2153,6 @@ Deno.test("extractRefusedSensitiveValues: text the input holds only at positions
     ),
     ["HUNTER2-LONG"],
   );
-  // The same text at a sensitive and a plain position is sensitive.
   assertEquals(
     refused(
       z.object({ password: secret, user: z.string() }).refine(
@@ -2302,7 +2257,6 @@ Deno.test("schemaHoldsSensitiveFields: true only when a field is marked sensitiv
     schemaHoldsSensitiveFields(z.object({ list: z.array(z.string()) })),
     false,
   );
-  // Metadata on the root schema marks no field.
   assertEquals(
     schemaHoldsSensitiveFields(
       z.object({ a: z.string() }).meta({ sensitive: true }),
@@ -2381,7 +2335,6 @@ Deno.test("sensitiveGlobalArgPaths: names each sensitive field holding a value a
       .optional(),
     keys: z.array(z.string().meta({ sensitive: true })).optional(),
   });
-  // Each path is the one expression extraction reports for that value.
   const args = {
     region: "r",
     apiKey: "${{ a }}",

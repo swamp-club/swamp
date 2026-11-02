@@ -150,8 +150,6 @@ Deno.test("DatastoreTypeRegistry - register user-defined type with createProvide
   assertEquals(typeof info?.createProvider, "function");
 });
 
-// --- Lazy loading tests ---
-
 function createLazyDatastoreEntry(type: string): LazyDatastoreEntry {
   return {
     type,
@@ -282,7 +280,6 @@ Deno.test("DatastoreTypeRegistry.resetLoadedFlag re-runs the loader on next ensu
   await registry.ensureLoaded();
   assertEquals(loadCount, 1);
 
-  // Without reset, a second ensureLoaded is a no-op.
   await registry.ensureLoaded();
   assertEquals(loadCount, 1);
 

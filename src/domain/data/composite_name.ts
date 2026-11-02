@@ -17,18 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Computes a composite data name from a base name and vary dimension values.
- *
- * When vary dimensions are provided, the resulting name is
- * `{baseName}-{value1}-{value2}-...`. When the vary array is empty,
- * the base name is returned unchanged.
- *
- * @param baseName - The original data name
- * @param varyValues - Resolved dimension values to append
- * @returns The composite data name
- * @throws Error if baseName is empty or any varyValue is empty
- */
 export function composeDataName(
   baseName: string,
   varyValues: string[],

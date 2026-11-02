@@ -82,7 +82,6 @@ Deno.test("SessionCredentialService: refresh slides the window with a new creden
   assertNotEquals(second, null);
   assertNotEquals(second!.credential, first.credential);
   assertEquals(second!.expiresAtMs, 1900);
-  // The old credential is revoked by the refresh.
   assertEquals(service.verify(first.credential), null);
   assertEquals(service.verify(second!.credential)?.workerId, "worker-1");
 });
@@ -243,8 +242,6 @@ Deno.test("SessionCredentialService: interleaved issue and revoke maintains inde
   assertEquals(service.verify(d3.credential)?.dispatchId, "dispatch-3");
 });
 
-// ── Auto-refresh tests ───────────────────────────────────────────────────
-
 Deno.test("SessionCredentialService: dispatch credential auto-refreshes past original TTL", () => {
   const clock = { nowMs: 0 };
   const { service, intervals } = serviceAt(clock, 1000);
@@ -253,12 +250,10 @@ Deno.test("SessionCredentialService: dispatch credential auto-refreshes past ori
   assertEquals(intervals.length, 1);
   assertEquals(record.expiresAtMs, 1000);
 
-  // Advance past the original TTL and fire the refresh callback
   clock.nowMs = 900;
   intervals[0].cb();
   assertEquals(record.expiresAtMs, 1900);
 
-  // Credential still verifies past the original expiry
   clock.nowMs = 1500;
   assertEquals(service.verify(record.credential)?.dispatchId, "dispatch-1");
 
@@ -271,7 +266,7 @@ Deno.test("SessionCredentialService: dispatch credential refresh interval matche
   service.issueForDispatch("worker-1", "dispatch-1");
 
   assertEquals(intervals.length, 1);
-  assertEquals(intervals[0].ms, 2000); // 3000 * 2/3
+  assertEquals(intervals[0].ms, 2000);
 
   service.dispose();
 });
@@ -298,7 +293,7 @@ Deno.test("SessionCredentialService: revokeAllForWorker clears all dispatch refr
   assertEquals(intervals.length, 3);
   service.revokeAllForWorker("worker-1");
   assertEquals(intervals.length, 1);
-  assertEquals(intervals[0].id, 3); // only dispatch-3 remains
+  assertEquals(intervals[0].id, 3);
 
   service.dispose();
 });
@@ -319,11 +314,9 @@ Deno.test("SessionCredentialService: refresh callback guards against deleted rec
   const { service, intervals } = serviceAt(clock, 1000);
   const record = service.issueForDispatch("worker-1", "dispatch-1");
 
-  // Force-expire and verify (which deletes the record)
   clock.nowMs = 1000;
   assertEquals(service.verify(record.credential), null);
 
-  // The interval was cleared by #deleteCredential via verify
   assertEquals(intervals.length, 0);
 
   service.dispose();
@@ -337,17 +330,14 @@ Deno.test("SessionCredentialService: concurrent dispatches have independent refr
 
   assertEquals(intervals.length, 2);
 
-  // Fire only dispatch-1's refresh
   clock.nowMs = 800;
   intervals[0].cb();
   assertEquals(d1.expiresAtMs, 1800);
-  assertEquals(d2.expiresAtMs, 1000); // unchanged
+  assertEquals(d2.expiresAtMs, 1000);
 
-  // Revoke dispatch-1, dispatch-2 still has its interval
   service.revokeDispatch("worker-1", "dispatch-1");
   assertEquals(intervals.length, 1);
 
-  // Fire dispatch-2's refresh
   intervals[0].cb();
   assertEquals(d2.expiresAtMs, 1800);
 
@@ -362,13 +352,10 @@ Deno.test("SessionCredentialService: refresh callback no-ops after revocation ra
   // Capture the callback before revocation clears the interval
   const cb = intervals[0].cb;
 
-  // Simulate: revocation happened but callback was already scheduled
   service.revokeDispatch("worker-1", "dispatch-1");
 
-  // Manually fire the callback — should not crash
   cb();
 
-  // Credential is still revoked
   assertEquals(service.verify(record.credential), null);
 
   service.dispose();

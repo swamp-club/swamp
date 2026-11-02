@@ -25,28 +25,9 @@ import {
 } from "../expressions/expression_scanner.ts";
 
 /**
- * Resolves a trigger's `inputs` value map by evaluating its CEL expressions
- * against an {@link ExpressionContext}. Used for webhook-triggered runs where
- * `trigger.inputs` maps fields of the request payload onto workflow inputs,
- * e.g. `identifier: "${{ webhook.body.data.issue.identifier }}"`.
- *
- * A value that is exactly a single `${{ ... }}` expression resolves to the
- * evaluated result with its native type preserved (object, number, boolean).
- * Expressions embedded in a larger string are interpolated and stringified.
- * Nested objects and arrays are resolved recursively; non-expression values
- * (the static literals scheduled runs rely on) pass through unchanged.
- *
- * **Strict**: a CEL evaluation error propagates, surfacing a misconfigured
- * mapping to the caller rather than silently dropping the input. Optional
- * payload fields should be guarded with `??` in the expression itself.
- *
- * **No secrets.** The resolver evaluates with the evaluator's default,
- * empty scope: it binds no run's bag and no vault
- * (design/enablers/typed-secrets.md Section 5, typed-secrets 4.1). With a
- * typed evaluator a `vault.get` in a trigger input is refused before any
- * work, and a result that holds a `Secret` is refused with
- * `secret_destination_refused`, so no sentinel is ever persisted as orphan
- * run-input text.
+ * strict: a CEL error propagates rather than silently dropping the input. No
+ * secrets: the empty default scope binds no vault, so no sentinel is ever
+ * persisted as run-input text
  */
 export class TriggerInputResolver {
   constructor(private readonly celEvaluator: CelExpressionEvaluator) {}

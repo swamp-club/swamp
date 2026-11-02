@@ -35,15 +35,10 @@ type TerminalStatus = "succeeded" | "failed" | "skipped";
 
 interface GeneratedJob {
   name: string;
-  /** Indices of earlier jobs this job depends on. */
   dependsOn: number[];
   steps: { name: string; dependsOn: number[]; status: TerminalStatus }[];
 }
 
-/**
- * Picks the earlier indices whose edge flag is set, so node `i` only depends
- * on nodes with a lower index and the graph is acyclic by construction.
- */
 function earlierEdges(i: number, edges: boolean[]): number[] {
   return Array.from({ length: i }, (_, j) => j).filter((j) => edges[j]);
 }
@@ -139,11 +134,6 @@ function keyOf(jobName: string, stepName: string): string {
   return stepRunKey({ jobName, stepName });
 }
 
-/**
- * Oracle: the failed steps and everything downstream of them, each keyed by
- * its job, following step dependencies within a job and job dependencies
- * across jobs.
- */
 function expectedResetSet(jobs: GeneratedJob[]): Set<string> {
   const downstream = new Map<string, Set<string>>();
   const edge = (from: string, to: string) => {
@@ -179,7 +169,6 @@ function expectedResetSet(jobs: GeneratedJob[]): Set<string> {
   return result;
 }
 
-/** The union of the records each retry entry resets, once each. */
 function resetRefsFor(workflow: Workflow, run: WorkflowRun): StepRunRef[] {
   const union = new Map<string, StepRunRef>();
   for (const entry of selectRetryTemplates(workflow, run)) {

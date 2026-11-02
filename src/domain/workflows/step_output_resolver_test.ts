@@ -82,7 +82,6 @@ function modelMethodOutput(
   };
 }
 
-/** Builds a run with one step per entry, each succeeded with its output. */
 function runWithSteps(
   steps: Array<{ name: string; output: unknown; failed?: boolean }>,
 ): WorkflowRun {
@@ -387,7 +386,6 @@ Deno.test("StepOutputResolver.resolve: the read policy filters resources out", a
   const resolved = await resolver.resolve(stepOf(run, "write"));
 
   assertEquals(resolved.outputs, { visible: 1 });
-  // A denied resource is never read.
   assertEquals(read, ["a"]);
 });
 
@@ -404,7 +402,6 @@ Deno.test("StepOutputResolver.resolve: stops between resources once its signal a
   const resolver = new StepOutputResolver({
     readAttributes: (ref) => {
       read.push(ref.name);
-      // The request is cancelled while its first resource is read.
       controller.abort(new Error("request cancelled"));
       return Promise.resolve({ value: 1 });
     },
@@ -497,7 +494,6 @@ Deno.test("StepOutputResolver.resolve: a workflow step resolves its child run's 
   const resolved = await resolver.resolve(stepOf(parent, "child"));
 
   assertEquals(resolved.outputs, { write_record: { stdout: "hello" } });
-  // Each child step's sources are grouped under its name.
   assertEquals(resolved.sources, [{
     path: ["write_record"],
     records: [{
@@ -510,7 +506,6 @@ Deno.test("StepOutputResolver.resolve: a workflow step resolves its child run's 
       attributes: { stdout: "hello" },
     }],
   }]);
-  // The grandchild workflow step is not followed.
   assertEquals(lookups, [`${child.workflowId}/${child.id}`]);
 });
 
@@ -598,7 +593,6 @@ Deno.test("createDataRepositoryAttributeReader: keeps stored references for the 
   assertEquals(resolved?.plain, stored.plain);
   assertEquals(sensitiveValues.list(), []);
 
-  // Without a vault service (display paths) references stay as stored.
   const raw = await createDataRepositoryAttributeReader(dataRepo)(ref);
   assertEquals(raw?.token, stored.token);
 });
@@ -779,7 +773,6 @@ Deno.test("StepOutputResolver.resolve: inside a diagnostic phase, times the merg
       typeof walk.attributes["swamp.diagnostic.assemble_work_ms"],
       "number",
     );
-    // Timing changes nothing it measures.
     assertEquals(
       resolved,
       await resolver.resolve(stepOf(run, "write")),

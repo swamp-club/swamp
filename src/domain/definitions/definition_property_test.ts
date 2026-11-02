@@ -53,7 +53,6 @@ const arbShortString = fc.stringOf(fc.constantFrom(...NAME_CHARS), {
   maxLength: 12,
 });
 
-// Arbitrary for strict definition names (matching create() validation)
 const arbSafeName = fc
   .tuple(
     fc.constantFrom(...LOWER_ALNUM),
@@ -80,7 +79,6 @@ const arbDefinitionName = fc.oneof(
   { arbitrary: arbScopedName, weight: 1 },
 );
 
-// Arbitrary for names that contain path traversal characters
 const arbPathTraversalName = fc.oneof(
   fc.constant("foo/../bar"),
   fc.constant("foo/bar"),
@@ -125,8 +123,6 @@ const arbInputsSchema = fc.record({
   required: fc.array(arbKey, { maxLength: 2 }),
 }, { requiredKeys: [] });
 
-/** Everything about a definition except its name, so name generation can be
- * varied independently. */
 const arbDefinitionShape: fc.Arbitrary<Omit<CreateDefinitionProps, "name">> = fc
   .record({
     type: arbShortString,
@@ -249,7 +245,6 @@ Deno.test("property: hash is deterministic for arbitrary content", async () => {
       async (name, shape) => {
         const def = Definition.create({ ...shape, name });
         assertEquals(await def.computeHash(), await def.computeHash());
-        // Two definitions built from identical props hash identically too.
         const twin = Definition.fromData(def.toData());
         assertEquals(await twin.computeHash(), await def.computeHash());
       },
@@ -277,7 +272,6 @@ Deno.test("property: hash ignores tag insertion order", async () => {
 
         const a = Definition.create({ id, name, tags: forward });
         const b = Definition.create({ id, name, tags: reversed });
-        // computeHash sorts keys recursively before hashing.
         assertEquals(await a.computeHash(), await b.computeHash());
       },
     ),
@@ -305,7 +299,6 @@ Deno.test("property: hash ignores type and typeVersion", async () => {
           type: typeB,
           typeVersion: "2030.12.0",
         });
-        // computeHash strips type/typeVersion before serializing.
         assertEquals(await a.computeHash(), await b.computeHash());
       },
     ),
@@ -324,8 +317,6 @@ Deno.test("property: hash changes when hashed content differs", async () => {
         const id = crypto.randomUUID();
         const a = Definition.create({ ...shape, id, name: nameA });
         const b = Definition.create({ ...shape, id, name: nameB });
-        // Distinct names change the hashed payload; SHA-256 makes a collision
-        // infeasible, so the hashes must differ.
         assertNotEquals(await a.computeHash(), await b.computeHash());
       },
     ),

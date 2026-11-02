@@ -18,16 +18,9 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * Built-in step-lease model (see design/enablers/remote-execution.md).
- *
- * A lease records that a given step is in flight on a given worker, and
- * whether it has performed any durable write — the fact that decides the
- * failure semantics when a worker drops: no-write leases re-dispatch,
- * write-bearing leases fail the run.
- *
- * Unlike workers and tokens, leases are high-churn: all leases live as
- * separately named data items under a single model instance (`leases`), so
- * dispatch does not mint a new model definition per step.
+ * a lease records a step in flight on a worker and whether it made a durable
+ * write, which decides failure semantics on drop: no-write leases re-dispatch,
+ * write-bearing ones fail the run
  */
 
 import { z } from "zod";
@@ -68,12 +61,10 @@ export const StepLeaseSchema = z.object({
   modelId: z.string(),
   methodName: z.string(),
   workflowName: z.string().optional(),
-  /** The workflow run the step belongs to, when dispatched from a run. */
   workflowRunId: z.string().optional(),
   jobName: z.string().optional(),
   stepName: z.string().optional(),
   state: LeaseStateSchema,
-  /** True once the dispatched step performed any durable write. */
   hasWrites: z.boolean(),
   createdAt: z.string().datetime(),
   endedAt: z.string().datetime().optional(),
@@ -86,10 +77,6 @@ export function leaseDataName(leaseId: string): string {
   return `lease-${leaseId}`;
 }
 
-/**
- * The stored lease, parsed; throws when the lease does not exist. Shared by
- * the model's methods and serve's lease ledger.
- */
 export function parseStoredLease(leaseId: string, raw: unknown): StepLease {
   if (raw === null) {
     throw new Error(`Step lease '${leaseId}' does not exist`);
@@ -122,10 +109,6 @@ export const AcquireArgsSchema = z.object({
 
 export type AcquireLeaseArgs = z.infer<typeof AcquireArgsSchema>;
 
-/**
- * The lease `acquire` records: active, with no writes. `existing` is what is
- * stored under the lease's data name; a lease is never acquired twice.
- */
 export function startLease(
   args: AcquireLeaseArgs,
   existing: unknown,
@@ -142,10 +125,6 @@ export function startLease(
   };
 }
 
-/**
- * The lease with its first durable write recorded, or null when it already
- * records one. Only an active lease records writes.
- */
 export function recordLeaseWrites(
   leaseId: string,
   lease: StepLease,
@@ -159,7 +138,6 @@ export function recordLeaseWrites(
   return { ...lease, hasWrites: true };
 }
 
-/** The states that end a lease. */
 export type EndedLeaseState = Extract<
   LeaseState,
   "completed" | "failed" | "expired"
@@ -250,9 +228,6 @@ function endLease(state: EndedLeaseState) {
   };
 }
 
-/**
- * The step-lease model definition. Self-registers via the models barrel.
- */
 export const stepLeaseModel: ModelDefinition = defineModel({
   type: STEP_LEASE_MODEL_TYPE,
   version: "2026.06.09.1",

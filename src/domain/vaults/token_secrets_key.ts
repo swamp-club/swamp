@@ -19,24 +19,10 @@
 
 import { UserError } from "../errors.ts";
 
-/**
- * The operator-supplied key that encrypts `_token-secrets` when serve is
- * opted in to an external key (serve.yaml `token-secrets`). The key lives in a
- * vault outside the datastore; the control plane only ever holds a
- * {@link TokenKeyMarker} recording which key was used.
- */
-
-/** Length of an AES-256 key in bytes. */
 export const TOKEN_SECRETS_KEY_BYTES = 32;
 
-/**
- * A problem with the external token key or its configuration. The message
- * already says what to fix, so callers report it as is rather than adding
- * datastore hints.
- */
 export class TokenSecretsKeyError extends UserError {}
 
-/** Where the operator stores the external key: a vault name and secret key. */
 export interface TokenSecretsKeyRef {
   readonly vault: string;
   readonly key: string;
@@ -45,13 +31,6 @@ export interface TokenSecretsKeyRef {
 const HEX_KEY_PATTERN = /^[0-9a-fA-F]{64}$/;
 const BASE64_PATTERN = /^[A-Za-z0-9+/]+={0,2}$/;
 
-/**
- * Decodes operator-supplied key material. Accepts exactly 64 hex characters,
- * or base64 (padded or not) that decodes to exactly 32 bytes (e.g.
- * `openssl rand -base64 32`).
- * Rejects any other length or encoding, and keys whose bytes are all the same.
- * Error messages never include the value.
- */
 export function parseTokenSecretsKeyMaterial(value: string): Uint8Array {
   const trimmed = value.trim();
   let bytes: Uint8Array | undefined;
@@ -101,11 +80,6 @@ export function parseTokenSecretsKeyMaterial(value: string): Uint8Array {
 
 const FINGERPRINT_LABEL = "swamp token-secrets key fingerprint v1";
 
-/**
- * Identifies a key without revealing it: HMAC-SHA256 keyed by the key over a
- * fixed label, as hex. Instances compare fingerprints to prove they hold the
- * same key; the fingerprint cannot decrypt anything.
- */
 export async function tokenKeyFingerprint(key: Uint8Array): Promise<string> {
   const hmacKey = await crypto.subtle.importKey(
     "raw",
@@ -130,10 +104,9 @@ export async function tokenKeyFingerprint(key: Uint8Array): Promise<string> {
 const MARKER_FORMAT = "swamp-token-key-marker";
 
 /**
- * Stored in place of the co-located key once `_token-secrets` uses an external
- * key. `vault` and `key` record where the key was configured, for error
- * messages only — nothing resolves a key from them, because the control plane
- * is datastore content and must not choose the key source.
+ * vault and key are for error messages only; nothing resolves a key from them,
+ * because the control plane is datastore content and must not choose the key
+ * source
  */
 export interface TokenKeyMarker {
   readonly vault: string;
@@ -158,17 +131,15 @@ export function serializeTokenKeyMarker(marker: TokenKeyMarker): Uint8Array {
   }));
 }
 
-/** What the control plane holds at the token-secrets key path. */
 export type TokenKeyRecord =
   | { readonly kind: "absent" }
   | { readonly kind: "legacy"; readonly key: Uint8Array }
   | { readonly kind: "marker"; readonly marker: TokenKeyMarker };
 
 /**
- * Classifies the token-secrets key record. A 32-byte record is the legacy
- * co-located key; a marker is recognised by its format field. Anything else is
- * corrupt and throws rather than being treated as absent, which would
- * generate a fresh key over it.
+ * a 32-byte record is the legacy key and a marker is recognised by its format
+ * field; anything else is corrupt and throws, since treating it as absent would
+ * generate a fresh key over it
  */
 export function classifyTokenKeyRecord(
   data: Uint8Array | null,

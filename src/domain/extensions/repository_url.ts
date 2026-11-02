@@ -20,32 +20,25 @@
 import { UserError } from "../errors.ts";
 import { DEFAULT_SWAMP_CLUB_URL } from "../auth/auth_credentials.ts";
 
-/** Supported third-party repository providers. */
 export type RepositoryProvider = "github" | "gitlab" | "other";
 
-/** Parsed view of a manifest `repository` URL. */
 export interface ParsedRepositoryUrl {
   provider: RepositoryProvider;
   host: string;
-  /** "owner/repo" for GitHub/GitLab; undefined for "other". */
   ownerRepo?: string;
-  /** The original URL, canonicalised (trailing slash and `.git` stripped). */
   url: string;
 }
 
 /**
- * GitHub URLs pre-fill title/body in the issue-new page up to ~8KB — truncate
- * conservatively well under that so percent-encoding doesn't push us over.
+ * truncate conservatively below GitHub's pre-fill limit so percent-encoding
+ * does not push the URL over it
  */
 const URL_BODY_MAX_LEN = 7000;
 const URL_BODY_TRUNCATION_SUFFIX = "\n\n…(body truncated; see terminal output)";
 
 /**
- * Parses a repository URL from an extension manifest.
- *
- * Only HTTPS URLs are accepted — `git@github.com:...` style URLs cannot be
- * opened in a browser and are rejected with a clear error so the caller
- * surfaces the right guidance.
+ * only HTTPS URLs are accepted: git@ style URLs cannot be opened in a browser
+ * and are rejected so the caller surfaces the right guidance
  */
 export function parseRepositoryUrl(url: string): ParsedRepositoryUrl {
   rejectInvisibleCharacters(url);
@@ -85,10 +78,6 @@ export function parseRepositoryUrl(url: string): ParsedRepositoryUrl {
   return { provider: "other", host, url: canonical };
 }
 
-/**
- * Builds the pre-filled GitHub new-issue URL. Body is truncated with a
- * visible suffix if it would otherwise blow past GitHub's URL-length cap.
- */
 export function buildGithubNewIssueUrl(
   ownerRepo: string,
   title: string,
@@ -104,15 +93,13 @@ export function buildGithubNewIssueUrl(
 }
 
 /**
- * Builds the GitHub private vulnerability reporting URL. GitHub's advisory
- * form is structured and does not accept URL query parameters — the CLI
- * hands off to this URL and the user fills in the form.
+ * GitHub's advisory form takes no URL query parameters, so the CLI hands off to
+ * this URL and the user fills in the form
  */
 export function buildGithubAdvisoryUrl(ownerRepo: string): string {
   return `https://github.com/${ownerRepo}/security/advisories/new`;
 }
 
-/** Builds the pre-filled GitLab new-issue URL (gitlab.com only). */
 export function buildGitlabNewIssueUrl(
   repoUrl: string,
   title: string,
@@ -127,9 +114,8 @@ export function buildGitlabNewIssueUrl(
 }
 
 /**
- * Centralises the swamp-club extension-page URL so future swamp-club
- * route changes land in one place. The URL template matches
- * swamp-club/routes/extensions/[...name].tsx.
+ * centralised so swamp-club route changes land in one place; the template
+ * matches swamp-club's extensions route
  */
 export function swampClubExtensionUrl(extensionName: string): string {
   return `${DEFAULT_SWAMP_CLUB_URL}/extensions/${
@@ -138,10 +124,8 @@ export function swampClubExtensionUrl(extensionName: string): string {
 }
 
 /**
- * Builds the GitHub "enable private vulnerability reporting" repo-settings
- * URL. Only useful to the repo's admin, but included in the refusal
- * guidance so publishers have a one-click action when a reporter forwards
- * the message to them.
+ * only useful to the repo's admin, but included in refusal guidance so
+ * publishers have a one-click action when a reporter forwards it
  */
 export function buildGithubSecuritySettingsUrl(ownerRepo: string): string {
   return `https://github.com/${ownerRepo}/settings/security_analysis`;
@@ -163,7 +147,6 @@ function canonicaliseUrl(parsed: URL): string {
 }
 
 function extractOwnerRepo(parsed: URL): string | undefined {
-  // Strip leading "/", drop trailing ".git", then take the first two segments.
   const cleaned = parsed.pathname.replace(/^\/+/, "").replace(/\.git$/, "");
   if (!cleaned) return undefined;
   const segments = cleaned.split("/").filter((s) => s.length > 0);
@@ -175,10 +158,8 @@ function extractOwnerRepo(parsed: URL): string | undefined {
 const INVISIBLE_CHAR_PATTERN = /[\x00-\x08\x0b\x0c\x0e-\x1f\t\n\r]/;
 
 /**
- * Rejects repository URLs that contain ASCII control characters. The WHATWG
- * URL parser silently strips tabs (U+0009) and newlines (U+000A, U+000D),
- * which corrupts the extracted owner/repo — e.g. `f\tveronezzi` becomes
- * `fveronezzi` after `new URL()` drops the tab.
+ * the WHATWG URL parser silently strips tabs and newlines, which corrupts the
+ * extracted owner/repo (f\tveronezzi becomes fveronezzi)
  */
 function rejectInvisibleCharacters(url: string): void {
   const match = INVISIBLE_CHAR_PATTERN.exec(url);

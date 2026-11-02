@@ -17,32 +17,17 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * What a landed commit changes for a serve node holding a copy of the
- * datastore (swamp-club#4120). On v3 serve keeps its catalog, its access
- * policy and its extensions current by applying each commit it sees, from
- * its own writes and, on a follower, from the leader's commit feed, in
- * place of v2's pollers. Decided from the commit's partition alone, so it
- * needs nothing but the commit.
- *
- * @module
- */
+/** decided from the commit's partition alone, so it needs nothing but the commit */
 
 import { isControlPlaneModelType } from "../models/control_plane_types.ts";
 import type { PartitionKey } from "./partition_key.ts";
 
-/** One thing a commit can change for serve. */
 export type CommitEffect =
-  /** A model, workflow or vault definition: the catalog is rebuilt. */
   | "config"
-  /** The extension lockfile: serve reloads its extensions. */
   | "lockfile"
-  /** Grants, groups, tokens or workers: the access policy is reloaded. */
   | "access"
-  /** Model data, run records or auto-definitions: the catalog is rebuilt. */
   | "runtime";
 
-/** What a commit to `partition` changes. */
 export function commitEffectOf(partition: PartitionKey): CommitEffect {
   const identity = partition.identity;
   switch (identity.kind) {
@@ -58,7 +43,6 @@ export function commitEffectOf(partition: PartitionKey): CommitEffect {
   }
 }
 
-/** The effects a batch of commits to `partitions` has, each once. */
 export function commitEffectsOf(
   partitions: Iterable<PartitionKey>,
 ): ReadonlySet<CommitEffect> {

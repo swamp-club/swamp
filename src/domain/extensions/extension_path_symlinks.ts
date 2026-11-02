@@ -20,26 +20,15 @@
 import { dirname, resolve, SEPARATOR } from "@std/path";
 
 /**
- * An extension file is refused if any component of its path, from the root
- * it lives under down to the file itself, is a symlink (swamp-club#3421).
- * Push never follows one: what an extension packages is the tree as the
- * author laid it out, so its archive never holds a symlink or a file
- * reached through one. Symlinks above the root (a repository under macOS
- * /tmp or a symlinked home directory) are not the extension's and are
- * allowed.
+ * a symlink in any component from the root down is refused: push never follows
+ * one, so an archive holds no symlink or file reached through one; symlinks
+ * above the root are not the extension's and are allowed
  */
 
 function isSameOrUnder(path: string, root: string): boolean {
   return path === root || path.startsWith(root + SEPARATOR);
 }
 
-/**
- * The paths whose symlink status decides whether `path` is refused: each
- * component from just below the outermost root that contains it down to
- * `path` itself, outermost first. A path under no root is checked only by
- * its own last component, which a symlinked file always is. Computed from
- * the paths alone; nothing is read.
- */
 export function pathComponentsToCheck(
   path: string,
   roots: readonly string[],
@@ -55,11 +44,6 @@ export function pathComponentsToCheck(
   return components.reverse();
 }
 
-/**
- * The first component of `path` that is a symlink, outermost first, or
- * undefined when none is. `isSymlink` answers for one component without
- * following it.
- */
 export async function firstSymlinkedComponent(
   path: string,
   roots: readonly string[],

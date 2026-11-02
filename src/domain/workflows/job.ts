@@ -29,17 +29,11 @@ import { rejectUnknownKeys } from "./unknown_keys.ts";
 import { nodeName } from "./node_name.ts";
 import { type PlacementFields, PlacementFieldsSchema } from "./placement.ts";
 
-/**
- * Schema for job dependency with condition.
- */
 export const JobDependencySchema = z.object({
   job: z.string().min(1),
   condition: TriggerConditionSchema,
 });
 
-/**
- * Type representing job dependency data.
- */
 export type JobDependencyData = z.infer<typeof JobDependencySchema>;
 
 const JobDependencyFieldSchema = z.array(JobDependencySchema).default([]);
@@ -57,9 +51,8 @@ export const JobObjectSchema = z.object({
 });
 
 /**
- * Reports each string-form `dependsOn` entry as a schema issue with the object
- * form to write instead (swamp-club#3832). The message is one line: schema
- * errors escape control characters, so a newline would print as an escape.
+ * the message is one line: schema errors escape control characters, so a
+ * newline would print as an escape
  */
 function rejectStringJobDependsOn(
   data: unknown,
@@ -87,9 +80,8 @@ function rejectStringJobDependsOn(
 }
 
 /**
- * Zod schema for Job entity. Rejects the removed `driver`/`driverConfig`
- * fields with an actionable error (see design/enablers/remote-execution.md), and
- * rejects unknown keys with did-you-mean suggestions (swamp-club#1240).
+ * rejects the removed driver/driverConfig fields with an actionable error, and
+ * unknown keys with did-you-mean suggestions
  */
 export const JobSchema = z.preprocess(
   addRemovedDriverFieldIssues,
@@ -99,27 +91,15 @@ export const JobSchema = z.preprocess(
   ),
 );
 
-/**
- * Type representing job data (output — defaults applied).
- */
 export type JobData = z.infer<typeof JobObjectSchema>;
 
-/**
- * Type representing job input data (defaults optional for backward compat).
- */
 export type JobInput = z.input<typeof JobObjectSchema>;
 
-/**
- * Job dependency with resolved TriggerCondition.
- */
 export interface JobDependency {
   job: string;
   condition: TriggerCondition;
 }
 
-/**
- * Properties for creating a new Job.
- */
 export interface CreateJobProps {
   name: string;
   description?: string;
@@ -135,16 +115,6 @@ export interface CreateJobProps {
   queueTimeout?: number;
 }
 
-/**
- * Job is an entity within a Workflow that groups related steps.
- *
- * Each job has:
- * - A unique name (within the workflow)
- * - An optional description
- * - One or more steps to execute
- * - Dependencies on other jobs with trigger conditions
- * - A weight for deterministic topological sorting
- */
 export class Job {
   private constructor(
     readonly name: string,
@@ -161,9 +131,6 @@ export class Job {
     readonly queueTimeout: number | undefined,
   ) {}
 
-  /**
-   * Creates a new Job.
-   */
   static create(props: CreateJobProps): Job {
     if (props.steps.length === 0) {
       throw new Error("Job must have at least one step");
@@ -190,9 +157,6 @@ export class Job {
     return Job.fromData(data);
   }
 
-  /**
-   * Reconstructs a Job from persisted data.
-   */
   static fromData(data: JobInput): Job {
     const validated = JobSchema.parse(data);
     const steps = validated.steps.map((s) => Step.fromData(s));
@@ -217,30 +181,18 @@ export class Job {
     );
   }
 
-  /**
-   * Returns the steps for this job.
-   */
   get steps(): ReadonlyArray<Step> {
     return this._steps;
   }
 
-  /**
-   * Returns the dependencies for this job.
-   */
   get dependsOn(): ReadonlyArray<JobDependency> {
     return this._dependsOn;
   }
 
-  /**
-   * Returns the names of all jobs this job depends on.
-   */
   getDependencyNames(): string[] {
     return this._dependsOn.map((d) => d.job);
   }
 
-  /**
-   * Finds a step by name.
-   */
   getStep(name: string): Step | undefined {
     return this._steps.find((s) => s.name === name);
   }
@@ -254,9 +206,6 @@ export class Job {
     };
   }
 
-  /**
-   * Converts to plain data for persistence.
-   */
   toData(): JobData {
     return {
       name: this.name,

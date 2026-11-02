@@ -172,7 +172,6 @@ Deno.test("fails on duplicate job names", async () => {
     jobs: [],
   });
 
-  // Manually add duplicate jobs (bypassing addJob's check)
   const job1 = Job.create({
     name: "build",
     steps: [
@@ -180,7 +179,7 @@ Deno.test("fails on duplicate job names", async () => {
     ],
   });
   const job2 = Job.create({
-    name: "build", // duplicate!
+    name: "build",
     steps: [
       Step.create({ name: "s1", task: StepTask.model("test-model", "run") }),
     ],
@@ -203,7 +202,7 @@ Deno.test("fails on duplicate step names within job", async () => {
     task: StepTask.model("test-model", "run"),
   });
   const step2 = Step.create({
-    name: "compile", // duplicate!
+    name: "compile",
     task: StepTask.model("test-model", "run"),
   });
 
@@ -212,7 +211,6 @@ Deno.test("fails on duplicate step names within job", async () => {
     steps: [step1],
   });
 
-  // Manually add duplicate step
   (job as unknown as { _steps: Step[] })._steps = [step1, step2];
 
   const workflow = Workflow.create({
@@ -296,7 +294,6 @@ Deno.test("fails on cyclic job dependencies", async () => {
     ],
   });
 
-  // Create cycle: a -> b -> a
   (jobA as unknown as {
     _dependsOn: { job: string; condition: TriggerCondition }[];
   })._dependsOn = [
@@ -331,7 +328,6 @@ Deno.test("fails on cyclic step dependencies", async () => {
     task: StepTask.model("test-model", "run"),
   });
 
-  // Create cycle: a -> b -> a
   (stepA as unknown as {
     _dependsOn: { step: string; condition: TriggerCondition }[];
   })._dependsOn = [
@@ -449,8 +445,6 @@ Deno.test("validate returns a promise", async () => {
 });
 
 Deno.test("does not produce implicit dependency validation results", async () => {
-  // Regression: implicit CEL dependency checks were removed.
-  // No validation result should mention "implicit".
   const workflow = Workflow.create({
     name: "multi-model-workflow",
     jobs: [
@@ -479,7 +473,6 @@ Deno.test("does not produce implicit dependency validation results", async () =>
 });
 
 Deno.test("passes validation for linear chain that old implicit system would reject", async () => {
-  // Regression test for the proxmox-manager stop-allthemons failure.
   const workflow = Workflow.create({
     name: "stop-allthemons",
     jobs: [
@@ -548,8 +541,6 @@ Deno.test("validation results have equals method", async () => {
   const result2 = results[0];
   assertEquals(result1.equals(result2), true);
 });
-
-// --- Step input validation tests (model_method) ---
 
 Deno.test("validateStepInputs: fails when required model method arg is missing", async () => {
   const resolver = mockResolver({
@@ -721,8 +712,8 @@ Deno.test("validateStepInputs: model not found produces warning", async () => {
 
   const results = await svc.validate(workflow);
   const inputResult = results.find((r) => r.name.includes("Step inputs"));
-  // A missing model *instance* is a warning (it may be created at run time),
-  // unlike an unresolvable model *type*, which fails. See swamp-club#506/#517.
+  // a missing model instance is a warning since it may be created at run time,
+  // unlike an unresolvable model type, which fails
   assertEquals(inputResult?.passed, true);
   assertEquals(inputResult?.warning, true);
   assertEquals(inputResult?.name.includes("skipped"), false);
@@ -815,8 +806,6 @@ Deno.test("validateStepInputs: method with no required args and no inputs passes
   const inputResult = results.find((r) => r.name.includes("Step inputs"));
   assertEquals(inputResult?.passed, true);
 });
-
-// --- Definition-provided arguments (issue #359) ---
 
 Deno.test("validateStepInputs: passes when definition provides all required args", async () => {
   const resolver = mockResolver({
@@ -940,7 +929,6 @@ Deno.test("validateStepInputs: fails a step whose definition holds a literal sen
   assertEquals(globalResult?.passed, false);
   assertStringIncludes(globalResult?.error ?? "", "'apiKey'");
   assertStringIncludes(globalResult?.error ?? "", "vault.get");
-  // The step's own inputs are still checked beside it.
   const inputResult = results.find((r) => r.name.includes("Step inputs"));
   assertEquals(inputResult?.passed, false);
   assertEquals(inputResult?.error, "Missing required inputs: region");
@@ -979,9 +967,8 @@ Deno.test("validateStepInputs: definition and step inputs overlap on the same ke
 });
 
 Deno.test("validateStepInputs: missing definitionProvidedArgs field preserves legacy behavior", async () => {
-  // Mocks written before issue #359 omit definitionProvidedArgs entirely.
-  // The validator must treat the field as empty (no args provided by the
-  // definition) so existing behavior is unchanged.
+  // mocks may omit definitionProvidedArgs; the validator treats the field as
+  // empty so existing behavior is unchanged
   const resolver = mockResolver({
     "my-model.deploy": {
       status: "resolved",
@@ -1237,8 +1224,6 @@ Deno.test("validateStepInputs: a dynamic target that cannot be resolved statical
   }
 });
 
-// --- Step input validation tests (workflow tasks) ---
-
 Deno.test("validateStepInputs: fails when required workflow input is missing", async () => {
   const nestedWorkflow = Workflow.create({
     name: "deploy-pipeline",
@@ -1401,8 +1386,6 @@ Deno.test("validateStepInputs: nested workflow with no required inputs passes", 
   assertEquals(inputResult?.passed, true);
 });
 
-// --- Direct-execution step validation tests ---
-
 Deno.test("validateStepInputs: direct-execution step with resolved type and valid inputs passes", async () => {
   const resolver = mockResolverWithType({
     "type:@swamp/test/model.deploy": {
@@ -1503,8 +1486,8 @@ Deno.test("validateStepInputs: direct-execution step with unresolvable type fail
 
   const results = await svc.validate(workflow);
   const inputResult = results.find((r) => r.name.includes("Step inputs"));
-  // An unresolvable type must NOT silently pass — it hides real contract bugs
-  // (non-existent methods, wrong arg keys). See swamp-club#506.
+  // an unresolvable type must not silently pass: it hides real contract bugs
+  // such as non-existent methods or wrong arg keys
   assertEquals(inputResult?.passed, false);
   assertEquals(inputResult?.error?.includes("could not be resolved"), true);
   assertEquals(inputResult?.error?.includes("@swamp/nonexistent/type"), true);
@@ -1912,8 +1895,6 @@ Deno.test("validateStepInputs: direct-execution step missing required globalArg 
   assertEquals(inputResult?.passed, false);
   assertEquals(inputResult?.error?.includes("name"), true);
 });
-
-// ---------- validateGlobalArgInputRefs ----------
 
 Deno.test("validateGlobalArgInputRefs: fails when step does not supply referenced input", async () => {
   const resolver = mockResolver({
@@ -2367,8 +2348,6 @@ Deno.test("validate: warns when job clears inherited placement but queueTimeout 
   assertEquals(warning?.warning, true);
 });
 
-// --- Assert expr interpolation validation tests ---
-
 Deno.test("validate: fails when assert expr is wrapped in interpolation syntax", async () => {
   const workflow = Workflow.create({
     name: "test-assert-wrapped",
@@ -2786,8 +2765,6 @@ Deno.test("validate: no mixed placement warning when an affinity group's placeme
   );
 });
 
-// --- Guard expression type validation tests ---
-
 Deno.test("validate: fails when guard references boolean input", async () => {
   const workflow = Workflow.create({
     name: "guard-bool",
@@ -3163,7 +3140,6 @@ Deno.test("fails a wait_for_signal schema that reads inputs when the step sets a
     plain.find((r) => r.name.includes("Wait schema") && !r.passed),
     undefined,
   );
-  // A literal schema is what an early payload can be checked against.
   const literal = await service.validate(
     waitWorkflow({ type: "object", required: ["verdict"] }, 10),
   );
@@ -3240,8 +3216,6 @@ Deno.test("passes a wait_for_signal schema that is literal or reads inputs only"
     );
   }
 });
-
-// --- vaults list validation ---
 
 function vaultsListWorkflow(
   vaults: string[] | undefined,
@@ -3396,8 +3370,6 @@ Deno.test("passes a signal wait whose workflow sets autoResume, declares no inpu
   }
 });
 
-// --- wait keys (swamp-club#3209) ---
-
 function keyedWorkflow(
   steps: { job: string; step: string; key?: string; forEach?: boolean }[],
 ): Workflow {
@@ -3475,8 +3447,6 @@ Deno.test("fails a wait key on a step under forEach, naming the step", async () 
   );
 });
 
-// Another templating system's text in step tasks (swamp-club#2528).
-
 function foreignTextWorkflow(task: StepTask): Workflow {
   return Workflow.create({
     name: "foreign",
@@ -3550,14 +3520,11 @@ Deno.test("fails a root that nearly spells a swamp namespace in step arguments",
     "so a run fails with \"Unknown variable\". Did you mean 'inputs'? " +
     "If it is another templating system's text, write it with literal()",
   ]]);
-  // The other system's text beside it still only warns.
   assertEquals(
     results.filter((r) => r.warning).map((r) => r.error?.slice(0, 16)),
     ["inputs.sha holds"],
   );
 });
-
-// Only known foreign roots pass through step arguments (swamp-club#3400).
 
 Deno.test("fails an unlisted root in step arguments", async () => {
   const results = await service.validate(foreignTextWorkflow(
@@ -3616,9 +3583,7 @@ Deno.test("fails literal() output a run would refuse to save in a direct step's 
     ["${{ inputs.version }}", "", "reads a swamp namespace"],
     ["${{ a | b }}", "", "does not parse as an expression"],
     ["${{ 1 + 1 }}", "", "cannot be attributed to another templating system"],
-    // A literal() call inside a computation produces its text too.
     ["${{ inputs.v }}", "'x' + ", "reads a swamp namespace"],
-    // A run reads the hyphen as subtraction.
     [
       "${{ needs.build-vault.outputs.url }}",
       "",
@@ -3724,8 +3689,6 @@ Deno.test("passes literal() around an unlisted root in step inputs", async () =>
   );
 });
 
-// Reserved tags (swamp-club#3635)
-
 const RESERVED_TAG = { "_swamp.sensitiveFields": JSON.stringify(["stdout"]) };
 
 function twoStepWorkflow(
@@ -3821,7 +3784,6 @@ Deno.test("validateStepInputs: fails a step whose type's spec defaults hold a re
     assertEquals(tags?.passed, false);
     assertEquals(tags?.error, refusal);
   }
-  // Reported beside the step's inputs, not in place of them.
   assertEquals(
     results.find((r) => r.name === "Step inputs for 'a' in job 'a' (probe.run)")
       ?.passed,

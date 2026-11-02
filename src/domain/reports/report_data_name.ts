@@ -18,14 +18,9 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * Sanitizes a report name for use as a data name component.
- *
- * Report names use the `@collective/name` scoped pattern, but data names
- * reject `/`, `\`, `..`, and null bytes as path traversal risks.
- * Follows the same pattern as `sanitizeVaultKey` in `data_writer.ts`.
- *
- * Kept in its own dependency-free module: the dashboard derives the same
- * data name to deep-link a report, and its parity test imports this.
+ * data names reject /, \, .. and null bytes as path traversal; kept
+ * dependency-free because the dashboard derives the same data name and its
+ * parity test imports this
  */
 export function sanitizeReportNameForData(reportName: string): string {
   return reportName

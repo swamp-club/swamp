@@ -378,7 +378,6 @@ Deno.test("decideChunkCollection: only from the current lineage's head, with not
     decideChunkCollection(copy, [current], ReplicaRoot.of(ROOT)).kind,
     "collect",
   );
-  // Another root's lineage is never restored here.
   assertEquals(
     decideChunkCollection(
       copy,
@@ -436,9 +435,7 @@ Deno.test("currentLineage: a lineage another spelling of the S3 endpoint started
 
 Deno.test("outrankingForeignLineage: only a lineage under another root that would decide the state (swamp-club#3801)", () => {
   const foreign = "s3:http://localhost:47441:other:prefix";
-  // Nothing published: nothing to refuse.
   assertEquals(outrankingForeignLineage([], S3_OWN), undefined);
-  // Another spelling of this replica's endpoint is not foreign.
   assertEquals(
     outrankingForeignLineage(
       [published(4, { confirmed: 1, head: 1, root: S3_OTHER_SPELLING })],
@@ -446,7 +443,6 @@ Deno.test("outrankingForeignLineage: only a lineage under another root that woul
     ),
     undefined,
   );
-  // Under another root, with none under this one: refused.
   assertEquals(
     outrankingForeignLineage(
       [published(2, { confirmed: 1, head: 1, root: foreign })],
@@ -467,7 +463,6 @@ Deno.test("outrankingForeignLineage: only a lineage under another root that woul
     )?.fence,
     9,
   );
-  // Below a lineage this replica started later: history, ignored.
   assertEquals(
     outrankingForeignLineage(
       [
@@ -488,7 +483,6 @@ Deno.test("outrankingForeignLineage: only a lineage under another root that woul
 const SPELLED = "s3::bucket:prefix";
 const PROXIED = "s3:http://proxy:1:bucket:prefix";
 
-/** A start a swamp before swamp-club#3801 wrote, or this one (`chain`). */
 function startOf(
   fence: number,
   replicaRoot: string,
@@ -504,7 +498,6 @@ function startOf(
   };
 }
 
-/** What collection at `current` keeps; every listed lineage is complete. */
 function keptOf(
   list: ReturnType<typeof startOf>[],
   current: number,
@@ -534,7 +527,6 @@ Deno.test("lineagesKeptForFork: one history is collected whatever the spellings,
     ], 6),
     new Set(),
   );
-  // Lineage 8's writer was fenced before 9 began, from 7.
   assertEquals(
     keptOf([
       startOf(7, SPELLED, {}),

@@ -20,16 +20,11 @@
 import { z } from "zod";
 import { workflowNameBase } from "./workflow.ts";
 
-/**
- * How deep workflow steps may nest. A run at depth `MAX_WORKFLOW_NESTING_DEPTH`
- * cannot start another nested workflow.
- */
 export const MAX_WORKFLOW_NESTING_DEPTH = 10;
 
 /**
- * The child run a parent's nested workflow step waits on (swamp-club#2736).
- * Ids are UUIDs, so a run record cannot steer a lookup outside the runs
- * directory or match another run's id by substring.
+ * ids are UUIDs, so a run record cannot steer a lookup outside the runs
+ * directory or match another run's id by substring
  */
 export const NestedRunRefSchema = z.object({
   workflowId: z.string().uuid(),
@@ -39,11 +34,6 @@ export const NestedRunRefSchema = z.object({
 
 export type NestedRunRef = z.infer<typeof NestedRunRefSchema>;
 
-/**
- * The parent step a child run was started by, with the nesting state a
- * resume of the child restores: its depth and the names of the workflows
- * above it, for the depth limit and cycle detection.
- */
 export const ParentRunRefSchema = z.object({
   workflowId: z.string().uuid(),
   workflowName: workflowNameBase,
@@ -72,26 +62,22 @@ function parseLink<T>(schema: z.ZodType<T>, raw: unknown): RunLink<T> {
     : { kind: "broken", raw };
 }
 
-/** Reads a step's `nestedRun` field; undefined when absent. */
 export function parseNestedRunLink(
   raw: unknown,
 ): RunLink<NestedRunRef> | undefined {
   return raw === undefined ? undefined : parseLink(NestedRunRefSchema, raw);
 }
 
-/** Reads a run's `parentRun` field; undefined when absent. */
 export function parseParentRunLink(
   raw: unknown,
 ): RunLink<ParentRunRef> | undefined {
   return raw === undefined ? undefined : parseLink(ParentRunRefSchema, raw);
 }
 
-/** The value a link persists as: the ref, or the raw value it was read from. */
 export function persistedLink<T>(link: RunLink<T>): unknown {
   return link.kind === "valid" ? structuredClone(link.ref) : link.raw;
 }
 
-/** True when two run or workflow ids name the same record. */
 export function sameRunId(a: string, b: string): boolean {
   return a.toLowerCase() === b.toLowerCase();
 }

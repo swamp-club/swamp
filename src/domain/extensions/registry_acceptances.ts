@@ -23,9 +23,8 @@ import type {
 } from "./extension_content.ts";
 
 /**
- * The most entries kept from a registry response. The registry stores at
- * most this many (swamp-club#3095); the cap is enforced again here so an
- * unbounded response cannot flood an installer's terminal.
+ * the registry stores at most this many; the cap is enforced again so an
+ * unbounded response cannot flood an installer's terminal
  */
 export const MAX_REGISTRY_ACCEPTANCES = 500;
 
@@ -70,15 +69,9 @@ function parseGenerated(
 }
 
 /**
- * Reads the `acceptances` field of a registry version detail
- * (`{ accepted, generated, total }`, where `file`, `line`, `reason` and
- * `generated` are `null` when absent, and the whole field is `null` for a
- * version that declared none) into the domain shape: nulls become absent
- * fields, malformed entries are dropped, at most
- * {@link MAX_REGISTRY_ACCEPTANCES} entries are kept, and `total` is never
- * less than the entries read. Returns `undefined` when nothing usable is
- * declared — the field is absent (a registry that predates swamp-club#3095),
- * null, or malformed.
+ * nulls become absent fields, malformed entries are dropped, at most
+ * MAX_REGISTRY_ACCEPTANCES are kept and total is never less than the entries
+ * read; undefined when nothing usable is declared
  */
 export function parseRegistryAcceptances(
   raw: unknown,

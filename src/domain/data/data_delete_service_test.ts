@@ -223,8 +223,6 @@ Deno.test("DataDeleteService.previewDelete: throws when artifact has no versions
   );
 });
 
-// --- Batch delete tests ---
-
 Deno.test("DataDeleteService.batchDelete: deletes all items matching prefix", async () => {
   const { service, dataRepo } = makeService();
   dataRepo.versionsByName.set("run-001", [1]);

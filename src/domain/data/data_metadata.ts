@@ -24,14 +24,6 @@ import {
 } from "../terminology/behavior_aliases.ts";
 import { boundedRecord } from "../untrusted_parse.ts";
 
-/**
- * Lifetime determines how long data should be retained.
- * - Duration strings: "1h", "5m", "10d", "2w", "1mo", "10y" (hours, minutes, days, weeks, months, years)
- * - "ephemeral": Deleted when the process ends
- * - "infinite": Never automatically deleted
- * - "job": Lives until the job completes
- * - "workflow": Lives until the workflow completes
- */
 export const LifetimeSchema = z.union([
   z.string().regex(/^\d+(mo|y|h|m|d|w)$/, {
     message:
@@ -46,9 +38,8 @@ export const LifetimeSchema = z.union([
 export type Lifetime = z.infer<typeof LifetimeSchema>;
 
 /**
- * Restricted lifetime for method invocation outputs.
- * Only duration strings and "infinite" are valid — "ephemeral", "job", and
- * "workflow" have no clear semantics for invocation records.
+ * ephemeral, job and workflow have no clear semantics for invocation records,
+ * so only durations and infinite are valid
  */
 export const OutputLifetimeSchema = z.union([
   z.string().regex(/^\d+(mo|y|h|m|d|w)$/, {
@@ -65,10 +56,6 @@ export const OutputLifetimeSchema = z.union([
 
 export type OutputLifetime = z.infer<typeof OutputLifetimeSchema>;
 
-/**
- * Converts a duration lifetime string to milliseconds.
- * Returns null for non-duration lifetimes ("infinite", "ephemeral", etc.).
- */
 export function lifetimeToMs(lifetime: Lifetime): number | null {
   const match = lifetime.match(/^(\d+)(mo|y|h|m|d|w)$/);
   if (!match) return null;
@@ -94,11 +81,6 @@ export function lifetimeToMs(lifetime: Lifetime): number | null {
   }
 }
 
-/**
- * Garbage collection policy determines version retention.
- * - number: Keep N most recent versions
- * - duration string: Keep versions created within the duration
- */
 export const GarbageCollectionSchema = z.union([
   z.number().int().positive(),
   z.string().regex(/^\d+(mo|y|h|m|d|w)$/, {
@@ -114,10 +96,6 @@ export const GarbageCollectionSchema = z.union([
 
 export type GarbageCollectionPolicy = z.infer<typeof GarbageCollectionSchema>;
 
-/**
- * Encodes a garbage collection policy for the catalog's TEXT column.
- * A count policy becomes its digits; a duration is stored as is.
- */
 export function garbageCollectionToColumn(
   policy: GarbageCollectionPolicy,
 ): string {
@@ -125,12 +103,9 @@ export function garbageCollectionToColumn(
 }
 
 /**
- * Decodes a catalog garbage collection column back to the policy's own
- * type: all digits is a count policy, anything else is a duration. The
- * empty string means unknown (a row pulled from a catalog export written
- * before the column existed) and stays empty. Rows pulled from a foreign
- * export are not validated, so the result is typed as any number or string
- * rather than a GarbageCollectionPolicy.
+ * empty means unknown (a row from an export written before the column existed)
+ * and stays empty; foreign rows are not validated, so the result is typed
+ * number or string
  */
 export function garbageCollectionFromColumn(
   column: string,
@@ -139,15 +114,8 @@ export function garbageCollectionFromColumn(
 }
 
 /**
- * Normalizes zero-duration lifetime strings to "workflow".
- *
- * Zero-duration strings like "0h", "0d", "00w" produce 0ms when parsed,
- * which would cause data to expire immediately on creation. Instead,
- * we treat them as "workflow" lifetime — the data lives for the
- * duration of the workflow run.
- *
- * @param lifetime - The lifetime value to normalize
- * @returns The normalized lifetime (zero durations become "workflow")
+ * zero-duration strings like 0h would expire data immediately, so they become
+ * workflow lifetime
  */
 export function normalizeLifetime(lifetime: Lifetime): Lifetime {
   if (typeof lifetime === "string") {
@@ -159,44 +127,29 @@ export function normalizeLifetime(lifetime: Lifetime): Lifetime {
   return lifetime;
 }
 
-/**
- * Lifecycle state of a data entry.
- * - "active": Normal, live data (default)
- * - "deleted": Tombstone marker — the cloud resource was deleted
- */
 export const DataLifecycleSchema = z.enum(["active", "deleted"]);
 export type DataLifecycle = z.infer<typeof DataLifecycleSchema>;
 
 /**
- * Decodes a catalog lifecycle column. The empty string means unknown (a row
- * pulled from a catalog export written before the column existed). Rows
- * pulled from a foreign export are not validated, so any other value is
- * unknown too rather than a third lifecycle state.
+ * empty means unknown (a row from an export written before the column existed);
+ * foreign rows are not validated, so any other value is unknown too rather than
+ * a third state
  */
 export function lifecycleFromColumn(column: string): DataLifecycle | "" {
   const parsed = DataLifecycleSchema.safeParse(column);
   return parsed.success ? parsed.data : "";
 }
 
-/**
- * Owner types that can create data.
- */
 export const OwnerTypes = ["model-method", "workflow-step", "manual"] as const;
 export type OwnerType = typeof OwnerTypes[number];
 
-/**
- * An owner type in its stored spelling: `behavior-method` becomes
- * `model-method` (swamp-club#3410), and every other value is returned
- * unchanged.
- */
 export function canonicalOwnerType(ownerType: string): string {
   return ownerType === BEHAVIOR_OWNER_TYPE ? MODEL_OWNER_TYPE : ownerType;
 }
 
 /**
- * Owner definition tracks who created/owns the data.
- * Ownership is validated by comparing ownerType + ownerRef.
- * definitionHash is retained for backward compatibility with existing data on disk.
+ * definitionHash is retained for backward compatibility with existing data on
+ * disk
  */
 export const OwnerDefinitionSchema = z.object({
   definitionHash: z.string().min(1).optional(),
@@ -212,13 +165,8 @@ export const OwnerDefinitionSchema = z.object({
 
 export type OwnerDefinition = z.infer<typeof OwnerDefinitionSchema>;
 
-/** Most tags one data version may carry. */
 export const MAX_DATA_TAGS = 10_000;
 
-/**
- * Complete metadata schema for Data entity.
- * Tags must include a 'type' key for categorization.
- */
 export const DataMetadataSchema = z.object({
   name: z.string().min(1).refine(
     (name) =>
@@ -235,8 +183,8 @@ export const DataMetadataSchema = z.object({
   lifetime: LifetimeSchema,
   garbageCollection: GarbageCollectionSchema,
   streaming: z.boolean().default(false),
-  // Bounded because a datastore commit carries it from a caller; generous
-  // because this schema also reads stored versions (swamp-club#3862).
+  // bounded because a datastore commit carries it from a caller; generous
+  // because this schema also reads stored versions
   tags: boundedRecord(z.string(), z.string(), MAX_DATA_TAGS).refine(
     (tags) => "type" in tags,
     { message: "tags must include 'type' key" },

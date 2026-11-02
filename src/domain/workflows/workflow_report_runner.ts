@@ -35,13 +35,6 @@ import type { Workflow } from "./workflow.ts";
 import type { WorkflowExecutionEvent } from "./execution_events.ts";
 import type { StepSkipReasonData } from "./workflow_run.ts";
 
-/**
- * Per-step execution detail collected during workflow execution.
- *
- * Built up as the service yields `model_resolved` and `step_completed`
- * events so the workflow-scope report context can describe what each
- * step did.
- */
 export interface WorkflowStepExecutionDetail {
   jobName: string;
   stepName: string;
@@ -55,13 +48,9 @@ export interface WorkflowStepExecutionDetail {
   modelId: string;
   globalArgs: Record<string, unknown>;
   errorMessage?: string;
-  /** Why the step did not run. Populated only when `status` is `skipped`. */
   skipReason?: StepSkipReasonData;
 }
 
-/**
- * Inputs for running workflow-scope reports after a workflow completes.
- */
 export interface WorkflowReportArgs {
   workflow: Workflow;
   workflowRunId: string;
@@ -77,16 +66,8 @@ export interface WorkflowReportArgs {
 }
 
 /**
- * Runs workflow-scope reports after a workflow completes and returns the
- * data artifacts they produced.
- *
- * Mirrors {@link MethodReportRunner} for method/model-scope reports.
- * Caller appends the returned DataArtifactRef entries to the WorkflowRun
- * aggregate via `addWorkflowDataArtifact` so they participate in the
- * `--workflow` retrieval path.
- *
- * Errors raised inside report execution are swallowed and logged — a
- * broken report must not mask the workflow result.
+ * errors in report execution are swallowed and logged so a broken report cannot
+ * mask the workflow result
  */
 export class WorkflowReportRunner {
   async runFor(args: WorkflowReportArgs): Promise<DataArtifactRef[]> {

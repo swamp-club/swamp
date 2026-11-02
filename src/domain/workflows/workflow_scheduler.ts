@@ -18,10 +18,8 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * WorkflowScheduler is a domain service that manages cron-based schedule
- * registrations for workflows. It is a pure scheduling layer — all I/O
- * decisions (execution, overlap prevention) are the caller's responsibility
- * via the onFire callback.
+ * a pure scheduling layer: execution and overlap prevention are the caller's
+ * responsibility via onFire
  */
 
 import { Cron } from "croner";
@@ -29,19 +27,14 @@ import { runDetached } from "../../infrastructure/tracing/mod.ts";
 import type { WorkflowId } from "./workflow_id.ts";
 
 /**
- * Callback invoked when a scheduled workflow should fire.
- * Receives the canonical fire time — the cron-pattern-matched
- * time, not the wall-clock time — so callers can derive a
- * deterministic key for cross-instance dedup.
+ * receives the canonical cron-matched fire time, not wall-clock time, so
+ * callers can derive a deterministic key for cross-instance dedup
  */
 export type ScheduleFireCallback = (
   workflowId: WorkflowId,
   fireTime: Date,
 ) => void | Promise<void>;
 
-/**
- * Information about a registered schedule.
- */
 export interface ScheduleEntry {
   readonly workflowId: WorkflowId;
   readonly cronExpression: string;
@@ -52,17 +45,12 @@ export class WorkflowScheduler {
   private readonly entries = new Map<WorkflowId, Cron>();
   private onFire: ScheduleFireCallback | null = null;
 
-  /**
-   * Registers a workflow schedule. If the workflow already has a schedule,
-   * it is replaced with the new cron expression.
-   */
   register(workflowId: WorkflowId, cronExpression: string): void {
     this.unregister(workflowId);
 
-    // Croner arms the job's timer here, and every fire re-arms it from that
-    // timer, so the active trace context at registration reaches every fire.
-    // Arm it detached: a fire is its own unit of work, never part of the
-    // trace that registered it (for serve, the never-ending swamp.cli span).
+    // croner arms the timer here and every fire re-arms from it, so arm it
+    // detached: a fire is its own unit of work, never part of the registering
+    // trace
     const cron = runDetached(() =>
       new Cron(
         cronExpression,
@@ -81,9 +69,6 @@ export class WorkflowScheduler {
     this.entries.set(workflowId, cron);
   }
 
-  /**
-   * Unregisters a workflow schedule. No-op if the workflow has no schedule.
-   */
   unregister(workflowId: WorkflowId): void {
     const existing = this.entries.get(workflowId);
     if (existing) {
@@ -92,10 +77,6 @@ export class WorkflowScheduler {
     }
   }
 
-  /**
-   * Starts the scheduler. Resumes all registered cron jobs and sets the
-   * fire callback. The callback is invoked each time a cron expression matches.
-   */
   start(onFire: ScheduleFireCallback): void {
     this.onFire = onFire;
     for (const cron of this.entries.values()) {
@@ -103,9 +84,6 @@ export class WorkflowScheduler {
     }
   }
 
-  /**
-   * Stops the scheduler. Pauses all cron jobs but does not unregister them.
-   */
   stop(): void {
     for (const cron of this.entries.values()) {
       cron.stop();
@@ -114,9 +92,6 @@ export class WorkflowScheduler {
     this.onFire = null;
   }
 
-  /**
-   * Returns all currently registered schedules.
-   */
   listSchedules(): ScheduleEntry[] {
     const result: ScheduleEntry[] = [];
     for (const [workflowId, cron] of this.entries) {
@@ -129,24 +104,15 @@ export class WorkflowScheduler {
     return result;
   }
 
-  /**
-   * Returns the number of registered schedules.
-   */
   get size(): number {
     return this.entries.size;
   }
 }
 
 /**
- * Computes the canonical fire time for a cron callback by snapping
- * the current wall-clock time to the nearest cron pattern grid point.
- *
- * croner's `currentRun()` returns wall-clock `new Date()`, NOT the
- * deterministic scheduled time. Two instances with slight clock skew
- * could get different values and both claim a fire slot. This function
- * enumerates recent pattern matches and picks the latest one at or
- * before `now`. If the timer fires slightly early (before the
- * scheduled second boundary), it snaps forward to the imminent match.
+ * croner's currentRun() is wall-clock, so skewed instances could both claim a
+ * fire slot; pick the latest pattern match at or before now, snapping forward
+ * if the timer fired early
  */
 export function canonicalFireTime(cron: Cron, now?: Date): Date {
   const ref = now ?? new Date();
@@ -168,11 +134,6 @@ export function canonicalFireTime(cron: Cron, now?: Date): Date {
   return ref;
 }
 
-/**
- * The cron expression a workflow is scheduled on: a serve.yaml trigger
- * override's schedule when it sets one, otherwise the workflow's own
- * trigger schedule. Null when neither schedules it.
- */
 export function effectiveSchedule(
   builtInSchedule: string | null,
   overrideSchedule: string | undefined,
@@ -180,10 +141,6 @@ export function effectiveSchedule(
   return overrideSchedule ?? builtInSchedule;
 }
 
-/**
- * The next time `cronExpression` fires after `from`, or null when it never
- * fires again or does not parse. Arms no timer.
- */
 export function nextFireTime(cronExpression: string, from: Date): Date | null {
   try {
     return new Cron(cronExpression).nextRun(from);

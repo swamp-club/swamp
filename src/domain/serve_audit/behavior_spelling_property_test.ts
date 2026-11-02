@@ -17,9 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// Audit filters select the same events under the behavior and model
-// spellings (swamp-club#3334).
-
 import { assertEquals } from "@std/assert";
 import fc from "fast-check";
 import { AuditQueryService } from "./audit_query_service.ts";
@@ -51,7 +48,6 @@ const arbEvents = fc.array(
   { maxLength: 12 },
 );
 
-/** A model-spelled filter value and its behavior spelling, when it has one. */
 function respell(value: string, sep: "." | ":"): string {
   return value.startsWith(`model${sep}`)
     ? `behavior${sep}${value.slice(6)}`

@@ -21,10 +21,6 @@ import { UserError } from "../errors.ts";
 
 const TRUSTED_ARTIFACT_HOST = "artifacts.swamp-club.com";
 
-/**
- * Validate that a redirect URL points to the trusted artifact host over HTTPS.
- * Throws UserError if the URL is not trusted.
- */
 export function validateRedirectUrl(url: string): void {
   let parsed: URL;
   try {
@@ -46,18 +42,10 @@ export function validateRedirectUrl(url: string): void {
   }
 }
 
-/**
- * Derive the checksum URL from a tarball URL by appending ".sha256".
- */
 export function checksumUrlFromTarballUrl(tarballUrl: string): string {
   return `${tarballUrl}.sha256`;
 }
 
-/**
- * Parse a sha256sum-format checksum file and return the hex digest.
- * Expected format: "<hex_hash>  <filename>"
- * Throws UserError if the format is invalid.
- */
 export function parseChecksumFile(content: string): string {
   const trimmed = content.trim();
   if (trimmed.length === 0) {
@@ -72,10 +60,6 @@ export function parseChecksumFile(content: string): string {
   return match[1];
 }
 
-/**
- * Verify that a computed checksum matches the expected checksum.
- * Throws UserError on mismatch.
- */
 export function verifyChecksum(expected: string, actual: string): void {
   if (expected.toLowerCase() !== actual.toLowerCase()) {
     throw new UserError(

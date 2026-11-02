@@ -45,7 +45,6 @@ import {
   type ShellContext,
 } from "./shell_context_scanner.ts";
 
-/** A recorded sensitive value with the reference it was read from. */
 export interface RecordedSecret {
   readonly value: string;
   readonly source: SecretReference;
@@ -53,7 +52,6 @@ export interface RecordedSecret {
 
 type QuoteContext = "unquoted" | "single" | "double";
 
-/** A command with sentinels replaced, and the environment that feeds it. */
 export interface ShellSecretResolution {
   command: string;
   env: Record<string, string>;
@@ -62,46 +60,31 @@ export interface ShellSecretResolution {
    * because no environment reference can expand where it sits.
    */
   dataInCommandLine: boolean;
-  /**
-   * vault.get() sentinels with an occurrence inside single quotes, where
-   * the reference stays a literal; each sentinel listed once.
-   */
   singleQuoted: string[];
-  /** The generated environment name of each sentinel in the command. */
   envNames: ReadonlyMap<string, string>;
 }
 
-/** Where one occurrence of a sentinel in a shell command is placed. */
 export interface ShellOccurrencePlacement {
   readonly sentinel: string;
-  /** The offset of the sentinel in the command. */
   readonly start: number;
-  /** The offset just past the sentinel. */
   readonly end: number;
   readonly dataOrigin: boolean;
-  /** The generated environment variable the occurrence refers to. */
   readonly envName: string;
   /**
-   * `environment`: replaced by `text`, a reference the shell expands from
-   * the child environment. `literal`: a vault.get() reference inside single
-   * quotes, replaced by `text` but left unexpanded by the shell, which is
-   * warned about. `refused`: a data-origin value no environment reference
-   * can expand where it sits (`where`); a typed run refuses the delivery,
-   * and the legacy fill pastes the value and reports it.
+   * refused: a data-origin value no environment reference can expand where it
+   * sits; a typed run refuses the delivery, the legacy fill pastes the value
+   * and reports it
    */
   readonly placement: "environment" | "literal" | "refused";
   readonly text?: string;
-  /** For a refused placement, the position as a user reads it. */
   readonly where?: string;
-  /** For a refused placement, what to write instead. */
   readonly fix?: string;
 }
 
 /**
- * A plan of a shell command's secret placement
- * (design/enablers/typed-secrets.md Section 7.2), computed from references
- * alone: no value is read, so a destination policy can refuse before the
- * load, and the fill after the load places exactly what the plan says.
+ * computed from references alone, no value read, so a destination policy can
+ * refuse before the load and the fill after it places exactly what the plan
+ * says
  */
 export interface ShellPlacementPlan {
   readonly occurrences: readonly ShellOccurrencePlacement[];
@@ -110,33 +93,18 @@ export interface ShellPlacementPlan {
    * issue order. A name never equals an authored environment key.
    */
   readonly envNames: ReadonlyMap<string, string>;
-  /** The occurrences no environment reference can expand. */
   readonly refused: readonly ShellOccurrencePlacement[];
-  /**
-   * vault.get() sentinels with an occurrence inside single quotes, where
-   * the reference stays a literal; each sentinel listed once.
-   */
   readonly singleQuoted: readonly string[];
 }
 
-/** The prefix of every generated environment variable name. */
 export const GENERATED_ENV_PREFIX = "__SWAMP_VAULT_";
 
-/** Characters after which a quote begins a new here-document token. */
 const TOKEN_BOUNDARY = /[\s=(|;&{[,:]/;
 
 /**
- * Whether `position` reads as inside a double-quoted string of here-document
- * text starting at `bodyStart`. Here-document text has no quoting of its own,
- * so this reads it as the author's script or config would. Within a line
- * every double quote opens or closes a string, as in shell, so attached
- * strings (`-p"…"`, `>"…"`, `'a'"…"`) pair up. A string still open at the end
- * of a line carries to the next line only when its opening quote sat at a
- * token boundary (`echo "line1`), so a stray mid-word quote such as an inch
- * mark (`5"`) ends with its line. A single-quoted span that opens at a token
- * boundary and closes on the same line is skipped (`tr -d '"'`); a position
- * inside one counts as quoted, so the reference stays bare inside the
- * author's single quotes. Mid-word apostrophes (`don't`) are prose.
+ * reads here-document text as the author's script would: within a line each
+ * double quote toggles, an open string carries to the next line only if it
+ * opened at a token boundary, single-quoted spans count as quoted
  */
 function heredocDoubleQuoted(
   command: string,
@@ -176,18 +144,14 @@ function heredocDoubleQuoted(
 }
 
 /**
- * Builds the reader of the quote context a vault.get() reference in
- * `command` is chosen by, from the POSIX shell context of its occurrence.
- * In a here-document body, {@link heredocDoubleQuoted} reads the text from
- * the start of the body, so a double-quoted string may span body lines. A
- * reference in a body is never reported as single-quoted.
+ * a double-quoted string may span here-document body lines; a reference in a
+ * body is never reported as single-quoted
  */
 function posixVaultQuoter(
   command: string,
 ): (position: number, context: ShellContext) => QuoteContext {
   let lineStarts: number[] | undefined;
   let bodyStarts: number[] = [];
-  /** Start of the here-document body holding `position`. */
   const bodyStartOf = (position: number): number => {
     if (lineStarts === undefined) {
       const starts = [0];
@@ -232,11 +196,6 @@ function posixVaultQuoter(
   };
 }
 
-/**
- * Returns the quoting context at a given position in a shell command string.
- * Tracks single-quote and double-quote state, respecting backslash escapes
- * outside single quotes.
- */
 export function getQuoteContext(str: string, position: number): QuoteContext {
   let inDouble = false;
   let inSingle = false;
@@ -258,22 +217,18 @@ export function getQuoteContext(str: string, position: number): QuoteContext {
 }
 
 /**
- * Whether a whole-value occurrence of `entry`'s sentinel delivers the number
- * or boolean its JSON text holds: a JSON-value entry written as raw text. A
- * shipped entry carries the mark only when this holds, so it needs no
- * encoding.
+ * a shipped entry carries the JSON-value mark only when this holds, so it needs
+ * no encoding
  */
 function parsesWhole(entry: RegistryEntry): boolean {
   return isJsonValueEntry(entry) &&
     (!isIssuedEntry(entry) || entry.encoding === "raw");
 }
 
-/** The key {@link VaultSecretBag.addDataSecret} shares a sentinel by. */
 function dataSentinelKey(value: string, jsonValue: boolean): string {
   return `${jsonValue ? "json" : "text"}\u0000${value}`;
 }
 
-/** Splits text into sentinel tokens and the text between them. */
 function splitOnSentinels(
   text: string,
 ): { text: string; sentinel: boolean }[] {
@@ -294,46 +249,24 @@ function splitOnSentinels(
 }
 
 /**
- * VaultSecretBag is a view of a run's {@link SecretBagRegistry}: it issues
- * sentinels under its own prefix and resolves any sentinel the registry
- * holds.
- *
- * During vault expression resolution, each vault.get() call is replaced with
- * a unique sentinel token (a safe alphanumeric string) that stands for its
- * reference. The bag holds no vault value: a load at delivery reads them and
- * returns a delivery view ({@link withLoaded}) that resolves sentinels —
- * either to raw values (for non-shell contexts) or to environment variable
- * references (for shell commands). Sentinels are persisted as references.
- * What the bag ships to a remote worker and reports as its own stays the
- * entries it issued, so one step's dispatch carries nothing from another
- * step.
+ * the bag holds no vault value: a load at delivery returns a delivery view that
+ * resolves sentinels; what it ships to a worker stays the entries it issued, so
+ * one step's dispatch carries nothing from another
  */
 export class VaultSecretBag {
-  /** Sentinels this bag issued, in issue order. */
   private readonly issued: string[] = [];
-  /**
-   * Sentinel per value for secrets read through data, reused on repeat,
-   * keyed by {@link dataSentinelKey}.
-   */
   private readonly dataSentinels = new Map<string, string>();
   private counter = 0;
   /** Drawn on the first issue, so a delivery view draws none. */
   private prefix: string | undefined;
-  /**
-   * The values one delivery attempt loaded for vault references, keyed by
-   * sentinel. Set only on a delivery view.
-   */
   private loaded: ReadonlyMap<string, string> | undefined;
 
-  /** Pattern that matches any sentinel produced by this bag or any other. */
   static readonly SENTINEL_PATTERN = new RegExp(SENTINEL_SOURCE, "g");
 
   constructor(
-    /** The run's registry this bag is a view of. */
     readonly registry: SecretBagRegistry,
   ) {}
 
-  /** Issues the next sentinel of this bag for `entry` into the registry. */
   private issue(
     entry:
       | Omit<VaultReferenceEntry, "sentinel">
@@ -354,12 +287,6 @@ export class VaultSecretBag {
     return sentinel;
   }
 
-  /**
-   * Adds a vault.get() reference, written at `location`, and returns a
-   * unique sentinel token that stands for it. No value is read: a load at
-   * delivery reads it. The sentinel is alphanumeric + underscores, safe in
-   * CEL strings and shell.
-   */
   addSecret(reference: SecretReference, location: string): string {
     return this.issue({
       reference,
@@ -370,13 +297,8 @@ export class VaultSecretBag {
   }
 
   /**
-   * Returns the sentinel for a secret that reached an argument through a
-   * data read (data.latest, step outputs) rather than vault.get(). One
-   * sentinel per distinct value, so repeated occurrences share it and two
-   * references whose values are equal share it too, with the first
-   * reference kept, as {@link RunSensitiveValues} keeps the first source.
-   * A value that is JSON text ({@link DataReferenceEntry.jsonValue}) never
-   * shares a sentinel with the same text that is not.
+   * one sentinel per distinct value, keeping the first reference; a value that
+   * is JSON text never shares a sentinel with the same text that is not
    */
   addDataSecret(
     value: string,
@@ -399,13 +321,8 @@ export class VaultSecretBag {
   }
 
   /**
-   * Adds a sensitive-field reference a typed data read brought into an
-   * expression (typed-secrets 3.3), read at `location`, and returns a unique
-   * sentinel that stands for it. No value is read: a load at delivery reads
-   * it, as for {@link addSecret}. Unlike {@link addDataSecret}, nothing is
-   * shared on a repeat, because no value is known to share by. `jsonValue`
-   * marks a vault value that is the JSON text of a value that is not a
-   * string ({@link DataReferenceEntry.jsonValue}).
+   * unlike addDataSecret, nothing is shared on a repeat, because no value is
+   * known to share by
    */
   addDataReference(
     reference: SecretReference,
@@ -422,14 +339,9 @@ export class VaultSecretBag {
   }
 
   /**
-   * Adds a written reference an existing file recorded (a cache or run
-   * record's `writtenReferences` entry, design/enablers/typed-secrets.md
-   * Section 8.1), restored at `location` (the record and the position), and
-   * returns a unique sentinel that stands for it. The entry keeps the file's
-   * encoding and origin, so it persists back as it was read and delivery
-   * applies the encoding; no value is read, a load at delivery reads it.
-   * `jsonValue` is kept for a data-origin entry only, as only the accessor
-   * adapter sets it.
+   * the entry keeps the file's encoding and origin so it persists back as read;
+   * jsonValue is kept for a data-origin entry only, as only the accessor
+   * adapter sets it
    */
   addWrittenReference(
     reference: SecretReference,
@@ -449,16 +361,13 @@ export class VaultSecretBag {
       : this.issue({ reference, encoding, dataOrigin: false, location });
   }
 
-  /** The entry behind a sentinel the run issued, if it is one. */
   entryOf(sentinel: string): RegistryEntry | undefined {
     return this.registry.entryOf(sentinel);
   }
 
   /**
-   * A delivery view of this bag: the same registry and the same issued
-   * sentinels, with `values` loaded for vault references, keyed by
-   * sentinel. Only a load builds one, for one delivery attempt; this bag is
-   * left as it is, so the next attempt loads again. A view issues nothing.
+   * built by a load for one delivery attempt; this bag is left as it is, so the
+   * next attempt loads again, and a view issues nothing
    */
   withLoaded(values: ReadonlyMap<string, string>): VaultSecretBag {
     const view = new VaultSecretBag(this.registry);
@@ -468,17 +377,9 @@ export class VaultSecretBag {
   }
 
   /**
-   * The value `sentinel` stands for: a data entry's or a shipped entry's
-   * own, or the value this delivery view loaded for a reference-only entry,
-   * in the entry's encoding: a `json` entry delivers the escaped form, and
-   * a `number` or `boolean` entry (a written reference an untyped run
-   * recorded at a scalar leaf) delivers the text, which the trusted
-   * boundary's schema coerces where a scalar is expected and refuses when
-   * the vault now holds something else. Delivery cannot restore a scalar
-   * itself: the sentinel may have flowed from the written position into a
-   * text field. Undefined for text that is not a sentinel of the run. A
-   * reference no load filled throws, so its sentinel is never delivered as
-   * a value.
+   * a number or boolean entry delivers text, which the boundary schema coerces
+   * or refuses, since delivery cannot restore a scalar the sentinel may have
+   * flowed from into a text field; an unloaded reference throws
    */
   private valueOf(sentinel: string): string | undefined {
     const entry = this.registry.entryOf(sentinel);
@@ -488,7 +389,6 @@ export class VaultSecretBag {
     return entry.encoding === "json" ? jsonEscaped(value) : value;
   }
 
-  /** The value this delivery view loaded for a reference-only entry. */
   private loadedValueOf(
     entry: VaultReferenceEntry | DataReferenceEntry,
   ): string {
@@ -502,7 +402,6 @@ export class VaultSecretBag {
     return value;
   }
 
-  /** Whether a sentinel this bag issued has its value in hand. */
   private inHand(sentinel: string): boolean {
     const entry = this.registry.entryOf(sentinel);
     return entry !== undefined &&
@@ -510,11 +409,9 @@ export class VaultSecretBag {
   }
 
   /**
-   * Replaces every occurrence of the given secret values in a string with
-   * data-origin sentinels. JSON-escaped forms are matched too and get their
-   * own sentinel with the `json` encoding, which restores the escaped text,
-   * so a secret spliced into JSON text round-trips to valid JSON. Text
-   * inside sentinels already in the string is never searched.
+   * JSON-escaped forms get their own json-encoded sentinel so a secret spliced
+   * into JSON text round-trips to valid JSON; text inside existing sentinels is
+   * never searched
    */
   sentinelizeText(text: string, secrets: readonly RecordedSecret[]): string {
     let segments: { text: string; sentinel: boolean }[] = splitOnSentinels(
@@ -544,10 +441,6 @@ export class VaultSecretBag {
     return segments.map((segment) => segment.text).join("");
   }
 
-  /**
-   * Deep variant of {@link sentinelizeText} over strings in a structure.
-   * `resolveDeep` of the result returns the input exactly.
-   */
   sentinelizeValues(
     data: unknown,
     secrets: readonly RecordedSecret[],
@@ -573,14 +466,9 @@ export class VaultSecretBag {
   }
 
   /**
-   * Re-issues the sentinels this bag issued that occur in `data` from
-   * `target`, so a value sanitized before a step started (at workflow
-   * evaluation) is delivered through that step's own bag and ships with it.
-   * Each source sentinel maps to one target sentinel, whatever its origin,
-   * with the same reference, encoding, origin and JSON-value mark; a
-   * reference-only entry, vault or data origin, moves as a reference, with
-   * no value. Other text is left as it is; a sentinel from another bag still
-   * resolves through the registry.
+   * re-issues sentinels from target so a value sanitized before the step is
+   * delivered through that step's own bag; reference-only entries move as
+   * references, with no value
    */
   rehomeSentinels(data: unknown, target: VaultSecretBag): unknown {
     const rehomed = new Map<string, string>();
@@ -638,19 +526,10 @@ export class VaultSecretBag {
     return walk(data);
   }
 
-  /**
-   * The sentinels this bag issued whose values are in hand, in issue order:
-   * every data entry, and each vault reference this delivery view loaded. A
-   * vault reference of a method the attempt does not run is never loaded.
-   */
   private ownInHand(): string[] {
     return this.issued.filter((sentinel) => this.inHand(sentinel));
   }
 
-  /**
-   * `sentinel`'s entry in the shape a dispatch ships, with its value, and
-   * its JSON-value mark when it delivers parsed ({@link parsesWhole}).
-   */
   private shipped(sentinel: string): SecretBagEntry {
     const entry = this.registry.entryOf(sentinel)!;
     return {
@@ -661,20 +540,14 @@ export class VaultSecretBag {
     };
   }
 
-  /**
-   * The sentinels this bag issued with their values in hand, so a remote
-   * worker can rebuild the bag with {@link VaultSecretBag.fromEntries} and
-   * deliver the step's secrets the way a local run does.
-   */
   toEntries(): SecretBagEntry[] {
     return this.ownInHand().map((sentinel) => this.shipped(sentinel));
   }
 
   /**
-   * The entries a dispatch of `args` needs: the ones this bag issued with
-   * their values in hand, then any other entry of the run whose sentinel
-   * occurs in `args`, so a worker delivers what the step's arguments
-   * reference and nothing else. A sentinel in `args` no load filled throws.
+   * own in-hand entries plus any other run entry whose sentinel occurs in args,
+   * so a worker delivers what the arguments reference and nothing else; an
+   * unloaded sentinel throws
    */
   entriesFor(args: unknown): SecretBagEntry[] {
     const sentinels = this.ownInHand();
@@ -683,15 +556,9 @@ export class VaultSecretBag {
   }
 
   /**
-   * The references behind the sentinels `args` carry, whichever bag of the
-   * run issued them, in order of first occurrence and without repeats.
-   * Serve admits these to the dispatch's own secret reads, since the
-   * arguments it ships hold the values and not the references
-   * (swamp-club#3529); a reference the arguments do not carry, such as one
-   * for a method the dispatch does not run, is not listed. Read through the
-   * registry and never through a value, so an unloaded reference is listed
-   * rather than thrown on, and an entry without a reference (a bag a worker
-   * rebuilt from shipped entries) is skipped.
+   * serve admits these to the dispatch's secret reads since shipped args hold
+   * values, not references; read via the registry so an unloaded reference is
+   * listed, and an entry without a reference is skipped
    */
   referencesFor(args: unknown): SecretReference[] {
     const sentinels: string[] = [];
@@ -710,14 +577,9 @@ export class VaultSecretBag {
   }
 
   /**
-   * The entries a protocol version 6 dispatch of `args` ships: one per
-   * sentinel of the run that occurs in `args`, in order of first occurrence,
-   * each carrying its reference, encoding, origin and JSON-value mark and no
-   * value. Their references are exactly those {@link referencesFor} lists,
-   * which serve admits to the dispatch's loads. A data entry that holds its
-   * value ships by its reference too, so the worker loads it as it loads
-   * every other. An entry without a reference cannot ship this way and
-   * throws.
+   * a data entry that holds its value ships by reference too, so the worker
+   * loads it like every other; an entry without a reference cannot ship this
+   * way and throws
    */
   referenceEntriesFor(args: unknown): ShippedReferenceEntry[] {
     const sentinels: string[] = [];
@@ -740,10 +602,6 @@ export class VaultSecretBag {
     });
   }
 
-  /**
-   * Appends to `sentinels` each sentinel of the run that occurs in `args`
-   * and is not listed yet, in order of first occurrence.
-   */
   private collectRunSentinels(args: unknown, sentinels: string[]): void {
     const seen = new Set(sentinels);
     const walk = (value: unknown): void => {
@@ -765,10 +623,9 @@ export class VaultSecretBag {
   }
 
   /**
-   * Rebuilds a bag from {@link VaultSecretBag.toEntries} over a registry of
-   * its own, keeping each sentinel exactly as shipped. Secrets added
-   * afterwards get this bag's own prefix. Entries come from one bag, so
-   * sentinels are unique; a repeated one is refused.
+   * keeps each sentinel exactly as shipped; secrets added afterwards get this
+   * bag's own prefix; entries come from one bag, so a repeated sentinel is
+   * refused
    */
   static fromEntries(entries: readonly SecretBagEntry[]): VaultSecretBag {
     const bag = new VaultSecretBag(new SecretBagRegistry());
@@ -795,12 +652,8 @@ export class VaultSecretBag {
   }
 
   /**
-   * Rebuilds a bag from {@link referenceEntriesFor} over a registry of its
-   * own, keeping each sentinel exactly as shipped. Every entry is
-   * reference-only, so the bag delivers nothing until a load builds a
-   * delivery view of it ({@link withLoaded}); that view then delivers each
-   * value in its entry's encoding, as the orchestrator's bag would. A
-   * repeated sentinel is refused.
+   * every entry is reference-only, so the bag delivers nothing until a load
+   * builds a delivery view; a repeated sentinel is refused
    */
   static fromReferenceEntries(
     entries: readonly ShippedReferenceEntry[],
@@ -831,30 +684,25 @@ export class VaultSecretBag {
     return bag;
   }
 
-  /** Whether this bag issued no secrets. */
   get isEmpty(): boolean {
     return this.issued.length === 0;
   }
 
   /**
-   * Whether any sentinel of the run resolves through this bag: the gate for
-   * delivery, since a step's arguments can carry a sentinel an earlier pass
-   * issued into the registry.
+   * the gate for delivery, since a step's arguments can carry a sentinel an
+   * earlier pass issued into the registry
    */
   get resolvesAny(): boolean {
     return !this.registry.isEmpty;
   }
 
-  /** The raw values of the secrets this bag issued that are in hand. */
   get rawValues(): string[] {
     return this.ownInHand().map((sentinel) => this.valueOf(sentinel)!);
   }
 
   /**
-   * Replaces every sentinel the run issued in a string with its raw secret
-   * value. Sentinel-shaped text with another prefix stays as it is. Use this
-   * for non-shell contexts where the value should be literal. A vault
-   * reference resolves only through a delivery view that loaded it.
+   * a vault reference resolves only through a delivery view that loaded it;
+   * sentinel-shaped text with another prefix stays as it is
    */
   resolveRaw(str: string): string {
     return str.replace(
@@ -863,14 +711,6 @@ export class VaultSecretBag {
     );
   }
 
-  /**
-   * Recursively replaces all sentinel tokens in a data structure with raw
-   * values. A string that is exactly one sentinel of a JSON-value entry
-   * ({@link parsesWhole}) is replaced by the number or boolean its JSON text
-   * holds ({@link deliveredJsonValue}), so a port the writer vaulted arrives
-   * as `8080`; an object or list, and any sentinel inside other text, is its
-   * text.
-   */
   resolveDeep(data: unknown): unknown {
     if (typeof data === "string") {
       if (SENTINEL_EXACT.test(data)) {
@@ -900,23 +740,9 @@ export class VaultSecretBag {
   }
 
   /**
-   * Replaces sentinel tokens in a shell command string with environment
-   * variable references, and returns the env var map.
-   *
-   * Shell variable expansion happens after command parsing, so metacharacters
-   * in the secret value are never interpreted as shell syntax.
-   *
-   * The replacement is quoting-context-aware, chosen per occurrence from
-   * the shell context scanner (which skips comments and here-documents):
-   * - If the sentinel is inside existing double quotes, uses bare `${VAR}`
-   *   (the user's quotes already protect against word splitting)
-   * - If the sentinel is outside quotes, uses `"${VAR}"` (adds quotes to
-   *   prevent word splitting and glob expansion)
-   * - Inside single quotes the reference stays a literal and the sentinel
-   *   is listed in `singleQuoted`
-   *
-   * The fill of {@link planShellPlacement}: `authoredEnvKeys` are the names
-   * the command's own `env` sets, which no generated name may take.
+   * shell expansion happens after parsing, so value metacharacters are never
+   * syntax: bare ${VAR} inside double quotes, quoted outside, and a literal
+   * (listed in singleQuoted) inside single quotes
    */
   resolveForShell(
     command: string,
@@ -929,31 +755,9 @@ export class VaultSecretBag {
   }
 
   /**
-   * PowerShell sibling of `resolveForShell`. Replaces sentinel tokens
-   * with `$env:VAR` references using PowerShell's environment-variable
-   * syntax, and returns the env var map.
-   *
-   * As with the POSIX path, secret values are passed through the
-   * process environment rather than substituted into the command
-   * string, so metacharacters in the value can't be parsed as syntax.
-   *
-   * The replacement is quoting-context-aware, chosen per occurrence:
-   * - If the sentinel is inside existing double quotes, uses bare
-   *   `$env:VAR` — PowerShell interpolates env vars inside double
-   *   quotes natively, no extra wrapping needed.
-   * - If the sentinel is outside quotes, uses `"$env:VAR"` to defend
-   *   against PowerShell's whitespace-splitting behavior when the
-   *   resolved value is passed to a native (non-cmdlet) command.
-   *
-   * Quote tracking reuses the POSIX `getQuoteContext` helper.
-   * PowerShell's escape character is a backtick rather than a
-   * backslash, so commands authored with PowerShell-specific escape
-   * sequences inside single quotes could mis-classify their context;
-   * users hitting that corner case can avoid it by keeping vault
-   * sentinels outside single-quoted regions, the same advice that
-   * applies to the POSIX resolver.
-   *
-   * The fill of {@link planPowerShellPlacement}.
+   * values pass through the process environment; PowerShell's backtick escape
+   * can mis-classify single-quoted regions, so keep vault sentinels outside
+   * them
    */
   resolveForPowerShell(
     command: string,
@@ -965,17 +769,14 @@ export class VaultSecretBag {
     );
   }
 
-  /** The origin of a sentinel the run issued, read from the registry. */
   private get originOf(): SecretOriginLookup {
     return secretOccurrencesOf(this.registry).originOf;
   }
 
   /**
-   * Places each occurrence as `plan` says and fills the environment with
-   * the values of the sentinels the command refers to. A refused occurrence
-   * is the legacy paste: the value goes into the command line and the
-   * result says so; a typed run refuses the delivery before this is
-   * reached. A sentinel no load filled throws.
+   * a refused occurrence is the legacy paste: the value goes into the command
+   * line and the result says so; a typed run refuses before this; a sentinel no
+   * load filled throws
    */
   private fill(
     command: string,
@@ -1021,7 +822,6 @@ export class VaultSecretBag {
   }
 }
 
-/** The POSIX reference a data-origin occurrence becomes in `context`. */
 export function posixDataReference(
   envName: string,
   context: ShellContext,
@@ -1041,25 +841,14 @@ export function posixDataReference(
   }
 }
 
-/** The POSIX reference a vault.get() occurrence becomes in `quote`. */
 function posixVaultReference(envName: string, quote: QuoteContext): string {
   return quote === "double" ? `\${${envName}}` : `"\${${envName}}"`;
 }
 
-/** The PowerShell reference an occurrence becomes in `quote`. */
 function powerShellReference(envName: string, quote: QuoteContext): string {
   return quote === "double" ? `$env:${envName}` : `"$env:${envName}"`;
 }
 
-/**
- * Plans the placement of every sentinel of the run in a POSIX `sh -c`
- * command, from references alone: each occurrence's context from the shell
- * context scanner, the environment reference that expands there, a literal
- * vault.get() reference inside single quotes, or a refusal where nothing
- * expands (a data value in a here-document with a quoted delimiter).
- * Generated names follow the run's issue order and skip any name in
- * `authoredEnvKeys`.
- */
 export function planShellPlacement(
   command: string,
   authoredEnvKeys: Iterable<string>,
@@ -1077,12 +866,9 @@ export function planShellPlacement(
 }
 
 /**
- * PowerShell sibling of {@link planShellPlacement}: contexts come from
- * `getQuoteContext`, and a data value inside single quotes is refused,
- * since PowerShell has no break-out from a single-quoted string that is
- * safe in every command position. Environment variable names are
- * case-insensitive on Windows, so generated names skip authored keys
- * whatever their case.
+ * a data value inside single quotes is refused, since PowerShell has no
+ * break-out from them that is safe in every position; names are
+ * case-insensitive, so authored keys are skipped whatever their case
  */
 export function planPowerShellPlacement(
   command: string,
@@ -1102,11 +888,9 @@ export function planPowerShellPlacement(
   });
 }
 
-/** How one shell reads contexts and writes references. */
 interface ShellPlacementRules<C> {
   caseInsensitiveNames: boolean;
   classify: (command: string, positions: number[]) => C[];
-  /** The reference for a data-origin occurrence; undefined where none expands. */
   dataReference: (envName: string, context: C) => string | undefined;
   vaultQuote: (position: number, context: C) => QuoteContext;
   vaultReference: (envName: string, quote: QuoteContext) => string;

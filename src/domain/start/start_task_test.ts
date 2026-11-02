@@ -49,7 +49,6 @@ Deno.test("StartTask.create: rejects text over 32 KiB", () => {
 });
 
 Deno.test("StartTask.create: measures the limit in UTF-8 bytes, not characters", () => {
-  // "é" is two bytes in UTF-8.
   const text = "é".repeat(MAX_TASK_BYTES / 2 + 1);
   assertThrows(() => StartTask.create(text), UserError);
 });

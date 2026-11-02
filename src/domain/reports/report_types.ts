@@ -38,10 +38,6 @@ export interface ReportTypeInfo {
   isBuiltIn: boolean;
 }
 
-/**
- * Gets all available report types (both loaded and lazy).
- * Lazy types are synthesized from catalog metadata.
- */
 export function getReportTypes(): ReportTypeInfo[] {
   const loaded = reportRegistry.getAll().map(({ name, report }) => ({
     type: name,

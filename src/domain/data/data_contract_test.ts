@@ -17,29 +17,12 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Contract tests for Data cross-context boundaries.
- *
- * These test behavioral invariants NOT covered by the unit tests in
- * data_test.ts. The unit tests cover creation, validation, path traversal,
- * lifetimes, serialization, and basic ownership. These contract tests verify:
- * - GC schema boundary conditions (zero, float, negative duration)
- * - Ownership schema strictness (enum, non-empty ref)
- * - OwnerDefinition optional fields behavior
- * - withNewVersion preserves all inherited fields
- * - Tags immutability (returned tags are copies)
- */
-
 import { assert, assertEquals, assertThrows } from "@std/assert";
 import {
   GarbageCollectionSchema,
   OwnerDefinitionSchema,
 } from "./data_metadata.ts";
 import { Data } from "./data.ts";
-
-// ============================================================================
-// GarbageCollection boundary conditions (not in data_test.ts)
-// ============================================================================
 
 Deno.test("contract: GarbageCollectionSchema rejects zero integer", () => {
   assertThrows(() => GarbageCollectionSchema.parse(0));
@@ -64,10 +47,6 @@ Deno.test("contract: GarbageCollectionSchema accepts positive integer", () => {
 Deno.test("contract: GarbageCollectionSchema accepts valid duration string", () => {
   assertEquals(GarbageCollectionSchema.parse("30d"), "30d");
 });
-
-// ============================================================================
-// OwnerDefinition schema (not in data_test.ts)
-// ============================================================================
 
 Deno.test("contract: OwnerDefinitionSchema rejects invalid ownerType", () => {
   assertThrows(() => {
@@ -112,10 +91,6 @@ Deno.test("contract: OwnerDefinitionSchema optional workflow fields", () => {
   assertEquals(withoutWorkflow.workflowRunId, undefined);
 });
 
-// ============================================================================
-// withNewVersion behavioral contract (not fully covered in data_test.ts)
-// ============================================================================
-
 Deno.test("contract: withNewVersion preserves all inherited fields", () => {
   const original = Data.create({
     name: "my-data",
@@ -146,14 +121,9 @@ Deno.test("contract: withNewVersion preserves all inherited fields", () => {
   );
   assertEquals(v2.ownerDefinition.ownerRef, original.ownerDefinition.ownerRef);
 
-  // New version-specific fields
   assertEquals(v2.version, 2);
   assertEquals(v2.size, 1024);
 });
-
-// ============================================================================
-// Tags reference semantics contract
-// ============================================================================
 
 Deno.test("contract: toData returns a copy of tags (not shared reference)", () => {
   const data = Data.create({
@@ -165,16 +135,11 @@ Deno.test("contract: toData returns a copy of tags (not shared reference)", () =
     ownerDefinition: { ownerType: "model-method", ownerRef: "ref" },
   });
 
-  // toData() spreads tags, so mutating the output shouldn't affect the entity
   const serialized = data.toData();
   serialized.tags.env = "HACKED";
 
   assertEquals(data.tags.env, "prod");
 });
-
-// ============================================================================
-// Ownership edge cases
-// ============================================================================
 
 Deno.test("contract: isOwnedBy ignores optional fields in comparison", () => {
   const data = Data.create({
@@ -190,7 +155,6 @@ Deno.test("contract: isOwnedBy ignores optional fields in comparison", () => {
     },
   });
 
-  // isOwnedBy only checks ownerType + ownerRef, not workflowId
   assert(
     data.isOwnedBy({
       ownerType: "workflow-step",

@@ -17,34 +17,16 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * The import sites a module writes: the one place push, quality, fmt and the
- * loader read them (swamp-club#3969). Sites come from the shared scorer's
- * import scan (`@swamp-club/extension-scoring/source`), which reads the
- * module's syntax tree, so push reads imports as the registry does
- * (swamp-club#3983).
- */
-
 import { importedSpecifiersAt } from "@swamp-club/extension-scoring/source";
 import { LineIndex } from "../extension_source_ast.ts";
 import type { SpecifierSpan } from "../extension_source_graph.ts";
 
-/** An import specifier as the source writes it, and where. */
 export interface ImportSite {
   specifier: string;
-  /** Quotes included; zero-based line, code-point columns. */
   span: SpecifierSpan;
-  /** UTF-16 offset of the opening quote in the source. */
   offset: number;
 }
 
-/**
- * Every module specifier `source` imports (static, side-effect and dynamic
- * imports, re-exports and `typeof import()` types), with its span, read the
- * way the dependency audit reads them. Null when the module does not parse.
- * `path` picks TypeScript, JavaScript or JSX; without one the module is read
- * as TypeScript.
- */
 export function scanImportSites(
   source: string,
   path?: string,

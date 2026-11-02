@@ -18,25 +18,9 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * Detects dynamic code execution — the global `eval`, the `Function`
- * constructor, and `.constructor(...)` calls — in TypeScript/JavaScript
- * source, for the extension safety gate.
- *
- * This is a hygiene gate, not a sandbox. The source is parsed with
- * `@babel/parser`, so comments, strings, template text and regex literals
- * never count, and the rules apply to syntax-tree nodes: an `eval` or
- * `Function` identifier is flagged unless its role is positively benign (a
- * class member or object-literal key, a label, a TypeScript type). A member
- * access named `eval` or `Function` is flagged on any receiver, because the
- * receiver may be the global object and no static check can rule that out.
- * A file that does not parse as a module falls back to the old text check
- * (`eval(` or `new Function(`), so it is held to at least the old standard.
- * Aliases built at runtime (`globalThis["ev" + "al"]`) cannot be caught
- * statically.
- *
- * The tree walk (`walkRuntimeNodes` in `extension_source_ast.ts`) uses an
- * explicit stack, because `extension pull` runs this on untrusted archive
- * sources.
+ * a hygiene gate, not a sandbox: runtime-built aliases cannot be caught
+ * statically; the walk uses an explicit stack because pull runs this on
+ * untrusted archives
  */
 
 import {
@@ -58,7 +42,6 @@ import {
   walkRuntimeNodes,
 } from "./extension_source_ast.ts";
 
-/** The form of dynamic code execution a finding reports. */
 export type DynamicCodeKind =
   | "eval-reference"
   | "eval-computed-access"
@@ -67,7 +50,6 @@ export type DynamicCodeKind =
   | "eval-member"
   | "unparsed-eval-text";
 
-/** One occurrence of dynamic code execution, 1-based line and column. */
 export interface DynamicCodeFinding {
   line: number;
   column: number;
@@ -77,7 +59,6 @@ export interface DynamicCodeFinding {
 const CALL_FORMS = new Set(["call", "apply", "bind"]);
 const COMPUTED_NAMES = new Set(["eval", "Function"]);
 
-/** The old text check, used when the source does not parse. */
 function textFallback(source: string): DynamicCodeFinding[] {
   const findings: DynamicCodeFinding[] = [];
   let lineStart = 0;
@@ -99,11 +80,6 @@ function textFallback(source: string): DynamicCodeFinding[] {
   return findings;
 }
 
-/**
- * A receiver whose `constructor` is a function constructor: a function,
- * arrow or class literal, or `Object.getPrototypeOf(...)` /
- * `Reflect.getPrototypeOf(...)` of anything.
- */
 function isFunctionSource(node: AstNode | undefined): boolean {
   const target = unwrap(node);
   if (!target) return false;
@@ -150,9 +126,8 @@ class Analyzer {
   private checkEval(visit: Visit): void {
     const role = identifierRole(visit);
     if (role === "property") {
-      // A member named `eval` is flagged on any receiver: the receiver may
-      // be the global object (`globalThis.valueOf()`, a host-bound `this`),
-      // and no static check can rule that out.
+      // a member named eval is flagged on any receiver: it may be the global
+      // object and no static check can rule that out
       this.flag(
         visit.node,
         isGlobalObject(child(visit.parent!.node, "object"))
@@ -213,10 +188,6 @@ class Analyzer {
     this.flag(node, "function-constructor");
   }
 
-  /**
-   * `x.constructor(...)` (without `new`), `x.constructor.call(...)`, or
-   * `new <function literal>.constructor(...)`.
-   */
   private checkConstructor(visit: Visit): void {
     if (identifierRole(visit) !== "property") return;
     if (this.reachesFunctionConstructor(visit.parent!)) {
@@ -233,7 +204,6 @@ class Analyzer {
       isFunctionSource(child(member.node, "object"));
   }
 
-  /** The member is the callee of a call, or of `.call`/`.apply`/`.bind`. */
   private isCalledWithoutNew(member: Visit): boolean {
     const outer = member.parent;
     if (!outer) return false;
@@ -259,11 +229,6 @@ class Analyzer {
     }
   }
 
-  /**
-   * `Reflect.get(globalThis, "eval")`, `Object.getOwnPropertyDescriptor(
-   * globalThis, "Function")`: one call given both a global object and the
-   * literal name reads the global the same way `globalThis["eval"]` does.
-   */
   private checkGlobalLookup(call: AstNode): void {
     const args = call.arguments;
     if (!Array.isArray(args)) return;
@@ -278,12 +243,6 @@ class Analyzer {
   }
 }
 
-/**
- * Finds dynamic code execution in `source`. Never throws: a file that does
- * not parse is checked with the plain text check instead. `program` is the
- * result of {@link parseExtensionSource} when the caller already parsed the
- * source (null when it did not parse); omitted, the source is parsed here.
- */
 export function findDynamicCodeExecution(
   source: string,
   program: AstNode | null = parseExtensionSource(source),

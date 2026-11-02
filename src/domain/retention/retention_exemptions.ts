@@ -23,21 +23,12 @@ import {
 } from "../models/control_plane_types.ts";
 
 /**
- * Every stored type name data retention never deletes: the control-plane
- * types (server tokens, grants, groups, enrollment tokens, workers, step
- * leases, pending dispatches, fleet probes), each bare and with its `@`
- * prefix, since the access commands store grants and groups as
- * `@swamp/grant` and `@swamp/group`. Deleting a grant or token would lock
- * users out; token GC, worker GC and bookkeeping reap these records.
+ * control-plane types are never deleted by retention: deleting a grant or token
+ * would lock users out
  */
 export const RETENTION_EXEMPT_MODEL_TYPES: readonly string[] =
   CONTROL_PLANE_STORED_TYPES;
 
-/**
- * True when data of this model type is never deleted by data retention.
- * Normalizes the type first, so any spelling of a control-plane type
- * matches.
- */
 export function isRetentionExempt(modelType: string): boolean {
   return isControlPlaneModelType(modelType);
 }

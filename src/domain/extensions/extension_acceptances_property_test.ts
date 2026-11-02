@@ -229,7 +229,6 @@ Deno.test("acceptance property: accepted plus remaining is exactly the input, in
         ]);
         assertEquals(seen.size, findings.length);
         for (const f of findings) assertEquals(seen.has(f), true);
-        // Each stale directive is one that covers no finding.
         for (const d of result.stale) {
           assertEquals(directives.includes(d), true);
         }

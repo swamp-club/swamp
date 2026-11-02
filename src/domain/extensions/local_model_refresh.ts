@@ -18,14 +18,9 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * Brings a long-lived process's model registry up to date with edited
- * repo-local model sources (swamp-club#3284). `swamp serve` loads its
- * extensions once; without this, an edit to a model under the repo's
- * models dir never reached the steps serve runs or the bundles it ships
- * to workers until serve restarted.
- *
- * Pulled extensions are left alone here: they reload through
- * `swamp serve reload` (src/serve/extension_reload.ts).
+ * serve loads extensions once, so without this an edit to a repo-local model
+ * never reaches steps or worker bundles until restart; pulled extensions reload
+ * through swamp serve reload
  */
 
 import { getLogger } from "@logtape/logtape";
@@ -40,20 +35,9 @@ import { removeAttachedExtensionsForType } from "./model_kind_adapter.ts";
 const logger = getLogger(["swamp", "model", "refresh"]);
 
 /**
- * Returns a refresher that runs {@link refreshLocalModels} only when a file
- * under the local model dirs changed since its last pass. Checking costs a
- * directory walk and a stat per file; a pass rehashes every source, pulled
- * ones included, so serve would otherwise pay it on every run.
- *
- * A change is any file added, removed, or with a new size, mtime, ctime or
- * inode (an editor's atomic save replaces the inode). A pass that throws
- * leaves the snapshot alone, so the next call tries again; a source that
- * fails to bundle or load is not retried until it changes again.
- *
- * @param watchDirs every local dir to snapshot besides `dir`, whether or not
- * it exists yet (the behaviors dir, the mounted source dirs)
- * @param passDirs the dirs a fresh index would walk now, read again for
- * every pass: local dirs of `dir`'s tier and the source and pulled dirs
+ * a check is a walk and a stat per file while a pass rehashes every source; a
+ * throwing pass leaves the snapshot so the next call retries; a source that
+ * fails to load is not retried until it changes
  */
 export function createLocalModelRefresher(
   loader: ExtensionLoader,
@@ -71,18 +55,14 @@ export function createLocalModelRefresher(
   };
 }
 
-/** The dirs a refresh pass walks besides the models dir. */
 export interface LocalModelDirs {
-  /** Further local dirs of the models dir's tier, such as the behaviors dir. */
   localDirs: string[];
-  /** The mounted source dirs, then the pulled extension dirs. */
   additionalDirs: string[];
 }
 
 /**
- * One line per file under `dirs`, sorted: its path, size, mtime, ctime and
- * inode. Every file counts, `_`-prefixed helper dirs included, since a
- * model's fingerprint covers the local modules it imports.
+ * every file counts, _-prefixed helper dirs included, since a model's
+ * fingerprint covers the local modules it imports
  */
 async function snapshotSourceFiles(dirs: string[]): Promise<string> {
   const lines: string[] = [];
@@ -125,14 +105,8 @@ async function snapshotSourceFiles(dirs: string[]): Promise<string> {
 }
 
 /**
- * Re-checks the loader's source dirs and swaps every model type whose
- * repo-local source changed, so the next resolve gets the new code.
- *
- * Failures follow a fresh local process: a source that no longer imports
- * or validates leaves its type unregistered, so a run fails as
- * `swamp model method run` would, rather than running the old code. A
- * failed `deno bundle` keeps the previous bundle with a warning, as the
- * loader does everywhere.
+ * failures follow a fresh local process: a source that fails to import or
+ * validate leaves its type unregistered rather than running old code
  */
 export async function refreshLocalModels(
   loader: ExtensionLoader,

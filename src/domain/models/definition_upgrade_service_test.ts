@@ -145,10 +145,9 @@ Deno.test("DefinitionUpgradeService - absent typeVersion skips the upgrade chain
   const definition = Definition.create({
     name: "test-def",
     type: "test/upgradeable",
-    // Already in the shape the current version expects, which is exactly the
-    // case absence cannot be distinguished from a definition that predates the
-    // chain. Running the chain would rename `content` away and corrupt it
-    // (swamp-club#2412).
+    // already in the current shape, a case absence cannot tell from a
+    // definition predating the chain; running the chain would rename `content`
+    // away and corrupt it
     globalArguments: { content: "hello", priority: "medium" },
   });
 
@@ -250,7 +249,6 @@ Deno.test("DefinitionUpgradeService - partial upgrade (skip already applied)", (
   const result = service.upgrade(definition, modelDef);
 
   assertEquals(result.upgraded, true);
-  // Only the second upgrade should have been applied
   assertEquals(result.definition.globalArguments.content, "hello");
   assertEquals(result.definition.globalArguments.priority, "medium");
   assertEquals(result.definition.globalArguments.message, undefined);
@@ -287,15 +285,14 @@ Deno.test("DefinitionUpgradeService - preserves id, name, tags", () => {
 
 Deno.test("DefinitionUpgradeService - numeric typeVersion from disk is malformed, not absent", () => {
   const service = new DefinitionUpgradeService();
-  // A definition written by a swamp built between #203 and #230, when
-  // typeVersion was a bare integer. That format is no longer understood, and a
-  // number the schema cannot parse is reported rather than discarded.
+  // a bare-integer typeVersion is not understood by the schema; it is reported
+  // rather than discarded
   const definition = Definition.fromData({
     id: "550e8400-e29b-41d4-a716-446655440000",
     name: "numeric-def",
     version: 1,
     type: "test/upgradeable",
-    typeVersion: 1 as unknown as string, // numeric typeVersion from disk
+    typeVersion: 1 as unknown as string,
     tags: {},
     globalArguments: { message: "old" },
     methods: {},

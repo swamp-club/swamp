@@ -30,10 +30,6 @@ const VAULT_REF = "${{ vault.get('my-vault', 'k') }}";
 
 type Layer = "object" | "array" | "record" | "optional" | "union";
 
-/**
- * Wraps a schema and a value holding `leaf` in the given container layers,
- * innermost first, and returns both with the path the leaf ends up at.
- */
 function nest(layers: Layer[], leaf: string) {
   let schema: z.ZodTypeAny = z.string().meta({ sensitive: true });
   let value: unknown = leaf;

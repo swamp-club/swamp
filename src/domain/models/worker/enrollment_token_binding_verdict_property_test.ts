@@ -51,14 +51,12 @@ Deno.test("enrollmentTokenBindingVerdict: keeps a worker exactly when its record
   fc.assert(
     fc.property(
       arbToken,
-      // Draw the bound mint either from the token (same mint) or freely.
       fc.boolean(),
       arbInstant,
       (token, sameMint, otherMint) => {
         const boundCreatedAt = sameMint && token ? token.createdAt : otherMint;
         const verdict = enrollmentTokenBindingVerdict(token, boundCreatedAt);
 
-        // Only a newer mint is a re-mint; an older record is a stale read.
         const shouldKeep = token !== null &&
           token.state !== "revoked" &&
           Date.parse(token.createdAt) <= Date.parse(boundCreatedAt);

@@ -18,32 +18,15 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * The file an extension member (method, check or resource spec) came from,
- * ranked for collision resolution (swamp-club#2562).
- *
- * `sourcePath` must already be canonical (see `canonicalizePath`), so two
- * surface forms of one file compare equal and the tie-break is stable
- * across hosts.
+ * sourcePath must already be canonical so two forms of one file compare equal
+ * and the tie-break is stable across hosts
  */
 export interface ExtensionContributor {
   readonly sourcePath: string;
   readonly pulled: boolean;
-  /**
-   * For a source mounted through `.swamp-sources.yaml`, the position of its
-   * mounted directory in source order. Absent for local and pulled sources.
-   */
   readonly mountIndex?: number;
 }
 
-/**
- * True when `canonicalPath` lives under one of the repo's pulled-extension
- * roots: `<repoRoot>/.swamp/pulled-extensions/` or, for managedConfig
- * repos, `<repoRoot>/.swamp/config/pulled-extensions/`. Those are the only
- * roots `resolvePulledExtensionsRoot` returns. Everything else — local
- * sources and source-mounted directories — is non-pulled.
- *
- * Both arguments must be canonical.
- */
 export function isPulledExtensionPath(
   canonicalPath: string,
   canonicalRepoRoot: string,
@@ -58,14 +41,9 @@ export function isPulledExtensionPath(
 }
 
 /**
- * Orders two contributors for collision resolution. Negative means `a`
- * wins. The tiers are `local > source-mounted > pulled`, the same order
- * the catalog applies to primary types and the order the loader registers
- * directories in (swamp-club#2563). Between two mounted sources the earlier
- * `.swamp-sources.yaml` entry wins. Within a tier the lexicographically
- * smaller canonical path wins, matching the Extension aggregate's I2
- * tie-break. A total order, so the winner of any set of contributors does
- * not depend on the order they attach in.
+ * tiers are local > source-mounted > pulled, as the catalog applies and the
+ * loader registers; earlier mount wins, then smaller canonical path; a total
+ * order, so attach order never changes the winner
  */
 export function compareExtensionPrecedence(
   a: ExtensionContributor,
@@ -80,7 +58,6 @@ export function compareExtensionPrecedence(
   return 0;
 }
 
-/** Short human label for a contributor's tier, used in collision warnings. */
 export function contributorTier(c: ExtensionContributor): string {
   if (c.pulled) return "pulled";
   return c.mountIndex === undefined ? "local" : "source-mounted";

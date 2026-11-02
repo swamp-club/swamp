@@ -25,7 +25,6 @@ import {
 } from "./bundle_module_map.ts";
 import { parseExtensionSourceWithComments } from "./extension_source_ast.ts";
 
-/** The map of `source`, read from its parsed comments. */
 function parsedMap(source: string): BundleModuleMap {
   const parsed = parseExtensionSourceWithComments(source);
   if (!parsed) throw new Error("fixture does not parse");
@@ -33,15 +32,15 @@ function parsedMap(source: string): BundleModuleMap {
 }
 
 const BUNDLE = [
-  "var __defProp = Object.defineProperty;", // 1: prelude
+  "var __defProp = Object.defineProperty;",
   "// ../../.swamp/deno-cache/npm/registry.npmjs.org/zod/4.3.6/v4/core/util.js",
-  "const a = 1;", // 3
+  "const a = 1;",
   "// @__NO_SIDE_EFFECTS__",
-  "const b = 2;", // 5
+  "const b = 2;",
   "// extensions/models/_lib/helper.ts",
-  "const c = 3;", // 7
+  "const c = 3;",
   "// compose.ts",
-  "const d = 4;", // 9
+  "const d = 4;",
 ].join("\n");
 
 Deno.test("BundleModuleMap.moduleAt: attributes each line to the comment above it", () => {
@@ -53,7 +52,6 @@ Deno.test("BundleModuleMap.moduleAt: attributes each line to the comment above i
         "../../.swamp/deno-cache/npm/registry.npmjs.org/zod/4.3.6/v4/core/util.js",
       origin: "dependency",
     });
-    // A comment that names no module does not start one.
     assertEquals(map.moduleAt(5).origin, "dependency");
     assertEquals(map.moduleAt(7), {
       path: "extensions/models/_lib/helper.ts",
@@ -68,7 +66,7 @@ Deno.test("BundleModuleMap.moduleAt: a module path with spaces starts a module, 
     "// ../.swamp/deno-cache/npm/registry.npmjs.org/dep/1.0.0/index.js",
     "const a = 1;",
     "// .swamp/pulled-extensions/@x/y/files/sub dir/evil helper.js",
-    "const b = 2;", // 4
+    "const b = 2;",
   ].join("\n");
   for (const map of [parsedMap(source), BundleModuleMap.fromText(source)]) {
     assertEquals(map.moduleAt(4), {
@@ -92,7 +90,7 @@ Deno.test("BundleModuleMap.moduleAt: a module comment the pattern does not recog
       "// ../.swamp/deno-cache/npm/registry.npmjs.org/dep/1.0.0/index.js",
       "const a = 1;",
       comment,
-      "const b = 2;", // 4
+      "const b = 2;",
     ].join("\n");
     for (const map of [parsedMap(source), BundleModuleMap.fromText(source)]) {
       assertEquals(map.moduleAt(4).origin, "author", comment);
@@ -105,7 +103,7 @@ Deno.test("BundleModuleMap.moduleAt: an uppercase extension is still a module pa
     "// ../.swamp/deno-cache/npm/registry.npmjs.org/dep/1.0.0/index.js",
     "const a = 1;",
     "// .swamp/pulled-extensions/@x/y/files/helper.JS",
-    "const b = 2;", // 4
+    "const b = 2;",
   ].join("\n");
   assertEquals(parsedMap(source).moduleAt(4), {
     path: ".swamp/pulled-extensions/@x/y/files/helper.JS",
@@ -125,7 +123,7 @@ Deno.test("BundleModuleMap.moduleAt: annotations and legal comments do not end a
     const source = [
       "// ../node_modules/dep/index.js",
       comment,
-      "const b = 2;", // 3
+      "const b = 2;",
     ].join("\n");
     assertEquals(parsedMap(source).moduleAt(3).origin, "dependency", comment);
   }
@@ -138,7 +136,7 @@ Deno.test("BundleModuleMap.fromComments: counts lines by \\n, as the safety rule
     "// ../node_modules/dep/index.js",
     "const s = '\u2028\u2028';",
     "// extensions/models/thing.ts",
-    "const b = 2;", // 4
+    "const b = 2;",
   ].join("\n");
   assertEquals(parsedMap(source).moduleAt(4), {
     path: "extensions/models/thing.ts",
@@ -158,13 +156,12 @@ Deno.test("BundleModuleMap.fromComments: a comment-like line inside a template l
     "const text = `",
     "// ../.swamp/deno-cache/npm/registry.npmjs.org/dep/1.0.0/index.js",
     "`;",
-    "const run = 1;", // 5
+    "const run = 1;",
   ].join("\n");
   assertEquals(parsedMap(source).moduleAt(5), {
     path: "extensions/models/thing.ts",
     origin: "author",
   });
-  // Only a bundle that does not parse is read line by line.
   assertEquals(
     BundleModuleMap.fromText(source).moduleAt(5).origin,
     "dependency",
@@ -176,7 +173,7 @@ Deno.test("BundleModuleMap.fromComments: an indented or block comment starts no 
     "// extensions/models/thing.ts",
     "  // ../node_modules/dep/index.js",
     "/* ../node_modules/dep/index.js */",
-    "const run = 1;", // 4
+    "const run = 1;",
   ].join("\n");
   assertEquals(parsedMap(source).moduleAt(4).origin, "author");
 });

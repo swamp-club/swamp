@@ -43,12 +43,10 @@ Deno.test("scanExpressions: finds each expression with its trimmed inner text", 
 });
 
 Deno.test("scanExpressions: keeps the legacy edge cases", () => {
-  // No inner character, so `${{}}` is not an expression.
   assertEquals(raws("${{}}"), []);
   assertEquals(inners("${{ }}"), [""]);
   assertEquals(inners("${{}}}"), ["}"]);
   assertEquals(raws("${{{ a }}}"), ["${{{ a }}"]);
-  // An opener with no close after it is not an expression.
   assertEquals(raws("${{ a"), []);
   assertEquals(raws("${{ a }} ${{ b"), ["${{ a }}"]);
 });
@@ -68,36 +66,28 @@ Deno.test("scanExpressions: a }} inside a CEL string does not end the expression
 });
 
 Deno.test("scanExpressions: an expression that parses at the first }} keeps that boundary", () => {
-  // Comments parse, and a }} in a comment still ends the expression.
   const value = "echo ${{ self.name // model name }}\necho ${{ self.id }}";
   assertEquals(inners(value), ["self.name // model name", "self.id"]);
-  // Quotes after an expression are ordinary text.
   assertEquals(inners("${{ self.name }}'s file"), ["self.name"]);
   assertEquals(inners(`echo '\${{ self.name }}' "x"`), ["self.name"]);
 });
 
 Deno.test("scanExpressions: malformed text keeps the legacy boundary", () => {
-  // An unterminated string.
   assertEquals(raws(`\${{ "abc }} secret`), [`\${{ "abc }}`]);
-  // Unparseable text whose quote-aware boundary does not parse either.
   assertEquals(raws("${{ it's }} SECRET don't }}"), ["${{ it's }}"]);
-  // A line break ends a single-quoted string's chance to close.
   assertEquals(raws("${{ 'a }}\n' }}"), ["${{ 'a }}"]);
 });
 
 Deno.test("scanExpressions: a quoted string holding a later expression becomes one literal", () => {
-  // The whole quoted text parses as one CEL string, so the inner expression
-  // is part of it rather than a second expression.
   assertEquals(inners("${{ 'a }} b ${{ inputs.x }} c' }}"), [
     "'a }} b ${{ inputs.x }} c'",
   ]);
 });
 
 Deno.test("scanExpressions: a walk that reaches a rejected walk's state keeps the legacy boundary", () => {
-  // The first opener's walk is rejected and passes the newline in the Code
-  // state. The second opener's walk leaves its comment on the same newline,
-  // meets the rejected state, and so keeps its legacy boundary, even though
-  // its own quote-aware text would parse.
+  // the second opener's walk meets the first's rejected state at the newline,
+  // so it keeps its legacy boundary even though its quote-aware text would
+  // parse
   const value = `\${{ z'}}\${{ "}}'//"\n}}`;
   assertEquals(raws(value), ["${{ z'}}", `\${{ "}}`]);
 });

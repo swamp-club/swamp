@@ -26,7 +26,6 @@ const arbBaseName = fc.stringOf(
   { minLength: 1, maxLength: 20 },
 ).filter((s) => s.trim() !== "");
 
-/** Vary values that pass every guard: non-blank, separator-free, not "."/"..". */
 const arbVaryValue = fc.stringOf(
   fc.constantFrom(..."abcdefgh0123-_".split("")),
   { minLength: 1, maxLength: 12 },
@@ -62,7 +61,6 @@ Deno.test("composeDataName: joins the base name and vary values with hyphens", (
             varyValues.length,
           true,
         );
-        // Deterministic for the same inputs.
         assertEquals(composeDataName(baseName, varyValues), composed);
       },
     ),

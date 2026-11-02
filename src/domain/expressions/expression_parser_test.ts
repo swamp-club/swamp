@@ -82,7 +82,6 @@ Deno.test("replaceExpressions: interpolates a literal() expression by its raw te
 });
 
 Deno.test("replaceExpressions: replaces by position, not every copy of a raw", () => {
-  // The second expression's raw also appears inside the first one's string.
   const value = "${{ 'x ${{ a }}' }} ${{ a }}";
   const values = new Map<string, unknown>([
     ["${{ 'x ${{ a }}' }}", "x ${{ a }}"],
@@ -107,7 +106,6 @@ Deno.test("extractInputReferencesFromCel: ignores text passed through literal()"
     [...extractInputReferencesFromCel("inputs.a + literal('{{inputs.b}}')")],
     ["a"],
   );
-  // A non-literal argument is a real reference.
   assertEquals(
     [...extractInputReferencesFromCel("literal(inputs.c)")],
     ["c"],
@@ -150,7 +148,6 @@ Deno.test("extractExpressions and replaceExpressions: preserve excluded fields i
         .map(({ path, raw }) => ({ path, raw })),
     );
   }
-  // Arbitrary input records with similarly named keys still interpolate.
   const data = { task: { inputs: { task } } };
   assertEquals(extractExpressions(data, "", isAssertExprPath).length, 2);
   assertEquals(
@@ -382,8 +379,6 @@ Deno.test("extractCelExpression returns null for invalid format", () => {
   assertEquals(extractCelExpression("{{ no dollar }}"), null);
 });
 
-// Tests for isTaskInputsPath
-
 Deno.test("isTaskInputsPath returns true for task.inputs with dot path", () => {
   assertEquals(
     isTaskInputsPath("jobs[0].steps[1].task.inputs.vpc_id"),
@@ -426,8 +421,6 @@ Deno.test("isTaskInputsPath returns true for the inputs field itself", () => {
   );
 });
 
-// Tests for isTaskGlobalArgsPath
-
 Deno.test("isTaskGlobalArgsPath returns true for globalArgs with dot path", () => {
   assertEquals(
     isTaskGlobalArgsPath("jobs[0].steps[0].task.globalArgs.name"),
@@ -448,8 +441,6 @@ Deno.test("isTaskGlobalArgsPath returns false for task.inputs", () => {
     false,
   );
 });
-
-// Tests for isAssertMessagePath
 
 Deno.test("isAssertMessagePath: returns true for task.message", () => {
   assertEquals(
@@ -479,8 +470,6 @@ Deno.test("isAssertMessagePath: returns false for step name", () => {
   );
 });
 
-// Tests for isTriggerInputsPath
-
 Deno.test("isTriggerInputsPath returns true for a trigger.inputs dot path", () => {
   assertEquals(isTriggerInputsPath("trigger.inputs.identifier"), true);
 });
@@ -500,8 +489,6 @@ Deno.test("isTriggerInputsPath returns false for trigger.schedule", () => {
 Deno.test("isTriggerInputsPath returns false for the top-level inputs schema", () => {
   assertEquals(isTriggerInputsPath("inputs.identifier"), false);
 });
-
-// Tests for extractInputReferences
 
 Deno.test("extractInputReferences finds dot notation references", () => {
   const data = {
@@ -568,10 +555,8 @@ Deno.test("extractInputReferences handles mixed dot and bracket notation", () =>
   );
 });
 
-// Documents why extractInputReferencesFromCel must not be used as a skip gate
-// for expression evaluation. It reports all inputs in ALL branches of a ternary,
-// regardless of which branch CEL would actually evaluate at runtime.
-// This was the root cause of the #814 regression introduced in #655.
+// extractInputReferencesFromCel reports inputs from every ternary branch, so it
+// must not be used as a skip gate for expression evaluation
 Deno.test("extractInputReferencesFromCel: returns all branch inputs in ternary regardless of which branch runs", () => {
   assertEquals(
     extractInputReferencesFromCel(
@@ -580,8 +565,6 @@ Deno.test("extractInputReferencesFromCel: returns all branch inputs in ternary r
     new Set(["transport", "lan_host", "tailnet_host"]),
   );
 });
-
-// Multi-line expression tests (swamp-club#1316)
 
 Deno.test("containsExpression: detects expression spanning newlines", () => {
   assertEquals(
@@ -616,9 +599,6 @@ Deno.test("replaceExpressions: replaces whole-value expression spanning newlines
 });
 
 Deno.test("replaceExpressions: interpolates strings that start and end with expressions", () => {
-  // Regression: the single-expression fast path once matched any string that
-  // started with "${{" and ended with "}}", so this shape was looked up whole
-  // in the values map, missed, and returned completely unreplaced.
   const data = { message: "${{ a }} and ${{ b }}" };
   const values = new Map<string, unknown>([
     ["${{ a }}", "A"],
@@ -758,10 +738,6 @@ Deno.test("stripExpressionFields: preserves __proto__ key for non-expression val
   assertStrictEquals(Object.hasOwn(result, "expr"), false);
 });
 
-// ---------------------------------------------------------------------------
-// isTaskTargetPath
-// ---------------------------------------------------------------------------
-
 Deno.test("isTaskTargetPath returns true for modelIdOrName", () => {
   assertEquals(
     isTaskTargetPath("jobs[0].steps[1].task.modelIdOrName"),
@@ -776,8 +752,6 @@ Deno.test("isTaskTargetPath returns true for modelName", () => {
 });
 
 Deno.test("isTaskTargetPath returns true for workflowIdOrName", () => {
-  // A nested workflow step's target names what it executes, the same as a
-  // model step's modelIdOrName.
   assertEquals(
     isTaskTargetPath("jobs[0].steps[1].task.workflowIdOrName"),
     true,
@@ -800,8 +774,6 @@ Deno.test("isTaskTargetPath returns false for other task fields", () => {
 });
 
 Deno.test("isTaskTargetPath does not match a field merely containing the name", () => {
-  // Anchored at the end, so a nested input that happens to be called
-  // modelIdOrName is not mistaken for the target.
   assertEquals(
     isTaskTargetPath("jobs[0].steps[0].task.inputs.modelIdOrName"),
     false,
@@ -873,7 +845,6 @@ Deno.test("rewriteExpressions: rewrites the occurrences extractExpressions repor
     "b.c": ["<two>", 3, null],
     d: { e: "plain" },
   });
-  // The input is left as it was.
   assertEquals(data.a, "x ${{ one }} y ${{ one }}");
 });
 
@@ -896,7 +867,6 @@ Deno.test("rewriteExpressions: returns every value it does not change as it is",
   assertStrictEquals(rewritten.when, when);
   assertStrictEquals(rewritten.bytes, bytes);
   assertStrictEquals(rewritten.untouched, untouched);
-  // Nothing to rewrite: the value itself comes back.
   assertStrictEquals(rewriteExpressions(untouched, () => "<x>"), untouched);
   assertStrictEquals(rewriteExpressions(data, () => undefined), data);
 });

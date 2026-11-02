@@ -262,7 +262,6 @@ Deno.test("removeSupersededLocalSkills: a skills dir that cannot be resolved is 
   });
 });
 
-/** Seeds an installed swamp skill holding the pre-#3332 model reference folder. */
 async function seedOldSwampSkill(skillsDir: string): Promise<void> {
   const refs = join(skillsDir, "swamp", "references");
   await Deno.mkdir(join(refs, "model", "references"), { recursive: true });

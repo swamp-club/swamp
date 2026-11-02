@@ -59,9 +59,6 @@ import {
   storedTextRefusal,
 } from "../expressions/swamp_namespaces.ts";
 
-/**
- * Value object representing the result of a single validation.
- */
 export class WorkflowValidationResult {
   private constructor(
     readonly name: string,
@@ -107,13 +104,8 @@ export class WorkflowValidationResult {
 }
 
 /**
- * Result of resolving a method's required arguments.
- *
- * `definitionProvidedArgs` carries the keys of arguments already populated
- * on the resolved definition — both `methods.<methodName>.arguments` and
- * `globalArguments`. The runtime merges these as fallbacks under step-level
- * inputs (see DefaultMethodExecutionService.execute), so the validator must
- * treat them as satisfied when checking required arguments.
+ * definitionProvidedArgs are merged at runtime as fallbacks under step inputs,
+ * so the validator treats them as satisfying required arguments
  */
 export type MethodResolution =
   | {
@@ -121,15 +113,11 @@ export type MethodResolution =
     requiredArgs: string[];
     definitionProvidedArgs?: string[];
     definitionProvidedArgValues?: Record<string, unknown>;
-    /**
-     * Paths of sensitive global arguments the stored definition holds as a
-     * literal secret, which the step refuses when it runs.
-     */
     literalSensitiveGlobals?: string[];
     /**
-     * The refusal of a reserved tag key in the type's spec defaults, which
-     * the step refuses when it runs (swamp-club#3635). The definition's own
-     * tags are checked with the workflow's, through `findDefinition`.
+     * the definition's own tags are checked with the workflow's through
+     * findDefinition; this covers the type's spec defaults, which the step
+     * refuses when it runs
      */
     reservedTagRefusal?: string;
   }
@@ -137,12 +125,6 @@ export type MethodResolution =
   | { status: "method_not_found"; modelType: string }
   | { status: "type_unresolvable"; modelType: string };
 
-/**
- * Port interface for resolving method argument schemas.
- *
- * Abstracts model type resolution so the validation service can look up
- * method argument schemas without depending on infrastructure.
- */
 export interface ModelMethodResolver {
   resolve(
     modelIdOrName: string,
@@ -151,12 +133,6 @@ export interface ModelMethodResolver {
   ): Promise<MethodResolution>;
 }
 
-/**
- * Port for predicting the vaults a model-method step's sensitive outputs land
- * in, with the resolver the data writer stores with
- * (`sensitive_output_vault.ts`). Returns `undefined` when the step cannot be
- * resolved statically or its method stores no sensitive output.
- */
 export interface SensitiveOutputVaultResolver {
   targetVaults(step: {
     modelIdOrName: string;
@@ -166,40 +142,17 @@ export interface SensitiveOutputVaultResolver {
   }): Promise<string[] | undefined>;
 }
 
-/**
- * Domain service for workflow validation.
- *
- * Validates:
- * 1. Schema compliance (Zod validation)
- * 2. Unique job names within workflow
- * 3. Unique step names within each job
- * 4. Valid job dependency references
- * 5. Valid step dependency references
- * 6. No cyclic dependencies between jobs
- * 7. No cyclic dependencies between steps within jobs
- * 8. Step inputs match method/workflow required arguments
- * 9. GlobalArgument expressions reference inputs supplied by the step
- */
 export interface WorkflowValidationService {
-  /**
-   * Validates a workflow.
-   *
-   * @param workflow The workflow to validate
-   * @returns Array of validation results
-   */
   validate(workflow: Workflow): Promise<WorkflowValidationResult[]>;
 }
 
 /**
- * Workflow, job and step prose. Input-schema annotations are collected from
- * schema nodes separately, so argument data named description is not skipped.
+ * input-schema annotations are collected from schema nodes separately, so
+ * argument data named description is not skipped
  */
 const PROSE_DESCRIPTION_PATH =
   /^(?:jobs\[\d+\](?:\.steps\[\d+\])?\.)?description$/;
 
-/**
- * Default implementation of workflow validation service.
- */
 export class DefaultWorkflowValidationService
   implements WorkflowValidationService {
   private readonly sortService = new TopologicalSortService();
@@ -208,7 +161,6 @@ export class DefaultWorkflowValidationService
     private readonly methodResolver?: ModelMethodResolver,
     private readonly workflowRepo?: WorkflowRepository,
     private readonly sensitiveOutputVaults?: SensitiveOutputVaultResolver,
-    /** The stored definition a step names, for its reserved tag keys. */
     private readonly findDefinition?: ReservedTagLookups["findDefinition"],
     private readonly diagnoseSecrets?: (
       expression: string,
@@ -221,43 +173,32 @@ export class DefaultWorkflowValidationService
   async validate(workflow: Workflow): Promise<WorkflowValidationResult[]> {
     const results: WorkflowValidationResult[] = [];
 
-    // 1. Schema validation
     results.push(this.validateSchema(workflow));
 
-    // 2. Unique job names
     results.push(this.validateUniqueJobNames(workflow));
 
-    // 3. Unique step names within jobs
     results.push(...this.validateUniqueStepNames(workflow));
 
-    // 4. Valid job dependency references
     results.push(this.validateJobDependencyRefs(workflow));
 
-    // 5. Valid step dependency references
     results.push(...this.validateStepDependencyRefs(workflow));
 
-    // 6. No cyclic job dependencies
     results.push(this.validateNoJobCycles(workflow));
 
-    // 7. No cyclic step dependencies within jobs
     results.push(...this.validateNoStepCycles(workflow));
 
-    // 8. Step inputs match required arguments
     if (this.methodResolver || this.workflowRepo) {
       results.push(...await this.validateStepInputs(workflow));
     }
 
-    // 9. GlobalArgument expressions reference inputs supplied by the step
     if (this.methodResolver) {
       results.push(
         ...await this.validateGlobalArgInputRefs(workflow),
       );
     }
 
-    // 10. queueTimeout without placement is a no-op
     results.push(...this.validateQueueTimeoutPlacement(workflow));
 
-    // 11. Assert expr must not be wrapped in ${{ }}
     results.push(...this.validateAssertExprNotInterpolated(workflow));
     for (const result of this.validateWaitSchemaExpressions(workflow)) {
       results.push(result);
@@ -269,21 +210,16 @@ export class DefaultWorkflowValidationService
       results.push(result);
     }
 
-    // 12. affinity without placement is a no-op
     results.push(...this.validateAffinityPlacement(workflow));
 
-    // 13. Guard expression type matches input type
     results.push(...this.validateGuardExpressionTypes(workflow));
 
-    // 14. writes without placement is a no-op
     results.push(...this.validateWritesPlacement(workflow));
 
-    // 15. Vaults the workflow reads are in its vaults list
     for (const result of await this.validateVaultsList(workflow)) {
       results.push(result);
     }
 
-    // 16. Another templating system's ${{ }} text in step tasks
     for (const result of this.validateForeignTaskText(workflow)) {
       results.push(result);
     }
@@ -292,12 +228,10 @@ export class DefaultWorkflowValidationService
       results.push(result);
     }
 
-    // 17. Reserved tag keys the workflow, its steps and nested workflows supply
     for (const result of await this.validateReservedTags(workflow)) {
       results.push(result);
     }
 
-    // 18. literal() output a direct step could not store
     for (const result of this.validateDirectGlobalArgLiterals(workflow)) {
       results.push(result);
     }
@@ -306,13 +240,9 @@ export class DefaultWorkflowValidationService
   }
 
   /**
-   * A step that runs a model type directly saves its `globalArgs` in a
-   * definition. A run stores another templating system's text that a
-   * `literal()` call produces as text, and refuses to save swamp's own
-   * (swamp-club#3389, swamp-club#3401). This fails the text a run refuses,
-   * wherever the `literal()` call sits in the expression. A run also refuses
-   * any expression text in a sensitive field, which needs the type's schema
-   * and is not checked here.
+   * a run stores another system's text from literal() as text and refuses
+   * swamp's own; this fails what a run refuses, wherever literal() sits.
+   * Sensitive-field expression text needs the type's schema, not checked here
    */
   private validateDirectGlobalArgLiterals(
     workflow: Workflow,
@@ -350,9 +280,9 @@ export class DefaultWorkflowValidationService
 
   private validateSecretUsage(workflow: Workflow): WorkflowValidationResult[] {
     if (!this.diagnoseSecrets) return [];
-    // Prose and input-schema descriptions may document expression syntax.
-    // Actual values (including schema defaults) are still diagnosed, even
-    // when a value contains a property named description.
+    // prose and input-schema descriptions may document expression syntax;
+    // actual values, including schema defaults, are still diagnosed even when a
+    // value has a property named description
     const inputDescriptions = inputDescriptionPaths(workflow.inputs);
     const expressions: {
       celExpression: string;
@@ -395,11 +325,6 @@ export class DefaultWorkflowValidationService
     );
   }
 
-  /**
-   * Reserved tag keys the workflow supplies: in its own tags, a step's data
-   * output overrides, the stored definition a step names, or a nested
-   * workflow's. A run refuses them before any step runs (swamp-club#3635).
-   */
   private async validateReservedTags(
     workflow: Workflow,
   ): Promise<WorkflowValidationResult[]> {
@@ -426,17 +351,9 @@ export class DefaultWorkflowValidationService
   }
 
   /**
-   * Another templating system's `${{ ... }}` text, such as GitHub Actions
-   * `${{ github.sha }}`. Nested in a step's task inputs or global arguments
-   * it reaches the method as literal text, so it only warns. Where a task
-   * names what it runs, or as a whole-field record expression, a run fails
-   * on it.
-   *
-   * In step arguments that holds only for the known foreign roots. Text
-   * reading any other root (`nonexistent.variable`, `input.region`) fails
-   * here, as a run fails on it with "Unknown variable" (swamp-club#3400).
-   * The check is static, so it also fails a root in a branch a run would
-   * never evaluate.
+   * foreign text in task inputs or global arguments reaches the method as
+   * literal text, so it only warns; an unknown root fails here as a run fails
+   * with Unknown variable, even in a branch a run would never evaluate
    */
   private validateForeignTaskText(
     workflow: Workflow,
@@ -477,12 +394,8 @@ export class DefaultWorkflowValidationService
   }
 
   /**
-   * With a `vaults:` list, reports each vault the workflow statically uses
-   * but does not list: a `vault.get` whose vault name is quoted or an
-   * unquoted literal name in its own steps or inputs, and each
-   * sensitive-output target vault of a mutating model-method step. The
-   * run-time check is the guarantee for dynamic names and for `vault.get`
-   * inside model definitions.
+   * the run-time check is the guarantee for dynamic vault names and for
+   * vault.get inside model definitions
    */
   private async validateVaultsList(
     workflow: Workflow,
@@ -528,8 +441,8 @@ export class DefaultWorkflowValidationService
           (taskData.modelType ?? modelRef).includes("${{") ||
           taskData.methodName.includes("${{")
         ) continue;
-        // An evaluated vaultName is known only at run time, where the pre-run
-        // vault check decides on the evaluated name.
+        // an evaluated vaultName is known only at run time, where the pre-run
+        // vault check decides on the evaluated name
         if (
           step.dataOutputOverrides.some((o) => o.vaultName?.includes("${{"))
         ) continue;
@@ -645,9 +558,9 @@ export class DefaultWorkflowValidationService
       }
     }
 
-    // The runtime keys workflow affinity on the whole run, so job affinity
-    // only forms its own group when the workflow sets none. A job with
-    // affinity: false is in no group.
+    // the runtime keys workflow affinity on the whole run, so job affinity
+    // forms its own group only when the workflow sets none; a job with affinity
+    // false is in no group
     const scopes = workflow.affinity
       ? [{ where: "at workflow level", jobs: pinnedJobs }]
       : workflow.jobs.filter((job) => job.affinity).map((job) => ({
@@ -679,11 +592,9 @@ export class DefaultWorkflowValidationService
   }
 
   /**
-   * The placed steps of an affinity group grouped by their effective
-   * placement, or null when they all agree. A target stands in for labels
-   * and platform, as it does in scheduling. A group whose placement holds
-   * an expression is not compared, since its value is only known at run
-   * time.
+   * a target stands in for labels and platform, as in scheduling; a group whose
+   * placement holds an expression is not compared, since its value is known
+   * only at run time
    */
   private mixedAffinityPlacement(
     workflow: Workflow,
@@ -804,10 +715,8 @@ export class DefaultWorkflowValidationService
   }
 
   /**
-   * A wait_for_signal schema is captured as data when the step starts
-   * waiting. Workflow evaluation resolves `inputs.*` in it, but not `self`,
-   * `steps` or `data`, which would stay in the schema as literal text and
-   * match no payload.
+   * evaluation resolves inputs.* in a captured wait schema but not self, steps
+   * or data, which would stay as literal text and match no payload
    */
   private validateWaitSchemaExpressions(
     workflow: Workflow,
@@ -822,9 +731,8 @@ export class DefaultWorkflowValidationService
         const taskData = step.task.data;
         if (taskData.type !== "wait_for_signal") continue;
         const expressions = schemaExpressions(taskData.schema);
-        // An early payload is checked against the schema as the definition
-        // has it, before any run exists to resolve an expression
-        // (swamp-club#3212).
+        // an early payload is checked against the schema as the definition has
+        // it, before any run exists to resolve an expression
         if (taskData.acceptEarly !== undefined && expressions.length > 0) {
           results.push(
             WorkflowValidationResult.fail(
@@ -854,11 +762,9 @@ export class DefaultWorkflowValidationService
   }
 
   /**
-   * `swamp serve` continues a run once its waits are settled, when the
-   * workflow's auto-resume policy allows (swamp-club#3108). The server
-   * default never applies to a workflow that declares inputs, so one that
-   * waits for a signal and leaves `autoResume` unset would stay suspended
-   * after its signal with nothing saying why. It has to choose.
+   * the server default never applies to a workflow that declares inputs, so a
+   * signal-waiting workflow with autoResume unset would stay suspended with
+   * nothing saying why; it has to choose
    */
   private validateWaitAutoResumeDeclared(
     workflow: Workflow,
@@ -882,10 +788,9 @@ export class DefaultWorkflowValidationService
   }
 
   /**
-   * A wait's key is held by one open wait of the workflow at a time
-   * (swamp-club#3209), so the definition lists its valid keys: no two
-   * steps declare the same one, and a step under `forEach`, whose every
-   * iteration would share it, declares none.
+   * a key is held by one open wait at a time, so no two steps declare the same
+   * one and a step under forEach, whose iterations would share it, declares
+   * none
    */
   private validateWaitKeys(workflow: Workflow): WorkflowValidationResult[] {
     const results: WorkflowValidationResult[] = [];
@@ -1195,14 +1100,9 @@ export class DefaultWorkflowValidationService
       ),
     ];
 
-    // Skip dynamic CEL references — cannot resolve statically.
-    // For factory-pattern steps (modelType is set), only the modelType
-    // matters for type/method resolution — a CEL modelName does not
-    // prevent resolving the extension type. A CEL methodName still
-    // resolves the model and type; only the method lookup is skipped below.
-    // A target that is a single workflow input with a literal default is
-    // checked at that default, the value the run uses when the input is
-    // left out (swamp-club#3844).
+    // dynamic CEL references cannot be resolved statically; for modelType steps
+    // only the type matters, and a single input target with a literal default
+    // is checked at that default
     let target = modelIdOrName;
     let atDefault = "";
     if (modelType) {
@@ -1230,11 +1130,9 @@ export class DefaultWorkflowValidationService
 
     switch (resolution.status) {
       case "model_not_found":
-        // A step may reference a model created at run time (by an upstream
-        // direct-execution step or out-of-band), so a missing model instance
-        // is a warning rather than a failure. This differs from an
-        // unresolvable model *type* below, which is always a real authoring
-        // error.
+        // a step may reference a model created at run time, so a missing
+        // instance is a warning; an unresolvable model type is always a real
+        // authoring error
         return [
           WorkflowValidationResult.warning(
             checkName +
@@ -1266,8 +1164,8 @@ export class DefaultWorkflowValidationService
           ),
         ];
       case "resolved": {
-        // The definition's own problem, reported beside the step's inputs
-        // rather than in place of them.
+        // the definition's own problem, reported beside the step's inputs
+        // rather than in place of them
         const literalGlobals = resolution.literalSensitiveGlobals?.length
           ? [
             WorkflowValidationResult.fail(
@@ -1322,12 +1220,10 @@ export class DefaultWorkflowValidationService
     const checkName =
       `Step inputs for '${stepName}' in job '${jobName}' (workflow: ${workflowIdOrName})`;
 
-    // Skip dynamic CEL references
     if (workflowIdOrName.includes("${{")) {
       return [WorkflowValidationResult.pass(checkName)];
     }
 
-    // Try to find the nested workflow
     let nested: Workflow | null = null;
     try {
       nested = await this.workflowRepo!.findByName(workflowIdOrName) ??
@@ -1384,7 +1280,6 @@ export class DefaultWorkflowValidationService
         if (modelRef.includes("${{")) continue;
         if (taskData.modelType?.includes("${{")) continue;
 
-        // Dynamic step inputs cannot be statically analysed
         if (typeof taskData.inputs === "string") continue;
 
         const checkName =

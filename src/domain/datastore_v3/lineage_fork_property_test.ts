@@ -17,15 +17,9 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// A model of checkouts that spell one S3 endpoint two ways, some on a swamp
-// before swamp-club#3801 (which sees only its own spelling's lineages) and
-// some on this one (which sees every spelling and records `follows`). Each
-// writes in turn: it restores the current lineage it can see, begins a
-// lineage with one new commit, and confirms it, or crashes first. After
-// each confirmation by this swamp, collection removes every lineage below
-// the current one that `lineagesKeptForFork` does not keep, recording the
-// ones it keeps. No commit of a confirmed lineage may then be missing from
-// every remaining lineage.
+// checkouts spell one S3 endpoint two ways, some on an older swamp that sees
+// only its own spelling's lineages; no commit of a confirmed lineage may go
+// missing from every remaining lineage
 
 import { assert } from "@std/assert";
 import fc from "fast-check";
@@ -54,7 +48,6 @@ Deno.test("lineagesKeptForFork: whatever older and upgraded swamps write under t
     fc.property(fc.array(arbStep, { minLength: 1, maxLength: 12 }), (steps) => {
       const lineages = new Map<number, ModelLineage>();
       const acknowledged = new Set<number>();
-      // The kept records collection leaves in the control plane.
       const marked = new Set<number>();
       let fence = 0;
       for (const step of steps) {
@@ -96,7 +89,6 @@ Deno.test("lineagesKeptForFork: whatever older and upgraded swamps write under t
         if (!step.confirms) continue;
         for (const commit of commits) acknowledged.add(commit);
         if (!step.upgraded) continue;
-        // This swamp's collection at its first confirmation.
         const starts = new Map(
           [...lineages.values()].map((l) => [l.started.fence, l.started]),
         );

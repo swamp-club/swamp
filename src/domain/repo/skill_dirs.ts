@@ -24,10 +24,6 @@ import {
   swampPath,
 } from "../../infrastructure/persistence/paths.ts";
 
-/**
- * Maps AI tool names to their skill directory paths (relative to repo root).
- * Used for project-local skill directories and extension skill resolution.
- */
 export const SKILL_DIRS: Record<string, string> = {
   amp: ".agents/skills",
   claude: ".claude/skills",
@@ -41,10 +37,8 @@ export const SKILL_DIRS: Record<string, string> = {
 };
 
 /**
- * Maps AI tool names to their global (user-level) skill directory paths,
- * relative to the user's home directory. Tools that read from
- * `~/.agents/skills/` natively share a single copy; Claude Code and Kiro
- * require their own vendor-specific paths.
+ * tools that read ~/.agents/skills natively share one copy; Claude Code and
+ * Kiro require their own vendor-specific paths
  */
 export const GLOBAL_SKILL_DIRS: Record<string, string> = {
   amp: ".agents/skills",
@@ -59,8 +53,8 @@ export const GLOBAL_SKILL_DIRS: Record<string, string> = {
 };
 
 /**
- * Resolves the absolute skill directory for a repo, based on the active AI tool.
- * Falls back to `.swamp/pulled-extensions/skills/` when tool is "none" or unknown.
+ * falls back to .swamp/pulled-extensions/skills/ when the tool is none or
+ * unknown
  */
 export function resolveSkillsDir(
   repoDir: string,
@@ -77,12 +71,8 @@ export function resolveSkillsDir(
 }
 
 /**
- * Resolves the absolute global skill directory for a tool, rooted in the
- * user's home directory. Returns null for "none" or unknown tools.
- *
- * `homeDir` overrides the ambient home directory. Callers that own a home
- * directory (tests, sandboxed installs) pass it explicitly so the write
- * target never depends on the process-wide `HOME`.
+ * homeDir overrides the ambient home; callers that own a home directory pass it
+ * so the write target never depends on the process-wide HOME
  */
 export function resolveGlobalSkillsDir(
   tool: string,
@@ -94,14 +84,9 @@ export function resolveGlobalSkillsDir(
 }
 
 /**
- * Returns deduplicated absolute project-local skill directory paths for
- * a set of enrolled tools. Since multiple tools may share the same path
- * (e.g., codex/cursor/opencode/copilot all use `.agents/skills/`), this
- * deduplicates so each directory is only written to once.
- *
- * When tools is empty, returns a single-element array with the fallback
- * `.swamp/pulled-extensions/skills/` directory — there is always at
- * least one target dir so callers don't need to special-case.
+ * tools sharing a path are deduplicated so each directory is written once; with
+ * no tools it returns the pulled-extensions fallback, so there is always one
+ * target
  */
 export function resolveUniqueLocalSkillsDirs(
   repoDir: string,
@@ -123,10 +108,8 @@ export function resolveUniqueLocalSkillsDirs(
 }
 
 /**
- * Returns deduplicated absolute global skill directory paths for a set of
- * enrolled tools. Since multiple tools may share the same global path
- * (e.g., codex/cursor/opencode/copilot all use ~/.agents/skills/), this
- * deduplicates so each directory is only written to once.
+ * tools sharing a global path are deduplicated so each directory is written
+ * once
  */
 export function resolveUniqueGlobalSkillsDirs(
   tools: readonly string[],
@@ -145,15 +128,8 @@ export function resolveUniqueGlobalSkillsDirs(
 }
 
 /**
- * Returns the repo-relative project-local skill directories (the
- * `SKILL_DIRS` values and the `.swamp/pulled-extensions/skills/`
- * fallback) that a lockfile entry's `files` record a skill under, in
- * forward-slash form and deduplicated. A skill is recorded as its root
- * (`.claude/skills/foo`) or, when merged into a dir the extension does
- * not own, as the files it wrote there; both name the same dir.
- *
- * Only members of that fixed set are returned, never a path taken from
- * `files`, so a hand-edited lockfile cannot point an install elsewhere.
+ * returns only members of the fixed skill-dir set, never a path taken from
+ * files, so a hand-edited lockfile cannot point an install elsewhere
  */
 export function recordedSkillsDirs(files: readonly string[]): string[] {
   const known = new Set([

@@ -94,8 +94,6 @@ Deno.test("ModelType.toString returns raw type", () => {
   assertEquals(type.toString(), "AWS::EC2::VPC");
 });
 
-// --- User namespace helper tests ---
-
 Deno.test("ModelType.isUserNamespace returns true for @ prefixed types", () => {
   assertEquals(ModelType.isUserNamespace("@user/foo"), true);
   assertEquals(ModelType.isUserNamespace("@adam/bar"), true);
@@ -121,14 +119,11 @@ Deno.test("ModelType.getUserNamespace returns undefined for non-@ types", () => 
 });
 
 Deno.test("ModelType.getSegmentCount returns correct counts", () => {
-  // Built-in types
   assertEquals(ModelType.getSegmentCount("swamp/echo"), 2);
   assertEquals(ModelType.getSegmentCount("aws/ec2/vpc"), 3);
-  // User namespace types
   assertEquals(ModelType.getSegmentCount("@user/echo"), 2);
   assertEquals(ModelType.getSegmentCount("@user/foo/bar"), 3);
   assertEquals(ModelType.getSegmentCount("@user/a/b/c/d"), 5);
-  // Edge cases
   assertEquals(ModelType.getSegmentCount("@user"), 1);
   assertEquals(ModelType.getSegmentCount("single"), 1);
 });
@@ -158,15 +153,9 @@ Deno.test("ModelType.isReservedCollective returns false for non-reserved built-i
   assertEquals(ModelType.isReservedCollective("docker/run"), false);
 });
 
-// --- Stream-0 regression net: logical-key path separators ---
-
 Deno.test("ModelType.toDirectoryPath: returns forward-slash separators on every OS", () => {
-  // ModelType normalizes to a logical key (e.g. "aws/ec2/vpc"). This is
-  // a content-addressable identifier, NOT a host filesystem path —
-  // every consumer (catalog DB, manifests, registry lookups) expects
-  // forward slashes. Stream C is leaving this code alone explicitly;
-  // the test pins the contract so a refactor that, say, swaps `/` for
-  // `path.SEPARATOR` will fail on Windows.
+  // a model type normalizes to a logical key, not a host path; consumers expect
+  // forward slashes, so a swap to path.SEPARATOR must fail on Windows
   const inputs = [
     "AWS::EC2::VPC",
     "Microsoft.Resources.resourceGroup",
@@ -196,16 +185,12 @@ Deno.test("ModelType.toDirectoryPath: returns forward-slash separators on every 
       `toNormalized must not contain backslash for ${input}; got ${toNormalized}`,
     );
 
-    // toDirectoryPath and toNormalized must agree: same logical key.
     assertEquals(directoryPath, toNormalized);
     assertEquals(directoryPath, normalized);
   }
 });
 
 Deno.test("ModelType.create: multi-segment input always normalizes with forward slashes", () => {
-  // Belt-and-braces guard for Stream C. Even on Windows, where
-  // path.SEPARATOR is "\\", the logical key from ModelType.create must
-  // be forward-slash-separated.
   const t1 = ModelType.create("AWS::EC2::VPC");
   assertEquals(t1.normalized, "aws/ec2/vpc");
   assertEquals(t1.normalized.split("/").length, 3);
@@ -214,8 +199,6 @@ Deno.test("ModelType.create: multi-segment input always normalizes with forward 
   assertEquals(t2.normalized.includes("/"), true);
   assertEquals(t2.normalized.includes("\\"), false);
 });
-
-// --- Non-string input guard tests ---
 
 Deno.test("ModelType.create: throws TypeError for undefined input", () => {
   assertThrows(

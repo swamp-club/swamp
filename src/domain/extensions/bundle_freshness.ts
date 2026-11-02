@@ -22,15 +22,8 @@ import { resolveLocalImports } from "../models/local_import_resolver.ts";
 import { isPulledExtensionPath } from "./extension_precedence.ts";
 
 /**
- * The extension-catalog kinds this helper can query. Declared
- * domain-local so the freshness check does not import ExtensionKind
- * from the infrastructure catalog store — matches the inline pattern
- * of FreshnessCatalogRow below and preserves the
- * domain→infrastructure boundary rule.
- *
- * Must stay in sync with the ExtensionKind union on ExtensionTypeRow;
- * the infrastructure row type structurally satisfies this helper's
- * FreshnessCatalog interface.
+ * declared domain-local to keep the domain-to-infrastructure boundary; must
+ * stay in sync with the ExtensionKind union on ExtensionTypeRow
  */
 export type FreshnessKind =
   | "model"
@@ -40,47 +33,29 @@ export type FreshnessKind =
   | "report"
   | "webhook";
 
-/**
- * Minimal row shape this module needs from the catalog. The concrete
- * ExtensionTypeRow in the infrastructure layer extends this; keeping
- * the dependency one-way (infrastructure knows the domain shape, not
- * vice versa) respects the domain→infrastructure boundary rule.
- */
 export interface FreshnessCatalogRow {
   source_path: string;
   source_fingerprint?: string;
   bundle_path?: string;
-  /** The type the row claims; empty when it claims none. */
   type_normalized?: string;
   kind?: FreshnessKind;
   /**
-   * Vestigial after W1a (issue swamp-club#211) — the row migrated to
-   * the `state` field below. Preserved on the type for back-compat
-   * with tests that still assert on it; production code reads
-   * `state === 'ValidationFailed'` via {@link findStaleFiles}.
+   * vestigial: the row migrated to state; kept on the type for tests that still
+   * assert on it, and production reads state === 'ValidationFailed'
    */
   validation_failed?: boolean;
   /**
-   * RowState tag (W1a). `findStaleFiles` checks
-   * `state === 'ValidationFailed'` to skip rebundling rows that are
-   * known schema-broken — the swamp-club#209 rebundle-loop guard.
-   * Optional so legacy fixtures that omit it default to 'Indexed'
-   * via {@link mapRow}.
+   * findStaleFiles skips rebundling rows with state ValidationFailed (the
+   * rebundle-loop guard); optional so legacy fixtures default to Indexed via
+   * mapRow
    */
   state?: string;
 }
 
 /**
- * Return type for bundleWithCache across all extension loaders.
- * Distinguishes freshly-built bundles from stale cache fallbacks so
- * callers can decide whether to advance the catalog fingerprint.
- *
- * A cached result carries why it came from cache:
- * - `trusted-pulled` — a pulled extension's on-disk bundle was reused
- *   without attempting a rebundle. Nothing failed.
- * - `rebundle-failed` — `deno bundle` threw and the previous bundle was
- *   reused. `bundleWithCache` has already logged the failure: at warn when
- *   it was unexpected, at debug when `expectedFailure` is true.
+ * distinguishes fresh bundles from cache fallbacks so callers can decide
+ * whether to advance the catalog fingerprint; trusted-pulled reused an on-disk
+ * bundle, rebundle-failed reused the previous one
  */
 export type BundleResult =
   | { readonly js: string; readonly fromCache: false }
@@ -102,14 +77,8 @@ export type BundleResult =
   };
 
 /**
- * Per-invocation cache that dedups file hashing and transitive dep
- * resolution across multiple computeSourceFingerprint calls. Safe to
- * share within a single buildIndex pass — filesystem contents don't
- * change mid-pass. Discard after the pass finishes.
- *
- * Without this, a repo where N entry points share a common _lib/ of M
- * files ends up reading and hashing each shared file up to N times;
- * with it each path is read and hashed exactly once.
+ * dedups file hashing and dependency resolution within one buildIndex pass,
+ * where the filesystem does not change; discard it afterwards
  */
 export interface FreshnessCache {
   fileHash: Map<string, Promise<string>>;
@@ -123,81 +92,40 @@ export function createFreshnessCache(): FreshnessCache {
   };
 }
 
-/**
- * A source file the caller must rebundle — its content no longer matches
- * the catalog's stored fingerprint, or the file is new to the catalog.
- */
 export interface StaleFile {
   absolutePath: string;
   relativePath: string;
   baseDir: string;
 }
 
-/** A seen source whose Indexed catalog row claims no type. */
 export interface TypelessRow extends StaleFile {
   row: FreshnessCatalogRow;
 }
 
-/** Everything one warm-path scan of the source dirs found. */
 export interface FreshnessScan {
-  /** Sources that need rebundling. */
   stale: StaleFile[];
-  /** Rows deleted because their source was not seen in any scanned dir. */
   removed: FreshnessCatalogRow[];
-  /**
-   * Seen sources of a primary (non-extension) kind whose Indexed row
-   * claims no type and is not already stale — candidates for the
-   * loader's typeless-row heal (swamp-club#2490).
-   */
   typeless: TypelessRow[];
 }
 
 /**
- * Placeholder emitted in place of a real sha-256 hex hash when a
- * transitive dep cannot be read (broken symlink, deleted file,
- * FilesystemLoop). Encodes "this dep is currently unreadable" into the
- * fingerprint so a stable broken state produces a stable fingerprint
- * and repairing the dep correctly invalidates it (#208). Cannot collide
- * with a real hash — contains non-hex characters.
- *
- * Internal to computeSourceFingerprint. No external code compares
- * against this value — ReconcileFromDisk handles broken-dep behavior
- * via the BundleBuildFailed RowState transition.
+ * stands in for a hash when a transitive dep is unreadable, so a stable broken
+ * state gives a stable fingerprint and repairing it invalidates; cannot collide
+ * with a hex hash
  */
 const UNREADABLE_PLACEHOLDER = "MISSING";
 
-/**
- * The most local modules the catalog records for one source. A longer
- * list is neither written nor read back (swamp-club#3487).
- */
+/** a longer module list is neither written nor read back */
 export const MAX_SOURCE_MODULES = 10_000;
 
-/**
- * Where {@link computeSourceFingerprint} finds the local modules a source
- * was last bundled from. The extension catalog records them from the
- * entry point's module graph each time it is bundled (swamp-club#3385).
- */
 export interface SourceModuleLookup {
-  /**
-   * The local modules recorded for `sourcePath`, or `undefined` when none
-   * are recorded.
-   */
   findSourceModules(sourcePath: string): readonly string[] | undefined;
 }
 
 /**
- * Computes a content-based fingerprint covering an entry point and every
- * local module it was bundled from.
- *
- * The modules are the ones `modules` recorded for the entry point from its
- * module graph, wherever they live and however they are imported. A
- * source with no recorded modules falls back to the relative imports
- * resolveLocalImports finds within `boundaryDir`, which is how pulled
- * extensions, whose bundles ship pre-built, are fingerprinted.
- *
- * A recorded list stays valid until the source changes: a relative import
- * can only reach a new module if a recorded module's content changes or a
- * recorded missing module appears, and either changes the fingerprint.
+ * a source with no recorded modules falls back to relative imports within
+ * boundaryDir, as pulled extensions with pre-built bundles are fingerprinted. A
+ * recorded list stays valid until the source changes.
  */
 export async function computeSourceFingerprint(
   absolutePath: string,
@@ -213,13 +141,9 @@ export async function computeSourceFingerprint(
 }
 
 /**
- * The sha-256 over a sorted list of `{relPath}:{sha256(content)}` entries,
- * one per distinct file, with paths relative to `boundaryDir`. It changes
- * when either the content of any file changes, or when the file set
- * changes (rename, add, remove).
- *
- * Unreadable files produce a stable placeholder entry instead of
- * throwing, so a stable broken state yields a stable fingerprint (#208).
+ * sha-256 over sorted {relPath}:{sha256(content)} entries relative to
+ * boundaryDir, so content or file-set changes alter it; unreadable files get a
+ * stable placeholder instead of throwing
  */
 async function fingerprintSourceModules(
   files: readonly string[],
@@ -265,7 +189,6 @@ async function resolveDeps(
   return resolvedFiles;
 }
 
-/** The SHA-256 of a file's content, as hex. */
 export async function hashFile(
   path: string,
   cache?: FreshnessCache,
@@ -295,63 +218,48 @@ function toHex(buffer: ArrayBuffer): string {
   return out;
 }
 
-/**
- * Minimal view of the catalog a freshness check needs.
- * Lets loaders pass their ExtensionCatalogStore without coupling this
- * module to every catalog method.
- */
 export interface FreshnessCatalog extends SourceModuleLookup {
   findByKind(kind: FreshnessKind): FreshnessCatalogRow[];
-  /** Deletes the row stored at exactly this (un-canonicalized) path. */
   removeByRawSourcePath(rawSourcePath: string): void;
-  /** Forgets the local modules recorded for `sourcePath`. */
   deleteSourceModules(sourcePath: string): void;
   /**
-   * Whether the list recorded for `sourcePath` is the fallback walk,
-   * recorded after a good bundle whose module graph could not be read,
-   * and the graph has not been retried yet (swamp-club#3487).
+   * whether the list recorded for sourcePath is the fallback walk, recorded
+   * after a good bundle whose module graph could not be read, and the graph has
+   * not been retried yet
    */
   isSourceGraphPending(sourcePath: string): boolean;
 }
 
 export interface FindStaleFilesParams {
-  /** The primary directory for local user extensions. */
   modelsDir: string;
-  /** Additional directories — source dirs + pulled extension dirs. */
   additionalDirs?: string[];
-  /** Catalog view for looking up stored fingerprints. */
   catalog: FreshnessCatalog;
-  /** Discovers `.ts` files under a directory, returning repo-relative paths. */
   discoverFiles: (dir: string) => Promise<string[]>;
   /**
-   * Catalog kinds to query. Each loader passes its own kind(s) so that
-   * findStaleFiles only considers rows it owns. The models loader
-   * passes ["model", "extension"] — models plus user-defined extensions
-   * that target base models. Sibling loaders pass singletons
-   * (["report"], ["datastore"], etc.).
+   * each loader passes its own kinds so findStaleFiles considers only rows it
+   * owns; the models loader passes model and extension, siblings pass
+   * singletons
    */
   kinds: FreshnessKind[];
   /**
-   * The repository root. When given, a local (non-pulled) source with no
-   * recorded modules is stale, so a bundle an earlier binary built is
-   * rebuilt once and its modules recorded (swamp-club#3385).
+   * when given, a local (non-pulled) source with no recorded modules is stale,
+   * so a bundle an earlier binary built is rebuilt once and its modules
+   * recorded
    */
   repoDir?: string;
 }
 
 /**
- * W3 freshness query: a Source is fresh iff its RowState is `Indexed`.
- * All other states are not visible to type resolution. An absent state
- * (`undefined`) is NOT fresh — the source needs indexing.
+ * a source is fresh only when its state is Indexed; an absent state is not
+ * fresh, as the source needs indexing
  */
 export function isFresh(state: string | undefined): boolean {
   return state === "Indexed";
 }
 
 /**
- * Catalog row states that record a failure. {@link findStaleFiles} keeps
- * rows in these states even when their source is no longer seen, so the
- * failure stays visible.
+ * rows in these states are kept even when their source is not seen, so the
+ * failure stays visible
  */
 export const CATALOG_FAILURE_STATES: ReadonlySet<string> = new Set([
   "BundleBuildFailed",
@@ -359,27 +267,12 @@ export const CATALOG_FAILURE_STATES: ReadonlySet<string> = new Set([
   "OrphanedBundleOnly",
 ]);
 
-/**
- * Warm-start incremental change detection. Walks source directories,
- * compares each file's current fingerprint against the catalog, and
- * returns files that need rebundling. Also removes catalog entries
- * whose source file has been deleted.
- *
- * Cold-start reconciliation is handled by ReconcileFromDisk (W3).
- * This function handles the warm-start path: catalog is populated,
- * a few files may have changed since the last run.
- */
 export async function findStaleFiles(
   params: FindStaleFilesParams,
 ): Promise<StaleFile[]> {
   return (await scanCatalogFreshness(params)).stale;
 }
 
-/**
- * {@link findStaleFiles}, also reporting the rows it removed and the
- * seen typeless rows, which the loader needs for bundle eviction and the
- * typeless-row heal (swamp-club#2490).
- */
 export async function scanCatalogFreshness(
   params: FindStaleFilesParams,
 ): Promise<FreshnessScan> {
@@ -431,12 +324,9 @@ export async function scanCatalogFreshness(
           continue;
         }
 
-        // A fingerprint without recorded modules only covers the relative
-        // imports inside `dir`, and so does a fallback recorded when the
-        // module graph could not be read, until its one retry
-        // (swamp-club#3487). Pulled sources with no recorded modules are
-        // not forced stale: they may be served a pre-built bundle that
-        // records nothing.
+        // a fingerprint without recorded modules covers only relative imports
+        // inside dir, as does a fallback until its one retry; pulled sources
+        // are not forced stale since their pre-built bundles may record nothing
         if (
           repoDir !== undefined &&
           !isPulledExtensionPath(
@@ -450,14 +340,9 @@ export async function scanCatalogFreshness(
           continue;
         }
 
-        // A transient bundle-build failure must not be pinned as a satisfied
-        // fingerprint-matched cache hit. Re-attempt on the next scan so a
-        // later run (e.g. after network is restored) can succeed. Restricted
-        // to BundleBuildFailed: ValidationFailed is deterministic — retrying
-        // it only thrashes — and stays excluded below. The cold-start
-        // ReconcileFromDisk path needs no change: a failed bundle leaves the
-        // catalog populated, so daemon-restart recovery routes through this
-        // warm path.
+        // a transient BundleBuildFailed must not be pinned as a
+        // fingerprint-matched cache hit, so it is retried next scan;
+        // ValidationFailed is deterministic and stays excluded below
         if (catalogEntry.state === "BundleBuildFailed") {
           stale.push({ absolutePath, relativePath, baseDir: dir });
           continue;
@@ -499,19 +384,14 @@ export async function scanCatalogFreshness(
   return { stale, removed, typeless };
 }
 
-/**
- * Normalizes a source path for {@link scanCatalogFreshness}'s seen-set
- * comparisons: lowercase with forward slashes on Windows, unchanged on
- * POSIX.
- */
 export function normalizeFreshnessPath(path: string): string {
   return SEPARATOR === "\\" ? path.toLowerCase().replaceAll("\\", "/") : path;
 }
 
 /**
- * Collects the normalized absolute paths of every source file the
- * loader's discovery finds under `dirs`. The cold path uses it to apply
- * the same unseen-row removal as the warm path (swamp-club#2490).
+ * collects the normalized absolute paths of every source file the loader's
+ * discovery finds under dirs; the cold path uses it to apply the same
+ * unseen-row removal as the warm path
  */
 export async function collectSeenSources(
   dirs: readonly string[],

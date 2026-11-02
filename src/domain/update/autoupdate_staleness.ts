@@ -20,7 +20,6 @@
 import type { AutoupdateLogEntry } from "./autoupdate_log.ts";
 import type { UpdateCadence, UpdatePreferences } from "./update_preferences.ts";
 
-/** Seconds between scheduled autoupdate checks for each cadence. */
 export function cadenceIntervalSeconds(cadence: UpdateCadence): number {
   switch (cadence) {
     case "hourly":
@@ -33,20 +32,16 @@ export function cadenceIntervalSeconds(cadence: UpdateCadence): number {
 }
 
 /**
- * The shortest age at which a last check counts as stale, whatever the
- * cadence. Keeps an overnight laptop sleep (or cron skipping the runs it
- * missed) from being reported as a broken scheduler.
+ * the shortest age at which a check counts as stale, so an overnight laptop
+ * sleep or cron skipping missed runs is not reported as a broken scheduler
  */
 export const STALE_CHECK_FLOOR_MS = 72 * 60 * 60 * 1000;
 
-/** Failed scheduler re-registrations are retried at most this often. */
 export const SCHEDULER_REFRESH_RETRY_MS = 24 * 60 * 60 * 1000;
 
 /**
- * Whether the newest autoupdate log entry is older than the scheduler should
- * ever let it get: twice the cadence interval, and never less than
- * {@link STALE_CHECK_FLOOR_MS}. No entry at all is not stale — a freshly
- * enabled scheduler has simply not run yet.
+ * no entry at all is not stale: a freshly enabled scheduler has simply not run
+ * yet
  */
 export function isLastCheckStale(
   lastEntry: AutoupdateLogEntry | null,
@@ -63,7 +58,6 @@ export function isLastCheckStale(
   return now.getTime() - checkedAt > threshold;
 }
 
-/** Whole days since the entry was written, or null without a usable entry. */
 export function lastCheckAgeDays(
   lastEntry: AutoupdateLogEntry | null,
   now: Date,
@@ -74,13 +68,11 @@ export function lastCheckAgeDays(
   return Math.floor((now.getTime() - checkedAt) / (24 * 60 * 60 * 1000));
 }
 
-/** The "autoupdate has stopped checking" warning is shown at most this often. */
 export const STALE_WARNING_INTERVAL_MS = 24 * 60 * 60 * 1000;
 
 /**
- * Whether to warn that autoupdate has stopped checking: the last check is
- * stale, the warning was not shown in the last day, and the scheduler was
- * not just re-registered by this invocation (which starts a fresh check).
+ * no warning when this invocation just re-registered the scheduler, which
+ * starts a fresh check
  */
 export function shouldWarnStaleAutoupdate(input: {
   lastEntry: AutoupdateLogEntry | null;
@@ -106,7 +98,6 @@ export interface SchedulerRefreshInputs {
     "enabled" | "schedulerRefreshedVersion" | "lastSchedulerRefreshAttempt"
   >;
   currentVersion: string;
-  /** The installed launchd job, or null when none is installed. */
   installedLaunchdJob: "agent" | "daemon" | null;
   isRoot: boolean;
   configDirOwned: boolean;
@@ -114,15 +105,9 @@ export interface SchedulerRefreshInputs {
 }
 
 /**
- * Whether the launchd autoupdate job is owed a re-registration for the
- * running binary.
- *
- * On macOS, launchd can pin the job to the code signature of the binary it
- * last launched. Swamp's binaries are ad-hoc signed, so every update changes
- * that signature and launchd refuses to start the replaced binary until the
- * job is registered again. This is owed once per installed version; a failed
- * attempt is retried after {@link SCHEDULER_REFRESH_RETRY_MS} so a refresh
- * that keeps failing never slows every command.
+ * launchd pins the job to the binary's code signature and ad-hoc signed
+ * binaries change it every update, so one re-registration is owed per version;
+ * failures retry after a cooldown
  */
 export function shouldRefreshScheduler(input: SchedulerRefreshInputs): boolean {
   if (input.os !== "darwin") return false;

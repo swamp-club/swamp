@@ -24,10 +24,6 @@ import type {
   VaultPutOptions,
 } from "./vault_provider.ts";
 
-/**
- * Mock vault provider for testing and demonstrations.
- * Returns predefined values for known secret keys.
- */
 export class MockVaultProvider
   implements VaultProvider, VaultDeleteProvider, VaultExistenceProvider {
   private readonly secrets = new Map<string, string>();
@@ -36,12 +32,10 @@ export class MockVaultProvider
   constructor(name: string, secrets: Record<string, string> = {}) {
     this.name = name;
 
-    // Pre-populate with default secrets for testing
     this.secrets.set("demo-api-key", "super-secret-api-key-12345");
     this.secrets.set("demo-api-key-2", "another-secret-value-67890");
     this.secrets.set("derived-api-key", "derived-secret-value");
 
-    // Add any provided secrets
     for (const [key, value] of Object.entries(secrets)) {
       this.secrets.set(key, value);
     }
@@ -88,26 +82,14 @@ export class MockVaultProvider
     return Promise.resolve();
   }
 
-  /**
-   * Answers presence from the in-memory map. The map lookup never touches the
-   * value, so the {@link VaultExistenceProvider} contract holds by
-   * construction: `has` is true exactly when {@link get} would resolve.
-   */
   has(secretKey: string): Promise<boolean> {
     return Promise.resolve(this.secrets.has(secretKey));
   }
 
-  /**
-   * Adds a secret to the mock vault.
-   */
   addSecret(key: string, value: string): void {
     this.secrets.set(key, value);
   }
 
-  /**
-   * Lists all available secrets (for testing).
-   * @deprecated Use list() instead
-   */
   listSecrets(): string[] {
     return Array.from(this.secrets.keys());
   }

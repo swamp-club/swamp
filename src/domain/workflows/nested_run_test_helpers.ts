@@ -25,11 +25,9 @@ import { Workflow } from "./workflow.ts";
 import type { WorkflowId, WorkflowRunId } from "./workflow_id.ts";
 import { WorkflowRun } from "./workflow_run.ts";
 
-/** Run records by id, counting saves, for tests of linked nested runs. */
 export class InMemoryRuns {
   readonly byId = new Map<string, WorkflowRun>();
   readonly saved: string[] = [];
-  /** Run ids whose read throws. */
   readonly unreadable = new Set<string>();
 
   add(...runs: WorkflowRun[]): void {
@@ -54,7 +52,6 @@ export class InMemoryRuns {
     return Promise.resolve();
   }
 
-  /** The stored run, read back. */
   get(run: { id: string }): WorkflowRun {
     const found = this.byId.get(run.id.toLowerCase());
     if (!found) throw new Error(`no run ${run.id}`);
@@ -62,7 +59,6 @@ export class InMemoryRuns {
   }
 }
 
-/** Workflows by id. */
 export class InMemoryWorkflows {
   readonly byId = new Map<string, Workflow>();
   add(...workflows: Workflow[]): void {
@@ -73,7 +69,6 @@ export class InMemoryWorkflows {
   }
 }
 
-/** A workflow whose one step calls `callee`, or a gate when there is none. */
 export function chainWorkflow(name: string, callee?: string): Workflow {
   return Workflow.create({
     name,
@@ -93,7 +88,6 @@ export function chainWorkflow(name: string, callee?: string): Workflow {
   });
 }
 
-/** Runs suspended one inside the next, linked both ways. */
 export interface NestedChain {
   /** Outermost first: `runs[0]` is the top parent, the last one holds the gate. */
   chain: WorkflowRun[];
@@ -102,13 +96,6 @@ export interface NestedChain {
   workflowRepo: InMemoryWorkflows;
 }
 
-/**
- * Builds `levels` runs (at least 2), each suspended on the next through its
- * `step`, the innermost suspended at a manual approval gate. Every run is
- * stored. The returned `chain` holds the objects that were stored, so a test
- * that changes one stores it again with `runs.add`. With `signalWait`, the
- * innermost run waits for a signal on it instead.
- */
 export function nestedChain(
   levels = 2,
   signalWait?: SignalWait,
@@ -138,7 +125,6 @@ export function nestedChain(
     run.getJob("main")!.getStep("step")!.start();
     chain.push(run);
   }
-  // Suspend from the innermost outward, as the runs would.
   for (let i = levels - 1; i >= 0; i--) {
     const step = chain[i].getJob("main")!.getStep("step")!;
     if (i === levels - 1 && signalWait) {

@@ -24,14 +24,6 @@ import { SecretBagRegistry } from "../vaults/secret_bag_registry.ts";
 import { VaultSecretBag } from "../vaults/vault_secret_bag.ts";
 import { forEachNameWithoutSecrets } from "./persisted_workflow.ts";
 
-/**
- * forEachNameWithoutSecrets (typed-secrets 4.1): whatever text surrounds
- * them, every sentinel the run issued becomes sensitive-<index>, text outside
- * the sentinels is kept, sentinel-shaped text of another prefix is left
- * alone, and the stand-in is the same whether the secret arrived as a
- * sentinel (typed run) or as a recorded value (untyped run).
- */
-
 const plainText = fc.stringMatching(/^[a-z0-9-]{0,12}$/);
 const otherSentinel = fc.hexaString({ minLength: 32, maxLength: 32 }).map(
   (prefix) => `__SWAMP_VSEC_${prefix}_0__`,

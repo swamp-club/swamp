@@ -38,7 +38,6 @@ import { datastoreTypeRegistry } from "../datastore/datastore_type_registry.ts";
 import { z } from "zod";
 import type { ExtensionContentMetadata } from "./extension_content.ts";
 
-/** Creates a no-op output port that records calls for assertions. */
 function createMockOutput(): AutoResolveOutputPort & { calls: string[] } {
   const calls: string[] = [];
   return {
@@ -100,7 +99,6 @@ function createMockOutput(): AutoResolveOutputPort & { calls: string[] } {
   };
 }
 
-/** Creates a mock lookup port. */
 function createMockLookup(
   extensions: Record<
     string,
@@ -126,22 +124,18 @@ function createMockLookup(
   };
 }
 
-/** Creates a mock installer port. */
 function createMockInstaller(
   shouldSucceed = true,
   version = "2026.03.16.1",
   inspection: InstallationInspection = { state: "missing" },
   failedLocalSourceTypes: string[] = [],
   options: {
-    /** What providesType answers; by default, whether install() has run. */
     providesType?: boolean;
-    /** Error withInstallLock rejects with instead of running fn. */
     lockError?: Error;
   } = {},
 ): ExtensionInstallerPort & {
   installCalls: string[];
   inspectCalls: string[];
-  /** Lock, inspect, install and hot-load calls in the order they ran. */
   events: string[];
 } {
   const installCalls: string[] = [];
@@ -207,8 +201,6 @@ Deno.test("ExtensionAutoResolver - skips non-allowlisted collectives", async () 
 
   const result = await resolver.resolve("@foo/bar/baz");
   assertEquals(result, false);
-  // Untrusted @collective/* references surface an actionable trust hint rather
-  // than installing or failing silently (swamp-club#465).
   assertEquals(output.calls, ["collectiveNotTrusted:foo:@foo/bar/baz"]);
 });
 
@@ -282,7 +274,6 @@ Deno.test("ExtensionAutoResolver - tries intermediate candidates before shorter 
   });
 
   await resolver.resolve("@swamp/aws/ec2/instance");
-  // Full type tried first, then stripped candidates longest-to-shortest
   assertEquals(lookupCalls[0], "@swamp/aws/ec2/instance");
   assertEquals(lookupCalls[1], "@swamp/aws/ec2");
 });
@@ -293,7 +284,6 @@ Deno.test("ExtensionAutoResolver - falls back to search when direct lookup fails
 
   const lookup: ExtensionLookupPort = {
     getExtension(name: string) {
-      // Direct lookup always fails, but we need to serve the install lookup
       if (name === "@swamp/aws-toolkit") {
         return Promise.resolve({
           name,
@@ -361,7 +351,6 @@ Deno.test("ExtensionAutoResolver - shows networkError on fetch failure", async (
   assertEquals(output.calls[1], "networkError:@swamp/aws/ec2/instance");
 });
 
-/** Resolves a type against a lookup whose calls reject with `error`. */
 async function resolveAgainstFailingLookup(
   error: Error,
   failing: "getExtension" | "searchExtensions",
@@ -459,13 +448,10 @@ Deno.test("ExtensionAutoResolver - re-entrancy guard prevents infinite loops", a
     output: createMockOutput(),
   });
 
-  // First call sets up the guard
   const result = await resolver.resolve("@swamp/aws/ec2/instance");
   assertEquals(result, false);
-  // Reset count
   resolveCount = 0;
 
-  // Second call with same type should work (guard was released)
   await resolver.resolve("@swamp/aws/ec2/instance");
   assertEquals(resolveCount > 0, true);
 });
@@ -485,16 +471,15 @@ Deno.test("ExtensionAutoResolver - handles non-@ prefixed types", async () => {
     output,
   });
 
-  // Non-@ type with "swamp" collective
   const result = await resolver.resolve("swamp/echo/v2");
   assertEquals(result, true);
   assertEquals(installer.installCalls, ["@swamp/echo"]);
 });
 
 Deno.test("ExtensionAutoResolver - refuses to install when extension is intact on disk", async () => {
-  // Issue #121 regression guard: intact tree + type failed to register
-  // means local edits are the cause; a silent reinstall would destroy
-  // WIP. Must surface `alreadyInstalledButFailed` and skip install.
+  // an intact tree whose type failed to register means local edits caused it; a
+  // silent reinstall would destroy work in progress, so surface
+  // alreadyInstalledButFailed and skip install
   const output = createMockOutput();
   const installer = createMockInstaller(true, "2026.03.16.1", {
     state: "intact",
@@ -524,7 +509,6 @@ Deno.test("ExtensionAutoResolver - refuses to install when extension is intact o
   assertEquals(kinds.includes("alreadyInstalledTruncated"), false);
 });
 
-/** Resolves a type against an intact install and returns the output calls. */
 async function resolveAgainstIntact(
   inspection: InstallationInspection,
   latestVersion = "2026.09.24.1",
@@ -545,8 +529,8 @@ async function resolveAgainstIntact(
 }
 
 Deno.test("ExtensionAutoResolver - reports an older intact install that lacks the type, with the newer version", async () => {
-  // swamp-club#2476: the installed version loaded cleanly but predates the
-  // type. Must not blame local edits or suggest --force.
+  // the installed version loaded cleanly but predates the type; do not blame
+  // local edits or suggest --force
   const { result, calls, installCalls } = await resolveAgainstIntact({
     state: "intact",
     path: "/fake/pulled-extensions/@acme/send",
@@ -613,8 +597,8 @@ Deno.test("ExtensionAutoResolver - omits the newer version when the installed ve
 });
 
 Deno.test("ExtensionAutoResolver - keeps the local-edits error when load failures are unknown", async () => {
-  // Without a catalog the adapter cannot tell; fall back to the
-  // conservative issue #121 message rather than claim the install is clean.
+  // without a catalog the adapter cannot tell, so fall back to the conservative
+  // local-edits message rather than claim the install is clean
   const { calls, installCalls } = await resolveAgainstIntact({
     state: "intact",
     path: "/fake/pulled-extensions/@acme/send",
@@ -629,10 +613,9 @@ Deno.test("ExtensionAutoResolver - keeps the local-edits error when load failure
 });
 
 Deno.test("ExtensionAutoResolver - surfaces truncated error when tree is incomplete", async () => {
-  // swamp-club#133 regression guard: truncated tree + type failed to
-  // register means files listed in the lockfile are missing from disk.
-  // Must surface `alreadyInstalledTruncated` naming the missing files,
-  // not the generic "local edits" message, and must not reinstall.
+  // a truncated tree whose type failed to register means lockfile files are
+  // missing; surface alreadyInstalledTruncated naming them, not the generic
+  // local-edits message, and do not reinstall
   const output = createMockOutput();
   const installer = createMockInstaller(true, "2026.03.16.1", {
     state: "truncated",
@@ -703,9 +686,6 @@ Deno.test("ExtensionAutoResolver - refuses to migrate legacy files automatically
 });
 
 Deno.test("ExtensionAutoResolver - inspectInstallation is consulted before install on the happy path", async () => {
-  // Regression guard for #121: the resolver must consult the inspection
-  // port before proceeding to install. When the tree is missing,
-  // install proceeds normally.
   const output = createMockOutput();
   const installer = createMockInstaller();
   const resolver = new ExtensionAutoResolver({
@@ -740,7 +720,6 @@ Deno.test("ExtensionAutoResolver - skips types without a collective", async () =
 });
 
 Deno.test("resolveModelType - returns existing definition without resolver", async () => {
-  // Register a test model
   const testType = ModelType.create("@test-resolve/unit-test-model");
   if (!modelRegistry.has(testType)) {
     modelRegistry.register({
@@ -809,7 +788,6 @@ Deno.test("resolveModelType - does not strip @ for non-internal types", async ()
 });
 
 Deno.test("resolveVaultType - returns true for existing vault type", async () => {
-  // Register a test vault type if needed
   if (!vaultTypeRegistry.has("test-resolve-vault")) {
     vaultTypeRegistry.register({
       type: "test-resolve-vault",
@@ -871,16 +849,10 @@ Deno.test("resolveDatastoreType - skips non-@ types", async () => {
   assertEquals(result, false);
 });
 
-// --- Stream-0 regression net: candidate names preserve forward slashes ---
-
 Deno.test("ExtensionAutoResolver - buildCandidateNames preserves forward-slash separators", async () => {
-  // The private buildCandidateNames helper splits on `/` and stitches
-  // candidates back together with `/`. Stream C is leaving this code
-  // alone because the type-string IS the logical key — it's never a
-  // host filesystem path. This test pins the contract by observing the
-  // candidate names through the public resolve() entry point: a refactor
-  // that swaps `/` for `path.SEPARATOR` would surface as backslash-
-  // separated lookup names on Windows and fail this assertion.
+  // the type string is a logical key, never a host path, so candidate names
+  // must stay forward-slash separated; swapping in path.SEPARATOR would break
+  // lookups on Windows
   const lookupCalls: string[] = [];
   const lookup: ExtensionLookupPort = {
     getExtension(name: string) {
@@ -899,12 +871,8 @@ Deno.test("ExtensionAutoResolver - buildCandidateNames preserves forward-slash s
     output: createMockOutput(),
   });
 
-  // Input is `@user/aws/ec2`; with collective "user" allowlisted, we
-  // expect the candidate progression `@user/aws/ec2` (full type),
-  // then `@user/aws` (stripped).
   await resolver.resolve("@user/aws/ec2");
 
-  // Every observed candidate must be forward-slash separated.
   assertEquals(
     lookupCalls.length > 0,
     true,
@@ -924,7 +892,6 @@ Deno.test("ExtensionAutoResolver - buildCandidateNames preserves forward-slash s
       `candidate must remain @-prefixed; got: ${candidate}`,
     );
   }
-  // Pin candidates: full type first, then stripped.
   assertEquals(
     lookupCalls.includes("@user/aws/ec2"),
     true,
@@ -938,8 +905,6 @@ Deno.test("ExtensionAutoResolver - buildCandidateNames preserves forward-slash s
     `expected @user/aws among candidates; got: ${JSON.stringify(lookupCalls)}`,
   );
 });
-
-// --- Issue #445: 2-segment datastore types must be tried as direct candidates ---
 
 Deno.test("ExtensionAutoResolver - resolves 2-segment datastore type via direct lookup", async () => {
   const output = createMockOutput();
@@ -1001,7 +966,6 @@ Deno.test("ExtensionAutoResolver - untrusted collective hint is emitted once per
   await resolver.resolve("@myorg/tools/gizmo");
   await resolver.resolve("@myorg/utils/helper");
 
-  // One hint for the whole collective, not one per referenced type.
   assertEquals(output.calls, [
     "collectiveNotTrusted:myorg:@myorg/tools/widget",
   ]);
@@ -1075,7 +1039,7 @@ Deno.test("ExtensionAutoResolver - installing message reports the pinned version
   const output = createMockOutput();
   const installer = createMockInstaller(
     true,
-    "2026.01.01.1", // installer reports the pinned version it installed
+    "2026.01.01.1",
     { state: "missing", lockedVersion: "2026.01.01.1" },
   );
   const resolver = new ExtensionAutoResolver({
@@ -1089,7 +1053,6 @@ Deno.test("ExtensionAutoResolver - installing message reports the pinned version
 
   const result = await resolver.resolve("@swamp/aws/ec2/instance");
   assertEquals(result, true);
-  // "installing" must show the pinned version (from the lockfile), not latest.
   assertEquals(output.calls[1], "installing:@swamp/aws@2026.01.01.1");
   assertEquals(output.calls[2], "installed:@swamp/aws@2026.01.01.1:3");
 });
@@ -1199,8 +1162,8 @@ Deno.test("ExtensionAutoResolver - inspects, installs and hot-loads inside the i
 });
 
 Deno.test("ExtensionAutoResolver - loads an intact install that another process just installed", async () => {
-  // swamp-club#2571: a concurrent process installed the extension after this
-  // one loaded its registries. Load it instead of reporting the type missing.
+  // a concurrent process installed the extension after this one loaded its
+  // registries; load it instead of reporting the type missing
   const output = createMockOutput();
   const installer = createMockInstaller(
     true,
@@ -1320,9 +1283,9 @@ Deno.test("ExtensionAutoResolver - names the process holding the install lock wh
 });
 
 Deno.test("ExtensionAutoResolver - installs once when two types from one extension resolve concurrently", async () => {
-  // The per-type re-entrancy guard does not cover two different types from
-  // one extension. The install lock serializes them, and the second loads
-  // what the first installed (swamp-club#2571).
+  // the per-type re-entrancy guard does not cover two types from one extension;
+  // the install lock serializes them and the second loads what the first
+  // installed
   let installed = false;
   let lockChain = Promise.resolve();
   const installCalls: string[] = [];
@@ -1385,10 +1348,6 @@ Deno.test("ExtensionAutoResolver - installs once when two types from one extensi
     1,
   );
 });
-
-// ---------------------------------------------------------------------------
-// describeTypeInRegistry (swamp-club#3003)
-// ---------------------------------------------------------------------------
 
 const ONE_PASSWORD_METADATA = {
   models: [],
@@ -1508,13 +1467,8 @@ Deno.test("ExtensionAutoResolver.describeTypeInRegistry - null when the version 
   assertEquals(await resolver.describeTypeInRegistry("@swamp/1password"), null);
 });
 
-// ---------------------------------------------------------------------------
-// Search hits are checked against published metadata (swamp-club#3246)
-// ---------------------------------------------------------------------------
-
 type ProvidedKind = "models" | "vaults" | "datastores" | "webhooks";
 
-/** Content metadata whose `kind` list provides each of `types`. */
 function metadataProviding(
   kind: ProvidedKind,
   ...types: string[]
@@ -1554,10 +1508,6 @@ function metadataProviding(
   return metadata;
 }
 
-/**
- * A lookup with no direct-name match whose search returns `hits` in rank
- * order, each with the given published metadata (absent = no detail).
- */
 function createSearchLookup(
   hits: string[],
   detail: Record<string, ExtensionContentMetadata | null>,
@@ -1760,11 +1710,6 @@ Deno.test("ExtensionAutoResolver.describeTypeInRegistry - describes a search-fou
   assertEquals(installer.installCalls, []);
 });
 
-// ---------------------------------------------------------------------------
-// Concurrent resolutions in one process (swamp-club#3911)
-// ---------------------------------------------------------------------------
-
-/** An installer whose install waits until `release` is called. */
 function createGatedInstaller(): ReturnType<typeof createMockInstaller> & {
   release: () => void;
   installStarted: Promise<void>;
@@ -1784,7 +1729,6 @@ function createGatedInstaller(): ReturnType<typeof createMockInstaller> & {
   });
 }
 
-/** Lets settled promises run their callbacks. */
 async function drainMicrotasks(): Promise<void> {
   for (let i = 0; i < 10; i++) await Promise.resolve();
 }
@@ -1951,7 +1895,6 @@ Deno.test("ExtensionAutoResolver - reports the extension's registered behavior c
     [],
     { providesType: true },
   );
-  // Another caller already loaded every type, so this hot-load loads none.
   installer.hotLoadModels = () => Promise.resolve(0);
   installer.registeredModelCount = (name) => name === "@swamp/aws" ? 10 : 0;
   const resolver = new ExtensionAutoResolver({
@@ -2013,7 +1956,6 @@ Deno.test("ExtensionAutoResolver - runs the install through the install schedule
 Deno.test("ExtensionAutoResolver - never reports fewer behaviors than its own hot-load registered", async () => {
   const output = createMockOutput();
   const installer = createMockInstaller();
-  // The installer's catalog does not show the rows yet.
   installer.registeredModelCount = () => 0;
   const resolver = new ExtensionAutoResolver({
     allowedCollectives: ["swamp"],

@@ -22,12 +22,6 @@ import type { EnvVarUsageDetail } from "./validation_service.ts";
 import { maskLiteralCalls } from "../expressions/cel_string_lexer.ts";
 import { scanExpressions } from "../expressions/expression_scanner.ts";
 
-/**
- * Scans a definition for environment variable references in expressions.
- *
- * Searches globalArguments and method data for `${{ env.VAR }}` patterns
- * and returns a list of paths and env var names found.
- */
 export function detectEnvVarUsageInDefinition(
   definition: Definition,
 ): EnvVarUsageDetail[] {
@@ -52,9 +46,6 @@ export function detectEnvVarUsageInDefinition(
   return usages;
 }
 
-/**
- * Recursively collects env var references from a data structure.
- */
 function collectEnvVarUsages(
   data: unknown,
   basePath: string,

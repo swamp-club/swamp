@@ -37,7 +37,6 @@ function identifiers(source: string): Array<[string, string]> {
       found.push([String(visit.node.name), identifierRole(visit)]);
     }
   });
-  // Walk order is an implementation detail; compare as a sorted list.
   return found.sort((a, b) => `${a}`.localeCompare(`${b}`));
 }
 
@@ -114,7 +113,6 @@ Deno.test("isGlobalObject: global names, casts and chains of them", () => {
 Deno.test("LineIndex: 1-based line and column of an offset, counted by \\n", () => {
   const index = new LineIndex("ab\ncd\n");
   assertEquals(index.position(0), { line: 1, column: 1 });
-  // The \n itself is the last column of its own line.
   assertEquals(index.position(2), { line: 1, column: 3 });
   assertEquals(index.position(3), { line: 2, column: 1 });
   assertEquals(index.position(4), { line: 2, column: 2 });

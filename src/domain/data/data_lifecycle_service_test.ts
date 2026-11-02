@@ -22,7 +22,6 @@ import { DefaultDataLifecycleService } from "./data_lifecycle_service.ts";
 import { Data } from "./data.ts";
 import { ModelType } from "../models/model_type.ts";
 
-// Mock repositories for testing
 class MockDataRepository {
   findByName = () => Promise.resolve(null);
   findAllGlobal: () => Promise<
@@ -179,7 +178,6 @@ Deno.test("calculateExpiration - calculates expiration for 1mo duration", () => 
   const createdAt = new Date("2025-01-01T00:00:00Z");
   const expiration = service.calculateExpiration("1mo", createdAt);
 
-  // 30 days = 30 * 24 * 60 * 60 * 1000 ms
   const expected = new Date(
     createdAt.getTime() + 30 * 24 * 60 * 60 * 1000,
   );
@@ -195,7 +193,6 @@ Deno.test("calculateExpiration - calculates expiration for 1y duration", () => {
   const createdAt = new Date("2025-01-01T00:00:00Z");
   const expiration = service.calculateExpiration("1y", createdAt);
 
-  // 365 days = 365 * 24 * 60 * 60 * 1000 ms
   const expected = new Date(
     createdAt.getTime() + 365 * 24 * 60 * 60 * 1000,
   );
@@ -218,15 +215,12 @@ function createMockData(overrides: {
   });
 }
 
-// --- Zero-duration lifetime normalization via Data.create ---
-
 Deno.test("calculateExpiration - Data.create with '0h' produces workflow lifetime (null expiration)", () => {
   const service = new DefaultDataLifecycleService(
     new MockDataRepository() as never,
     new MockWorkflowRunRepository() as never,
   );
 
-  // Data.create normalizes "0h" to "workflow"
   const data = createMockData({ name: "zero-hours", lifetime: "0h" });
   assertEquals(data.lifetime, "workflow");
 
@@ -297,7 +291,6 @@ Deno.test("calculateExpiration - non-zero durations still produce correct expira
     new MockWorkflowRunRepository() as never,
   );
 
-  // Verify non-zero is unaffected
   const data = createMockData({ name: "valid-hours", lifetime: "2h" });
   assertEquals(data.lifetime, "2h");
 
@@ -396,7 +389,6 @@ Deno.test("findExpiredData - returns empty array when no data exists", async () 
 
 Deno.test("findExpiredData - skips deletion markers (lifecycle: deleted)", async () => {
   const mockRepo = new MockDataRepository();
-  // Create a deleted data entry that would otherwise appear expired
   const deletedData = Data.create({
     name: "deleted-resource",
     contentType: "application/json",
@@ -423,7 +415,6 @@ Deno.test("findExpiredData - skips deletion markers (lifecycle: deleted)", async
   );
 
   const expired = await service.findExpiredData();
-  // Deletion markers should be skipped, not treated as expired
   assertEquals(expired.length, 0);
 });
 
@@ -464,7 +455,6 @@ Deno.test("findExpiredData - includes expired active data alongside deleted mark
   );
 
   const expired = await service.findExpiredData();
-  // Only the active expired data should be returned, not the deletion marker
   assertEquals(expired.length, 1);
   assertEquals(expired[0].dataName, "active-expired");
 });
@@ -487,17 +477,14 @@ Deno.test("deleteExpiredData - hard-deletes expired data via delete()", async ()
 
   const result = await service.deleteExpiredData();
 
-  // Should call delete() with no version (hard-delete all versions)
   assertEquals(mockRepo.deleteCalls.length, 1);
   assertEquals(mockRepo.deleteCalls[0].modelId, "m1");
   assertEquals(mockRepo.deleteCalls[0].dataName, "old-data");
   assertEquals(mockRepo.deleteCalls[0].version, undefined);
 
-  // Should report the expired entry
   assertEquals(result.dataEntriesExpired, 1);
   assertEquals(result.expiredEntries[0].dataName, "old-data");
   assertEquals(result.expiredEntries[0].versionCount, 3);
-  // versionsDeleted includes the 3 versions from the expired entry
   assertEquals(result.versionsDeleted, 3);
 });
 
@@ -546,7 +533,6 @@ Deno.test("deleteExpiredData - dry run passes dryRun=true to collectGarbage", as
 
   await service.deleteExpiredData({ dryRun: true });
 
-  // Phase 2 should have invoked collectGarbage with dryRun=true for the unique model
   assertEquals(mockRepo.collectGarbageCalls.length, 1);
   assertEquals(mockRepo.collectGarbageCalls[0].modelId, "m1");
   assertEquals(mockRepo.collectGarbageCalls[0].dryRun, true);
@@ -622,13 +608,10 @@ Deno.test("previewVersionGarbage - returns one entry per unique model with pendi
 
   const previews = await service.previewVersionGarbage();
 
-  // Unique models iterated once each
   assertEquals(mockRepo.collectGarbageCalls.length, 2);
-  // All calls must be dry-run
   for (const call of mockRepo.collectGarbageCalls) {
     assertEquals(call.dryRun, true);
   }
-  // Only m1 has versions to prune
   assertEquals(previews.length, 1);
   assertEquals(previews[0].modelId, "m1");
   assertEquals(previews[0].versionsWouldBeRemoved, 5);
@@ -658,9 +641,6 @@ Deno.test("previewVersionGarbage - returns empty when no prunes pending", async 
   assertEquals(previews.length, 0);
 });
 
-// --- Orphaned-data reclamation ---
-
-/** Predicate factory: models in `liveIds` are live, everything else orphaned. */
 function isModelLiveFor(liveIds: string[]) {
   return (_type: ModelType, modelId: string) =>
     Promise.resolve(liveIds.includes(modelId));
@@ -669,7 +649,6 @@ function isModelLiveFor(liveIds: string[]) {
 Deno.test("findOrphanedData - returns only models with no live definition", async () => {
   const mockRepo = new MockDataRepository();
   const modelType = ModelType.create("test/model");
-  // infinite lifetime so nothing is "expired" — orphaning is independent of TTL
   const orphanData = createMockData({ name: "d1", lifetime: "infinite" });
   const liveData = createMockData({ name: "d2", lifetime: "infinite" });
 
@@ -870,7 +849,6 @@ Deno.test("deleteOrphanedData - hard-deletes orphaned data, leaves live untouche
     isModelLive: isModelLiveFor(["live"]),
   });
 
-  // Only the orphaned model's data is deleted (all versions, no version arg).
   assertEquals(mockRepo.deleteCalls.length, 1);
   assertEquals(mockRepo.deleteCalls[0].modelId, "orphan");
   assertEquals(mockRepo.deleteCalls[0].dataName, "d1");
@@ -929,8 +907,6 @@ Deno.test("deleteOrphanedData - no orphans when all models live", async () => {
   assertEquals(result.modelsReclaimed, 0);
   assertEquals(result.reclaimedModels.length, 0);
 });
-
-// --- isExpired: workflow/job lifetime ---
 
 function createWorkflowData(overrides: {
   name: string;

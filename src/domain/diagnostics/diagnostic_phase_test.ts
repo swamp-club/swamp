@@ -175,8 +175,6 @@ Deno.test("currentDiagnosticTally: measures into the innermost running phase", a
     await withDiagnosticArea("enrollment", async () => {
       await observeDiagnosticPhase("definition_scan", {}, async (scan) => {
         await scan.tally.measure("read", async () => {
-          // A layer below, reached through a closure, measures into the
-          // same tally; that time leaves the outer measurement.
           await currentDiagnosticTally().measure(
             "parse",
             () => Promise.resolve(),
@@ -239,10 +237,8 @@ Deno.test("PhaseTally.measure: concurrent measurements each add their own time, 
     now = 10;
     endA();
     await a;
-    // A later measurement has no stale parent to hide its time in.
     await tally.measure("parse", async () => {
       now += 4;
-      // Another tally's measurement is not nested in this one.
       await other.measure("lookup", () => {
         now += 3;
         return Promise.resolve();
@@ -268,7 +264,6 @@ Deno.test("PhaseTally: a tally that is not recording keeps nothing", async () =>
 });
 
 Deno.test("startDiagnosticPhase: an unsampled phase is silent", async () => {
-  // No execution observer: observations are silent, so nothing records.
   await withCapturedSpans(async (spans) => {
     await withDiagnosticArea("enrollment", () => {
       const phase = startDiagnosticPhase("definition_scan");
@@ -403,8 +398,6 @@ Deno.test("diagnosticSpanAttributes: tags a span as a phase only inside an area 
       }),
   );
 });
-
-// Shared additions used by the access_poll area (swamp-club#4005).
 
 Deno.test("startDiagnosticPhase: the access_poll area exports its own phases and not another area's", async () => {
   await withObservedSpans(async (spans) => {

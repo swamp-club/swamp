@@ -44,7 +44,6 @@ Deno.test("VaultConfig.create creates a new config with current timestamp", () =
   assertEquals(config.type, "aws-sm");
   assertEquals(config.config, { region: "us-east-1" });
 
-  // Verify createdAt is set to current time
   assertEquals(config.createdAt >= beforeCreate, true);
   assertEquals(config.createdAt <= afterCreate, true);
 });
@@ -82,7 +81,6 @@ Deno.test("VaultConfig.toData converts config to persistable format", () => {
   assertEquals(data.type, "aws-sm");
   assertEquals(data.config, { region: "eu-west-1", profile: "production" });
   assertEquals(typeof data.createdAt, "string");
-  // Verify createdAt is valid ISO string
   assertEquals(new Date(data.createdAt).toISOString(), data.createdAt);
 });
 

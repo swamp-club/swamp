@@ -27,13 +27,9 @@ import { attachBindingProvenance } from "../expressions/splice_origin.ts";
 import type { Workflow } from "./workflow.ts";
 
 /**
- * Where data sits in a workflow run's inputs (swamp-club#3205). The values
- * arrive merged: caller inputs, webhook payloads, static `trigger.inputs`
- * literals and schema defaults are one map by the time a run starts. A value
- * equal to the workflow's own default or static trigger literal for its key
- * is that authored text, so it is authored; any other value came from the
- * caller and is data. A caller who passes the author's exact default text
- * gains nothing the default did not already grant.
+ * inputs arrive merged (caller, webhook, trigger literals, defaults); a value
+ * equal to the workflow's own default or static trigger literal for its key is
+ * authored, any other came from the caller and is data
  */
 export function workflowInputsProvenance(
   inputs: Record<string, unknown> | undefined,
@@ -64,7 +60,6 @@ export function workflowInputsProvenance(
   return map;
 }
 
-/** The authored values one input key may hold: its default and trigger literal. */
 function authoredValues(
   key: string,
   schema: InputsSchema | undefined,
@@ -98,12 +93,9 @@ interface AuthoredValue {
 }
 
 /**
- * Authored where the value equals an authored value for its position,
- * recursing into object properties whose schema declares defaults;
- * otherwise data. An object that no authored object value and no schema
- * property describes is data whole, its keys included: they are the
- * caller's, and a record of secrets keyed by name is then masked at the
- * record, and its keys stay out of the map's paths (swamp-club#3681).
+ * authored where equal to an authored value for its position, recursing into
+ * properties with schema defaults; otherwise data, an undescribed object whole
+ * with its keys, so a record of secrets is masked at the record
  */
 function valueProvenance(
   value: unknown,
@@ -171,10 +163,6 @@ export function vouchInherited(
   return out;
 }
 
-/**
- * Sets where data sits in a run's inputs on its expression context, for both
- * `inputs` and `run.inputs`.
- */
 export function attachInputsProvenance<T extends object>(
   context: T,
   inputs: ProvenanceMap,

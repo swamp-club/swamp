@@ -18,17 +18,8 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * Minimal CEL evaluator surface needed by domain-side evaluators
- * (expression evaluators, forEach expansion). Defined in the domain
- * so consumers don't need to reach into infrastructure for the type;
- * the infrastructure CelEvaluator implements this structurally.
- *
- * Includes both sync `evaluate` (used for step-name templates and
- * predicates) and async `evaluateAsync` (used for `forEach.in` and
- * any expression that may reach data.* helpers returning Promises).
- * Consumers that only need one of the two are still served by passing
- * the broader implementation — extra methods are harmless under
- * TypeScript's structural typing.
+ * defined in the domain so consumers need not reach into infrastructure for the
+ * type; the infrastructure CelEvaluator implements it structurally
  */
 export interface CelExpressionEvaluator {
   evaluate(expression: string, context: Record<string, unknown>): unknown;
@@ -39,10 +30,8 @@ export interface CelExpressionEvaluator {
 }
 
 /**
- * Syntax check without evaluation. Lets a caller tell `${{ ... }}` text that
- * is not CEL at all (prose documenting the syntax) from an expression that
- * failed to evaluate. The infrastructure CelEvaluator implements this
- * structurally.
+ * lets a caller tell ${{ ... }} text that is not CEL at all (prose documenting
+ * the syntax) from an expression that failed to evaluate
  */
 export interface CelExpressionValidator {
   validate(expression: string): { valid: boolean; error?: string };

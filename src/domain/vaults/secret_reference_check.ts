@@ -27,40 +27,24 @@ import {
 } from "./secret_reference_errors.ts";
 import type { VaultService } from "./vault_service.ts";
 
-/** The audit caller context of a probe read, told apart from a load. */
 export const PROBE_PURPOSE = "expression:vault-check";
 
-/** Where a probe's value goes before it is dropped: the run's redactor. */
 export interface ProbeRedactor {
   addSecret(value: string): void;
 }
 
 /**
- * Checks that a vault.get() reference would load, so a missing or
- * unreadable key fails when the expression is evaluated, where the eager
- * read used to fail it, though nothing reads the value until delivery
- * (design/enablers/typed-secrets.md Section 3.4).
- *
- * Every call authorizes a read of the key under the run's vault access, so
- * a grant revoked mid-run fails the next check. The provider is asked once
- * per run tree, through the registry's existence memo: with
- * `VaultExistenceProvider.has` where the vault offers it, so no value is
- * read, and otherwise with one probe read whose value goes to the run's
- * redactor and nowhere else. A missing key under `has` fails with
- * `secret_reference_unavailable`; any other failure keeps the text the
- * eager read reported.
+ * every call authorizes a read under the run's vault access; the provider is
+ * asked once per run tree via the registry memo, with has() where offered so no
+ * value is read, else one probe whose value goes to the redactor
  */
 export async function checkSecretReference(
   vaultService: VaultService,
   reference: SecretReference,
   options: {
-    /** The run's registry, whose memo answers each reference once. */
     registry: SecretBagRegistry;
-    /** The run's redactor, for the value a probe reads. */
     redactor?: ProbeRedactor;
-    /** The vault.get() call as written, for errors. */
     call: string;
-    /** Where the author wrote the call. */
     location: string;
   },
 ): Promise<void> {

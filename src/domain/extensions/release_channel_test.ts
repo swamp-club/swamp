@@ -20,8 +20,6 @@
 import { assertEquals, assertThrows } from "@std/assert";
 import { ReleaseChannel } from "./release_channel.ts";
 
-// --- Validation ---
-
 Deno.test("ReleaseChannel.create: accepts valid channel names", () => {
   assertEquals(ReleaseChannel.create("beta").name, "beta");
   assertEquals(ReleaseChannel.create("rc").name, "rc");
@@ -63,15 +61,11 @@ Deno.test("ReleaseChannel.isValid: returns false for invalid names", () => {
   assertEquals(ReleaseChannel.isValid("STABLE"), false);
 });
 
-// --- Static instances ---
-
 Deno.test("ReleaseChannel: static instances have correct names", () => {
   assertEquals(ReleaseChannel.BETA.name, "beta");
   assertEquals(ReleaseChannel.RC.name, "rc");
   assertEquals(ReleaseChannel.STABLE.name, "stable");
 });
-
-// --- isPrerelease ---
 
 Deno.test("ReleaseChannel.isPrerelease: beta is prerelease", () => {
   assertEquals(ReleaseChannel.BETA.isPrerelease(), true);
@@ -91,8 +85,6 @@ Deno.test("ReleaseChannel.isPrereleaseName: checks name strings", () => {
   assertEquals(ReleaseChannel.isPrereleaseName("stable"), false);
   assertEquals(ReleaseChannel.isPrereleaseName("other"), false);
 });
-
-// --- canPromoteTo (promotion ladder) ---
 
 Deno.test("ReleaseChannel.canPromoteTo: beta can promote to rc", () => {
   assertEquals(ReleaseChannel.BETA.canPromoteTo(ReleaseChannel.RC), true);
@@ -127,8 +119,6 @@ Deno.test("ReleaseChannel.canPromoteTo: cannot promote to same channel", () => {
   );
 });
 
-// --- Equality ---
-
 Deno.test("ReleaseChannel.equals: same channels are equal", () => {
   assertEquals(ReleaseChannel.BETA.equals(ReleaseChannel.create("beta")), true);
   assertEquals(ReleaseChannel.RC.equals(ReleaseChannel.create("rc")), true);
@@ -143,8 +133,6 @@ Deno.test("ReleaseChannel.equals: different channels are not equal", () => {
   assertEquals(ReleaseChannel.RC.equals(ReleaseChannel.STABLE), false);
   assertEquals(ReleaseChannel.STABLE.equals(ReleaseChannel.BETA), false);
 });
-
-// --- toString ---
 
 Deno.test("ReleaseChannel.toString: returns channel name", () => {
   assertEquals(ReleaseChannel.BETA.toString(), "beta");

@@ -18,29 +18,15 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * Ownership rules for the repo-relative paths an extension's lockfile
- * entry lists in `files[]`.
- *
- * Most tracked paths live in a per-extension subtree, so no two
- * extensions can list the same one. Skills are the exception: they land
- * in shared tool dirs (`.claude/skills/<name>`, ...), so two extensions,
- * or an extension and the user, can write into the same skill dir.
- * These rules decide when a path is claimed by an entry, so the delete
- * paths (extension rm, the install orphan prune) never remove a dir
- * another extension still owns files in.
- *
- * Paths are compared in a canonical form: forward slashes, NFC, case
- * folded, no trailing slash. macOS and Windows filesystems are
- * case-insensitive, and lockfiles written on Windows use backslashes,
- * so two spellings of one directory must compare equal.
+ * skills share tool dirs, so delete paths must never remove a dir another
+ * extension still owns; paths compare in canonical form (forward slashes, NFC,
+ * case-folded) since filesystems and lockfiles vary
  */
 
-/** Minimal lockfile entry shape the claim rules read. */
 export interface PathClaimEntry {
   files?: ReadonlyArray<string>;
 }
 
-/** Returns the canonical comparison form of a repo-relative path. */
 export function canonicalClaimPath(path: string): string {
   let out = path.replaceAll("\\", "/").normalize("NFC").toLowerCase();
   while (out.length > 1 && out.endsWith("/")) {
@@ -49,7 +35,6 @@ export function canonicalClaimPath(path: string): string {
   return out;
 }
 
-/** True when `path` equals `dir` or lies under it. */
 export function pathCovers(dir: string, path: string): boolean {
   const d = canonicalClaimPath(dir);
   const p = canonicalClaimPath(path);
@@ -57,9 +42,8 @@ export function pathCovers(dir: string, path: string): boolean {
 }
 
 /**
- * True when `files` claim `dir`: some listed path equals `dir` or lies
- * under it. An entry that recorded a skill root, or recorded the files
- * it merged into that root, both own the root for conflict purposes.
+ * an entry that recorded a skill root, or the files it merged into that root,
+ * owns the root for conflict purposes
  */
 export function claimsPath(
   files: ReadonlyArray<string>,
@@ -68,11 +52,6 @@ export function claimsPath(
   return files.some((f) => pathCovers(dir, f));
 }
 
-/**
- * Returns the names of lockfile entries, other than `selfName`, that
- * claim `path` (list it, or list something under it). Sorted for
- * stable output.
- */
 export function findClaimants(
   path: string,
   selfName: string,

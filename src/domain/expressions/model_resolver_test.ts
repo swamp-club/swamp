@@ -60,8 +60,8 @@ async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
     await fn(dir);
   } finally {
     if (Deno.build.os === "windows") {
-      // Best-effort: EBUSY can fire when V8 hasn't GC'd native
-      // sqlite handles yet. Temp dir is ephemeral, OS reclaims.
+      // EBUSY can fire on Windows when V8 has not GC'd native sqlite handles;
+      // the temp dir is ephemeral so the error is ignored
       await Deno.remove(dir, { recursive: true }).catch(() => {});
     } else {
       await Deno.remove(dir, { recursive: true });
@@ -79,10 +79,6 @@ const owner = {
   ownerType: "model-method" as const,
   ownerRef: "test/model:test",
 };
-
-// ============================================================================
-// data.latest() reads from disk synchronously
-// ============================================================================
 
 Deno.test("data.latest() reads from disk synchronously", async () => {
   await withTempDir(async (repoDir) => {
@@ -134,10 +130,6 @@ Deno.test("data.latest() reads from disk synchronously", async () => {
   });
 });
 
-// ============================================================================
-// data.latest() sees data written after buildContext()
-// ============================================================================
-
 Deno.test("data.latest() sees data written after buildContext()", async () => {
   await withTempDir(async (repoDir) => {
     await setupRepoDir(repoDir);
@@ -156,7 +148,6 @@ Deno.test("data.latest() sees data written after buildContext()", async () => {
     });
     await defRepo.save(type, model);
 
-    // Write initial data
     const data = Data.create({
       name: "state",
       contentType: "application/json",
@@ -172,7 +163,6 @@ Deno.test("data.latest() sees data written after buildContext()", async () => {
       new TextEncoder().encode(JSON.stringify({ step: 1 })),
     );
 
-    // Build context
     const dqs = new DataQueryService(catalog, dataRepo);
     await dqs.query('name == ""');
 
@@ -183,7 +173,6 @@ Deno.test("data.latest() sees data written after buildContext()", async () => {
     });
     const ctx = await resolver.buildContext(new RunSensitiveValues());
 
-    // Write new data AFTER context was built
     await dataRepo.save(
       type,
       model.id,
@@ -191,11 +180,9 @@ Deno.test("data.latest() sees data written after buildContext()", async () => {
       new TextEncoder().encode(JSON.stringify({ step: 2 })),
     );
 
-    // Re-populate catalog so latest() picks up the new version
     catalog.invalidate();
     await dqs.query('name == ""');
 
-    // data.latest() should see the fresh version
     assertExists(ctx.data);
     const result = await ctx.data.latest("fresh-model", "state");
     assertExists(result);
@@ -204,10 +191,6 @@ Deno.test("data.latest() sees data written after buildContext()", async () => {
     catalog.close();
   });
 });
-
-// ============================================================================
-// data.version() reads specific version from disk
-// ============================================================================
 
 Deno.test("data.version() reads specific version from disk", async () => {
   await withTempDir(async (repoDir) => {
@@ -261,10 +244,6 @@ Deno.test("data.version() reads specific version from disk", async () => {
   });
 });
 
-// ============================================================================
-// data.listVersions() returns sorted version numbers
-// ============================================================================
-
 Deno.test("data.listVersions() returns sorted version numbers", async () => {
   await withTempDir(async (repoDir) => {
     await setupRepoDir(repoDir);
@@ -315,10 +294,6 @@ Deno.test("data.listVersions() returns sorted version numbers", async () => {
   });
 });
 
-// ============================================================================
-// data.findByTag() returns matching records
-// ============================================================================
-
 Deno.test("data.findByTag() returns matching records from disk", async () => {
   await withTempDir(async (repoDir) => {
     await setupRepoDir(repoDir);
@@ -337,7 +312,6 @@ Deno.test("data.findByTag() returns matching records from disk", async () => {
     });
     await defRepo.save(type, model);
 
-    // Create resource data
     const resourceData = Data.create({
       name: "resource-item",
       contentType: "application/json",
@@ -353,7 +327,6 @@ Deno.test("data.findByTag() returns matching records from disk", async () => {
       new TextEncoder().encode(JSON.stringify({ key: "value" })),
     );
 
-    // Create non-matching data
     const otherData = Data.create({
       name: "other-item",
       contentType: "application/json",
@@ -393,10 +366,6 @@ Deno.test("data.findByTag() returns matching records from disk", async () => {
   });
 });
 
-// ============================================================================
-// data.findByTag() deduplicates across coordinate sets
-// ============================================================================
-
 Deno.test("data.findByTag() deduplicates when data exists under orphan coordinates", async () => {
   await withTempDir(async (repoDir) => {
     await setupRepoDir(repoDir);
@@ -409,7 +378,6 @@ Deno.test("data.findByTag() deduplicates when data exists under orphan coordinat
     );
     const type = ModelType.create("test/model");
 
-    // Step 1: Create model and save data under its UUID
     const originalModel = Definition.create({
       name: "dup-model",
       globalArguments: {},
@@ -431,7 +399,6 @@ Deno.test("data.findByTag() deduplicates when data exists under orphan coordinat
       new TextEncoder().encode(JSON.stringify({ v: 1 })),
     );
 
-    // Step 2: Delete and recreate model with new UUID
     await defRepo.delete(type, originalModel.id);
     const recreatedModel = Definition.create({
       name: "dup-model",
@@ -439,7 +406,6 @@ Deno.test("data.findByTag() deduplicates when data exists under orphan coordinat
     });
     await defRepo.save(type, recreatedModel);
 
-    // Step 3: Build context — orphan recovery maps old UUID data to new model name
     const dqs = new DataQueryService(catalog, dataRepo);
     await dqs.query('name == ""');
 
@@ -452,7 +418,6 @@ Deno.test("data.findByTag() deduplicates when data exists under orphan coordinat
 
     assertExists(ctx.data);
 
-    // findByTag should return the record only once, not duplicated
     const results = await ctx.data.findByTag("env", "prod");
     assertEquals(results.length, 1);
     assertEquals(results[0].name, "tagged-item");
@@ -472,7 +437,6 @@ Deno.test("data.findByTag() deduplicates when both old and new UUIDs have data f
     );
     const type = ModelType.create("test/model");
 
-    // Step 1: Create model and save data under its UUID
     const originalModel = Definition.create({
       name: "dup-model",
       globalArguments: {},
@@ -494,7 +458,6 @@ Deno.test("data.findByTag() deduplicates when both old and new UUIDs have data f
       new TextEncoder().encode(JSON.stringify({ v: 1 })),
     );
 
-    // Step 2: Delete and recreate model with new UUID
     await defRepo.delete(type, originalModel.id);
     const recreatedModel = Definition.create({
       name: "dup-model",
@@ -502,7 +465,6 @@ Deno.test("data.findByTag() deduplicates when both old and new UUIDs have data f
     });
     await defRepo.save(type, recreatedModel);
 
-    // Step 3: Save data with same name under new UUID
     const dataV2 = Data.create({
       name: "tagged-item",
       contentType: "application/json",
@@ -518,7 +480,6 @@ Deno.test("data.findByTag() deduplicates when both old and new UUIDs have data f
       new TextEncoder().encode(JSON.stringify({ v: 2 })),
     );
 
-    // Step 4: Build context — both UUIDs have data for "tagged-item"
     const dqs = new DataQueryService(catalog, dataRepo);
     await dqs.query('name == ""');
 
@@ -531,18 +492,12 @@ Deno.test("data.findByTag() deduplicates when both old and new UUIDs have data f
 
     assertExists(ctx.data);
 
-    // Both old and new UUID entries exist in the catalog; deduplication
-    // keeps only the most recently created record for each data name.
     const results = await ctx.data.findByTag("env", "prod");
     assertEquals(results.length, 1);
     assertEquals(results[0].name, "tagged-item");
     catalog.close();
   });
 });
-
-// ============================================================================
-// data.findBySpec() returns records matching specName tag
-// ============================================================================
 
 Deno.test("data.findBySpec() returns records matching specName tag", async () => {
   await withTempDir(async (repoDir) => {
@@ -562,7 +517,6 @@ Deno.test("data.findBySpec() returns records matching specName tag", async () =>
     });
     await defRepo.save(type, model);
 
-    // Create items with specName tag
     const subnetA = Data.create({
       name: "subnet-a",
       contentType: "application/json",
@@ -623,7 +577,6 @@ Deno.test("data.findBySpec() deduplicates when both old and new UUIDs have data 
     );
     const type = ModelType.create("test/model");
 
-    // Step 1: Create model and save data under its UUID
     const originalModel = Definition.create({
       name: "spec-model",
       globalArguments: {},
@@ -645,7 +598,6 @@ Deno.test("data.findBySpec() deduplicates when both old and new UUIDs have data 
       new TextEncoder().encode(JSON.stringify({ cidr: "10.0.1.0/24" })),
     );
 
-    // Step 2: Delete and recreate model with new UUID
     await defRepo.delete(type, originalModel.id);
     const recreatedModel = Definition.create({
       name: "spec-model",
@@ -653,7 +605,6 @@ Deno.test("data.findBySpec() deduplicates when both old and new UUIDs have data 
     });
     await defRepo.save(type, recreatedModel);
 
-    // Step 3: Save data with same name under new UUID
     const dataV2 = Data.create({
       name: "subnet-a",
       contentType: "application/json",
@@ -669,7 +620,6 @@ Deno.test("data.findBySpec() deduplicates when both old and new UUIDs have data 
       new TextEncoder().encode(JSON.stringify({ cidr: "10.0.1.0/24-v2" })),
     );
 
-    // Step 4: Build context — both UUIDs have data for "subnet-a"
     const dqs = new DataQueryService(catalog, dataRepo);
     await dqs.query('name == ""');
 
@@ -682,8 +632,6 @@ Deno.test("data.findBySpec() deduplicates when both old and new UUIDs have data 
 
     assertExists(ctx.data);
 
-    // Both old and new UUID entries exist in the catalog; deduplication
-    // keeps only the most recently created record for each data name.
     const results = await ctx.data.findBySpec("spec-model", "subnet");
     assertEquals(results.length, 1);
     assertEquals(results[0].name, "subnet-a");
@@ -709,7 +657,6 @@ Deno.test("data.findBySpec() returns only latest version when multiple versions 
     });
     await defRepo.save(type, model);
 
-    // Create a data entry and save it multiple times to create multiple versions
     const subnet = Data.create({
       name: "subnet-versioned",
       contentType: "application/json",
@@ -748,7 +695,6 @@ Deno.test("data.findBySpec() returns only latest version when multiple versions 
 
     assertExists(ctx.data);
     const results = await ctx.data.findBySpec("spec-model", "subnet");
-    // Should return only 1 record (the latest version), not 3
     assertEquals(results.length, 1);
     assertEquals(results[0].name, "subnet-versioned");
     catalog.close();
@@ -773,7 +719,6 @@ Deno.test("data.findByTag() returns only latest version when multiple versions e
     });
     await defRepo.save(type, model);
 
-    // Create a data entry and save it multiple times to create multiple versions
     const item = Data.create({
       name: "tagged-versioned",
       contentType: "application/json",
@@ -812,16 +757,11 @@ Deno.test("data.findByTag() returns only latest version when multiple versions e
 
     assertExists(ctx.data);
     const results = await ctx.data.findByTag("env", "staging");
-    // Should return only 1 record (the latest version), not 3
     assertEquals(results.length, 1);
     assertEquals(results[0].name, "tagged-versioned");
     catalog.close();
   });
 });
-
-// ============================================================================
-// Graceful handling of missing models/data
-// ============================================================================
 
 Deno.test("data.* returns null/empty for missing model", async () => {
   await withTempDir(async (repoDir) => {
@@ -874,10 +814,6 @@ Deno.test("data.* returns null/empty for missing data name", async () => {
   });
 });
 
-// ============================================================================
-// data.findBySpec() run-scoping via workflowRunId
-// ============================================================================
-
 Deno.test("findBySpec: returns all data regardless of workflowRunId", async () => {
   await withTempDir(async (repoDir) => {
     await setupRepoDir(repoDir);
@@ -896,7 +832,6 @@ Deno.test("findBySpec: returns all data regardless of workflowRunId", async () =
     });
     await defRepo.save(type, model);
 
-    // Data from run-1
     const episodeA = Data.create({
       name: "episode-a",
       contentType: "application/json",
@@ -917,7 +852,6 @@ Deno.test("findBySpec: returns all data regardless of workflowRunId", async () =
       new TextEncoder().encode(JSON.stringify({ title: "Episode A" })),
     );
 
-    // Data from run-2
     const episodeB = Data.create({
       name: "episode-b",
       contentType: "application/json",
@@ -948,13 +882,11 @@ Deno.test("findBySpec: returns all data regardless of workflowRunId", async () =
     const ctx = await resolver.buildContext(new RunSensitiveValues());
     assertExists(ctx.data);
 
-    // findBySpec no longer scopes by workflowRunId — returns all data
     const allResults = await ctx.data.findBySpec("dedup-model", "episode");
     assertEquals(allResults.length, 2);
     assertEquals(allResults.some((r) => r.name === "episode-a"), true);
     assertEquals(allResults.some((r) => r.name === "episode-b"), true);
 
-    // Even with workflowRunId set, findBySpec returns ALL data
     ctx.workflowRunId = "run-1";
     const run1Results = await ctx.data.findBySpec("dedup-model", "episode");
     assertEquals(run1Results.length, 2);
@@ -980,7 +912,6 @@ Deno.test("findBySpec: returns all data when workflowRunId is not set", async ()
     });
     await defRepo.save(type, model);
 
-    // Data with no workflowRunId tag (e.g., written outside a workflow)
     const dataNoRun = Data.create({
       name: "item-standalone",
       contentType: "application/json",
@@ -996,7 +927,6 @@ Deno.test("findBySpec: returns all data when workflowRunId is not set", async ()
       new TextEncoder().encode(JSON.stringify({ value: 1 })),
     );
 
-    // Data with a workflowRunId tag
     const dataWithRun = Data.create({
       name: "item-from-workflow",
       contentType: "application/json",
@@ -1027,16 +957,11 @@ Deno.test("findBySpec: returns all data when workflowRunId is not set", async ()
     const ctx = await resolver.buildContext(new RunSensitiveValues());
     assertExists(ctx.data);
 
-    // No workflowRunId set — returns all data regardless of tags
     const allResults = await ctx.data.findBySpec("global-model", "item");
     assertEquals(allResults.length, 2);
     catalog.close();
   });
 });
-
-// ============================================================================
-// data.findBySpec() returns distinct records from different workflow steps
-// ============================================================================
 
 Deno.test("findBySpec: returns both records when same data name written by different steps", async () => {
   await withTempDir(async (repoDir) => {
@@ -1114,10 +1039,6 @@ Deno.test("findBySpec: returns both records when same data name written by diffe
   });
 });
 
-/**
- * Writes `result` for model `probe` from two workflow steps, run-good
- * (exitCode 0) then run-bad (exitCode 7), and returns a resolver context.
- */
 async function buildTwoStepContext(repoDir: string) {
   await setupRepoDir(repoDir);
   const defRepo = new YamlDefinitionRepository(repoDir);
@@ -1189,8 +1110,6 @@ Deno.test("data.query and data.latest return only the newest version when steps 
     assertEquals(queried[0].version, 2);
     assertEquals(queried[0].isLatest, true);
 
-    // The data name equals its spec name: two latest rows used to make
-    // this lookup ambiguous.
     const latest = await data.latest("probe", "result");
     assertEquals(
       (latest?.attributes as { exitCode: number }).exitCode,
@@ -1276,10 +1195,6 @@ Deno.test("findBySpec: deduplicates same-step same-name to latest version", asyn
     catalog.close();
   });
 });
-
-// ============================================================================
-// workers.connected() returns only non-disconnected workers
-// ============================================================================
 
 Deno.test("workers.connected() returns only non-disconnected workers", async () => {
   await withTempDir(async (repoDir) => {
@@ -1442,10 +1357,6 @@ Deno.test("workers.connected() returns empty array when all workers disconnected
   });
 });
 
-// ============================================================================
-// latest() always returns fresh data from disk (no caching)
-// ============================================================================
-
 Deno.test("latest: returns fresh data after intervening write", async () => {
   await withTempDir(async (repoDir) => {
     await setupRepoDir(repoDir);
@@ -1561,10 +1472,6 @@ Deno.test("latest: returns data written after initial miss", async () => {
     catalog.close();
   });
 });
-
-// ============================================================================
-// data.latest() throws on ambiguous specName matches
-// ============================================================================
 
 Deno.test("data.latest() throws on ambiguous specName matches", async () => {
   await withTempDir(async (repoDir) => {
@@ -1841,17 +1748,6 @@ Deno.test("data.latest() with exact data name skips specName ambiguity check (sw
   });
 });
 
-// ============================================================================
-// Deferred dynamic vault arguments
-// ============================================================================
-
-/** The value a load at delivery reads for the one sentinel `cel` holds. */
-
-// --- resolveModel gates its exact-ID fallback on UUID syntax ---
-//
-// After a name miss, the fallback walked every definition in the repository
-// (findAllGlobal) and compared IDs with strict equality — work a non-UUID ref
-// can never benefit from. The outcome must be identical either way.
 Deno.test("ModelResolver.resolveModel resolves a model by name", async () => {
   await withTempDir(async (dir) => {
     const repo = new YamlDefinitionRepository(dir);
@@ -1886,7 +1782,6 @@ Deno.test("ModelResolver.resolveModel throws ModelNotFoundError for a non-UUID m
     const type = ModelType.create("command/shell");
     await repo.save(type, Definition.create({ name: "resident" }));
 
-    // Gating the ID fallback must not change the failure the caller sees.
     await assertRejects(
       () => new ModelResolver(repo).resolveModel("missing-model-name"),
       Error,
@@ -1909,10 +1804,6 @@ Deno.test("ModelResolver.resolveModel throws ModelNotFoundError for a UUID miss"
     );
   });
 });
-
-// ============================================================================
-// buildContext / buildLightContext — definition scanning (swamp-club#2123)
-// ============================================================================
 
 Deno.test("buildContext reuses definitions supplied by the caller", async () => {
   await withTempDir(async (repoDir) => {
@@ -2058,8 +1949,6 @@ Deno.test("buildLightContext resolves data.latest sensitive vault refs like buil
       vaultService,
     });
 
-    // Both data.latest paths record what they resolve, with its vault
-    // source, and forward it to the run redactor (swamp-club#2171).
     const lightRedactor = new SecretRedactor();
     const lightValues = new RunSensitiveValues(lightRedactor);
     const lightCtx = resolver.buildLightContext(lightValues);
@@ -2069,7 +1958,6 @@ Deno.test("buildLightContext resolves data.latest sensitive vault refs like buil
       lightRecord.attributes.apiKey,
       "${{ vault.get('my-vault', 'api-key') }}",
     );
-    // Fields the schema did not mark sensitive stay unresolved.
     assertEquals(
       lightRecord.attributes.plain,
       "${{ vault.get('my-vault', 'api-key') }}",
@@ -2152,7 +2040,6 @@ Deno.test("data.latest records sensitive vault refs resolved through the catalog
         record.attributes.apiKey,
         "${{ vault.get('my-vault', 'api-key') }}",
       );
-      // Fields the schema did not mark sensitive stay unresolved.
       assertEquals(
         record.attributes.plain,
         "${{ vault.get('my-vault', 'api-key') }}",
@@ -2253,18 +2140,8 @@ Deno.test("data.latest returns another namespace's sensitive vault refs as store
   });
 });
 
-// ============================================================================
-// DataRecord.path — local content path for CEL data.* results (swamp-club#2288)
-// ============================================================================
-
 type HydrateMode = "restore" | "absent" | "throw";
 
-/**
- * Saves a text/plain file-kind data item for `producer`, then (when `evict`
- * is set) removes its raw file to mimic a lazy-hydration datastore that has
- * synced metadata only. The hydrate hook restores the bytes, reports the file
- * absent, or throws, per `mode`.
- */
 async function setupPathFixture(
   repoDir: string,
   opts: { evict: boolean; mode?: HydrateMode },
@@ -2336,8 +2213,6 @@ Deno.test("data.latest(): the catalog fallback path also sets path", async () =>
       repoDir,
       { evict: false },
     );
-    // The light context has no model coordinates, so latest() resolves
-    // through DataQueryService.getLatestRecord.
     const ctx = resolver.buildLightContext(new RunSensitiveValues());
     const record = await ctx.data!.latest("producer", "log");
     assertEquals(record?.path, contentPath);
@@ -2442,10 +2317,6 @@ Deno.test("data.query(): record results and path projections carry the path", as
   });
 });
 
-// ============================================================================
-// data.specInstanceNames() lists the data names written under a spec
-// ============================================================================
-
 Deno.test("data.specInstanceNames() lists data names of a spec, scoped like latest()", async () => {
   await withTempDir(async (repoDir) => {
     await setupRepoDir(repoDir);
@@ -2518,14 +2389,9 @@ Deno.test("data.specInstanceNames() returns no names without a data query servic
   });
 });
 
-// ============================================================================
-// Control-plane records are never readable from expressions (swamp-club#2756)
-// ============================================================================
-
 Deno.test("buildContext: expressions never read control-plane records", async () => {
   await withTempDir(async (repoDir) => {
     await setupRepoDir(repoDir);
-    // Serve writes control-plane definitions to .swamp/auto-definitions.
     const autoRepo = new YamlDefinitionRepository(
       repoDir,
       undefined,
@@ -2637,7 +2503,6 @@ Deno.test("buildContext: control-plane records stored under an @-prefixed type a
     );
     const dqs = new DataQueryService(catalog, dataRepo);
     await dqs.query('name == ""');
-    // Without the exclusion the record is there under the @ type.
     assertEquals(
       (await dqs.query('modelType == "@swamp/grant"') as unknown[]).length,
       1,
@@ -2661,11 +2526,6 @@ Deno.test("buildContext: control-plane records stored under an @-prefixed type a
   });
 });
 
-// ============================================================================
-// Model instance renames (swamp-club#3029)
-// ============================================================================
-
-/** Counts name lookups, the definition walks the light context may make. */
 class CountingDefinitionRepository extends YamlDefinitionRepository {
   nameLookups = 0;
 
@@ -2684,9 +2544,7 @@ interface RenameFixture {
   defRepo: CountingDefinitionRepository;
   dataRepo: FileSystemUnifiedDataRepository;
   type: ModelType;
-  /** The id the model kept when it was renamed from old-name to new-name. */
   modelId: string;
-  /** Writes a version of `name` under `modelId` (or another id). */
   write: (
     name: string,
     specName: string,
@@ -2694,18 +2552,9 @@ interface RenameFixture {
     modelId?: string,
     createdAt?: string,
   ) => Promise<void>;
-  /**
-   * Builds a context of `kind` over a freshly populated catalog, from one
-   * resolver shared by every call.
-   */
   context: (kind: ContextKind) => Promise<ExpressionContext>;
 }
 
-/**
- * A model renamed from old-name to new-name: its definition is saved under
- * the new name, and data is written by the caller with whichever modelName
- * tag the write would have carried.
- */
 async function withRenamedModel(
   fn: (fixture: RenameFixture) => Promise<void>,
   namespace?: Namespace,
@@ -2868,7 +2717,6 @@ for (const kind of ["full", "light"] as const) {
       const ctx = await context(kind);
       assertExists(ctx.data);
 
-      // old-name has no definition now; its name tag still matches.
       const bySpec = await ctx.data.findBySpec("old-name", "result");
       assertEquals(bySpec.map((r) => r.name), ["result"]);
       assertEquals(ctx.data.listVersions("old-name", "result"), [1]);
@@ -2879,8 +2727,6 @@ for (const kind of ["full", "light"] as const) {
 
   Deno.test(`ModelResolver.${kind === "full" ? "buildContext" : "buildLightContext"}: data accessors treat data under an earlier id of the same name as the name tag does`, async () => {
     await withRenamedModel(async ({ write, context }) => {
-      // The definition was deleted and recreated under the same name: both
-      // ids carry the new-name tag. Unchanged by identity reads.
       const earlierId = crypto.randomUUID();
       await write("result", "result", "new-name", earlierId);
       await write("result", "result", "new-name", earlierId);
@@ -2899,8 +2745,6 @@ for (const kind of ["full", "light"] as const) {
 
   Deno.test(`ModelResolver.${kind === "full" ? "buildContext" : "buildLightContext"}: data accessors treat a renamed model's data like data under an earlier id of its new name`, async () => {
     await withRenamedModel(async ({ modelId, write, context }) => {
-      // An earlier definition of new-name wrote result v1 and v2; the current
-      // one wrote result v1 as tmp-name before it was renamed.
       const earlierId = crypto.randomUUID();
       await write("result", "result", "new-name", earlierId);
       await write("result", "result", "new-name", earlierId);
@@ -2977,7 +2821,6 @@ for (const kind of ["full", "light"] as const) {
       const ctx = await context(kind);
       assertExists(ctx.data);
 
-      // No other namespace holds new-name, so only the caller's own has it.
       assertEquals(await ctx.data.latest("security:new-name", "result"), null);
       assertEquals(await ctx.data.latest("nosuchns:new-name", "result"), null);
       const own = `${dataRepo.namespace}:new-name`;
@@ -3029,7 +2872,6 @@ Deno.test("ModelResolver.buildLightContext: data accessors look each name up onc
     );
     assertEquals(defRepo.nameLookups, 2);
 
-    // Another light context from the same resolver, as the next step of a run.
     const next = await context("light");
     assertExists(next.data);
     await next.data.findBySpec("ghost", "result");
@@ -3103,7 +2945,6 @@ Deno.test("ModelResolver.buildLightContext: data accessors control-plane definit
   });
 });
 
-/** Fails every name lookup, as an unreadable definitions directory would. */
 class FailingDefinitionRepository extends CountingDefinitionRepository {
   override findByNameGlobal(
     _name: string,
@@ -3160,10 +3001,6 @@ Deno.test("ModelResolver.buildLightContext: a failed definition lookup reads by 
   });
 });
 
-// ============================================================================
-// Synchronous readers on a lazily hydrating datastore (swamp-club#3179)
-// ============================================================================
-
 interface LazyItem {
   name: string;
   kind: "resource" | "file";
@@ -3172,11 +3009,6 @@ interface LazyItem {
   body: string;
 }
 
-/**
- * Saves `items` for model `vpc`, publishes their bytes as the remote's copy
- * and evicts them from the cache, as a metadata-only pull leaves data
- * another host wrote. The hook downloads from that remote copy.
- */
 async function setupLazyFixture(repoDir: string, items: LazyItem[]) {
   await setupRepoDir(repoDir);
   const defRepo = new YamlDefinitionRepository(repoDir);
@@ -3271,7 +3103,6 @@ Deno.test("prepare: model.<name>.resource reads data a metadata-only pull left o
       await evaluateIn(ctx, "model.vpc.resource.state.main.attributes.vpcId"),
       "vpc-0abc123",
     );
-    // Only the text resources a resource read reads are downloaded.
     assertEquals(hydrated, ["main"]);
     catalog.close();
   });
@@ -3345,12 +3176,10 @@ Deno.test("prepare: refreshes maps a synchronous read loaded before the content 
   await withTempDir(async (repoDir) => {
     const { resolver, catalog } = await setupLazyFixture(repoDir, [STATE]);
     const ctx = await resolver.buildContext(new RunSensitiveValues());
-    // A synchronous pass fires the getter first and sees empty attributes.
     assertEquals(
       ctx.model["vpc"].resource?.["state"]?.["main"]?.attributes,
       {},
     );
-    // A record a step merged in after the getter fired is kept.
     const merged = { ...ctx.model["vpc"].resource!["state"]["main"] };
     ctx.model["vpc"].resource!["state"]["merged"] = merged;
     assertEquals(
@@ -3369,7 +3198,6 @@ Deno.test("prepare: a file left out of a loaded map is added once it is local", 
   await withTempDir(async (repoDir) => {
     const { resolver, catalog } = await setupLazyFixture(repoDir, [LOG]);
     const ctx = await resolver.buildContext(new RunSensitiveValues());
-    // The getter skips a file whose content is not on disk.
     assertEquals(ctx.model["vpc"].file?.["log"]?.["log"], undefined);
     assertEquals(await evaluateIn(ctx, "model.vpc.file.log.log.size"), 6);
     catalog.close();
@@ -3400,10 +3228,6 @@ Deno.test("data.latest(): attributes come from content a metadata-only pull left
     catalog.close();
   });
 });
-
-// ============================================================================
-// typed-secrets 3.3: stored reads and the reader's namespace
-// ============================================================================
 
 Deno.test("data.latest with the stored option returns tagged references as written and reads no vault, on both paths", async () => {
   await withTempDir(async (repoDir) => {
@@ -3478,7 +3302,6 @@ Deno.test("data.latest with the stored option returns tagged references as writt
       assertEquals(reads, 0);
       assertEquals(values.list(), []);
 
-      // The default, and an explicit resolve, read as today.
       const resolved = await ctx.data!.latest("holder", "creds");
       assertEquals(
         resolved?.attributes.apiKey,
@@ -3510,7 +3333,6 @@ Deno.test("data.latest: a tagged field whose vault read fails stays as stored an
         catalog,
       );
       const type = ModelType.create("test/model");
-      // "holder" reads by its coordinates; "orphan" through the catalog.
       const holder = Definition.create({ name: "holder" });
       await defRepo.save(type, holder);
       const orphan = Definition.create({ name: "orphan" });
@@ -3587,7 +3409,6 @@ Deno.test("DataNamespace.namespace: the reader's own namespace, on the full and 
         resolver.buildLightContext(new RunSensitiveValues()).data?.namespace,
         dataRepo.namespace,
       );
-      // With no repository, the solo namespace.
       assertEquals(
         new ModelResolver(defRepo).buildLightContext(new RunSensitiveValues())
           .data?.namespace,
@@ -3599,16 +3420,6 @@ Deno.test("DataNamespace.namespace: the reader's own namespace, on the full and 
   });
 });
 
-// ============================================================================
-// Loud reads of records the v3 datastore could not materialise
-// (swamp-club#3617)
-// ============================================================================
-
-/**
- * Saves STATE for model `vpc` in a repository shaped as a v3 checkout's: no
- * hydrate hook, and a lookup that reports the evicted content unreadable
- * (`answer`), or does not know it (undefined).
- */
 async function setupUnreadableFixture(
   repoDir: string,
   answer: UserError | undefined,
@@ -3674,7 +3485,6 @@ Deno.test("loud reads: the model map's resource attributes of an unreadable reco
       const error = await assertRejects(() =>
         evaluateIn(ctx, "model.vpc.resource.state.main.attributes.vpcId")
       );
-      // Not wrapped in a download error: the record's error, with its code.
       assertEquals((error as Error).cause, unreadable);
     } finally {
       catalog.close();
@@ -3691,8 +3501,6 @@ Deno.test("loud reads: data.latest and data.query of an unreadable record throw 
     );
     try {
       const ctx = await resolver.buildContext(new RunSensitiveValues());
-      // Through the definition's coordinates, the catalog fallback and a
-      // query.
       const thrown = [
         await assertRejects(() => ctx.data!.latest("vpc", "main")),
         await assertRejects(() =>
@@ -3797,7 +3605,6 @@ Deno.test("ModelResolver.vaultEvaluationScope: answers the resolver's vault serv
     assertEquals(scope.location, "methods.run.arguments.token");
     const silent = await resolver.vaultEvaluationScope("globalArguments.t");
     assertEquals(silent.service, vaultService);
-    // A probe's value goes nowhere without a redactor.
     silent.redactor.addSecret("dropped");
     assertEquals(redactor.redact("dropped"), "dropped");
   });

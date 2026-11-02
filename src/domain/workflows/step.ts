@@ -36,30 +36,18 @@ import {
   resolvePlacement,
 } from "./placement.ts";
 
-/**
- * Schema for step dependency with condition.
- */
 export const StepDependencySchema = z.object({
   step: z.string().min(1),
   condition: TriggerConditionSchema,
 });
 
-/**
- * Schema for forEach iteration.
- */
 export const ForEachSchema = z.object({
-  item: z.string().min(1), // Variable name (e.g., "env")
-  in: z.string().min(1), // Expression (e.g., "${{ inputs.environments }}")
+  item: z.string().min(1),
+  in: z.string().min(1),
 });
 
-/**
- * Type representing step dependency data.
- */
 export type StepDependencyData = z.infer<typeof StepDependencySchema>;
 
-/**
- * Type representing forEach data.
- */
 export type ForEachData = z.infer<typeof ForEachSchema>;
 
 const StepDependencyFieldSchema = z.array(StepDependencySchema).default([]);
@@ -80,9 +68,8 @@ export const StepObjectSchema = z.object({
 });
 
 /**
- * Reports each string-form `dependsOn` entry as a schema issue with the object
- * form to write instead (swamp-club#3832). The message is one line: schema
- * errors escape control characters, so a newline would print as an escape.
+ * one line, because schema errors escape control characters and a newline would
+ * print as an escape
  */
 function rejectStringStepDependsOn(
   data: unknown,
@@ -110,11 +97,8 @@ function rejectStringStepDependsOn(
 }
 
 /**
- * Zod schema for Step entity. Rejects the removed `driver`/`driverConfig`
- * fields with an actionable error (see design/enablers/remote-execution.md), and
- * rejects unknown keys — Zod's silent stripping would otherwise discard a
- * typo'd placement key (e.g. `lables:`) and run the step locally
- * (swamp-club#1240).
+ * rejects unknown keys because Zod's silent stripping would discard a typo'd
+ * placement key and run the step locally
  */
 export const StepSchema = z.preprocess(
   addRemovedDriverFieldIssues,
@@ -124,35 +108,20 @@ export const StepSchema = z.preprocess(
   ),
 );
 
-/**
- * Type representing step data (output — defaults applied).
- */
 export type StepData = z.infer<typeof StepObjectSchema>;
 
-/**
- * Type representing step input data (defaults optional for backward compat).
- */
 export type StepInput = z.input<typeof StepObjectSchema>;
 
-/**
- * Step dependency with resolved TriggerCondition.
- */
 export interface StepDependency {
   step: string;
   condition: TriggerCondition;
 }
 
-/**
- * ForEach iteration configuration.
- */
 export interface ForEach {
   item: string;
   in: string;
 }
 
-/**
- * Properties for creating a new Step.
- */
 export interface CreateStepProps {
   name: string;
   description?: string;
@@ -171,17 +140,6 @@ export interface CreateStepProps {
   writes?: boolean;
 }
 
-/**
- * Step is an entity within a Job that represents a single unit of work.
- *
- * Each step has:
- * - A unique name (within the job)
- * - An optional description
- * - A task to execute (model method or shell command)
- * - Dependencies on other steps with trigger conditions
- * - A weight for deterministic topological sorting
- * - Optional data output overrides
- */
 export class Step {
   private constructor(
     readonly name: string,
@@ -201,9 +159,6 @@ export class Step {
     readonly writes: boolean | undefined,
   ) {}
 
-  /**
-   * Creates a new Step.
-   */
   static create(props: CreateStepProps): Step {
     const data = StepSchema.parse({
       name: props.name,
@@ -229,9 +184,6 @@ export class Step {
     return Step.fromData(data);
   }
 
-  /**
-   * Reconstructs a Step from persisted data.
-   */
   static fromData(data: StepInput): Step {
     const validated = StepSchema.parse(data);
     const task = StepTask.fromData(validated.task);
@@ -240,7 +192,6 @@ export class Step {
       condition: TriggerCondition.fromData(d.condition),
     }));
 
-    // Convert persisted overrides to DataOutputOverride
     const dataOutputOverrides: DataOutputOverride[] =
       (validated.dataOutputOverrides ?? []).map((override) => ({
         specName: override.specName,
@@ -251,7 +202,6 @@ export class Step {
         vaultName: override.vaultName,
       }));
 
-    // Convert forEach data to ForEach interface
     const forEach: ForEach | undefined = validated.forEach
       ? { item: validated.forEach.item, in: validated.forEach.in }
       : undefined;
@@ -275,37 +225,22 @@ export class Step {
     );
   }
 
-  /**
-   * Returns the task for this step.
-   */
   get task(): StepTask {
     return this._task;
   }
 
-  /**
-   * Returns the dependencies for this step.
-   */
   get dependsOn(): ReadonlyArray<StepDependency> {
     return this._dependsOn;
   }
 
-  /**
-   * Returns the data output overrides for this step.
-   */
   get dataOutputOverrides(): ReadonlyArray<DataOutputOverride> {
     return this._dataOutputOverrides;
   }
 
-  /**
-   * Returns the names of all steps this step depends on.
-   */
   getDependencyNames(): string[] {
     return this._dependsOn.map((d) => d.step);
   }
 
-  /**
-   * Converts to plain data for persistence.
-   */
   toData(): StepData {
     return {
       name: this.name,
@@ -349,12 +284,6 @@ export class Step {
     };
   }
 
-  /**
-   * The step's own remote-execution placement, or undefined when it has none —
-   * placement-free steps run on the loopback executor. Does not include
-   * inherited placement from job or workflow; use resolvePlacement with
-   * mergePlacementFields for the effective placement.
-   */
   get placement(): ResolvedPlacement | undefined {
     return resolvePlacement(this.placementFields);
   }

@@ -45,14 +45,12 @@ Deno.test("isPulledExtensionPath: classifies both pulled roots as pulled", () =>
 Deno.test("isPulledExtensionPath: local and source-mounted paths are not pulled", () => {
   assert(!isPulledExtensionPath(`${REPO}/extensions/models/a.ts`, REPO));
   assert(!isPulledExtensionPath("/elsewhere/extensions/models/a.ts", REPO));
-  // A sibling directory that only shares the prefix text is not pulled.
   assert(
     !isPulledExtensionPath(
       `${REPO}/.swamp/pulled-extensions-archive/a.ts`,
       REPO,
     ),
   );
-  // Another repo's pulled root is not this repo's.
   assert(
     !isPulledExtensionPath(
       "/work/other/.swamp/pulled-extensions/@acme/x/models/a.ts",

@@ -18,25 +18,17 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * A vault type's config fields, and how a config that does not satisfy
- * them is explained to the user.
- *
- * The fields come from one of two places: the type's Zod `configSchema`
- * once its extension is installed, or the field list the registry
- * publishes for the extension before it is installed. Both are written by
- * the extension author, so every name and description is sanitized before
- * it reaches a terminal (swamp-club#3003).
+ * fields come from the Zod configSchema once installed, or the registry's field
+ * list before; both are author-written, so every name and description is
+ * sanitized before it reaches a terminal
  */
 
 import type { z } from "zod";
 
-/** One field of a vault type's provider config. */
 export interface VaultConfigField {
   readonly name: string;
-  /** The Zod base type, e.g. "string" or "number"; "unknown" when unclear. */
   readonly type: string;
   readonly description?: string;
-  /** Whether the schema rejects a config that leaves the field out. */
   readonly required: boolean;
 }
 
@@ -52,10 +44,6 @@ const ANSI_CSI_RE = /\x1b\[[0-?]*[ -/]*[@-~]/g;
 // deno-lint-ignore no-control-regex
 const CONTROL_RE = /[\x00-\x1f\x7f-\x9f]/g;
 
-/**
- * Makes author-controlled text safe to print: strips ANSI escape sequences
- * and control characters, collapses whitespace, and caps the length.
- */
 export function sanitizeFieldText(text: string, maxLength: number): string {
   const cleaned = text
     .replace(ANSI_OSC_RE, "")
@@ -67,7 +55,6 @@ export function sanitizeFieldText(text: string, maxLength: number): string {
   return `${cleaned.slice(0, Math.max(0, maxLength - 1))}…`;
 }
 
-/** Builds a sanitized field from raw (author-supplied) parts. */
 export function vaultConfigField(raw: {
   name: string;
   type: string;
@@ -86,11 +73,6 @@ export function vaultConfigField(raw: {
   };
 }
 
-/**
- * Zod wrapper types that sit between a field and its base type. A field
- * wrapped in any of these accepts undefined (or substitutes a value), so
- * the base type is what the user should supply.
- */
 const WRAPPER_TYPES = new Set([
   "optional",
   "nullable",
@@ -102,10 +84,8 @@ const WRAPPER_TYPES = new Set([
 ]);
 
 /**
- * The parts of a Zod schema read here, duck-typed because an extension may
- * bundle its own zod (see `isZodSchemaLike` in `zod_compat.ts`). Zod v4
- * exposes `def.type` and `def.innerType`; v3 exposes `_def.typeName` and
- * `_def.innerType`.
+ * duck-typed because an extension may bundle its own zod: v4 exposes def.type
+ * and def.innerType, v3 exposes _def.typeName and _def.innerType
  */
 interface SchemaLike {
   description?: unknown;
@@ -135,9 +115,8 @@ function schemaBaseType(schema: SchemaLike): string {
 }
 
 /**
- * Reads the fields of an object schema. A schema that is not an object
- * (or whose shape cannot be read) yields no fields, which callers treat
- * as "unknown", never as "nothing required".
+ * a schema that is not an object, or whose shape cannot be read, yields no
+ * fields, which callers treat as unknown, never as nothing required
  */
 export function describeVaultConfigFields(
   schema: z.ZodTypeAny,
@@ -165,12 +144,10 @@ export function describeVaultConfigFields(
   );
 }
 
-/** Whether `config` supplies a value for the field (an own key, not undefined). */
 function hasValue(config: Record<string, unknown>, name: string): boolean {
   return Object.hasOwn(config, name) && config[name] !== undefined;
 }
 
-/** The required fields that `config` leaves out. */
 export function findMissingRequiredFields(
   fields: readonly VaultConfigField[],
   config: Record<string, unknown>,
@@ -182,22 +159,18 @@ const SECRET_LIKE_NAME_RE =
   /secret|token|password|passwd|api[_-]?key|private[_-]?key|credential/i;
 
 /**
- * Whether a config field, judged by its name, is likely to hold a
- * credential. Vault config is meant to hold connection details, not
- * secrets (the vaults directory is tracked in git), but a few registry
- * extensions do take an API key or token there. A field that looks like
- * one is read without echo and never repeated in a hint.
+ * vault config holds connection details, not secrets (it is tracked in git),
+ * but some extensions take a key or token; a secret-looking field is read
+ * without echo and never repeated in a hint
  */
 export function isSecretLikeFieldName(name: string): boolean {
   return SECRET_LIKE_NAME_RE.test(name);
 }
 
 /**
- * A `--config` value the user can copy: what they already supplied plus a
- * placeholder per missing field, e.g. `{"region":"eu","op_vault":"<op_vault>"}`.
- * The hint is presented as a command to run, so it must not drop anything
- * the user passed; a value under a secret-looking key is replaced by a
- * placeholder so the hint never repeats a credential.
+ * the hint is shown as a command to run, so it keeps everything the user
+ * passed; a value under a secret-looking key becomes a placeholder so the hint
+ * never repeats a credential
  */
 export function exampleConfigFor(
   missing: readonly VaultConfigField[],
@@ -212,15 +185,10 @@ export function exampleConfigFor(
   });
 }
 
-/**
- * Quotes a value for a POSIX shell so a hint can be pasted as a command:
- * wraps it in single quotes and escapes any single quote inside as '\\''.
- */
 export function shellSingleQuote(value: string): string {
   return `'${value.replace(/'/g, "'\\''")}'`;
 }
 
-/** The parts of a Zod issue this module reads. */
 export interface VaultConfigIssue {
   readonly code: string;
   readonly path: ReadonlyArray<PropertyKey>;
@@ -229,10 +197,6 @@ export interface VaultConfigIssue {
   readonly keys?: readonly string[];
 }
 
-/**
- * Produces the sentence that tells the user how to try again, given an
- * example config for the missing fields. Returns "" for no hint.
- */
 export type RerunHint = (
   exampleConfig: string,
   missing: readonly VaultConfigField[],
@@ -240,7 +204,6 @@ export type RerunHint = (
 
 export interface ExplainVaultConfigIssuesInput {
   readonly vaultType: string;
-  /** Named when the config is one already stored for a vault. */
   readonly vaultName?: string;
   readonly config: Record<string, unknown>;
   readonly issues: readonly VaultConfigIssue[];
@@ -278,13 +241,6 @@ function formatProblems(input: {
   return [prefix, ...lines, ...(hint ? [hint] : [])].join("\n");
 }
 
-/**
- * Turns a schema failure into a short message: each missing required
- * field by name (with its description), each wrong-typed field with the
- * expected type, each unknown key with the accepted fields, then the
- * re-run hint. Keeps the "Invalid config for vault type" prefix every
- * caller has always produced.
- */
 export function explainVaultConfigIssues(
   input: ExplainVaultConfigIssuesInput,
 ): string {

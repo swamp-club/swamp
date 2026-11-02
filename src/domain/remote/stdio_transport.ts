@@ -20,12 +20,11 @@
 import type { RpcTransport } from "./rpc_channel.ts";
 
 const HEADER_SIZE = 4;
-const MAX_FRAME_SIZE = 64 * 1024 * 1024; // 64 MiB
+const MAX_FRAME_SIZE = 64 * 1024 * 1024;
 
 /**
- * Length-prefixed RPC transport over stdin/stdout. Each frame is a 4-byte
- * big-endian length followed by the UTF-8 JSON payload. This avoids
- * newline-based framing which breaks when JSON payloads contain newlines.
+ * 4-byte big-endian length prefix instead of newline framing, which breaks when
+ * JSON payloads contain newlines
  */
 export class StdioTransport implements RpcTransport {
   readonly #writer: WritableStreamDefaultWriter<Uint8Array>;
@@ -43,7 +42,6 @@ export class StdioTransport implements RpcTransport {
     this.#writer.write(frame).catch(() => {});
   }
 
-  /** Send a frame and wait for the write to flush before returning. */
   sendFinal(data: string): Promise<void> {
     const payload = this.#encoder.encode(data);
     const frame = new Uint8Array(HEADER_SIZE + payload.byteLength);
@@ -61,11 +59,6 @@ export class StdioTransport implements RpcTransport {
   }
 }
 
-/**
- * Read length-prefixed frames from a readable byte stream. Calls `onFrame`
- * for each complete frame, `onClose` when the stream ends. Handles partial
- * reads: a frame header or payload may be split across multiple chunks.
- */
 export async function createStdioReader(
   stdin: ReadableStream<Uint8Array>,
   onFrame: (data: string) => void,

@@ -31,7 +31,6 @@ type FieldKind =
   | "coerceNumber"
   | "throwsOnMissing";
 
-/** Each kind's field, a value it accepts, and whether a step must supply it. */
 const KINDS: Record<
   FieldKind,
   { field: () => z.ZodTypeAny; value: unknown; required: boolean }

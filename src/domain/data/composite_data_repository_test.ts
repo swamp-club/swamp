@@ -107,7 +107,6 @@ Deno.test("CompositeUnifiedDataRepository: findByName returns ephemeral data whe
   const ephData = createTestData({ lifetime: "ephemeral", ownerRef: "eph" });
   const persData = createTestData({ lifetime: "infinite", ownerRef: "pers" });
 
-  // Save to both stores with different owner refs so content differs
   await ephemeral.save(TEST_TYPE, TEST_MODEL_ID, ephData, TEST_CONTENT);
   await persistent.save(
     TEST_TYPE,
@@ -121,7 +120,6 @@ Deno.test("CompositeUnifiedDataRepository: findByName returns ephemeral data whe
     TEST_MODEL_ID,
     "test-data",
   );
-  // Ephemeral shadows persistent — the result should come from the ephemeral store
   assertEquals(found?.ownerDefinition.ownerRef, "eph");
 });
 
@@ -142,7 +140,6 @@ Deno.test("CompositeUnifiedDataRepository: findByName falls back to persistent w
 Deno.test("CompositeUnifiedDataRepository: findAllForModel merges results, ephemeral shadows persistent by name", async () => {
   const { composite, persistent, ephemeral } = createCompositeRepo();
 
-  // "shared" exists in both stores — ephemeral should win
   const sharedEph = createTestData({
     name: "shared",
     lifetime: "ephemeral",
@@ -173,7 +170,6 @@ Deno.test("CompositeUnifiedDataRepository: findAllForModel merges results, ephem
   const names = results.map((d) => d.name).sort();
   assertEquals(names, ["only-ephemeral", "only-persistent", "shared"]);
 
-  // The "shared" entry should be from ephemeral
   const shared = results.find((d) => d.name === "shared");
   assertEquals(shared?.ownerDefinition.ownerRef, "eph");
 });
@@ -240,7 +236,6 @@ Deno.test("CompositeUnifiedDataRepository: findAllGlobal merges results with ded
   const names = results.map((r) => r.data.name).sort();
   assertEquals(names, ["global-data", "pers-only"]);
 
-  // The "global-data" entry should be from ephemeral
   const globalData = results.find((r) => r.data.name === "global-data");
   assertEquals(globalData?.data.ownerDefinition.ownerRef, "eph");
 });
@@ -271,7 +266,6 @@ Deno.test("CompositeUnifiedDataRepository: getContentSync returns ephemeral cont
   const ephContent = new TextEncoder().encode('{"from": "ephemeral"}');
   const persContent = new TextEncoder().encode('{"from": "persistent"}');
 
-  // Both stores have the same data name
   const ephData = createTestData({ name: "both", ownerRef: "eph" });
   const persData = createTestData({ name: "both", ownerRef: "pers" });
   await ephemeral.save(TEST_TYPE, TEST_MODEL_ID, ephData, ephContent);
@@ -284,7 +278,6 @@ Deno.test("CompositeUnifiedDataRepository: getContentSync returns ephemeral cont
   );
   assertEquals(new TextDecoder().decode(content!), '{"from": "ephemeral"}');
 
-  // Only persistent has "pers-only"
   const persOnly = createTestData({ name: "pers-only" });
   await persistent.save(TEST_TYPE, TEST_MODEL_ID, persOnly, persContent);
 
@@ -372,12 +365,8 @@ Deno.test("CompositeUnifiedDataRepository: findAllForType passes the unreadable 
   assertEquals(unreadable.map((r) => r.modelId).sort(), ["e", "p"]);
 });
 
-// --- Content-ensuring step routing (swamp-club#3178) ---
-
-/** A composite whose stores record which one ensureContentLocal reached. */
 async function compositeWithSameNameInBothStores() {
   const { composite, persistent, ephemeral } = createCompositeRepo();
-  // Ephemeral holds version 1; persistent holds versions 1 and 2.
   await ephemeral.save(
     TEST_TYPE,
     TEST_MODEL_ID,
@@ -586,7 +575,6 @@ Deno.test("CompositeUnifiedDataRepository.rollbackVersions: releases a pending a
   );
   await Deno.writeFile(allocated.contentPath, TEST_CONTENT);
 
-  // The receipt a writer builds for a version it never finalized.
   await composite.rollbackVersions([{
     type: TEST_TYPE,
     modelId: TEST_MODEL_ID,

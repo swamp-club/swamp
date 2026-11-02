@@ -35,10 +35,6 @@ const MAX_MS = Date.parse("2035-01-01T00:00:00.000Z");
 
 const arbMs = fc.integer({ min: MIN_MS, max: MAX_MS });
 const arbGrace = fc.integer({ min: 0, max: 30 * 24 * 60 * 60 * 1000 });
-/**
- * endedAt: absent, a valid ISO timestamp (with or without milliseconds), or
- * garbage.
- */
 const arbEndedAt = fc.oneof(
   fc.constant(undefined),
   arbMs.map((ms) => new Date(ms).toISOString()),
@@ -46,7 +42,6 @@ const arbEndedAt = fc.oneof(
   fc.string(),
 );
 
-/** The schema's own notion of a well-formed timestamp. */
 const isDatetime = (value: string) =>
   z.string().datetime().safeParse(value).success;
 
@@ -57,7 +52,6 @@ function expectedReapable(
   now: number,
 ): boolean {
   if (!terminal || endedAt === undefined) return false;
-  // Garbage strings fail the schema's datetime check before any parse.
   if (!isDatetime(endedAt)) return false;
   return now - Date.parse(endedAt) >= grace;
 }

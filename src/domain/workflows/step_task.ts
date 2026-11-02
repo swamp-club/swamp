@@ -46,7 +46,6 @@ const recordOrExpression = z.union([
 export const AssertSeveritySchema = z.enum(["low", "medium", "high"]);
 export type AssertSeverity = z.infer<typeof AssertSeveritySchema>;
 
-/** The `model_method` step task, as stored. */
 export const ModelMethodTaskRawSchema = z.object({
   type: z.literal("model_method"),
   modelIdOrName: z.string().min(1).optional(),
@@ -58,11 +57,8 @@ export const ModelMethodTaskRawSchema = z.object({
 });
 
 /**
- * The behavior spelling of the `model_method` step task (swamp-club#3334),
- * for documentation only: `swamp workflow schema` lists it beside the
- * `model_method` variant. Parsing never produces it —
- * {@link normalizeBehaviorTask} rewrites a behavior-spelled task to
- * `model_method` before the task schema sees it.
+ * documentation only: parsing never produces it, since normalizeBehaviorTask
+ * rewrites a behavior-spelled task to model_method first
  */
 export const BehaviorTaskDocSchema = z.object({
   type: z.literal("behavior"),
@@ -74,16 +70,6 @@ export const BehaviorTaskDocSchema = z.object({
   globalArgs: recordOrExpression,
 });
 
-/**
- * Raw schema for step tasks (without backward compat preprocessing).
- *
- * A task can be either:
- * - A model method invocation (`type: "model_method"`)
- * - A nested workflow invocation (`type: "workflow"`)
- * - A manual approval gate (`type: "manual_approval"`)
- * - A CEL predicate assertion (`type: "assert"`)
- * - A wait for a JSON signal (`type: "wait_for_signal"`)
- */
 const StepTaskRawSchema = z.discriminatedUnion("type", [
   ModelMethodTaskRawSchema,
   z.object({
@@ -104,19 +90,16 @@ const StepTaskRawSchema = z.discriminatedUnion("type", [
   }),
   z.object({
     type: z.literal("wait_for_signal"),
-    // Seconds the wait stays open. Required and bounded: a wait never stays
-    // open forever.
+    // a wait never stays open forever, so the timeout is required and bounded
     timeout: z.number().positive().max(SIGNAL_WAIT_MAX_TIMEOUT_SECONDS),
-    // The payload schema, in the same form as workflow `inputs`.
     schema: RequiredInputsSchemaSchema,
-    // A name at most one open wait of the workflow holds at a time
-    // (swamp-club#3209). A literal: it takes no expression.
+    // a name at most one open wait of the workflow holds at a time; a literal,
+    // it takes no expression
     key: z.string().refine(
       isWaitKey,
       `A wait_for_signal key must be ${WAIT_KEY_FORM}. It takes no expression.`,
     ).optional(),
-    // Seconds a signal by key may arrive before the wait opens
-    // (swamp-club#3212). Bounded: the signal is held with no run behind it.
+    // bounded because the signal is held with no run behind it
     acceptEarly: z.number().positive().max(SIGNAL_ACCEPT_EARLY_MAX_SECONDS)
       .optional(),
   }),
@@ -134,24 +117,16 @@ function presentKeys(
 }
 
 /**
- * Rewrites a behavior-spelled step task to its stored `model_method` form
- * (swamp-club#3334): `type: behavior` becomes `type: model_method`, and
- * `behavior`, `behaviorType` and `behaviorName` become `modelIdOrName`,
- * `modelType` and `modelName`. Key order is kept, so the parsed task, and the
- * file swamp writes back, are the same as for the model spelling.
- *
- * A task that mixes the two spellings is refused: the task schema strips
- * unknown keys, so a stray field would otherwise be silently dropped. The
- * reference checks are run here in the behavior spelling so their errors use
- * the words the author wrote. Any other value is returned unchanged.
+ * a task mixing the two spellings is refused since the task schema strips
+ * unknown keys and a stray field would be silently dropped; key order is kept
+ * so the written file matches the model spelling
  */
 export function normalizeBehaviorTask(raw: unknown): unknown {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return raw;
   const d = raw as Record<string, unknown>;
-  // A model_method task is left exactly as before: its object schema has
-  // always dropped keys it does not declare, so a stray behavior key in an
-  // existing file keeps parsing (no regression). Only the new spelling
-  // refuses a mix.
+  // a model_method task is left as is: its schema has always dropped undeclared
+  // keys, so a stray behavior key in an existing file keeps parsing; only the
+  // new spelling refuses a mix
   if (d.type !== BEHAVIOR_STEP_TASK_TYPE) return raw;
   const refusal = behaviorTaskRefusal(d);
   if (refusal !== undefined) {
@@ -167,7 +142,6 @@ export function normalizeBehaviorTask(raw: unknown): unknown {
   return out;
 }
 
-/** Why a `type: behavior` task is refused, or undefined when it is not. */
 function behaviorTaskRefusal(d: Record<string, unknown>): string | undefined {
   const stray = presentKeys(d, MODEL_SPECIFIC_KEYS);
   if (stray.length > 0) {
@@ -195,9 +169,8 @@ function behaviorTaskRefusal(d: Record<string, unknown>): string | undefined {
 }
 
 /**
- * Why a step task is refused, or undefined when it is not. Each message is
- * one line: schema errors escape control characters, so a newline would
- * print as an escape (swamp-club#3832).
+ * each message is one line because schema errors escape control characters and
+ * a newline would print as an escape
  */
 function stepTaskRefusal(input: unknown): string | undefined {
   if (input && typeof input === "object" && !Array.isArray(input)) {
@@ -220,16 +193,15 @@ function stepTaskRefusal(input: unknown): string | undefined {
         `Put the method's arguments under 'inputs'.`;
     }
     if (d.type === "wait_for_signal") {
-      // An early signal is addressed by key, so there is nothing to hold it
-      // under without one.
+      // an early signal is addressed by key, so there is nothing to hold it
+      // under without one
       if (d.acceptEarly !== undefined && d.key === undefined) {
         return `A wait_for_signal step that sets acceptEarly must declare a key: ` +
           `a signal that arrives before the wait opens is held under the key.`;
       }
       const schema = d.schema;
-      // An inputs schema may be written flat, as a bare map of properties.
-      // For a wait that form is ambiguous with the schema's own keywords, so
-      // the nested form is required.
+      // the flat bare-map form of an inputs schema is ambiguous with the
+      // schema's own keywords for a wait, so the nested form is required
       if (
         schema && typeof schema === "object" && !Array.isArray(schema) &&
         (schema as Record<string, unknown>).type !== "object" &&
@@ -239,8 +211,8 @@ function stepTaskRefusal(input: unknown): string | undefined {
           `List the payload's fields under "properties", e.g. ` +
           `schema: { type: object, properties: { verdict: { type: string } } }.`;
       }
-      // A signal comes from outside the workflow, so a schema keyword that
-      // no payload is checked against is refused, not silently ignored.
+      // a signal comes from outside the workflow, so a keyword no payload is
+      // checked against is refused, not silently ignored
       const unenforced = unenforcedSchemaKeywords(schema);
       if (unenforced.length > 0) {
         return `A wait_for_signal schema may only use keywords a payload is checked against. ` +
@@ -270,14 +242,6 @@ function stepTaskRefusal(input: unknown): string | undefined {
   return undefined;
 }
 
-/**
- * Zod schema for step tasks with backward compatibility preprocessing.
- *
- * - The behavior spelling is rewritten to `model_method` first
- *   ({@link normalizeBehaviorTask}), so every consumer sees one form
- * - A refused task (e.g. `type: "shell"`) is reported as a schema issue with
- *   an actionable message
- */
 export const StepTaskSchema = z.preprocess((input, ctx) => {
   const refusal = stepTaskRefusal(input);
   if (refusal !== undefined) {
@@ -287,30 +251,16 @@ export const StepTaskSchema = z.preprocess((input, ctx) => {
   return normalizeBehaviorTask(input);
 }, StepTaskRawSchema);
 
-/**
- * Type representing step task data.
- */
 export type StepTaskData = z.infer<typeof StepTaskRawSchema>;
 
-/**
- * StepTask is a value object representing the work to be performed by a step.
- *
- * Immutable with equality based on value.
- */
 export class StepTask {
   private constructor(readonly data: StepTaskData) {}
 
-  /**
-   * Creates a StepTask from raw data.
-   */
   static fromData(data: StepTaskData): StepTask {
     const validated = StepTaskSchema.parse(data);
     return new StepTask(validated);
   }
 
-  /**
-   * Creates a model method task.
-   */
   static modelMethod(
     modelIdOrName: string,
     methodName: string,
@@ -324,9 +274,6 @@ export class StepTask {
     });
   }
 
-  /**
-   * Alias for modelMethod() - shorter convenience factory.
-   */
   static model(
     modelIdOrName: string,
     methodName: string,
@@ -335,9 +282,6 @@ export class StepTask {
     return StepTask.modelMethod(modelIdOrName, methodName, inputs);
   }
 
-  /**
-   * Creates a direct type execution task.
-   */
   static directExecution(
     modelType: string,
     modelName: string,
@@ -355,9 +299,6 @@ export class StepTask {
     });
   }
 
-  /**
-   * Creates a workflow invocation task.
-   */
   static workflow(
     workflowIdOrName: string,
     inputs?: Record<string, unknown>,
@@ -369,9 +310,6 @@ export class StepTask {
     });
   }
 
-  /**
-   * Creates a manual approval task.
-   */
   static manualApproval(
     prompt: string,
     timeout?: number,
@@ -383,9 +321,6 @@ export class StepTask {
     });
   }
 
-  /**
-   * Creates an assert task.
-   */
   static assert(
     expr: string,
     message: string,
@@ -399,17 +334,14 @@ export class StepTask {
     });
   }
 
-  /**
-   * Creates a wait for signal task.
-   */
   static waitForSignal(
     timeout: number,
     schema: InputsSchema,
     key?: string,
     acceptEarly?: number,
   ): StepTask {
-    // Parsed, so the schema's keys are in the order a loaded task has them
-    // and equals() compares the two alike.
+    // parsed so the schema's keys are in the order a loaded task has them and
+    // equals() compares the two alike
     return StepTask.fromData({
       type: "wait_for_signal",
       timeout,
@@ -419,59 +351,35 @@ export class StepTask {
     });
   }
 
-  /**
-   * Returns true if this is a model method task.
-   */
   isModelMethod(): boolean {
     return this.data.type === "model_method";
   }
 
-  /**
-   * Returns true if this is a direct type execution task (modelType + modelName).
-   */
   isDirectExecution(): boolean {
     return this.data.type === "model_method" && "modelType" in this.data &&
       !!this.data.modelType;
   }
 
-  /**
-   * Returns true if this is a workflow invocation task.
-   */
   isWorkflow(): boolean {
     return this.data.type === "workflow";
   }
 
-  /**
-   * Returns true if this is a manual approval task.
-   */
   isManualApproval(): boolean {
     return this.data.type === "manual_approval";
   }
 
-  /**
-   * Returns true if this is an assert task.
-   */
   isAssert(): boolean {
     return this.data.type === "assert";
   }
 
-  /**
-   * Returns true if this is a wait for signal task.
-   */
   isWaitForSignal(): boolean {
     return this.data.type === "wait_for_signal";
   }
 
-  /**
-   * Converts to plain data for persistence.
-   */
   toData(): StepTaskData {
     return structuredClone(this.data);
   }
 
-  /**
-   * Value equality comparison.
-   */
   equals(other: StepTask): boolean {
     return JSON.stringify(this.data) === JSON.stringify(other.data);
   }

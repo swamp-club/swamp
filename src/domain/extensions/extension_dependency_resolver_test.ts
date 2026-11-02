@@ -187,7 +187,6 @@ Deno.test("resolveWorkflowDependencies handles circular workflow references", as
   ]);
   const ctx = makeMockContext(workflows, new Map());
 
-  // Should not hang — visited set prevents infinite recursion
   const result = await resolveWorkflowDependencies(["wf-a"], ctx);
   assertEquals(result.workflowFiles.length, 2);
 });

@@ -59,8 +59,8 @@ Deno.test("MockVaultProvider - get", async (t) => {
   });
 
   await t.step("should reject for non-existent secret", async () => {
-    // assertRejects fails if the call throws synchronously instead of
-    // returning a rejected promise (swamp-club#3559).
+    // assertRejects fails if the call throws synchronously instead of returning
+    // a rejected promise
     const provider = new MockVaultProvider("test-vault");
     const error = await assertRejects(
       () => provider.get("non-existent-key"),
@@ -71,8 +71,8 @@ Deno.test("MockVaultProvider - get", async (t) => {
   });
 
   await t.step("should round-trip an empty-string secret", async () => {
-    // Regression: `if (!secret)` treated "" as not-found, diverging from
-    // LocalEncryptionVaultProvider, which round-trips empty strings.
+    // an empty-string secret must round-trip like LocalEncryptionVaultProvider
+    // does; a falsy check would treat it as not found
     const provider = new MockVaultProvider("test-vault");
     await provider.put("empty-secret", "");
     const value = await provider.get("empty-secret");
@@ -171,7 +171,6 @@ Deno.test("MockVaultProvider - listSecrets", async (t) => {
       "key2": "value2",
     });
     const secrets = provider.listSecrets();
-    // Default secrets plus custom ones
     assertEquals(secrets.includes("key1"), true);
     assertEquals(secrets.includes("key2"), true);
     assertEquals(secrets.includes("demo-api-key"), true);

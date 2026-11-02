@@ -25,7 +25,6 @@ import {
   vaultCreateHint,
 } from "./vault_name.ts";
 
-/** Mixes valid names with arbitrary strings so both outcomes are exercised. */
 const arbName = fc.oneof(
   fc.stringMatching(/^[a-z][a-z0-9-]{0,20}$/),
   fc.string({ maxLength: 20 }),

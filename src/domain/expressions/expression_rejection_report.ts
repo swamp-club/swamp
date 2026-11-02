@@ -18,39 +18,23 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * Which refused expressions a step has already reported (swamp-club#3402).
- *
- * Every step-time pass over a step's arguments refuses the same expression
- * text that arrived as data, so without a report each refusal would be logged
- * once per pass. The step executor enters a report for each step with
- * {@link runWithRejectionReport}; the refusal warnings check it through
- * {@link firstRejection} and log a raw text once per step. With no report
- * entered, every refusal is logged, as before.
- *
- * The report is ambient so that every pass a step runs shares it without each
- * one taking it as a parameter. `AsyncLocalStorage` reaches an async
- * generator's body only through each `next()` call, so a report must be
- * entered around plain async code, never around a generator; a step whose
- * evaluation is split by a `yield` enters the same report around each part.
- *
- * @module
+ * the report is ambient for all passes. AsyncLocalStorage reaches a generator
+ * body only per next() call, so enter it around plain async code, never a
+ * generator; re-enter around each part split by a yield.
  */
 
 import { AsyncLocalStorage } from "node:async_hooks";
 
-/** The raw expression texts one step has reported as refused. */
 export interface RejectionReport {
   readonly reported: Set<string>;
 }
 
-/** A report with nothing reported yet. */
 export function createRejectionReport(): RejectionReport {
   return { reported: new Set() };
 }
 
 const ambientReport = new AsyncLocalStorage<RejectionReport>();
 
-/** Runs `fn` with `report` as the step's rejection report. */
 export function runWithRejectionReport<T>(
   report: RejectionReport,
   fn: () => T,
@@ -58,10 +42,6 @@ export function runWithRejectionReport<T>(
   return ambientReport.run(report, fn);
 }
 
-/**
- * Whether the refusal of `raw` should be logged: true the first time the
- * current report sees it, and always when no report is entered.
- */
 export function firstRejection(raw: string): boolean {
   const report = ambientReport.getStore();
   if (report === undefined) return true;

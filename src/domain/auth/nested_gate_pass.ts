@@ -18,14 +18,9 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * The auth gate's handoff to a nested swamp (design/surfaces/auth-gate.md,
- * "Nested runs"). A swamp that passes the gate publishes the swamp-club
- * signed proof its pass rests on, prefixed with its own pid. A swamp it
- * starts, directly or through a workflow shell step, may pass the gate on
- * that proof without a credential of its own, but only while the issuing
- * process is a live ancestor running the same executable. The pass carries
- * no API key and no public key: the proof is checked only against the keys
- * the gate already trusts.
+ * a nested swamp may pass on the parent's signed proof without a credential,
+ * only while the issuing process is a live ancestor running the same
+ * executable; the pass carries no API key or public key
  */
 
 import {
@@ -34,35 +29,23 @@ import {
   type ProofPayload,
 } from "./verification_proof.ts";
 
-/** The environment variable that carries the pass to child processes. */
 export const NESTED_GATE_PASS_ENV = "SWAMP_NESTED_GATE_PASS";
 
 export interface NestedGatePass {
-  /** The swamp process that passed the gate and issued this pass. */
   readonly parentPid: number;
-  /** The signed proof payload, as JSON. */
   readonly proof: string;
-  /** The proof's Ed25519 signature, base64url. */
   readonly signature: string;
 }
 
 const PID_PATTERN = /^[1-9][0-9]*$/;
 const BASE64URL_PATTERN = /^[A-Za-z0-9_-]+$/;
 
-/**
- * Encode a pass as `<pid>.<base64url proof>.<signature>`: the signin-token
- * encoding, prefixed with the issuing pid.
- */
 export function formatNestedGatePass(pass: NestedGatePass): string {
   const proofB64 = base64urlEncode(new TextEncoder().encode(pass.proof));
   return `${pass.parentPid}.${proofB64}.${pass.signature}`;
 }
 
-/**
- * Decode a pass, or return null for anything that is not exactly
- * `<positive integer pid>.<base64url>.<base64url>` with a proof that decodes
- * to JSON. Whether the proof is genuine is the gate's check, not this one.
- */
+/** whether the proof is genuine is the gate's check, not this one */
 export function parseNestedGatePass(value: string): NestedGatePass | null {
   const parts = value.split(".");
   if (parts.length !== 3) return null;
@@ -75,19 +58,14 @@ export function parseNestedGatePass(value: string): NestedGatePass | null {
 }
 
 /**
- * The pass a serve hands a worker it enrolled (design/surfaces/auth-gate.md,
- * "Remote workers"): the proof the serve's own pass rests on, with no pid.
- * The issuer is a remote process, so there is no ancestry to check; the
- * serve admitting the worker stands in for it.
+ * the issuer is a remote process, so there is no ancestry to check; the serve
+ * admitting the worker stands in for it
  */
 export interface OrchestratorGatePass {
-  /** The signed proof payload, as JSON. */
   readonly proof: string;
-  /** The proof's Ed25519 signature, base64url. */
   readonly signature: string;
 }
 
-/** Encode a pass as `<base64url proof>.<signature>`, as a signin token is. */
 export function formatOrchestratorGatePass(
   pass: OrchestratorGatePass,
 ): string {
@@ -95,10 +73,6 @@ export function formatOrchestratorGatePass(
   return `${proofB64}.${pass.signature}`;
 }
 
-/**
- * Decode an orchestrator pass, or return null for anything that is not
- * exactly `<base64url>.<base64url>` with a proof that decodes to JSON.
- */
 export function parseOrchestratorGatePass(
   value: string,
 ): OrchestratorGatePass | null {
@@ -126,13 +100,9 @@ function decodeSignedProof(
 }
 
 /**
- * Whether a signed proof may carry a nested run under an ancestor that
- * started at `ancestorStartedAt` (Unix seconds): it must have an `exp`, and
- * must still have been valid when that ancestor started, since that is when
- * the ancestor was admitted on it. A long-running ancestor therefore keeps
- * its children passing after the proof expires, while a leaked or old proof
- * is useless under any process started after its expiry. A proof without an
- * `exp` (a signin token) never qualifies; the gate never hands one down.
+ * the proof must have an exp and still be valid when the ancestor started, so a
+ * long-running ancestor keeps children passing but an old or leaked proof is
+ * useless; a signin token is never handed down
  */
 export function admitsNestedRun(
   payload: Pick<ProofPayload, "exp">,

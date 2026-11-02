@@ -25,22 +25,15 @@ export interface DataOutputValidationResult {
 }
 
 /**
- * Domain service for validating data handles produced by method execution.
- *
- * Spec name validation is now enforced at writer creation time by the
- * resource/file writer factories. This service focuses on detecting duplicate
- * instance names within a single method execution.
+ * spec names are validated at writer creation, so this only detects duplicate
+ * instance names within one method execution
  */
 export class DataOutputValidationService {
-  /**
-   * Validates data handles for duplicate instance names.
-   */
   validate(
     dataHandles: DataHandle[],
   ): DataOutputValidationResult {
     const errors: string[] = [];
 
-    // Check for duplicate instance names
     const names = new Set<string>();
     for (const handle of dataHandles) {
       if (names.has(handle.name)) {

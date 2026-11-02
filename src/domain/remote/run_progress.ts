@@ -146,7 +146,6 @@ export interface TrackedRunObservation {
 
 const trackedRunSources = new Set<() => readonly TrackedRunObservation[]>();
 
-/** Adapters supply authoritative running rows owned by this process. */
 export function registerTrackedRunSource(
   source: () => readonly TrackedRunObservation[],
 ): () => void {
@@ -227,7 +226,6 @@ export async function withRunProgress<T>(
   return await scope.run(progress, work);
 }
 
-/** Observe the root workflow from its first started event through generator cleanup. */
 export async function* trackWorkflowProgress<
   T extends {
     kind: string;
@@ -278,7 +276,6 @@ export async function* trackWorkflowProgress<
   }
 }
 
-/** Bind each generator advance, including cleanup, without leaking to its consumer. */
 export async function* bindRunProgress<T>(
   progress: RunProgress,
   generator: AsyncGenerator<T>,

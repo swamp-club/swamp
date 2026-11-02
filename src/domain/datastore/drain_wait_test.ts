@@ -102,7 +102,6 @@ Deno.test("areMutuallyWaiting: true only when each waits on a lock the other ski
 
   assertEquals(areMutuallyWaiting(a, b), true);
   assertEquals(areMutuallyWaiting(b, a), true);
-  // The bystander waits on a, but a does not wait on anything it skips.
   assertEquals(areMutuallyWaiting(a, bystander), false);
 });
 

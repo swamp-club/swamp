@@ -19,42 +19,25 @@
 
 import type { StartSession } from "./start_session.ts";
 
-/** What converting a workspace's pre-task-list files did. */
 export interface LegacyMigration {
-  /** Tasks written as records from the old current and filed sessions. */
   readonly migrated: number;
-  /** Old files that couldn't be read, kept where they are. */
   readonly kept: readonly string[];
 }
 
 /**
- * Stores a workspace's tasks: one record each, plus the brief file each task
- * names. A task read back always carries the folder it was read from as its
- * workspace path.
+ * a task read back always carries the folder it was read from as its workspace
+ * path
  */
 export interface StartSessionRepository {
-  /**
-   * Every readable task of the workspace, in no particular order. A record
-   * that can't be read is left out, never rewritten.
-   */
+  /** a record that cannot be read is left out, never rewritten */
   list(workspacePath: string): Promise<StartSession[]>;
-  /** One task, or null when there is none with that id (or it's unreadable). */
   load(workspacePath: string, id: string): Promise<StartSession | null>;
   save(session: StartSession): Promise<void>;
-  /**
-   * A brief path no other task of the workspace uses and no file under
-   * `tasks/` already has: `tasks/<date>-<slug>.md`, with `-2`, `-3`… added
-   * when taken.
-   */
   reserveBriefFile(
     workspacePath: string,
     createdAt: string,
     title: string,
   ): Promise<string>;
-  /**
-   * Converts the files `swamp start` wrote before every task had its own
-   * record and brief (`.swamp/start/state.json`, `history/`, `TASK.md`).
-   * Idempotent; nothing that can't be read is deleted.
-   */
+  /** idempotent; nothing that cannot be read is deleted */
   migrateLegacy(workspacePath: string): Promise<LegacyMigration>;
 }

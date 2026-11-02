@@ -254,7 +254,6 @@ for (const v of vectors.findings) {
         : 0,
     }));
     assertEquals(reported, v.expect);
-    // The rubric loses points for exactly the findings marked as costing them.
     const lost = Math.max(0, ...v.expect.map((e) => e.pointsLost));
     assertEquals(
       factorOf(result).earnedPoints,

@@ -19,39 +19,27 @@
 
 import { type CommandSpelling, isCommandSpelling } from "./command_spelling.ts";
 
-/**
- * Represents a CLI command execution.
- * Values are redacted for privacy - only option keys are logged, not values.
- */
+/** values are redacted for privacy: only option keys are logged, not values */
 export interface CommandInvocation {
-  /** The main command (e.g., "model", "workflow") */
   readonly command: string;
-  /** The subcommand (e.g., "create", "run") */
   readonly subcommand?: string;
   /** Positional arguments - categorical values recorded, user-identifiable values redacted */
   readonly args: string[];
-  /** Command-specific option keys (e.g., ["--repo-dir", "--json"]) */
   readonly optionKeys: string[];
-  /** Global option keys (e.g., ["--verbose", "--json"]) */
   readonly globalOptions: string[];
   /**
-   * The full canonical command path as resolved from the command tree
-   * (e.g., ["model", "type", "describe"]). Aliases are resolved to the
-   * command's name. Absent on entries recorded before it existed.
+   * the full canonical command path from the command tree, with aliases
+   * resolved to the command's name
    */
   readonly commandPath?: string[];
   /**
-   * The root word typed for a `swamp model` invocation or one of its
-   * `swamp behavior` / `swamp behaviour` spellings. The other fields record
-   * all three in the `swamp model` form. Absent for every other group and on
-   * entries recorded before it existed.
+   * the root word typed for model or its behavior/behaviour spellings; the
+   * other fields record all three in the swamp model form; absent for every
+   * other group
    */
   readonly commandSpelling?: CommandSpelling;
 }
 
-/**
- * Data transfer object for CommandInvocation.
- */
 export interface CommandInvocationData {
   command: string;
   subcommand?: string;
@@ -63,9 +51,8 @@ export interface CommandInvocationData {
 }
 
 /**
- * Creates a CommandInvocation value object. A `commandSpelling` that is not
- * one of the known spellings is dropped: persisted entries are on disk and
- * may be hand-edited or written by a newer version.
+ * an unknown commandSpelling is dropped: persisted entries may be hand-edited
+ * or written by a newer version
  */
 export function createCommandInvocation(
   props: CommandInvocationData,
@@ -83,9 +70,6 @@ export function createCommandInvocation(
     : invocation;
 }
 
-/**
- * Converts a CommandInvocation to its data representation.
- */
 export function commandInvocationToData(
   invocation: CommandInvocation,
 ): CommandInvocationData {

@@ -84,21 +84,12 @@ import {
   wordedText,
 } from "../behavior_wording.ts";
 
-/**
- * The second remedy for template-like text, for when it is another service's
- * syntax rather than a swamp expression with its syntax slightly wrong. The
- * example rebuilds the matched form, so it differs per form.
- */
 function foreignTemplateRemedy(example: string): WordedText {
   return wordedText((w) =>
     `If this is another service's template syntax, pass it through with literal(), e.g. ${example}, or have the ${w.noun} type declare the field with .meta({ foreignTemplate: true }).`
   );
 }
 
-/**
- * Error text for template-like text that swamp would claim as its own
- * expression once the syntax is fixed.
- */
 const MALFORMED_EXPRESSION_MESSAGES: Record<
   TemplateSyntaxForm,
   { issue: string; suggestion: string; remedy?: WordedText }
@@ -131,42 +122,23 @@ const MALFORMED_EXPRESSION_MESSAGES: Record<
  */
 export const FOREIGN_TEMPLATE_WARNING_NAME = "Template syntax passed through";
 
-/**
- * The env-var usage warning in both spellings. Shared by validation, method
- * runs and workflow runs, so all three say the same thing.
- */
 export function envVarWarningText(): WordedText {
   return wordedText((w) =>
     `Data stored under this ${w.noun} will vary depending on these environment variables at runtime. Consider using separate ${w.nouns} per environment, or vault.get() for sensitive values.`
   );
 }
 
-/**
- * Value object representing a validation warning.
- *
- * Warnings do not cause validation to fail — they surface information
- * that may affect runtime behavior (e.g., env var usage).
- *
- * Immutable with equality based on value.
- */
 export class ValidationWarning {
   private constructor(
     readonly name: string,
     readonly message: string,
     readonly details?: EnvVarUsageDetail[],
     readonly templates?: ForeignTemplateDetail[],
-    /**
-     * The message in model words, printed under `swamp model …`
-     * (swamp-club#3437). Equal to `message` when no word differs.
-     */
     readonly modelMessage: string = message,
   ) {
     markModelWording(this, modelMessage);
   }
 
-  /**
-   * Creates a warning about environment variable usage in a model definition.
-   */
   static envVarUsage(
     envVars: EnvVarUsageDetail[],
   ): ValidationWarning {
@@ -180,11 +152,6 @@ export class ValidationWarning {
     );
   }
 
-  /**
-   * Creates a warning about another service's template syntax, which is
-   * passed to the method unchanged: `{{...}}` and `${...}` text, and
-   * `${{ ... }}` text that references nothing swamp provides.
-   */
   static foreignTemplateSyntax(
     templates: ForeignTemplateDetail[],
   ): ValidationWarning {
@@ -201,9 +168,6 @@ export class ValidationWarning {
     );
   }
 
-  /**
-   * Value equality comparison.
-   */
   equals(other: ValidationWarning): boolean {
     return (
       this.name === other.name &&
@@ -213,31 +177,16 @@ export class ValidationWarning {
   }
 }
 
-/**
- * Describes another service's template syntax found in a model definition.
- */
 export interface ForeignTemplateDetail {
-  /** The definition path holding the text (e.g., "globalArguments.message") */
   path: string;
-  /** The template text (e.g., "{{host.name}}") */
   text: string;
 }
 
-/**
- * Describes where an env var is referenced in a model definition.
- */
 export interface EnvVarUsageDetail {
-  /** The definition path where the env var is used (e.g., "globalArguments.shell") */
   path: string;
-  /** The env var name (e.g., "JENKINS_BASE_URL") */
   envVar: string;
 }
 
-/**
- * Value object representing the result of a single validation.
- *
- * Immutable with equality based on value (name + passed + error).
- */
 export class ValidationResult {
   private constructor(
     readonly name: string,
@@ -249,23 +198,13 @@ export class ValidationResult {
      * equality on `error` covers them.
      */
     readonly expressionErrors?: readonly ExpressionPathError[],
-    /**
-     * `error` in model words, printed under `swamp model …`
-     * (swamp-club#3437). Equal to `error` when no word differs.
-     */
     readonly modelError: string | undefined = error,
   ) {}
 
-  /**
-   * Creates a passing validation result.
-   */
   static pass(name: string): ValidationResult {
     return new ValidationResult(name, true);
   }
 
-  /**
-   * Creates a failing validation result with an error message.
-   */
   static fail(
     name: string,
     error: string,
@@ -281,9 +220,6 @@ export class ValidationResult {
     );
   }
 
-  /**
-   * Value equality comparison.
-   */
   equals(other: ValidationResult): boolean {
     return (
       this.name === other.name &&
@@ -293,15 +229,11 @@ export class ValidationResult {
   }
 }
 
-/** An issue as a Zod error or {@link maskRefusedIssues} reports it. */
 interface FormattedIssue {
   readonly path: readonly PropertyKey[];
   readonly message: string;
 }
 
-/**
- * Formats a Zod error into a human-readable string.
- */
 function formatZodError(error: { issues: readonly FormattedIssue[] }): string {
   const describe = (issue: FormattedIssue) => {
     const path = issue.path.length > 0
@@ -312,20 +244,11 @@ function formatZodError(error: { issues: readonly FormattedIssue[] }): string {
   return error.issues.map(describe).join("; ");
 }
 
-/**
- * Context for running check validations during `model validate`.
- */
 export interface CheckValidationContext {
   repoDir: string;
   dataRepository: MethodContext["dataRepository"];
   definitionRepository: DefinitionRepository;
   dataQueryService?: DataQueryService;
-  /**
-   * Factory that builds a fresh cel-js Environment with swamp's baseline
-   * registrations. Forwarded to `buildMethodContext` so the domain layer
-   * does not import the cel-js binding directly. The application layer
-   * (libswamp / CLI) supplies the implementation.
-   */
   createCelEnvironment: MethodContext["createCelEnvironment"];
   /**
    * Resolves runtime expressions (vault.get, env.*) in arbitrary data.
@@ -334,13 +257,9 @@ export interface CheckValidationContext {
    */
   resolveRuntimeExpressions?: (data: unknown) => Promise<unknown>;
   /**
-   * Delivers what the checks receive through the shared refuse-then-load
-   * step of a typed run (design/enablers/typed-secrets.md Sections 3.3 and
-   * 6.3): the global arguments with their values, the merge the checks see
-   * as `unresolvedMethodArgs` with its sentinels, and the loaded bag. A
-   * refused destination or a failed load throws, and every applicable check
-   * fails with that error, since nothing is delivered. Supplied for a typed
-   * run; otherwise `resolveRuntimeExpressions` resolves inline, as before.
+   * delivers check arguments through the typed-run refuse-then-load step; a
+   * refused destination or failed load throws and every applicable check fails
+   * with it. Supplied only for typed runs; else inline resolution.
    */
   deliverCheckArguments?: (
     definition: Definition,
@@ -350,41 +269,28 @@ export interface CheckValidationContext {
   method?: string;
 }
 
-/**
- * Return type for model validation: results (pass/fail) plus warnings.
- */
 export interface ModelValidationOutcome {
   results: ValidationResult[];
   warnings: ValidationWarning[];
 }
 
-/**
- * Options that change what model validation reads.
- */
 export interface ModelValidationOptions {
   /**
-   * The global arguments as their author wrote them, when the definition
-   * holds evaluated values instead: a definition a workflow step synthesizes
-   * from its own `globalArgs` after the workflow evaluator has substituted
-   * them. The template-syntax scan reads these in place of the definition's
-   * global arguments, so text that evaluation produced is never flagged.
-   * Every other check still reads the definition.
+   * global arguments as authored, when the definition holds evaluated values (a
+   * workflow step's synthesized one); the template-syntax scan reads these so
+   * evaluation-produced text is never flagged
    */
   authoredGlobalArguments?: Record<string, unknown>;
   /**
-   * Fail Global arguments when a field marked sensitive holds a literal
-   * secret. Set only when the definition is the one stored on disk: a copy
-   * holding the real values a run resolved may hold plaintext read through
-   * data where the stored definition holds its vault reference.
+   * fail Global arguments on a literal secret in a sensitive field; set only
+   * for the definition as stored, since a resolved copy may hold plaintext read
+   * through data where the stored one holds a vault reference
    */
   refuseLiteralSensitiveGlobals?: boolean;
   /**
-   * The static misuse diagnostics of typed secrets for one authored
-   * expression (design/enablers/typed-secrets.md Sections 4.3 item 4 and
-   * 10.2), supplied by the application layer from the CEL adapter when the
-   * run is typed. The domain never sees a Secret: each finding names a
-   * location and a code, never a value. Absent, no Secret usage validation
-   * runs.
+   * static typed-secrets misuse diagnostics per authored expression, supplied
+   * for typed runs; findings name a location and code, never a value. Absent,
+   * no Secret usage validation runs.
    */
   diagnoseSecretMisuse?: (
     expression: string,
@@ -392,52 +298,26 @@ export interface ModelValidationOptions {
     embedded?: boolean,
   ) => readonly SecretMisuseFinding[];
   /**
-   * Validate as a run of this method: Method arguments, Expression paths,
-   * Secret usage and the template-syntax scan read the global arguments and
-   * this method's arguments only, what a delivery of the method reads
-   * (`isDeliveredWithMethod`). Another method's problems are that method's
-   * run to fail on. Ignored for a method the model type does not define, so
-   * a scope never passes for want of anything to check.
+   * validate as a run of this method: checks read only the global arguments and
+   * this method's arguments; another method's problems are its own run's to
+   * fail. Ignored for an undefined method.
    */
   method?: string;
 }
 
-/** One statically identified secret misuse, as the Secret usage validation reports it. */
 export interface SecretMisuseFinding {
-  /** Where it was authored: the expression path, and the call's line and column. */
   readonly location: string;
-  /** The code the run refuses the same misuse with. */
   readonly code: string;
-  /** What was refused, never a value. */
   readonly reason: string;
 }
 
-/** What the pre-flight checks of a typed run receive, delivered once. */
 export interface CheckArgumentDelivery {
-  /** The global arguments with their values, as a method receives them. */
   globalArgs: Record<string, unknown>;
-  /** The merge the checks see as `unresolvedMethodArgs`, sentinels in place. */
   unresolvedMethodArgs: Record<string, unknown>;
-  /** The loaded bag, as `context.vaultSecrets`. */
   vaultSecrets?: MethodContext["vaultSecrets"];
 }
 
-/**
- * Domain service interface for model validation.
- */
 export interface ModelValidationService {
-  /**
-   * Validates a definition against the model definition.
-   *
-   * Runs all validations in parallel.
-   *
-   * @param definition - The definition to validate
-   * @param modelDef - The model definition containing schemas
-   * @param definitionRepo - Optional definition repository for resolving model references in expressions
-   * @param checkContext - Optional context for running pre-flight checks
-   * @param options - Optional authored text for the template-syntax scan
-   * @returns Validation results and warnings
-   */
   validateModel(
     definition: Definition,
     modelDef: ModelDefinition,
@@ -447,33 +327,20 @@ export interface ModelValidationService {
   ): Promise<ModelValidationOutcome>;
 }
 
-/**
- * Error detail for a single expression path validation failure.
- */
 export interface ExpressionPathError {
-  /** The raw expression that failed validation */
   expression: string;
-  /** The error message */
   error: string;
-  /** Stable diagnostic code, separate from the display text. */
   code?: string;
-  /** Authored file/path and source location. */
   location?: string;
-  /** Optional suggestion for fixing the error */
   suggestion?: string;
   /**
    * Optional fix shared by every error of the same form, printed once after
    * the list of errors rather than once per error.
    */
   remedy?: string;
-  /** Optional available keys at the failure point */
   availableKeys?: string[];
 }
 
-/**
- * The distinct remedies across expression path errors, in the order first
- * seen. Each is printed once after the errors it applies to.
- */
 export function distinctRemedies(
   errors: readonly ExpressionPathError[],
 ): string[] {
@@ -484,11 +351,6 @@ export function distinctRemedies(
   ];
 }
 
-/**
- * Formats expression path errors as plain text: each expression on a "- "
- * line with its details indented under it, then each distinct remedy once.
- * Renderers that indent it add their own indent to every line.
- */
 export function formatExpressionPathErrors(
   errors: readonly ExpressionPathError[],
 ): string {
@@ -505,16 +367,11 @@ export function formatExpressionPathErrors(
 }
 
 /**
- * Where an expression path error keeps its model-words counterpart. A
- * module-private symbol on a non-enumerable property, so JSON output never
- * sees it (swamp-club#3437).
+ * a module-private symbol on a non-enumerable property, so JSON output never
+ * sees the model-words counterpart
  */
 const MODEL_SPELLING = Symbol("swamp.expressionPathErrorModelSpelling");
 
-/**
- * An expression path error whose `error` and `remedy` read in behavior words,
- * carrying its model-words counterpart for `swamp model …`.
- */
 function wordedPathError(
   base: Omit<ExpressionPathError, "error" | "remedy">,
   error: WordedText,
@@ -537,10 +394,6 @@ function wordedPathError(
   return behavior;
 }
 
-/**
- * `error` as `swamp model …` prints it: its model-words counterpart, or
- * `error` itself when no word differs.
- */
 export function expressionPathErrorInModelWords(
   error: ExpressionPathError,
 ): ExpressionPathError {
@@ -551,10 +404,9 @@ export function expressionPathErrorInModelWords(
 }
 
 /**
- * The method arguments a run of `method` is delivered: that method's subtree
- * alone, the part of `methods` that `isDeliveredWithMethod` accepts. Every
- * method's when no method is selected. Pruned at the method key rather than
- * filtered by path, so it holds however a scanner spells its paths.
+ * the method arguments a run of method is delivered: that method's subtree
+ * alone, or all when none is selected. Pruned at the method key, so it holds
+ * however a scanner spells paths.
  */
 function deliveredMethodData(
   definition: Definition,
@@ -568,12 +420,9 @@ function deliveredMethodData(
 }
 
 /**
- * The global arguments the pre-flight checks receive, parsed by the type's
- * schema as a method run parses them before its checks: defaults,
- * coercions and transforms applied, and a field still holding a swamp
- * expression left as written (swamp-club#3851). A parse the schema refuses
- * or throws on leaves the values as given; the Global arguments item
- * reports it.
+ * global arguments parsed by the type's schema as a method run does before its
+ * checks, leaving swamp expressions as written; a refused or throwing parse
+ * leaves values as given for Global arguments to report
  */
 function parsedForChecks(
   modelDef: ModelDefinition,
@@ -603,20 +452,11 @@ function parsedForChecks(
   return result.success ? { ...globalArgs, ...result.data } : globalArgs;
 }
 
-/**
- * Default implementation of the model validation service.
- */
 export class DefaultModelValidationService implements ModelValidationService {
   /**
-   * Paths of sensitive global arguments that hold a literal secret in a
-   * stored definition, read as a run would save it: a run upgrades the stored
-   * file, expressions included, and saves the result, and an upgrade can move
-   * a literal into a sensitive field. When an upgrade applies, only the
-   * upgraded copy is read, since a key it drops leaves the file on that save
-   * and an old key the current schema reuses may not be secret. Without an
-   * upgrade, or when it throws, the stored copy is read. Pass only a
-   * definition as stored (see
-   * {@link ModelValidationOptions.refuseLiteralSensitiveGlobals}).
+   * reads a stored definition as a run would save it: an upgrade can move a
+   * literal into a sensitive field, so only the upgraded copy is read when one
+   * applies; the stored copy otherwise, or if the upgrade throws
    */
   findLiteralSensitiveGlobals(
     definition: Definition,
@@ -645,9 +485,9 @@ export class DefaultModelValidationService implements ModelValidationService {
     checkContext?: CheckValidationContext,
     options?: ModelValidationOptions,
   ): Promise<ModelValidationOutcome> {
-    // Global arguments and checks read static arguments as a method run
-    // would: after the upgrade chain, applied in memory and never saved
-    // (swamp-club#3196). Every other check reads the definition as authored.
+    // Global arguments and checks read static arguments as a method run would,
+    // after the in-memory upgrade chain, never saved; every other check reads
+    // the definition as authored
     const upgrade = this.upgradeInMemory(definition, modelDef);
     const leakedArgs = options?.refuseLiteralSensitiveGlobals
       ? this.findLiteralSensitiveGlobals(definition, modelDef)
@@ -655,8 +495,6 @@ export class DefaultModelValidationService implements ModelValidationService {
     const globalArgsResult = upgrade.failure
       ? Promise.resolve(upgrade.failure)
       : this.validateGlobalArguments(upgrade.definition, modelDef);
-    // The method arguments the method items read: the selected method's
-    // only, when the validation is scoped to a method the type defines.
     const method = options?.method !== undefined &&
         Object.hasOwn(modelDef.methods, options.method)
       ? options.method
@@ -666,7 +504,6 @@ export class DefaultModelValidationService implements ModelValidationService {
       this.validateDefinitionSchema(definition),
       this.validateTypeVersion(definition),
       leakedArgs.length > 0
-        // Any other problem with the global arguments is reported with it.
         ? globalArgsResult.then((result) =>
           ValidationResult.fail(
             "Global arguments",
@@ -706,8 +543,6 @@ export class DefaultModelValidationService implements ModelValidationService {
       );
     }
 
-    // Secret usage: the static misuse diagnostics of a typed run, over the
-    // same authored expressions, when the application layer supplies them.
     if (options?.diagnoseSecretMisuse) {
       validations.push(
         Promise.resolve(
@@ -720,7 +555,6 @@ export class DefaultModelValidationService implements ModelValidationService {
       );
     }
 
-    // Validate definition-level check selection (require/skip)
     validations.push(
       this.validateCheckSelection(definition, modelDef),
     );
@@ -729,7 +563,6 @@ export class DefaultModelValidationService implements ModelValidationService {
 
     const results = await Promise.all(validations);
 
-    // Run pre-flight checks if context provided and model has checks
     if (
       modelDef.checks && checkContext &&
       !results.some((result) =>
@@ -744,7 +577,6 @@ export class DefaultModelValidationService implements ModelValidationService {
       results.push(...checkResults);
     }
 
-    // Detect env var usage and generate warnings
     const warnings = [
       ...this.detectEnvVarUsage(definition),
       ...this.foreignTemplateWarnings([
@@ -757,16 +589,9 @@ export class DefaultModelValidationService implements ModelValidationService {
   }
 
   /**
-   * Applies the model type's upgrade chain to a copy of the definition, as a
-   * method run does before it reads the global arguments. Returns the
-   * definition unchanged when no upgrade applies or its `typeVersion` is
-   * malformed (the Type version check reports that). An upgrade that throws
-   * fails Global arguments, since the next method run throws the same way.
-   *
-   * Arguments holding a swamp expression are left as written: the run
-   * upgrades their evaluated values, and an upgrade run over the raw text
-   * (`Number()` of an expression, say) yields values the run never sees.
-   * The Global arguments check skips them until evaluation anyway.
+   * applies the upgrade chain to a copy, as a run does; a throwing upgrade
+   * fails Global arguments. Arguments holding swamp expressions are left as
+   * written, since the run upgrades their evaluated values.
    */
   private upgradeInMemory(
     definition: Definition,
@@ -799,12 +624,6 @@ export class DefaultModelValidationService implements ModelValidationService {
     }
   }
 
-  /**
-   * Scans the authored globalArguments and method data for template-like
-   * text, skipping fields the model type declares as foreign template text.
-   * `authoredGlobalArguments` replaces the definition's global arguments when
-   * those hold evaluated values (see {@link ModelValidationOptions}).
-   */
   private scanTemplateSyntax(
     definition: Definition,
     methodData: Definition["methodData"],
@@ -826,9 +645,6 @@ export class DefaultModelValidationService implements ModelValidationService {
     );
   }
 
-  /**
-   * Returns a warning listing another service's template syntax, if any.
-   */
   private foreignTemplateWarnings(
     foreign: ForeignTemplateDetail[],
   ): ValidationWarning[] {
@@ -838,9 +654,6 @@ export class DefaultModelValidationService implements ModelValidationService {
     return [ValidationWarning.foreignTemplateSyntax(foreign)];
   }
 
-  /**
-   * Scans a definition for env var references and returns warnings if found.
-   */
   private detectEnvVarUsage(definition: Definition): ValidationWarning[] {
     const usages = detectEnvVarUsageInDefinition(definition);
     if (usages.length === 0) {
@@ -849,12 +662,6 @@ export class DefaultModelValidationService implements ModelValidationService {
     return [ValidationWarning.envVarUsage(usages)];
   }
 
-  /**
-   * Secret usage: the static misuse diagnostics of typed secrets over every
-   * authored expression in the global and delivered method arguments
-   * (design/enablers/typed-secrets.md Sections 4.3 item 4 and 10.2). Each
-   * failure names the authored location and the code, never a value.
-   */
   private validateSecretUsage(
     definition: Definition,
     methodData: Definition["methodData"],
@@ -899,7 +706,6 @@ export class DefaultModelValidationService implements ModelValidationService {
     const applicable = Object.entries(checks).filter(([name, check]) => {
       // Definition-level skip always wins
       if (skippedCheckNames.has(name)) return false;
-      // Filter by labels if provided
       if (
         checkContext.labels && checkContext.labels.length > 0 &&
         (!check.labels ||
@@ -1048,19 +854,9 @@ export class DefaultModelValidationService implements ModelValidationService {
   }
 
   /**
-   * Checks that a recorded `typeVersion` parses as CalVer.
-   *
-   * `DefinitionSchema` deliberately types the field as a plain optional string
-   * so a malformed value survives into the definition — `model get` has to be
-   * able to name it, and discarding it would silently throw away something the
-   * author expected to be read. That permissiveness means the schema check
-   * above passes a value like `1.0`, so the format rule lives here instead,
-   * where reporting it costs nothing.
-   *
-   * An absent `typeVersion` passes: it records that nobody stated which version
-   * the arguments were authored for, which is a legitimate state for a
-   * hand-written definition. `DefinitionUpgradeService` declines to migrate it
-   * rather than guessing (swamp-club#2412).
+   * DefinitionSchema keeps typeVersion a plain string so a malformed value
+   * survives for model get to name, so CalVer is checked here. An absent
+   * typeVersion passes: the upgrade service declines to migrate it.
    */
   private validateTypeVersion(
     definition: Definition,
@@ -1084,7 +880,6 @@ export class DefaultModelValidationService implements ModelValidationService {
     definition: Definition,
     modelDef: ModelDefinition,
   ): Promise<ValidationResult> {
-    // Skip if model has no globalArguments schema
     if (!modelDef.globalArguments) {
       return Promise.resolve(ValidationResult.pass("Global arguments"));
     }
@@ -1104,7 +899,6 @@ export class DefaultModelValidationService implements ModelValidationService {
     const totalFields = Object.keys(definition.globalArguments).length;
     const staticFields = Object.keys(staticArgs).length;
     if (staticFields < totalFields) {
-      // Some fields contain expressions - skip schema validation
       return Promise.resolve(ValidationResult.pass("Global arguments"));
     }
 
@@ -1128,14 +922,9 @@ export class DefaultModelValidationService implements ModelValidationService {
       }
     }
     const coerced = coerceMethodArgs(staticArgs, globalArgsSchema);
-    // Use lenient validation: validate provided fields but don't require
-    // missing ones. Direct execution and workflow steps create ephemeral
-    // instances where not all globalArgs are needed (e.g. get/sync/delete
-    // don't need creation-time fields). swamp model create has its own
-    // strict validation in create.ts.
-    // Described as a run's refusal is, so the schema's own code cannot
-    // spell a sensitive value here, and a schema that throws while parsing
-    // is reported as a run reports it (swamp-club#3681).
+    // lenient: validate provided fields, don't require missing ones, since
+    // direct execution and steps create ephemeral instances (create has its own
+    // strict check). Failures are described as a run's refusal is.
     let result: ReturnType<typeof parseGlobalArgumentsLeniently>;
     try {
       result = parseGlobalArgumentsLeniently(globalArgsSchema, coerced);
@@ -1167,7 +956,6 @@ export class DefaultModelValidationService implements ModelValidationService {
       const args = methodData[methodName]?.arguments;
       if (!args) continue;
 
-      // Strip fields that contain expressions
       const staticArgs = stripExpressionFields(args);
       const totalFields = Object.keys(args).length;
       const staticFields = Object.keys(staticArgs).length;
@@ -1193,9 +981,9 @@ export class DefaultModelValidationService implements ModelValidationService {
         }
       }
       const coercedArgs = coerceMethodArgs(staticArgs, methodArgsSchema);
-      // Described as a run's refusal is, so the schema's own code cannot
-      // spell a sensitive value here, and a schema that throws while parsing
-      // is reported as a run reports it (swamp-club#3681).
+      // described as a run's refusal is, so the schema's own code cannot spell
+      // a sensitive value here, and a schema that throws while parsing is
+      // reported as a run reports it
       let result: ReturnType<typeof methodArgsSchema.safeParse>;
       try {
         result = methodArgsSchema.safeParse(
@@ -1231,14 +1019,6 @@ export class DefaultModelValidationService implements ModelValidationService {
     );
   }
 
-  /**
-   * Validates expression paths in the definition attributes.
-   *
-   * Extracts all expressions from definition attributes, resolves model references,
-   * and validates that the paths exist in the referenced schemas.
-   * Also reports template-like text that swamp would claim as its own
-   * expression once the syntax is fixed (a dropped `$` or a missing brace).
-   */
   private async validateExpressionPaths(
     definition: Definition,
     methodData: Definition["methodData"],
@@ -1265,7 +1045,6 @@ export class DefaultModelValidationService implements ModelValidationService {
         .map((m) => `${m.path}\0${m.text}`),
     );
 
-    // Extract and validate all expressions from definition data
     const allExpressionData = {
       globalArguments: definition.globalArguments,
       methods: methodData,
@@ -1275,14 +1054,9 @@ export class DefaultModelValidationService implements ModelValidationService {
       const { celExpression, raw, path } = exprLocation;
       if (unclosed.has(`${path}\0${raw}`)) continue;
 
-      // Another templating system's text (${{ github.sha }}) is passed to the
-      // method unchanged, so it is never an error. Classified before the
-      // reference checks, whose substring extractors would otherwise read
-      // github.event.model.foo as a reference to a model named foo. It is
-      // judged with the same scope as the run-time guard on global
-      // arguments, so validate never passes text that the run then rejects.
-      // A root that names one of this repo's models is a missing "model."
-      // prefix, and still fails below.
+      // Another system's ${{ }} text passes through, classified before the
+      // reference checks that would misread it and judged by the run-time
+      // guard's scope.
       if (
         isForeignExpression(celExpression) &&
         !await this.namesModel(celExpression, definitionRepo)
@@ -1324,7 +1098,6 @@ export class DefaultModelValidationService implements ModelValidationService {
         continue;
       }
 
-      // Validate model references
       const pathRefs = extractPathReferences(celExpression);
       const modelErrors = await Promise.all(
         pathRefs.map((ref) =>
@@ -1335,21 +1108,16 @@ export class DefaultModelValidationService implements ModelValidationService {
         ...modelErrors.filter((e): e is ExpressionPathError => e !== null),
       );
 
-      // Validate self references
       const selfRefs = extractSelfReferences(celExpression);
       const selfErrors = selfRefs
         .map((ref) => this.validateSelfPathReference(ref, modelDef))
         .filter((e): e is ExpressionPathError => e !== null);
       errors.push(...selfErrors);
 
-      // Extract env references (these are always valid - resolved at runtime)
       const envRefs = extractEnvReferences(celExpression);
 
-      // Check for inputs references (valid when model defines an inputs schema)
-      // (text passed through literal() is not a reference)
       const hasInputsRef = /\binputs\./.test(maskLiteralCalls(celExpression));
 
-      // Check for expressions with valid ${{...}} syntax but no valid references
       if (
         pathRefs.length === 0 && selfRefs.length === 0 &&
         envRefs.length === 0 && !hasInputsRef
@@ -1371,10 +1139,6 @@ export class DefaultModelValidationService implements ModelValidationService {
     );
   }
 
-  /**
-   * Whether CEL text starts with the name of a model in this repo, the shape
-   * of a model reference missing its `model.` prefix.
-   */
   private async namesModel(
     celExpression: string,
     definitionRepo: DefinitionRepository,
@@ -1384,17 +1148,11 @@ export class DefaultModelValidationService implements ModelValidationService {
       await definitionRepo.findByNameGlobal(root) !== null;
   }
 
-  /**
-   * Validates expression content when no valid model, self, or env references were found.
-   * This catches cases like ${{my-vpc.VpcId}} which should be ${{ model.my-vpc.resource.attributes.VpcId }}
-   */
   private validateExpressionContent(
     celExpression: string,
     rawExpression: string,
     path: string,
   ): ExpressionPathError | null {
-    // First, check if it looks like a valid CEL literal or operation
-    // These are valid expressions that don't need model/self/env references
     const looksLikeValidCel = /^[\d"'\[\{(]|^true$|^false$|^null$/.test(
       celExpression,
     );
@@ -1402,10 +1160,9 @@ export class DefaultModelValidationService implements ModelValidationService {
       return null;
     }
 
-    // An expression that reads nothing, such as literal('{{host.name}}') or
-    // literal('{{a}}') + ' on-call', always evaluates to the same value, so it
-    // is valid when every function it calls exists: not now(), not
-    // literal(123).
+    // an expression reading nothing, like literal('{{a}}') + ' x', always
+    // evaluates to the same value, so it is valid when every function it calls
+    // exists: not now(), not literal(123)
     if (
       freeRoots(celExpression)?.size === 0 &&
       typeChecksAsConstant(celExpression)
@@ -1426,17 +1183,13 @@ export class DefaultModelValidationService implements ModelValidationService {
       return null;
     }
 
-    // Check if it's a valid file.contents expression
     const fileContentsPattern = /^file\.contents\(.*\)/;
     if (fileContentsPattern.test(celExpression)) {
       return null;
     }
 
-    // Check if it's a valid data function expression. The alternation is
-    // derived from DATA_NAMESPACE_ACCESSORS rather than restated: this list
-    // was hand-written and fell behind when query and findBySpec joined the
-    // namespace, which rejected them in global arguments long after they
-    // worked everywhere else.
+    // the alternation is derived from DATA_NAMESPACE_ACCESSORS, not restated,
+    // so new accessors are not rejected in global arguments
     const dataFunctionPattern = new RegExp(
       `^data\\.(${dataAccessorAlternation()})\\(.*\\)`,
     );
@@ -1444,8 +1197,6 @@ export class DefaultModelValidationService implements ModelValidationService {
       return null;
     }
 
-    // Check if it looks like an incomplete model reference (e.g., "my-vpc.VpcId")
-    // Pattern: word characters/hyphens followed by dot and more content
     const incompleteModelRefPattern = /^([a-zA-Z0-9_-]+)\.([a-zA-Z0-9_.]+)$/;
     const match = celExpression.match(incompleteModelRefPattern);
 
@@ -1461,7 +1212,6 @@ export class DefaultModelValidationService implements ModelValidationService {
       };
     }
 
-    // Check if it's just a simple identifier that might be a model name (must start with letter)
     const simpleIdentifierPattern = /^[a-zA-Z][a-zA-Z0-9_-]*$/;
     if (simpleIdentifierPattern.test(celExpression)) {
       return {
@@ -1473,7 +1223,6 @@ export class DefaultModelValidationService implements ModelValidationService {
       };
     }
 
-    // For other unrecognized expressions, provide a generic error
     return {
       expression: rawExpression,
       error:
@@ -1483,9 +1232,6 @@ export class DefaultModelValidationService implements ModelValidationService {
     };
   }
 
-  /**
-   * Validates a model path reference (e.g., model.my-vpc.data.attributes.VpcId).
-   */
   private async validateModelPathReference(
     ref: {
       modelRef: string;
@@ -1495,7 +1241,6 @@ export class DefaultModelValidationService implements ModelValidationService {
     },
     definitionRepo: DefinitionRepository,
   ): Promise<ExpressionPathError | null> {
-    // Look up the referenced model
     const result = await definitionRepo.findByNameGlobal(ref.modelRef);
     if (!result) {
       return wordedPathError(
@@ -1504,9 +1249,8 @@ export class DefaultModelValidationService implements ModelValidationService {
       );
     }
 
-    // Ensure the referenced type is fully loaded — without this,
-    // lazy-registered types (catalog-known but not yet imported) cause
-    // get() to return undefined even though has() reports them as registered.
+    // ensure the type is fully loaded: lazy-registered types make get() return
+    // undefined even though has() reports them
     await modelRegistry.ensureTypeLoaded(result.type);
     const targetDefinition = modelRegistry.get(result.type);
     if (!targetDefinition) {
@@ -1518,17 +1262,12 @@ export class DefaultModelValidationService implements ModelValidationService {
       );
     }
 
-    // Get the appropriate schema based on type and determine path to validate
     const firstSegment = ref.path[0];
 
-    // Validate the path structure
     if (ref.path.length === 0) {
-      // Just "input" or "resource" without a path is valid
       return null;
     }
 
-    // For resource namespace: model.X.resource.<specName>.<instanceName>.<field>
-    // path[0] is the specName, path[1] is the instanceName (any value valid), path[2+] are DataRecord fields
     if (ref.type === "resource") {
       const specName = firstSegment;
       const availableSpecs = targetDefinition.resources
@@ -1571,7 +1310,6 @@ export class DefaultModelValidationService implements ModelValidationService {
           };
         }
 
-        // If accessing .attributes.<field>, validate against the resource schema
         if (
           recordField === "attributes" && ref.path.length > 3 &&
           targetDefinition.resources?.[specName]
@@ -1595,8 +1333,6 @@ export class DefaultModelValidationService implements ModelValidationService {
       return null;
     }
 
-    // For file namespace: model.X.file.<specName>.<instanceName>.<field>
-    // path[0] is the specName, path[1] is the instanceName (any value valid), path[2+] are FileDataRecord fields
     if (ref.type === "file") {
       const specName = firstSegment;
       const availableSpecs = targetDefinition.files
@@ -1615,7 +1351,6 @@ export class DefaultModelValidationService implements ModelValidationService {
         );
       }
 
-      // path[1] is the instanceName — skip validation (any name is valid)
       if (ref.path.length > 2) {
         const fileField = ref.path[2];
         const validFileFields = [
@@ -1657,7 +1392,6 @@ export class DefaultModelValidationService implements ModelValidationService {
       return null;
     }
 
-    // For definition type, validate globalArguments path
     if (firstSegment !== "globalArguments") {
       return {
         expression: ref.rawExpression,
@@ -1669,14 +1403,11 @@ export class DefaultModelValidationService implements ModelValidationService {
       };
     }
 
-    // Skip the "globalArguments" segment and validate the rest against the schema
     const pathToValidate = ref.path.slice(1);
     if (pathToValidate.length === 0) {
-      // Just ".globalArguments" is valid
       return null;
     }
 
-    // Validate against the global arguments schema
     if (!targetDefinition.globalArguments) {
       return null;
     }
@@ -1697,9 +1428,6 @@ export class DefaultModelValidationService implements ModelValidationService {
     return null;
   }
 
-  /**
-   * Validates a self path reference (e.g., self.attributes.VpcId).
-   */
   private validateSelfPathReference(
     ref: { path: string[]; rawExpression: string },
     definition: ModelDefinition,
@@ -1744,9 +1472,8 @@ export class DefaultModelValidationService implements ModelValidationService {
   }
 
   /**
-   * Fails when the definition's tags or a spec's default tags hold a key
-   * under the reserved `_swamp.` prefix, which every method run refuses
-   * before it executes (swamp-club#3635).
+   * fails when definition tags or a spec's default tags use the reserved
+   * _swamp. prefix, which every method run refuses
    */
   private validateTags(
     definition: Definition,
@@ -1769,17 +1496,12 @@ export class DefaultModelValidationService implements ModelValidationService {
     );
   }
 
-  /**
-   * Validates that definition-level check selection (require/skip) references
-   * checks that exist on the model definition.
-   */
   private validateCheckSelection(
     definition: Definition,
     modelDef: ModelDefinition,
   ): Promise<ValidationResult> {
     const errors: WordedText[] = [];
 
-    // Validate appliesTo references existing methods
     if (modelDef.checks) {
       const availableMethods = new Set(Object.keys(modelDef.methods));
       for (const [checkName, check] of Object.entries(modelDef.checks)) {
@@ -1813,7 +1535,6 @@ export class DefaultModelValidationService implements ModelValidationService {
       ? new Set(Object.keys(modelDef.checks))
       : new Set<string>();
 
-    // Validate required check names exist
     if (selection?.require) {
       for (const name of selection.require) {
         if (!availableChecks.has(name)) {
@@ -1826,7 +1547,6 @@ export class DefaultModelValidationService implements ModelValidationService {
       }
     }
 
-    // Validate skipped check names exist
     if (selection?.skip) {
       for (const name of selection.skip) {
         if (!availableChecks.has(name)) {

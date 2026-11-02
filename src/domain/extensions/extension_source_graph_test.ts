@@ -169,7 +169,6 @@ Deno.test("withoutSymlinkedModules: a graph without symlinks is unchanged", () =
 });
 
 Deno.test("withoutSymlinkedModules: with a symlink present, a missing module the root does not reach cleanly is dropped, even if the root is spelled differently", () => {
-  // The reader reports the importer under another spelling of the root.
   const result = withoutSymlinkedModules(
     graphOf(["/private/r/m.ts"], [
       edge("/private/r/m.ts", "/private/r/link.ts", 0),

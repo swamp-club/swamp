@@ -18,11 +18,8 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * The local part of an extension entry point's module graph, as the bundler
- * sees it: every file the entry point reaches through a static or literal
- * dynamic import, a type import, or a JSON, text or bytes import. Push builds
- * the archive's source copy from this graph, so the source copy holds every
- * local module the bundle was built from (swamp-club#3376).
+ * push builds the archive's source copy from this graph, so the copy holds
+ * every local module the bundle was built from
  */
 
 import type { UnauditedDependency } from "@swamp-club/extension-scoring/dependency-audit";
@@ -36,42 +33,32 @@ import {
   uniqueBareImports,
 } from "./bare_import_resolution.ts";
 
-/** Code modules are TypeScript or JavaScript; data modules are imported as JSON, text or bytes. */
 export type LocalModuleKind = "code" | "data";
 
-/** A position in a source file: zero-based line, and column in code points. */
 export interface SourcePosition {
   line: number;
   character: number;
 }
 
-/** The span of an import specifier in its importer, quotes included. */
 export interface SpecifierSpan {
   start: SourcePosition;
   end: SourcePosition;
 }
 
-/** A local file in the graph, by absolute path. */
 export interface LocalModule {
   path: string;
   kind: LocalModuleKind;
 }
 
-/** One import of a local module by another local module. */
 export interface LocalEdge {
-  /** Absolute path of the importing module. */
   importer: string;
-  /** Absolute path of the imported module. */
   target: string;
-  /** The specifier as written in the importer. */
   specifier: string;
   span: SpecifierSpan;
 }
 
-/** A local module the graph reaches but cannot load. */
 export interface MissingLocalModule {
   path: string;
-  /** A module that imports it, when the graph names one. */
   importer?: string;
   reason: string;
 }
@@ -80,74 +67,51 @@ export interface SourceModuleGraph {
   modules: LocalModule[];
   edges: LocalEdge[];
   missing: MissingLocalModule[];
-  /**
-   * The bare imports the local modules write, with what Deno resolved each
-   * to; absent when the reader recorded none.
-   */
   bareImports?: ResolvedBareImport[];
-  /**
-   * The bare imports a package.json project declares that node_modules does
-   * not hold at a version package.json allows (swamp-club#3630); absent
-   * when there are none.
-   */
   staleInstalls?: StaleInstalledImport[];
   /**
-   * The exact package each `npm:` and `jsr:` specifier resolved to, which
-   * push pins in the archive's source (swamp-club#3970); absent when the
-   * reader recorded none.
+   * the exact package each npm: and jsr: specifier resolved to, which push pins
+   * in the archive's source; absent when the reader recorded none
    */
   packageVersions?: PackageVersions;
-  /**
-   * Code from outside npm and JSR the graph fetched or installed, with a
-   * SHA-256 of each module (swamp-club#3970); absent when there is none.
-   */
   unaudited?: UnauditedDependency[];
   /**
-   * Every package a package.json project's node_modules supplies to the
-   * graph, transitive ones included, by its path from the package.json
-   * directory (`node_modules/ms`, forward slashes) and installed version;
-   * absent outside a package.json project (swamp-club#3970).
+   * every package node_modules supplies to the graph, transitive included, by
+   * path from the package.json directory (forward slashes); absent outside a
+   * package.json project
    */
   installedPackages?: InstalledPackage[];
   /**
-   * Every package directory in a node_modules the graph reads a module
-   * from, taken at the first `node_modules` on the module's path
-   * (`/a/node_modules/ms`); absent when there is none. Push refuses one
-   * above the repository (swamp-club#3971).
+   * each package directory a module is read from, taken at the first
+   * node_modules on its path; push refuses one above the repository
    */
   nodeModulesPackageDirs?: string[];
   /**
-   * The `jsr:` imports the local modules write, or an import map maps a
-   * bare import to, that name a dist-tag (`@latest`), which JSR does not
-   * have (swamp-club#3971); absent when there are none.
+   * jsr: imports naming a dist-tag such as @latest, which JSR does not have;
+   * absent when there are none
    */
   jsrDistTags?: DistTaggedJsrImport[];
 }
 
-/** A `jsr:` import naming a dist-tag, and the module that writes it. */
 export interface DistTaggedJsrImport {
   importer: string;
   specifier: string;
   tag: string;
 }
 
-/** A package installed in node_modules, and its version. */
 export interface InstalledPackage {
   path: string;
   version: string;
 }
 
-/** The project configuration the bundler resolves modules under. */
 export interface ModuleGraphProject {
   denoConfigPath?: string;
   packageJsonDir?: string;
-  /** The workspace root whose lock a member reads (swamp-club#3971). */
+  /** the workspace root whose lock a member reads */
   workspaceRootConfigPath?: string;
-  /** Read no config Deno would discover (`--no-config`). */
   noConfig?: boolean;
 }
 
-/** Port: reads the local module graph of one entry point. */
 export interface ModuleGraphReader {
   read(
     entryPoint: string,
@@ -155,20 +119,14 @@ export interface ModuleGraphReader {
   ): Promise<SourceModuleGraph>;
 }
 
-/**
- * Builds a {@link ModuleGraphReader} that runs the deno binary at
- * `denoPath` with `env`, for callers that resolve the binary only when
- * they first bundle.
- */
 export type ModuleGraphReaderFactory = (
   denoPath: string,
   env: Record<string, string>,
 ) => ModuleGraphReader;
 
 /**
- * Unions graphs, keeping the first occurrence of each module and each
- * edge. Edges are identified by importer and span, so the same import read
- * from two entry points counts once.
+ * keeps the first occurrence of each module and edge; edges are identified by
+ * importer and span, so the same import read from two entry points counts once
  */
 export function mergeSourceGraphs(
   graphs: readonly SourceModuleGraph[],
@@ -247,23 +205,19 @@ export function mergeSourceGraphs(
   };
 }
 
-/** One entry point's graph with its symlinked modules removed. */
 export interface SymlinkFreeGraph {
   graph: SourceModuleGraph;
   /**
-   * The symlinks the root reaches without passing through another one, so
-   * the safety gate can refuse each by the symlink rule. A symlink the graph
-   * could not load is listed as code (its kind is unknown).
+   * symlinks the root reaches without passing through another, so the safety
+   * gate can refuse each; one the graph could not load is listed as code
    */
   symlinked: LocalModule[];
 }
 
 /**
- * Removes every symlink from one entry point's graph, together with each
- * module, edge and missing module the root reaches only through one, so
- * nothing read from a symlink's target — its imports, or the error text the
- * graph recorded for it, which quotes its source — is used or shown
- * (swamp-club#3420). A module no edge leads to is kept, as before.
+ * removes symlinks and everything reached only through one, so nothing read
+ * from a symlink's target, including recorded error text that quotes its
+ * source, is used or shown
  */
 export function withoutSymlinkedModules(
   graph: SourceModuleGraph,

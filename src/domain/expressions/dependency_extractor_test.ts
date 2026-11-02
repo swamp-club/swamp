@@ -129,10 +129,8 @@ Deno.test("hasSelfReference returns true for self expressions", () => {
 
 Deno.test("hasSelfReference returns false without self", () => {
   assertEquals(hasSelfReference("model.foo.input.x"), false);
-  assertEquals(hasSelfReference("myself.name"), false); // 'self' must be word boundary
+  assertEquals(hasSelfReference("myself.name"), false);
 });
-
-// Tests for data function dependency extraction
 
 Deno.test("extractModelRefs includes model refs from data.version calls", () => {
   const expr = "data.version('my-model', 'result', 1).attributes.value";
@@ -238,8 +236,6 @@ Deno.test("hasDataFunctionDependency returns false for other expressions", () =>
   assertEquals(hasDataFunctionDependency("self.name"), false);
 });
 
-// Tests for file.contents() dependency extraction
-
 Deno.test("extractModelRefs extracts model name from file.contents()", () => {
   const expr = "file.contents('my-model', 'report')";
   const refs = extractModelRefs(expr);
@@ -289,8 +285,6 @@ Deno.test("extractModelRefs includes both model.X and file.contents() refs", () 
   assertEquals(refs.includes("target"), true);
 });
 
-// Tests for hasExecutionDependency
-
 Deno.test("hasExecutionDependency returns true for execution refs", () => {
   assertEquals(
     hasExecutionDependency("model.foo.execution.status"),
@@ -318,8 +312,6 @@ Deno.test("hasExecutionDependency returns false for input refs", () => {
     false,
   );
 });
-
-// Tests for hasStepOutputDependency
 
 Deno.test("hasStepOutputDependency returns true for resource refs", () => {
   assertEquals(
@@ -386,8 +378,6 @@ Deno.test("hasStepOutputDependency returns false for simple inputs ref", () => {
   );
 });
 
-// Tests for data.findBySpec() dependency extraction
-
 Deno.test("extractModelRefs includes model refs from data.findBySpec calls", () => {
   const expr = "data.findBySpec('my-model', 'subnet')";
   const refs = extractModelRefs(expr);
@@ -416,8 +406,6 @@ Deno.test("hasStepOutputDependency returns true for data.findBySpec calls", () =
     true,
   );
 });
-
-// Tests for namespace prefix stripping in data function extraction
 
 Deno.test("extractModelRefs strips namespace prefix from data.latest", () => {
   const expr = "data.latest('security:scanner', 'result').attributes.value";
@@ -475,10 +463,6 @@ Deno.test("extractModelRefs extracts model.method() alongside data refs", () => 
   const refs = extractModelRefs(expr);
   assertEquals(refs.includes("infra"), true);
 });
-
-// ============================================================================
-// requiresModelNamespace
-// ============================================================================
 
 Deno.test("requiresModelNamespace is false for data with no expressions", () => {
   assertEquals(requiresModelNamespace({ run: "echo hi" }), false);
@@ -597,10 +581,6 @@ Deno.test("requiresModelNamespace is false for a property that shares the name",
   );
 });
 
-// ============================================================================
-// hasStepsNamespaceReference
-// ============================================================================
-
 Deno.test("hasStepsNamespaceReference matches dotted, bracket and bare reads", () => {
   for (
     const expression of [
@@ -616,8 +596,6 @@ Deno.test("hasStepsNamespaceReference matches dotted, bracket and bare reads", (
 });
 
 Deno.test("hasStepsNamespaceReference ignores properties and longer identifiers", () => {
-  // A property that merely shares the name reads something else, and a longer
-  // identifier is a different variable altogether.
   for (
     const expression of [
       "inputs.steps",

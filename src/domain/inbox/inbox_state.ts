@@ -17,16 +17,8 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * What the CLI remembers about one API key's inbox between commands. Three
- * parts that change for different reasons: the last good server summary, when
- * to poll next, and which message the notice last announced.
- */
-
-/** The last good `/api/inbox/summary` answer and its `ETag`. */
 export interface InboxSnapshot {
   readonly unread: number;
-  /** The newest unread message's id, upper-case ULID. */
   readonly newestId: string | null;
   readonly newestAt: string | null;
   /** The server's value, unclamped. The policy applies the floor and ceiling. */
@@ -40,7 +32,6 @@ export interface InboxSnapshot {
   readonly fetchedAt?: number;
 }
 
-/** The poll outcomes that stop polling for a key. */
 export const POLL_STOP_REASONS = [
   "unavailable",
   "rejected",
@@ -54,35 +45,27 @@ export type PollStopReason = typeof POLL_STOP_REASONS[number];
  */
 export interface PollStop {
   readonly reason: PollStopReason;
-  /** Epoch milliseconds. */
   readonly at: number;
 }
 
-/** When the key was last polled and when it may be polled again. */
 export interface PollSchedule {
-  /** Epoch milliseconds of the last poll, whatever its outcome. */
   readonly lastPolledAt: number | null;
-  /** Epoch milliseconds a backoff asked the poll to wait until. */
   readonly nextPollAt: number | null;
   readonly stop: PollStop | null;
 }
 
-/** The message the notice last announced, and when it first showed. */
 export interface Announcement {
   readonly id: string;
-  /** Epoch milliseconds. */
   readonly at: number;
 }
 
 export interface InboxState {
-  /** Null until the first successful poll. */
   readonly snapshot: InboxSnapshot | null;
   readonly schedule: PollSchedule;
   readonly announcement: Announcement | null;
 }
 
 export const InboxState = {
-  /** The state of a key that has never been polled. */
   empty(): InboxState {
     return {
       snapshot: null,
@@ -101,14 +84,10 @@ export type PollOutcome =
   | { readonly kind: "ok"; readonly snapshot: InboxSnapshot }
   | {
     readonly kind: "not_modified";
-    /** Epoch milliseconds the request was sent, when known. */
     readonly sentAt?: number;
   }
-  /** The server has no inbox. */
   | { readonly kind: "unsupported" }
-  /** A collective key has no inbox. */
   | { readonly kind: "unavailable" }
-  /** The key is unknown or revoked. */
   | { readonly kind: "rejected" }
   | { readonly kind: "backoff"; readonly retryAfterSeconds?: number }
   | { readonly kind: "failed"; readonly reason: string };
@@ -135,24 +114,20 @@ export function isStorableEtag(etag: string): boolean {
  * server's answers never decide when or what the other shows.
  */
 export interface InboxCacheKey {
-  /** The server's origin, as `URL.origin` gives it. */
   readonly origin: string;
   /** The API key's fingerprint; never the key. */
   readonly fingerprint: string;
 }
 
 export const InboxCacheKey = {
-  /** The key for an API key on a server. Throws when the URL does not parse. */
   of(serverUrl: string, fingerprint: string): InboxCacheKey {
     return { origin: new URL(serverUrl).origin, fingerprint };
   },
 };
 
-/** Remembers each API key's inbox state per server. */
 export interface InboxCacheRepository {
   /** The key's state, or an empty state when none is stored or it is invalid. */
   load(key: InboxCacheKey): Promise<InboxState>;
   save(key: InboxCacheKey, state: InboxState): Promise<void>;
-  /** Forgets the key's state. Never fails because none is stored. */
   delete(key: InboxCacheKey): Promise<void>;
 }

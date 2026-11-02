@@ -53,13 +53,6 @@ function grant(id: string): Grant {
   };
 }
 
-/**
- * A data repository over grant models, each keeping `grant-main` and
- * optionally a method-summary report. `content` maps `<modelId>/<dataName>`
- * to its bytes, an Error to throw, or null; `skipped` is what
- * findAllForType reports as skipped; `orphanedListing` fails the orphaned
- * type's listing.
- */
 function fakeRepo(options: {
   items: Array<{ modelId: string; dataName: string }>;
   content: Record<string, Uint8Array | Error | null>;
@@ -127,7 +120,6 @@ Deno.test("readStoredGrants: refuses before anything is written, naming every gr
           "invalid/grant-main": encode({ id: "invalid" }),
         },
         skipped: [
-          // The model directory, or its grant-main, could not be listed.
           {
             modelId: "dir",
             error: new Deno.errors.PermissionDenied("dir"),

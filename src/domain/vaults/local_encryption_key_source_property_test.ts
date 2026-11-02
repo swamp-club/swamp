@@ -33,7 +33,6 @@ const arbValue = fc.oneof(
   fc.constant(undefined),
 );
 
-/** Configs that set any mix of key-source fields and other fields. */
 const arbConfig = fc.record(
   {
     base_dir: arbValue,

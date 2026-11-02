@@ -19,26 +19,17 @@
 
 import type { ExtensionContentMetadata } from "./extension_content.ts";
 
-/** A single content item whose collective doesn't match the extension's collective. */
 export interface CollectiveMismatch {
   kind: "model" | "vault" | "workflow" | "datastore" | "report" | "webhook";
   identifier: string;
   fileName: string;
 }
 
-/** Result of validating content collectives against the extension collective. */
 export interface CollectiveValidationResult {
   valid: boolean;
   mismatches: CollectiveMismatch[];
 }
 
-/**
- * Validates that all content items (models, vaults, workflows, datastores, reports, webhooks) in an extension
- * use the same collective as the extension package itself.
- *
- * For example, if the extension is `@stack72/my-extension`, all model types,
- * vault types, workflow names, datastore types, report names, and webhook types must start with `@stack72/`.
- */
 export function validateContentCollectives(
   extensionName: string,
   contentMetadata: ExtensionContentMetadata,
@@ -117,19 +108,16 @@ export function validateContentCollectives(
   };
 }
 
-/** A type an extension source registers when it is loaded. */
 export interface RuntimeContentType {
   kind: CollectiveMismatch["kind"];
-  /** The type as the loader registers it (its normalized form). */
   typeNormalized: string;
   fileName: string;
 }
 
 /**
- * The loaded types that are outside the extension's collective. Static
- * metadata reads a type only when the source writes it as a string literal,
- * so a type held in a constant, spread in or computed is checked here
- * against the identity the loader actually registers (swamp-club#3456).
+ * static metadata reads a type only when written as a string literal, so
+ * constant, spread or computed types are checked here against the identity the
+ * loader registers
  */
 export function collectiveMismatchesForTypes(
   extensionName: string,

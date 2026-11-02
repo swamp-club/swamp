@@ -38,13 +38,11 @@ import {
   versionOp,
 } from "./v3_test_helpers.ts";
 
-/** Asserts `fn` throws a CommitRejectedError with `reason`. */
 function assertRejected(fn: () => unknown, reason: string): void {
   const error = assertThrows(fn, CommitRejectedError);
   assertEquals(error.reason, reason);
 }
 
-/** A snapshot of everything a partition exposes. */
 function snapshot(partition: Partition) {
   return {
     seq: partition.seq,
@@ -182,7 +180,6 @@ Deno.test("Partition.appendObserved: leaves expect and data-version rules to ser
   });
   partition.appendObserved(modelCommit(7, [mismatched], { fence: 3 }));
   assertEquals(partition.seq, 7);
-  // The plain append still refuses both.
   const solo = Partition.empty(modelPartition());
   solo.append(modelCommit(1, [versionOp("vpc", 1)], { fence: 3 }));
   assertRejected(
@@ -245,7 +242,6 @@ Deno.test("Partition.append: a removed version is never recorded again (swamp-cl
     () => partition.append(modelCommit(3, [versionOp("vpc", 2)])),
     "version-reused",
   );
-  // Nor once the name is empty.
   partition.append(modelCommit(3, [deleteVersion("vpc", 1)]));
   assertEquals(partition.versions("vpc"), []);
   for (const version of [1, 2]) {
@@ -315,13 +311,11 @@ Deno.test("Partition.append: replay accepts a reuse a store holds from before ve
   );
   assertEquals(partition.versions("vpc"), [1]);
   assertEquals(partition.removed("vpc", 1), false);
-  // Removing it again is remembered, and live commits are checked.
   partition.append(modelCommit(4, [deleteVersion("vpc", 1)]));
   assertRejected(
     () => partition.append(modelCommit(5, [versionOp("vpc", 1)])),
     "version-reused",
   );
-  // Replay keeps every other rule.
   partition.append(modelCommit(5, [versionOp("vpc", 2)]));
   assertRejected(
     () =>
@@ -342,7 +336,6 @@ Deno.test("Partition.retainDroppedVersions: raises the high-water mark and count
   assertEquals(partition.removed("vpc", 1), false);
   assertEquals(partition.removed("vpc", 3), true);
   assertEquals(partition.retainDroppedVersions("vpc", [2]), false);
-  // A name the kept commits never wrote.
   assertEquals(partition.retainDroppedVersions("subnet", [4]), true);
   assertEquals(partition.highWater("subnet"), 4);
   assertRejected(
@@ -359,7 +352,6 @@ Deno.test("Partition.append: versions can arrive out of order, as parallel write
   assertEquals(partition.versions("vpc"), [5, 6]);
   assertEquals(partition.latest("vpc"), 6);
   assertEquals(partition.highWater("vpc"), 6);
-  // In one commit too, and the high-water mark never goes down.
   partition.append(modelCommit(3, [versionOp("vpc", 8), versionOp("vpc", 7)]));
   assertEquals(partition.versions("vpc"), [5, 6, 7, 8]);
   assertEquals(partition.highWater("vpc"), 8);
@@ -381,8 +373,6 @@ Deno.test("Partition.append: an append re-records a live version only with its d
   );
   assertEquals(partition.versions("vpc"), [1]);
   assertEquals(partition.highWater("vpc"), 2);
-  // A save put does not stand in for an append, nor does an append of
-  // another version or name.
   for (
     const put of [
       await savePut("vpc", 1, "again"),
@@ -411,7 +401,6 @@ Deno.test("Partition.append: an append put lets through only a later data-versio
       ),
     "version-live",
   );
-  // One append put lets one op through, not two.
   assertRejected(
     () =>
       partition.append(
@@ -437,7 +426,6 @@ Deno.test("Partition.append: deleting every version leaves no latest but keeps t
 Deno.test("Partition.append: a whole-name delete removes only the versions it names", () => {
   const partition = Partition.empty(modelPartition());
   partition.append(modelCommit(1, [versionOp("vpc", 1)]));
-  // Another writer adds version 2 before the delete lands.
   partition.append(modelCommit(2, [versionOp("vpc", 2)]));
   partition.append(
     modelCommit(3, [
@@ -481,7 +469,6 @@ Deno.test("Partition.append: a put with a stale expect is refused and changes no
 Deno.test("Partition.append: an expect-failed refusal names the failing record key, message unchanged (swamp-club#3915)", async () => {
   const partition = Partition.empty(modelPartition());
   partition.append(modelCommit(1, [await savePut("vpc", 1, "a", "absent")]));
-  // Another reason carries no key.
   const gap = assertThrows(
     () => partition.append(modelCommit(5, [versionOp("vpc", 2)])),
     CommitRejectedError,
@@ -625,7 +612,6 @@ Deno.test("Partition.append: lease ops raise the lease fence and name the holder
     "stale-lease",
   );
   assertEquals(snapshot(partition), before);
-  // The same fence again is the same lease's next commit.
   partition.append(
     modelCommit(3, [leaseOp({ holder: "lease-b", fence: 2 })], { fence: 7 }),
   );
@@ -720,8 +706,8 @@ Deno.test("Partition.append: a data rename is two data-version ops in one commit
   );
   assertEquals(partition.latest("old"), 2);
 
-  // Today's rename saves the content under the new name, then writes a
-  // marker version on the old name carrying `renamedTo`.
+  // a rename saves the content under the new name, then writes a marker version
+  // on the old name carrying renamedTo
   const marker = dataVersionOp({
     key: RecordKey.create(
       "data/@swamp/aws-ec2/6f1c2a3b-4d5e-4f60-8a7b-9c0d1e2f3a4b/old/3/metadata.yaml",
@@ -759,7 +745,6 @@ Deno.test("Partition.append: a data rename is two data-version ops in one commit
   );
 });
 
-/** A partition with a fence, a lease holder, records and data names. */
 async function populated(): Promise<Partition> {
   const partition = Partition.empty(modelPartition());
   partition.append(
@@ -771,7 +756,6 @@ async function populated(): Promise<Partition> {
   return partition;
 }
 
-/** The prior-txnId lookup for {@link populated}'s two commits. */
 function populatedTxns(txnId: string): boolean {
   return txnId === "txn-1" || txnId === "txn-2";
 }
@@ -836,7 +820,6 @@ Deno.test("Partition.retainVersionsOf: keeps a later state's high-water marks an
   assertEquals(earlier.retainVersionsOf(later), true);
   assertEquals(earlier.versions("vpc"), [1, 2]);
   assertEquals(earlier.highWater("vpc"), 6);
-  // Version 2 is live here, so it is not removed.
   assertEquals(
     [1, 2, 3, 4, 5].map((v) => earlier.removed("vpc", v)),
     [false, false, true, true, false],

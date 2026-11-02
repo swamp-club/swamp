@@ -63,7 +63,6 @@ Deno.test("checkExtensionQuality passes for well-formatted, lint-clean file", as
 
 Deno.test("checkExtensionQuality detects formatting issues", async () => {
   await withTempFiles(
-    // Missing trailing newline and inconsistent spacing
     { "model.ts": "export const x=1;" },
     async (_dir, paths) => {
       const result = await checkExtensionQuality(paths, DENO_PATH);
@@ -75,7 +74,6 @@ Deno.test("checkExtensionQuality detects formatting issues", async () => {
 
 Deno.test("checkExtensionQuality detects lint issues", async () => {
   await withTempFiles(
-    // no-explicit-any and ban-unused-ignore are default lint rules
     {
       "model.ts": "// deno-lint-ignore no-explicit-any\nexport const x = 1;\n",
     },
@@ -462,7 +460,6 @@ Deno.test("checkExtensionQuality: fmt output contains no ANSI escape codes", asy
       assertEquals(result.passed, false);
       const fmtIssue = result.issues.find((i) => i.check === "fmt");
       assertEquals(fmtIssue !== undefined, true);
-      // ANSI escape codes start with ESC (\x1b) followed by [
       assertEquals(fmtIssue!.output.includes("\x1b["), false);
     },
   );
@@ -544,9 +541,7 @@ Deno.test("stripCommentsAndStrings handles multi-line block comments", () => {
   const source = '/*\n * import("pkg")\n */\nreal code';
   const result = stripCommentsAndStrings(source);
   const lines = result.split("\n");
-  // Line with import() inside comment should be blanked
   assertEquals(lines[1].includes("import"), false);
-  // Line with real code should be preserved
   assertEquals(lines[3], "real code");
 });
 
@@ -562,8 +557,6 @@ Deno.test("stripCommentsAndStrings blanks template literal text", () => {
   assertEquals(result.includes("import"), false);
   assertEquals(result.includes("const x"), true);
 });
-
-// ── checkVersionConsistency tests ────────────────────────────────────
 
 Deno.test("checkVersionConsistency: informs user when the extension was never published", async () => {
   await withTempFiles(
@@ -841,8 +834,6 @@ Deno.test("checkVersionConsistency: files without version export are skipped", a
   );
 });
 
-// ── checkUpgradeChainConsistency tests ─────────────────────────────
-
 Deno.test("checkUpgradeChainConsistency: model without upgrades produces no issues", async () => {
   await withTempFiles(
     {
@@ -942,8 +933,6 @@ Deno.test("checkUpgradeChainConsistency: file without model export is skipped", 
     },
   );
 });
-
-// ── checkVersionBumpWithoutUpgrade tests ─────────────────────────────
 
 Deno.test("checkVersionBumpWithoutUpgrade: model with upgrades produces no issues", async () => {
   await withTempFiles(

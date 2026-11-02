@@ -404,7 +404,6 @@ Deno.test("analyzeExtensionSafety errors on symlinks", async () => {
 });
 
 Deno.test("analyzeExtensionSafety errors on file count > 150", async () => {
-  // Generate 151 fake paths — we don't need real files for count check
   const tmpDir = await Deno.makeTempDir();
   try {
     const paths: string[] = [];
@@ -523,8 +522,6 @@ Deno.test("analyzeExtensionSafety: exempt files still checked for size limit", a
   }
 });
 
-// ── Content rule framework tests ─────────────────────────────────────
-
 Deno.test("analyzeExtensionSafety: content rule fires on matching file extension", async () => {
   const rule: ContentRule = {
     id: "test-rule",
@@ -591,8 +588,6 @@ Deno.test("analyzeExtensionSafety: content rules do not run on .ts files", async
     },
   );
 });
-
-// ── IPv4 address detection tests ─────────────────────────────────────
 
 Deno.test("analyzeExtensionSafety: warns on RFC 1918 IP in .md", async () => {
   await withTempFiles(
@@ -732,7 +727,6 @@ Deno.test("analyzeExtensionSafety: a directive whose reason holds a quote is sti
     {
       "a.ts": [
         `const s = "${long}"; // swamp-quality-ignore long-line: ${reason}`,
-        // The same text inside a string literal is code, so it counts.
         `const t = "${long}"; const u = "// swamp-quality-ignore long-line: ${
           "r-".repeat(100)
         }";`,
@@ -858,8 +852,6 @@ Deno.test("symlinkIssue: a file that is itself a symlink keeps the rule's messag
     "Symlinks are not allowed in extensions. Copy the file into the extension tree instead.",
   );
 });
-
-// ===== analyzeBundleSafety (swamp-club#3383) =====
 
 Deno.test("analyzeBundleSafety: eval in the extension's own module is an error naming the module", () => {
   const result = analyzeBundleSafety(

@@ -166,7 +166,6 @@ Deno.test("parseAcceptanceDirectives: an apostrophe in Markdown prose does not h
   });
 });
 
-/** `line` with the directive span `directiveSpans` gives it removed. */
 function stripped(line: string, file: string): string {
   return withoutDirective(line, directiveSpans(line, file).get(1));
 }
@@ -368,7 +367,6 @@ Deno.test("parseAcceptanceDirectives: a reason may not carry Deno.Command( or a 
     assertEquals(parsed.directives, [], reason);
     assertStringIncludes(parsed.invalid[0].problem, problem);
   }
-  // Markdown reasons are bounded by the comment and may quote freely.
   const md = parseAcceptanceDirectives(
     '<!-- swamp-quality-ignore ipv4-address-literals: the "lab" gateway -->\n10.0.0.1\n',
     MD,
@@ -784,7 +782,6 @@ Deno.test("staleAcceptanceFinding: warns at the directive's own location", () =>
   assertEquals(typeof finding.remediation, "string");
 });
 
-/** Sites saying lines 1 to 20 of the named files take a comment, unindented. */
 function open(...files: string[]): Record<string, CommentSites> {
   const lines: CommentSites = {};
   for (let l = 1; l <= 20; l++) lines[l] = "";
@@ -843,7 +840,6 @@ Deno.test("acceptanceFor: a Markdown finding inside a code block is a sidecar en
       entry: { rule: "secret-unsafe-docs", file: "docs/README.md", line: 3 },
     },
   );
-  // A file the sites do not name still has none.
   assertEquals(
     acceptanceFor({ ruleId: "secret-unsafe-docs", file, line: 3 }, "/ext", {}),
     undefined,
@@ -930,17 +926,17 @@ Deno.test("acceptanceFor: none on a line the sites leave out, or in a file they 
 
 Deno.test("commentSites: no line inside a multi-line template literal, string or block comment, each other line with its indentation", () => {
   const source = [
-    "const a = 1;", // 1
-    "const t = `x", // 2
-    "QQQ", // 3
-    "${a}", // 4
-    "y`;", // 5
-    "/**", // 6
-    " * doc", // 7
-    " */", // 8
-    'const s = "a\\', // 9
-    'b";', // 10
-    "  const b = `one line`;", // 11
+    "const a = 1;",
+    "const t = `x",
+    "QQQ",
+    "${a}",
+    "y`;",
+    "/**",
+    " * doc",
+    " */",
+    'const s = "a\\',
+    'b";',
+    "  const b = `one line`;",
   ].join("\n");
   assertEquals(
     commentSites(source, TS, [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]),
@@ -952,12 +948,12 @@ Deno.test("commentSites: no line inside a multi-line template literal, string or
 Deno.test("commentSites: line breaks Babel reads inside a comment or string do not move the barriers", () => {
   const source = (br: string) =>
     [
-      `/* a${br}b${br}c */ const s = "x${br}y";`, // 1
-      "const a = 1;", // 2
-      "const t = `one", // 3
-      "  two", // 4
-      "  three`;", // 5
-      "const z = 2;", // 6
+      `/* a${br}b${br}c */ const s = "x${br}y";`,
+      "const a = 1;",
+      "const t = `one",
+      "  two",
+      "  three`;",
+      "const z = 2;",
     ].join("\n");
   const lines = [1, 2, 3, 4, 5, 6];
   const plain = commentSites(source(" "), TS, lines);
@@ -976,35 +972,35 @@ Deno.test("commentSites: line breaks Babel reads inside a comment or string do n
 
 Deno.test("commentSites: no Markdown line inside a fenced block, through the closing fence", () => {
   const md = [
-    "# T", // 1
-    "Gateway: 10.0.0.1", // 2
-    "```sh", // 3
-    "curl http://10.0.0.2", // 4
-    "```", // 5
-    "  Router: 10.0.0.3", // 6
+    "# T",
+    "Gateway: 10.0.0.1",
+    "```sh",
+    "curl http://10.0.0.2",
+    "```",
+    "  Router: 10.0.0.3",
   ].join("\n");
   assertEquals(commentSites(md, MD, [2, 4, 5, 6]), { 2: "", 6: "  " });
 });
 
 Deno.test("commentSites: a /* inside a regex literal hides no line, since the parser reads the same comments as the tokenizer", () => {
   const source = [
-    "const re = /[/*]/;", // 1
-    "new Deno.Command(x);", // 2
-    "// */", // 3
-    "new Deno.Command(y);", // 4
+    "const re = /[/*]/;",
+    "new Deno.Command(x);",
+    "// */",
+    "new Deno.Command(y);",
   ].join("\n");
   assertEquals(commentSites(source, TS, [2, 4]), { 2: "", 4: "" });
 });
 
 Deno.test("commentSites: every offered source site, applied, parses back as a directive aimed at its line", () => {
   const source = [
-    "// swamp-quality-ignore deno-command", // 1
-    "// swamp-quality-ignore credentials-sensitive-field: stacked", // 2
-    "new Deno.Command(a);", // 3
-    "const s = `x", // 4
-    "y`; new Deno.Command(b);", // 5
-    "new Deno.Command(c); // don't inline", // 6
-    "  // swamp-quality-ignore not-a-rule", // 7
+    "// swamp-quality-ignore deno-command",
+    "// swamp-quality-ignore credentials-sensitive-field: stacked",
+    "new Deno.Command(a);",
+    "const s = `x",
+    "y`; new Deno.Command(b);",
+    "new Deno.Command(c); // don't inline",
+    "  // swamp-quality-ignore not-a-rule",
   ].join("\n");
   const sites = commentSites(source, TS, [1, 2, 3, 5, 6, 7]);
   // A standalone directive line takes no comment above it: the stack would
@@ -1041,23 +1037,23 @@ Deno.test("commentSites: no source site once the directives above reach the cap"
 
 Deno.test("commentSites: no line inside JSX children, which a comment would turn into text", () => {
   const tsx = [
-    "export const C = () => (", // 1
-    "  <div>", // 2
-    "    hello", // 3
-    "    <span>{new Deno.Command(x)}</span>", // 4
-    "  </div>", // 5
-    ");", // 6
+    "export const C = () => (",
+    "  <div>",
+    "    hello",
+    "    <span>{new Deno.Command(x)}</span>",
+    "  </div>",
+    ");",
   ].join("\n");
   assertEquals(commentSites(tsx, "/ext/ui/c.tsx", [1, 3, 4]), { 1: "" });
 });
 
 Deno.test("commentSites: no Markdown line inside a multi-line HTML comment", () => {
   const md = [
-    "<!--", // 1
-    "Gateway: 10.0.0.1", // 2
-    "-->", // 3
-    "Router: 10.0.0.3", // 4
-    "<!-- note --> Host: 10.0.0.4", // 5
+    "<!--",
+    "Gateway: 10.0.0.1",
+    "-->",
+    "Router: 10.0.0.3",
+    "<!-- note --> Host: 10.0.0.4",
   ].join("\n");
   assertEquals(commentSites(md, MD, [2, 3, 4, 5]), { 4: "", 5: "" });
 });
@@ -1106,7 +1102,6 @@ Deno.test("acceptanceFor: every comment acceptance, applied bottom-up, accepts i
     }
     const parsed = parseAcceptanceDirectives(edited.join("\n"), file);
     assertEquals(parsed.invalid, [], file);
-    // Each finding is reported again where its line now sits.
     const moved = findings.map((f) =>
       "line" in f && f.line !== undefined
         ? {

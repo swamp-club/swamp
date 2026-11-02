@@ -58,10 +58,9 @@ Deno.test("findRepoRoot: starting in the repo root itself returns root", async (
 
 Deno.test("findRepoRoot: throws when no ancestor has .swamp/", async () => {
   await withTempDir(async (root) => {
-    // If an ancestor of the temp dir already contains .swamp/ (e.g.
-    // $HOME/.swamp/ created by parallel tests), findRepoRoot would find
-    // it instead of throwing. Skip in that case — the test can only
-    // assert the "no match" path when the temp dir's ancestors are clean.
+    // an ancestor of the temp dir holding .swamp/ would be found instead of
+    // throwing, so the no-match path is only testable when the ancestors are
+    // clean
     let ancestorHasSwamp = false;
     let probe = root;
     while (true) {
@@ -79,7 +78,6 @@ Deno.test("findRepoRoot: throws when no ancestor has .swamp/", async () => {
     if (ancestorHasSwamp) return;
 
     await Deno.mkdir(join(root, "child"));
-    // Walk terminates at the FS root with no match.
     assertThrows(
       () => findRepoRoot(join(root, "child")),
       RepoRootNotFoundError,
@@ -89,41 +87,25 @@ Deno.test("findRepoRoot: throws when no ancestor has .swamp/", async () => {
 
 Deno.test("findRepoRoot: nested .swamp/ — innermost wins (worktree-in-repo)", async () => {
   await withTempDir(async (outer) => {
-    // Outer is a swamp repo.
     await Deno.mkdir(join(outer, ".swamp"));
-    // Inner is ALSO a swamp repo, nested under outer (e.g. a worktree
-    // checked out inside the parent repo's working tree).
     const inner = join(outer, "worktree");
     await Deno.mkdir(join(inner, ".swamp"), { recursive: true });
-    // Start path is deep inside the inner worktree.
     const start = join(inner, "src", "deep");
     await Deno.mkdir(start, { recursive: true });
 
-    // Innermost wins — the inner .swamp/ is found before the walk
-    // reaches the outer one.
     assertPathEquals(findRepoRoot(start), inner);
   });
 });
 
 Deno.test("findRepoRoot: lexical only — does NOT realpath through symlinks", async () => {
-  // Symlink semantics: if `start` is reached via a symlinked ancestor,
-  // the walk must follow lexical ancestors (the symlinked path),
-  // not the realpath target. This keeps catalog identity stable even
-  // when the user has set up a symlinked working tree.
+  // the walk follows lexical ancestors, not the realpath target, so catalog
+  // identity stays stable under a symlinked working tree
   if (Deno.build.os === "windows") {
-    // Windows symlink creation requires admin / dev mode + an explicit
-    // target type. The lexical-only contract is the same on all
-    // platforms; POSIX coverage is sufficient for this fixture.
+    // windows symlink creation needs elevated rights and a target type; the
+    // lexical contract is the same on every platform
     return;
   }
   await withTempDir(async (root) => {
-    // Real layout:
-    //   <root>/real/.swamp/
-    //   <root>/real/sub/leaf
-    //   <root>/link  → symlink to <root>/real
-    // We start at <root>/link/sub/leaf — a path that resolves through
-    // the symlink. findRepoRoot must return <root>/link (lexical) NOT
-    // <root>/real (realpath).
     const real = join(root, "real");
     await Deno.mkdir(join(real, ".swamp"), { recursive: true });
     await Deno.mkdir(join(real, "sub", "leaf"), { recursive: true });
@@ -131,9 +113,6 @@ Deno.test("findRepoRoot: lexical only — does NOT realpath through symlinks", a
     await Deno.symlink(real, link, { type: "dir" });
 
     const start = join(link, "sub", "leaf");
-    // The walk goes: link/sub/leaf → link/sub → link, where link/.swamp
-    // is statable (because link points at real). The returned path is
-    // the lexical "link", not the realpath "real".
     assertEquals(findRepoRoot(start), link);
   });
 });

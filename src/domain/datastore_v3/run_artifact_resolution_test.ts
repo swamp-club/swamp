@@ -77,7 +77,6 @@ Deno.test("resolveRunArtifact: a workflow step's version resolves only from its 
     kind: "available",
     metadata: version.metadata,
   });
-  // The version was deleted and saved again by another run.
   assertEquals(
     resolveRunArtifact(REF, WORKFLOW_RUN, live({ workflowRunId: OTHER_RUN })),
     {
@@ -86,7 +85,6 @@ Deno.test("resolveRunArtifact: a workflow step's version resolves only from its 
         "a@1: content no longer available (the live version was written by another run)",
     },
   );
-  // A method run never produced a version that records a workflow run.
   assertEquals(
     resolveRunArtifact(REF, METHOD_RUN, version).kind,
     "unavailable",
@@ -98,7 +96,6 @@ Deno.test("resolveRunArtifact: a method run's version resolves when it was creat
   // Report data and the like record no run: the window decides for a
   // workflow run too.
   assertEquals(resolveRunArtifact(REF, WORKFLOW_RUN, live()).kind, "available");
-  // Saved again after the run finished, or before it started.
   assertEquals(
     resolveRunArtifact(
       REF,

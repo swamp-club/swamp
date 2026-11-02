@@ -475,7 +475,6 @@ Deno.test("checkReviewRules: reads content, computes sibling test, skips test fi
     DEFAULT_REVIEW_RULES,
     io,
   );
-  // schema-strictness warns; testing-completeness does NOT (sibling test exists).
   const ids = result.warnings.map((w) => w.ruleId);
   assert(ids.includes("schema-strictness"));
   assertEquals(ids.includes("testing-completeness"), false);
@@ -503,7 +502,6 @@ Deno.test("checkReviewRules: skips non-ts files and unreadable files", async () 
     DEFAULT_REVIEW_RULES,
     io,
   );
-  // yaml skipped; unreadable ts skipped — no crash, no findings from them.
   assertEquals(result.errors, []);
 });
 
@@ -523,17 +521,15 @@ Deno.test("checkReviewRules: entry point without sibling test warns", async () =
   assert(ids.includes("testing-completeness"));
 });
 
-// ── Report machinery ──────────────────────────────────────────────────
-
 Deno.test("applicableDimensions: universal always present; type-specific gated by kind", () => {
   const modelOnly = applicableDimensions(["model"]).map((d) => d.id);
-  assert(modelOnly.includes("credentials-secrets")); // universal
-  assert(modelOnly.includes("published-surface-hygiene")); // universal
-  assert(modelOnly.includes("schema-strictness")); // model-specific
-  assertEquals(modelOnly.includes("vault-getname"), false); // vault-specific
+  assert(modelOnly.includes("credentials-secrets"));
+  assert(modelOnly.includes("published-surface-hygiene"));
+  assert(modelOnly.includes("schema-strictness"));
+  assertEquals(modelOnly.includes("vault-getname"), false);
   const vaultOnly = applicableDimensions(["vault"]).map((d) => d.id);
   assert(vaultOnly.includes("vault-getname"));
-  assert(vaultOnly.includes("published-surface-hygiene")); // universal
+  assert(vaultOnly.includes("published-surface-hygiene"));
   assertEquals(vaultOnly.includes("schema-strictness"), false);
 });
 
@@ -542,7 +538,7 @@ Deno.test("reviewReportPath: deterministic and hash-bound", () => {
   const b = reviewReportPath("@acme/thing", "abcdef0123456789aa", "/tmp");
   assertEquals(a, b);
   const c = reviewReportPath("@acme/thing", "ffffffffffffffffbb", "/tmp");
-  assert(a !== c); // different hash → different path
+  assert(a !== c);
 });
 
 Deno.test("reviewReportPath: explicit baseTmpDir takes precedence over env var", () => {
@@ -638,12 +634,9 @@ Deno.test("evaluateReviewReport: missing report is a warning (prompt), never a h
   );
   assertEquals(findings.length, 1);
   assertEquals(findings[0].severity, "medium");
-  // The report path must be carried on the finding (rendered in log mode).
   assertEquals(findings[0].file, "/tmp/review.json");
-  // The message is a single, self-sufficient line (no embedded skeleton).
   assertEquals(findings[0].message.includes("\n"), false);
   assert(!findings[0].message.includes("{"));
-  // The skeleton rides on its own field, as an object, for JSON consumers.
   assertEquals(
     findings[0].skeleton,
     buildReviewReportSkeleton("@a/b", "1", applicableDimensions(["model"])),
@@ -672,7 +665,7 @@ Deno.test("evaluateReviewReport: parse errors surface explicit message with allo
 Deno.test("evaluateReviewReport: name/version mismatch warns (e.g. manual version bump)", () => {
   const report: ExtensionReviewReport = {
     extension: "@a/b",
-    version: "9", // report from a different version
+    version: "9",
     reviewedAt: "now",
     dimensions: [],
   };
@@ -683,7 +676,6 @@ Deno.test("evaluateReviewReport: name/version mismatch warns (e.g. manual versio
 
 Deno.test("evaluateReviewReport: pending verdicts warn, issue warns, all-pass is clean", () => {
   const dims = applicableDimensions(["vault"]);
-  // One pending, the rest pass.
   const pendingReport: ExtensionReviewReport = {
     extension: "@a/b",
     version: "1",
@@ -697,7 +689,6 @@ Deno.test("evaluateReviewReport: pending verdicts warn, issue warns, all-pass is
   assert(pendingFindings.length > 0);
   assertEquals(pendingFindings.every((f) => f.severity === "medium"), true);
 
-  // All pass except one issue → exactly one warning.
   const passReport: ExtensionReviewReport = {
     extension: "@a/b",
     version: "1",
@@ -711,12 +702,9 @@ Deno.test("evaluateReviewReport: pending verdicts warn, issue warns, all-pass is
   const passFindings = evaluateReviewReport(reportCtx(passReport, dims));
   assertEquals(passFindings.length, 1);
   assertEquals(passFindings[0].severity, "medium");
-  // The issue-verdict finding carries its own ruleId, distinct from the
-  // review-owed/stale ruleId, so a CI gate can tell the two states apart.
   assertEquals(passFindings[0].ruleId, "adversarial-review-dimension-issue");
   assert(passFindings[0].ruleId !== "adversarial-review-report");
 
-  // Fully clean report → no findings.
   const cleanReport: ExtensionReviewReport = {
     extension: "@a/b",
     version: "1",
@@ -728,8 +716,6 @@ Deno.test("evaluateReviewReport: pending verdicts warn, issue warns, all-pass is
 
 Deno.test("evaluateReviewReport: a completed review with an issue verdict is distinguishable from a missing/stale review", () => {
   const dims = applicableDimensions(["vault"]);
-  // Present, name/version-matching, fully-verdicted review whose only "problem"
-  // is one honest `issue` verdict.
   const report: ExtensionReviewReport = {
     extension: "@a/b",
     version: "1",
@@ -742,10 +728,7 @@ Deno.test("evaluateReviewReport: a completed review with an issue verdict is dis
   };
   const findings = evaluateReviewReport(reportCtx(report, dims));
 
-  // Gate-distinguishability: a gate keying on the review-owed ruleId sees this
-  // completed review as clean — no `adversarial-review-report` finding.
   assert(findings.every((f) => f.ruleId !== "adversarial-review-report"));
-  // The honest note still surfaces, under the distinct ruleId, with the note.
   assertEquals(findings.length, 1);
   assertEquals(findings[0].ruleId, "adversarial-review-dimension-issue");
   assertStringIncludes(findings[0].message, "delete swallows 404");
@@ -784,12 +767,9 @@ Deno.test("checkReviewRules: validates report when a report request is supplied"
     DEFAULT_REVIEW_RULES,
     io,
   );
-  // Missing report → non-blocking warning (prompt), not a hard error.
   assertEquals(result.passed, true);
   assert(result.warnings.some((w) => w.ruleId === "adversarial-review-report"));
 });
-
-// ── credentials-sensitive-field: whole-identifier matching (swamp-club#3019) ──
 
 function sensitiveFindings(
   content: string,
@@ -938,8 +918,6 @@ Deno.test("credentials-sensitive-field: a line with a reference key and a secret
   );
   assertEquals(findings.length, 1);
   assert(findings[0].message.includes("apiKey"));
-  // The same reference key beside another reference key is silent, so the
-  // finding above comes from apiKey, not secretName.
   assertEquals(
     sensitiveFindings("  secretName: z.string(), tokenCount: z.string(),")
       .length,
@@ -979,14 +957,10 @@ Deno.test("credentials-sensitive-field: every .meta({ sensitive: true }) form su
   }
 });
 
-// ── credentials-sensitive-field: wrapped metadata objects (swamp-club#3852) ──
-
-/** A parseable module whose schema object holds `fields`. */
 function schemaModule(fields: string): string {
   return `import { z } from "npm:zod@4";\n\nexport const GlobalArgs = z.object({\n${fields}\n});\n`;
 }
 
-/** The issue's field, as deno fmt wraps it, with `entry` inside the object. */
 function wrappedApiKey(entry: string): string {
   return schemaModule(`  apiKey: z.string().meta({
 ${entry}    description:

@@ -24,7 +24,6 @@ Deno.test("NoToolConfiguredError: carries an actionable hint in its message", ()
   const err = new NoToolConfiguredError(["claude", "cursor", "kiro", "pi"]);
   assertInstanceOf(err, Error);
   assertEquals(err.name, "NoToolConfiguredError");
-  // The hint must list the valid tool names so CLI users know what to pass.
   for (const tool of ["claude", "cursor", "kiro", "pi"]) {
     if (!err.message.includes(tool)) {
       throw new Error(

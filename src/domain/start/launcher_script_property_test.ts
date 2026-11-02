@@ -26,10 +26,6 @@ import {
   posixQuote,
 } from "./launcher_script.ts";
 
-/**
- * A reference reader for one POSIX shell word made only of single-quoted
- * runs and `\'` escapes — the forms `posixQuote` emits.
- */
 function parsePosixWord(word: string): string {
   let out = "";
   let i = 0;
@@ -51,7 +47,6 @@ function parsePosixWord(word: string): string {
   return out;
 }
 
-/** A reference reader for a `cmdQuote`d token: outer quotes, `%%` → `%`. */
 function parseCmdToken(token: string): string {
   if (token.length < 2 || !token.startsWith('"') || !token.endsWith('"')) {
     throw new Error("not double-quoted");
@@ -64,11 +59,6 @@ function parseCmdToken(token: string): string {
   return inner.replace(/%%/g, "%");
 }
 
-/**
- * A reference reader for a `cmdPasteQuote`d token at an interactive prompt:
- * quotes toggle, and outside them only `^%` (a literal percent) may appear.
- * Inside quotes no `%` may appear, so nothing can expand.
- */
 function parsePasteToken(token: string): string {
   let out = "";
   let quoted = false;

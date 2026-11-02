@@ -100,7 +100,6 @@ Deno.test("assessRecoveryForRun: zero unknown steps allows auto-recovery", async
   run.jobs[0].steps[1].start();
   run.jobs[0].steps[1].succeed();
   run.jobs[0].succeed();
-  // Crash after all steps completed but before run.complete()
   run.interrupt("server_crash");
 
   const result = await assessRecoveryForRun(wf, run);
@@ -128,7 +127,6 @@ Deno.test("assessRecoveryForRun: no fingerprint skips drift check", async () => 
   run.jobs[0].start();
   run.jobs[0].steps[0].start();
   run.interrupt("server_crash");
-  // No captureRunPlan — fingerprint is undefined
 
   const result = await assessRecoveryForRun(wf, run);
 
@@ -213,10 +211,6 @@ function modelStep(
   });
 }
 
-/**
- * An interrupted run of `wf` whose job `jobName` was running the step run
- * `stepName`, stored with `forEachTemplate` when it is a forEach iteration.
- */
 function interruptedAt(
   wf: Workflow,
   jobName: string,

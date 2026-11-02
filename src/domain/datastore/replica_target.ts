@@ -17,33 +17,18 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Where a datastore's v3 Litestream replica lives (swamp-club#3507), as its
- * provider's `replicaTarget()` describes it. See "Phase 4: the replica
- * target" in `design/enablers/datastore-litestream.md`.
- *
- * `packages/testing/replica_target_conformance.ts` checks targets with the
- * same rules; `replica_target_test.ts` runs both over one fixture list.
- *
- * @module
- */
-
 import { UserError } from "../errors.ts";
 
 /**
- * A datastore's Litestream replica: its bucket and the datastore root's key
- * prefix. Core appends `_litestream/<fence>/` to the prefix. It never
- * carries credentials, which Litestream resolves from the AWS SDK default
- * chain or Google ADC.
+ * never carries credentials, which Litestream resolves from the AWS SDK default
+ * chain or Google ADC
  */
 export type V3ReplicaTarget =
   | {
     readonly type: "s3";
     readonly bucket: string;
-    /** The datastore root's key prefix: no leading or trailing slash, or empty. */
     readonly prefix: string;
     readonly region?: string;
-    /** An S3-compatible endpoint, as an http or https URL. */
     readonly endpoint?: string;
     /**
      * Path-style addressing. Unset, it is on whenever `endpoint` is set.
@@ -53,19 +38,14 @@ export type V3ReplicaTarget =
   | {
     readonly type: "gcs";
     readonly bucket: string;
-    /** The datastore root's key prefix: no leading or trailing slash, or empty. */
     readonly prefix: string;
   };
 
-/** The fields each kind of target may carry; anything else is refused. */
 const ALLOWED_KEYS: Readonly<Record<string, readonly string[]>> = {
   s3: ["type", "bucket", "prefix", "region", "endpoint", "forcePathStyle"],
   gcs: ["type", "bucket", "prefix"],
 };
 
-/**
- * Why `value` is not a {@link V3ReplicaTarget}, or undefined when it is one.
- */
 export function replicaTargetProblem(value: unknown): string | undefined {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
     return "it is not an object";
@@ -137,12 +117,6 @@ function endpointProblem(endpoint: unknown): string | undefined {
   return undefined;
 }
 
-/**
- * The {@link V3ReplicaTarget} the `datastoreType` datastore's provider
- * returned, checked before anything uses it.
- *
- * @throws UserError when it is not one
- */
 export function parseV3ReplicaTarget(
   value: unknown,
   datastoreType: string,

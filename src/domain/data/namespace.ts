@@ -30,14 +30,9 @@ const NAMESPACE_PATTERN = /^[a-z0-9]([a-z0-9-]*[a-z0-9])?$/;
 const NAMESPACE_MAX_LENGTH = 64;
 
 /**
- * Names a namespace cannot take because swamp already uses them as
- * directories. A namespace is the outermost segment of the datastore tier
- * (`{base}/{namespace}/{subdir}/...`), so one named after a layout directory
- * shares a directory with the solo layout (`{base}/{subdir}/...`); and a v3
- * checkout materialises it at `.swamp/{namespace}/`, so one named after any
- * directory swamp keeps in `.swamp/` would be written over swamp's own files
- * (swamp-club#3691). Built from {@link SWAMP_OWNED_DIR_NAMES}, which holds the
- * layout constants, so a directory added there is reserved with it.
+ * a namespace named after a layout directory shares it with the solo layout,
+ * and a v3 checkout writes it at .swamp/<namespace>/ over swamp's own files;
+ * built from SWAMP_OWNED_DIR_NAMES
  */
 export const RESERVED_NAMESPACE_NAMES: ReadonlySet<string> = new Set<string>(
   SWAMP_OWNED_DIR_NAMES,
@@ -48,23 +43,15 @@ export function isReservedNamespaceName(slug: string): boolean {
 }
 
 /**
- * The reserved names that are directories of the datastore layout, the set
- * reserved before swamp-club#3691. Only these share a directory with the
- * solo layout on v2 (`{base}/{subdir}/...`), so only these make an existing
- * v2 binding's data impossible to tell apart. A v2 repository already bound
- * to another reserved name keeps working; the wider set applies to new
- * claims ({@link createNamespace}) and to v3.
+ * only these share a directory with the solo layout on v2; a v2 repo already
+ * bound to another reserved name keeps working, the wider set applies to new
+ * claims and v3
  */
 const LAYOUT_NAMESPACE_NAMES: ReadonlySet<string> = new Set<string>([
   ...DEFAULT_DATASTORE_SUBDIRS,
   ...ALWAYS_LOCAL_SUBDIRS,
 ]);
 
-/**
- * True when a namespace slug names a directory of the datastore layout:
- * a layout name, or one of the repo's configured datastore directories.
- * The v2 gates on an existing binding use it.
- */
 export function namespaceCollidesWithLayout(
   slug: string,
   datastoreDirectories: Iterable<string>,
@@ -76,11 +63,6 @@ export function namespaceCollidesWithLayout(
   return false;
 }
 
-/**
- * The opening of every message about a namespace that shares its name with
- * a directory swamp uses (swamp-club#3691): the v2 move-it-by-hand steps and
- * the v3 refusal both start with it.
- */
 export function namespaceNameClash(namespace: string): string {
   return `Namespace ${
     JSON.stringify(namespace)
@@ -88,10 +70,8 @@ export function namespaceNameClash(namespace: string): string {
 }
 
 /**
- * Why a v3 checkout refuses to open on a reserved namespace, and the one way
- * off it that works on v3 (swamp-club#3691): `namespace set` and `datastore
- * setup` both refuse on a v3 repository, so the repository's datastore
- * config is edited by hand and pointed at a new, empty v3 datastore.
+ * namespace set and datastore setup both refuse on v3, so the datastore config
+ * is edited by hand and pointed at a new, empty v3 datastore
  */
 export function reservedV3NamespaceMessage(namespace: string): string {
   return `${namespaceNameClash(namespace)}. A v3 checkout keeps namespace ` +
@@ -125,9 +105,6 @@ function assertNamespaceShape(slug: string): void {
   }
 }
 
-/**
- * Creates a namespace a repo is about to claim. Rejects reserved names.
- */
 export function createNamespace(slug: string): Namespace {
   assertNamespaceShape(slug);
   if (isReservedNamespaceName(slug)) {
@@ -141,9 +118,8 @@ export function createNamespace(slug: string): Namespace {
 }
 
 /**
- * Rebuilds a namespace already stored in a repo's config. Unlike
- * {@link createNamespace} it accepts a reserved name, so a repo bound to one
- * before the name was reserved still loads.
+ * accepts a reserved name, so a repo bound to one before it was reserved still
+ * loads
  */
 export function restoreNamespace(slug: string): Namespace {
   assertNamespaceShape(slug);
@@ -156,23 +132,15 @@ export function isEmptyNamespace(ns: Namespace): boolean {
   return ns === "";
 }
 
-/**
- * Who reads a row, for deciding whether the row is the reader's own: the
- * reader's namespace, and whether it reads the solo namespace as another
- * namespace, as a v3 checkout does (swamp-club#3691).
- */
 export interface NamespaceReader {
   readonly namespace: string;
   readonly readsSoloNamespace: boolean;
 }
 
 /**
- * Whether a row of `namespace` is another namespace's to `reader`. A row of
- * the reader's namespace is its own. A solo row (`""`) in a namespaced
- * repository was written before the repository set a namespace, so it is
- * the reader's own too, unless the reader reads the solo namespace as
- * another namespace. A catalog pull never stores a solo row, so only the
- * repository's own writes leave one.
+ * a solo row in a namespaced repository predates the namespace and is the
+ * reader's own, unless the reader reads solo as another namespace; a catalog
+ * pull never stores a solo row
  */
 export function isForeignToReader(
   namespace: string,

@@ -21,10 +21,8 @@ import type { CheckResult, PreflightCheck } from "../check.ts";
 import type { ResolveBinary } from "./resolve_binary.ts";
 
 /**
- * Verifies swamp itself is invocable from the hook. All supported tools
- * embed the string `swamp audit record --from-hook` in their hook configs
- * and rely on PATH lookup at hook-fire time; without swamp on PATH, every
- * hook silently fails on every tool.
+ * hook configs rely on PATH lookup of swamp at hook-fire time; without swamp on
+ * PATH every hook silently fails on every tool
  */
 
 function appliesTo(tool: string): boolean {
@@ -33,10 +31,6 @@ function appliesTo(tool: string): boolean {
     tool === "antigravity";
 }
 
-/**
- * `resolveBinary` is injected — domain owns the port, the CLI passes in
- * `defaultCommandResolver()` from `infrastructure/process` at wiring time.
- */
 export function makeSwampBinaryOnPathCheck(
   opts: { resolveBinary: ResolveBinary },
 ): PreflightCheck {

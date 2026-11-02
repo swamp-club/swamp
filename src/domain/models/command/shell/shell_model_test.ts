@@ -65,18 +65,12 @@ import {
   SWAMP_LOCK_HOLDER_TOKENS,
 } from "../../../datastore/lock_holder_marker.ts";
 
-/** The reference every secret of these tests stands for. */
 const REF = { vaultName: "v", key: "k" };
 
 /**
- * Skip on Windows. The matching `windowsOnlyTest` below covers the
- * same behavior using PowerShell-flavored commands.
- *
- * Used for `shellModel.methods.execute` tests that shell out to
- * POSIX-style commands (`echo`, `false`, `>&2`, `$VAR`, pipes,
- * `/tmp` paths). On native Windows hosts `selectShellStrategy()`
- * returns `PowerShellStrategy`, which wouldn't run those invocations
- * as written.
+ * skipped on Windows, where selectShellStrategy returns PowerShellStrategy and
+ * POSIX-style commands would not run as written; windowsOnlyTest covers the
+ * same behavior
  */
 function posixOnlyTest(
   name: string,
@@ -85,11 +79,6 @@ function posixOnlyTest(
   Deno.test({ name, ignore: Deno.build.os === "windows", fn });
 }
 
-/**
- * Skip on POSIX. The matching `posixOnlyTest` above covers the same
- * behavior using `sh -c` semantics. This sibling exists so the
- * Windows code path through `PowerShellStrategy` gets exercised in CI.
- */
 function windowsOnlyTest(
   name: string,
   fn: () => Promise<void> | void,
@@ -97,17 +86,11 @@ function windowsOnlyTest(
   Deno.test({ name, ignore: Deno.build.os !== "windows", fn });
 }
 
-/**
- * Stored result from mock data writer.
- */
 interface MockWriterResult {
   handle: DataHandle;
   content: Uint8Array;
 }
 
-/**
- * Creates mock writeResource and createFileWriter functions that store written content in memory.
- */
 function createMockWriters(): {
   writeResource: (
     specName: string,
@@ -218,9 +201,6 @@ function createMockWriters(): {
   return { writeResource, createFileWriter, getResults };
 }
 
-/**
- * Helper to get parsed JSON content from mock results by name.
- */
 function getResultAttributes(
   results: MockWriterResult[],
   namePart: string,
@@ -230,9 +210,6 @@ function getResultAttributes(
   return JSON.parse(new TextDecoder().decode(result.content));
 }
 
-/**
- * Helper to get output log content as string.
- */
 function getOutputLogContent(results: MockWriterResult[]): string {
   const logResult = results.find((r) =>
     r.handle.kind === "file" && r.handle.specName === "log"
@@ -241,9 +218,6 @@ function getOutputLogContent(results: MockWriterResult[]): string {
   return new TextDecoder().decode(logResult.content);
 }
 
-/**
- * Creates a mock UnifiedDataRepository for testing.
- */
 function createMockDataRepo(): UnifiedDataRepository {
   return {
     namespace: SOLO_NAMESPACE,
@@ -310,9 +284,6 @@ function createMockDataRepo(): UnifiedDataRepository {
   };
 }
 
-/**
- * Creates a mock DefinitionRepository for testing.
- */
 function createMockDefinitionRepo(): DefinitionRepository {
   return {
     findById: () => Promise.resolve(null),
@@ -327,9 +298,6 @@ function createMockDefinitionRepo(): DefinitionRepository {
   };
 }
 
-/**
- * Creates a test MethodContext with mocked repositories.
- */
 function createTestContext(
   overrides?: Partial<MethodContext>,
 ): {
@@ -376,8 +344,6 @@ Deno.test("shellModel.type equals SHELL_MODEL_TYPE", () => {
   assertEquals(shellModel.type.equals(SHELL_MODEL_TYPE), true);
 });
 
-// Foreign template text in run
-
 Deno.test("ShellInputAttributesSchema: run is declared foreign template text", () => {
   assertEquals(extractForeignTemplateFields(ShellInputAttributesSchema), [
     "run",
@@ -411,7 +377,6 @@ Deno.test("shellModel: validate still checks ${{ }} expressions in run", async (
   assertStringIncludes(expressionPaths?.error ?? "", "data.nope");
 });
 
-// Input schema validation tests
 Deno.test("ShellInputAttributesSchema validates run command", () => {
   const result = ShellInputAttributesSchema.safeParse({ run: "echo hello" });
   assertEquals(result.success, true);
@@ -462,7 +427,6 @@ Deno.test("ShellInputAttributesSchema rejects zero timeout", () => {
   assertEquals(result.success, false);
 });
 
-// Data schema validation tests
 Deno.test("ShellDataAttributesSchema validates correct data", () => {
   const result = ShellDataAttributesSchema.safeParse({
     exitCode: 0,
@@ -493,7 +457,6 @@ Deno.test("ShellDataAttributesSchema rejects invalid timestamp", () => {
   assertEquals(result.success, false);
 });
 
-// Method definition tests
 Deno.test("shellModel has execute method", () => {
   assertEquals("execute" in shellModel.methods, true);
   assertEquals(
@@ -502,21 +465,18 @@ Deno.test("shellModel has execute method", () => {
   );
 });
 
-// Execute method tests
 posixOnlyTest("shellModel.methods.execute runs simple command", async () => {
   const args: ShellInputAttributes = { run: "echo hello" };
 
   const { context, getResults } = createTestContext();
   await shellModel.methods.execute.execute(args, context);
 
-  // Check data attributes
   const attrs = getResultAttributes(getResults(), "result");
   assertEquals(attrs?.exitCode, 0);
   assertEquals(attrs?.command, "echo hello");
   assertEquals(typeof attrs?.executedAt, "string");
   assertEquals(typeof attrs?.durationMs, "number");
 
-  // Check output contains stdout
   const logContent = getOutputLogContent(getResults());
   assertStringIncludes(logContent, "hello");
 });
@@ -530,7 +490,6 @@ posixOnlyTest("shellModel.methods.execute captures stderr", async () => {
   const attrs = getResultAttributes(getResults(), "result");
   assertEquals(attrs?.exitCode, 0);
 
-  // Check output contains stderr
   const logContent = getOutputLogContent(getResults());
   assertStringIncludes(logContent, "error");
 });
@@ -549,15 +508,8 @@ posixOnlyTest(
   },
 );
 
-// -- Output on the failure path (swamp-club#2364) -------------------------
-//
-// The writes used to sit below the throw, under a comment reading "Only
-// persist data for successful executions", so a step that failed produced no
-// log at all. A red verification gate arrived as `Command exited with code 1`
-// and nothing else: a review that genuinely voted to reject looked exactly
-// like one whose CLI had crashed, and a failing test suite named no failing
-// test. These tests exist because the success path alone left that ordering
-// free to be wrong.
+// output is written before the failure throw, so a failed step still leaves a
+// log
 
 posixOnlyTest(
   "shellModel.methods.execute persists the log when the command fails",
@@ -606,10 +558,8 @@ posixOnlyTest(
       Error,
     );
 
-    // Writing the data is not enough on its own: the execution service reads
-    // `dataHandles` off the error to turn them into artifacts on the failed
-    // step, which is what puts a `swamp data get` within reach of whoever is
-    // looking at the failure.
+    // the execution service reads dataHandles off the error to turn them into
+    // artifacts on the failed step
     const handles = (error as Error & { dataHandles?: DataHandle[] })
       .dataHandles;
     assertEquals(handles?.length, 2);
@@ -638,8 +588,8 @@ posixOnlyTest(
 posixOnlyTest(
   "shellModel.methods.execute: aborting the step terminates every process it started",
   async () => {
-    // swamp-club#2634: aborting used to SIGTERM only `sh`, leaving the
-    // command's own children running after the step reported cancelled.
+    // aborting must signal the command's whole process group, not only `sh`, or
+    // its children keep running after the step reports cancelled
     const previous = setProcessGroupIsolation("always");
     const pidFile = await Deno.makeTempFile({ prefix: "swamp-pid-" });
     const readPid = async () =>
@@ -694,7 +644,6 @@ Deno.test({
     const attrs = getResultAttributes(getResults(), "result");
     assertEquals(attrs?.exitCode, 0);
 
-    // Check output contains the working directory
     const logContent = getOutputLogContent(getResults());
     assertStringIncludes(logContent, expectedPath);
   },
@@ -712,7 +661,6 @@ posixOnlyTest("shellModel.methods.execute respects env variables", async () => {
   const attrs = getResultAttributes(getResults(), "result");
   assertEquals(attrs?.exitCode, 0);
 
-  // Check output contains the env variable value
   const logContent = getOutputLogContent(getResults());
   assertStringIncludes(logContent, "test_value");
 });
@@ -915,7 +863,6 @@ posixOnlyTest(
     const given: Array<AbortSignal | undefined> = [];
     const locks = {
       lockIds: () => ["step-lock"],
-      // The cancel arrives while the reclaim is waiting.
       reclaim: (signal?: AbortSignal) => {
         given.push(signal);
         controller.abort();
@@ -1070,7 +1017,6 @@ posixOnlyTest("shellModel.methods.execute handles pipes", async () => {
   const attrs = getResultAttributes(getResults(), "result");
   assertEquals(attrs?.exitCode, 0);
 
-  // Check output contains the piped output
   const logContent = getOutputLogContent(getResults());
   assertStringIncludes(logContent, "Hello world");
 });
@@ -1086,7 +1032,6 @@ posixOnlyTest(
     const attrs = getResultAttributes(getResults(), "result");
     assertEquals(attrs?.exitCode, 0);
 
-    // Check output contains /tmp (cd /tmp && pwd outputs the logical path)
     const logContent = getOutputLogContent(getResults());
     assertStringIncludes(logContent, "/tmp");
   },
@@ -1125,7 +1070,6 @@ posixOnlyTest(
 
     const attrs = getResultAttributes(getResults(), "result");
     const durationMs = attrs?.durationMs as number;
-    // Should be at least 100ms (sleep 0.1 seconds)
     assertEquals(durationMs >= 100, true);
   },
 );
@@ -1136,11 +1080,9 @@ posixOnlyTest("shellModel.methods.execute returns dataHandles", async () => {
   const { context, getResults } = createTestContext();
   const result = await shellModel.methods.execute.execute(args, context);
 
-  // Should have data handles (result and output)
   assertEquals(result.dataHandles !== undefined, true);
   assertEquals(result.dataHandles!.length >= 1, true);
 
-  // Output should contain both stdout and stderr
   const logContent = getOutputLogContent(getResults());
   assertStringIncludes(logContent, "hello");
   assertStringIncludes(logContent, "error");
@@ -1149,17 +1091,15 @@ posixOnlyTest("shellModel.methods.execute returns dataHandles", async () => {
 posixOnlyTest(
   "shellModel.methods.execute returns output for no output command",
   async () => {
-    const args: ShellInputAttributes = { run: "true" }; // Command with no output
+    const args: ShellInputAttributes = { run: "true" };
 
     const { context } = createTestContext();
     const result = await shellModel.methods.execute.execute(args, context);
 
-    // Should still have data handles
     assertEquals(result.dataHandles !== undefined, true);
   },
 );
 
-// Secret redaction tests
 posixOnlyTest(
   "shellModel.methods.execute redacts secrets from stdout in result attributes",
   async () => {
@@ -1238,7 +1178,6 @@ posixOnlyTest(
     const redactor = new SecretRedactor();
     redactor.addSecret("error-secret");
 
-    // Use a command that will produce an error containing the secret
     const args: ShellInputAttributes = {
       run: "echo error-secret >&2 && exit 1",
     };
@@ -1293,24 +1232,10 @@ posixOnlyTest(
       "Command exited with code 1",
     );
 
-    // This assertion used to read `length, 0`, under a comment saying no data
-    // should be written for a failed command. Withholding it cost more than
-    // it saved: the output is the only account of what went wrong, and the
-    // step that failed is the one whose account anyone needs.
     assertEquals(getResults().length, 2);
     assertStringIncludes(getOutputLogContent(getResults()), "some output");
   },
 );
-
-// ─────────────────────────────────────────────────────────────────────
-// PowerShell variants
-// ─────────────────────────────────────────────────────────────────────
-//
-// Each `windowsOnlyTest` mirrors a `posixOnlyTest` above, exercising
-// the same `shellModel.methods.execute` behavior through a
-// PowerShell-flavored `run` argument. PR 2 routes
-// `Deno.build.os === "windows"` to `PowerShellStrategy`, so these
-// tests run against `powershell.exe -NoProfile -Command <cmd>`.
 
 windowsOnlyTest(
   "shellModel.methods.execute (powershell): runs simple command",
@@ -1402,7 +1327,6 @@ windowsOnlyTest(
   "shellModel.methods.execute (powershell): preserves vault metacharacters",
   async () => {
     const secret = "pass;rm -rf /|cat /etc/passwd&whoami";
-    // The shell receives the delivery view the method boundary loaded.
     const bag = new VaultSecretBag(new SecretBagRegistry());
     const sentinel = bag.addSecret(REF, "methods.execute.arguments.run");
     const vaultSecrets = bag.withLoaded(new Map([[sentinel, secret]]));
@@ -1455,12 +1379,8 @@ windowsOnlyTest(
   },
 );
 
-// No PowerShell sibling for "throws on command failure" — the POSIX
-// version distinguished `false` (separate program) from `exit 42` (shell
-// builtin). PowerShell has no `false` analogue, so the obvious
-// translation (`exit 1`) is functionally identical to the
-// "throws on non-zero exit code" case above. The exit-N path is already
-// covered; adding a second `exit N` test wouldn't exercise anything new.
+// no powershell sibling for "throws on command failure": powershell has no
+// `false` analogue, and `exit 1` duplicates the non-zero exit code test
 
 windowsOnlyTest(
   "shellModel.methods.execute (powershell): respects workingDir",
@@ -1512,8 +1432,6 @@ windowsOnlyTest(
 windowsOnlyTest(
   "shellModel.methods.execute (powershell): handles pipes",
   async () => {
-    // PowerShell's `-replace` operator maps to the same shape the
-    // POSIX test uses (`tr 'h' 'H'`).
     const args: ShellInputAttributes = {
       run: "'hello world' -replace 'h', 'H'",
     };
@@ -1532,7 +1450,6 @@ windowsOnlyTest(
 windowsOnlyTest(
   "shellModel.methods.execute (powershell): handles complex commands",
   async () => {
-    // Mirror of `cd /tmp && pwd` against a real temp dir.
     const tmpDir = await Deno.makeTempDir();
     try {
       const args: ShellInputAttributes = {
@@ -1603,7 +1520,6 @@ windowsOnlyTest(
 windowsOnlyTest(
   "shellModel.methods.execute (powershell): returns output for no output command",
   async () => {
-    // A bare `exit 0` produces no stdout/stderr output.
     const args: ShellInputAttributes = { run: "exit 0" };
 
     const { context } = createTestContext();
@@ -1819,9 +1735,6 @@ posixOnlyTest(
   },
 );
 
-// ---------- typed-secrets 3.4: the shell's destination policy ----------
-
-/** A typed run and its issuing bag. */
 function typedRun(): { registry: SecretBagRegistry; bag: VaultSecretBag } {
   const registry = new SecretBagRegistry();
   return { registry, bag: new VaultSecretBag(registry) };
@@ -1887,7 +1800,6 @@ posixOnlyTest(
     assertEquals(error.reference, REF);
     assertStringIncludes(error.message, "(at db/main.password)");
     assertEquals(error.message.includes(data), false);
-    // The bag was never loaded: the plan needed no value.
     refuseShellSecretDestinations({
       arguments: {
         run: `cat <<'EOF'\n${vault}\nEOF\necho '${vault}' ${data} "${data}"`,
@@ -2079,7 +1991,6 @@ windowsOnlyTest(
   },
 );
 
-/** The hook's input for `run` with `data` spliced at its end. */
 function dataSplice(
   before: string,
   data: string,

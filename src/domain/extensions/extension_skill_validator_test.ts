@@ -170,7 +170,6 @@ Deno.test("validateExtensionSkills: counts files correctly", async () => {
       { name: skill.name, absolutePath: join(skill.dir, skill.name) },
     ]);
     assertEquals(result.errors.length, 0);
-    // SKILL.md + references/api.md = 2 files
     assertEquals(result.skills[0].fileCount, 2);
     assertEquals(result.skillFiles.length, 2);
   } finally {

@@ -17,14 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Shared fixtures for the offline rebase tests (swamp-club#4195): commits
- * built by the data repository's own change factory, a partition with its
- * history, and the lookups a flush reads.
- *
- * @module
- */
-
 import type { DataMetadata } from "../data/data_metadata.ts";
 import { checkCommitBindings } from "./commit_authorization.ts";
 import { Commit } from "./commit.ts";
@@ -41,17 +33,14 @@ import { ModelChanges } from "./repository_changes.ts";
 import { ModelType } from "../models/model_type.ts";
 import { type PartitionKey, partitionOf } from "./partition_key.ts";
 
-/** The fixture behavior: a production file may not import `_test` paths. */
 export const MODEL_ID = "6f1c2a3b-4d5e-4f60-8a7b-9c0d1e2f3a4b";
 export const MODEL_TYPE = ModelType.create("@swamp/aws-ec2");
 const DATA_ID = "0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d";
 
-/** The fixture behavior's partition. */
 export function modelPartition(): PartitionKey {
   return partitionOf({ kind: "model", type: MODEL_TYPE, id: MODEL_ID });
 }
 
-/** Valid metadata for a fixture data version. */
 export function metadata(name: string, version: number): DataMetadata {
   return {
     name,
@@ -67,24 +56,20 @@ export function metadata(name: string, version: number): DataMetadata {
   };
 }
 
-/** The fixture's metadata encoding: stable JSON, as the tests compare it. */
 export function encodeMetadata(value: DataMetadata): Uint8Array {
   return new TextEncoder().encode(JSON.stringify(value));
 }
 
-/** The fixture model's change factory. */
 export function fixtureChanges(): ModelChanges {
   return new ModelChanges(MODEL_TYPE, MODEL_ID);
 }
 
-/** Base64 of bytes. */
 function base64Of(bytes: Uint8Array): string {
   let binary = "";
   for (const byte of bytes) binary += String.fromCharCode(byte);
   return btoa(binary);
 }
 
-/** Typed changes as ops, storing every pending put inline. */
 export async function toOps(changes: readonly TypedChange[]): Promise<Op[]> {
   const ops: Op[] = [];
   for (const change of changes) {
@@ -113,13 +98,11 @@ export async function toOps(changes: readonly TypedChange[]): Promise<Op[]> {
   return ops;
 }
 
-/** A save of one version, with its latest marker, as the repository stages it. */
 export async function saveOps(props: {
   readonly name: string;
   readonly version: number;
   readonly text?: string;
   readonly tags?: Readonly<Record<string, string>>;
-  /** The writer's clock when it saved; the fixture's default otherwise. */
   readonly createdAt?: string;
   readonly marker?: boolean;
 }): Promise<Op[]> {
@@ -153,7 +136,6 @@ export async function saveOps(props: {
   return await toOps(staged);
 }
 
-/** A commit on the fixture model. */
 export function fixtureCommit(props: {
   readonly seq: number;
   readonly txnId: string;
@@ -179,18 +161,12 @@ export function fixtureCommit(props: {
   });
 }
 
-/**
- * A partition and the history the lookups read: every commit appended
- * records each version's commit time, content and metadata.
- */
 export class FixtureHistory {
   readonly partition = Partition.empty(modelPartition());
   readonly #observations = new Map<string, VersionObservation>();
   readonly #content = new Map<string, VersionContent>();
-  /** Versions whose commit was compacted away: no commit time. */
   readonly compacted = new Set<string>();
 
-  /** Appends `commit` and records its versions. */
   append(commit: Commit): void {
     this.partition.append(commit);
     for (const op of commit.ops) {
@@ -213,7 +189,6 @@ export class FixtureHistory {
     }
   }
 
-  /** The next seq on the partition. */
   get nextSeq(): number {
     return this.partition.seq + 1;
   }
@@ -231,11 +206,6 @@ export class FixtureHistory {
     };
   }
 
-  /**
-   * Lands a rebase's result as serve would: checks its bindings, builds the
-   * commit under its txnId and appends it. Returns the landed commit, or
-   * undefined for an unsent one.
-   */
   async land(result: RebasedCommit, at: string): Promise<Commit | undefined> {
     if (result.kind === "rejected") return undefined;
     const ops = result.kind === "unchanged"

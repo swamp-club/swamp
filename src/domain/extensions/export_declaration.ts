@@ -19,7 +19,6 @@
 
 import { stripCommentsAndStrings } from "./extension_quality_checker.ts";
 
-/** The catalog kinds a source can claim a type for. */
 export type DeclarationKind =
   | "model"
   | "extension"
@@ -28,17 +27,11 @@ export type DeclarationKind =
   | "report"
   | "webhook";
 
-/**
- * A model entry point (`export const model`, or its behavior spelling
- * `export const behavior`, swamp-club#3338) or a model add-on
- * (`export const extension`).
- */
 const MODEL_EXPORT = /export\s+const\s+(model|behavior|extension)\s*[=:]/;
 
 /**
- * The `export const` declaration each catalog kind is defined by. The kind
- * adapters use these as their `exportRegex`, so the loader's pre-bundle
- * check and the catalog prune agree on what an entry point is.
+ * kind adapters use these as exportRegex so the loader's pre-bundle check and
+ * the catalog prune agree on what an entry point is
  */
 export const EXPORT_DECLARATION_PATTERNS: Readonly<
   Record<DeclarationKind, RegExp>
@@ -52,15 +45,9 @@ export const EXPORT_DECLARATION_PATTERNS: Readonly<
 };
 
 /**
- * Returns the offset in `source` of the first match of `pattern` that lies
- * in code, or -1. Matches inside string, template or comment text are not
- * declarations: a test fixture such as
- * `` const src = `export const model = { type: "@acme/thing" }` `` names a
- * type no module exports, and must not become a catalog claim
- * (swamp-club#2876).
- *
- * `stripCommentsAndStrings` keeps every offset, so the returned offset
- * indexes the raw source.
+ * matches inside string, template or comment text are not declarations, so a
+ * fixture's quoted export never becomes a catalog claim; offsets are kept, so
+ * the result indexes the raw source
  */
 export function findExportDeclaration(
   source: string,
@@ -70,16 +57,10 @@ export function findExportDeclaration(
   return match ? match.index : -1;
 }
 
-/** True when `source` declares `pattern` in code rather than in a literal. */
 export function declaresExport(source: string, pattern: RegExp): boolean {
   return findExportDeclaration(source, pattern) !== -1;
 }
 
-/**
- * The raw source from the first declaration matching `pattern` onward, or
- * null when there is none in code. Callers run their own field regexes
- * over the result, so string values such as the `type` stay readable.
- */
 export function sourceFromExportDeclaration(
   source: string,
   pattern: RegExp,

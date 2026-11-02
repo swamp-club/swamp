@@ -31,11 +31,6 @@ import { SecretReferenceUnavailableError } from "./secret_reference_errors.ts";
 import { VaultService } from "./vault_service.ts";
 import { vaultTypeRegistry } from "./vault_type_registry.ts";
 
-/**
- * Registers a per-run vault type backed by the testing package's in-memory
- * vault and binds it under `vaultName`: with `withExistence` it answers
- * has(), and without it every check is a probe read.
- */
 async function withTestVault(
   vaultName: string,
   options: VaultTestContextOptions,
@@ -62,7 +57,6 @@ async function withTestVault(
 const CALL = "vault.get('erp', 'token')";
 const LOCATION = "methods.run.arguments.cmd";
 
-/** Checks `key` of vault `erp` in `registry`, with `redacted` as redactor. */
 function check(
   service: VaultService,
   registry: SecretBagRegistry,
@@ -107,7 +101,6 @@ Deno.test("checkSecretReference: a provider without has() gets one probe read pe
       await check(service, registry, "token", redacted);
       assertEquals(ctx.getOperationsByMethod("get").length, 1);
       assertEquals(redacted, ["s3cret"]);
-      // Another run asks again.
       await check(service, new SecretBagRegistry(), "token");
       assertEquals(ctx.getOperationsByMethod("get").length, 2);
     },
@@ -141,9 +134,7 @@ Deno.test("checkSecretReference: a refusal by the run's vault access keeps its c
     { withExistence: true, secrets: { token: "s3cret" } },
     async (service, ctx) => {
       const registry = new SecretBagRegistry();
-      // Confirmed while the run could read it.
       await check(service, registry, "token");
-      // Then the grant is revoked: the next check is refused.
       const revoked = RunVaultAccess.create({
         allowedVaults: ["other"],
         allowListSource: "deploy",

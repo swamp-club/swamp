@@ -137,8 +137,6 @@ Deno.test("VaultTypeRegistry - register user-defined type with createProvider", 
   assertEquals(typeof info?.createProvider, "function");
 });
 
-// --- Lazy loading tests ---
-
 function createLazyVaultEntry(type: string): LazyVaultEntry {
   return {
     type,

@@ -50,7 +50,6 @@ Deno.test("migrateDatastore: does not migrate secrets directory", async () => {
     const sourceDir = join(tmpDir, "source");
     const destDir = join(tmpDir, "dest");
 
-    // Create source with secrets and data dirs
     await Deno.mkdir(join(sourceDir, "secrets", "local_encryption", "v1"), {
       recursive: true,
     });
@@ -82,7 +81,6 @@ Deno.test("migrateDatastore: does not migrate secrets directory", async () => {
       "data should be migrated",
     );
 
-    // Source secrets dir must remain intact
     assertEquals(
       await exists(
         join(sourceDir, "secrets", "local_encryption", "v1", "KEY.enc"),
@@ -91,13 +89,11 @@ Deno.test("migrateDatastore: does not migrate secrets directory", async () => {
       "source secrets must not be touched",
     );
 
-    // Dest must not have secrets
     assertFalse(
       await exists(join(destDir, "secrets")),
       "secrets must not appear in destination",
     );
 
-    // Data should have been migrated
     assertEquals(
       await exists(join(destDir, "data", "test.json")),
       true,
@@ -170,12 +166,10 @@ Deno.test("migrateDatastore: secrets survives full migration-then-cleanup cycle"
 
     const result = await migrateDatastore(sourceDir, destDir, config);
 
-    // Simulate cleanupSourceDirs (setup.ts:463)
     for (const subdir of result.directoriesMigrated) {
       await Deno.remove(join(sourceDir, subdir), { recursive: true });
     }
 
-    // Secrets must survive the cleanup
     assertEquals(
       await exists(join(sourceDir, "secrets", "local_encryption", ".key")),
       true,

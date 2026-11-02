@@ -29,11 +29,6 @@ import { dataVersionOp, type Op, tombstoneOp } from "./op.ts";
 import { RecordKey } from "./record_key.ts";
 import { dataKey, metadata, modelIntent } from "./v3_test_helpers.ts";
 
-/**
- * The catalog as `CatalogStore` keeps it, reduced to what the projection
- * drives: each name's row versions and its forward. An upsert that becomes
- * the latest ends the name's forward, as `upsertNewVersion` does.
- */
 class MemoryCatalog {
   readonly rows = new Map<string, Set<number>>();
   readonly forwards = new Map<string, string>();
@@ -71,16 +66,15 @@ class MemoryCatalog {
 const NAMES = ["a", "b"] as const;
 
 /**
- * Which version a save or rename records: the next above the high-water
- * mark, or (swamp-club#3250) a version at or below it that is not live, as
- * v2 reuses a removed number and parallel writers finish out of order.
+ * which version a save or rename records: the next above the high-water mark,
+ * or one at or below it that is not live, as v2 reuses a removed number and
+ * parallel writers finish out of order
  */
 const arbAt = fc.oneof(
   { weight: 3, arbitrary: fc.constant(undefined) },
   { weight: 1, arbitrary: fc.integer({ min: 1, max: 6 }) },
 );
 
-/** One step, described relative to the state when it runs. */
 const arbStep = fc.oneof(
   fc.record({
     kind: fc.constant("save" as const),
@@ -109,7 +103,6 @@ type Step = typeof arbStep extends fc.Arbitrary<infer T> ? T : never;
 Deno.test("projectCatalog: the catalog tracks each name's top live version across random histories", () => {
   fc.assert(
     fc.property(
-      // Each commit holds one to three steps, so ops in one commit interact.
       fc.array(fc.array(arbStep, { minLength: 1, maxLength: 3 }), {
         maxLength: 20,
       }),
@@ -120,8 +113,6 @@ Deno.test("projectCatalog: the catalog tracks each name's top live version acros
         const catalog = new MemoryCatalog();
 
         for (const steps of commits) {
-          // Build the commit's ops step by step against a working copy of
-          // the live versions, so a later step sees an earlier one's effect.
           const working = new Map(live);
           const ops: Op[] = [];
           const touched: Step[] = [];
@@ -152,7 +143,6 @@ Deno.test("projectCatalog: the catalog tracks each name's top live version acros
           for (const [name, versions] of projection.live) {
             live.set(name, [...versions]);
           }
-          // The last step to touch a name decides whether it ends expired.
           for (const step of touched) {
             if (step.kind === "expire") expired.add(step.name);
             else expired.delete(step.name);
@@ -162,7 +152,6 @@ Deno.test("projectCatalog: the catalog tracks each name's top live version acros
             const versions = live.get(name) ?? [];
             const top = versions.at(-1);
             const rows = catalog.rowsOf(name);
-            // Every row is a live version.
             assert(rows.every((r) => versions.some((v) => v.version === r)));
             if (expired.has(name) || top === undefined) {
               assertEquals(rows, []);

@@ -295,7 +295,6 @@ Deno.test("discoverManifestCrossKindDirs: a behaviors: key counts as models (swa
       reports: ["report.ts"],
     });
 
-    // Under a behaviors dir already scanned as models, nothing is added.
     const inBehaviors = join(behaviorsDir, "other");
     await writeManifest(inBehaviors, {
       manifestVersion: 1,

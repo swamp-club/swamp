@@ -197,7 +197,6 @@ function createMockRequest(): ExecutionRequest {
 Deno.test("InProcessExecutor: collects writer handles when method returns no dataHandles", async () => {
   const executor: MethodExecutor = {
     execute: async (_def, _method, context) => {
-      // Simulate extension model: writes resource but returns no dataHandles
       await context.writeResource!("output", "output", { value: "test" });
       return {};
     },
@@ -217,15 +216,13 @@ Deno.test("InProcessExecutor: collects writer handles when method returns no dat
   const result = await inProcessExecutor.execute(createMockRequest());
 
   assertEquals(result.status, "success");
-  // The executor should collect handles from the writer since the method
-  // returned no dataHandles
   assertEquals(result.outputs.length > 0, true);
   assertEquals(result.outputs[0].kind, "persisted");
 });
 
-// The executor hands its onEvent to both writers, so a data name portability
-// warning reaches the run's output for files as well as resources
-// (swamp-club#3568). On Windows these names are refused instead.
+// the executor hands its onEvent to both writers, so a data name portability
+// warning reaches the run's output for files as well as resources; on Windows
+// these names are refused instead
 Deno.test({
   name:
     "InProcessExecutor: both writers emit data name portability warnings to the context",
@@ -278,7 +275,6 @@ Deno.test("InProcessExecutor: uses explicit dataHandles when method returns them
 
   const executor: MethodExecutor = {
     execute: (_def, _method, _context) => {
-      // Simulate built-in model: returns explicit dataHandles
       return Promise.resolve({ dataHandles: [explicitHandle] });
     },
   };
@@ -308,7 +304,6 @@ Deno.test("InProcessExecutor: uses explicit dataHandles when method returns them
 Deno.test("InProcessExecutor: returns empty outputs when no writes and no dataHandles", async () => {
   const executor: MethodExecutor = {
     execute: () => {
-      // Method does nothing
       return Promise.resolve({});
     },
   };
@@ -365,11 +360,8 @@ Deno.test("InProcessExecutor: passes workflowRunId from tagOverrides to readMode
 
   await inProcessExecutor.execute(createMockRequest());
 
-  // readModelData should be wired up on the context
   assertEquals(typeof capturedContext!.readModelData, "function");
 
-  // When called, it should scope to the workflow run — a non-existent model
-  // returns empty array either way, but the function should be callable
   const result = await capturedContext!.readModelData!("nonexistent");
   assertEquals(result, []);
 });
@@ -409,7 +401,6 @@ Deno.test("InProcessExecutor: passes queryData predicate through without scoping
 
   await inProcessExecutor.execute(createMockRequest());
 
-  // No hidden scoping — predicate passes through unmodified
   assertEquals(capturedPredicate, "model_name == 'source'");
 });
 
@@ -678,15 +669,12 @@ Deno.test("InProcessExecutor: concurrent executions never see a sibling's TRACEP
   aFinished.resolve();
   await runB;
 
-  // A lone execution still publishes its span for env readers.
   assertEquals(seen.aEnvAlone, spanA.traceparent);
   // Once B overlaps, the env holds neither span, before or after A exits.
   assertEquals(seen.aEnvOverlapped, baseline);
   assertEquals(seen.bEnvOverlapped, baseline);
   assertEquals(seen.bEnvAfterA, baseline);
-  // Nothing leaks past the last execution.
   assertEquals(Deno.env.get("TRACEPARENT"), baseline);
-  // The context always carries each execution's own span.
   assertEquals(seen.aContext, spanA);
   assertEquals(seen.bContext, spanB);
 });
@@ -951,8 +939,6 @@ Deno.test("InProcessExecutor: does not wire gate methods when no workflowGateSer
   assertEquals(hasReject, false);
 });
 
-// ---------- wrapLoggerWithOutput Tests ----------
-
 Deno.test("wrapLoggerWithOutput: returns logger unchanged when onEvent is undefined", () => {
   const logger = getLogger(["test", "wrap-noop"]);
   const result = wrapLoggerWithOutput(logger, undefined);
@@ -1020,8 +1006,8 @@ Deno.test("wrapLoggerWithOutput: tagged template interpolation works", () => {
   assertEquals(events[0].stream, "stdout");
 });
 
-// swamp-club#2453: process output is escaped with escapeLogTemplate before it
-// reaches the logger ({ -> {{), and the displayed line must undo that.
+// process output is escaped with escapeLogTemplate before it reaches the logger
+// ({ -> {{), and the displayed line must undo that
 Deno.test("wrapLoggerWithOutput: escaped braces in a plain string render once", () => {
   const logger = getLogger(["test", "wrap-escaped"]);
   const events: { type: string; line: string; stream: string }[] = [];
@@ -1036,8 +1022,8 @@ Deno.test("wrapLoggerWithOutput: escaped braces in a plain string render once", 
   ]);
 });
 
-// swamp-club#3220: escapeLogTemplate leaves a line with no opening brace
-// alone, as LogTape does, so the displayed line must not halve its braces.
+// escapeLogTemplate leaves a line with no opening brace alone, as LogTape does,
+// so the displayed line must not halve its braces
 Deno.test("wrapLoggerWithOutput: escaped lines round-trip whichever braces they hold", () => {
   const logger = getLogger(["test", "wrap-closing"]);
   const events: { type: string; line: string; stream: string }[] = [];
@@ -1228,6 +1214,5 @@ Deno.test("InProcessExecutor: a failed method rolls back the file versions it to
     ),
     [[["unfinished", 2]]],
   );
-  // The finalised write is still reported, as before.
   assertEquals(result.outputs.length, 1);
 });

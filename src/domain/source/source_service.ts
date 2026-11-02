@@ -19,50 +19,20 @@
 
 import type { SourceMetadata } from "./source_metadata.ts";
 
-/**
- * Port interface for downloading source archives.
- * Implemented by infrastructure adapters.
- */
 export interface SourceDownloader {
-  /**
-   * Download and extract source archive for the given version.
-   * @param version Version tag (e.g., "v1.2.3") or "main" for the main branch
-   * @param targetDir Directory to extract source into
-   * @returns Number of files extracted
-   */
   downloadAndExtract(version: string, targetDir: string): Promise<number>;
 }
 
-/**
- * Port interface for source metadata persistence.
- * Implemented by infrastructure adapters.
- */
 export interface SourceMetadataRepository {
-  /**
-   * Read source metadata from disk.
-   * @returns Metadata if it exists, null otherwise
-   */
   read(): Promise<SourceMetadata | null>;
 
-  /**
-   * Write source metadata to disk.
-   */
   write(metadata: SourceMetadata): Promise<void>;
 
-  /**
-   * Delete source metadata file.
-   */
   delete(): Promise<void>;
 
-  /**
-   * Get the source directory path.
-   */
   getSourceDir(): string;
 }
 
-/**
- * Result types for source operations.
- */
 export type SourceFetchResult =
   | {
     status: "fetched";
@@ -94,23 +64,15 @@ export type SourceCleanResult =
   | { status: "cleaned"; path: string }
   | { status: "not_found"; path: string };
 
-/**
- * Domain service for managing swamp source code.
- */
 export class SourceService {
   constructor(
     private readonly downloader: SourceDownloader,
     private readonly repository: SourceMetadataRepository,
   ) {}
 
-  /**
-   * Fetch source code for the given version.
-   * If the same version is already fetched, returns early.
-   */
   async fetch(version: string): Promise<SourceFetchResult> {
     const existing = await this.repository.read();
 
-    // Check if we already have this version
     if (existing && existing.version === version) {
       return {
         status: "already_fetched",
@@ -124,19 +86,16 @@ export class SourceService {
     const previousVersion = existing?.version;
     const sourceDir = this.repository.getSourceDir();
 
-    // Clean existing source before downloading new version
     if (existing) {
       await this.cleanSourceDir(sourceDir);
     }
 
-    // Download and extract
     const fileCount = await this.downloader.downloadAndExtract(
       version,
       sourceDir,
     );
     const fetchedAt = new Date().toISOString();
 
-    // Save metadata
     const metadata: SourceMetadata = {
       version,
       path: sourceDir,
@@ -155,9 +114,6 @@ export class SourceService {
     };
   }
 
-  /**
-   * Get information about currently fetched source.
-   */
   async getInfo(): Promise<SourceInfoResult> {
     const metadata = await this.repository.read();
     if (!metadata) {
@@ -173,9 +129,6 @@ export class SourceService {
     };
   }
 
-  /**
-   * Remove downloaded source and metadata.
-   */
   async clean(): Promise<SourceCleanResult> {
     const sourceDir = this.repository.getSourceDir();
     const metadata = await this.repository.read();
@@ -190,9 +143,6 @@ export class SourceService {
     return { status: "cleaned", path: sourceDir };
   }
 
-  /**
-   * Remove source directory contents.
-   */
   private async cleanSourceDir(sourceDir: string): Promise<void> {
     try {
       await Deno.remove(sourceDir, { recursive: true });

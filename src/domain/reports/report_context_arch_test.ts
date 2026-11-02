@@ -17,11 +17,9 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// Architecture guard: production MethodReportContext construction must go
-// through buildMethodReportContext. This test walks src/ and fails if a new
-// inline MethodReportContext object literal appears outside the allowed files.
-// If this test fails, route the construction through buildMethodReportContext
-// in src/domain/reports/report_context.ts.
+// production MethodReportContext construction must go through
+// buildMethodReportContext; inline object literals outside the allowed files
+// fail this test
 
 import { assertEquals } from "@std/assert";
 import { walk } from "@std/fs";
@@ -33,16 +31,12 @@ const REPO_ROOT = fromFileUrl(new URL("../../..", import.meta.url));
 const SRC_ROOT = join(REPO_ROOT, "src");
 
 const ALLOWED_FILES: ReadonlySet<string> = new Set([
-  // The factory itself.
   "src/domain/reports/report_context.ts",
 ]);
 
-// Matches the three ways a MethodReportContext gets constructed outside the
-// factory: `MethodReportContext = {` object literals, `satisfies
-// MethodReportContext`, and `as (unknown as) MethodReportContext` casts.
-// The negative lookahead excludes indexed-access *type* references such as
-// `as unknown as MethodReportContext["logger"]`, which name one field's type
-// rather than fabricating a whole context.
+// matches literal, satisfies and as-cast constructions of MethodReportContext;
+// the lookahead skips indexed-access type references like
+// MethodReportContext["logger"]
 const INLINE_LITERAL =
   /\bMethodReportContext\s*=\s*\{|(?:satisfies|as)\s+MethodReportContext\b(?!\s*\[)/;
 

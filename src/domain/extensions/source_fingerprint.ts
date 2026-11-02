@@ -18,19 +18,8 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * Stable identifier of a source file's contents for catalog freshness.
- *
- * Always a plain `<sha-256-hex>` string over the entry point and its
- * transitive local imports. Equality means "the same content graph,
- * byte-for-byte." A file that cannot be read at fingerprint time is
- * hashed into the value via a stable placeholder descriptor for that
- * path, so two consecutive runs with the same broken state produce the
- * same value (no rebundle loop) — the missing file changes the hash but
- * never the shape.
- *
- * Treated as a value type by the domain — the catalog stores it as TEXT,
- * the aggregate compares it via string equality, and consumers must not
- * try to parse it. The format is opaque to everything except the
- * fingerprint producer.
+ * an unreadable file is hashed in via a stable placeholder, so repeated runs
+ * with the same broken state give the same value (no rebundle loop); the format
+ * is opaque and consumers must not parse it
  */
 export type SourceFingerprint = string;

@@ -18,77 +18,39 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * How a model partition's commit changes the data catalog (swamp-club#3239):
- * the catalog actions a v2 repository takes for the same change, derived
- * from the commit's intents and data-version metadata. Pure: the read model
- * supplies each name's live versions and applies the actions.
- *
- * - A `data-version` op records a version: its row is upserted, unless it is
- *   a rename marker (`lifecycle: deleted` with `renamedTo`), which removes
- *   the old name's rows and forwards the name, as v2 `rename()` does.
- * - A versioned `data.delete` or `data.gc` tombstone removes that version's
- *   row, then the name is reconciled as v2 `delete(version)` and
- *   `collectGarbage` reconcile it: with no live version left the name is
- *   removed; with a rename marker on top it is removed and forwarded; else
- *   the greatest live version's row is upserted again, which restores a row
- *   an earlier rename removed.
- * - A version-less `data.gc` is expiry (v2 `removeLatestMarker`): the name's
- *   rows are removed while its versions stay. A version-less `data.delete`
- *   changes nothing: a delete of a whole name lists each version as its own
- *   tombstone.
- *
- * Names and versions come from intents and metadata, never from record keys.
- *
- * @module
+ * names and versions come from intents and metadata, never record keys; a
+ * version-less data.delete changes nothing since a whole-name delete lists each
+ * version as its own tombstone
  */
 
 import type { DataMetadata } from "../data/data_metadata.ts";
 import type { Op } from "./op.ts";
 
-/** One live version of a data name, with the metadata its row is built from. */
 export interface LiveDataVersion {
   readonly version: number;
   readonly metadata: DataMetadata;
 }
 
-/** One change to the data catalog, for one name of the commit's model. */
 export type CatalogAction =
-  /** Upsert this version's row; the catalog keeps the latest flags. */
   | { readonly kind: "upsert-version"; readonly metadata: DataMetadata }
-  /** Remove one version's row. */
   | {
     readonly kind: "remove-version";
     readonly name: string;
     readonly version: number;
   }
-  /** Remove every row of the name. */
   | { readonly kind: "remove-name"; readonly name: string }
-  /** Record that the name forwards to `to`. */
   | { readonly kind: "forward"; readonly name: string; readonly to: string }
-  /** Remove the name's forward, if any. */
   | { readonly kind: "end-forward"; readonly name: string };
 
-/** What {@link projectCatalog} derived from one commit. */
 export interface CatalogProjection {
-  /** The catalog actions, in the order to apply them. */
   readonly actions: readonly CatalogAction[];
-  /**
-   * Each name the commit changed, with its live versions after the commit in
-   * ascending order; an empty list when none is left.
-   */
   readonly live: ReadonlyMap<string, readonly LiveDataVersion[]>;
 }
 
-/** True for a rename marker: the version v2 writes on a renamed name. */
 export function isRenameMarker(metadata: DataMetadata): boolean {
   return metadata.lifecycle === "deleted" && metadata.renamedTo !== undefined;
 }
 
-/**
- * The catalog actions for one commit's ops, applied in order. `liveBefore`
- * returns a name's live versions before the commit. Ops that are not data
- * ops (a lease, a non-data put or tombstone) give no action.
- */
 export function projectCatalog(
   ops: readonly Op[],
   liveBefore: (name: string) => readonly LiveDataVersion[],
@@ -103,7 +65,6 @@ export function projectCatalog(
     return versions;
   };
   const actions: CatalogAction[] = [];
-  // Names to reconcile after the ops, in the order first touched.
   const reconcile = new Set<string>();
 
   for (const op of ops) {

@@ -32,27 +32,13 @@ export interface ServeAuthConfig {
   oauthClientId?: string;
   groupsField: string;
   /**
-   * Model types that need admin authority to create or run, each held as its
-   * normalizeModelTypeName key (no leading `@`), so `@exp/probe` and
-   * `exp/probe` name the same entry (swamp-club#3129).
+   * held as normalizeModelTypeName keys with no leading @, so @exp/probe and
+   * exp/probe name the same entry
    */
   restrictedModelTypes: string[];
   restrictedCommands: string[];
-  /**
-   * When true, deciding a manual approval gate needs a grant that names
-   * `approve`; a `run` grant alone no longer implies it. Off by default.
-   */
   approveRequiresExplicitGrant: boolean;
-  /**
-   * When true, delivering a signal to a workflow's wait needs a grant that
-   * names `signal`; a `run` grant alone no longer implies it. Off by default.
-   */
   signalRequiresExplicitGrant: boolean;
-  /**
-   * When true, changing a model's or workflow's tags needs a grant that
-   * names `tag`; a `write` grant alone no longer implies it. Off by default
-   * (swamp-club#3085).
-   */
   tagRequiresExplicitGrant: boolean;
 }
 
@@ -80,9 +66,8 @@ export interface ServeAuthConfigInput {
 }
 
 /**
- * Splits a comma-separated option value into trimmed, non-empty entries. The
- * serve config file's lists reach here joined with commas, so serve and
- * `serve check-config` split entries the same way.
+ * the serve config file's lists reach here joined with commas, so serve and
+ * serve check-config split entries the same way
  */
 export function parseCommaSeparated(value: string | undefined): string[] {
   if (!value) return [];
@@ -208,47 +193,34 @@ export function buildServeAuthConfig(
   };
 }
 
-/** A restriction entry that cannot restrict anything as written. */
 export interface IneffectiveRestriction {
   readonly option: "restricted-model-types" | "restricted-commands";
   readonly entry: string;
   /**
-   * `no-type`: the entry names no model type at all (`@`, `::`); serve
-   * refuses to start. `unknown-type`: a bare entry naming no registered
-   * type (or, where only built-in types are known, no built-in type),
-   * likely misspelled or missing its `@`. `unknown-command`: not a
-   * server request type; commands match exactly.
+   * no-type: names no model type at all and serve refuses to start;
+   * unknown-type: a bare entry matching no known type, likely misspelled or
+   * missing its @; unknown-command: commands match exactly
    */
   readonly reason: "no-type" | "unknown-type" | "unknown-command";
   readonly message: string;
 }
 
 export interface IneffectiveRestrictionInput {
-  /** The comma-separated values as merged from flags and serve.yaml. */
   readonly restrictedModelTypes?: string;
   readonly restrictedCommands?: string;
-  /** The server request type names `restricted-commands` is matched against. */
   readonly requestTypes: ReadonlySet<string>;
-  /**
-   * Whether a model type is registered. Omitted where the registry is not
-   * loaded (`serve check-config`).
-   */
   readonly isKnownModelType?: (type: string) => boolean;
   /**
-   * Whether a model type is built in, used when `isKnownModelType` is
-   * omitted. Built-in types need no registry load, so `serve check-config`
-   * can check bare entries against them; a bare extension type is reported
-   * too, since it cannot be seen without loading extensions
-   * (swamp-club#3132). With neither lookup, bare entries are not checked.
+   * used when isKnownModelType is omitted: built-in types need no registry
+   * load, so check-config can check bare entries; a bare extension type is
+   * reported too, as it cannot be seen without loading extensions
    */
   readonly isBuiltInModelType?: (type: string) => boolean;
 }
 
 /**
- * Finds restriction entries that can never match, so serve and
- * `serve check-config` can say so instead of silently restricting nothing.
- * An entry with a leading `@` is not checked against the registry: an
- * extension type can be installed or auto-resolved after startup.
+ * an entry with a leading @ is not checked against the registry, since an
+ * extension type can be installed or auto-resolved after startup
  */
 export function findIneffectiveRestrictions(
   input: IneffectiveRestrictionInput,

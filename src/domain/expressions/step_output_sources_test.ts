@@ -56,7 +56,6 @@ Deno.test("attachStepOutputSources: the sources are read back from the context, 
     outputs: { user: "u" },
   });
   assertStrictEquals(stepOutputSourcesOf({ ...context }), sources);
-  // A copy by string key loses them.
   assertEquals(
     stepOutputSourcesOf(Object.fromEntries(Object.entries(context))),
     undefined,
@@ -89,7 +88,6 @@ Deno.test("toPersistedStepContexts / fromPersistedStepContexts: the sources roun
     sources,
   });
   assertEquals(persisted.plain, { status: "failed" });
-  // The originals are untouched.
   assertEquals(Object.keys(steps.seed), ["status", "outputs"]);
   const copied = JSON.parse(JSON.stringify(persisted));
   const restored = fromPersistedStepContexts(copied)!;

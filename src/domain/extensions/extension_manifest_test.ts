@@ -583,8 +583,6 @@ models:
   assertEquals(manifest.dependencies, []);
 });
 
-// --- isSafeRelativePath unit tests ---
-
 Deno.test("isSafeRelativePath: accepts simple filename", () => {
   assertEquals(isSafeRelativePath("foo.ts"), true);
 });
@@ -612,8 +610,6 @@ Deno.test("isSafeRelativePath: rejects absolute path", () => {
 Deno.test("isSafeRelativePath: rejects backslash path traversal", () => {
   assertEquals(isSafeRelativePath("..\\foo.ts"), false);
 });
-
-// --- Manifest-level path traversal rejection tests ---
 
 Deno.test("parseExtensionManifest rejects path traversal in models", () => {
   const yaml = `

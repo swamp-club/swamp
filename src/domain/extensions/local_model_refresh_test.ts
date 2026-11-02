@@ -87,7 +87,6 @@ export const extension = {
 };
 `;
 
-/** Mock `deno bundle`: copies the source to the `-o` output path. */
 let bundleFails = false;
 let bundleCalls = 0;
 const copyingBundler = async (_cmd: string, args: string[]) => {
@@ -103,25 +102,16 @@ const copyingBundler = async (_cmd: string, args: string[]) => {
 interface Fixture {
   repoDir: string;
   modelsDir: string;
-  /** `extensions/behaviors`, indexed as a local dir beside `modelsDir`. */
   behaviorsDir: string;
   pulledModelsDir: string;
   loader: ExtensionLoader;
-  /** Runs one refresh pass over the dirs the fixture indexed. */
   refresh: () => Promise<void>;
-  /** Runs one refresh pass through a separately constructed loader. */
   refreshWith: (loader: ExtensionLoader) => Promise<void>;
-  /** Creates the loader serve wires after its startup index pass. */
   createRefresher: () => ExtensionLoader;
   reindexElsewhere: () => Promise<void>;
   type: (suffix: string) => string;
 }
 
-/**
- * A repo with a local models dir and one pulled extension, indexed as a
- * fresh process indexes it, with the registry's type loader wired to the
- * fixture's loader. Types are unique per run (`--repeats`).
- */
 async function withRepo(
   fn: (f: Fixture) => Promise<void>,
   setup: (
@@ -180,8 +170,6 @@ async function withRepo(
       modelRegistry.setTypeLoader((t, entry) =>
         loader.loadSingleType(t, entry)
       );
-      // Cold pass populates the catalog, a warm pass registers it lazily,
-      // as two CLI commands in a row would.
       for (let i = 0; i < 2; i++) {
         await loader.buildIndex(modelsDir, {
           additionalDirs,
@@ -327,8 +315,6 @@ Deno.test("bundleSourceFactory: a pulled model changed on disk without a reload 
     assertStringIncludes(error.message, type("pulled"));
     assertEquals(error.message.includes(repoDir), false);
 
-    // The refusal is not memoized: once the source the type was loaded
-    // from is back, the bundle is built from it.
     await Deno.writeTextFile(source, modelCode(type("pulled"), "v1"));
     assertStringIncludes(await before!.bundleSourceFactory!(), '"v1"');
   }, async ({ pulledModelsDir, type }) => {
@@ -394,7 +380,6 @@ Deno.test("refreshLocalModels: a failed deno bundle keeps the previous code, as 
     await refresh();
     assertEquals((await loaded(type("a")))?.methods.run.description, "v1");
 
-    // A second pass over the still-failing source keeps the type too.
     await refresh();
     assertEquals((await loaded(type("a")))?.methods.run.description, "v1");
   }, async ({ modelsDir, type }) => {
@@ -540,9 +525,6 @@ Deno.test("refreshLocalModels: a broken model warns once, not on every later ref
   }
 });
 
-// -- Skipping the pass when nothing changed ---------------------------------
-
-/** Sets a file's mtime to a distinct second, as a later save would. */
 async function touch(path: string, second: number): Promise<void> {
   const at = new Date(Date.UTC(2030, 0, 1, 0, 0, second));
   await Deno.utime(path, at, at);

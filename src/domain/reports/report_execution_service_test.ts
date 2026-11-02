@@ -80,7 +80,6 @@ Deno.test("filterReports - only model-type defaults are candidates", () => {
     makeReportEntry("b", "method"),
     makeReportEntry("c", "method"),
   ];
-  // Only "a" and "b" are model-type defaults, "c" should be excluded
   const result = filterReports(
     reports,
     "method",
@@ -98,7 +97,6 @@ Deno.test("filterReports - without modelTypeReports only require are candidates"
     makeReportEntry("a", "method"),
     makeReportEntry("b", "method"),
   ];
-  // No model-type defaults and no require = no candidates (workflow scope behavior)
   const result = filterReports(reports, "method", undefined, {});
   assertEquals(result.length, 0);
 });
@@ -111,7 +109,6 @@ Deno.test("filterReports - require adds to candidates without modelTypeReports",
   const selection: ReportSelection = {
     require: ["a"],
   };
-  // Only "a" is in require, so only "a" is a candidate
   const result = filterReports(reports, "method", selection, {});
   assertEquals(result.length, 1);
   assertEquals(result[0].name, "a");
@@ -314,7 +311,6 @@ Deno.test("filterReports - method scoping from YAML", () => {
       "b",
     ],
   };
-  // Running "delete" method - "a" should be excluded, "b" included
   const result = filterReports(
     reports,
     "method",
@@ -355,7 +351,6 @@ Deno.test("filterReports - require adds reports beyond model-type defaults", () 
   const selection: ReportSelection = {
     require: ["c"],
   };
-  // Model-type defaults are "a" and "b", require adds "c"
   const result = filterReports(
     reports,
     "method",
@@ -430,11 +425,6 @@ Deno.test("sanitizeReportNameForData - handles nested path report names", () => 
   );
 });
 
-// --- executeReports with varySuffix tests ---
-
-/**
- * Creates a minimal in-memory data repository for testing report persistence.
- */
 function createInMemoryDataRepo() {
   const saved: Array<{
     name: string;
@@ -525,7 +515,6 @@ Deno.test("executeReports - varySuffix appends to data names", async () => {
     "iteration-1",
   );
 
-  // Should have saved 2 artifacts (markdown + json) with varySuffix in name
   assertEquals(saved.length, 2);
   assertStringIncludes(saved[0].name, "iteration-1");
   assertStringIncludes(saved[1].name, "iteration-1");
@@ -681,7 +670,6 @@ Deno.test("executeReports - varySuffix with scoped report name sanitization", as
     "2",
   );
 
-  // @adam/state-report → sanitized to "adam-state-report", plus varySuffix "2"
   assertEquals(saved[0].name, "report-adam-state-report-2");
   assertEquals(saved[1].name, "report-adam-state-report-2-json");
 });
@@ -755,16 +743,10 @@ Deno.test("executeReports - events include varySuffix data handles", async () =>
   assertStringIncludes(handles[1].name, "host-a");
 });
 
-// --- buildRedactSensitiveArgs tests (via executeReports) ---
-
 import type { WorkflowReportContext } from "./report_context.ts";
 import { modelRegistry } from "../models/model.ts";
 import { z } from "zod";
 
-/**
- * Creates a report that captures the redactSensitiveArgs function from its
- * context and applies it to the provided args, returning the results.
- */
 function makeRedactionCapturingReport(
   globalArgs: Record<string, unknown>,
   methodArgs: Record<string, unknown>,
@@ -802,10 +784,6 @@ function makeRedactionCapturingReport(
   return { report, getResults: () => capturedResults };
 }
 
-/**
- * Registers a temporary model type with sensitive fields for testing.
- * Uses a unique type name to avoid conflicts with other tests.
- */
 function registerSensitiveModel(suffix: string): ModelType {
   const typeName = `@test-redact/sensitive-${suffix}`;
   const modelType = ModelType.create(typeName);
@@ -1100,7 +1078,6 @@ Deno.test("buildRedactSensitiveArgs: returns args unchanged for workflow scope",
     undefined,
   );
 
-  // Workflow scope should return args unchanged (no redaction)
   assertEquals(capturedResult !== null, true);
   assertEquals(capturedResult!.apiKey, "sk-secret");
 });
@@ -1235,11 +1212,6 @@ Deno.test("buildRedactSensitiveArgs: redacts all method args when method not fou
   assertEquals(results!.redactedMethod.token, "***");
 });
 
-// --- executeReports lazy-report promotion tests (regression: #81) ---
-
-/**
- * Builds a minimal MethodReportContext for lazy-promotion tests.
- */
 function makeMethodContext(
   repo: ReturnType<typeof createInMemoryDataRepo>["repo"],
   modelType: ModelType,
@@ -1272,11 +1244,6 @@ function makeMethodContext(
   };
 }
 
-/**
- * Creates a fresh ReportRegistry with a single lazy entry and a type loader
- * that promotes it on demand. Returns the registry and a counter for the
- * number of times the loader was invoked.
- */
 function createRegistryWithLazyReport(
   typeName: string,
   scope: "method" | "model" | "workflow" = "method",
@@ -1324,7 +1291,6 @@ Deno.test("executeReports: promotes lazy report named in selection.require", asy
   assertEquals(summary.results.length, 1);
   assertEquals(summary.results[0].name, "@test/lazy-method");
   assertEquals(summary.results[0].success, true);
-  // Persisted two artifacts (markdown + json)
   assertEquals(saved.length, 2);
   assertStringIncludes(saved[0].name, "test-lazy-method");
 });
@@ -1521,13 +1487,9 @@ Deno.test("buildRedactSensitiveArgs: redacts array-typed sensitive method args t
 
   const results = getResults();
   assertEquals(results !== null, true);
-  // The entire array is replaced with "***"
   assertEquals(results!.redactedMethod.command, "***");
-  // Non-sensitive fields are preserved
   assertEquals(results!.redactedMethod.name, "test-step");
 });
-
-// --- executeReports error fallback tests ---
 
 function makeThrowingReport(
   scope: "method" | "model" | "workflow" = "method",
@@ -1569,16 +1531,13 @@ Deno.test("executeReports: persists fallback error artifact when execute() throw
   assertEquals(summary.results[0].success, false);
   assertEquals(summary.results[0].error, "gate tripped");
 
-  // Fallback error artifact should be persisted
   assertEquals(saved.length, 2);
   assertEquals(saved[0].name, "report-test-throwing");
   assertEquals(saved[1].name, "report-test-throwing-json");
 
-  // Markdown artifact contains error details
   assertStringIncludes(saved[0].content, "Report Error: @test/throwing");
   assertStringIncludes(saved[0].content, "gate tripped");
 
-  // JSON artifact contains structured error
   const json = JSON.parse(saved[1].content);
   assertEquals(json.error, true);
   assertEquals(json.reportName, "@test/throwing");
@@ -1646,8 +1605,6 @@ Deno.test("executeReports: onReportFailed callback receives data handles", async
   assertEquals(failedHandles!.length, 2);
 });
 
-// --- executeReports unresolvable-require tests (swamp-club#640) ---
-
 Deno.test("executeReports: unresolvable required report fails loudly", async () => {
   const registry = new ReportRegistry();
 
@@ -1694,7 +1651,6 @@ Deno.test("executeReports: unresolvable required report fails loudly", async () 
   assertStringIncludes(failedError!, "Required report not found");
   assertEquals(failedHandles !== undefined, true);
 
-  // Error artifact persisted so `swamp report search` surfaces the failure
   assertEquals(saved.length, 2);
   assertEquals(saved[0].name, "report-test-missing");
   assertEquals(saved[1].name, "report-test-missing-json");
@@ -1804,13 +1760,10 @@ Deno.test("executeReports: unresolvable require failure survives artifact persis
     "run",
   );
 
-  // Persistence failed, but the failure is still reported
   assertEquals(summary.failures, 1);
   assertEquals(summary.results[0].success, false);
   assertEquals(summary.results[0].dataHandles, undefined);
 });
-
-// --- Empty report skip tests (issue #1443) ---
 
 function makeEmptyReport(
   scope: "method" | "model" | "workflow" = "method",
@@ -1981,8 +1934,6 @@ Deno.test("executeReports: mixed empty and non-empty reports persist only non-em
   assertEquals(contentResult?.dataHandles?.length, 2);
   assertEquals(saved.length, 2);
 });
-
-// --- modelName tag tests ---
 
 Deno.test("executeReports - method scope includes modelName tag from definition", async () => {
   const registry = new ReportRegistry();

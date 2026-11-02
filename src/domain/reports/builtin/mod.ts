@@ -22,10 +22,8 @@ import { methodSummaryReport } from "./method_summary_report.ts";
 import { verificationSummaryReport } from "./verification_summary_report.ts";
 import { workflowSummaryReport } from "./workflow_summary_report.ts";
 
-/** Built-in method-scope report names injected as candidates at call sites. */
 export const BUILTIN_METHOD_REPORTS = ["@swamp/method-summary"];
 
-/** Built-in workflow-scope report names injected as candidates at call sites. */
 export const BUILTIN_WORKFLOW_REPORTS = [
   "@swamp/workflow-summary",
 ];

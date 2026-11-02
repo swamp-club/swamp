@@ -40,11 +40,8 @@ function appliesTo(tool: string): boolean {
 }
 
 /**
- * Verifies the AI tool's own binary is on PATH. Without it, the tool can't
- * run at all — no commands, no hooks, no audit rows.
- *
- * `resolveBinary` is injected — domain owns the port, the CLI passes in
- * `defaultCommandResolver()` from `infrastructure/process` at wiring time.
+ * resolveBinary is injected: domain owns the port and the CLI passes the
+ * default resolver at wiring time
  */
 export function makeBinaryOnPathCheck(
   opts: { resolveBinary: ResolveBinary },

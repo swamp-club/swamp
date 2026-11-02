@@ -73,7 +73,7 @@ export type ServerToken = z.infer<typeof ServerTokenSchema>;
 
 const TOKEN_DATA_NAME = "token-main";
 
-const DEFAULT_DURATION_MS = 30 * 24 * 60 * 60 * 1000; // ~30 days
+const DEFAULT_DURATION_MS = 30 * 24 * 60 * 60 * 1000;
 
 export const SERVER_TOKEN_SECRET_KEY_PREFIX = "server-token-";
 
@@ -82,10 +82,8 @@ export function serverTokenSecretKey(tokenName: string): string {
 }
 
 /**
- * Validates a presented credential against a server token lifecycle record.
- * Supplying the vault secret performs the timing-safe credential comparison;
- * omitting it permits callers to reject invalid lifecycle state before a vault
- * read.
+ * supplying the vault secret does the timing-safe credential comparison;
+ * omitting it lets callers reject invalid lifecycle state before a vault read
  */
 export function validateServerToken(
   token: ServerToken,
@@ -124,9 +122,8 @@ export function validateServerToken(
 }
 
 /**
- * The value a token record stores to name the secret it was minted with: the
- * hex SHA-256 of the plaintext. The plaintext is 32 random bytes, so the
- * unsalted hash reveals nothing about it.
+ * the plaintext is 32 random bytes, so the unsalted SHA-256 fingerprint reveals
+ * nothing about it
  */
 export async function serverTokenSecretFingerprint(
   secret: string,
@@ -142,8 +139,8 @@ export async function serverTokenSecretFingerprint(
 }
 
 /**
- * The record and the vault secret of a token come from different mints
- * (swamp-club#2482). The token cannot authenticate until it is rotated.
+ * the record and the vault secret come from different mints; the token cannot
+ * authenticate until it is rotated
  */
 export class ServerTokenSecretMismatchError extends Error {
   constructor(name: string) {
@@ -156,10 +153,9 @@ export class ServerTokenSecretMismatchError extends Error {
 }
 
 /**
- * Checks that the secret read from the vault is the one the record was minted
- * with. The record and the secret live in separate stores, so two writers of
- * one name can leave one mint's record beside another's secret. A record
- * without a fingerprint predates the check and passes.
+ * record and secret live in separate stores, so two writers of one name can
+ * leave mismatched mints; a record without a fingerprint predates the check and
+ * passes
  */
 export async function verifyServerTokenSecret(
   token: ServerToken,
@@ -199,9 +195,9 @@ async function mint(
   args: z.infer<typeof MintArgsSchema>,
   context: MethodContext,
 ): Promise<MethodResult> {
-  // A token whose principal serve cannot parse will be rejected on every
-  // connection, so refuse it at mint time (swamp-club#2383). Service
-  // principals act only in-process and never hold a credential.
+  // a token whose principal serve cannot parse is rejected on every connection,
+  // so refuse it at mint time; service principals act only in-process and never
+  // hold a credential
   parseCredentialPrincipal(args.principalId);
   if (!context.vaultService) {
     throw new Error("Minting a server token requires a vault service");

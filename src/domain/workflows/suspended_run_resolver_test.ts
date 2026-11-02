@@ -181,10 +181,6 @@ Deno.test("resolveSuspendedRun: --run rejects non-suspended run", async () => {
   assertStringIncludes(error.message, "swamp workflow history test-wf");
 });
 
-/**
- * A run failed by rejecting `gate`, with `other` (in its own job) still
- * waiting for approval — swamp-club#2899's scenario.
- */
 function createRejectedGateRun(): { workflow: Workflow; run: WorkflowRun } {
   const workflow = Workflow.create({
     name: "test-wf",
@@ -279,8 +275,6 @@ Deno.test("resolveSuspendedRun: --run on a run failed by a step keeps the plain 
   );
 });
 
-// ── nextActionForStatus ─────────────────────────────────────────────
-
 Deno.test("nextActionForStatus: a failed run with a rejected step resumes from it, shell-quoted", () => {
   assertEquals(
     nextActionForStatus("failed", "wf", "r1", { rejectedStep: "my gate" }),
@@ -304,8 +298,6 @@ Deno.test("nextActionForStatus: rejectedStep is ignored for a run that is not fa
     nextActionForStatus("succeeded", "wf", "r1"),
   );
 });
-
-// ── resolveResumableRun ─────────────────────────────────────────────
 
 function createFailedRun(workflow: Workflow): WorkflowRun {
   const run = WorkflowRun.create(workflow);
@@ -410,7 +402,6 @@ Deno.test("resolveResumableRun: --run with --from rejects non-failed run", async
   );
 });
 
-/** Jobs one and two each have a step "s"; one's s failed. */
 function sharedNameFailedRun(): { wf: Workflow; run: WorkflowRun } {
   const wf = Workflow.create({
     name: "test-wf",
@@ -621,7 +612,6 @@ Deno.test("resolveResumableRun: bare resume with only a failed run names the ret
     error.message,
     `The latest run is failed. Retry it with 'swamp workflow resume test-wf --run ${run.id}'.`,
   );
-  // The hint names the run, so the message does not repeat the id.
   assertEquals(error.message.split(run.id).length - 1, 1);
 });
 
@@ -670,7 +660,6 @@ Deno.test("resolveSuspendedRun: approve and reject on a failed run name the resu
   );
 });
 
-/** The test-wf workflow with a step t added to job j since the run. */
 function createEditedWorkflow(): Workflow {
   return Workflow.create({
     name: "test-wf",
@@ -779,11 +768,6 @@ Deno.test("resolveSuspendedRun: approve and reject still resolve a suspended run
   assertEquals(result.run.id, run.id);
 });
 
-/**
- * Repos holding two workflows, where `impostor` is named with `target`'s id,
- * so a name-first lookup of that id picks the impostor and an id-only lookup
- * picks the target.
- */
 function collidingRepos(runsByWorkflow: Map<string, WorkflowRun[]>): {
   target: Workflow;
   impostor: Workflow;

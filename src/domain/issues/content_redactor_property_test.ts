@@ -168,8 +168,6 @@ Deno.test("redactIssueContent: one raw value always maps to one placeholder", ()
   );
 });
 
-// --- Git object ids and colon-separated runs (swamp-club#3686) ---
-
 const HEX_CHARS = "0123456789abcdef".split("");
 
 const arbHex = (minLength: number, maxLength: number) =>
@@ -220,10 +218,8 @@ const arbIpv6 = fc.oneof(
   ).map(({ text }) => text),
 );
 
-// What text puts around an address or a colon run: spaces, a label colon
-// before it, a message colon after it, brackets and punctuation. A label
-// ending in a hex character (ipv6:) is left to the glued-word property: it
-// may read as one more group, so a seven-group run after it is redacted.
+// a label ending in a hex character (ipv6:) is left to the glued-word property,
+// since it may read as one more group
 const arbBefore = fc.constantFrom(
   "addr ",
   "remote_addr:",
@@ -295,11 +291,9 @@ Deno.test("redactIssueContent: a colon run that is not an address survives", () 
   );
 });
 
-// Words glued to an address with no separator: the redactor cannot always
-// tell where the word ends, so these only require that the address does not
-// survive whole. A word glued straight onto "::", or onto one group and then
-// "::" (srcaddr::1:2, srcaddr0::1:2), reads exactly like a code path
-// (Foo::bar, Hashed::abc) and is kept, so those are left out.
+// glued words only require that the address not survive whole; a word glued
+// onto "::" reads like a code path (Foo::bar) and is kept, so those are left
+// out
 const arbGluedBefore = fc.constantFrom("srcaddr", "x", "0x", "ipv6:", "id:");
 
 Deno.test("redactIssueContent: an IPv6 address glued to a word never survives whole", () => {
@@ -322,8 +316,6 @@ Deno.test("redactIssueContent: an IPv6 address glued to a word never survives wh
   );
 });
 
-// Zero to three word labels, as in structured-log prefixes and keys
-// (peer:addr:<addr>, <addr>:to:host).
 const arbLabelWord = fc.constantFrom(
   "peer",
   "addr",
@@ -414,8 +406,6 @@ const arbIpv4 = fc.tuple(
   !(a === 255 && b === 255 && c === 255 && d === 255)
 ).map((parts) => parts.join("."));
 
-// What can follow an address: punctuation, a port, a prefix length, a range
-// hyphen and digit, a DNS label after a dot, or the end of the text.
 const arbIpv4After = fc.constantFrom(
   " end",
   ".",
@@ -444,8 +434,6 @@ Deno.test("redactIssueContent: an IPv4 address never survives whole", () => {
   );
 });
 
-// A version with four dotted groups and a release suffix, such as the WSL2
-// kernel release 6.18.33.2-microsoft-standard-WSL2.
 const arbSuffixedVersion = fc.tuple(
   fc.array(fc.integer({ min: 0, max: 999 }), { minLength: 4, maxLength: 4 }),
   fc.stringMatching(/^[A-Za-z][A-Za-z0-9-]{0,15}$/),

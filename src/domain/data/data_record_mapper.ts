@@ -45,12 +45,9 @@ export interface DataRecordMapperOptions {
 }
 
 /**
- * Returns the local filesystem path of a data version's stored content, or
- * "" when there is none on this host: a record from another namespace in a
- * shared datastore (its content is fetched on demand, never stored locally),
- * a name the repository refuses to resolve, or a repository whose content
- * does not live on disk (the in-memory ephemeral store returns an
- * `ephemeral://` URI). Never touches the filesystem.
+ * empty when none is on this host: another namespace's record (fetched on
+ * demand), a name the repository refuses, or non-disk content (ephemeral://
+ * URI). Never touches the filesystem
  */
 export function localContentPath(
   dataRepo: UnifiedDataRepository,
@@ -69,10 +66,6 @@ export function localContentPath(
   }
 }
 
-/**
- * Loads content bytes and parses attributes/text from a data artifact.
- * Shared by both fromRow and fromData paths.
- */
 function parseContent(
   rawBytes: Uint8Array | null,
   contentType: string,
@@ -102,11 +95,8 @@ function parseContent(
 }
 
 /**
- * Attempts vault resolution on attributes. If resolution fails for any
- * individual reference, that reference is left unresolved and the failure is
- * logged at debug and recorded through the sink — the record is never failed
- * entirely — except when the run's vault access refuses the read:
- * `VaultAccessDeniedError` is rethrown.
+ * a reference that fails to resolve is left unresolved, logged and recorded,
+ * never failing the record, except VaultAccessDeniedError which is rethrown
  */
 async function resolveVaultRefs(
   attributes: Record<string, unknown>,
@@ -128,11 +118,7 @@ async function resolveVaultRefs(
   );
 }
 
-/**
- * Whether the repository accepts a row's local body that is shorter than
- * the row's size. A repository without `isContentAcceptedSync` (a test
- * double) accepts it, as every repository did before swamp-club#3178.
- */
+/** a repository without isContentAcceptedSync (a test double) accepts it */
 function isAcceptedShortContent(
   dataRepo: UnifiedDataRepository,
   row: CatalogRow,
@@ -148,30 +134,9 @@ function isAcceptedShortContent(
 }
 
 /**
- * Converts a CatalogRow to a DataRecord synchronously. This is the primary
- * runtime path since most data access functions delegate to
- * DataQueryService.query().
- *
- * Content is loaded from disk only when needed (controlled by loadAttributes
- * and loadContent flags, driven by AST analysis of the query predicate).
- * `path` is set only when includeContentPath is true — see
- * {@link localContentPath}; callers whose results cross a trust boundary
- * leave it off so host paths never leave the process.
- *
- * Vault resolution is NOT performed here — callers that need it (e.g.
- * DataQueryService.query) handle it after the query loop.
- *
- * The read is synchronous and cannot hydrate lazily-synced content.
- * `onMissingContent` is called when the body was needed but is not on local
- * disk, or is shorter than the row's size and the repository does not
- * accept it as the remote's copy (a metadata-only pull left the old bytes of
- * a version another host appended to, swamp-club#3178), so an async caller
- * can hydrate it and map the row again. Such stale bytes are not parsed.
- *
- * A row of another namespace (see {@link isForeignNamespace}) is never read
- * from the repository's own layout, which can hold the repository's own item
- * at the same path (swamp-club#3691): its bytes are left empty, and the
- * async caller fills them through the foreign content fetcher.
+ * callers whose results cross a trust boundary leave path off so host paths
+ * never leave the process; another namespace's row is never read from the own
+ * layout, which may hold the repository's item at that path
  */
 export function fromRow(
   row: CatalogRow,
@@ -260,12 +225,8 @@ export function fromRow(
 }
 
 /**
- * Converts a Data entity to a DataRecord asynchronously.
- * Used by helpers that hold a Data entity loaded outside the catalog path.
- *
- * Callers that know whether the version is currently the latest for its
- * (type, model, name) triple should pass `isLatest`. When omitted, the
- * record reports `isLatest: false`.
+ * callers that know the version is the latest pass isLatest; when omitted the
+ * record reports isLatest: false
  */
 export async function fromData(
   data: Data,
@@ -336,23 +297,8 @@ export async function fromData(
 }
 
 /**
- * Converts a DataHandle to a DataRecord for use in the workflow
- * step's expressionContext.model[...].resource[...] view.
- *
- * Used in the success path of step execution where the handle has
- * just been produced by the method's DataWriter. Differs from
- * {@link fromData}:
- * - `isLatest` is always true (the handle was just produced).
- * - `attributes` is parsed from JSON content for `application/json`
- *   only — other content types yield empty attributes. Downstream
- *   CEL access patterns reference `attributes.<field>`; raw text
- *   content is intentionally not eagerly loaded into the record.
- * - `content` is the parsed attributes object for JSON, otherwise "".
- * - `dataType` defaults to "resource" rather than "" because the
- *   caller already knows the handle is a resource.
- *
- * Returns the constructed DataRecord. Never null — handles always
- * carry their own metadata.
+ * attributes parse only for application/json since downstream CEL reads
+ * attributes.<field>; raw text content is intentionally not eagerly loaded
  */
 export async function fromResourceHandle(
   handle: DataHandle,
@@ -411,15 +357,7 @@ export async function fromResourceHandle(
   };
 }
 
-/**
- * Converts a file-kind DataHandle to a FileDataRecord for use in
- * the workflow step's expressionContext.model[...].file[...] view.
- *
- * Stats the on-disk content path to capture its size at record-build
- * time. Returns null if the file is no longer present (rare — the
- * DataWriter persisted it just before the handle was produced — but
- * the I/O can race with concurrent cleanup).
- */
+/** returns null if the file is gone; the I/O can race with concurrent cleanup */
 export async function fromFileHandle(
   handle: DataHandle,
   modelType: ModelType,

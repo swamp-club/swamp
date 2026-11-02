@@ -32,19 +32,13 @@ export interface AccessResource {
   readonly kind: ResourceKind;
   readonly name: string;
   readonly fields: Record<string, unknown>;
-  /**
-   * `kind` when the check is on the kind itself rather than on resources of
-   * it (see {@link kindResource}). Absent for a resource.
-   */
   readonly scope?: "kind";
 }
 
 /**
- * A check on a resource kind as a whole — an extension, datastore or type
- * endpoint that reads no resource of the kind. A condition that needs a
- * resource field decides nothing here, since no resource is touched; a check
- * that reads resources must authorize those resources instead
- * (swamp-club#2675).
+ * a kind-level check reads no resource, so a condition needing a resource field
+ * decides nothing; a check that reads resources must authorize those resources
+ * instead
  */
 export function kindResource(kind: ResourceKind): AccessResource {
   return { kind, name: "*", fields: { name: "*" }, scope: "kind" };
@@ -55,11 +49,6 @@ export interface AccessDecision {
   readonly grantId: string;
   readonly subject: Subject;
   readonly condition?: string;
-  /**
-   * Set when the grant matched the action only through another it grants —
-   * `approve` or `signal` through `run`, `tag` through `write` — not because
-   * it names the action itself.
-   */
   readonly impliedBy?: "run" | "write";
 }
 
@@ -83,10 +72,8 @@ export interface AccessDecisionService {
   ): boolean;
 
   /**
-   * Decides an operation over every resource of `kind` that cannot be
-   * filtered per resource (garbage collection, prune, summarise). Any
-   * applicable deny for the kind and action refuses it, whatever its pattern
-   * or condition, since the operation reaches every resource.
+   * any applicable deny for the kind and action refuses the operation, whatever
+   * its pattern or condition, since it reaches every resource
    */
   decideAll(
     principal: AccessPrincipal,

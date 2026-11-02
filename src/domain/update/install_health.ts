@@ -53,16 +53,9 @@ export interface AutoupdateHealth {
   schedulerInstalled: boolean;
   schedulerType?: SchedulerTypeLabel;
   lastEntry: AutoupdateLogEntry | null;
-  /** The last check is older than the cadence allows (see isLastCheckStale). */
   lastCheckStale: boolean;
-  /** Whole days since the last check, or null when there is none. */
   lastCheckAgeDays: number | null;
-  /**
-   * Exit code of the scheduler's last run, or null when it has never exited.
-   * Omitted when the scheduler cannot report it.
-   */
   schedulerLastExitCode?: number | null;
-  /** The OS refuses to start the scheduled job until it is registered again. */
   schedulerNeedsRepair: boolean;
 }
 
@@ -155,9 +148,8 @@ export async function checkInstallHealth(
 }
 
 /**
- * Whether any installation check failed. With autoupdate enabled, a missing
- * scheduler, a stale last check, a failing last run, or a job the OS will
- * not start all count: each means updates have silently stopped.
+ * with autoupdate enabled, a missing scheduler, stale last check, failing last
+ * run or a job the OS will not start each mean updates have silently stopped
  */
 export function hasInstallProblem(report: InstallHealthReport): boolean {
   const autoupdate = report.autoupdate;

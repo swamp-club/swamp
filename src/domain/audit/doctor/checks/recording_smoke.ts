@@ -23,15 +23,8 @@ import type { PreflightCheck } from "../check.ts";
 import { syntheticPayloadFor } from "../synthetic_payloads.ts";
 
 /**
- * End-to-end smoke test: pipes a synthetic hook payload through
- * `swamp audit record --from-hook --tool <tool>` and verifies a new row
- * with the fixture's sentinel command string lands in today's JSONL.
- *
- * This is the check that would have caught the kiro-cli 2.0 runtime
- * contract change (the `execute_bash`→`shell` drift cited in the issue).
- *
- * Never relies on subprocess exit code — `audit record --from-hook` never
- * throws by design (to avoid disrupting the user's coding session).
+ * never relies on the subprocess exit code: audit record --from-hook never
+ * throws by design, to avoid disrupting the user's coding session
  */
 
 function appliesTo(tool: string): boolean {
@@ -70,10 +63,9 @@ export const recordingSmokeTestCheck: PreflightCheck = {
       };
     }
 
-    // ensureDir is a no-op when the directory already exists, so it does not
-    // surface a writability problem on its own. Follow it with an active
-    // write-probe so an existing-but-readonly audit dir is caught here rather
-    // than masquerading as hook normalizer drift further down.
+    // ensureDir is a no-op on an existing directory, so a write probe follows
+    // to catch a readonly audit dir here rather than as hook normalizer drift
+    // later
     try {
       await ensureDir(ctx.auditDir);
       const probe = await Deno.makeTempFile({

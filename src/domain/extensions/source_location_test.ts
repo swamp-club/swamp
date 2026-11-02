@@ -26,7 +26,6 @@ Deno.test("makeSourceLocation: relativePath rebases lexically against extensionR
   const src = "/repo/.swamp/pulled-extensions/@scope/foo/models/instance.ts";
   const loc = makeSourceLocation(src, ext);
   assertEquals(loc.relativePath, "models/instance.ts");
-  // canonicalPath/extensionRoot are POSIX-pass-through on non-Windows hosts.
   if (Deno.build.os !== "windows") {
     assertEquals(loc.canonicalPath, src);
     assertEquals(loc.extensionRoot, ext);
@@ -54,32 +53,28 @@ Deno.test("sourceLocationEquals: differing canonicalPaths compare unequal", () =
 });
 
 Deno.test("SourceLocation cross-platform equality: Windows case-folds the fixture pair", () => {
-  // Plan-required fixture pair: EXTENSIONS/Models/A.ts ↔ extensions/models/a.ts
-  // On Windows: canonicalize lowercases + flips backslashes, so both inputs
-  // produce the same canonicalPath and compare equal.
   const upper = canonicalizePathFor(
     "C:\\repo\\EXTENSIONS\\Models\\A.ts",
-    /* isWindows */ true,
+    true,
   );
   const lower = canonicalizePathFor(
     "C:/repo/extensions/models/a.ts",
-    /* isWindows */ true,
+    true,
   );
   assertEquals(upper, lower);
 });
 
 Deno.test("SourceLocation cross-platform equality: POSIX leaves the fixture pair distinct", () => {
-  // On POSIX the canonicalize is pass-through — case differences survive,
-  // so two different surface forms compare as different paths. macOS HFS+/APFS
-  // case-insensitivity at the filesystem level is a known limitation
-  // documented in canonicalize_path.ts; the canonicalizer itself is pure.
+  // on POSIX canonicalize is pass-through, so case differences survive;
+  // filesystem case-insensitivity is a known limit and the canonicalizer itself
+  // is pure
   const upper = canonicalizePathFor(
     "/repo/EXTENSIONS/Models/A.ts",
-    /* isWindows */ false,
+    false,
   );
   const lower = canonicalizePathFor(
     "/repo/extensions/models/a.ts",
-    /* isWindows */ false,
+    false,
   );
   assertFalse(upper === lower);
 });

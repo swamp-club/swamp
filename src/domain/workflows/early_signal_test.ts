@@ -76,7 +76,6 @@ function signal(overrides: Partial<EarlySignal> = {}): EarlySignal {
   };
 }
 
-/** A step of `runId` claims the key at `at`, as the executor does. */
 async function claim(
   store: InMemorySignalWaitStore,
   at: Date,
@@ -112,7 +111,6 @@ async function claim(
   return { claim: acquired.claim, wait };
 }
 
-/** `store`, running `then` once, straight after the first pending create. */
 function afterFirstCreate(
   store: InMemorySignalWaitStore,
   then: () => Promise<void>,
@@ -233,7 +231,6 @@ Deno.test("decideEarlySignal: the first is stored, a second is refused while the
     decideEarlySignal([{ kind: "found", record: held }], AFTER_LIMIT),
     { kind: "store", number: 4 },
   );
-  // A signal in the slot below, which a release left live, counts too.
   assertEquals(
     decideEarlySignal(
       [{ kind: "none" }, { kind: "found", record: { ...held, slot: 1 } }],
@@ -241,7 +238,6 @@ Deno.test("decideEarlySignal: the first is stored, a second is refused while the
     ),
     { kind: "already_pending", record: held },
   );
-  // A lapse supersedes a signal: the next one is stored above it.
   assertEquals(
     decideEarlySignal([{
       kind: "found",
@@ -350,7 +346,6 @@ Deno.test("holdEarlySignal: a step that claims between the create and the second
   assert(arrival.kind === "held", `got ${arrival.kind}`);
   assertEquals(arrival.claim, opened);
   assertEquals(arrival.record?.slot, opened!.early!.generation);
-  // The signaller, or any later reader, gives the wait that signal.
   const registration = await store.findRegistration(opened!.waitId);
   assert(registration.kind === "found");
   const taken = await takePendingSignal(
@@ -399,7 +394,6 @@ Deno.test("holdEarlySignal: a signal a step took is not given to the wait a late
       const registration = await store.findRegistration(step.claim.waitId);
       assert(registration.kind === "found");
       await takePendingSignal(store, earlyWaitRef(registration.record)!);
-      // The key is free again, and a second run opens its wait.
       later = (await claim(store, NOW)).claim;
     }),
     signal(),
@@ -474,7 +468,6 @@ Deno.test("holdEarlySignal: a step that takes the signal between the signaller's
       `got ${arrival.kind} after read ${afterRead}`,
     );
     assertEquals(arrival.claim, opened);
-    // One record, and the wait's outcome is that signal.
     assertEquals(store.pendingRecords.size, 1);
     const outcome = await store.findOutcome(opened!.waitId);
     assert(outcome.kind === "found" && outcome.record.kind === "accepted");
@@ -487,8 +480,6 @@ Deno.test("holdEarlySignal: a wait opened under a later claim is reported, thoug
   let second: WaitKeyClaim | undefined;
   const arrival = await holdEarlySignal(
     afterFirstCreate(store, async () => {
-      // The claim of the signal's slot is made and its wait closed at once;
-      // a second run then claims the key.
       const first = await claim(store, NOW);
       await store.settle(cancelledOutcome(waitRefOfClaim(first.claim), NOW));
       second = (await claim(store, NOW)).claim;
@@ -500,7 +491,6 @@ Deno.test("holdEarlySignal: a wait opened under a later claim is reported, thoug
   assertEquals(arrival.claim, second);
   assertEquals(arrival.claim.generation, 2);
   assertEquals(arrival.record?.slot, 1);
-  // That wait reads slot 2 and takes nothing from slot 1.
   const registration = await store.findRegistration(second!.waitId);
   assert(registration.kind === "found");
   assertEquals(
@@ -513,7 +503,6 @@ Deno.test("holdEarlySignal: when its slot was claimed and settled with the key f
   const store = new InMemorySignalWaitStore();
   const arrival = await holdEarlySignal(
     afterFirstCreate(store, async () => {
-      // Claimed before the signal's window: the claim does not take it.
       const first = await claim(store, new Date(NOW.getTime() + 60_000));
       await store.settle(cancelledOutcome(waitRefOfClaim(first.claim), NOW));
     }),
@@ -522,7 +511,6 @@ Deno.test("holdEarlySignal: when its slot was claimed and settled with the key f
   );
   assert(arrival.kind === "pending", `got ${arrival.kind}`);
   assertEquals([arrival.record.slot, arrival.record.number], [2, 1]);
-  // The same signal: one receipt, one received time.
   const [first, again] = [...store.pendingRecords.values()].map((bytes) =>
     JSON.parse(new TextDecoder().decode(bytes)) as PendingSignal
   );
@@ -549,7 +537,6 @@ Deno.test("holdEarlySignal: a release over the last claim leaves the signal's sl
   // the first in slot 2.
   const second = await holdEarlySignal(store, signal(), WITHIN);
   assertEquals(second, { kind: "already_pending", record: arrival.record });
-  // The next claim is made over the release and reads both slots.
   const next = await claim(store, WITHIN);
   assertEquals(next.claim.early?.overRelease, true);
   const registration = await store.findRegistration(next.claim.waitId);
@@ -605,7 +592,6 @@ Deno.test("findSignalByIdempotencyKey: finds the held signal while it is within 
     }, WITHIN),
     undefined,
   );
-  // Past its limit no wait takes it, so a retry is not a repeat of it.
   assertEquals(
     await findSignalByIdempotencyKey(store, at, {
       idempotencyKey: "order-1",
@@ -639,7 +625,6 @@ Deno.test("findSignalByIdempotencyKey: finds the signal a wait took under the ke
   assertEquals(found.claim.waitId, first.claim.waitId);
   assertEquals(found.outcome.receipt.id, held.record.receiptId);
 
-  // The next run opens its wait: the claim below the highest still says so.
   const second = await claim(store, new Date(NOW.getTime() + 60_000));
   const below = await findSignalByIdempotencyKey(store, at, {
     idempotencyKey: "order-1",
@@ -648,7 +633,6 @@ Deno.test("findSignalByIdempotencyKey: finds the signal a wait took under the ke
   assert(below?.kind === "settled", `got ${below?.kind}`);
   assertEquals(below.claim.waitId, first.claim.waitId);
 
-  // Two claims later the receipt is out of reach.
   await store.settle(
     cancelledOutcome(
       waitRefOfClaim(second.claim),
@@ -735,13 +719,11 @@ Deno.test("holdEarlySignal: a signal whose other copy settled the wait that read
   assert(arrival.kind === "duplicate", `got ${arrival.kind}`);
   assertEquals(arrival.claim, other?.claim);
   assertEquals(arrival.outcome.receipt, other?.receipt);
-  // Only the record it stored before it found out; none in the next slot.
   assertEquals(
     (await store.listPendingAddresses()).map((at) => at.slot),
     [1],
   );
 
-  // Another sender's signal, or another key, is a signal of its own.
   for (
     const [sender, key] of [["doorbell", "order-1"], ["camera", "order-2"]]
   ) {
@@ -783,7 +765,6 @@ Deno.test("listHeldPendingSignals: a signal a wait took, or one superseded by a 
   const store = new InMemorySignalWaitStore();
   const held = await holdEarlySignal(store, signal(), NOW);
   assert(held.kind === "pending");
-  // The next claim takes it: its slot is no longer live.
   const { claim: taker } = await claim(store, WITHIN);
   const registration = await store.findRegistration(taker.waitId);
   assert(registration.kind === "found");
@@ -817,7 +798,6 @@ Deno.test("listHeldPendingSignals: lists one signal per key, ordered by when eac
     NOW,
   );
   assert(late.kind === "pending" && soon.kind === "pending");
-  // A second signal for a held key is refused, so it adds nothing.
   await holdEarlySignal(store, signal({ key: "soon" }), WITHIN);
   assertEquals(
     (await listHeldPendingSignals(store, WITHIN)).map((each) => each.key),

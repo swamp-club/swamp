@@ -27,9 +27,6 @@ import {
 
 export type { DatastoreTypeInfo } from "./datastore_type_registry.ts";
 
-/**
- * Built-in datastore type definitions.
- */
 const BUILT_IN_DATASTORE_TYPES: DatastoreTypeInfo[] = [
   {
     type: "filesystem",
@@ -40,17 +37,12 @@ const BUILT_IN_DATASTORE_TYPES: DatastoreTypeInfo[] = [
   },
 ];
 
-// Register built-in types on module load
 for (const datastoreType of BUILT_IN_DATASTORE_TYPES) {
   if (!datastoreTypeRegistry.has(datastoreType.type)) {
     datastoreTypeRegistry.register(datastoreType);
   }
 }
 
-/**
- * Gets all available datastore types (both loaded and lazy).
- * Lazy types are synthesized from catalog metadata.
- */
 export function getDatastoreTypes(): DatastoreTypeInfo[] {
   const loaded = datastoreTypeRegistry.getAll();
   const loadedKeys = new Set(loaded.map((t) => t.type.toLowerCase()));
@@ -68,13 +60,9 @@ export function getDatastoreTypes(): DatastoreTypeInfo[] {
 }
 
 /**
- * Lists every datastore type the way it declares itself, for type search.
- *
- * A lazy entry carries no declared name, so {@link getDatastoreTypes} can only
- * show its type id (swamp-club#3365). This reads the name and description
- * out of the entry's source text instead of importing its bundle: a listing
- * must not run extension code, which can exit, hang or print at import. A
- * source that cannot be read, or that computes its name, keeps the type id.
+ * reads name and description from the entry's source text, not by importing its
+ * bundle: a listing must not run extension code, which can exit, hang or print
+ * at import
  */
 export async function listDatastoreTypes(
   registry: DatastoreTypeRegistry = datastoreTypeRegistry,
@@ -104,9 +92,6 @@ export async function listDatastoreTypes(
   return [...loaded, ...lazy];
 }
 
-/**
- * Gets a datastore type by its identifier.
- */
 export function getDatastoreType(type: string): DatastoreTypeInfo | undefined {
   return datastoreTypeRegistry.get(type);
 }

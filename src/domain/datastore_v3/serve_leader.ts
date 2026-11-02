@@ -18,50 +18,31 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * Serve's leader in team mode (swamp-club#4096). Every serve node behind one
- * address shares a v3 datastore; the node holding the datastore's writer
- * lease leads and writes, and the others follow: they serve reads from
- * their own copy and forward writes to the leader (swamp-club#4120), or
- * refuse them when no leader can be reached. The lease and its fence alone decide
- * who may commit. The leader record only names the leader to followers, so
- * a stale record can name the wrong node but never lets a follower write.
- *
- * @module
+ * the lease and its fence alone decide who may commit; the leader record only
+ * names the leader, so a stale record can name the wrong node but never lets a
+ * follower write
  */
 
 import { UserError } from "../errors.ts";
 
-/** Error code for a write that reached a serve node that does not lead. */
 export const SERVE_NOT_LEADER_CODE = "serve_not_leader";
 
-/**
- * Error code for a read a serve follower refused because its copy is behind
- * the caller's (swamp-club#4254).
- */
 export const SERVE_FOLLOWER_BEHIND_CODE = "serve_follower_behind";
 
-/** The control-plane key the leader's record lives at. */
 export const SERVE_LEADER_KEY = "leader/current";
 
-/** Which serve node leads, as the leader recorded it. */
 export interface ServeLeader {
-  /** The leading serve instance. */
   readonly instanceId: string;
-  /** The writer-lease fence it leads at. */
   readonly fence: number;
-  /** Its own address (`scheme://host:port`), when it published one. */
   readonly address?: string;
-  /** When it took the lead, as an ISO 8601 timestamp. */
   readonly since: string;
   /**
-   * The team's proof that a leader wrote this record (swamp-club#4120): a
-   * follower forwards callers' credentials to `address` only when it holds,
-   * so whoever can write the shared control plane cannot redirect them.
+   * a follower forwards callers' credentials to address only when the proof
+   * holds, so whoever can write the shared control plane cannot redirect them
    */
   readonly proof?: string;
 }
 
-/** What a leader record's proof covers. */
 export function serveLeaderProofText(leader: ServeLeader): string {
   return [
     leader.instanceId,
@@ -71,7 +52,6 @@ export function serveLeaderProofText(leader: ServeLeader): string {
   ].join("\n");
 }
 
-/** Serializes a leader record for the control plane. */
 export function serializeServeLeader(leader: ServeLeader): Uint8Array {
   return new TextEncoder().encode(JSON.stringify({
     instanceId: leader.instanceId,
@@ -117,11 +97,8 @@ export function parseServeLeader(data: Uint8Array): ServeLeader | undefined {
 }
 
 /**
- * Normalizes `--advertise-address`: this node's own address as its team's
- * other nodes reach it, which the leader record names so followers can
- * forward to it (swamp-club#4120). It is an http(s) origin with no path,
- * query or credentials; a wildcard host names no node and is refused. An
- * explicit loopback address is accepted, for a team on one host.
+ * a wildcard host names no node and is refused; an explicit loopback address is
+ * accepted, for a team on one host
  */
 export function normalizeAdvertiseAddress(address: string): string {
   let parsed: URL;
@@ -144,16 +121,15 @@ export function normalizeAdvertiseAddress(address: string): string {
 }
 
 /**
- * Whether an advertised address would carry the team's peer key and
- * forwarded callers' credentials across a network unencrypted: plain http
- * to a host that is not loopback (swamp-club#4148).
+ * plain http to a non-loopback host would carry the team's peer key and
+ * forwarded credentials across a network unencrypted
  */
 export function advertiseAddressInCleartext(address: string): boolean {
   const url = new URL(address);
   if (url.protocol !== "http:") return false;
   const host = url.hostname.replace(/^\[|\]$/g, "").toLowerCase();
-  // The URL parser writes an IPv4-mapped address in hex, so 127.0.0.1 mapped
-  // is ::ffff:7f00:1 (swamp-club#4153).
+  // the URL parser writes an IPv4-mapped address in hex, so 127.0.0.1 mapped is
+  // ::ffff:7f00:1
   return !(host === "localhost" || host === "::1" ||
     /^127(\.\d{1,3}){3}$/.test(host) ||
     /^::ffff:7f[0-9a-f]{2}:[0-9a-f]{1,4}$/.test(host));
@@ -165,12 +141,8 @@ const advertiseAddressMessage =
   "path, query, credentials or wildcard host";
 
 /**
- * A write a serve node that does not lead the datastore could not take or
- * pass on: retry it, at the leader when it is named. A follower forwards
- * writes to the leader (swamp-club#4120) and refuses only when no leader can
- * be reached. When the leader changed or stopped answering after a forwarded
- * request reached it, the refusal is `inFlight`: the request may already
- * have run, so the follower never retries it and the caller checks first.
+ * when a forwarded request may already have run, the refusal is inFlight: the
+ * follower never retries it and the caller checks first
  */
 export class ServeNotLeaderError extends UserError {
   declare readonly code: typeof SERVE_NOT_LEADER_CODE;
@@ -203,10 +175,8 @@ export class ServeNotLeaderError extends UserError {
 }
 
 /**
- * A read a serve follower refused because the caller's copy holds commits
- * its own copy has not taken from the leader yet (swamp-club#4254): it is
- * catching up, as after a restart, so a retry shortly is answered. It is
- * never a sign the copy diverged, and nothing was changed.
+ * the follower is catching up (as after a restart), so a retry shortly is
+ * answered; never a sign of divergence, and nothing was changed
  */
 export class ServeFollowerBehindError extends UserError {
   declare readonly code: typeof SERVE_FOLLOWER_BEHIND_CODE;

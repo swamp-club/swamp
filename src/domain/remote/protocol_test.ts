@@ -348,7 +348,6 @@ Deno.test("DispatchResultSchema: drops out-of-bounds errorPaths without failing 
     assertEquals(parsed.errorPaths, undefined);
     assertEquals(parsed.error, "boom");
   }
-  // A result from a worker without the field still parses.
   assertEquals(DispatchResultSchema.parse(base).errorPaths, undefined);
 });
 
@@ -382,7 +381,6 @@ Deno.test("DispatchResultSchema: drops an out-of-bounds errorCode without failin
       .errorCode,
     "x".repeat(128),
   );
-  // A result from a worker without the field still parses.
   assertEquals(DispatchResultSchema.parse(base).errorCode, undefined);
 });
 
@@ -423,15 +421,13 @@ Deno.test("dispatchErrorPaths: is undefined when the error marked nothing", () =
 });
 
 Deno.test("REMOTE_PROTOCOL_VERSION: pins the sentinel format a dispatch's secret bag is validated against (swamp-club#3558)", () => {
-  // The dispatch schema checks each shipped sentinel with SENTINEL_EXACT,
-  // so a change to the format changes the wire: bump the version with it,
-  // and a worker on the other side of the change is refused at enrollment
-  // instead of failing on its first secret-bearing dispatch.
+  // the dispatch schema checks each shipped sentinel with SENTINEL_EXACT, so a
+  // format change changes the wire: bump the version with it so an incompatible
+  // worker is refused at enrollment
   assertEquals(
     [REMOTE_PROTOCOL_VERSION, SENTINEL_SOURCE],
     [6, "__SWAMP_VSEC_[0-9a-f]{32}_\\d+__"],
   );
-  // A sentinel of the protocol 4 shape is refused by the schema.
   assertEquals(
     DispatchParamsSchema.safeParse(
       dispatchWithSecretBag("__SWAMP_VSEC_0a1b2c3d_0__"),
@@ -469,7 +465,6 @@ Deno.test("DispatchParamsSchema: a version 6 reference bag carries the reference
       referenceBag: [{ ...entry, value: "s3cret" }],
     })),
   );
-  // A value smuggled into an entry is stripped, never delivered.
   assertEquals(parsed.referenceBag, [entry]);
   assertEquals(plaintextFieldsOf(parsed), []);
   for (
@@ -532,7 +527,6 @@ Deno.test("ResolveSecretParamsSchema: carries an optional resource claim (swamp-
 });
 
 Deno.test("DispatchSecretLoadRequestSchema: the body limit fits the largest request the schema admits", () => {
-  // Characters the JSON encoder escapes to six bytes, at every bound.
   const longest = (length: number) => "\u0001".repeat(length);
   const request = {
     references: Array.from({ length: MAX_DISPATCH_SECRET_LOADS }, () => ({

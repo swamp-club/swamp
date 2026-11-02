@@ -64,7 +64,6 @@ function job(
   return Job.create({ name, steps, dependsOn: after ? [after] : [] });
 }
 
-/** The issue's workflow: two gated parallel jobs and an always-teardown. */
 function issueWorkflow(): Workflow {
   return Workflow.create({
     name: "e2e-wf",
@@ -91,12 +90,10 @@ function issueWorkflow(): Workflow {
   });
 }
 
-/** A run as the store holds it: no forEach mappings, as after a load. */
 function reload(run: WorkflowRun): WorkflowRun {
   return WorkflowRun.fromData(run.toData());
 }
 
-/** The issue's run, suspended with `gate` approved and `gate2` waiting. */
 function suspendedIssueRun(workflow: Workflow): WorkflowRun {
   const run = WorkflowRun.create(workflow);
   run.start();
@@ -152,7 +149,6 @@ Deno.test("cancelAndSettle: settles the issue's suspended run as an abort would"
   assertEquals(run.getJob("main")!.getStep("gate")!.settledByAbort, false);
 });
 
-/** The issue's run, suspended with both gates waiting. */
 function suspendedAtBothGates(workflow: Workflow): WorkflowRun {
   const run = WorkflowRun.create(workflow);
   run.start();
@@ -391,7 +387,6 @@ Deno.test("settleCancelledRun: settles forEach iterations with their step's defi
           { step: "gate", condition: TriggerCondition.succeeded() },
           { forEach: { item: "env", in: '${{ ["dev", "qa"] }}' } },
         ),
-        // Runs only when build failed: the aggregate over its iterations.
         modelStep("rollback", {
           step: "build",
           condition: TriggerCondition.failed(),
@@ -581,7 +576,6 @@ Deno.test("resolveSettlementWorkflow: falls back to the repository definition", 
   const run = WorkflowRun.create(workflow);
   const calls: string[] = [];
 
-  // No run plan: the lookup is never asked.
   assertEquals(
     await resolveSettlementWorkflow(run, workflow, (id) => {
       calls.push(id);
@@ -610,7 +604,6 @@ Deno.test("resolveSettlementWorkflow: falls back to the repository definition", 
   );
 });
 
-/** A gate and a signal wait side by side, then a step depending on each. */
 function gateAndWaitWorkflow(): Workflow {
   return Workflow.create({
     name: "gate-and-wait",
@@ -716,12 +709,10 @@ Deno.test("failAbandonedSteps: marks the running steps it fails as stopped by th
   assertEquals(a.status, "failed");
   assertEquals(a.error, CANCELLED_STEP_ERROR);
   assertEquals(a.stoppedByAbort, true);
-  // A step that already failed on its own, and one never started, are left.
   assertEquals(jobRun.getStep("b")!.stoppedByAbort, false);
   assertEquals(jobRun.getStep("c")!.status, "pending");
 });
 
-/** A job a, b gated on a, c gated on b, whose records hold `statuses`. */
 function chain(
   bOnA: TriggerCondition,
   cOnB: TriggerCondition,
@@ -858,7 +849,6 @@ Deno.test("runsAfterFailure: an approval gate or a wait for a signal is work, wh
   }
 });
 
-/** Job each (forEach, always-gated on a), then t gated skipped on each. */
 function chainOverForEach(skips: StepSkipReasonData[]) {
   const t = modelStep("t", {
     step: "each",
@@ -898,7 +888,6 @@ Deno.test("runsAfterFailure: a forEach dependency answers skipped only when ever
   );
 });
 
-/** Jobs a, b gated on a, c gated on b, whose records hold `statuses`. */
 function jobChain(
   bOnA: TriggerCondition,
   cOnB: TriggerCondition,

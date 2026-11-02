@@ -117,8 +117,6 @@ Deno.test("AuditEmitter property: durable output is complete, ordered and chaine
         );
         assertEquals((await verifyChain(durable.received)).valid, true);
 
-        // Whatever reached the other sink is what the durable sink holds,
-        // in the same order and never twice.
         const bySequence = new Map(
           durable.received.map((e) => [e.sequence, e]),
         );
@@ -173,10 +171,6 @@ const durableStepArb: fc.Arbitrary<DurableStep> = fc.oneof(
   },
 );
 
-/**
- * A durable sink whose writes hang while `hanging` is set, until settled.
- * Counts how many of its writes are outstanding at once.
- */
 function hangingDurableSink(): AuditSink & {
   hanging: boolean;
   received: ChainedAuditEvent[];

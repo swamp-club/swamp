@@ -42,7 +42,6 @@ export const PendingDispatchStateSchema = z.enum([
 
 export type PendingDispatchState = z.infer<typeof PendingDispatchStateSchema>;
 
-/** States that end a queue episode; a record in one of them is never rewritten. */
 export const TERMINAL_PENDING_DISPATCH_STATES: ReadonlySet<
   PendingDispatchState
 > = new Set([

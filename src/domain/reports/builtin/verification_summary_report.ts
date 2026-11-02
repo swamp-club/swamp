@@ -34,12 +34,9 @@ function isWorkflowContext(ctx: ReportContext): ctx is WorkflowReportContext {
 }
 
 /**
- * One-line rendering of why a step did not run.
- *
- * A skip with no recorded reason reads as `skipped (reason not recorded)`
- * rather than a bare `skipped`: runs persisted before skip reasons existed
- * are legitimately silent, and saying so is honest where an unqualified
- * "skipped" invites the reader to assume a guard.
+ * a skip with no recorded reason reads 'reason not recorded', since older
+ * persisted runs are legitimately silent and a bare 'skipped' invites the
+ * reader to assume a guard
  */
 function describeSkipReason(reason: StepSkipReasonInfo | undefined): string {
   if (!reason) return "reason not recorded";
@@ -59,22 +56,9 @@ function describeSkipReason(reason: StepSkipReasonInfo | undefined): string {
 }
 
 /**
- * Per-run summary of a verification workflow: every step, its result, and why
- * anything was skipped.
- *
- * This used to be called `@swamp/verification-attestation` and label its JSON
- * `type: "verification-attestation"`, which claimed more than it delivered.
- * The attestation is a specific document — it binds a commit, pins the hashes
- * of the files that shaped the verification, and spans all three verify-*
- * workflows — and this report is none of those things: it is `scope:
- * "workflow"`, so it only ever sees one run, and it hashes nothing. With two
- * producers of attestation-shaped JSON in the tree, the one that could not
- * actually produce an attestation had the better claim to the name.
- *
- * The real thing is built by `scripts/build_attestation.ts` and typed by
- * `AttestationSchema`. That one lives in the repo rather than here on purpose:
- * which files get hashed and what a review verdict means are this repository's
- * verification policy, not something swamp should ship to everyone.
+ * a per-run summary only, not an attestation: the real one is built by
+ * scripts/build_attestation.ts and lives in the repo because what gets hashed
+ * is this repository's verification policy
  */
 export const verificationSummaryReport: ReportDefinition = {
   description:
@@ -123,7 +107,6 @@ export const verificationSummaryReport: ReportDefinition = {
       jobGroups.set(step.jobName, group);
     }
 
-    // -- Markdown: human-readable checklist --
     const lines: string[] = [
       `# Verification Attestation`,
       "",
@@ -210,7 +193,6 @@ export const verificationSummaryReport: ReportDefinition = {
 
     const markdown = lines.join("\n");
 
-    // -- JSON: structured attestation for CI validation --
     const json: Record<string, unknown> = {
       version: "1",
       type: "verification-summary",

@@ -162,8 +162,6 @@ Deno.test("Job.toData returns correct structure", () => {
   assertEquals(data.weight, 3);
 });
 
-// Removed driver field tests (see design/enablers/remote-execution.md)
-
 Deno.test("JobSchema rejects removed driver field with actionable error", () => {
   const step = createTestStep("step1");
   const error = assertThrows(
@@ -237,8 +235,6 @@ Deno.test("Job.fromData and toData roundtrip correctly", () => {
   assertEquals(restored.dependsOn.length, original.dependsOn.length);
   assertEquals(restored.weight, original.weight);
 });
-
-// Placement inheritance tests (swamp-club#1685)
 
 Deno.test("JobSchema accepts job-level placement fields", () => {
   const data = JobSchema.parse({

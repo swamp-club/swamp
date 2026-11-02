@@ -41,7 +41,6 @@ function workflowOf(...names: string[]): Workflow {
   });
 }
 
-/** A run whose jobs are stored under `stored`, in order. */
 function runOf(workflow: Workflow, ...stored: string[]): WorkflowRun {
   return runWithInputs(workflow, {}, ...stored);
 }
@@ -84,22 +83,18 @@ Deno.test("pairExpressionJobs: an empty map for a workflow without expression-na
 
 Deno.test("pairExpressionJobs: undefined once the workflow's jobs no longer line up with the run's", () => {
   const wf = workflowOf(A, B, "literal");
-  // A job added or removed since the run.
   assertEquals(
     pairExpressionJobs(wf, runOf(wf, "site-west", "site-east")),
     undefined,
   );
-  // A literal job moved.
   assertEquals(
     pairExpressionJobs(wf, runOf(wf, "literal", "site-west", "site-east")),
     undefined,
   );
-  // A stored name that does not fit the literal text around the expression.
   assertEquals(
     pairExpressionJobs(wf, runOf(wf, "host-west", "site-east", "literal")),
     undefined,
   );
-  // A stored name that is a literal job of the workflow.
   const withSite = workflowOf(A, "site-east");
   assertEquals(
     pairExpressionJobs(withSite, runOf(withSite, "site-east", "site-east")),
@@ -125,13 +120,11 @@ Deno.test("pairExpressionJobs: a name that only reads inputs pairs by the run's 
     "site-east",
     "literal",
   );
-  // The two expression-named jobs swapped since the run.
   const swapped = workflowOf(B, A, "literal");
   assertEquals(
     pairExpressionJobs(swapped, run),
     new Map([[B, "site-east"], [A, "site-west"]]),
   );
-  // And a job added, which position alone could not survive.
   const added = workflowOf("first", B, A, "literal");
   assertEquals(
     pairExpressionJobs(added, run),

@@ -65,26 +65,11 @@ import { markErrorPaths } from "../errors.ts";
 import { plainDenoEnv } from "../runtime/deno_plain_env.ts";
 
 /**
- * Client-side scoring of an extension archive against the Swamp Club
- * quality rubric.
- *
- * The rubric itself, and every rule about what in the archive counts, live
- * in `@swamp-club/extension-scoring`, which swamp-club's scorecard uses as
- * well (swamp-club#3781). This module is the CLI's I/O around it: extract
- * the archive, strip its config files, run `deno doc`, read the README and
- * LICENSE, then compose the score with what only the CLI knows before
- * publish. `repository-verified` is provisional here for a public
- * repository URL because only the registry calls the host's API, so its
- * points count as not earned yet and the percentage is the registry's for
- * the case where it does not; an attested private source is earned, as the
- * registry awards it on the attestation alone.
- *
- * Distinct from `extension_quality_checker.ts` in this directory — that
- * module runs `deno fmt` / `deno lint` / dynamic-import checks as part of
- * packaging (bundle safety).
+ * rubric rules live in @swamp-club/extension-scoring, shared with the registry;
+ * repository-verified is provisional for a public repo URL (only the registry
+ * calls the host API) but earned for an attested private source
  */
 
-/** One row of the scorecard as the CLI reports it. */
 export interface RubricFactor {
   id: string;
   label: string;
@@ -94,7 +79,6 @@ export interface RubricFactor {
   remediation?: string;
 }
 
-/** Complete rubric score. */
 export interface RubricScore {
   rubricVersion: number;
   factors: RubricFactor[];
@@ -102,17 +86,10 @@ export interface RubricScore {
   maxEarnablePoints: number;
   /** floor(earned × 100 / maxEarnablePoints): the registry's formula. */
   percentage: number;
-  /** The registry's grade for `percentage`. */
   grade: ScoreGrade;
-  /**
-   * What the registry shows if it awards every provisional row, or null
-   * when nothing is provisional.
-   */
   ifProvisionalEarned: { percentage: number; grade: ScoreGrade } | null;
   allPassed: boolean;
-  /** Points pending the registry; not in `earnedPoints`. */
   provisionalPoints: number;
-  /** Points the CLI can confirm before publish; not the percentage's divisor. */
   maxClientEarnablePoints: number;
   /**
    * Why `deno doc` could not analyse the source, or null when it could.
@@ -121,25 +98,18 @@ export interface RubricScore {
   docAnalysisError: string | null;
 }
 
-/** What the CLI knows before publish beyond the archive itself. */
 export interface LocalScoreOptions {
   dependencyTrustBlockerCount?: number;
-  /** Dependencies a failed OSV, npm or JSR lookup left unaudited. */
   dependencyNotAuditedCount?: number;
-  /** The distinct fixes the unaudited dependencies need. */
   dependencyNotAuditedFixes?: readonly NotAuditedFix[];
-  /** Dependencies with a loose specifier: they cost one of the two points. */
   dependencyLooseCount?: number;
-  /** No secret-unsafe-docs finding is left unaccepted; unchecked when absent. */
   secretSafeDocs?: boolean;
   privateSource?: PrivateSourceStanding;
 }
 
 /**
- * Compose the CLI's score from the archive's analysis and the manifest.
- * Every rule is the shared rubric's; this only maps the CLI's inputs onto
- * it. Without a dependency audit or secret-docs check the two factors are
- * unearned, as nothing vouched for them.
+ * without a dependency audit or secret-docs check those two factors are
+ * unearned, as nothing vouched for them
  */
 export function composeLocalScore(
   analysis: AnalysisFactors,
@@ -203,13 +173,9 @@ export function composeLocalScore(
 }
 
 /**
- * Whether a publish of this extension will be private, mirroring the
- * registry's `confirm-push.ts`: a republish keeps the stored visibility,
- * and a first publish is private when the manifest asks for it or the
- * collective's namespace is private, whatever the manifest says otherwise.
- *
- * @param existing the published extension, or null when it is not
- *   published yet
+ * mirrors the registry's confirm-push: a republish keeps the stored visibility;
+ * a first publish is private when the manifest asks or the collective's
+ * namespace is private, whatever the manifest says otherwise
  */
 export function predictPublishedPrivate(
   existing: { isPrivate: boolean } | null,
@@ -220,20 +186,15 @@ export function predictPublishedPrivate(
   return manifestVisibility === "private" || privateNamespace;
 }
 
-// ── Tarball extraction + deno doc orchestrator ─────────────────────────
-
 /**
- * Extracts a `.tar.gz` byte stream into the given directory. Domain owns
- * the port; the libswamp layer wires in `extractTarGz` from
- * `infrastructure/archive/tar_archive.ts` so this module doesn't reach
- * across layers. Tests inject a fake.
+ * domain owns the port so this module does not reach across layers; libswamp
+ * wires the real extractor and tests inject a fake
  */
 export type ExtractTarball = (
   source: ReadableStream<Uint8Array>,
   destDir: string,
 ) => Promise<void>;
 
-/** Injected subprocess deps — makes tests hermetic. */
 export interface RubricScoreDeps {
   /**
    * Runs `deno`. `denoDir`, when given, is an empty cache directory the run
@@ -281,7 +242,6 @@ const ISOLATED_ENV_KEYS: readonly string[] = [
   "SSL_CERT_FILE",
 ];
 
-/** The environment of an isolated `deno doc` run. */
 export function isolatedDenoEnv(
   baseEnv: Record<string, string>,
   denoDir: string,
@@ -295,10 +255,6 @@ export function isolatedDenoEnv(
   return env;
 }
 
-/**
- * Default deps: real `deno` subprocess plus the supplied tarball extractor.
- * `isolated` runs it as the registry does (see {@link RubricScoreDeps}).
- */
 export function createRubricScoreDeps(
   denoPath: string,
   extractTarball: ExtractTarball,
@@ -331,12 +287,6 @@ export function createRubricScoreDeps(
   };
 }
 
-/**
- * Score a pre-built extension tarball against the rubric. Extracts
- * the tarball to a temp dir, strips hermetic configs, writes a
- * controlled deno.json, runs `deno doc`, and composes the score with
- * the shared rubric, as the registry's scorecard does.
- */
 export async function scoreExtensionTarball(
   tarballBytes: Uint8Array,
   manifest: ExtensionManifest,
@@ -368,8 +318,6 @@ export async function scoreExtensionTarball(
     // common case is extractDir/extension/manifest.yaml.
     const logicalRoot = await findManifestRoot(extractDir);
 
-    // Strip any config files the packager might have included, then
-    // write the controlled deno.json the registry writes too.
     for (const name of STRIPPED_CONFIG_FILES) {
       await Deno.remove(join(logicalRoot, name)).catch(() => {});
     }
@@ -388,7 +336,6 @@ export async function scoreExtensionTarball(
     const readme = await findReadme(logicalRoot);
     const hasLicenseFile = await findLicenseFile(logicalRoot);
 
-    // an isolated run starts from an empty cache, removed with tmpDir
     let denoDir: string | undefined;
     if (deps.isolated) {
       denoDir = join(tmpDir, "deno_dir");
@@ -444,10 +391,6 @@ export async function scoreExtensionTarball(
   }
 }
 
-/**
- * The directory holding `manifest.yaml` in an extracted archive, searched
- * the way the registry searches (shared rule).
- */
 export async function findManifestRoot(extractDir: string): Promise<string> {
   const found = await findManifestRootIn({
     hasManifest: async (dir) => {
@@ -477,7 +420,6 @@ export async function findManifestRoot(extractDir: string): Promise<string> {
   return found === "" ? extractDir : join(extractDir, ...found.split("/"));
 }
 
-/** The manifest's entrypoints as absolute paths under the manifest root (shared rule). */
 export function collectEntrypoints(
   root: string,
   rootAbs: string,
@@ -514,7 +456,6 @@ async function listNames(dir: string): Promise<string[]> {
   return names;
 }
 
-/** README lookup at the logical root and `files/`, by exact name. */
 async function findReadme(root: string): Promise<string | null> {
   for (const dir of DOC_FILE_DIRS) {
     const abs = join(root, dir);
@@ -529,7 +470,6 @@ async function findReadme(root: string): Promise<string | null> {
   return null;
 }
 
-/** Non-empty LICENSE file lookup at the logical root and `files/`, by exact name. */
 async function findLicenseFile(root: string): Promise<boolean> {
   for (const dir of DOC_FILE_DIRS) {
     const abs = join(root, dir);
@@ -566,7 +506,6 @@ async function fileUrlRoots(rootAbs: string): Promise<string[]> {
   return spellings.map((p) => decodeURIComponent(pathToFileUrl(p).pathname));
 }
 
-/** `deno doc --json` failed or gave no JSON: the source did not resolve. */
 class DenoDocFailedError extends Error {
   constructor(readonly output: string) {
     super("deno doc --json failed");

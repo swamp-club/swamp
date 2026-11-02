@@ -25,7 +25,6 @@ import {
   removedDriverFieldMessage,
 } from "./removed_driver_fields.ts";
 
-/** The issues `addRemovedDriverFieldIssues` reports for `data`. */
 function issuesOf(data: unknown): { path: string; message: string }[] {
   const result = z.preprocess(addRemovedDriverFieldIssues, z.unknown())
     .safeParse(data);

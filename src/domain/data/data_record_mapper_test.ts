@@ -83,10 +83,6 @@ function stubRepo(
   } as unknown as UnifiedDataRepository;
 }
 
-// ============================================================================
-// fromRow — synchronous CatalogRow → DataRecord
-// ============================================================================
-
 Deno.test("fromRow: parses JSON attributes when loadAttributes is true", () => {
   const json = { host: "db.example.com", port: 5432 };
   const repo = stubRepo(encoder.encode(JSON.stringify(json)));
@@ -300,10 +296,6 @@ Deno.test("fromRow: loads content for text/ content types", () => {
   assertEquals(record.content, text);
 });
 
-// ============================================================================
-// fromData — async Data entity → DataRecord
-// ============================================================================
-
 const owner = {
   ownerType: "model-method" as const,
   ownerRef: "test/model:test",
@@ -373,7 +365,6 @@ Deno.test("fromData: stamps the repository namespace onto the record", async () 
     ownerDefinition: owner,
   });
 
-  // Repo configured with a non-solo namespace — the record must report it.
   const repo = {
     namespace: "infra",
     getContentSync: () => null,
@@ -456,7 +447,6 @@ Deno.test("fromData: maps provenance fields from ownerDefinition", async () => {
 
   assertEquals(record!.ownerType, "model-method");
   assertEquals(record!.ownerRef, "test/model:test");
-  // Unset optional provenance fields default to empty string
   assertEquals(record!.workflowRunId, "");
   assertEquals(record!.workflowName, "");
   assertEquals(record!.jobName, "");
@@ -485,10 +475,6 @@ Deno.test("fromData: handles null content bytes", async () => {
   assertEquals(record!.attributes, {});
   assertEquals(record!.content, "");
 });
-
-// ============================================================================
-// fromResourceHandle — vault reference resolution
-// ============================================================================
 
 Deno.test("fromResourceHandle: keeps sensitive references in stored attributes", async () => {
   const vaultService = new VaultService();
@@ -617,10 +603,6 @@ Deno.test("fromResourceHandle: returns raw vault refs when vaultService is omitt
   assertEquals(record.attributes.apiKey, vaultRef);
   assertEquals(record.attributes.label, "test");
 });
-
-// ============================================================================
-// content — JSON content is parsed object, not raw string
-// ============================================================================
 
 Deno.test("fromRow: content is parsed object for JSON, enabling dot access", () => {
   const json = { exitCode: 0, stdout: "12929", stderr: "" };
@@ -754,10 +736,6 @@ Deno.test("fromResourceHandle: content is empty string for non-JSON", async () =
 
   assertEquals(record.content, "");
 });
-
-// ============================================================================
-// localContentPath / path — local content location for CEL data.* results
-// ============================================================================
 
 function pathRepo(
   namespace: string,
@@ -916,10 +894,6 @@ Deno.test("fromData: a vault access refusal fails the read instead of leaving th
   );
 });
 
-// ============================================================================
-// fromRow — a local body shorter than its row (swamp-club#3178)
-// ============================================================================
-
 function shortBodyRepo(
   bytes: Uint8Array,
   accepted: boolean | undefined,
@@ -978,15 +952,6 @@ Deno.test("fromRow: a repository without isContentAcceptedSync accepts a short b
   assertEquals(record.attributes, { a: 1 });
 });
 
-// ============================================================================
-// fromRow — another namespace's row (swamp-club#3691)
-// ============================================================================
-
-/**
- * A repository of namespace `namespace` whose own layout holds `own` at
- * every path, counting the synchronous reads. `readsSoloNamespace` marks
- * its foreign content fetcher as one that reads the solo namespace too.
- */
 function namespacedRepo(
   namespace: string,
   own: Uint8Array,

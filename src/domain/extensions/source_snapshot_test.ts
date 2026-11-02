@@ -101,7 +101,6 @@ Deno.test("sourceSnapshotChanged: without recorded modules, covers the entry's r
     assertEquals(snapshot.files.includes(helper), true);
     assertEquals(await sourceSnapshotChanged(snapshot), false);
 
-    // A pull that changes only a helper module.
     await Deno.writeTextFile(helper, "export const h = 2;\n");
     assertEquals(await sourceSnapshotChanged(snapshot), true);
   });

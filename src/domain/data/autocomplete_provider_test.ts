@@ -45,7 +45,6 @@ Deno.test("AutocompleteProvider: root context returns matching fields", () => {
 Deno.test("AutocompleteProvider: root context with empty prefix returns all fields", () => {
   const provider = makeProvider();
   const items = provider.complete({ kind: "root", prefix: "" });
-  // Should include all QUERY_FIELDS, plus model() and behavior()
   assertEquals(items.length > 10, true);
   assertEquals(
     items.filter((i) => i.kind !== "field").map((i) => i.label),
@@ -106,7 +105,6 @@ Deno.test("AutocompleteProvider: operator context returns only comparison operat
   assertEquals(labels.includes("=="), true);
   assertEquals(labels.includes("!="), true);
   assertEquals(labels.includes(">="), true);
-  // Dot methods should NOT appear in operator context (space after field)
   assertEquals(labels.includes("contains("), false);
   assertEquals(labels.includes(".contains("), false);
   assertEquals(items.every((i) => i.kind === "operator"), true);
@@ -125,7 +123,6 @@ Deno.test("AutocompleteProvider: member context on known field returns dot metho
   assertEquals(labels.includes("contains("), true);
   assertEquals(labels.includes("startsWith("), true);
   assertEquals(labels.includes("matches("), true);
-  // Comparison operators should NOT appear
   assertEquals(labels.includes("=="), false);
 });
 

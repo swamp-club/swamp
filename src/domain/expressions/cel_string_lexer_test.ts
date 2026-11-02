@@ -51,7 +51,6 @@ Deno.test("lexSegments: triple-quoted strings span lines and hold single quotes"
 
 Deno.test("lexSegments: a backslash skips the next character, raw strings included", () => {
   assertEquals(kinds(`'a\\'b'`), [["string", `'a\\'b'`]]);
-  // cel-js ends a raw string at the same place as any other string.
   assertEquals(kinds(`r'a\\'b' + c`), [
     ["code", "r"],
     ["string", `'a\\'b'`],
@@ -71,7 +70,6 @@ Deno.test("stripStringLiterals: replaces strings and normalises member access", 
 });
 
 Deno.test("stripStringLiterals: a raw string's escaped quote does not end it", () => {
-  // The vault.get is real code: the raw string is 'a\'b'.
   assertEquals(
     stripStringLiterals(`r'a\\'b' + vault.get('v','k')`),
     `r"" + vault.get("","")`,

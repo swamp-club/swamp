@@ -48,8 +48,6 @@ function makeTestLocation(path: string) {
   return makeSourceLocation(path, REPO_ROOT);
 }
 
-// ---- recordSourceFailure: ValidationError input ----
-
 Deno.test("recordSourceFailure: ValidationError returns ValidationFailed state with bundle location", () => {
   const loc = makeTestLocation("/repo/extensions/models/foo.ts");
   const ext = makeTestExtension([
@@ -87,8 +85,6 @@ Deno.test("recordSourceFailure: ValidationError returns ValidationFailed state w
   assertEquals(source?.state.tag, "ValidationFailed");
 });
 
-// ---- recordSourceFailure: non-ValidationError input ----
-
 Deno.test("recordSourceFailure: non-ValidationError returns BundleBuildFailed state", () => {
   const loc = makeTestLocation("/repo/extensions/models/foo.ts");
   const ext = makeTestExtension([
@@ -121,8 +117,6 @@ Deno.test("recordSourceFailure: non-ValidationError returns BundleBuildFailed st
   const source = findSourceByPath(result.extension, loc.canonicalPath);
   assertEquals(source?.state.tag, "BundleBuildFailed");
 });
-
-// ---- existing source uses recordValidationFailed / recordBundleBuildFailed ----
 
 Deno.test("recordSourceFailure: existing source with ValidationError uses recordValidationFailed", () => {
   const loc = makeTestLocation("/repo/extensions/models/foo.ts");
@@ -190,8 +184,6 @@ Deno.test("recordSourceFailure: existing source with generic error uses recordBu
   assertEquals(updated?.state.tag, "BundleBuildFailed");
 });
 
-// ---- new source (existingSource undefined) uses makeExtensionWithNewSource ----
-
 Deno.test("recordSourceFailure: new source with ValidationError creates new source via makeExtensionWithNewSource", () => {
   const loc = makeTestLocation("/repo/extensions/models/bar.ts");
   const ext = makeTestExtension();
@@ -240,8 +232,6 @@ Deno.test("recordSourceFailure: new source with generic error creates new source
   assertEquals(source?.kind, "model");
 });
 
-// ---- transition emitted when fromState !== toState ----
-
 Deno.test("recordSourceFailure: emits transition when fromState differs from toState", () => {
   const loc = makeTestLocation("/repo/extensions/models/foo.ts");
   const bundle = makeBundleLocation("/repo/.swamp/bundles/foo.js", "fp1");
@@ -273,8 +263,6 @@ Deno.test("recordSourceFailure: emits transition when fromState differs from toS
   assertEquals(result.transition?.toState, "BundleBuildFailed");
 });
 
-// ---- no transition when fromState === toState ----
-
 Deno.test("recordSourceFailure: no transition when fromState equals toState", () => {
   const loc = makeTestLocation("/repo/extensions/models/foo.ts");
   const ext = makeTestExtension([
@@ -303,8 +291,6 @@ Deno.test("recordSourceFailure: no transition when fromState equals toState", ()
   assertEquals(result.transition, undefined);
 });
 
-// ---- no transition for new source (fromState is null, toState is non-null) ----
-
 Deno.test("recordSourceFailure: emits transition for new source (fromState null)", () => {
   const loc = makeTestLocation("/repo/extensions/models/new.ts");
   const ext = makeTestExtension();
@@ -321,13 +307,10 @@ Deno.test("recordSourceFailure: emits transition for new source (fromState null)
     sourceMtime: "2026-01-01T00:00:00.000Z",
   });
 
-  // fromState is null (new source), toState is BundleBuildFailed — they differ
   assertEquals(result.transition !== undefined, true);
   assertEquals(result.transition?.fromState, null);
   assertEquals(result.transition?.toState, "BundleBuildFailed");
 });
-
-// ---- kindDirToExtensionKind mappings ----
 
 Deno.test("kindDirToExtensionKind: maps all kindDir values correctly", () => {
   assertEquals(kindDirToExtensionKind("models"), "model");
@@ -337,8 +320,6 @@ Deno.test("kindDirToExtensionKind: maps all kindDir values correctly", () => {
   assertEquals(kindDirToExtensionKind("webhooks"), "webhook");
 });
 
-// ---- extensionKindToKindDir mappings ----
-
 Deno.test("extensionKindToKindDir: maps all extensionKind values correctly", () => {
   assertEquals(extensionKindToKindDir("model"), "models");
   assertEquals(extensionKindToKindDir("extension"), "models");
@@ -347,8 +328,6 @@ Deno.test("extensionKindToKindDir: maps all extensionKind values correctly", () 
   assertEquals(extensionKindToKindDir("report"), "reports");
   assertEquals(extensionKindToKindDir("webhook"), "webhooks");
 });
-
-// ---- findSourceByPath ----
 
 Deno.test("findSourceByPath: returns source when path matches", () => {
   const loc = makeTestLocation("/repo/extensions/models/foo.ts");

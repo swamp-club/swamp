@@ -18,10 +18,8 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * What a workflow's steps run: the models and nested workflows a run of it
- * will invoke. Serve authorizes the targets a workflow edit adds against the
- * writer, since a run of the workflow invokes them under only the workflow's
- * own `run` grant.
+ * serve authorizes the targets an edit adds against the writer, since a run
+ * invokes them under only the workflow's own run grant
  */
 
 import { containsExpression } from "../expressions/expression_parser.ts";
@@ -34,16 +32,11 @@ import {
 import { scanExpressions } from "../expressions/expression_scanner.ts";
 import type { Workflow } from "./workflow.ts";
 
-/**
- * One thing a workflow step runs. `location` is the step it sits in, as a
- * scope by job and step name, absent for a target not tied to a step.
- */
 export type StepTarget =
   & { readonly location?: string }
   & (
     | {
       readonly kind: "model";
-      /** A model name or id, or text with an expression computing one. */
       readonly modelIdOrName: string;
       readonly methodName: string;
     }
@@ -60,10 +53,8 @@ export type StepTarget =
   );
 
 /**
- * Each step's scope: `jobs[<job>].steps[<step>]` by name, with an occurrence
- * count for a repeated name, keyed by its index path (`jobs[j].steps[k]`).
- * Scopes by name stay put when other steps are added, removed or reordered,
- * so an edit elsewhere in the workflow does not look like it moved them.
+ * scopes by name stay put when other steps are added, removed or reordered, so
+ * an edit elsewhere does not look like it moved them
  */
 function stepScopes(workflow: Workflow): Map<string, string> {
   const scopes = new Map<string, string>();
@@ -86,7 +77,6 @@ function stepScopes(workflow: Workflow): Map<string, string> {
   return scopes;
 }
 
-/** `path` with its leading `jobs[j].steps[k]` replaced by the step's scope. */
 function scopedPath(scopes: Map<string, string>, path: string): string {
   const match = /^jobs\[\d+\]\.steps\[\d+\]/.exec(path);
   if (!match) return path;
@@ -94,7 +84,6 @@ function scopedPath(scopes: Map<string, string>, path: string): string {
   return scope ? scope + path.slice(match[0].length) : path;
 }
 
-/** Every step target in `workflow`, one per step that runs something. */
 export function workflowStepTargets(workflow: Workflow): StepTarget[] {
   const targets: StepTarget[] = [];
   const scopes = stepScopes(workflow);
@@ -132,12 +121,8 @@ export function workflowStepTargets(workflow: Workflow): StepTarget[] {
 }
 
 /**
- * The targets of the steps an edit adds or changes: each step of `after`
- * with no stored step at its scope, or whose content — inputs, method,
- * condition, dependsOn as much as what it runs — differs from the stored
- * one. A step renamed or moved to another job has a new scope, so it counts
- * as changed; a step left alone while others are added, removed or
- * reordered does not. Removed steps are not returned.
+ * a renamed step or one moved to another job has a new scope and counts as
+ * changed; removed steps are not returned
  */
 export function changedStepTargets(
   before: Workflow,
@@ -153,7 +138,6 @@ export function changedStepTargets(
   );
 }
 
-/** Each step's canonical content, keyed by its scope. */
 function stepContents(workflow: Workflow): Map<string, string> {
   const scopes = stepScopes(workflow);
   const contents = new Map<string, string>();
@@ -168,12 +152,6 @@ function stepContents(workflow: Workflow): Map<string, string> {
   return contents;
 }
 
-/**
- * Every expression a run of `workflow` evaluates as authored: its `${{ }}`
- * templates and its assert steps' bare predicates. Paths inside a step are
- * given by the step's scope (job and step name), so they match across edits
- * that add, remove or reorder other steps.
- */
 export function analyzeWorkflowExpressions(
   workflow: Workflow,
 ): AnalyzedExpression[] {
@@ -198,10 +176,9 @@ export function analyzeWorkflowExpressions(
 }
 
 /**
- * Whether an edit changes what a computed step target can resolve to: the
- * workflow's inputs (their defaults feed `inputs.*`) or any step's `forEach`
- * (its items feed `self.*`), expression text included. Other edits, such as
- * a retag, cannot retarget a stored computed step, so they leave it alone.
+ * only workflow inputs (defaults feed inputs.*) or a step's forEach (items feed
+ * self.*) can retarget a stored computed step; other edits such as a retag
+ * leave it alone
  */
 export function stepRetargetSourcesChanged(
   before: Workflow,
@@ -225,10 +202,8 @@ function retargetSources(workflow: Workflow): unknown {
 }
 
 /**
- * A stable key for comparing targets across two versions of a workflow. A
- * computed target that reads `self` or `inputs` resolves per step (its
- * forEach), so its key includes the step; any other target is the same
- * wherever it sits.
+ * a computed target reading self or inputs resolves per step, so its key
+ * includes the step; any other target is the same wherever it sits
  */
 export function stepTargetKey(target: StepTarget): string {
   const { location, ...rest } = target;
@@ -237,15 +212,10 @@ export function stepTargetKey(target: StepTarget): string {
     : JSON.stringify(rest);
 }
 
-/** Whether any name in `target` is computed by an expression. */
 export function isComputedStepTarget(target: StepTarget): boolean {
   return stepTargetNames(target).some(containsExpression);
 }
 
-/**
- * Whether a computed target reads `self` or `inputs`, so a plain value the
- * workflow holds (an input default) can retarget it.
- */
 export function readsSelfOrInputs(target: StepTarget): boolean {
   return stepTargetNames(target).some((name) =>
     scanExpressions(name).some((span) =>

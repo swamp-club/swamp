@@ -24,14 +24,9 @@ import type { UnifiedDataRepository } from "../data/repositories.ts";
 import type { ModelType } from "../models/model_type.ts";
 
 /**
- * The latest record `modelName` wrote as `dataName` (the resource handle's
- * name, which is its spec name only when the method named the instance so),
- * read as stored for the typed evaluator to adapt
- * (design/enablers/typed-secrets.md Section 4.5 item 4, typed-secrets 3.5):
- * its tagged fields keep their reference text and no vault is read. Null
- * when nothing was written under that name, or when the content is not a
- * JSON document, which keeps the parsed-content shape `model.method`
- * returns with the option off.
+ * the latest record modelName wrote as dataName, read as stored for the typed
+ * evaluator to adapt: tagged fields keep their reference text and no vault is
+ * read; null when nothing was written or content is not JSON
  */
 export async function storedResourceRecord(
   dataRepo: UnifiedDataRepository,
@@ -41,8 +36,8 @@ export async function storedResourceRecord(
   modelName: string,
 ): Promise<DataRecord | null> {
   const data = await dataRepo.findByName(type, modelId, dataName);
-  // The media type is matched as a media type, parameters and case aside,
-  // not as the exact string (review note on swamp-club#3628).
+  // the media type is matched as a media type, parameters and case aside, not
+  // as the exact string
   if (!data || !isJsonMediaType(data.contentType)) return null;
   // The mapper reads the content through getContent; make it local and
   // current first, as the data.latest accessor does. A failed download never
@@ -60,12 +55,9 @@ export async function storedResourceRecord(
 }
 
 /**
- * What `model.method` answers for the latest resource `modelName` wrote as
- * `dataName`. A typed consuming evaluator is handed the stored record,
- * which it adapts so each tagged field is a `Secret` (Section 4.5 item 4);
- * any other evaluator receives what it always has, the parsed JSON content
- * or the text. Undefined when nothing was written, so the caller falls back
- * to the method's raw result.
+ * a typed consuming evaluator is handed the stored record to adapt so each
+ * tagged field is a Secret; any other gets the parsed JSON or text; undefined
+ * when nothing was written, so the caller uses the raw result
  */
 export async function modelMethodResourceResult(
   dataRepo: UnifiedDataRepository,

@@ -18,29 +18,14 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * The behavior spelling of stored and authored formats (swamp-club#3334).
- *
- * "Behavior" is the product term for what swamp used to call a model
- * (design/primitives/behaviors.md). Every stored format keeps the model name,
- * and swamp keeps writing it. Where a format is authored by people, the
- * behavior spelling is accepted as an exact synonym: each bounded context
- * translates it to the model spelling at its edge, before the value is used or
- * authorized. This table is the one list of those synonyms, and each
- * context's translator is tested against it.
- *
- * Only these exact spellings are synonyms. `behaviour`, plurals and other
- * near-misses are not: a misspelled deny rule must fail loudly rather than
- * match nothing (swamp-club#3130).
+ * authored formats accept the behavior spelling as an exact synonym, translated
+ * to the model spelling at each context's edge; near-misses are not synonyms so
+ * a misspelled deny rule fails loudly
  */
 
-/** The workflow step task type, behavior spelling, and its model form. */
 export const BEHAVIOR_STEP_TASK_TYPE = "behavior";
 export const MODEL_STEP_TASK_TYPE = "model_method";
 
-/**
- * The behavior spelling of each `model_method` step task field, mapped to the
- * field it stands for.
- */
 export const BEHAVIOR_STEP_TASK_FIELDS: Readonly<Record<string, string>> =
   Object.freeze({
     behavior: "modelIdOrName",
@@ -48,27 +33,19 @@ export const BEHAVIOR_STEP_TASK_FIELDS: Readonly<Record<string, string>> =
     behaviorName: "modelName",
   });
 
-/** The grant selector kind, behavior spelling, and its model form. */
 export const BEHAVIOR_SELECTOR_KIND = "behavior";
 export const MODEL_SELECTOR_KIND = "model";
 
-/** The audit action prefix, behavior spelling, and its model form. */
 export const BEHAVIOR_AUDIT_ACTION_PREFIX = "behavior.";
 export const MODEL_AUDIT_ACTION_PREFIX = "model.";
 
-/** The audit resource prefix, behavior spelling, and its model form. */
 export const BEHAVIOR_AUDIT_RESOURCE_PREFIX = "behavior:";
 export const MODEL_AUDIT_RESOURCE_PREFIX = "model:";
 
-/**
- * A grant selector or audit resource kind in its model form: `behavior`
- * becomes `model`, and every other kind is returned unchanged.
- */
 export function canonicalResourceKind(kind: string): string {
   return kind === BEHAVIOR_SELECTOR_KIND ? MODEL_SELECTOR_KIND : kind;
 }
 
-/** `value` with a leading `from` replaced by `to`, otherwise unchanged. */
 export function replacePrefix(
   value: string,
   from: string,
@@ -77,59 +54,39 @@ export function replacePrefix(
   return value.startsWith(from) ? to + value.slice(from.length) : value;
 }
 
-/**
- * The extension entry-point export, behavior spelling, and its model form
- * (swamp-club#3338). A module exports one or the other, never both.
- */
+/** a module exports one or the other, never both */
 export const BEHAVIOR_EXPORT_NAME = "behavior";
 export const MODEL_EXPORT_NAME = "model";
 
 /**
- * The extension source directory name, behavior spelling, and its model
- * form. Swamp loads `extensions/behaviors/` beside `extensions/models/` only
- * while the models directory is the default one; archives always carry the
- * sources under `models/`.
+ * behaviors/ is loaded beside models/ only while the models directory is the
+ * default; archives always carry sources under models/
  */
 export const BEHAVIORS_DIR_NAME = "behaviors";
 export const MODELS_DIR_NAME = "models";
 
-/** The default models directory and its behavior-spelled sibling. */
 export const DEFAULT_MODELS_DIR = "extensions/models";
 export const DEFAULT_BEHAVIORS_DIR = "extensions/behaviors";
 
-/**
- * The extension manifest key, behavior spelling, and its model form. A
- * manifest uses one or the other; a pushed manifest always says `models:`.
- */
+/** a manifest uses one or the other; a pushed manifest always says models: */
 export const BEHAVIOR_MANIFEST_KEY = "behaviors";
 export const MODEL_MANIFEST_KEY = "models";
 
-/**
- * The report scope, behavior spelling, and its model form (swamp-club#3410).
- * `report search --scope behavior` filters on the stored `model` scope.
- */
+/** report search --scope behavior filters on the stored model scope */
 export const BEHAVIOR_REPORT_SCOPE = "behavior";
 export const MODEL_REPORT_SCOPE = "model";
 
-/**
- * The data owner type, behavior spelling, and its model form
- * (swamp-club#3410). Data records always store `model-method`.
- */
+/** data records always store model-method */
 export const BEHAVIOR_OWNER_TYPE = "behavior-method";
 export const MODEL_OWNER_TYPE = "model-method";
 
-/**
- * The extension kind and registry content type, behavior spelling, and its
- * model form (swamp-club#3410). `.swamp-sources.yaml` `only:` and the
- * registry keep `models`.
- */
+/** .swamp-sources.yaml only: and the registry keep models */
 export const BEHAVIOR_EXTENSION_KIND = "behaviors";
 export const MODEL_EXTENSION_KIND = "models";
 
 /**
- * The data query function and field, behavior spelling, and their model
- * forms (swamp-club#3410). `behavior("x")` and `behaviorName` evaluate
- * exactly as `model("x")` and `modelName` do.
+ * behavior("x") and behaviorName evaluate exactly as model("x") and modelName
+ * do
  */
 export const BEHAVIOR_QUERY_FUNCTION = "behavior";
 export const MODEL_QUERY_FUNCTION = "model";
@@ -137,9 +94,8 @@ export const BEHAVIOR_QUERY_NAME_FIELD = "behaviorName";
 export const MODEL_QUERY_NAME_FIELD = "modelName";
 
 /**
- * The environment variable naming the models directory, behavior spelling,
- * and its model form (swamp-club#3410). When both are set the model form
- * wins, and different non-empty values are refused at startup.
+ * when both are set the model form wins, and different non-empty values are
+ * refused at startup
  */
 export const BEHAVIORS_DIR_ENV_VAR = "SWAMP_BEHAVIORS_DIR";
 export const MODELS_DIR_ENV_VAR = "SWAMP_MODELS_DIR";

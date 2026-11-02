@@ -78,7 +78,6 @@ Deno.test("StartSession: no command sequence reaches launched without task, harn
           apply(session, command);
         } catch (error) {
           assert(error instanceof StartTransitionError);
-          // A refused command leaves the session unchanged.
           assertEquals(session.toData(), before);
         }
         const data = session.toData();

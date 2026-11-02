@@ -79,7 +79,6 @@ Deno.test("SwampVersion.create throws on invalid format - four parts", () => {
 });
 
 Deno.test("SwampVersion.create accepts pre-release suffix", () => {
-  // Pre-release suffixes like -beta, -dev are now allowed
   const v = SwampVersion.create("1.0.0-beta");
   assertEquals(v.major, 1);
   assertEquals(v.minor, 0);
@@ -87,7 +86,6 @@ Deno.test("SwampVersion.create accepts pre-release suffix", () => {
 });
 
 Deno.test("SwampVersion.create accepts calver format with sha suffix", () => {
-  // Calver format: YYYYMMDD.HHMMSS.patch-sha.commit
   const v = SwampVersion.create("20260204.165928.0-sha.06db816c");
   assertEquals(v.major, 20260204);
   assertEquals(v.minor, 165928);

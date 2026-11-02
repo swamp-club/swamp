@@ -43,21 +43,18 @@ const VAULT_REMOTE: VaultClassification = {
   type: "@swamp/aws-sm-vault",
 };
 
-// Scenario 1: filesystem + none/local vault → local, no warnings
 Deno.test("resolveDeploymentMode: filesystem datastore with no vault returns local", () => {
   const result = resolveDeploymentMode(FILESYSTEM, VAULT_NONE);
   assertEquals(result.mode, "local");
   assertEquals(result.warnings, []);
 });
 
-// Scenario 2: filesystem + remote vault → local, no warnings
 Deno.test("resolveDeploymentMode: filesystem datastore with remote vault returns local", () => {
   const result = resolveDeploymentMode(FILESYSTEM, VAULT_REMOTE);
   assertEquals(result.mode, "local");
   assertEquals(result.warnings, []);
 });
 
-// Scenario 3: remote without control-plane → local, warns to update extension
 Deno.test("resolveDeploymentMode: remote datastore without control-plane returns local with warning", () => {
   const result = resolveDeploymentMode(REMOTE_NO_CP, VAULT_REMOTE);
   assertEquals(result.mode, "local");
@@ -68,7 +65,6 @@ Deno.test("resolveDeploymentMode: remote datastore without control-plane returns
   );
 });
 
-// Scenario 4: remote with control-plane + no vault → durable, warns about missing vault
 Deno.test("resolveDeploymentMode: remote datastore with control-plane and no vault returns durable with warning", () => {
   const result = resolveDeploymentMode(REMOTE_CP, VAULT_NONE);
   assertEquals(result.mode, "durable");
@@ -79,7 +75,6 @@ Deno.test("resolveDeploymentMode: remote datastore with control-plane and no vau
   );
 });
 
-// Scenario 5: remote with control-plane + local vault → durable (limited), warns about file-based secrets
 Deno.test("resolveDeploymentMode: remote datastore with control-plane and local vault returns durable limited", () => {
   const result = resolveDeploymentMode(REMOTE_CP, VAULT_LOCAL);
   assertEquals(result.mode, "durable (limited)");
@@ -90,21 +85,18 @@ Deno.test("resolveDeploymentMode: remote datastore with control-plane and local 
   );
 });
 
-// Scenario 6: remote with control-plane + remote vault → durable, no warnings
 Deno.test("resolveDeploymentMode: remote datastore with control-plane and remote vault returns durable", () => {
   const result = resolveDeploymentMode(REMOTE_CP, VAULT_REMOTE);
   assertEquals(result.mode, "durable");
   assertEquals(result.warnings, []);
 });
 
-// Edge: filesystem + local vault → still local, no warnings
 Deno.test("resolveDeploymentMode: filesystem datastore with local vault returns local", () => {
   const result = resolveDeploymentMode(FILESYSTEM, VAULT_LOCAL);
   assertEquals(result.mode, "local");
   assertEquals(result.warnings, []);
 });
 
-// Edge: remote without control-plane + no vault → local with extension warning only
 Deno.test("resolveDeploymentMode: remote datastore without control-plane and no vault returns local with warning", () => {
   const result = resolveDeploymentMode(REMOTE_NO_CP, VAULT_NONE);
   assertEquals(result.mode, "local");

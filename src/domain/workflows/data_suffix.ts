@@ -17,7 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/** Maximum length for a coerced suffix before truncation. */
 const MAX_SUFFIX_LENGTH = 64;
 
 function sanitizeSuffix(raw: string): string {
@@ -27,15 +26,6 @@ function sanitizeSuffix(raw: string): string {
     .replace(/[/\\]/g, "--");
 }
 
-/**
- * Safely converts an unknown value to a string suitable for use as a
- * data artifact name suffix. For objects, tries common identifier
- * properties (`key`, `name`, `id`) before falling back to a truncated
- * JSON representation.
- *
- * Used by both forEach iteration (to derive per-iteration suffixes)
- * and the vary mechanism (to derive per-vary-dimension suffixes).
- */
 export function coerceToSuffix(val: unknown): string {
   if (val === undefined || val === null) {
     return "";

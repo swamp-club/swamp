@@ -73,8 +73,8 @@ Deno.test("parseUntrusted: a union holding a failing array gives one issue", () 
 });
 
 Deno.test("parseUntrusted: a bare record still gives one issue per entry", () => {
-  // zod 4.6.7 records ignore abortEarly; boundedRecord exists because of it.
-  // If this starts failing, zod changed and boundedRecord may be redundant.
+  // zod records ignore abortEarly, which is why boundedRecord exists; if this
+  // fails, zod changed and boundedRecord may be redundant
   const schema = z.record(z.string(), z.string());
   assertEquals(issueCount(parseUntrusted(schema, manyEntries(0))), N);
 });

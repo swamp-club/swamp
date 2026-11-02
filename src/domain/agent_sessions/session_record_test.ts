@@ -47,7 +47,6 @@ import {
   readAgentSessionSummary,
 } from "./session_record.ts";
 
-/** A hand-built v2 session: two turns, a swamp call with spans, a bypass. */
 function sampleSession(): Record<string, unknown> {
   return {
     schemaVersion: 2,
@@ -437,7 +436,6 @@ Deno.test("AgentSessionRecordV2Schema: a finding can be info", () => {
 });
 
 Deno.test("agentSessionChildId: the parent id, then a hash of both ids", async () => {
-  // SHA-256 of ["3b1c9e2a-0f4d","A1B2C3d4e5f6a7b8c"] as JSON, first 32 hex.
   assertEquals(
     await agentSessionChildId("3b1c9e2a-0f4d", "A1B2C3d4e5f6a7b8c"),
     "3b1c9e2a-0f4d_0789f6bf2eaf2134f3b956d4f043bd78",
@@ -489,7 +487,6 @@ Deno.test("agentSessionSummary: counts the session's own calls, tokens and findi
     harness: "claude-code",
     harnessVersion: "2.1.0",
     invocation: "interactive",
-    // The subagent call ends after the last turn does.
     wallMs: 15000,
     activeMs: 4200 + 3000,
     turns: 2,

@@ -77,7 +77,6 @@ Deno.test("methodSummaryReport: succeeded method with data handles shows narrati
 
   const result = await methodSummaryReport.execute(ctx);
 
-  // Markdown checks: title, narrative, retrieval hint (compact for humans)
   assertStringIncludes(
     result.markdown,
     "# my-server (server) \u2192 deploy: succeeded",
@@ -92,17 +91,14 @@ Deno.test("methodSummaryReport: succeeded method with data handles shows narrati
     result.markdown,
     '| **output.json** | file | `swamp data query \'modelType == "server" && modelId == "def-123" && name == "output.json" && version == 1\' --select content` |',
   );
-  // No schema in markdown — that's JSON-only for agents
   assertEquals(result.markdown.includes("## Output Schema"), false);
 
-  // Argument names shown in markdown (never values)
   assertStringIncludes(result.markdown, "**Global Arguments**");
   assertStringIncludes(result.markdown, "**Method Arguments**");
   assertStringIncludes(result.markdown, "- region");
   assertStringIncludes(result.markdown, "- force");
   assertEquals(result.markdown.includes("us-east-1"), false);
 
-  // JSON checks
   assertEquals(result.json.status, "succeeded");
   assertEquals(result.json.modelId, "def-123");
   assertEquals(result.json.modelName, "my-server");
@@ -157,7 +153,6 @@ Deno.test("methodSummaryReport: failed method with error message", async () => {
     result.markdown,
     "Connection refused: could not reach server at 10.0.0.1:8080",
   );
-  // Narrative includes error
   assertStringIncludes(
     result.markdown,
     "deploy on my-server (server) failed: Connection refused",
@@ -228,11 +223,9 @@ Deno.test("methodSummaryReport: output specs render schema section in markdown a
 
   const result = await methodSummaryReport.execute(ctx);
 
-  // Schema NOT in markdown (compact for humans), only in JSON
   assertEquals(result.markdown.includes("## Output Schema"), false);
   assertEquals(result.markdown.includes("- title: string"), false);
 
-  // JSON includes outputSpecs for agent retrieval
   const specs = result.json.outputSpecs as Array<Record<string, unknown>>;
   assertEquals(specs.length, 2);
   assertEquals(specs[0].specName, "episodes");
@@ -289,11 +282,9 @@ Deno.test("methodSummaryReport: multiple data handles grouped by specName", asyn
 
   const result = await methodSummaryReport.execute(ctx);
 
-  // Narrative mentions counts
   assertStringIncludes(result.markdown, "2 resources (items)");
   assertStringIncludes(result.markdown, "1 file (logs)");
 
-  // Data output table with retrieval commands
   assertStringIncludes(result.markdown, "## Data Output");
   assertStringIncludes(
     result.markdown,
@@ -308,7 +299,6 @@ Deno.test("methodSummaryReport: multiple data handles grouped by specName", asyn
     '| **log.txt** | file | `swamp data query \'modelType == "server" && modelId == "def-123" && name == "log.txt" && version == 1\' --select content` |',
   );
 
-  // JSON dataProduced includes specName
   const items = result.json.dataProduced as Array<Record<string, unknown>>;
   assertEquals(items.length, 3);
   assertEquals(items[0].specName, "items");
@@ -330,7 +320,6 @@ Deno.test("methodSummaryReport: both args empty shows 'No arguments.'", async ()
   assertEquals(result.markdown.includes("**Method Arguments**"), false);
   assertEquals(result.markdown.includes("```json\n{}"), false);
 
-  // JSON contains empty key arrays
   assertEquals(result.json.globalArgs, []);
   assertEquals(result.json.methodArgs, []);
 });
@@ -384,7 +373,6 @@ Deno.test("methodSummaryReport: JSON output structure matches expected shape", a
   const result = await methodSummaryReport.execute(ctx);
   const json = result.json;
 
-  // Verify all expected keys exist
   const expectedKeys = [
     "status",
     "modelId",
@@ -398,7 +386,6 @@ Deno.test("methodSummaryReport: JSON output structure matches expected shape", a
   ];
   assertEquals(Object.keys(json).sort(), expectedKeys.sort());
 
-  // Verify dataProduced item shape
   const items = json.dataProduced as Array<Record<string, unknown>>;
   assertEquals(items.length, 1);
   assertEquals(
@@ -423,7 +410,6 @@ Deno.test("methodSummaryReport: argument values never appear in markdown or JSON
 
   const result = await methodSummaryReport.execute(ctx);
 
-  // Markdown: argument names listed, values never appear
   assertStringIncludes(result.markdown, "- region");
   assertStringIncludes(result.markdown, "- apiKey");
   assertStringIncludes(result.markdown, "- target");
@@ -433,7 +419,6 @@ Deno.test("methodSummaryReport: argument values never appear in markdown or JSON
   assertEquals(result.markdown.includes("prod"), false);
   assertEquals(result.markdown.includes("hunter2"), false);
 
-  // JSON: key name arrays, not key-value objects
   assertEquals(result.json.globalArgs, ["region", "apiKey"]);
   assertEquals(result.json.methodArgs, ["target", "password"]);
 });

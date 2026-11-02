@@ -21,28 +21,16 @@ import { markModelWording } from "../behavior_wording.ts";
 import { UserError } from "../errors.ts";
 import { PartitionsRefusedError } from "./commit_log_unit_of_work.ts";
 
-/** Error code for {@link ConfigEditConflictError}. */
 export const CONFIG_EDIT_CONFLICT_CODE = "config_edit_conflict";
 
-/** One managed-config record another writer changed under an edit. */
 export interface ConfigEditConflict {
-  /** What was edited: a definition of a kind, or the extension lockfile. */
   readonly kind: "model" | "workflow" | "vault" | "lockfile";
-  /** The definition's name; undefined for the lockfile. */
   readonly name?: string;
-  /** The record key whose expected version did not hold. */
   readonly key: string;
-  /** Who changed it: the commit's principal, else its writer's host. */
   readonly changedBy?: string;
-  /** When the change was accepted. */
   readonly changedAt?: string;
 }
 
-/**
- * A managed-config edit started from a version another writer has since
- * changed, so it was refused and nothing of it was saved (swamp-club#4097).
- * `cause` is the datastore's refusal.
- */
 export class ConfigEditConflictError extends UserError {
   constructor(
     readonly conflicts: readonly ConfigEditConflict[],
@@ -55,13 +43,6 @@ export class ConfigEditConflictError extends UserError {
   }
 }
 
-/**
- * The edit conflict a refused commit stands for, itself or as the cause of
- * the error that wrapped it: every refusal of a
- * managed-config definition's or the lockfile's partition whose expected
- * version did not hold. Undefined for any other error, or a refusal with
- * any other reason or partition, which is not an edit conflict.
- */
 export function configEditConflictOf(
   error: unknown,
 ): ConfigEditConflictError | undefined {

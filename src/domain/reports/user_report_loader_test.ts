@@ -28,13 +28,11 @@ import { ExtensionRepository } from "../../infrastructure/persistence/extension_
 import { LockfileRepository } from "../../infrastructure/persistence/lockfile_repository.ts";
 import type { DenoRuntime } from "../runtime/deno_runtime.ts";
 
-/** Test DenoRuntime that returns the current deno binary path. */
 const testDenoRuntime: DenoRuntime = {
   ensureDeno: () => Promise.resolve(Deno.execPath()),
   getDenoEnv: () => Deno.env.toObject(),
 };
 
-/** W1b/(a-2): construct an ExtensionRepository wrapping a test catalog. */
 function makeRepoForCatalog(
   catalog: ExtensionCatalogStore,
   repoRoot: string,
@@ -50,11 +48,8 @@ function makeRepoForCatalog(
 }
 
 Deno.test("UserReportLoader buildIndex rebundles when source content changes with preserved mtime (#128)", async () => {
-  // Mirrors the models-loader regression at user_model_loader_test.ts —
-  // swap source content but restore the original mtime (the atomic-rename
-  // / rsync --times / sub-ms edit signature), then re-run buildIndex and
-  // verify the regenerated bundle carries the new content. With the old
-  // mtime-based freshness check the stale bundle would be served.
+  // restoring the original mtime after a content edit must still rebundle; an
+  // mtime-only freshness check would serve the stale bundle
   const ts = crypto.randomUUID().slice(0, 8);
   const name = `@user/preserved-mtime-report-${ts}`;
   const v1 = `
@@ -116,8 +111,7 @@ export const report = {
 
     const origMtime = (await Deno.stat(sourcePath)).mtime!;
 
-    // Swap content, then restore the original mtime — the #125 trigger.
-    // The restored mtime keeps source mtime <= bundle mtime without sleeping.
+    // the restored mtime keeps source mtime <= bundle mtime without sleeping
     await Deno.writeTextFile(sourcePath, v2);
     await Deno.utime(sourcePath, origMtime, origMtime);
 
@@ -130,7 +124,6 @@ export const report = {
       "Precondition — source mtime must be <= bundle mtime to exercise the bug",
     );
 
-    // Drop the registry entry so the second buildIndex fully re-imports.
     const catalog2 = new ExtensionCatalogStore(dbPath);
     const repository2 = makeRepoForCatalog(catalog2, repoDir);
     const loader2 = new ExtensionLoader(
@@ -161,9 +154,6 @@ export const report = {
 });
 
 Deno.test("UserReportLoader buildIndex rebundles when transitive dep content changes with preserved mtime (#128)", async () => {
-  // Transitive-dep variant — edit a _lib/*.ts helper, preserve the entry
-  // point's mtime, verify the fingerprint helper walks the dep graph and
-  // marks the entry point stale.
   const ts = crypto.randomUUID().slice(0, 8);
   const name = `@user/preserved-mtime-report-dep-${ts}`;
   const entry = `
@@ -218,8 +208,6 @@ export const report = {
     const v1Bundle = await Deno.readTextFile(bundlePath);
     assertEquals(v1Bundle.includes("V1_DEP_MARKER"), true);
 
-    // Capture both the entry and dep mtimes, edit the dep content, restore
-    // both mtimes so nothing on disk suggests a change except the bytes.
     const entryMtime = (await Deno.stat(entryPath)).mtime!;
     const libMtime = (await Deno.stat(libPath)).mtime!;
 
@@ -323,8 +311,6 @@ export const report = {
     await Deno.remove(reportsDir, { recursive: true });
   }
 });
-
-// ===== Pin 1 (W2) =====
 
 Deno.test(
   "UserReportLoader.bundleAndIndexOne: returns report metadata without writing catalog rows (Pin 1)",

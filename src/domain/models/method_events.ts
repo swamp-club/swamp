@@ -18,11 +18,8 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * Domain events emitted during method execution.
- *
- * These events are topology-agnostic — they carry no jobId or stepId.
- * The workflow execution layer wraps them with topology context when
- * forwarding to the event stream.
+ * topology-agnostic, carrying no jobId or stepId; the workflow execution layer
+ * wraps them with topology context
  */
 export type MethodExecutionEvent =
   | {
@@ -30,9 +27,8 @@ export type MethodExecutionEvent =
     line: string;
     stream: "stdout" | "stderr";
     /**
-     * The level the line was logged at. `stream` folds warnings and errors
-     * together, so this keeps the difference. Absent on an event from a
-     * worker that predates it.
+     * stream folds warnings and errors together, so this keeps the difference;
+     * absent on events from older workers
      */
     level?: "info" | "warning" | "error";
   }
@@ -54,8 +50,8 @@ export type MethodExecutionEvent =
   }
   | {
     /**
-     * A written data name cannot be stored on Windows as written
-     * (swamp-club#3568). The write went ahead on this host.
+     * a written data name cannot be stored on Windows as written; the write
+     * went ahead on this host
      */
     type: "data_name_portability_warning";
     message: string;

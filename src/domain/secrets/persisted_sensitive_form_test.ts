@@ -137,9 +137,6 @@ Deno.test("toPersistedForm: a data-origin reference sentinel is written as its r
   assertEquals(values.list(), []);
 });
 
-// --- typed-secrets 4.4: rehydration holds references ---
-
-/** A typed run's record and a bag of its registry. */
 function typedRun(): { values: RunSensitiveValues; bag: VaultSecretBag } {
   const values = new RunSensitiveValues(
     undefined,
@@ -196,12 +193,10 @@ Deno.test("rehydrateReferences: issues a sentinel per written reference with its
   };
   const { values, bag } = typedRun();
   const restored = rehydrateReferences(data, written, bag, "run-1");
-  // Nothing recorded: no value exists to search for, and nothing was read.
   assertEquals(values.isEmpty, true);
   assertEquals(restored.other, data.other);
   const sentinelsIn = (text: string) =>
     text.match(VaultSecretBag.SENTINEL_PATTERN) ?? [];
-  /** The reference-only entry behind a restored sentinel. */
   const restoredEntry = (sentinel: string | undefined) => {
     const entry = bag.registry.issuedEntryOf(sentinel ?? "");
     if (entry === undefined || holdsValue(entry)) {
@@ -220,7 +215,6 @@ Deno.test("rehydrateReferences: issues a sentinel per written reference with its
   assertEquals(restoredEntry(restored.port).location, "run-1: port");
   assertEquals(restoredEntry(restored.list[1]).encoding, "boolean");
   assertEquals(restoredEntry(restored.list[1]).location, "run-1: list[1]");
-  // The persisted form of the restored copy is the file it was read from.
   const form = toPersistedForm(restored, values);
   assertEquals(form.data, data);
   const key = (w: WrittenReference) => `${w.path.join(".")}#${w.occurrence}`;
@@ -324,7 +318,6 @@ Deno.test("toPersistedForm: a sentinel becomes its reference while a coincidenta
     port: 8080,
   });
   assertEquals(form.writtenReferences.map((w) => w.path), [["run"]]);
-  // Nothing issued and nothing recorded: the typed form writes as it is.
   const empty = new RunSensitiveValues(
     undefined,
     new SecretBagRegistry(),
@@ -380,7 +373,6 @@ Deno.test("toPersistedForm and rehydrateReferences: a JSON-value data reference 
     new Map([[restored.port, "8080"], [restored.password, secret]]),
   );
   assertEquals(view.resolveDeep(restored), { port: 8080, password: secret });
-  // And it persists back as it was read.
   assertEquals(
     toPersistedForm(restored, resumed.values).writtenReferences,
     form.writtenReferences,

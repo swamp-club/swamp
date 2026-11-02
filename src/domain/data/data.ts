@@ -29,56 +29,43 @@ import {
 } from "./data_metadata.ts";
 
 /**
- * Names reserved for internal use within data storage directories.
- * These cannot be used as user-supplied data names because they collide
- * with internal markers (e.g. the "latest" version pointer file).
+ * cannot be user-supplied data names because they collide with internal markers
+ * such as the latest version pointer file
  */
 export const RESERVED_DATA_NAMES: ReadonlyArray<string> = ["latest"];
 
-/**
- * Returns true if the given name is reserved for internal use.
- * Comparison is case-insensitive because some filesystems (e.g. macOS HFS+)
- * are case-insensitive.
- */
+/** case-insensitive because some filesystems, such as macOS HFS+, are */
 export function isReservedDataName(name: string): boolean {
   return RESERVED_DATA_NAMES.includes(name.toLowerCase());
 }
 
 /**
- * Prefix of the tag keys swamp writes itself, such as the
- * `_swamp.sensitiveFields` tag the data writer sets after vaulting and the
- * `_swamp.kind` tag it stamps on every record. A key under it is never
- * accepted from a definition, spec, method, workflow or `--tag`
- * (swamp-club#3635): readers trust these tags as swamp's own.
+ * prefix of tag keys swamp writes itself; a key under it is never accepted from
+ * a definition, spec, method, workflow or --tag, because readers trust these
+ * tags as swamp's own
  */
 export const RESERVED_TAG_PREFIX = "_swamp.";
 
 /**
- * The reserved tag a restatement carries (swamp-club#4195): a version an
- * offline flush wrote only to keep the current latest's content highest. It
- * holds the number of the version it restates, never a time.
+ * carried by a version an offline flush wrote only to keep the current latest's
+ * content highest; it holds the number of the version it restates, never a time
  */
 export const RESTATES_TAG = `${RESERVED_TAG_PREFIX}restates`;
 
 /**
- * Tag keys outside {@link RESERVED_TAG_PREFIX} that the data writers set
- * themselves and readers trust: `specName` names the spec that wrote a
- * record, and the resource reader once chose which fields resolve vault
- * references by it (swamp-club#3684). Refused from every user source, like a
- * key under the prefix.
+ * tag keys outside the prefix that data writers set and readers trust, such as
+ * specName; refused from every user source like a key under the prefix
  */
 export const RESERVED_TAG_KEYS: readonly string[] = ["specName"];
 
 /**
- * Returns true if the tag key is reserved for swamp. Comparison is
- * case-sensitive: readers look reserved tags up by their exact key, so a
- * case variant is an ordinary tag.
+ * case-sensitive: readers look reserved tags up by exact key, so a case variant
+ * is an ordinary tag
  */
 export function isReservedTagKey(key: string): boolean {
   return key.startsWith(RESERVED_TAG_PREFIX) || RESERVED_TAG_KEYS.includes(key);
 }
 
-/** Returns the first reserved key in `tags`, or undefined when there is none. */
 export function findReservedTagKey(
   tags: Record<string, string>,
 ): string | undefined {
@@ -91,27 +78,16 @@ export function findReservedTagKey(
  */
 const WINDOWS_FORBIDDEN_CHARACTERS = '<>:"|?*';
 
-/** Device names Windows reserves, alone or followed by an extension. */
 const WINDOWS_RESERVED_NAME = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(\..*)?$/i;
 
-/**
- * Whether a data name can be stored as a file name on every platform
- * (swamp-club#3568). `problem` completes the sentence "Data name 'x' ...".
- */
 export type DataNamePortability =
   | { kind: "ok" }
   | { kind: "warn" | "refuse"; problem: string };
 
 /**
- * Checks a data name against Windows file-name rules, since the filesystem
- * datastore stores each data name as a directory name.
- *
- * A character the Windows file API rejects is refused on Windows, where the
- * write would fail anyway, and warned about elsewhere so an author on Linux
- * or macOS sees it. A reserved device name or a trailing dot or space is only
- * warned about, on every platform: Windows may strip or accept these, so
- * refusing them could break a write that works today. The name is never
- * changed, so nothing already stored moves.
+ * a forbidden character is refused on Windows and warned elsewhere; a reserved
+ * device name or trailing dot or space is only warned about, as Windows may
+ * accept them; the name is never changed
  */
 export function dataNamePortability(
   name: string,
@@ -149,9 +125,6 @@ export function dataNamePortability(
   return { kind: "ok" };
 }
 
-/**
- * Properties required to create a new Data entity.
- */
 export interface CreateDataProps {
   name: string;
   id?: string;
@@ -169,20 +142,6 @@ export interface CreateDataProps {
   renamedTo?: string;
 }
 
-/**
- * Data is a unified entity representing versioned data storage.
- *
- * Each Data entity has:
- * - A unique ID (UUID)
- * - A human-readable name
- * - Version tracking
- * - Content type (MIME type)
- * - Lifetime policy for automatic cleanup
- * - Garbage collection policy for version retention
- * - Streaming flag for append-only data
- * - Tags including a required 'type' key
- * - Owner definition for access control
- */
 export class Data {
   private constructor(
     readonly id: DataId,
@@ -201,13 +160,6 @@ export class Data {
     readonly renamedTo?: string,
   ) {}
 
-  /**
-   * Creates a new Data instance.
-   *
-   * @param props - Properties for the new data entity
-   * @returns A new Data instance
-   * @throws ZodError if validation fails
-   */
   static create(props: CreateDataProps): Data {
     const id = props.id ?? generateDataId();
     const version = props.version ?? 1;
@@ -250,13 +202,6 @@ export class Data {
     );
   }
 
-  /**
-   * Reconstructs a Data entity from persisted metadata.
-   *
-   * @param data - The persisted metadata
-   * @returns A Data instance
-   * @throws ZodError if validation fails
-   */
   static fromData(data: DataMetadata): Data {
     const validated = DataMetadataSchema.parse({
       ...data,
@@ -280,9 +225,6 @@ export class Data {
     );
   }
 
-  /**
-   * Converts the Data entity to a plain data object for persistence.
-   */
   toData(): DataMetadata {
     const data: DataMetadata = {
       id: this.id,
@@ -313,43 +255,23 @@ export class Data {
     return data;
   }
 
-  /**
-   * Checks if this data is owned by the given owner definition.
-   * Ownership is verified by comparing ownerType and ownerRef.
-   *
-   * @param definition - The owner definition to check
-   * @returns true if the ownerType and ownerRef match
-   */
   isOwnedBy(definition: OwnerDefinition): boolean {
     return this.ownerDefinition.ownerType === definition.ownerType &&
       this.ownerDefinition.ownerRef === definition.ownerRef;
   }
 
-  /**
-   * Gets the type tag value.
-   */
   get type(): string {
     return this.tags.type;
   }
 
-  /**
-   * Returns true if this data has been marked as deleted.
-   */
   get isDeleted(): boolean {
     return this.lifecycle === "deleted";
   }
 
-  /**
-   * Returns true if this data has been renamed (tombstoned with a forward reference).
-   */
   get isRenamed(): boolean {
     return this.lifecycle === "deleted" && this.renamedTo !== undefined;
   }
 
-  /**
-   * Creates a deletion marker version of this data.
-   * The marker has lifecycle "deleted", JSON content type, and streaming disabled.
-   */
   withDeletionMarker(props: { version: number }): Data {
     return Data.create({
       id: this.id,
@@ -365,10 +287,6 @@ export class Data {
     });
   }
 
-  /**
-   * Creates a rename marker version of this data.
-   * The marker has lifecycle "deleted" and a forward reference to the new name.
-   */
   withRenameMarker(props: { version: number; renamedTo: string }): Data {
     return Data.create({
       id: this.id,
@@ -385,10 +303,6 @@ export class Data {
     });
   }
 
-  /**
-   * Creates a new version of this data with updated properties.
-   * The new version inherits most properties from the current version.
-   */
   withNewVersion(props: {
     version: number;
     createdAt?: Date;

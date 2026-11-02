@@ -21,10 +21,6 @@ import type { LoaderKind } from "./kind_adapter.ts";
 import type { SourceFingerprint } from "./source_fingerprint.ts";
 import { ValidationError } from "./validation_error.ts";
 
-/**
- * What a bundle exports, learned without loading it into the main isolate.
- * Every variant is plain data, so a result can cross an isolation boundary.
- */
 export type BundleProbeResult =
   | {
     readonly tag: "primary";
@@ -40,33 +36,23 @@ export type BundleProbeResult =
   | { readonly tag: "exited"; readonly code: number };
 
 export interface BundleProbeRequest {
-  /** The URL the main isolate would pass to `import()` for this bundle. */
   readonly importUrl: string;
-  /** Which kind adapter validates the bundle's export. */
   readonly kind: LoaderKind;
 }
 
 /**
- * Probes a bundle: evaluates it in isolation to learn its type, as opposed
- * to loading it, which makes it usable. Indexing probes, so a source that
- * exits, hangs or prints at import cannot end, stall or corrupt a command
- * that never uses it (swamp-club#3374).
+ * indexing probes in isolation, so a source that exits, hangs or prints at
+ * import cannot end, stall or corrupt a command that never uses it
  */
 export interface BundleProber {
   probe(request: BundleProbeRequest): Promise<BundleProbeResult>;
-  /**
-   * Frees whatever the prober holds, and resolves once it is freed. A
-   * later probe starts over, so the owner of a pass calls this once the
-   * pass is finished.
-   */
   release(): Promise<void>;
 }
 
 /**
- * A probe that did not finish: the import never settled, or the source
- * tried to exit the process. It is a {@link ValidationError} so the source
- * is recorded as `ValidationFailed` and left alone until its fingerprint
- * changes, instead of costing every command another timeout.
+ * a ValidationError so the source is recorded as ValidationFailed and left
+ * alone until its fingerprint changes, instead of costing every command another
+ * timeout
  */
 export class ProbeFailedError extends ValidationError {
   constructor(

@@ -20,21 +20,15 @@
 import type { AiTool } from "../repo/ai_tool.ts";
 
 /**
- * Tools that can be identified at runtime from environment variables. The
- * `none` value of the AiTool union is reserved for the marker file's
- * "explicitly opted out" sentinel — detection never returns it.
+ * none is reserved for the opted-out marker sentinel; detection never returns
+ * it
  */
 export type DetectableAiTool = Exclude<AiTool, "none">;
 
 /**
- * Result of agent-harness detection over an env snapshot.
- *
- * `agentSessionDetected` is a SOFT SIGNAL: it can be flipped on by generic
- * `AGENT` / `AI_AGENT` / `IS_AGENT` env vars that unrelated tooling (CI
- * runners, monitoring agents, build orchestrators) also sets. Dashboards or
- * queries that need precision must cross-reference `detectedAiTool` — when
- * that field is undefined and `agentSessionDetected` is true, we know an
- * agent context is present but cannot identify the harness.
+ * agentSessionDetected is a soft signal: generic AGENT vars are also set by CI
+ * and other tooling; true with no detectedAiTool means an agent is present but
+ * unidentified
  */
 export interface AgentHarnessDetection {
   detectedAiTool?: DetectableAiTool;
@@ -46,11 +40,7 @@ interface SpecificSignal {
   predicate: (env: Record<string, string>) => boolean;
 }
 
-/**
- * Tier-1 (high-confidence) and tier-2 (best-effort) signals that map a known
- * env signature to a specific harness. Iteration order is preserved — the
- * first matching entry wins.
- */
+/** order matters: the first matching entry wins */
 const SPECIFIC_HARNESS_SIGNALS: readonly SpecificSignal[] = [
   {
     tool: "claude",
@@ -62,47 +52,33 @@ const SPECIFIC_HARNESS_SIGNALS: readonly SpecificSignal[] = [
     predicate: (env) =>
       env.TERM_PROGRAM === "cursor" || env.CURSOR_TRACE_ID !== undefined,
   },
-  // Confirmed against upstream — see swamp-club#413.
-  // `TERM_PROGRAM=kiro` covers IDE-terminal sessions; `AGENT_CONTEXT_OUT` is
-  // a FIFO path Kiro CLI exports only when its agent is driving a shell
-  // command (see kiro.dev/docs/cli/reference/built-in-tools/). The name is
-  // less vendor-specific than other markers in this list — if a future
-  // harness collides on `AGENT_CONTEXT_OUT`, narrow this predicate then.
+  // AGENT_CONTEXT_OUT is a FIFO path Kiro CLI exports only when its agent
+  // drives a shell command; the name is generic, so narrow this predicate if
+  // another harness collides
   {
     tool: "kiro",
     predicate: (env) =>
       env.TERM_PROGRAM === "kiro" ||
       (env.AGENT_CONTEXT_OUT !== undefined && env.AGENT_CONTEXT_OUT !== ""),
   },
-  // Confirmed against upstream — see swamp-club#413.
-  // opencode sets `OPENCODE=1` at process startup
-  // (anomalyco/opencode packages/opencode/src/index.ts), inherited by every
-  // child process. It also sets `AGENT=1`, so even when this predicate fires
-  // first the generic fallback would have caught the session anonymously.
+  // opencode sets OPENCODE=1 at startup, inherited by children; it also sets
+  // AGENT=1, so the generic fallback would otherwise catch the session
+  // anonymously
   {
     tool: "opencode",
     predicate: (env) => env.OPENCODE === "1",
   },
-  // Confirmed against upstream — see swamp-club#413.
-  // Codex `env_clear()`s before each shell-tool spawn and re-adds only its
-  // sandbox markers (openai/codex codex-rs/core/src/spawn.rs and
-  // sandboxing/mod.rs): `CODEX_SANDBOX_NETWORK_DISABLED=1` on any platform
-  // when network sandbox is enabled, and `CODEX_SANDBOX=seatbelt` on macOS.
-  // Known blind spot: if a user runs codex with sandbox fully disabled
-  // (e.g. `--dangerously-bypass-approvals-and-sandbox`), neither var is set
-  // and codex is undetectable from a child process. That requires upstream
-  // to expose a stable identity env var — not fixable from our side.
+  // Codex clears env before each shell spawn and re-adds only sandbox markers;
+  // with the sandbox fully disabled neither is set and codex cannot be detected
+  // from a child process
   {
     tool: "codex",
     predicate: (env) =>
       env.CODEX_SANDBOX_NETWORK_DISABLED === "1" ||
       env.CODEX_SANDBOX !== undefined,
   },
-  // Pi sets `PI_CODING_AGENT=true` on all child processes and
-  // `AI_AGENT=pi` as a generic marker. `PI_CODING_AGENT` is the
-  // vendor-specific signal; `AI_AGENT=pi` is checked as a fallback
-  // since `AI_AGENT` is also in GENERIC_AGENT_SIGNALS (but only as
-  // a truthiness check, not a value match).
+  // PI_CODING_AGENT is the vendor-specific signal; AI_AGENT=pi is a fallback,
+  // since AI_AGENT is also a generic signal checked only for truthiness
   {
     tool: "pi",
     predicate: (env) => env.PI_CODING_AGENT === "true" || env.AI_AGENT === "pi",
@@ -112,10 +88,8 @@ const SPECIFIC_HARNESS_SIGNALS: readonly SpecificSignal[] = [
 const GENERIC_AGENT_SIGNALS = ["AGENT", "AI_AGENT", "IS_AGENT"] as const;
 
 /**
- * The full set of env keys any signal in this module inspects. Application
- * callers project Deno.env down to this whitelist before passing a snapshot
- * to `detectAgentHarness` — keeping the rest of the developer's env
- * (secrets, tokens, unrelated config) out of the telemetry pipeline.
+ * callers project the env down to this whitelist before detection, keeping the
+ * rest of the environment out of the telemetry pipeline
  */
 export const RELEVANT_ENV_VARS: readonly string[] = [
   "CLAUDECODE",
@@ -141,10 +115,8 @@ function genericAgentDetected(env: Record<string, string>): boolean {
 }
 
 /**
- * Detect the AI agent harness wrapping the current process from a whitelist
- * env snapshot. Specific harness signals win over the generic fallback —
- * when both fire (e.g. CLAUDECODE=1 and AGENT=1) the result names the
- * specific tool and still reports `agentSessionDetected: true`.
+ * specific signals win over the generic fallback; when both fire the result
+ * names the tool and still reports agentSessionDetected true
  */
 export function detectAgentHarness(
   env: Record<string, string>,

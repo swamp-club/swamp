@@ -18,30 +18,14 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * Extracts model references from a workflow definition.
- *
- * Walks jobs → steps → tasks to collect all modelIdOrName values.
- * Recursively follows nested workflow tasks.
- * Returns null if any reference contains a CEL expression (dynamic
- * reference that cannot be statically resolved).
+ * returns null if any reference contains a CEL expression, as a dynamic
+ * reference cannot be statically resolved
  */
 
 import type { Workflow } from "./workflow.ts";
 import type { WorkflowRepository } from "./repositories.ts";
 import { createWorkflowId } from "./workflow_id.ts";
 
-/**
- * Extracts all model references (modelIdOrName values) from a workflow.
- *
- * Recursively follows nested workflow tasks. If any model reference
- * contains a CEL expression (`${{`), returns null to signal that
- * the caller should fall back to a global lock.
- *
- * @param workflow - The workflow to extract references from
- * @param workflowRepo - Repository to look up nested workflows
- * @param visited - Set of already-visited workflow IDs (cycle prevention)
- * @returns Array of model ID/name strings, or null if dynamic references found
- */
 export async function extractModelReferencesFromWorkflow(
   workflow: Workflow,
   workflowRepo: WorkflowRepository,
@@ -64,21 +48,17 @@ export async function extractModelReferencesFromWorkflow(
 
       const taskData = task.data;
       if (taskData.type === "model_method") {
-        // Determine the reference name: modelIdOrName for existing, modelName for direct
         const refName = taskData.modelIdOrName ?? taskData.modelName;
         if (!refName) continue;
 
-        // Check for dynamic CEL expressions
         if (refName.includes("${{")) {
           return null;
         }
         references.push(refName);
       } else if (taskData.type === "workflow") {
-        // Check for dynamic CEL expressions in workflow reference
         if (taskData.workflowIdOrName.includes("${{")) {
           return null;
         }
-        // Recursively extract from nested workflow
         const nestedWorkflow =
           await workflowRepo.findByName(taskData.workflowIdOrName) ??
             await workflowRepo.findById(
@@ -103,17 +83,9 @@ export async function extractModelReferencesFromWorkflow(
 }
 
 /**
- * Collects the stored-definition references of a workflow's own model-method
- * steps — the definitions that will be evaluated against the run's expression
- * context.
- *
- * Direct-type steps are skipped: their auto-created definitions carry only
- * what the workflow YAML supplied. Nested workflow steps are skipped too,
- * because they build their own context when they run.
- *
- * @param workflow - The workflow whose steps to inspect
- * @returns The referenced definition names or ids, or null when a reference is
- * a CEL expression and cannot be resolved before the run
+ * direct-type steps are skipped as their auto-created definitions carry only
+ * what the YAML supplied; nested workflow steps are skipped as they build their
+ * own context when they run
  */
 export function extractStepDefinitionReferences(
   workflow: Workflow,

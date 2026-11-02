@@ -20,7 +20,6 @@
 import { assertEquals } from "@std/assert";
 import { encodeContent } from "./content_encoding.ts";
 
-// The 8-byte PNG signature followed by the start of an IHDR chunk.
 const PNG_HEADER = new Uint8Array([
   0x89,
   0x50,
@@ -62,7 +61,6 @@ Deno.test("encodeContent: base64-encodes a lone continuation byte", () => {
 });
 
 Deno.test("encodeContent: base64-encodes a truncated multi-byte sequence", () => {
-  // The first two bytes of the three-byte encoding of "✓".
   const bytes = new Uint8Array([0x6f, 0x6b, 0xe2, 0x9c]);
   const result = encodeContent(bytes);
   assertEquals(result.contentEncoding, "base64");

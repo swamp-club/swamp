@@ -29,7 +29,6 @@ import {
 
 const arbFieldName = fc.stringMatching(/^[a-z][a-z0-9_]{0,15}$/);
 
-/** Distinct field names with random required flags, in a fixed order. */
 const arbFields: fc.Arbitrary<VaultConfigField[]> = fc
   .uniqueArray(arbFieldName, { minLength: 0, maxLength: 8 })
   .chain((names) =>
@@ -44,7 +43,6 @@ const arbFields: fc.Arbitrary<VaultConfigField[]> = fc
     )
   );
 
-/** A config that sets some of the fields (and sometimes unrelated keys). */
 function arbConfigFor(
   fields: VaultConfigField[],
 ): fc.Arbitrary<Record<string, unknown>> {

@@ -18,14 +18,9 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * The arrival of a signal by key that finds no open wait, on a step that
- * sets `acceptEarly` (swamp-club#3212): the signal is stored as the key's
- * pending signal, and the key is then read again.
- *
- * The order is the protocol. The signaller creates its record and then reads
- * the key; a step creates its claim and its registration and then reads the
- * slot. Each writes before it reads, so at least one of them sees the other,
- * and whoever settles the wait later takes a signal neither of them applied.
+ * the order is the protocol: the signaller creates its record then reads the
+ * key; a step creates its claim and registration then reads the slot; each
+ * writes before it reads, so one sees the other
  */
 
 import type { InputsSchema } from "../definitions/definition.ts";
@@ -49,20 +44,13 @@ import {
 } from "./wait_key_claim.ts";
 import type { Workflow } from "./workflow.ts";
 
-/** What the definition says of a key whose step takes an early signal. */
 export interface DeclaredEarlyWait {
   jobName: string;
   stepName: string;
-  /** The age limit, in seconds. */
   acceptEarly: number;
-  /** The schema as the definition has it; it holds no expression. */
   schema: InputsSchema;
 }
 
-/**
- * The `wait_for_signal` step of `workflow` that declares `key` and sets
- * `acceptEarly`, or undefined when no step of it does.
- */
 export function declaredEarlyWait(
   workflow: Workflow,
   key: string,
@@ -87,9 +75,8 @@ export function declaredEarlyWait(
 }
 
 /**
- * Checks an early payload against the schema in the definition, under the
- * limits of any payload. No run exists yet, so no wait has captured the
- * schema; the wait that takes the signal checks it again against its own.
+ * no run exists yet, so no wait has captured the schema; the wait that takes
+ * the signal checks it again against its own
  */
 export function validateEarlyPayload(
   schema: InputsSchema,
@@ -104,9 +91,7 @@ export function validateEarlyPayload(
   }).validatePayload(payload);
 }
 
-/** The slot a signal is stored in, and the slots a pending signal may be in. */
 export interface LiveSlots {
-  /** The generation the next claim of the key will have. */
   slot: number;
   /**
    * `slot`, and the one below when the key's highest record is a release: a
@@ -116,7 +101,6 @@ export interface LiveSlots {
   live: number[];
 }
 
-/** The live slots of a key, from its highest record. */
 export function liveSlotsOf(
   highest: Exclude<HighestKeyRecord, { kind: "unreadable" }>,
 ): LiveSlots {
@@ -130,20 +114,14 @@ export function liveSlotsOf(
   };
 }
 
-/** What to do with an early signal, given the highest record of each live slot. */
 export type EarlySignalDecision =
-  /** Store it as this number of the slot. */
   | { readonly kind: "store"; readonly number: number }
-  /** A pending signal is within its age limit. A key holds one. */
   | { readonly kind: "already_pending"; readonly record: PendingSignal }
-  /** A live slot's highest record cannot be read. */
   | { readonly kind: "unreadable" };
 
 /**
- * Decides an early signal from the highest record of each live slot, the
- * slot it would be stored in first. The first pending signal is kept: a
- * second one is refused while the first is within its age limit, and stored
- * over it, at the next number, once it is not.
+ * the first pending signal is kept: a second is refused while the first is
+ * within its age limit, and stored over it at the next number once it is not
  */
 export function decideEarlySignal(
   heads: readonly HighestPendingRecord[],
@@ -167,36 +145,20 @@ export function decideEarlySignal(
   };
 }
 
-/**
- * A pending signal held for the next wait of its key, as a listing shows it
- * (swamp-club#3214). It names the signal by its receipt and never carries
- * the payload.
- */
 export interface HeldPendingSignal {
   workflowId: string;
   key: string;
   receiptId: string;
   receivedAt: string;
-  /** When its age limit ends, as an ISO timestamp. */
   heldUntil: string;
   submittedBy: string;
-  /** The workflow name the sender was authorized to signal, if it was. */
   authorizedFor?: string;
 }
 
 /**
- * The pending signals held at `now`, one per key at most, ordered by when
- * their age limits end (swamp-club#3214). For each key it reads the key's
- * highest record once and the highest record of each live slot
- * ({@link liveSlotsOf}), and lists the signal {@link decideEarlySignal}
- * refuses a second signal for with `already_pending`. A signal listed here
- * is one the sweep neither removes nor lapses at the same `now`, since it
- * reads only live slots and lapses only past the age limit. It writes
- * nothing.
- *
- * A key whose highest record cannot be read is left out, and so is a key
- * the decision finds unreadable: a key is listed exactly when a second
- * signal to it would be refused `already_pending`, never otherwise.
+ * a key is listed exactly when a second signal to it would be refused
+ * already_pending; unreadable keys are left out; a listed signal is one the
+ * sweep neither removes nor lapses at the same now; writes nothing
  */
 export async function listHeldPendingSignals(
   store:
@@ -244,26 +206,18 @@ export async function listHeldPendingSignals(
   );
 }
 
-/** An early signal, checked and ready to be stored. */
 export interface EarlySignal {
   workflowId: string;
   key: string;
-  /** The payload as {@link validateEarlyPayload} accepted it. */
   payload: Record<string, unknown>;
   submittedBy: string;
-  /** The age limit the definition declares, in seconds. */
   acceptEarly: number;
-  /** The idempotency key the sender gave, if any. */
   idempotencyKey?: string;
-  /** The workflow name the sender was authorized to signal, if it was. */
   authorizedFor?: string;
 }
 
-/** How the arrival of an early signal ended. */
 export type EarlyArrival =
-  /** Stored, and no wait holds the key. Held until its age limit ends. */
   | { readonly kind: "pending"; readonly record: PendingSignal }
-  /** An earlier signal is pending within its age limit. Nothing was stored. */
   | { readonly kind: "already_pending"; readonly record: PendingSignal }
   /**
    * An open wait holds the key. `record` is what this signal stored before
@@ -275,43 +229,29 @@ export type EarlyArrival =
     readonly claim: WaitKeyClaim;
     readonly record?: PendingSignal;
   }
-  /** A step took the stored signal on opening its wait. */
   | {
     readonly kind: "taken";
     readonly claim: WaitKeyClaim;
     readonly record: PendingSignal;
   }
   /**
-   * A wait of the key was settled by another copy of this signal: one from
-   * the same sender under the same idempotency key, delivered to a wait
-   * while this one arrived. `outcome` holds that
-   * copy's receipt. This one is not stored again for the next claim.
+   * another copy of this signal (same sender, same idempotency key) settled a
+   * wait while this one arrived; this one is not stored again for the next
+   * claim
    */
   | {
     readonly kind: "duplicate";
     readonly claim: WaitKeyClaim;
     readonly outcome: AcceptedWaitOutcome;
-    /** What this signal stored before it found that out, if anything. */
     readonly record?: PendingSignal;
   }
-  /** A record of the key cannot be read, so nothing can be decided. */
   | { readonly kind: "unreadable" }
-  /** The key changed hands on every attempt. */
   | { readonly kind: "contended" };
 
 /**
- * The claim whose wait took `stored`, if one did: a claim that reads the
- * signal's slot (its own generation, or the one below for a claim created
- * over a release) and whose outcome is this signal's receipt. It is looked
- * for among the claims that read the slot, not only the key's highest
- * record, because the key may have been claimed again since. Those are two
- * records of this key at most ({@link claimsReadingSlot}), so the key
- * records of other workflows are never listed (swamp-club#3308).
- *
- * A signal sent under an idempotency key has a second way to have landed
- * there: another copy of it, from the same sender under the same key, was
- * delivered to that wait while this one arrived. That outcome holds the
- * other copy's receipt, and is returned as it is.
+ * looked for among the claims that read the slot, not only the key's highest
+ * record, since the key may have been claimed again; at most two records, so
+ * other workflows' key records are never listed
  */
 async function findTakerOf(
   store: Pick<WaitKeyRecords, "findKeyRecord" | "findOutcome">,
@@ -342,10 +282,8 @@ async function findTakerOf(
 }
 
 /**
- * Stores `signal` as the pending signal of its key, then reads the key
- * again. Called when no open wait holds the key. The receipt ID and the
- * received time are fixed before the first attempt, so a signal that has to
- * arrive again at a later slot is the same signal.
+ * receipt ID and received time are fixed before the first attempt, so a signal
+ * that has to arrive again at a later slot is the same signal
  */
 export async function holdEarlySignal(
   store:
@@ -377,11 +315,9 @@ export async function holdEarlySignal(
       };
     }
 
-    // The key is free. Another copy of this signal may be why: delivered to
-    // the wait that held the key after this copy was looked up by its
-    // idempotency key. A key that reads as free has the outcome of its last
-    // claim written already, so that copy is found here, before anything is
-    // stored for the next claim to take.
+    // the key is free; another copy of this signal may be why, delivered to the
+    // wait that held it; a free key has its last outcome written already, so
+    // that copy is found here before anything is stored
     if (signal.idempotencyKey !== undefined) {
       const landed = await settledUnderKey(
         store,
@@ -435,9 +371,9 @@ export async function holdEarlySignal(
       created.record.kind !== "pending" ||
       created.record.receiptId !== receiptId
     ) {
-      // Another signal took the number at the same moment, and is the one
-      // stored. A lapse there means the sweep superseded the slot's last
-      // signal in between; the next attempt stores above it.
+      // another signal took the number at the same moment and is the one
+      // stored; a lapse means the sweep superseded the slot's last signal, and
+      // the next attempt stores above it
       if (created.record.kind === "pending") {
         return { kind: "already_pending", record: created.record };
       }
@@ -456,11 +392,8 @@ export async function holdEarlySignal(
         again.record.kind === "release")
     ) return { kind: "pending", record: stored };
 
-    // The key has reached the slot. Its holder is read before the taker is
-    // looked for: a key that reads as free, or as held by a later claim,
-    // has the outcome of every claim that reads this slot written already,
-    // and an outcome is written once. Looking for the taker first would let
-    // a step take the signal between the two reads and be missed by both.
+    // the holder is read before the taker: looking for the taker first would
+    // let a step take the signal between the two reads and be missed by both
     const holding = await findKeyHolder(store, workflowId, key);
     if (holding.kind === "unreadable") return { kind: "unreadable" };
     // A claim that reads the slot may have taken this signal, with the key
@@ -482,11 +415,8 @@ export async function holdEarlySignal(
   return { kind: "contended" };
 }
 
-/** A signal the store already holds under an idempotency key. */
 export type EarlierSignal =
-  /** Held as the key's pending signal, within its age limit. */
   | { readonly kind: "pending"; readonly record: PendingSignal }
-  /** A wait took it: `claim` is that wait's, and `outcome` its receipt. */
   | {
     readonly kind: "settled";
     readonly claim: WaitKeyClaim;
@@ -494,21 +424,8 @@ export type EarlierSignal =
   };
 
 /**
- * The signal already received for `key` under `idempotencyKey`, if the
- * records still say so: a retry of it is answered with that signal, and is
- * neither delivered nor held again. Looked for in the pending signal of each
- * live slot, and in the outcomes of the claims among the key's two highest
- * records: the wait that last held the key, and the one before it for a
- * retry that arrives once the next run has opened its wait. It reads at most six records and
- * writes nothing.
- *
- * A key names a signal of its sender only: another sender's signal under the
- * same key is not a match, so nobody is shown a receipt that is not theirs
- * and nobody's signal is dropped for a key someone else used.
- *
- * A key is remembered as long as its receipt is: until the run that took the
- * signal is removed, the key has been claimed twice since, or the pending
- * signal has passed its age limit untaken.
+ * a key names a signal of its sender only, so nobody is shown a receipt that is
+ * not theirs and nobody's signal is dropped for a key someone else used
  */
 export async function findSignalByIdempotencyKey(
   store:
@@ -538,10 +455,6 @@ export async function findSignalByIdempotencyKey(
   return landed ? { kind: "settled", ...landed } : undefined;
 }
 
-/**
- * The wait among the claims of a key's two highest records that a signal
- * from `sent.submittedBy` under `sent.idempotencyKey` settled, if one did.
- */
 async function settledUnderKey(
   store: Pick<WaitKeyRecords, "findKeyRecord" | "findOutcome">,
   at: { workflowId: string; key: string },

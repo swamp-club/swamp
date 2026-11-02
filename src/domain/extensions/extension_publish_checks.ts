@@ -18,27 +18,14 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * Registry-side publish checks.
- *
- * A push is refused by the registry for reasons the client can know in
- * advance: the caller is not signed in, the extension's collective is not one
- * of the caller's, the collective is reserved and membership could not be
- * verified, the version is already published, or (for a private publication)
- * the collective's plan does not allow private extensions. These rules decide
- * each check's verdict and carry the exact wording a real push fails with, so
- * a dry run reports the same outcome the push would.
- *
- * Entitlement is the registry's to decide. The private-entitlement rule only
- * repeats what the registry reported at sign-in and fails on the standings the
- * registry always refuses (a free plan with no trial, or whose trial has
- * ended: the registry never starts a trial at publish); every other standing
- * is reported as the registry's data, never as a prediction.
+ * verdicts carry the wording a real push fails with, so a dry run matches it;
+ * entitlement is the registry's to decide, so only a free plan with no or an
+ * ended trial fails and other standings are not predicted
  */
 
 import { ModelType } from "../models/model_type.ts";
 import { ReleaseChannel } from "./release_channel.ts";
 
-/** The registry checks a push runs before uploading. */
 export type RegistryCheckName =
   | "authentication"
   | "collective-membership"
@@ -47,19 +34,15 @@ export type RegistryCheckName =
   | "private-entitlement";
 
 /**
- * How a check ended. `not-run` means a prerequisite was missing (no
- * credentials, a failed sign-in, an unreachable registry); its message says
- * which.
+ * not-run means a prerequisite was missing (no credentials, failed sign-in,
+ * unreachable registry); its message says which
  */
 export type RegistryCheckStatus = "passed" | "failed" | "not-run";
 
 /**
- * Why a check could not run. `no-credentials` leaves a dry run green: the
- * registry was never asked. `entitlement-undecided` does too: the registry
- * answered, but what it reported does not settle private entitlement (it sent
- * none for the collective, or a trial state this client does not know), so
- * the registry decides at publish. The others mean the registry was asked and
- * did not confirm, which a real push would have failed on.
+ * no-credentials and entitlement-undecided leave a dry run green: the registry
+ * was not asked or its answer does not settle entitlement; other causes mean it
+ * did not confirm, which a real push fails on
  */
 export type RegistryCheckNotRunCause =
   | "no-credentials"
@@ -68,29 +51,21 @@ export type RegistryCheckNotRunCause =
   | "membership-unverified"
   | "entitlement-undecided";
 
-/** One registry check's verdict, in the wording a real push uses. */
 export interface RegistryCheckResult {
   name: RegistryCheckName;
   status: RegistryCheckStatus;
   message: string;
-  /** Present only when the check did not run. */
   cause?: RegistryCheckNotRunCause;
-  /** version-exists only: the channel the version is already published on. */
   existingChannel?: string;
-  /** version-exists only: the channel the push asked for. */
   requestedChannel?: string;
-  /** version-exists only: the existing version is yanked. */
   existingYanked?: true;
-  /** version-exists only: why the existing version was yanked, when given. */
   existingYankReason?: string;
-  /** A passed authentication only: the credential the registry accepted. */
   credential?: SignedInCredential;
 }
 
 /**
- * The credential a passed authentication check names, in the field names
- * `swamp auth whoami --json` uses. The fingerprint is the one swamp-club
- * lists beside each key, never the key itself.
+ * the fingerprint is the one swamp-club lists beside each key, never the key
+ * itself
  */
 export interface SignedInCredential {
   username?: string;
@@ -99,21 +74,16 @@ export interface SignedInCredential {
   fingerprint: string;
 }
 
-/** Who the registry says a key belongs to, from its whoami answer. */
 export interface SignedInIdentity {
-  /** The personal account's username; empty or absent for an API token. */
   username: string;
-  /** True when the key is an API token for a collective. */
   collectiveToken?: boolean;
-  /** The collective an API token is for. */
   collectiveSlug?: string;
   fingerprint: string;
 }
 
 /**
- * The passed authentication check, naming the credential it used: the
- * username for a personal key, or the collective and fingerprint for an API
- * token. Never interpolates an empty name.
+ * names the credential used: username for a personal key, collective and
+ * fingerprint for an API token; never interpolates an empty name
  */
 export function signedInCheck(identity: SignedInIdentity): RegistryCheckResult {
   const { fingerprint } = identity;
@@ -141,16 +111,11 @@ export function signedInCheck(identity: SignedInIdentity): RegistryCheckResult {
 }
 
 /**
- * What the prepare phase does with the registry checks.
- *
- * - `enforce`: a real push; the first failing check throws.
- * - `collect`: a dry run; every check runs and its verdict is collected.
- * - `skip`: packaging only (`extension quality`); nothing contacts the
- *   registry.
+ * enforce throws on the first failing check; collect (dry run) runs every check
+ * and gathers verdicts; skip contacts no registry
  */
 export type RegistryChecksMode = "enforce" | "collect" | "skip";
 
-/** Human-readable labels for the log summary. */
 export const REGISTRY_CHECK_LABELS: Record<RegistryCheckName, string> = {
   "authentication": "authentication",
   "collective-membership": "collective membership",
@@ -159,28 +124,22 @@ export const REGISTRY_CHECK_LABELS: Record<RegistryCheckName, string> = {
   "private-entitlement": "private entitlement",
 };
 
-/** The external services a push may call before uploading. */
 export type ApiCallService = "registry" | "osv" | "npm" | "jsr" | "other";
 
-/** How an HTTP call ended, as the summary reports it. */
 export type ApiCallOutcome = "ok" | "not-found" | "error";
 
 /**
- * One HTTP request made while preparing a push. Carries the method and URL
- * only — never headers, so no credential can reach the summary. A retried
- * request is listed once per attempt: the summary reports calls actually
- * made.
+ * method and URL only, never headers, so no credential can reach the summary; a
+ * retried request is listed once per attempt
  */
 export interface ApiCallRecord {
   service: ApiCallService;
   method: string;
   url: string;
   outcome: ApiCallOutcome;
-  /** HTTP status when a response arrived. */
   status?: number;
 }
 
-/** Names the service behind a URL so the summary can group calls. */
 export function classifyApiCallService(
   url: string,
   registryUrl: string,
@@ -202,31 +161,21 @@ function hostOf(url: string): string | undefined {
   }
 }
 
-/** The collective part of an extension name: `@acme/tool` gives `acme`. */
 export function collectiveOf(extensionName: string): string {
   return extensionName.slice(1, extensionName.indexOf("/"));
 }
 
-/** Inputs for the collective checks. */
 export interface CollectiveMembershipInput {
   extensionName: string;
-  /**
-   * The caller's collectives as the registry reports them, or `undefined`
-   * when the lookup failed and the registry's answer is unknown.
-   */
+  /** undefined when the lookup failed and the registry's answer is unknown */
   collectives: string[] | undefined;
   username: string;
 }
 
 /**
- * Decides the reserved-collective and collective-membership checks.
- *
- * A reserved collective (`@swamp`, `@si`) needs the registry's own word on
- * membership, so an unknown collectives list fails that check. For any
- * other collective the membership list decides, and when it is unknown the
- * caller's username stands in for it; with no username either (an API
- * token), the check does not run. Failure messages are the ones a real push
- * throws.
+ * a reserved collective needs the registry's own membership word, so an unknown
+ * list fails; otherwise the list decides, falling back to username, and with
+ * neither (API token) the check does not run
  */
 export function evaluateCollectiveMembership(
   input: CollectiveMembershipInput,
@@ -309,21 +258,16 @@ export function evaluateCollectiveMembership(
   };
 }
 
-/** A collective's trial clock as the registry reports it. */
 export interface CollectiveTrial {
   state: "none" | "active" | "expired";
-  /** ISO timestamp, or null when the registry sent none. */
   endsAt: string | null;
   daysRemaining: number;
-  /** The trial's full length in days, when the registry sent it. */
   totalDays?: number;
 }
 
 /**
- * What one collective entitles the caller to, as the registry reported it at
- * sign-in. Structurally the libswamp whoami entitlement, so the push can hand
- * it over without the domain importing from the application layer. `plan` is
- * absent when the registry did not report entitlement for the collective.
+ * structurally the libswamp whoami entitlement, so the domain need not import
+ * the application layer; plan is absent when the registry reported none
  */
 export interface CollectiveEntitlement {
   slug: string;
@@ -331,33 +275,24 @@ export interface CollectiveEntitlement {
   planName?: string;
   trial?: CollectiveTrial | null;
   /**
-   * The registry's own verdict on private extensions for the collective:
-   * `allowed`, `trial-ended` or `paywalled` today. Absent from registries
-   * that predate it; any other value is one this client does not know.
+   * the registry's own verdict (allowed, trial-ended or paywalled); absent from
+   * older registries, and any other value is unknown to this client
    */
   privateExtensions?: string;
 }
 
-/** Inputs for the private-entitlement check. */
 export interface PrivateEntitlementInput {
   extensionName: string;
-  /**
-   * Per-collective entitlement as the registry reported it, or `undefined`
-   * when the server sent none (an older or self-hosted swamp-club).
-   */
   entitlements: CollectiveEntitlement[] | undefined;
-  /** The registry's URL, for the upgrade pointer. */
   serverUrl: string;
 }
 
-/** The billing page of a collective on the registry at `serverUrl`. */
 export function collectiveBillingUrl(serverUrl: string, slug: string): string {
   return `${serverUrl.replace(/\/+$/, "")}/o/${slug}/billing`;
 }
 
 const PAID_PLAN_REQUIRED = "Private extensions need a paid plan";
 
-/** The registry's own answer on private extensions, when it is one we know. */
 type PrivateExtensionsVerdict = "allowed" | "trial-ended" | "paywalled";
 
 function isKnownVerdict(value: string): value is PrivateExtensionsVerdict {
@@ -365,21 +300,16 @@ function isKnownVerdict(value: string): value is PrivateExtensionsVerdict {
     value === "paywalled";
 }
 
-/** The plan as the registry labels it, falling back to its id. */
 function planLabel(entitlement: CollectiveEntitlement): string {
   return entitlement.planName ?? entitlement.plan ?? "";
 }
 
-/** A paid plan: anything but no plan, a Personal License or admin standing. */
 function isPaidPlan(plan: string | undefined): boolean {
   return plan !== undefined && plan !== "free" && plan !== "personal" &&
     plan !== "admin";
 }
 
-/**
- * The date part of an ISO timestamp, as the registry sent it. Never
- * recomputed in local time: the registry's trial dates are elapsed-based.
- */
+/** never recomputed in local time: the registry's trial dates are elapsed-based */
 function isoDate(timestamp: string): string {
   return /^\d{4}-\d{2}-\d{2}/.test(timestamp)
     ? timestamp.slice(0, 10)
@@ -395,17 +325,11 @@ function activeTrial(trial: CollectiveTrial): string {
     : `its free trial (${days})`;
 }
 
-/**
- * What the registry reported for a collective, as one outcome: allowed or
- * refused with the sentence that says why, or undecided with the reason the
- * registry is left to decide at publish.
- */
 type EntitlementAssessment =
   | { kind: "allowed"; sentence: string }
   | { kind: "refused"; sentence: string }
   | { kind: "undecided"; reason: string };
 
-/** Why a collective is allowed, from the standing the registry reported. */
 function allowedSentence(
   collective: string,
   entitlement: CollectiveEntitlement,
@@ -428,7 +352,6 @@ function allowedSentence(
   return `Collective "@${collective}" is covered by a paid plan or active trial on another collective you belong to, ${allows}`;
 }
 
-/** Why a collective is refused, naming what it needs and where to get it. */
 function refusedSentence(
   collective: string,
   entitlement: CollectiveEntitlement,
@@ -450,15 +373,9 @@ function refusedSentence(
 }
 
 /**
- * Decides a collective's private entitlement from what the registry reported.
- *
- * The registry's `privateExtensions` verdict decides when it is present: it
- * already applies rules the plan and trial cannot show, such as a personal
- * namespace covered by another collective its owner belongs to. A verdict
- * this client does not know is undecided. A registry that sends no verdict
- * (an older or self-hosted one) is decided from plan and trial: a paid plan
- * or an active trial is allowed, an ended trial or none is refused (a trial
- * starts only when its collective is created, never at publish).
+ * the registry's verdict decides when present, since it applies rules plan and
+ * trial cannot show; an unknown verdict is undecided; with none, a paid plan or
+ * active trial is allowed and anything else refused
  */
 function assessEntitlement(
   collective: string,
@@ -515,16 +432,6 @@ function assessEntitlement(
     };
 }
 
-/**
- * Decides the private-entitlement check from what the registry reported.
- *
- * An allowed collective passes, saying why: its paid plan, its free trial,
- * admin standing, or (for a personal namespace) another collective's cover. A
- * refused one fails with the message a real push throws, naming what it
- * needs and the upgrade page; no message ever names a plan the collective is
- * not on. No entitlement for the collective is undecided and says the
- * registry did not report it, as is anything else this client cannot read.
- */
 export function evaluatePrivateEntitlement(
   input: PrivateEntitlementInput,
 ): RegistryCheckResult {
@@ -549,17 +456,13 @@ export function evaluatePrivateEntitlement(
   }
 }
 
-/** A sentence carried after "reported that", its first letter lowered. */
 function lowerFirst(sentence: string): string {
   return sentence.charAt(0).toLowerCase() + sentence.slice(1);
 }
 
 /**
- * The registry's own refusal of a private publication, followed by what it
- * reported for the collective at sign-in. The report is stated as a report,
- * never as the cause: the registry decided, and this says what it had said
- * about the collective, in the words the entitlement check uses. The upgrade
- * pointer comes only with a refusal the registry had already reported.
+ * states the registry's report as a report, never the cause; the upgrade
+ * pointer comes only with a refusal the registry had already reported
  */
 export function explainPrivatePublishRefusal(
   serverMessage: string,
@@ -586,18 +489,15 @@ export function explainPrivatePublishRefusal(
   }`;
 }
 
-/** A published version as the registry lists it. */
 export interface PublishedVersion {
   version: string;
   channel: string;
-  /** Present when the version is yanked; `reason` is null when none was given. */
   yank?: { reason: string | null };
 }
 
 /**
- * Where an already-published version sits relative to the channel a push
- * asked for. Only `lower-channel` can be promoted; the registry moves a
- * version forward (beta → rc → stable) and never back.
+ * only lower-channel can be promoted; the registry moves a version forward
+ * (beta, rc, stable) and never back
  */
 export type ExistingVersionPlacement =
   | "same-channel"
@@ -605,9 +505,8 @@ export type ExistingVersionPlacement =
   | "higher-channel";
 
 /**
- * Places an existing version's channel against the requested one. A channel
- * name this client does not know is treated as the same channel, so it never
- * offers a promotion the registry has not been seen to allow.
+ * an unknown channel counts as the same channel, so no promotion is offered
+ * that the registry has not been seen to allow
  */
 export function placeExistingVersion(
   existingChannel: string,
@@ -626,7 +525,6 @@ export function placeExistingVersion(
   return "same-channel";
 }
 
-/** The promote command that moves a published version to a channel. */
 export function promoteCommand(
   extensionName: string,
   version: string,
@@ -635,14 +533,13 @@ export function promoteCommand(
   return `swamp extension promote ${extensionName} ${version} --channel ${toChannel}`;
 }
 
-/** A yank's reason as a parenthesis, or nothing when none was given. */
 function yankReasonSuffix(reason: string | null | undefined): string {
   return reason ? ` (${reason})` : "";
 }
 
 /**
- * The refusal for promoting a yanked version, in the registry's own wording,
- * so it reads the same whether the client or the registry refuses.
+ * uses the registry's wording so the refusal reads the same whether the client
+ * or the registry refuses
  */
 export function yankedVersionPromoteRefusal(
   extensionName: string,
@@ -655,19 +552,14 @@ export function yankedVersionPromoteRefusal(
 }
 
 /**
- * Decides the version-exists check. A version is unique per extension across
- * every release channel, so a match on any channel fails the check with the
- * message a real push throws. A duplicate on the requested channel keeps the
- * plain message; a match on another channel names that channel and, when the
- * version sits on a lower one, the promote command that moves it. A yanked
- * version stays taken, so it fails too, but its message names the yank and
- * never the promote command: the registry refuses to promote it.
+ * a version is unique across all channels, so a match on any fails; a yanked
+ * version stays taken but its message never offers the promote command, which
+ * the registry refuses
  */
 export function evaluateVersionExists(input: {
   extensionName: string;
   version: string;
   published: PublishedVersion | null;
-  /** The channel the push asked for; stable when omitted. */
   requestedChannel?: string;
 }): RegistryCheckResult {
   if (input.published && input.published.version === input.version) {
@@ -729,7 +621,6 @@ function versionExistsMessage(input: {
   }
 }
 
-/** A check that could not run, with the reason. */
 export function registryCheckNotRun(
   name: RegistryCheckName,
   cause: RegistryCheckNotRunCause,
@@ -739,12 +630,9 @@ export function registryCheckNotRun(
 }
 
 /**
- * Whether a dry run's collected checks let it end green. A failed check
- * ends it with that check's message, the one the push would fail with. A
- * check the registry was asked about but did not answer ends it too, since
- * the push would have stopped there; checks never asked (no credentials) and
- * ones the registry's answer left undecided leave the run green, and the
- * summary says they did not run.
+ * a failed check ends the run with its message; a check asked but unanswered
+ * also ends it; unasked or undecided checks leave it green and the summary says
+ * they did not run
  */
 export function registryChecksVerdict(
   checks: RegistryCheckResult[],

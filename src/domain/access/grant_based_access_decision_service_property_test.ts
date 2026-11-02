@@ -39,10 +39,6 @@ import { PolicySnapshot } from "./policy_snapshot.ts";
 import { createConditionEvaluator } from "./policy_snapshot_loader.ts";
 
 const ACTIONS: readonly Action[] = ActionSchema.options;
-/**
- * The actions another action's grant implies, each with that action and the
- * option that turns the implication off.
- */
 const IMPLIED = [
   { action: "approve", by: "run", option: "runImpliesApprove" },
   { action: "signal", by: "run", option: "runImpliesSignal" },
@@ -50,7 +46,6 @@ const IMPLIED = [
 ] as const;
 type ImpliedAction = typeof IMPLIED[number];
 
-/** Conditions are the literals "true" and "false", evaluated as themselves. */
 const literalEvaluator = (condition: string): boolean => condition === "true";
 
 const OPS_GROUP: Group = {
@@ -148,8 +143,6 @@ Deno.test("GrantBasedAccessDecisionService: turning an implication off only narr
       const strict = explicit.decide(PRINCIPAL, action, RESOURCE);
       const lenient = implied.decide(PRINCIPAL, action, RESOURCE);
       if (strict?.effect === "allow") {
-        // Anything allowed without the implication is allowed with it, and
-        // it came from a grant that names the action itself.
         assertEquals(lenient?.effect, "allow");
         assertEquals(strict.impliedBy, undefined);
       }
@@ -267,7 +260,6 @@ Deno.test("GrantBasedAccessDecisionService: a matching deny always beats the ser
   );
 });
 
-/** Like literalEvaluator, but the condition "error" throws. */
 const erroringEvaluator = (condition: string): boolean => {
   if (condition === "error") throw new Error("No such key: trigger");
   return condition === "true";
@@ -371,7 +363,7 @@ Deno.test("property: a tags deny refuses exactly the resources carrying the tag,
   );
 });
 
-// swamp-club#3130: type spellings fold for denies only.
+// type spellings fold for denies only
 const arbSpelling = fc.stringOf(
   fc.constantFrom(..."abAB-@/.:".split("")),
   { minLength: 1, maxLength: 10 },

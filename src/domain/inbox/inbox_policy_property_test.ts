@@ -38,7 +38,6 @@ const MAX_GAP_MS = MAX_POLL_INTERVAL_SECONDS * SECOND;
 /** Pinned rather than imported, so a change to the policy's retry fails here. */
 const RETRY_GAP_MS = DAY;
 
-/** Ascending ULIDs, so later entries are newer messages. */
 const IDS = ["A0", "A1", "A2", "A3", "A4"].map((s) =>
   `01JBQ0000000000000000000${s}`
 );
@@ -80,10 +79,6 @@ const outcome: fc.Arbitrary<PollOutcome> = fc.oneof(
 
 type Op =
   | { readonly op: "advance"; readonly ms: number }
-  /**
-   * A background poll, sent `lag` ms before it is applied. `refresh` is the
-   * `inbox read` refresh, which applies its answer whether a poll is due.
-   */
   | {
     readonly op: "poll" | "refresh";
     readonly outcome: PollOutcome;
@@ -124,11 +119,8 @@ interface Coverage {
   notices: Record<string, number>;
   blocked: number;
   retried: number;
-  /** A stop cleared by an answer the key earned. */
   unstopped: number;
-  /** A snapshot fetched earlier that lost to the one held. */
   olderLost: number;
-  /** A stop kept against an answer sent before it. */
   staleKept: number;
 }
 
@@ -144,7 +136,6 @@ function newCoverage(): Coverage {
   };
 }
 
-/** Stamps the outcome with when its request was sent. */
 function sent(outcome: PollOutcome, at: number): PollOutcome {
   if (outcome.kind === "ok") {
     return { ...outcome, snapshot: { ...outcome.snapshot, fetchedAt: at } };
@@ -214,11 +205,6 @@ function noticeBranch(state: InboxState, now: number): NoticeBranch {
   return now - announcement.at < NOTICE_LIFETIME_MS ? "repeat" : "retired";
 }
 
-/**
- * Plays a sequence and returns the first broken invariant, or undefined. With
- * a monotonic clock it also checks the rules that a clock going back may
- * legitimately bend: poll spacing and a retired notice staying retired.
- */
 function play(
   sequence: Op[],
   monotonic: boolean,
@@ -243,7 +229,6 @@ function play(
         return "a refresh changed the announcement";
       }
       state = next;
-      // Not a poll: it neither spaces nor follows the poll schedule.
       lastPollTime = null;
       lastOutcome = null;
       continue;

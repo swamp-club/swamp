@@ -17,14 +17,9 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// A model-based check of the published-lineage protocol (swamp-club#3482,
-// Phase 4 D2): two or three writers share one replica root, take the lease
-// at increasing fences, restore, continue or restart their lineage, commit,
-// and end each command with sync → head → confirmed → lease check →
-// acknowledge. They may crash at any point, pause past their lease
-// (zombies) or take a read-only recovery hold. The real rules in
-// `published_lineage.ts` and `replication_lineage.ts` make every decision;
-// the model only plays the object store, the replica paths and the copies.
+// model-based check of the published-lineage protocol: writers share one
+// replica root and may crash, pause past their lease or hold read-only; the
+// real rules decide, the model only plays storage
 
 import { ReplicaRoot } from "./replica_root.ts";
 import { assert, assertEquals } from "@std/assert";
@@ -52,30 +47,23 @@ function txidOf(n: number): string {
   return normalizeTxid(n)!;
 }
 
-/** One lineage's records in the control plane, as the store holds them. */
 interface Records {
   started?: PublishedLineage["started"];
   confirmed?: PublishedLineage["confirmed"];
   head?: LineageHead;
 }
 
-/** How far a write command's end has got. */
 type Phase = "open" | "synced" | "headed" | "confirmed";
 
-/** A write command in progress on one copy. */
 interface Session {
   readonly fence: number;
   phase: Phase;
-  /** How many commits of the copy the command's sync covered. */
   markLen: number;
-  /** The head's TXID, once the command published its head. */
   txid?: string;
-  /** The commits the command's head covers, once it published one. */
   headed: string[];
 }
 
 interface Writer {
-  /** `commits.db`: commit ids in cursor order (cursor = index + 1). */
   copy?: string[];
   copyState?: LocalCopyState;
   lineage?: ReplicationLineage;
@@ -85,15 +73,9 @@ interface Writer {
 interface World {
   maxFence: number;
   readonly records: Map<number, Records>;
-  /** Each replica path's content: a prefix of its writer's copy. */
   readonly replicas: Map<number, string[]>;
   readonly writers: Writer[];
-  /** Every commit a writer acknowledged, from any writer. */
   readonly acked: Set<string>;
-  /**
-   * Commits a head covered whose command then ended without acknowledging
-   * them: its lease check failed, or it crashed after publishing the head.
-   */
   readonly exposed: Set<string>;
   nextCommit: number;
 }
@@ -185,18 +167,12 @@ function recordsOf(world: World, fence: number): Records {
   return records;
 }
 
-/**
- * A Litestream restore of `lineage` up to its head's TXID, then swamp's
- * truncation to the head's high-water mark: every commit past the mark's
- * cursor is dropped.
- */
 function restore(world: World, lineage: CompleteLineage): string[] {
   const replica = world.replicas.get(lineage.fence) ?? [];
   const upToTxid = replica.slice(0, Number(BigInt(`0x${lineage.head.txid}`)));
   return upToTxid.slice(0, lineage.head.mark.cursor);
 }
 
-/** What a fresh copy restores now, or undefined when nothing is published. */
 function freshRestore(world: World): string[] | undefined {
   const decision = decideLocalCopy(
     undefined,
@@ -213,7 +189,6 @@ function isStarted(world: World, fence: number): boolean {
   return world.records.get(fence)?.started?.replicaRoot === ROOT;
 }
 
-/** A command ended without acknowledging what its head covered. */
 function endUnacknowledged(world: World, w: Writer): void {
   for (const id of w.session!.headed) {
     if (!world.acked.has(id)) world.exposed.add(id);
@@ -221,10 +196,6 @@ function endUnacknowledged(world: World, w: Writer): void {
   w.session = undefined;
 }
 
-/**
- * Applies one action, skipping it when it does not apply in this state, and
- * adds the branches it reached to `hit`.
- */
 function step(world: World, action: Action, hit: Set<Branch>): void {
   // Actions a command takes go to a writer with a command in progress, so
   // runs reach the end of their commands; the others pick any writer.
@@ -274,7 +245,6 @@ function step(world: World, action: Action, hit: Set<Branch>): void {
         !restored && fenceRule &&
         mayContinueLineage(w.lineage, lineages, ReplicaRoot.of(ROOT))
       ) {
-        // Invariant 3: a writer only ever continues a published lineage.
         assert(
           isStarted(world, w.lineage!.lineageFence),
           `writer continued unpublished lineage ${w.lineage!.lineageFence}`,
@@ -288,7 +258,6 @@ function step(world: World, action: Action, hit: Set<Branch>): void {
         hit.add("restart");
       }
       if (action.kind === "beginCrash") {
-        // The lineage record is written; a new lineage's `started` never is.
         if (fresh) hit.add("crash-before-started");
         return;
       }
@@ -379,7 +348,6 @@ function step(world: World, action: Action, hit: Set<Branch>): void {
     case "check": {
       if (session === undefined || session.phase !== "confirmed") return;
       if (session.fence !== world.maxFence) {
-        // A failed lease check acknowledges nothing; the head stays.
         hit.add("zombie-lease-check-failed");
         endUnacknowledged(world, w);
         return;
@@ -428,7 +396,6 @@ function step(world: World, action: Action, hit: Set<Branch>): void {
   }
 }
 
-/** Brute force: the highest started, confirmed and headed lineage. */
 function bruteCurrent(world: World): number | undefined {
   const fences = [...world.records.entries()]
     .filter(([fence, r]) =>
@@ -440,33 +407,9 @@ function bruteCurrent(world: World): number | undefined {
 }
 
 /**
- * The invariants, after every action.
- *
- * 1. `currentLineage` is the highest lineage under the root with `started`,
- *    `confirmed` and its own `head`.
- *
- * 2. Let R be what a fresh copy restores: the current lineage's replica up
- *    to its head's TXID, truncated to the head's high-water mark. Then R
- *    holds no commit twice, and:
- *    - every acknowledged commit, from any writer, is in R (through every
- *      takeover, crash, zombie and hold);
- *    - every commit in R that was never acknowledged is covered by the mark
- *      of a head some writer published and then did not acknowledge: that
- *      writer is still between its head and its lease check, or its lease
- *      check failed, or it crashed after publishing the head. No other
- *      unacknowledged commit (a zombie's unsynced or unheaded commits, a
- *      crashed command's commits before its head, commits past a mark)
- *      is ever restored.
- *    A writer's own unacknowledged commits left in its copy (D1: the next
- *    write replicates them) fall under the same rule: they reach R only
- *    through a head that covers them.
- *
- * 3. A writer never continues a lineage whose `started` was never published
- *    (checked where the model continues, and here for every recorded
- *    lineage: `mayContinueLineage` is false for an unpublished one, such as
- *    a recovery hold's). `mayContinueLineage`'s separate `started` check is
- *    implied by `newestStartedFence(...) === previous.lineageFence`, so
- *    dropping it alone changes nothing.
+ * after every action: current lineage is the highest started, confirmed and
+ * headed one; a fresh copy restores every acknowledged commit and no
+ * unacknowledged one a published head does not cover
  */
 function checkInvariants(world: World): void {
   const lineages = publishedList(world);
@@ -540,7 +483,6 @@ Deno.test("published lineage: takeovers, crashes, zombies and holds keep every a
   }
 });
 
-/** An action; in-command kinds index the writers with a command running. */
 function act(kind: ActionKind, w = 0): Action {
   return { kind, w, k: 1 };
 }
@@ -553,8 +495,6 @@ const END = [
 ];
 
 Deno.test("published lineage: a crash between confirmed and the lease check keeps the commits the lineage inherited", () => {
-  // The counterexample to the old order (confirmed before head, and a
-  // headless lineage restored with an empty mark).
   for (const crashAfter of ["publishHead", "publishConfirmed"] as const) {
     const world = run({
       writers: 2,

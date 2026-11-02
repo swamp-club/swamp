@@ -17,13 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * The access resources grants are judged against, built from the resources
- * they name: a model definition, a workflow, a vault, or a name that matches
- * nothing. Serve requests and the local `swamp access check` build them here,
- * so both judge a resource by the same fields (swamp-club#3224).
- */
-
 import { controlPlaneRecordResource } from "./control_plane_records.ts";
 import type { AccessResource } from "./access_decision_service.ts";
 import { isControlPlaneModelType } from "../models/control_plane_types.ts";
@@ -31,15 +24,12 @@ import type { DefinitionLookupResult } from "../models/model_lookup.ts";
 import { ModelType } from "../models/model_type.ts";
 import type { Workflow } from "../workflows/workflow.ts";
 
-/** Which resource kind a model reference is authorized as. */
 export type ModelResourceKind = "model" | "data";
 
 /**
- * The resource fields a model or data resource of `type` carries, as `kind`.
- * Every resource field of the kind is present, empty when the resource has
- * none (tags `{}`, ns `""`): a deny that needs a field the resource lacks
- * fails closed, so an untagged resource must say it has no tags
- * (swamp-club#2675).
+ * every resource field of the kind is present, empty when none: a deny needing
+ * a field the resource lacks fails closed, so an untagged resource must say it
+ * has no tags
  */
 export function modelTypeFields(
   name: string,
@@ -58,9 +48,8 @@ export function modelTypeFields(
 }
 
 /**
- * The access resource for a model definition, authorized as `kind`. A
- * control-plane model (a grant, group, token or worker record) is owned by
- * the access kind instead, whichever kind was asked for (swamp-club#2756).
+ * a control-plane model is owned by the access kind, whichever kind was asked
+ * for
  */
 export function modelAccessResource(
   result: DefinitionLookupResult,
@@ -85,7 +74,6 @@ export function modelAccessResource(
   };
 }
 
-/** The access resource for a workflow; its tags are `{}` when it has none. */
 export function workflowAccessResource(
   workflow: Pick<Workflow, "name" | "tags">,
 ): AccessResource {
@@ -96,10 +84,6 @@ export function workflowAccessResource(
   };
 }
 
-/**
- * The access resource for a request whose id-or-name matched nothing. A
- * resource that does not exist has no tags, so its fields say so.
- */
 export function unresolvedAccessResource(
   kind: AccessResource["kind"],
   idOrName: string,
@@ -110,10 +94,6 @@ export function unresolvedAccessResource(
   return { kind, name: idOrName, fields };
 }
 
-/**
- * The vault resource `vault:<name>` (swamp-club#2676). `key` is the secret a
- * request names; without one a `key` condition sees "".
- */
 export function vaultKindResource(name: string, key?: string): AccessResource {
   return {
     kind: "vault",
@@ -122,11 +102,6 @@ export function vaultKindResource(name: string, key?: string): AccessResource {
   };
 }
 
-/**
- * Whether two tag sets differ: a key added, removed or given another value.
- * Key order does not matter, and no tags reads as `{}`. A change to tags is
- * a retag, authorized as `tag` (swamp-club#3085).
- */
 export function tagsChanged(
   before: Readonly<Record<string, string>> | undefined,
   after: Readonly<Record<string, string>> | undefined,

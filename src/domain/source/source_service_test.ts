@@ -25,9 +25,6 @@ import {
   SourceService,
 } from "./source_service.ts";
 
-/**
- * Mock implementation of SourceDownloader for testing.
- */
 class MockSourceDownloader implements SourceDownloader {
   downloadCalls: Array<{ version: string; targetDir: string }> = [];
   fileCountToReturn = 100;
@@ -41,9 +38,6 @@ class MockSourceDownloader implements SourceDownloader {
   }
 }
 
-/**
- * Mock implementation of SourceMetadataRepository for testing.
- */
 class MockSourceMetadataRepository implements SourceMetadataRepository {
   private metadata: SourceMetadata | null = null;
   private readonly sourceDir: string;
@@ -70,7 +64,6 @@ class MockSourceMetadataRepository implements SourceMetadataRepository {
     await Promise.resolve();
   }
 
-  // Test helper to set initial metadata
   setMetadata(metadata: SourceMetadata): void {
     this.metadata = metadata;
   }
@@ -115,7 +108,6 @@ Deno.test("SourceService.fetch - returns already_fetched for same version", asyn
     assertEquals(result.fileCount, 200);
   }
 
-  // Should not have downloaded
   assertEquals(downloader.downloadCalls.length, 0);
 });
 
@@ -202,7 +194,6 @@ Deno.test("SourceService.clean - removes metadata when source exists", async () 
   assertEquals(result.status, "cleaned");
   assertEquals(result.path, "/test/.swamp/source");
 
-  // Verify metadata was deleted
   const info = await service.getInfo();
   assertEquals(info.status, "not_found");
 });

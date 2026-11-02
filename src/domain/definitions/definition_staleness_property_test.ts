@@ -22,7 +22,6 @@ import fc from "fast-check";
 import { CalVer } from "../models/calver.ts";
 import { isBehind, resolveStaleness } from "./definition_staleness.ts";
 
-/** A CalVer string built from ordered parts so generated versions compare. */
 const arbCalVer = fc.record({
   y: fc.integer({ min: 2020, max: 2030 }),
   m: fc.integer({ min: 1, max: 12 }),
@@ -45,9 +44,7 @@ Deno.test("resolveStaleness property: state agrees with CalVer ordering", () => 
           CalVer.create(modelVersion),
         ) <
           0;
-        // "current" must mean exactly "not behind by CalVer ordering".
         assertEquals(result.state === "current", !behind);
-        // Every behind case resolves to one of the two behind states.
         assertEquals(isBehind(result), behind);
       },
     ),

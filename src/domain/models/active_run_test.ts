@@ -129,7 +129,6 @@ Deno.test("ActiveRun.recordHeartbeat: updates heartbeat time", () => {
   });
 
   const before = run.heartbeatAt;
-  // Small delay to ensure time difference
   const spinUntil = Date.now() + 2;
   while (Date.now() < spinUntil) { /* spin */ }
   run.recordHeartbeat();

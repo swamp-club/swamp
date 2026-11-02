@@ -17,20 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Contract tests for Workflow cross-context boundaries.
- *
- * These test behavioral invariants NOT covered by the unit tests in
- * workflow_test.ts. The unit tests cover creation, jobs, serialization,
- * inputs, and tags. These contract tests verify:
- * - Job ordering is preserved through serialization
- * - Job dependencies form a valid DAG (no self-deps)
- * - Step dependencies reference valid step names
- * - Workflow.create allows empty jobs (for builder pattern) but
- *   fromData rejects them (schema enforcement)
- * - addJob order is reflected in jobs array
- */
-
 import { assert, assertEquals, assertThrows } from "@std/assert";
 import { Workflow, WorkflowSchema } from "./workflow.ts";
 import { Job } from "./job.ts";
@@ -83,11 +69,9 @@ Deno.test("contract: addJob appends in call order", () => {
 });
 
 Deno.test("contract: create allows empty jobs but fromData rejects them", () => {
-  // Builder pattern: create with no jobs, add later
   const wf = Workflow.create({ name: "empty-start" });
   assertEquals(wf.jobs.length, 0);
 
-  // Schema enforcement: fromData rejects empty jobs
   assertThrows(() => {
     WorkflowSchema.parse({
       id: crypto.randomUUID(),
@@ -161,7 +145,6 @@ Deno.test("contract: fromData then toData produces round-trip stable tags", () =
   const data = wf.toData();
   const restored = Workflow.fromData(data);
 
-  // Restored workflow has same tags
   assertEquals(restored.tags.env, "prod");
 
   // Mutating the serialized data should not affect the restored workflow

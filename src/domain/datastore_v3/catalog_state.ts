@@ -18,46 +18,24 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * What the data catalog holds for one data name, as plain data
- * (swamp-club#3258): the versions that have a row, and the name's forward.
- * History compaction folds each commit's {@link CatalogAction}s into it, so
- * a checkout that loads the compacted base rebuilds the rows a replay of
- * the compacted commits would have left.
- *
- * The fold keeps the catalog store's semantics: an upsert replaces a
- * version's row, a removal drops one or all of a name's rows, and a forward
- * replaces or ends the name's forward. An upsert that becomes the name's
- * latest row also ends its forward, as `CatalogStore.upsertNewVersion` does
- * ("a new latest version makes the name active again"); the read model's
- * catalog has no pending rows, so that is an upsert with no higher row.
- * Latest flags are derived from version order, so they are not part of the
- * state.
- *
- * @module
+ * an upsert that becomes the name's latest row also ends its forward, as
+ * CatalogStore.upsertNewVersion does; latest flags derive from version order
+ * and are not part of the state
  */
 
 import type { DataMetadata } from "../data/data_metadata.ts";
 import type { CatalogAction } from "./catalog_projection.ts";
 
-/** One data name's catalog state. */
 export interface CatalogNameState {
-  /** The rows, by version, in ascending version order. */
   readonly rows: readonly DataMetadata[];
-  /** The name it forwards to, if any. */
   readonly forward: string | undefined;
 }
 
-/** A name with no rows and no forward. */
 export const EMPTY_CATALOG_NAME: CatalogNameState = {
   rows: [],
   forward: undefined,
 };
 
-/**
- * Applies one commit's catalog actions, in order, and returns the new state
- * of each name they touched. `before` gives a name's state before the
- * commit.
- */
 export function foldCatalogActions(
   actions: readonly CatalogAction[],
   before: (name: string) => CatalogNameState,

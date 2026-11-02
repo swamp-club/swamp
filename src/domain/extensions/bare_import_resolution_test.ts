@@ -220,7 +220,6 @@ Deno.test("hasUnresolvedBareImports: false when every import has a target", () =
   assertEquals(hasUnresolvedBareImports([]), false);
 });
 
-/** A manifest reader over `manifests`, keyed by package directory. */
 function manifestsAt(
   manifests: Record<string, unknown>,
 ): (dir: string) => Promise<unknown> {
@@ -483,7 +482,6 @@ Deno.test("isLocalModuleSpecifier: reads node_modules only below the entry point
     isLocalModuleSpecifier(at("node_modules", "ms", "index.js"), entryDir),
     false,
   );
-  // Without a root, every segment is read, as before.
   assertEquals(isLocalModuleSpecifier(at("lib", "a.ts")), false);
 });
 

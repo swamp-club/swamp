@@ -32,7 +32,6 @@ import {
 const SERVER = "https://registry.test";
 const REFUSAL = "Private publication requires a paid plan";
 
-/** The plans and standings the registry reports, as id and label. */
 const PLANS = [
   { plan: "free", planName: "Free" },
   { plan: "team", planName: "Team" },
@@ -42,7 +41,6 @@ const PLANS = [
   { plan: "admin", planName: "Admin" },
 ] as const;
 
-/** The registry's verdicts, plus none sent and one this client does not know. */
 const VERDICTS = ["allowed", "trial-ended", "paywalled"] as const;
 const verdictArb = fc.oneof(
   fc.constant(undefined),
@@ -72,7 +70,6 @@ const trialArb = fc.oneof(
   }),
 );
 
-/** An entitlement the registry reported, with or without a plan label. */
 const reportedArb = fc.record({
   known: fc.constantFrom(...PLANS),
   labelled: fc.boolean(),
@@ -86,7 +83,6 @@ const reportedArb = fc.record({
   ...(verdict !== undefined ? { privateExtensions: verdict } : {}),
 }));
 
-/** The plan labels a message may not mention unless the registry sent them. */
 function foreignLabels(entitlement: CollectiveEntitlement): string[] {
   const own = new Set(
     [entitlement.plan, entitlement.planName].filter((x): x is string =>
@@ -113,7 +109,6 @@ function assertNamesOnlyReportedPlans(
   }
 }
 
-/** No message calls the absence of a plan a plan (swamp-club#3311). */
 function assertNeverFreePlan(message: string): void {
   assert(
     !message.toLowerCase().includes("free plan"),
@@ -121,7 +116,6 @@ function assertNeverFreePlan(message: string): void {
   );
 }
 
-/** The status the reported entitlement decides, verdict first. */
 function expectedStatus(
   entitlement: CollectiveEntitlement,
 ): "passed" | "failed" | "not-run" {
@@ -152,12 +146,10 @@ Deno.test("evaluatePrivateEntitlement: the verdict decides when sent, plan and t
       assertNamesOnlyReportedPlans(result.message, entitlement);
       assertNeverFreePlan(result.message);
       assertStringIncludes(result.message, '"@acme"');
-      // The upgrade page comes with a refusal, and only with one.
       assertEquals(
         result.message.includes(collectiveBillingUrl(SERVER, "acme")),
         result.status === "failed",
       );
-      // An unknown verdict is never echoed back.
       const verdict = entitlement.privateExtensions;
       if (
         verdict !== undefined &&

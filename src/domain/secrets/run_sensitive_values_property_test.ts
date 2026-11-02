@@ -46,7 +46,6 @@ Deno.test("RunSensitiveValues: in a typed run a registered sentinel is masked an
           ? bag.addDataReference(reference, "db/main.f")
           : bag.addDataSecret(value, reference);
         const text = `${before}${sentinel}${after}`;
-        // Masks never depend on the length or contents of a value.
         assertEquals(values.masked(text), `${before}***${after}`);
         assertEquals(redactor.redact(text), `${before}***${after}`);
         assertEquals(

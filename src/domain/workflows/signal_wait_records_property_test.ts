@@ -114,7 +114,6 @@ Deno.test("wait records: no bytes read as a record of a wait unless they are tha
             decodeWaitOutcome(bytes, registration.waitId),
           ]
         ) {
-          // Never absent, and found only with the wait's own id.
           assert(stored.kind !== "absent");
           if (stored.kind === "found") {
             assertEquals(stored.record.waitId, registration.waitId);
@@ -179,7 +178,6 @@ Deno.test("signal wait: any ordering of signals, timeouts and cancels leaves one
               "ada",
               OPENED,
             );
-            // A refused payload never reaches the store.
             assertEquals(decision.accepted, attempt === "signal");
             if (decision.accepted) tried = decision.outcome;
           } else if (attempt === "timeout") {
@@ -187,7 +185,6 @@ Deno.test("signal wait: any ordering of signals, timeouts and cancels leaves one
           } else if (attempt === "cancel") {
             tried = cancelledOutcome(registration, OPENED);
           } else {
-            // Anyone who looks after the deadline settles an open wait.
             const seen = await outcomeAt(store, registration, late);
             assert(seen.kind === "found");
             first ??= seen.record;
@@ -198,7 +195,6 @@ Deno.test("signal wait: any ordering of signals, timeouts and cancels leaves one
           const stored = await store.settle(tried);
           assert(stored.kind === "found");
           first ??= stored.record;
-          // Whatever was tried, what is stored is the first outcome.
           assertEquals(stored.record, first);
           if (settledBy(stored, tried)) winners++;
         }
@@ -207,7 +203,6 @@ Deno.test("signal wait: any ordering of signals, timeouts and cancels leaves one
         // A signal is told it won only when its own receipt is stored.
         if (first?.kind === "accepted") assertEquals(winners, 1);
         assertEquals(await store.listOutcomes(), first ? [first] : []);
-        // The registration is untouched by settling.
         assertEquals(await store.listRegistrations(), [registration]);
       },
     ),

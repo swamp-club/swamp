@@ -29,7 +29,7 @@ import {
 Deno.test("Definition.create generates UUID if not provided", () => {
   const definition = Definition.create({ name: "test-definition" });
   assertEquals(typeof definition.id, "string");
-  assertEquals(definition.id.length, 36); // UUID length
+  assertEquals(definition.id.length, 36);
 });
 
 Deno.test("Definition.create uses provided ID", () => {
@@ -168,8 +168,6 @@ Deno.test("Definition.create throws on name with forward slash", () => {
   );
 });
 
-// isFilenameSafeDefinitionName tests
-
 Deno.test("isFilenameSafeDefinitionName: accepts kebab-case names", () => {
   assertEquals(isFilenameSafeDefinitionName("my-server"), true);
   assertEquals(isFilenameSafeDefinitionName("prod-vpc"), true);
@@ -218,8 +216,6 @@ Deno.test("Definition.create throws on name with null bytes", () => {
     Error,
   );
 });
-
-// Scoped @collective/name tests
 
 Deno.test("Definition.create accepts scoped @collective/name", () => {
   const def = Definition.create({ name: "@john/pod-inventory" });
@@ -415,7 +411,6 @@ Deno.test("Definition.globalArguments handles deep nesting", () => {
     globalArguments,
   });
 
-  // Modifying the returned globalArguments shouldn't affect the original
   const attrs = definition.globalArguments;
   (attrs.nested as Record<string, unknown>).deep = "modified";
   assertEquals(
@@ -452,7 +447,7 @@ Deno.test("Definition.computeHash returns consistent hash", async () => {
   const hash2 = await definition2.computeHash();
 
   assertEquals(hash1, hash2);
-  assertEquals(hash1.length, 64); // SHA-256 hex string length
+  assertEquals(hash1.length, 64);
 });
 
 Deno.test("Definition.computeHash returns different hash for different nested content", async () => {
@@ -473,7 +468,6 @@ Deno.test("Definition.computeHash returns different hash for different nested co
   const hash1 = await definition1.computeHash();
   const hash2 = await definition2.computeHash();
 
-  // Different nested content should produce different hashes
   assertEquals(hash1 !== hash2, true);
 });
 
@@ -543,8 +537,6 @@ Deno.test("Definition.computeHash is stable regardless of type/typeVersion", asy
   assertEquals(hash1, hash2);
 });
 
-// --- withUpgradedGlobalArguments tests ---
-
 Deno.test("Definition.withUpgradedGlobalArguments preserves id, name, tags", () => {
   const original = Definition.create({
     id: "550e8400-e29b-41d4-a716-446655440000",
@@ -584,12 +576,9 @@ Deno.test("Definition.withUpgradedGlobalArguments updates globalArguments and ty
 
   assertEquals(upgraded.globalArguments, { content: "new", priority: "high" });
   assertEquals(upgraded.typeVersion, "2026.02.09.1");
-  // Original should be unchanged
   assertEquals(original.globalArguments, { message: "old" });
   assertEquals(original.typeVersion, "2025.01.15.1");
 });
-
-// --- removed driver/driverConfig field tests ---
 
 Deno.test("DefinitionSchema rejects removed driver field with actionable error", () => {
   const error = assertThrows(
@@ -633,10 +622,8 @@ Deno.test("DefinitionSchema rejects removed driverConfig field with actionable e
 });
 
 Deno.test("Numeric typeVersion is stringified, not discarded", () => {
-  // A number is what swamp wrote between #203 and #230, and it is also what a
-  // hand-edit like `typeVersion: 2026` produces. Neither is a CalVer version,
-  // and neither is the same as recording nothing — dropping it would silently
-  // throw away something the author expected to be read (swamp-club#2412).
+  // a numeric typeVersion comes from older swamp writes or hand edits; dropping
+  // it would silently discard something the author expected to be read
   const definition = Definition.fromData({
     id: "550e8400-e29b-41d4-a716-446655440000",
     name: "numeric-def",
@@ -688,8 +675,6 @@ Deno.test("Definition.parse: resources without vaultName remain backwards compat
   assertEquals(definition.resources?.result?.vaultName, undefined);
   assertEquals(definition.resources?.result?.lifetime, "infinite");
 });
-
-// --- Description field tests ---
 
 Deno.test("Definition.create: accepts description", () => {
   const def = Definition.create({

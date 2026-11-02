@@ -19,50 +19,25 @@
 
 import type { DataHandle } from "./model.ts";
 
-/**
- * Serializable request envelope describing a single method execution.
- *
- * Built by the method execution service for every run; the same shape is
- * the basis for what remote dispatch ships to workers (see
- * design/enablers/remote-execution.md).
- */
 export interface ExecutionRequest {
-  /** Protocol version for forward compatibility. */
   protocolVersion: number;
-  /** The model type identifier. */
   modelType: string;
-  /** The model/definition ID. */
   modelId: string;
-  /** The method name to execute. */
   methodName: string;
-  /** Pre-validated global arguments from the definition. */
   globalArgs: Record<string, unknown>;
-  /** Pre-validated per-method arguments. */
   methodArgs: Record<string, unknown>;
-  /** Definition metadata. */
   definitionMeta: {
     id: string;
     name: string;
     version: number;
     tags: Record<string, string>;
   };
-  /** Resource output spec metadata (spec names, tags, etc.). */
   resourceSpecs?: Record<string, unknown>;
-  /** File output spec metadata (spec names, content types, etc.). */
   fileSpecs?: Record<string, unknown>;
-  /** Optional bundled module for out-of-process execution. */
   bundle?: Uint8Array;
-  /** W3C Trace Context headers for distributed tracing propagation. */
   traceHeaders?: Record<string, string>;
 }
 
-/**
- * A single output from a method execution.
- *
- * - `"persisted"`: data was written in-process; handle references existing data.
- * - `"pending"`: data needs to be persisted by the host (for out-of-process
- *   execution).
- */
 export type ExecutionOutput =
   | { kind: "persisted"; handle: DataHandle }
   | {
@@ -72,34 +47,24 @@ export type ExecutionOutput =
     type: "resource" | "file";
     content: Uint8Array;
     tags?: Record<string, string>;
-    /** Execution metadata (exit code, timing, etc.). */
     metadata?: Record<string, unknown>;
   };
 
-/**
- * Result envelope returned by a method execution.
- */
 export interface ExecutionResult {
-  /** Whether execution succeeded or failed. */
   status: "success" | "error";
-  /** Error message if status is "error". */
   error?: string;
   /**
-   * Paths the error marked (see `markErrorPaths`), so the error rebuilt from
-   * `error` can carry them to telemetry (swamp-club#2830).
+   * paths the error marked, so the error rebuilt from error can carry them to
+   * telemetry
    */
   errorPaths?: string[];
   /**
-   * The code of the `UserError` the method threw (see `userErrorCode`), so
-   * the error rebuilt from `error` is a `UserError` with that code and a
-   * failed workflow step records it (swamp-club#3773).
+   * the UserError code, so the error rebuilt from error is a UserError with
+   * that code and a failed workflow step records it
    */
   errorCode?: string;
-  /** Outputs produced during execution. */
   outputs: ExecutionOutput[];
-  /** Log lines captured during execution. */
   logs: string[];
-  /** Execution duration in milliseconds. */
   durationMs: number;
 }
 
@@ -109,11 +74,8 @@ const TRACE_HEADER_ENV_NAMES: ReadonlyMap<string, string> = new Map([
 ]);
 
 /**
- * Maps W3C Trace Context headers to the environment variables a child process
- * reads them from (`traceparent` → `TRACEPARENT`, `tracestate` → `TRACESTATE`).
- *
- * Only those two headers are mapped; any other key is dropped, so a header
- * record can never name an arbitrary variable in a child's environment.
+ * only traceparent and tracestate are mapped and any other key is dropped, so a
+ * header record can never name an arbitrary variable in a child's environment
  */
 export function traceHeadersToEnv(
   headers: Readonly<Record<string, string>> | undefined,

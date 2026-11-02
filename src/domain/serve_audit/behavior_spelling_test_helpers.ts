@@ -25,7 +25,6 @@ import {
 } from "./audit_event.ts";
 import type { AuditStore } from "./audit_store.ts";
 
-/** A chained event with the given action and resource, stored as swamp writes it. */
 export function chainedEvent(
   chain: AuditChainState,
   action: string,
@@ -49,7 +48,6 @@ export function chainedEvent(
   }));
 }
 
-/** An in-memory audit store holding `events`, one batch per day. */
 export function inMemoryAuditStore(events: ChainedAuditEvent[]): AuditStore {
   const encoder = new TextEncoder();
   const storage = new Map<string, Uint8Array>();

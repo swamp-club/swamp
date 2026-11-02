@@ -358,8 +358,8 @@ Deno.test("ChunkStore.refresh: touches the chunks it holds and returns the missi
 });
 
 /**
- * A memory storage that reads chunk sizes and syncs chunk directories, as
- * the filesystem storage does (swamp-club#3617).
+ * a memory storage that reads chunk sizes and syncs chunk directories, as the
+ * filesystem storage does
  */
 class StatMemoryStorage extends MemoryStorage {
   readonly synced: { namespace: string; hashes: string[] }[] = [];
@@ -391,14 +391,12 @@ class StatMemoryStorage extends MemoryStorage {
     return Promise.resolve();
   }
 
-  /** Leaves the first `length` bytes of a chunk, as a power loss can. */
   tear(namespace: string, sha256: string, length: number): void {
     const key = `${namespace}/${sha256}`;
     this.chunks.set(key, this.chunks.get(key)!.slice(0, length));
   }
 }
 
-/** Reads `content` by range, as a file opened again would be. */
 function rangeOf(content: () => Uint8Array): ContentRangeReader {
   return (offset, length, signal) => {
     signal.throwIfAborted();
@@ -444,7 +442,6 @@ Deno.test("ChunkStore.missing and refresh: a chunk backing several parts is list
     ]
   ) {
     const store = new ChunkStore(storage);
-    // Three identical 4-byte chunks, then a shorter last one.
     const ref = await store.write(NS, new Uint8Array(14), live());
     const [repeated, , , last] = ref.chunkHashes();
     assertEquals(ref.chunkHashes().filter((h) => h === repeated).length, 3);
@@ -492,7 +489,6 @@ Deno.test("ChunkStore.syncStored: syncs the chunks' directories in the storage n
     { namespace: UNNAMESPACED_STORAGE_NAMESPACE, hashes: ["a".repeat(64)] },
     { namespace: "team-a", hashes: ["b".repeat(64), "c".repeat(64)] },
   ]);
-  // A storage without the capability: nothing to call, nothing thrown.
   await new ChunkStore(new MemoryStorage()).syncStored(
     NS,
     ["a".repeat(64)],
@@ -724,7 +720,6 @@ Deno.test("ChunkStore.beginBatch: a failed commit stores nothing and syncs nothi
   } finally {
     await other.discard();
   }
-  // A batch takes only content of its own namespace.
   await assertRejects(
     () =>
       direct.write(SOLO_NAMESPACE, bytesOf(4), live(), direct.beginBatch(NS)),

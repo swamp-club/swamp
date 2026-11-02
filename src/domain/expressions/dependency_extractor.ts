@@ -28,9 +28,6 @@ import { maskLiteralCalls } from "./cel_string_lexer.ts";
 // literal('...') call passes through is not a reference, so
 // literal('{{model.a.resource.b}}') mints no dependency.
 
-/**
- * Type of model reference in an expression.
- */
 export type DependencyType =
   | "input"
   | "resource"
@@ -39,70 +36,32 @@ export type DependencyType =
   | "execution"
   | "definition";
 
-/**
- * Artifact types that create implicit workflow dependencies.
- */
 export const ArtifactDependencyTypes: readonly DependencyType[] = [
   "resource",
   "data",
   "file",
 ] as const;
 
-/**
- * Represents a dependency extracted from an expression.
- */
 export interface ExpressionDependency {
-  /** The model reference (name or UUID) */
   modelRef: string;
-  /** Whether the dependency is on input or resource data */
   type: DependencyType;
 }
 
-/**
- * Pattern to match model references in CEL expressions.
- * Matches: model.<name-or-uuid>.(input|resource|file|execution|definition)
- */
 const MODEL_REF_PATTERN =
   /model\.([a-zA-Z0-9_-]+)\.(input|resource|file|execution|definition)/g;
 
 /**
- * Pattern to match data function calls whose first argument names a model.
- * Matches: data.version('model', 'data', N), data.latest('model', 'data'), data.listVersions('model', 'data')
- *
- * This list is deliberately NARROWER than DATA_NAMESPACE_ACCESSORS and
- * must not be "fixed" to match it. The capture group takes the first quoted
- * argument as a model name, which is what mints a dependency edge. That is
- * true of version, latest, listVersions and findBySpec; it is false of query,
- * whose first argument is a predicate, and of findByTag, whose first argument
- * is a tag key. Adding either would extract a predicate string as if it were a
- * model name.
- *
- * The consequence is real and is documented for users in the workflow
- * data-chaining reference: a step reading data with `query` gets no implicit
- * ordering, so it needs an explicit `dependsOn` where a `latest` call would
- * not have.
+ * deliberately narrower than DATA_NAMESPACE_ACCESSORS: query's first argument
+ * is a predicate and findByTag's a tag key, not a model name, so a query step
+ * needs an explicit dependsOn
  */
 const DATA_FUNCTION_PATTERN =
   /data\.(version|latest|listVersions|findBySpec)\s*\(\s*['"]([^'"]+)['"]/g;
 
-/**
- * Pattern to match file.contents() calls in CEL expressions.
- * Matches: file.contents('model', 'spec')
- */
 const FILE_CONTENTS_PATTERN = /file\.contents\s*\(\s*['"]([^'"]+)['"]/g;
 
-/**
- * Pattern to match model.method() calls in CEL expressions.
- * Matches: model.method('modelName', 'methodName') or model.method("modelName", "methodName", inputs)
- */
 const MODEL_METHOD_PATTERN = /model\.method\s*\(\s*['"]([^'"]+)['"]/g;
 
-/**
- * Extracts model dependencies from a CEL expression.
- *
- * @param expression - The CEL expression to analyze
- * @returns Array of dependencies found in the expression
- */
 export function extractDependencies(
   expression: string,
 ): ExpressionDependency[] {
@@ -116,7 +75,6 @@ export function extractDependencies(
     const type = match[2] as DependencyType;
     const key = `${modelRef}:${type}`;
 
-    // Deduplicate
     if (!seen.has(key)) {
       seen.add(key);
       dependencies.push({ modelRef, type });
@@ -126,18 +84,10 @@ export function extractDependencies(
   return dependencies;
 }
 
-/**
- * Extracts all model references from a CEL expression (both input and resource).
- * Also extracts model references from data function calls.
- *
- * @param expression - The CEL expression to analyze
- * @returns Array of unique model references
- */
 export function extractModelRefs(expression: string): string[] {
   const cel = maskLiteralCalls(expression);
   const refs = new Set<string>();
 
-  // Extract from model.X.property patterns
   const modelMatches = cel.matchAll(MODEL_REF_PATTERN);
   for (const match of modelMatches) {
     refs.add(match[1]);
@@ -151,13 +101,11 @@ export function extractModelRefs(expression: string): string[] {
     refs.add(parsed.modelName);
   }
 
-  // Extract from file.contents('model', ...)
   const fileContentsMatches = cel.matchAll(FILE_CONTENTS_PATTERN);
   for (const match of fileContentsMatches) {
     refs.add(match[1]);
   }
 
-  // Extract from model.method('model', ...)
   const methodMatches = cel.matchAll(MODEL_METHOD_PATTERN);
   for (const match of methodMatches) {
     refs.add(match[1]);
@@ -166,38 +114,16 @@ export function extractModelRefs(expression: string): string[] {
   return [...refs];
 }
 
-/**
- * Checks if an expression has any artifact dependencies (resource, file).
- * Artifact dependencies create implicit workflow step dependencies.
- *
- * @param expression - The CEL expression to check
- * @returns True if the expression references any model artifacts
- */
 export function hasArtifactDependency(expression: string): boolean {
   const cel = maskLiteralCalls(expression);
   return /model\.[a-zA-Z0-9_-]+\.(resource|file)/.test(cel);
 }
 
-/**
- * Checks if an expression has any resource dependencies.
- * Resource dependencies create implicit workflow step dependencies.
- *
- * @param expression - The CEL expression to check
- * @returns True if the expression references any model resources
- */
 export function hasResourceDependency(expression: string): boolean {
   const cel = maskLiteralCalls(expression);
   return /model\.[a-zA-Z0-9_-]+\.resource/.test(cel);
 }
 
-/**
- * Extracts all artifact dependencies from a CEL expression.
- * These create implicit workflow step dependencies.
- * Includes both model.X.resource/file patterns and data.version/latest/listVersions function calls.
- *
- * @param expression - The CEL expression to analyze
- * @returns Array of dependencies with artifact types (resource, data, file)
- */
 export function extractArtifactDependencies(
   expression: string,
 ): ExpressionDependency[] {
@@ -205,7 +131,6 @@ export function extractArtifactDependencies(
   const dependencies: ExpressionDependency[] = [];
   const seen = new Set<string>();
 
-  // Extract from model.X.property patterns
   const pattern = /model\.([a-zA-Z0-9_-]+)\.(resource|file)/g;
   const matches = cel.matchAll(pattern);
   for (const match of matches) {
@@ -219,8 +144,6 @@ export function extractArtifactDependencies(
     }
   }
 
-  // Extract from data function calls (all data functions create data dependencies)
-  // Strip namespace prefix ("ns:model" → "model")
   const dataMatches = cel.matchAll(DATA_FUNCTION_PATTERN);
   for (const match of dataMatches) {
     const parsed = parseNamespacedModelName(match[2]);
@@ -233,7 +156,6 @@ export function extractArtifactDependencies(
     }
   }
 
-  // Extract from file.contents() calls (create file dependencies)
   const fileContentsMatches = cel.matchAll(FILE_CONTENTS_PATTERN);
   for (const match of fileContentsMatches) {
     const modelRef = match[1];
@@ -248,13 +170,6 @@ export function extractArtifactDependencies(
   return dependencies;
 }
 
-/**
- * Extracts only resource dependencies from a CEL expression.
- * These create implicit workflow step dependencies.
- *
- * @param expression - The CEL expression to analyze
- * @returns Array of model references that have resource dependencies
- */
 export function extractResourceDependencies(expression: string): string[] {
   const cel = maskLiteralCalls(expression);
   const refs = new Set<string>();
@@ -267,23 +182,11 @@ export function extractResourceDependencies(expression: string): string[] {
   return [...refs];
 }
 
-/**
- * Checks if an expression contains a self-reference.
- *
- * @param expression - The CEL expression to check
- * @returns True if the expression references 'self'
- */
 export function hasSelfReference(expression: string): boolean {
   const cel = maskLiteralCalls(expression);
   return /\bself\b/.test(cel);
 }
 
-/**
- * Extracts model references from data function calls.
- *
- * @param expression - The CEL expression to analyze
- * @returns Array of model references from data.version/latest/listVersions calls
- */
 export function extractDataFunctionDependencies(expression: string): string[] {
   const cel = maskLiteralCalls(expression);
   const refs = new Set<string>();
@@ -297,14 +200,6 @@ export function extractDataFunctionDependencies(expression: string): string[] {
   return [...refs];
 }
 
-/**
- * Extracts the model names data.version/latest/listVersions/findBySpec calls
- * pass as a literal without a namespace prefix — the calls that read the
- * caller's own namespace. Names computed at runtime are not seen.
- *
- * @param expression - The CEL expression to analyze
- * @returns The distinct unprefixed model names, in order of appearance
- */
 export function extractOwnNamespaceDataModelNames(
   expression: string,
 ): string[] {
@@ -317,33 +212,15 @@ export function extractOwnNamespaceDataModelNames(
   return [...names];
 }
 
-/**
- * Checks if an expression has any data function calls.
- *
- * @param expression - The CEL expression to check
- * @returns True if the expression contains any data.* function call
- */
 export function hasDataFunctionDependency(expression: string): boolean {
   const cel = maskLiteralCalls(expression);
-  // Derived from DATA_NAMESPACE_ACCESSORS rather than restated, so this cannot
-  // drift the way the validator's copy did.
-  //
-  // Note for anyone reading this as the live detection path: it is not one.
-  // This function has no caller outside its own tests, and neither does
-  // extractDataFunctionDependencies below. Dependency edges are minted by
-  // extractDependencies, which uses the narrower DATA_FUNCTION_PATTERN. The
-  // rebuild here is hygiene — a stale copy left behind is how the next drift
-  // starts — not a behaviour fix.
+  // derived from DATA_NAMESPACE_ACCESSORS so it cannot drift; not the live
+  // detection path: edges are minted by extractDependencies with the narrower
+  // DATA_FUNCTION_PATTERN
   return new RegExp(`data\\.(${dataAccessorAlternation()})\\s*\\(`)
     .test(cel);
 }
 
-/**
- * Extracts model references from file.contents() calls.
- *
- * @param expression - The CEL expression to analyze
- * @returns Array of model references from file.contents() calls
- */
 export function extractFileContentsDependencies(
   expression: string,
 ): string[] {
@@ -358,36 +235,16 @@ export function extractFileContentsDependencies(
   return [...refs];
 }
 
-/**
- * Checks if an expression has any file.contents() calls.
- *
- * @param expression - The CEL expression to check
- * @returns True if the expression contains file.contents()
- */
 export function hasFileContentsDependency(expression: string): boolean {
   const cel = maskLiteralCalls(expression);
   return /file\.contents\s*\(/.test(cel);
 }
 
-/**
- * Checks if an expression has any execution dependencies.
- * Execution dependencies reference model.*.execution.* patterns.
- *
- * @param expression - The CEL expression to check
- * @returns True if the expression references any model execution data
- */
 export function hasExecutionDependency(expression: string): boolean {
   const cel = maskLiteralCalls(expression);
   return /model\.[a-zA-Z0-9_-]+\.execution/.test(cel);
 }
 
-/**
- * Checks if an expression depends on step outputs (artifacts, execution, data functions, or file contents).
- * These dependencies cannot be resolved before the producing step runs.
- *
- * @param expression - The CEL expression to check
- * @returns True if the expression depends on any step output
- */
 export function hasStepOutputDependency(expression: string): boolean {
   return hasArtifactDependency(expression) ||
     hasExecutionDependency(expression) ||
@@ -396,29 +253,16 @@ export function hasStepOutputDependency(expression: string): boolean {
 }
 
 /**
- * Pattern to match any read of the model or file namespace, covering dotted
- * access (`model.name.resource`), bracket access (`model["name"].file`),
- * the namespace functions (`file.contents(...)`, `model.method(...)`), and
- * the namespace used as a bare value (`has(model)`, `size(file)`).
- *
- * The leading lookbehind rejects a property that merely shares the name —
- * `inputs.model` and `data.model.x` read something else entirely — while the
- * trailing word boundary rejects longer identifiers like `model_name`.
+ * the lookbehind rejects a property that merely shares the name (inputs.model,
+ * data.model.x); the trailing word boundary rejects longer identifiers like
+ * model_name
  */
 const MODEL_NAMESPACE_PATTERN = /(?<![.\w])(?:model|file)\b/;
 
 /**
- * Checks whether any expression in the given data reads the model or file
- * namespace, and therefore needs a full expression context built from every
- * model definition. Expressions that only touch inputs, env, self, steps or
- * data can be evaluated against a lightweight context instead.
- *
- * Deliberately broad: a false positive only costs the definition scan that
- * would have happened anyway, while a false negative would evaluate a model
- * reference against an empty namespace.
- *
- * @param data - Arbitrary data (a definition or workflow) to inspect
- * @returns True if a full model context is required
+ * deliberately broad: a false positive only costs a definition scan that would
+ * have happened anyway, while a false negative would evaluate a model reference
+ * against an empty namespace
  */
 export function requiresModelNamespace(data: unknown): boolean {
   return extractExpressions(data).some((expression) =>
@@ -426,24 +270,13 @@ export function requiresModelNamespace(data: unknown): boolean {
   );
 }
 
-/**
- * Pattern to match any read of the `steps` namespace — dotted
- * (`steps.build.outputs`), bracket (`steps["build-app"].status`) or bare
- * (`has(steps.build)`) — anchored like {@link MODEL_NAMESPACE_PATTERN} so
- * `inputs.steps` and longer identifiers like `steps_total` do not match.
- */
+/** anchored so inputs.steps and longer identifiers like steps_total do not match */
 const STEPS_NAMESPACE_PATTERN = /(?<![.\w])steps\b/;
 
 /**
- * Checks whether an expression reads the `steps` namespace.
- *
- * The namespace is populated only once the workflow run exists, after
- * workflow evaluation, so like `run.*` it can only be resolved at step
- * execution time. It is not a step-output dependency: the step-time passes
- * resolve it synchronously from the expression context.
- *
- * @param expression - The CEL expression to check
- * @returns True if the expression reads the steps namespace
+ * the namespace exists only once the run does, so it resolves at step execution
+ * time; it is not a step-output dependency, as the step-time passes resolve it
+ * synchronously from the context
  */
 export function hasStepsNamespaceReference(expression: string): boolean {
   const cel = maskLiteralCalls(expression);

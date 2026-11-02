@@ -456,7 +456,7 @@ Deno.test("agentConfigLoadable: antigravity fails when hooks.json does not refer
   });
 });
 
-// Duplicate audit hooks (swamp-club#2881): each copy records every tool call.
+// duplicate audit hooks: each copy records every tool call
 
 const CLAUDE_AUDIT = "swamp audit record --from-hook";
 const BACKGROUNDED_AUDIT =

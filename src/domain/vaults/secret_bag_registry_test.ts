@@ -199,7 +199,6 @@ Deno.test("SecretBagRegistry.independent: a new registry has no entries, prefixe
     // The parent's answer is not reused: the nested registry asks again.
     await nested.confirmExists(REF, ask);
     assertEquals(asked, 2);
-    // And issuing into the nested registry leaves the parent untouched.
     nested.register({
       sentinel: sentinel(0, "f".repeat(32)),
       reference: REF,

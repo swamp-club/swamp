@@ -18,87 +18,48 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * The vault access a run is held to (swamp-club#2676).
- *
- * A {@link RunVaultAccess} carries up to two limits on which vaults code
- * running inside it may read or write:
- *
- * - a **principal policy** — a port the serve layer implements to decide, per
- *   vault and action, from the grants of the principal that triggered the
- *   run; and
- * - a **workflow allow-list** — the `vaults:` list a workflow author declared
- *   as the most the workflow may touch.
- *
- * The access is ambient: {@link runWithVaultAccess} enters it on an
- * `AsyncLocalStorage`, and `VaultService` reads {@link currentVaultAccess} on
- * every per-vault method before it touches a provider, so every vault service
- * instance a run builds is held to it. With no scope, vault operations behave
- * exactly as they always have.
- *
- * **Nesting only narrows.** A scope entered inside another combines with it:
- * allow-lists intersect, and the outer principal policy is inherited and
- * cannot be replaced — when both supply one, both decide and a refusal from
- * either refuses.
- *
- * **Generators.** `AsyncLocalStorage` reaches an async generator's body only
- * through each `next()` call, from the context of the code that calls it.
- * So the scope must be entered in the code that calls the generator's
- * `next()`: wrapping a `for await` loop that itself runs inside the scope is
- * fine, as is wrapping the generator with {@link runGeneratorWithVaultAccess}
- * or entering the scope inside the code the generator drives. Entering it
- * anywhere outside the code that drives `next()` — around a function that
- * only creates or returns the generator, say — leaves the body unscoped.
- *
- * @module
+ * scopes nest and only narrow: allow-lists intersect and the outer policy
+ * stays; AsyncLocalStorage reaches a generator body only via next(), so enter
+ * the scope in the code that drives next()
  */
 
 import { AsyncLocalStorage } from "node:async_hooks";
 import { UserError } from "../errors.ts";
 
-/** What a vault operation does: reads a value or key list, or changes one. */
 export type VaultAction = "read" | "write";
 
-/** One decision on a vault action. */
 export interface VaultAccessDecision {
   allowed: boolean;
-  /** The grant that decided, when one did. */
   grantId?: string;
-  /** Why, in words fit for an error message (never a secret value). */
   reason: string;
   /**
-   * Set only when decided with {@link VaultDecideOptions.keyUnknown}: the
-   * outcome depends on a condition on the secret key, which the caller could
-   * not supply. `allowed` is then false; the operation that knows the key
-   * decides.
+   * set only with keyUnknown: the outcome depends on a condition on the secret
+   * key the caller could not supply; allowed is false and the operation that
+   * knows the key decides
    */
   undetermined?: boolean;
 }
 
-/** Options for deciding a vault action. */
 export interface VaultDecideOptions {
   /**
-   * The operation will name a secret key that is not known yet (a sensitive
-   * output whose key is generated at write time). A policy then reports
-   * `undetermined` rather than decide on a key condition it cannot evaluate.
+   * a policy reports undetermined rather than decide on a key condition it
+   * cannot evaluate
    */
   keyUnknown?: boolean;
 }
 
 /**
- * Who triggered a run and the memberships captured when it started
- * (swamp-club#2676). A workflow run records it, so a later resume is held to
- * the principal that started the run rather than to whoever resumed it.
+ * a workflow run records it so a resume is held to the principal that started
+ * the run, not whoever resumed it
  */
 export interface RunTriggeringPrincipal {
   readonly kind: "user" | "worker" | "service";
   readonly id: string;
-  /** The server token the triggering session was opened with, if any. */
   readonly tokenBinding?: {
     readonly name: string;
     readonly createdAt: string;
     readonly principalId: string;
   };
-  /** Memberships as of run start. */
   readonly membership: {
     readonly localGroups: readonly string[];
     readonly idpGroups: readonly string[];
@@ -107,16 +68,14 @@ export interface RunTriggeringPrincipal {
 }
 
 /**
- * Port for the principal policy a run is held to. The serve layer implements
- * it from the triggering principal's grants; the domain never sees grants.
+ * the serve layer implements it from the triggering principal's grants; the
+ * domain never sees grants
  */
 export interface VaultPrincipalPolicy {
-  /** Names the principal in refusals and audit (e.g. `user:alice`). */
   readonly principal: string;
   /**
-   * The principal and memberships to record on a workflow run started under
-   * this policy, so its resumes are held to the same principal. Absent when
-   * the policy has none to record (a resume of a run that recorded none).
+   * recorded on a workflow run so its resumes are held to the same principal;
+   * absent when the policy has none to record
    */
   readonly triggeringPrincipal?: RunTriggeringPrincipal;
   decide(
@@ -127,15 +86,11 @@ export interface VaultPrincipalPolicy {
   ): VaultAccessDecision | Promise<VaultAccessDecision>;
 }
 
-/** A refused vault operation, as reported to an `onDenied` hook. */
 export interface VaultAccessDenial {
   vaultName: string;
   action: VaultAction;
-  /** The secret key the operation named, when it named one. */
   secretKey?: string;
-  /** The principal refused, when a principal policy refused. */
   principal?: string;
-  /** The workflow whose `vaults:` list refused, when the list refused. */
   workflow?: string;
   grantId?: string;
   reason: string;
@@ -146,20 +101,13 @@ export type VaultAccessDeniedHook = (
   denial: VaultAccessDenial,
 ) => void | Promise<void>;
 
-/** Options for {@link RunVaultAccess.create}. */
 export interface RunVaultAccessOptions {
   policy?: VaultPrincipalPolicy;
-  /** The vault names a workflow's `vaults:` list allows. */
   allowedVaults?: Iterable<string>;
-  /** The workflow that declared `allowedVaults`, named in refusals. */
   allowListSource?: string;
   onDenied?: VaultAccessDeniedHook;
 }
 
-/**
- * Refused by the run's vault access. The message names the vault and the
- * principal (or the workflow whose list refused), never a secret value.
- */
 export class VaultAccessDeniedError extends UserError {
   constructor(readonly denial: VaultAccessDenial) {
     super(describeDenial(denial), "vault_access_denied");
@@ -184,16 +132,9 @@ interface AllowList {
 
 interface DeniedHookEntry {
   readonly hook: VaultAccessDeniedHook;
-  /** Denials already reported to `hook`: deduplicated per scope. */
   readonly seen: Set<string>;
 }
 
-/**
- * Value object: the vault access a run is held to. Its limits are immutable;
- * the only state that changes is each `onDenied` hook's record of denials
- * already reported, so a scope reports each refusal once. Combining two with
- * {@link narrowedBy} only ever narrows.
- */
 export class RunVaultAccess {
   private constructor(
     readonly policies: readonly VaultPrincipalPolicy[],
@@ -214,10 +155,6 @@ export class RunVaultAccess {
     );
   }
 
-  /**
-   * The vault names every allow-list in this access allows (their
-   * intersection), or `undefined` when no list applies.
-   */
   get allowedVaults(): ReadonlySet<string> | undefined {
     if (this.allowLists.length === 0) return undefined;
     const [first, ...rest] = this.allowLists;
@@ -226,10 +163,6 @@ export class RunVaultAccess {
     );
   }
 
-  /**
-   * The triggering principal of the outermost policy that records one: the
-   * principal a workflow run started under this access is held to on resume.
-   */
   get triggeringPrincipal(): RunTriggeringPrincipal | undefined {
     for (const policy of this.policies) {
       if (policy.triggeringPrincipal) return policy.triggeringPrincipal;
@@ -249,12 +182,6 @@ export class RunVaultAccess {
     );
   }
 
-  /**
-   * Decides `action` on `vaultName` without reporting a refusal. With
-   * `keyUnknown`, the result is `undetermined` when no limit refuses outright
-   * but a policy's outcome depends on the key. A workflow's `vaults:` list
-   * never depends on the key.
-   */
   async decide(
     vaultName: string,
     action: VaultAction,
@@ -311,11 +238,8 @@ export class RunVaultAccess {
   }
 
   /**
-   * Refuses `action` on `vaultName` unless every limit allows it: reports the
-   * refusal to each `onDenied` hook (once per vault, key and action) and
-   * throws {@link VaultAccessDeniedError}. With `keyUnknown`, an outcome that
-   * depends on the key is not refused here: the operation that names the key
-   * is checked again and decides.
+   * with keyUnknown, an outcome that depends on the key is not refused here;
+   * the operation that names the key is checked again and decides
    */
   async check(
     vaultName: string,
@@ -339,27 +263,17 @@ export class RunVaultAccess {
   }
 }
 
-/** `null` marks a scope left with {@link withoutVaultAccess}. */
 const ambientVaultAccess = new AsyncLocalStorage<RunVaultAccess | null>();
 
-/**
- * The vault access `access` would hold code to when entered here: `access`
- * narrowed by the current scope, if any.
- */
 function scopedAccess(access: RunVaultAccess): RunVaultAccess {
   const outer = currentVaultAccess();
   return outer ? outer.narrowedBy(access) : access;
 }
 
 /**
- * Runs `fn` held to `access`, narrowed by any scope it is entered from.
- *
- * For an async generator, `fn` must be the code that calls the generator's
- * `next()` — such as the whole `for await` loop that consumes it — because
- * `AsyncLocalStorage` reaches a generator's body only through each `next()`
- * call. A scope entered around code that merely creates or returns the
- * generator, with `next()` called later from outside `fn`, does not reach
- * it. {@link runGeneratorWithVaultAccess} wraps a generator.
+ * for an async generator fn must be the code that calls next() (e.g. the whole
+ * for-await loop), since AsyncLocalStorage reaches a generator body only
+ * through each next() call
  */
 export function runWithVaultAccess<T>(
   access: RunVaultAccess,
@@ -368,7 +282,6 @@ export function runWithVaultAccess<T>(
   return ambientVaultAccess.run(scopedAccess(access), fn);
 }
 
-/** The vault access code is currently held to, or `undefined`. */
 export function currentVaultAccess(): RunVaultAccess | undefined {
   return ambientVaultAccess.getStore() ?? undefined;
 }
@@ -382,16 +295,6 @@ export function withoutVaultAccess<T>(fn: () => T): T {
   return ambientVaultAccess.run(null, fn);
 }
 
-/**
- * Drives the generator `inner` creates held to `access` (narrowed by the
- * scope the first `next()` is called from): `inner` is created, and every
- * `next()` and a forwarded `return()` run, inside the scope. Values are
- * re-yielded unchanged. Code the consumer runs between values is outside it.
- *
- * `access` may be a function, called once at the first `next()`, so the
- * access can depend on what the caller resolves first; returning `undefined`
- * adds no limit of its own.
- */
 export async function* runGeneratorWithVaultAccess<T, R = void>(
   access:
     | RunVaultAccess
@@ -435,11 +338,6 @@ export async function* runGeneratorWithVaultAccess<T, R = void>(
   }
 }
 
-/**
- * Drives the generator `inner` creates outside any vault access scope, for
- * control-plane work returned as a stream (worker prune): `inner` is created,
- * and every `next()` and a forwarded `return()` run, with no scope.
- */
 export async function* runGeneratorWithoutVaultAccess<T, R = void>(
   inner: () => AsyncGenerator<T, R>,
 ): AsyncGenerator<T, R | undefined> {

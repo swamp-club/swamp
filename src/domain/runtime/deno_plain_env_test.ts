@@ -30,7 +30,6 @@ Deno.test("plainDenoEnv: overrides FORCE_COLOR with an empty value at any settin
 });
 
 Deno.test("plainDenoEnv: sets an empty FORCE_COLOR when the base has none", () => {
-  // The child inherits the parent's FORCE_COLOR unless the record names it.
   assertEquals(plainDenoEnv({}), { NO_COLOR: "1", FORCE_COLOR: "" });
 });
 

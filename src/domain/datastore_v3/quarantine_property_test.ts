@@ -83,7 +83,6 @@ Deno.test("parseQuarantineRecordKey: every record key names its state, txnId and
 Deno.test("chunksOf: every chunk put on the wire reads back with its bytes", async () => {
   await fc.assert(
     fc.asyncProperty(
-      // Distinct contents: a chunk named twice is refused.
       fc.uniqueArray(fc.uint8Array({ maxLength: 256 }), {
         maxLength: 4,
         selector: (bytes) => [...bytes].join(","),

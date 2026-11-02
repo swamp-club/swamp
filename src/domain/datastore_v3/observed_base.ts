@@ -18,14 +18,8 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * The compacted base as serve sends it to a follower copy (swamp-club#4006):
- * the entries of {@link CompactedBaseEntry}, filtered to what the caller may
- * read, with each partition's data-name marks. Serve encodes them with
- * {@link observedBaseEntryToJSON}; the copy reads serve's reply as
- * untrusted input through {@link observedBaseEntryFromJSON}, which accepts
- * exactly the shape serve writes.
- *
- * @module
+ * the copy reads serve's reply as untrusted input; observedBaseEntryFromJSON
+ * accepts exactly the shape serve writes
  */
 
 import { DataMetadataSchema } from "../data/data_metadata.ts";
@@ -36,10 +30,8 @@ import { PartitionKey } from "./partition_key.ts";
 import { RecordKey } from "./record_key.ts";
 import { VersionRanges } from "./version_ranges.ts";
 
-/** One entry of the base a follower copy loads. */
 export type ObservedBaseEntry =
   | Exclude<CompactedBaseEntry, { readonly kind: "partition" }>
-  /** A partition's compacted seq, and its data names' marks. */
   | {
     readonly kind: "partition";
     readonly namespace: string;
@@ -48,16 +40,13 @@ export type ObservedBaseEntry =
     readonly names: readonly DataNameMarks[];
   };
 
-/** One page of the base from serve. */
 export interface ObservedBasePage {
   /** Serve's compaction point; pages of two points are of two bases. */
   readonly point: number;
   readonly entries: readonly ObservedBaseEntry[];
-  /** Pass to the next read; undefined after the last page. */
   readonly next: string | undefined;
 }
 
-/** Thrown for a base entry that is not one serve writes. */
 export class ObservedBaseEntryError extends Error {
   constructor(message: string) {
     super(message);
@@ -65,7 +54,6 @@ export class ObservedBaseEntryError extends Error {
   }
 }
 
-/** The JSON form of an entry, as serve sends it. */
 export function observedBaseEntryToJSON(
   entry: ObservedBaseEntry,
 ): Record<string, unknown> {
@@ -135,10 +123,8 @@ export function observedBaseEntryToJSON(
 }
 
 /**
- * Reads one entry of serve's reply. Every field is checked, and an entry of
- * another shape, or of a namespace other than `namespace`, is refused with
- * {@link ObservedBaseEntryError}: serve's replies are untrusted
- * (swamp-club#4062).
+ * serve's replies are untrusted, so every field is checked and an entry of
+ * another shape or of a namespace other than the given one is refused
  */
 export function observedBaseEntryFromJSON(
   raw: unknown,
@@ -235,12 +221,6 @@ export function observedBaseEntryFromJSON(
   return fail(`unknown base entry kind ${JSON.stringify(kind)}`);
 }
 
-/**
- * Parses one data name's version marks as serve sends them, in a base
- * entry or with a fenced model lease (swamp-club#4121).
- *
- * @throws ObservedBaseEntryError for a malformed value
- */
 export function dataNameMarksFromJSON(raw: unknown): DataNameMarks {
   return marksOf(raw);
 }

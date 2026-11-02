@@ -67,9 +67,6 @@ function makeManifest(
   };
 }
 
-// ── composeLocalScore ───────────────────────────────────────────────────
-
-/** The analysis plus what the CLI adds before publish, as these tests write it. */
 type LocalFactors = AnalysisFactors & {
   dependencyTrustPassed?: boolean;
   dependencyTrustBlockerCount?: number;
@@ -194,8 +191,6 @@ Deno.test("composeScore: repository-verified is missing when URL is not verifiab
   assertEquals(factor.status, "missing");
 });
 
-// ── private source hosting (swamp-club#3396, swamp-club#3406) ──────────
-
 const SELF_HOSTED = "https://git.example-corp.internal/team/ext";
 
 function repositoryFactor(
@@ -247,7 +242,6 @@ Deno.test("composeScore: an attested private extension earns repository-verified
     assertEquals(score.ifProvisionalEarned, null);
     assertEquals(score.maxClientEarnablePoints, score.maxEarnablePoints);
     assertEquals(score.percentage, 100);
-    // what a public forge reaches once the registry verifies it
     assertEquals(publicForge.score.ifProvisionalEarned?.percentage, 100);
   }
 });
@@ -420,7 +414,6 @@ Deno.test("composeScore: symbols-docs at exactly 80% earns", () => {
 });
 
 Deno.test("composeScore: rich-readme requires both length AND fences", () => {
-  // Long enough but only 1 fence
   const s1 = composeScore(
     {
       ...factorsAllEarned(),
@@ -434,7 +427,6 @@ Deno.test("composeScore: rich-readme requires both length AND fences", () => {
     "missing",
   );
 
-  // Enough fences but too short
   const s2 = composeScore(
     {
       ...factorsAllEarned(),
@@ -469,13 +461,10 @@ Deno.test("composeScore: factor IDs and order match server", () => {
 });
 
 Deno.test("composeScore: percentage floors (not rounds)", () => {
-  // 14/16 = 87.5 → floor = 87
   const score = composeScore(factorsAllEarned(), makeManifest());
   assertEquals(score.earnedPoints, 14);
   assertEquals(score.percentage, 87);
 });
-
-// --- scorecard_test.ts ports (core scenarios) --------------------------
 
 Deno.test("[parity] composeScore: empty everything earns universal-platform only", () => {
   const score = composeScore(
@@ -502,7 +491,6 @@ Deno.test("[parity] composeScore: empty everything earns universal-platform only
       platforms: [],
     }),
   );
-  // Universal platforms earns 2 + fast-check always earns 1 (deprecated).
   assertEquals(score.earnedPoints, 3);
   assertEquals(score.percentage, Math.floor((3 * 100) / 16));
   assertEquals(score.rubricVersion, 6);
@@ -511,15 +499,12 @@ Deno.test("[parity] composeScore: empty everything earns universal-platform only
   assertEquals(byId.get("platforms")?.status, "earned");
   assertEquals(byId.get("platforms")?.earnedPoints, 2);
   assertEquals(byId.get("repository-verified")?.status, "missing");
-  // verified-by-swamp is not a factor in the rubric (badge only)
   assertEquals(byId.get("verified-by-swamp"), undefined);
-  // entrypoints-docs was dropped at v2
   assertEquals(byId.get("entrypoints-docs"), undefined);
 });
 
 Deno.test("[parity] composeScore: perfect score hits 100% once the registry awards repository-verified", () => {
   const score = composeScore(factorsAllEarned(), makeManifest());
-  // 14/16: repo-verified is provisional, not earned yet, still in the divisor
   assertEquals(score.earnedPoints, 14);
   assertEquals(score.maxClientEarnablePoints, 14);
   assertEquals(score.provisionalPoints, 2);
@@ -539,7 +524,6 @@ Deno.test("[parity] composeScore: percentage floors (13/16 → 81, 15/16 → 93)
 });
 
 Deno.test("[parity] composeScore: platforms factor earns 2 for any count", () => {
-  // 1 platform: earned
   const s1 = composeScore(
     factorsAllEarned(),
     makeManifest({ platforms: ["linux"] }),
@@ -548,7 +532,6 @@ Deno.test("[parity] composeScore: platforms factor earns 2 for any count", () =>
   assertEquals(m1.get("platforms")?.status, "earned");
   assertEquals(m1.get("platforms")?.earnedPoints, 2);
 
-  // 2+ platforms: earned
   const s2 = composeScore(
     factorsAllEarned(),
     makeManifest({ platforms: ["linux", "darwin"] }),
@@ -557,7 +540,6 @@ Deno.test("[parity] composeScore: platforms factor earns 2 for any count", () =>
   assertEquals(m2.get("platforms")?.status, "earned");
   assertEquals(m2.get("platforms")?.earnedPoints, 2);
 
-  // Empty (= universal): earned
   const s3 = composeScore(
     factorsAllEarned(),
     makeManifest({ platforms: [] }),
@@ -781,8 +763,6 @@ Deno.test("computeAnalysisFactors: a failed deno doc documents nothing, not 100%
   assertEquals(failed.allFastCheck, true);
 });
 
-// ── scoreExtensionTarball: import map merging ────────────────────────
-
 function fakeExtractTarball(
   files: Record<string, string>,
 ): RubricScoreDeps["extractTarball"] {
@@ -824,7 +804,6 @@ Deno.test("scoreExtensionTarball: the controlled deno.json has no import map, as
   const deps = fakeScoreDeps(
     {
       "manifest.yaml": "manifestVersion: 1\nname: '@test/no-map'\n",
-      // A bare import push shipped as written stays unresolved locally too.
       "models/mod.ts": 'import { z } from "zod";\nexport const s = z.string();',
       "README.md": "# Test",
       "LICENSE": "MIT",
@@ -867,12 +846,6 @@ Deno.test("scoreExtensionTarball: an empty LICENSE file does not earn license-fi
   }
 });
 
-// ── scoreExtensionTarball: deno doc failure (swamp-club#3669) ────────
-
-/**
- * deno 2.9.7's stderr for `deno doc --json` on an entrypoint with a bare
- * `zod` import nothing maps, with the importing file's URL left to fill in.
- */
 function bareZodDocStderr(moduleUrl: string): string {
   return [
     'Warning Import "zod" not a dependency',
@@ -927,9 +900,7 @@ Deno.test("scoreExtensionTarball: a deno doc failure is scored, not thrown, as t
   const symbols = score.factors.find((f) => f.id === "symbols-docs")!;
   assertEquals(symbols.earnedPoints, 0);
   assertEquals(symbols.status, "missing");
-  // The registry skips the lint run once deno doc has failed.
   assertEquals(calls.filter((a) => a[1] === "--lint"), []);
-  // The README still counts.
   assertEquals(
     score.factors.find((f) => f.id === "has-readme")!.status,
     "earned",
@@ -960,11 +931,6 @@ Deno.test("scoreExtensionTarball: a doc failure names archive files relative to 
   );
 });
 
-/**
- * deno 2.9's output when one npm import names a version npm does not
- * publish and another npm import resolves: every constraint is reported
- * missing and the error names whichever import deno was resolving.
- */
 function unpublishedVersionDocStderr(moduleUrl: string): string {
   return [
     "Warning Failed resolving types. Could not find constraint 'zod@4' in the list of packages.",
@@ -1058,11 +1024,7 @@ Deno.test("scoreExtensionTarball: invalid JSON from a successful deno doc is sco
   );
 });
 
-// ── archive rules shared with the registry (swamp-club#3781) ──────────
-
 Deno.test("scoreExtensionTarball: an entry already under its kind directory is analysed where push archives it", async () => {
-  // typedDir `models: [models/foo.ts]` resolves to extensions/models/models/foo.ts,
-  // which push archives at models/models/foo.ts
   const docArgs: string[][] = [];
   const score = await scoreExtensionTarball(
     new Uint8Array(0),
@@ -1152,8 +1114,6 @@ Deno.test("composeScore: repository-verified is provisional only for a URL namin
     );
   }
 });
-
-// ── isolated deno doc (swamp-club#3781) ───────────────────────────────
 
 Deno.test("scoreExtensionTarball: an isolated run gives deno doc an empty cache of its own and removes it", async () => {
   const dirs: (string | undefined)[] = [];

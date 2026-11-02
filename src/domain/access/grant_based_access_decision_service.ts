@@ -75,9 +75,8 @@ function resolveSubjects(
 }
 
 /**
- * Each grant's selector in canonical type spelling, computed once. Keyed by
- * the grant object, which is sound because snapshots hold grants that are
- * never changed in place: a reload builds new grant objects.
+ * keyed by the grant object, sound because snapshots never change grants in
+ * place; a reload builds new grant objects
  */
 const canonicalPatterns = new WeakMap<Grant, string | null>();
 
@@ -106,11 +105,8 @@ function grantMatchesResource(grant: Grant, resource: AccessResource): boolean {
   ) {
     return true;
   }
-  // A deny also matches the type in any spelling — case, `::` or `.`
-  // separators, with or without a leading `@` — so a deny an admin wrote
-  // never silently matches nothing. An allow matches only as written: folding
-  // it would widen what it grants (swamp-club#3130). Of access resources only
-  // control-plane records name a type.
+  // a deny matches the type in any spelling so it never silently matches
+  // nothing; an allow matches only as written, since folding would widen it
   if (
     grant.effect === "deny" &&
     (resource.kind === "model" || isControlPlaneRecordResource(resource))
@@ -130,40 +126,19 @@ function grantMatchesResource(grant: Grant, resource: AccessResource): boolean {
 }
 
 export interface GrantBasedAccessDecisionServiceOptions {
-  /**
-   * Whether an allow grant for `run` also satisfies `approve`. Defaults to
-   * true, the original semantics. A deny grant for `run` denies `approve`
-   * regardless, so turning this off can only narrow what is allowed.
-   */
   readonly runImpliesApprove?: boolean;
-  /**
-   * Whether an allow grant for `run` also satisfies `signal`. Defaults to
-   * true. A deny grant for `run` denies `signal` regardless, so turning this
-   * off can only narrow what is allowed.
-   */
   readonly runImpliesSignal?: boolean;
-  /**
-   * Whether an allow grant for `write` also satisfies `tag`. Defaults to
-   * true. A deny grant for `write` denies `tag` regardless, so turning this
-   * off can only narrow what is allowed (swamp-club#3085).
-   */
   readonly writeImpliesTag?: boolean;
 }
 
-/**
- * Each action a grant for another action also satisfies, and that action:
- * `run` implies `approve` and `signal`, `write` implies `tag`.
- */
 const IMPLYING_ACTION = {
   approve: "run",
   signal: "run",
   tag: "write",
 } as const satisfies Partial<Record<Action, Action>>;
 
-/** An action another action implies. */
 type ImpliedAction = keyof typeof IMPLYING_ACTION;
 
-/** An action that implies another. */
 export type ImplyingAction = (typeof IMPLYING_ACTION)[ImpliedAction];
 
 const IMPLIED_ACTIONS = Object.keys(IMPLYING_ACTION) as ImpliedAction[];
@@ -172,19 +147,13 @@ function isImpliedAction(action: Action): action is ImpliedAction {
   return action in IMPLYING_ACTION;
 }
 
-/** Whether an allow grant for the implying action satisfies each action. */
 type Implications = Readonly<Record<ImpliedAction, boolean>>;
 
-/** An action a grant covers, and the action it is covered through, if any. */
 export interface ActionCoverage {
   readonly action: Action;
   readonly impliedBy?: ImplyingAction;
 }
 
-/**
- * How a grant matched a requested action: directly, through the action
- * named, or not at all (null).
- */
 type ActionMatch = "direct" | ImplyingAction | null;
 
 function grantMatchesAction(
@@ -259,17 +228,15 @@ function toDecision(grant: Grant, match: ActionMatch): AccessDecision {
 }
 
 /**
- * Grant id reported for the built-in allow that lets a service principal run
- * a workflow when no grant decides the request. It is computed, never stored,
- * so no reconcile loop, reload or fleet version skew can remove it.
+ * computed, never stored, so no reconcile loop, reload or fleet version skew
+ * can remove it
  */
 export const SERVICE_TRIGGER_DEFAULT_GRANT_ID =
   "builtin:service-trigger-default";
 
 /**
- * The built-in decision for scheduled and webhook runs: a service principal
- * may `run` a workflow unless a deny grant matches. It covers no other action
- * or resource kind, so it never implies `approve` or `signal`.
+ * a service principal may run a workflow unless a deny matches; it covers no
+ * other action or kind, so it never implies approve or signal
  */
 function serviceTriggerDefault(
   accessPrincipal: AccessPrincipal,
@@ -289,7 +256,6 @@ function serviceTriggerDefault(
   };
 }
 
-/** The subject a synthetic decision is attributed to. */
 function budgetExceededSubject(accessPrincipal: AccessPrincipal): Subject {
   return {
     kind: accessPrincipal.principal.kind === "service" ? "service" : "user",
@@ -297,16 +263,11 @@ function budgetExceededSubject(accessPrincipal: AccessPrincipal): Subject {
   };
 }
 
-/**
- * The most callers whose read-access fingerprint one snapshot keeps; past
- * it the snapshot's cache starts again.
- */
 const MAX_CACHED_FINGERPRINTS = 4096;
 
 export class GrantBasedAccessDecisionService implements AccessDecisionService {
   #snapshot: PolicySnapshot;
   readonly #implications: Implications;
-  /** Read-access fingerprints by snapshot, then by caller. */
   readonly #fingerprints = new WeakMap<PolicySnapshot, Map<string, string>>();
 
   constructor(
@@ -333,11 +294,6 @@ export class GrantBasedAccessDecisionService implements AccessDecisionService {
     return this.#implications.tag;
   }
 
-  /**
-   * The actions a grant covers under this service's policy: the grant's own
-   * actions in order, then `approve` and `signal` when the grant covers them
-   * only through `run`, and `tag` when it covers it only through `write`.
-   */
   actionsCoveredBy(grant: Grant): ActionCoverage[] {
     const covered: ActionCoverage[] = grant.actions.map((action) => ({
       action,
@@ -360,11 +316,8 @@ export class GrantBasedAccessDecisionService implements AccessDecisionService {
   }
 
   /**
-   * A fingerprint of everything `principal` may read under the current
-   * snapshot and serve's `restrictedTypes` (swamp-club#4089; see
-   * `read_access_fingerprint.ts`): it changes whenever a read decision for
-   * the principal could, and a reload that leaves the principal's groups
-   * and grants alone keeps it.
+   * changes whenever a read decision for the principal could; a reload that
+   * leaves the principal's groups and grants alone keeps it
    */
   readAccessFingerprint(
     principal: AccessPrincipal,
@@ -402,8 +355,8 @@ export class GrantBasedAccessDecisionService implements AccessDecisionService {
     action: Action,
     resource: AccessResource,
   ): AccessDecision | null {
-    // Any action on a control-plane record is managing access, so it is
-    // decided as admin (swamp-club#2756).
+    // any action on a control-plane record is managing access, so it is decided
+    // as admin
     if (isControlPlaneRecordResource(resource)) action = "admin";
     const snapshot = this.#snapshot;
     const principalKey = principalToString(principal.principal);
@@ -450,8 +403,7 @@ export class GrantBasedAccessDecisionService implements AccessDecisionService {
         resource,
         principalContext,
       );
-      // A deny that needs a field the resource does not carry fails closed
-      // (swamp-club#2675).
+      // a deny that needs a field the resource does not carry fails closed
       if (outcome === "match" || outcome === "missing-field") {
         return toDecision(grant, match);
       }
@@ -488,8 +440,8 @@ export class GrantBasedAccessDecisionService implements AccessDecisionService {
     action: Action,
     resource: AccessResource,
   ): AccessDecision[] {
-    // Any action on a control-plane record is managing access, so it is
-    // explained as admin (swamp-club#2756).
+    // any action on a control-plane record is managing access, so it is
+    // explained as admin
     if (isControlPlaneRecordResource(resource)) action = "admin";
     const snapshot = this.#snapshot;
     const principalKey = principalToString(principal.principal);
@@ -560,10 +512,9 @@ export class GrantBasedAccessDecisionService implements AccessDecisionService {
       if (grant.effect !== "deny" || grant.resource.kind !== kind) continue;
       const match = grantMatchesAction(grant, action, this.#implications);
       if (!match) continue;
-      // A condition is evaluated with no resource fields at all: one that
-      // reads any of them — the name included — could hold for some
-      // resource, so it refuses; one on the principal alone is decided for
-      // this caller.
+      // evaluated with no resource fields: a condition reading any, name
+      // included, could hold for some resource so it refuses; one on the
+      // principal alone is decided for this caller
       if (
         grant.condition &&
         snapshot.evaluateConditionOutcome(

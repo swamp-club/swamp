@@ -74,7 +74,6 @@ const direct = (type: string, name: string) =>
     methodName: "run",
   });
 
-/** Lookups over fixed definitions and workflows, recording each lookup. */
 function lookupsOf(
   definitions: Record<string, Record<string, string>>,
   workflows: Workflow[] = [],

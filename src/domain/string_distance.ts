@@ -17,9 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Computes Levenshtein distance between two strings for typo detection.
- */
 export function levenshteinDistance(a: string, b: string): number {
   const matrix: number[][] = [];
 
@@ -36,9 +33,9 @@ export function levenshteinDistance(a: string, b: string): number {
         matrix[i][j] = matrix[i - 1][j - 1];
       } else {
         matrix[i][j] = Math.min(
-          matrix[i - 1][j - 1] + 1, // substitution
-          matrix[i][j - 1] + 1, // insertion
-          matrix[i - 1][j] + 1, // deletion
+          matrix[i - 1][j - 1] + 1,
+          matrix[i][j - 1] + 1,
+          matrix[i - 1][j] + 1,
         );
       }
     }
@@ -47,13 +44,6 @@ export function levenshteinDistance(a: string, b: string): number {
   return matrix[b.length][a.length];
 }
 
-/**
- * Finds the closest match to a key among available keys using Levenshtein distance.
- *
- * @param key - The unknown key to find a match for
- * @param availableKeys - The set of valid keys to search
- * @returns The closest matching key, or undefined if none is within threshold
- */
 export function findClosestMatch(
   key: string,
   availableKeys: string[],

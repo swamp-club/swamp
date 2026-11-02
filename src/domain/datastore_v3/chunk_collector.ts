@@ -18,60 +18,9 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * Chunk garbage collection (swamp-club#3249): reclaims stored chunks that no
- * commit names, finds damaged ones and clears a filesystem storage's stale
- * temp files. Run by `swamp datastore gc` and serve's maintenance sweep on a
- * v3 datastore; while it replicates, only once no lineage but the copy's
- * current one can be restored (swamp-club#3491).
- *
- * - **The reference set is the commit log**, not a read model. A checkout
- *   catching up from cursor 0 replays every commit and reads every chunk
- *   each put names, including content a later commit overwrote or deleted,
- *   so a chunk is kept for as long as any stored commit names it
- *   (`CommitStore.referencedChunks`). A read model's `chunksInUse` is one
- *   checkout's present records at its own cursor, and would miss them.
- *   After history compaction (swamp-club#3258) the compacted base's
- *   records count too, and a chunk whose last reference was compacted away
- *   still counts while it was released after the cutoff: a checkout may
- *   still be applying a page of commits it read before the compaction.
- * - **The grace period.** A chunk is stored, or refreshed, before the
- *   commit that names it lands, so a chunk no commit names yet may be one a
- *   unit of work is about to commit. Only a chunk whose `lastModified` is
- *   older than `now - grace` is a candidate. `now` is fixed before any
- *   reference is read, so a commit that lands during the sweep names a
- *   chunk stored or refreshed after `now - grace`: never a candidate.
- * - **Closing the race with a writer.** A writer refreshes a chunk it
- *   finds present and commits later, so a sweep can see a chunk unreferenced
- *   and old, and a commit can land on it before it is deleted. Each batch's
- *   unreferenced candidates are read (and hashed) first, then deleted, then
- *   their references are checked again: a chunk a commit landed on
- *   meanwhile is put back from the bytes read. A commit landing after that
- *   re-check landed after the delete, and the writer checks its chunks
- *   after its commit lands and stores any missing ones again
- *   (`commit_log_unit_of_work.ts`). Either way no commit is left naming a
- *   missing chunk. Reads are bounded by a byte budget; a candidate past it
- *   is kept for the next sweep, never deleted unread. See "v3 chunk garbage
- *   collection" in `design/enablers/datastores.md`.
- * - **A writer that dies after its commit lands** (swamp-club#3490) never
- *   runs its check. On a v3 datastore the reference set also holds the
- *   commit outbox's entries, which a writer prepares before it appends, and
- *   the sweep marks itself in progress ({@link SweepMonitor}) with a
- *   heartbeat each batch. A writer that sees a sweep may have overlapped
- *   checks its chunks before appending; otherwise the sweep's re-check sees
- *   its entry. The writer lease is checked before and after each batch's
- *   deletes, and a batch deleted by a sweep that lost the lease is put back.
- * - **Damaged chunks** are deleted whatever their age, so the next write of
- *   that content finds it absent and stores it again (writes trust `has`).
- *   A damaged chunk a commit names already fails every read; the report
- *   says so. A chunk verifying finds damaged is moved aside first
- *   ({@link ChunkQuarantine}, swamp-club#3617) and hashed again there: a
- *   chunk stored again meanwhile (a checkout putting back the content it
- *   holds) is good now and put back, never deleted. On a storage that
- *   cannot move chunks aside, verifying only reports damage. Verifying
- *   starts at a shard prefix (`verifyFrom`), so sweeps with a small budget
- *   and different prefixes cover the whole namespace over time.
- *
- * @module
+ * references come from the commit log, not a read model, as a catching-up
+ * checkout replays every commit; only chunks older than now minus grace are
+ * candidates, and deleted batches are re-checked
  */
 
 // node:crypto, as the chunk store hashes chunks.
@@ -88,93 +37,63 @@ import { storageNamespaceOf } from "./chunk_store.ts";
 import type { CommitStore } from "./commit_store.ts";
 
 /**
- * How long an unreferenced chunk is kept after it was last stored or
- * refreshed: far longer than a unit of work lives between storing its
- * chunks and committing them, and than any clock skew between the storage
- * and the collector.
+ * far longer than a unit of work lives between storing its chunks and
+ * committing them, and than any clock skew between storage and collector
  */
 export const DEFAULT_CHUNK_GRACE_MS = 24 * 60 * 60 * 1000;
 
-/** Candidates checked against the commit log, then deleted, at a time. */
 export const CHUNK_COLLECTION_BATCH = 256;
 
 /**
- * How many bytes of deletion candidates one sweep reads by default. A
- * candidate is read before it is deleted, so it can be put back; past this
- * budget candidates are kept for the next sweep.
+ * a candidate is read before it is deleted so it can be put back; past this
+ * budget candidates are kept for the next sweep
  */
 export const DEFAULT_SWEEP_READ_BYTES = 1024 * 1024 * 1024;
 
 /**
- * How long putting back chunks a commit landed on may take, apart from the
- * sweep's own signal, which may already have aborted.
+ * bounds putting back chunks separately from the sweep's own signal, which may
+ * already have aborted
  */
 const RESTORE_TIMEOUT_MS = 5 * 60 * 1000;
 
-/** The most candidate bytes held at once before they are deleted. */
 const MAX_HELD_BYTES = 64 * 1024 * 1024;
 
 /**
- * A chunk whose bytes do not match its SHA-256. It has been deleted, unless
- * verifying found it on a storage that cannot move chunks aside, which
- * keeps it.
+ * deleted, unless verifying found it on a storage that cannot move chunks
+ * aside, which keeps it
  */
 export interface DamagedChunk {
   readonly sha256: string;
-  /** True when a commit names it, so its reads were already failing. */
   readonly referenced: boolean;
 }
 
-/** What one sweep of a storage namespace found and did. */
 export interface ChunkCollectionReport {
-  /** The storage namespace swept. */
   readonly namespace: string;
-  /** Chunks the listing yielded. */
   readonly scanned: number;
-  /** Chunks past the grace period kept because a commit names them. */
   readonly referenced: number;
-  /** Unreferenced chunks past the grace period, deleted. */
   readonly deleted: number;
-  /**
-   * Chunks deleted and then put back, because a commit naming them landed
-   * during the sweep.
-   */
   readonly restored: number;
-  /** Candidates kept unread because the sweep's read budget was spent. */
   readonly keptOverBudget: number;
-  /** Chunks stored or refreshed within the grace period, kept unchecked. */
   readonly keptTooNew: number;
-  /** Chunks whose bytes were read and checked. */
   readonly verified: number;
-  /** Damaged chunks found (see {@link DamagedChunk}). */
   readonly damaged: readonly DamagedChunk[];
-  /** Stale temp files removed. */
   readonly tempFilesRemoved: number;
 }
 
-/**
- * Marks a sweep in progress where writers look (swamp-club#3490): `begin`
- * before the listing, `heartbeat` each batch, `end` when it finishes or
- * fails.
- */
 export interface SweepMonitor {
   begin(): Promise<void>;
   heartbeat(): Promise<void>;
   end(): Promise<void>;
   /**
-   * Runs one batch, from its reference check through its deletes and the
-   * re-check after them, where a writer that may overlap it waits for it
-   * (swamp-club#3586): a chunk the batch judged unreferenced before the
-   * writer prepared its commit is either back or absent by then, and the
-   * writer's own check stores it again before its commit lands.
+   * runs a whole batch (reference check, deletes, re-check) where an
+   * overlapping writer waits, so a chunk judged unreferenced before its commit
+   * was prepared is back or absent and the writer's check stores it
    */
   batch?(run: () => Promise<void>): Promise<void>;
 }
 
-/** What a {@link ChunkCollector} works over. */
 export interface ChunkCollectorOptions {
   readonly commitStore: Pick<CommitStore, "referencedChunks">;
-  /** Marks the sweep in progress, when writers prepare commits. */
   readonly sweep?: SweepMonitor;
   /**
    * Throws once the sweeper may no longer delete (it lost the writer
@@ -182,37 +101,18 @@ export interface ChunkCollectorOptions {
    */
   readonly assertMayDelete?: () => void;
   readonly storage: DatastoreStorage;
-  /** Clears the storage's stale temp files, when it has any. */
   readonly tempFiles?: TempFileSweeper;
-  /** {@link DEFAULT_CHUNK_GRACE_MS} unless given; tests pass less. */
   readonly graceMs?: number;
   readonly clock?: () => Date;
 }
 
-/** What one {@link ChunkCollector.collect} does. */
 export interface CollectOptions {
-  /**
-   * How many bytes of chunks to read and verify, in listing order; 0 (the
-   * default) verifies none. A chunk is read whole, so the last one verified
-   * may go past the budget.
-   */
   readonly verifyBytes?: number;
-  /**
-   * Where verifying starts: a lowercase hex prefix. Chunks whose hash sorts
-   * at or after it are verified first, then the rest, each from a listing
-   * of its own; "" (the default) verifies in listing order.
-   */
   readonly verifyFrom?: string;
-  /**
-   * How many bytes of deletion candidates to read before deleting them;
-   * {@link DEFAULT_SWEEP_READ_BYTES} unless given. Candidates past it are
-   * kept for the next sweep.
-   */
   readonly sweepReadBytes?: number;
   readonly signal: AbortSignal;
 }
 
-/** Sweeps one namespace's chunks. A domain service; holds no state. */
 export class ChunkCollector {
   readonly #commitStore: Pick<CommitStore, "referencedChunks">;
   readonly #storage: DatastoreStorage;
@@ -222,7 +122,6 @@ export class ChunkCollector {
   readonly #graceMs: number;
   readonly #clock: () => Date;
 
-  /** Throws when `graceMs` is not a non-negative safe integer. */
   constructor(options: ChunkCollectorOptions) {
     const graceMs = options.graceMs ?? DEFAULT_CHUNK_GRACE_MS;
     requireNonNegative(graceMs, "graceMs");
@@ -235,12 +134,6 @@ export class ChunkCollector {
     this.#clock = options.clock ?? (() => new Date());
   }
 
-  /**
-   * Sweeps `namespace`'s chunks: verifies up to `verifyBytes` of them and
-   * deletes any damaged, then deletes those no commit names that are past
-   * the grace period, then removes stale temp files. Rejects when `signal`
-   * aborts; what was deleted by then stays deleted.
-   */
   async collect(
     namespace: Namespace,
     options: CollectOptions,
@@ -280,7 +173,8 @@ export class ChunkCollector {
     const { signal } = options;
 
     const ns = storageNamespaceOf(namespace);
-    // Fixed before any reference is read: see the module doc.
+    // fixed before any reference is read, so a commit landing during the sweep
+    // names a chunk newer than the cutoff
     const cutoff = new Date(this.#clock().getTime() - this.#graceMs);
     // A pass of its own, so reading and hashing chunks never stretches the
     // time between the sweep seeing a chunk's age and deleting it.
@@ -306,10 +200,6 @@ export class ChunkCollector {
     const damagedInSweep: string[] = [];
     let batch: string[] = [];
 
-    /**
-     * Deletes candidates already read, re-checks their references, and puts
-     * back the ones a commit landed on meanwhile.
-     */
     const settle = async (held: { sha256: string; bytes: Uint8Array }[]) => {
       if (held.length === 0) return;
       // Every chunk a delete was started for, so the re-check covers it even
@@ -317,7 +207,6 @@ export class ChunkCollector {
       // landed on it since the batch's reference check.
       const started: { sha256: string; bytes: Uint8Array }[] = [];
       this.#assertMayDelete();
-      // Before every batch of deletes, however long the reads before it took.
       await this.#sweep?.heartbeat();
       try {
         for (const chunk of held) {
@@ -369,14 +258,12 @@ export class ChunkCollector {
         }
         signal.throwIfAborted();
         const bytes = await this.#storage.get(ns, sha256, signal);
-        // Null: deleted since the listing, so nothing is left to sweep.
         if (bytes === null) continue;
         readBudget -= bytes.length;
         if (sha256Hex(bytes) !== sha256) {
-          // Damaged: deleted, never put back. Moved aside first where the
-          // storage can, as when verifying; otherwise deleted at once, as an
-          // unreferenced candidate a commit lands on meanwhile is stored
-          // again by its writer's check. Only while it may still delete.
+          // damaged: deleted, never put back; moved aside first where the
+          // storage can, otherwise deleted at once; only while it may still
+          // delete
           this.#assertMayDelete();
           if (isChunkQuarantine(this.#storage)) {
             const outcome = await this.#discardDamaged(
@@ -447,20 +334,15 @@ export class ChunkCollector {
     };
   }
 
-  /** Runs `run` inside the sweep's batch, when it has one. */
   async #inBatch(run: () => Promise<void>): Promise<void> {
     if (this.#sweep?.batch !== undefined) await this.#sweep.batch(run);
     else await run();
   }
 
   /**
-   * Moves a chunk found damaged aside and hashes it again there: removes it
-   * when still damaged, puts it back when good (stored again since it was
-   * read). A chunk gone meanwhile (deleted, or a moved-aside file another
-   * process's temp-file sweep removed) is done. A chunk moved aside but not
-   * judged, because reading it failed or the sweep aborted, is put back so
-   * a good one is never lost, though never over a chunk stored since it was
-   * moved aside; whatever is put back has its directory synced.
+   * moves a damaged chunk aside and rehashes it: removes it if still damaged,
+   * puts it back if good; one not judged is put back unless a chunk was stored
+   * since, so a good one is never lost
    */
   async #discardDamaged(
     storage: ChunkQuarantine,
@@ -509,11 +391,7 @@ export class ChunkCollector {
     }
   }
 
-  /**
-   * Re-checks the references of chunks just deleted and puts back the ones
-   * a commit landed on meanwhile. Runs whether or not the sweep was aborted,
-   * so it uses a signal of its own; `count` gets how many were put back.
-   */
+  /** runs whether or not the sweep was aborted, so it uses a signal of its own */
   async #restoreReferenced(
     namespace: Namespace,
     ns: string,
@@ -551,13 +429,6 @@ export class ChunkCollector {
     if (leaseLost !== undefined) throw leaseLost;
   }
 
-  /**
-   * Reads and hashes chunks until `budget` bytes are spent: those whose
-   * hash sorts at or after `from` first, then the rest, each from a listing
-   * of its own so nothing is held but the chunk being read. Each damaged
-   * one is discarded whatever its age (see the module doc). A chunk is read
-   * whole, so the last one may go past the budget.
-   */
   async #verify(
     namespace: Namespace,
     ns: string,
@@ -578,7 +449,6 @@ export class ChunkCollector {
         signal.throwIfAborted();
         if (!admits(chunk.sha256)) continue;
         const bytes = await this.#storage.get(ns, chunk.sha256, signal);
-        // Null: deleted since the listing, so there is nothing to check.
         if (bytes === null) continue;
         budget -= bytes.length;
         verified++;
@@ -586,8 +456,8 @@ export class ChunkCollector {
           await this.#sweep?.heartbeat();
         }
         if (sha256Hex(bytes) === chunk.sha256) continue;
-        // Without a way to move it aside, a chunk stored again since the
-        // read could be deleted good: only reported (swamp-club#3617).
+        // without a way to move it aside, a chunk stored again since the read
+        // could be deleted while good, so it is only reported
         if (!isChunkQuarantine(this.#storage)) {
           rotten.push(chunk.sha256);
           continue;
@@ -620,11 +490,6 @@ export class ChunkCollector {
   }
 }
 
-/**
- * What {@link ChunkCollector} did with a damaged chunk it moved aside:
- * removed it, put it back because it hashed good there (stored again since
- * it was read), or found it gone.
- */
 type DiscardOutcome = "removed" | "restored" | "gone";
 
 function sha256Hex(bytes: Uint8Array): string {

@@ -39,10 +39,6 @@ import { CelEvaluator } from "../../infrastructure/cel/cel_evaluator.ts";
 import type { ExpressionContext } from "../expressions/model_resolver.ts";
 import { UserError } from "../errors.ts";
 
-// ---------------------------------------------------------------------------
-// resolveForEachStepName — pure helper, no I/O
-// ---------------------------------------------------------------------------
-
 function makeStepContext(
   vars: Record<string, unknown> = {},
 ): Record<string, unknown> {
@@ -160,10 +156,6 @@ Deno.test("resolveForEachStepName: mixed resolved and failed expressions appends
   assertEquals(result.hadEvalFailure, true);
 });
 
-// ---------------------------------------------------------------------------
-// ForEachExpansionService.expand — class-level unit tests
-// ---------------------------------------------------------------------------
-
 function makeExpressionContext(): ExpressionContext {
   return { model: {}, env: {} };
 }
@@ -188,7 +180,6 @@ Deno.test("ForEachExpansionService.expand: non-forEach step yields one entry tha
   assertEquals(expanded?.length, 1);
   assertEquals(expanded?.[0].expandedName, "plain-step");
   assertEquals(expanded?.[0].forEachVar, { name: "", value: undefined });
-  // The template step is preserved by reference.
   assertEquals(expanded?.[0].step, step);
 });
 
@@ -244,12 +235,10 @@ Deno.test("ForEachExpansionService.expand: object iteration binds {key, value} o
     "deploy-amer",
     "deploy-emea",
   ]);
-  // Each entry's forEachVar.value is the {key, value} pair (not the raw value).
   for (const entry of expanded ?? []) {
     const v = entry.forEachVar.value as { key: string; value: string };
     assertEquals(typeof v.key, "string");
     assertEquals(typeof v.value, "string");
-    // Sanity: the binding shape matches the documented {key, value} contract.
     assertEquals(Object.keys(v).sort(), ["key", "value"]);
   }
 });
@@ -332,7 +321,6 @@ Deno.test("ForEachExpansionService: a sensitive item never becomes part of a ste
     expanded.get("deploy")!.map((s) => s.expandedName),
     ["deploy-sensitive-0", "deploy-public"],
   );
-  // The iteration variable keeps the real value for the step to use.
   assertEquals(expanded.get("deploy")![0].forEachVar.value, "Pl41n-s3cret");
 });
 
@@ -420,7 +408,6 @@ Deno.test("ForEachExpansionService.expand: a control character in an item value 
     "deploy-a\\x0ab",
     "deploy-c\\x1b]0;x\\x07",
   ]);
-  // The item value itself is untouched; only the name is made printable.
   assertEquals(
     {
       name: expanded?.[0].forEachVar.name,
@@ -455,8 +442,8 @@ Deno.test("resolveForEachStepName: a secret refusal in a name fails loudly inste
     SecretRefusedError,
   );
   assertEquals(error.code, SECRET_OPERATION_UNSUPPORTED);
-  // A secret in the name leaves as its sentinel, for the stand-in to
-  // replace; a composition (design Section 3.2) carries the sentinel too.
+  // a secret in the name leaves as its sentinel for the stand-in to replace; a
+  // composition carries the sentinel too
   const secret = resolveForEachStepName(
     "step-${{ self.item.password }}-${{ self.item.password + '-x' }}",
     true,
@@ -469,7 +456,6 @@ Deno.test("resolveForEachStepName: a secret refusal in a name fails loudly inste
     name: `step-${sentinel}-${sentinel}-x`,
     hadEvalFailure: false,
   });
-  // An ordinary failure keeps today's fallback.
   const missing = resolveForEachStepName(
     "step-${{ self.item.missing.deep }}",
     true,
@@ -564,7 +550,6 @@ Deno.test("ForEachExpansionService.expand: in a typed run an item that holds a s
     "rotate-sensitive-0-a",
     "rotate-sensitive-1-b",
   ]);
-  // The item binds the sentinel text the later passes read as a Secret.
   assertEquals(
     steps.map((s) => (s.forEachVar.value as { password: string }).password),
     [sentinel, sentinel],
@@ -573,7 +558,6 @@ Deno.test("ForEachExpansionService.expand: in a typed run an item that holds a s
   // Nothing was issued beyond the fixture's entry: the name's Secret is the
   // bound sentinel itself.
   assertEquals(registry.isEmpty, false);
-  // A plain evaluator, with no prepare, expands as before.
   const plain = await new ForEachExpansionService(new CelEvaluator()).expand(
     job,
     context,

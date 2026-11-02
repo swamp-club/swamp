@@ -54,7 +54,6 @@ function recorded(): RunSensitiveValues {
   return values;
 }
 
-/** A workflow whose step task inputs, labels and tags all hold the secret. */
 function workflowHolding(value: string): Workflow {
   return Workflow.create({
     name: "w",
@@ -146,7 +145,6 @@ Deno.test("persistEvaluatedWorkflow: identifier maps carry placeholders, not ref
   assertEquals(data.labels, { team: placeholder });
   assertEquals(data.jobs[0].labels, { tier: placeholder });
   assertEquals(data.jobs[0].steps[0].labels, { role: placeholder });
-  // Placeholders are never listed for restoration.
   for (const ref of persisted.writtenReferences) {
     assertEquals(ref.path.includes("labels") && ref.path[4] !== "task", false);
   }
@@ -180,7 +178,6 @@ Deno.test("rehydrateEvaluatedWorkflow: a replay restores task inputs, including 
       .toData().jobs,
     persisted.workflow.toData().jobs,
   );
-  // The overlay hands the step sentinels, not the value.
   const overlay = restored.sanitizedTasks!.forStep(
     restored.workflow.jobs[0].steps[0],
     new VaultSecretBag(new SecretBagRegistry()),
@@ -219,7 +216,6 @@ Deno.test("recordableEvaluatedInputs: inputs holding a sensitive value are withh
     inputs: plain,
   });
   assertEquals(recordableEvaluatedInputs({}, recorded()), { inputs: {} });
-  // Anywhere in the structure, whole or inside a longer string.
   assertEquals(recordableEvaluatedInputs({ tok: SECRET }, recorded()), {
     omitted: "sensitive",
   });
@@ -276,12 +272,10 @@ Deno.test("replayInputs: a --last-evaluated run takes the inputs its cache recor
   const recordedInputs = { target: "scratch", creds: { user: "u", key: "k" } };
   const cache = { workflow: gated, evaluatedInputs: recordedInputs };
   assertEquals(replayInputs(cache, {}), { inputs: recordedInputs });
-  // The same value after the merge: no change.
   assertEquals(
     replayInputs(cache, { target: "scratch", creds: { key: "k" } }),
     { inputs: recordedInputs },
   );
-  // A workflow evaluated with no inputs records an empty set, which replays.
   assertEquals(replayInputs({ workflow: gated, evaluatedInputs: {} }, {}), {
     inputs: {},
   });
@@ -298,7 +292,6 @@ Deno.test("replayInputs: refuses an input the cache was evaluated with another v
   );
   assertEquals(other.refusal.includes("protected"), false);
   assertEquals(other.refusal.includes("scratch"), false);
-  // A nested change is a change of its top-level key.
   const nested = replayInputs(
     { workflow: gated, evaluatedInputs: { creds: { user: "u", key: "k" } } },
     { creds: { key: "other" } },
@@ -339,22 +332,17 @@ Deno.test("forEachNameWithoutSecrets: in a typed run every sentinel the run issu
     forEachNameWithoutSecrets(`deploy-${vault}-${data}-${other}`, 2, values),
     `deploy-sensitive-2-sensitive-2-${other}`,
   );
-  // Recorded values are still replaced beside the sentinels.
   values.addSecret(SECRET, SOURCE);
   assertEquals(
     forEachNameWithoutSecrets(`${vault}:${SECRET}`, 0, values),
     "sensitive-0:sensitive-0",
   );
-  // An untyped run keeps a sentinel as text.
   assertEquals(
     forEachNameWithoutSecrets(`deploy-${vault}`, 2, recorded()),
     `deploy-${vault}`,
   );
 });
 
-// --- typed-secrets 4.4: a typed replay holds references ---
-
-/** A typed run's record. */
 function typedValues(): RunSensitiveValues {
   return new RunSensitiveValues(
     undefined,
@@ -362,7 +350,6 @@ function typedValues(): RunSensitiveValues {
   );
 }
 
-/** A workflow a typed evaluation produced: two sentinels in one task input. */
 function typedWorkflow(bag: VaultSecretBag): {
   workflow: Workflow;
   provenance: ProvenanceMap;
@@ -526,7 +513,6 @@ Deno.test("persistEvaluatedWorkflow: an untyped write marks every written refere
   }).inputs.auth;
   assertEquals(auth, `a ${REF} b ${REF} ${"${{ env.X }}"}`);
   const map = persisted.persistedProvenance!;
-  // Each reference is data; the trailing expression is not.
   assertEquals(map.overlapsData(path, 2, 2 + REF.length), true);
   assertEquals(
     map.overlapsData(path, 5 + REF.length, 5 + 2 * REF.length),
@@ -538,9 +524,6 @@ Deno.test("persistEvaluatedWorkflow: an untyped write marks every written refere
   );
 });
 
-// --- typed-secrets 4.4: a typed resume holds references ---
-
-/** A run a typed run wrote: references in its inputs, bindings, error and prompt. */
 function storedTypedRun(): {
   stored: ReturnType<WorkflowRun["toPersistedData"]>;
   a: string;
@@ -623,7 +606,6 @@ Deno.test("rehydrateRunReferences: a typed resume restores every written referen
   const bound = run.deferredExpressions[0].bindings.inputs as { token: string };
   const [d] = bound.token.match(VaultSecretBag.SENTINEL_PATTERN)!;
   assertEquals(bound.token, `v ${d}`);
-  // The inputs map follows the sentinel copy exactly.
   const map = run.inputsProvenance!;
   assertEquals(map.rangesAt("token"), [
     [2, 2 + a.length],
@@ -640,7 +622,6 @@ Deno.test("rehydrateRunReferences: a typed resume restores every written referen
   );
   assertEquals(deferredMap.isWholeDataAt("inputs.token"), true);
   assertEquals(deferredMap.hasDataAtOrBelow("inputs.other"), false);
-  // Written back, the record is what it was.
   const again = run.toPersistedData();
   assertEquals(again.inputs, stored.inputs);
   assertEquals(

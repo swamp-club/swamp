@@ -46,9 +46,7 @@ Deno.test("modeWithAccess: derives the mode from the created file's bits", () =>
   assertEquals(modeWithAccess(0o644, "executable"), 0o755);
   assertEquals(modeWithAccess(0o644, "private"), 0o600);
   assertEquals(modeWithAccess(0o644, "private-executable"), 0o700);
-  // A umask of 077 already makes new files private.
   assertEquals(modeWithAccess(0o600, "executable"), 0o700);
-  // A umask of 002 keeps group write.
   assertEquals(modeWithAccess(0o664, "executable"), 0o775);
   assertEquals(modeWithAccess(0o100644, "executable"), 0o755);
 });

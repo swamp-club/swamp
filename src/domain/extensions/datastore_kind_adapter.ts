@@ -52,17 +52,9 @@ const UserDatastoreSchema = z.object({
 });
 
 /**
- * Wraps an extension's `createProvider` so every lock its providers create
- * rejects with the core `LockTimeoutError` on timeout. This is the one place
- * extension datastores enter core, so every lock call site — per-model,
- * global and push locks in the CLI and serve — gets core semantics (exit
- * code 75, `lock_timeout`) without knowing the backend (swamp-club#2553).
- *
- * The provider is proxied rather than copied: extension providers may be
- * class instances, and a spread would drop their prototype methods. The
- * proxy target is an empty object inheriting from the provider, not the
- * provider itself. Proxy invariants forbid returning a different value for a
- * frozen own property, so proxying a frozen provider directly would throw.
+ * the one place extension datastores enter core, so every lock gets core
+ * LockTimeoutError. Proxied over an empty object inheriting from the provider:
+ * a spread drops prototype methods, a frozen target throws.
  */
 function wrapExtensionProvider(
   createProvider: (config: Record<string, unknown>) => DatastoreProvider,

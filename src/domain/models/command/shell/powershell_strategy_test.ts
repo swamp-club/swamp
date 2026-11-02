@@ -23,7 +23,6 @@ import { VaultSecretBag } from "../../../vaults/vault_secret_bag.ts";
 import { SecretBagRegistry } from "../../../vaults/secret_bag_registry.ts";
 import { secretOccurrencesOf } from "../../../vaults/secret_occurrences.ts";
 
-/** The reference every secret of these tests stands for. */
 const REF = { vaultName: "v", key: "k" };
 
 const POWERSHELL_COMPATIBILITY_PREFIX =
@@ -149,7 +148,6 @@ Deno.test("PowerShellStrategy.planSecrets: refuses a data value inside single qu
     "__SWAMP_VAULT_1",
     "__SWAMP_VAULT_2",
   ]);
-  // A vault.get() reference inside single quotes stays literal, as before.
   const literal = strategy.planSecrets(
     `Write-Output '${vault}'`,
     [],

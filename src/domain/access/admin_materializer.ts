@@ -53,12 +53,10 @@ export interface StoredConfigGrant {
 
 export interface AdminGrantStore {
   /**
-   * Config grants keyed by instance name. An instance name can hold more
-   * than one stored copy: serve instances sharing a datastore each create
-   * their own (swamp-club#2822).
+   * an instance name can hold several stored copies: serve instances sharing a
+   * datastore each create their own
    */
   queryConfigGrants(): Promise<Map<string, StoredConfigGrant[]>>;
-  /** The id of the definition stored under `instanceName`, if any. */
   findDefinitionId(instanceName: string): Promise<string | undefined>;
   ensureDefinition(instanceName: string): Promise<string>;
   writeGrant(
@@ -98,9 +96,8 @@ function buildAdminGrant(adminPrincipal: string): Grant {
 }
 
 /**
- * @param onDefinitionSaved - called with the path of each grant definition
- *   this store creates, right after it is written, so a caller can re-mark
- *   it dirty before pushing.
+ * called with the path of each grant definition this store creates, right after
+ * it is written, so a caller can re-mark it dirty before pushing
  */
 export function createAdminGrantStore(
   readRepo: DefinitionRepository,
@@ -139,8 +136,6 @@ export function createAdminGrantStore(
         def = Definition.create({
           type: GRANT_MODEL_TYPE.normalized,
           name: instanceName,
-          // See grant_file_reconciler: creation owns typeVersion now that the
-          // repository no longer stamps it (swamp-club#900).
           typeVersion: grantModel.version,
         });
         await writeRepo.save(GRANT_MODEL_TYPE, def);
@@ -196,11 +191,9 @@ export async function materializeAdmins(
     const instanceName = instanceNameForAdmin(hash);
     desiredInstanceNames.add(instanceName);
 
-    // Every copy of a wanted admin grant is left as it is. Revoking the
-    // extras would need peers to agree on which copy survives, and a peer
-    // whose synced definition differs could revoke the one the other kept,
-    // leaving the admin with no active grant. An active duplicate is
-    // harmless: removing the admin revokes every copy below.
+    // leave every copy of a wanted admin grant alone: revoking extras needs
+    // peers to agree on a survivor, and one could revoke the copy another kept,
+    // leaving no active grant
     const copies = configGrants.get(instanceName) ?? [];
     if (copies.some((c) => c.grant.state === "active")) {
       result.unchanged++;
@@ -246,9 +239,8 @@ export async function materializeAdmins(
 }
 
 /**
- * Picks which revoked copy of a wanted admin grant to reactivate: the copy
- * whose model id matches the stored definition, so it is not orphaned data,
- * then the lowest model id.
+ * reactivate the copy whose model id matches the stored definition, so it is
+ * not orphaned data, then the lowest model id
  */
 function selectCopyToReactivate(
   copies: readonly StoredConfigGrant[],
@@ -264,7 +256,6 @@ function selectCopyToReactivate(
 export interface MigrateGrantDefinitionsResult {
   moved: number;
   skipped: number;
-  /** Destination path of each moved file, for per-path dirty marks. */
   movedPaths: string[];
 }
 
@@ -310,10 +301,8 @@ export async function migrateGrantDefinitions(
       try {
         await Deno.rename(srcPath, dstPath);
       } catch {
-        // Cross-filesystem move (repo and home on different mounts): rename
-        // throws EXDEV, so fall back to copy-then-remove. A NotFound from
-        // either step means a concurrent invocation already migrated the
-        // file — skip it.
+        // cross-filesystem move: rename throws EXDEV, so copy then remove;
+        // NotFound means a concurrent run already migrated the file, skip it
         try {
           await Deno.copyFile(srcPath, dstPath);
         } catch (copyError) {

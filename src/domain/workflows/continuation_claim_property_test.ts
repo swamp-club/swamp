@@ -125,7 +125,6 @@ Deno.test("acquireContinuation: no generation ever has two holders, and a live h
         }
         const generations = store.claims.map((c) => c.generation);
         assertEquals(new Set(generations).size, generations.length);
-        // Generations are taken in order, with none skipped.
         assert(
           generations.sort((a, b) => a - b).every((g, i) => g === i + 1),
         );
@@ -165,7 +164,6 @@ Deno.test("suspensionKeyOf: every change a resume makes to a run gives a key not
         run.suspend();
 
         const seen = new Set([await suspensionKeyOf(run)]);
-        // Each pick advances one step by one stage: decided, then done.
         const stage = new Map<number, number>();
         for (const pick of picks) {
           const index = pick % stepCount;

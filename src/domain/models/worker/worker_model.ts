@@ -17,17 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Built-in worker model (see design/enablers/remote-execution.md, "Worker state is
- * swamp data").
- *
- * One model instance per enrolled worker, named by its enrollment-token name.
- * The orchestrator's worker gateway drives these methods inside its
- * serialized critical section — they are not meant for interactive use, but
- * their output is ordinary swamp data: queryable, versioned, and visible to
- * workflows, reports, and the CLI like any model output.
- */
-
 import { z } from "zod";
 import { ModelType } from "../model_type.ts";
 import {
@@ -90,7 +79,6 @@ async function readState(context: MethodContext): Promise<WorkerState> {
   return WorkerStateSchema.parse(raw);
 }
 
-/** Definition-instance name for a worker (distinct from its token's). */
 export function workerDefinitionName(workerName: string): string {
   return `worker-${workerName}`;
 }
@@ -162,9 +150,6 @@ async function setStatus(
   return { dataHandles: [handle] };
 }
 
-/**
- * The worker model definition. Self-registers via the models barrel.
- */
 export const workerModel: ModelDefinition = defineModel({
   type: WORKER_MODEL_TYPE,
   version: "2026.07.06.1",

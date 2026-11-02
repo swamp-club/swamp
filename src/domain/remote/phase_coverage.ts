@@ -23,7 +23,6 @@ export interface PhaseInterval {
   readonly end: number;
 }
 
-/** Union child intervals, clipping to the enclosing phase without double counting. */
 export function phaseCoverage(
   start: number,
   end: number,

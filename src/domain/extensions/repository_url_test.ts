@@ -107,7 +107,6 @@ Deno.test("buildGithubNewIssueUrl: percent-encodes title and body", () => {
     "Fails on `foo`",
     "Hello\n```js\ncode\n```",
   );
-  // URLSearchParams uses '+' for spaces; also encodes backticks/newlines.
   assertStringIncludes(url, "title=Fails+on+%60foo%60");
   assertStringIncludes(url, "body=");
   assertEquals(

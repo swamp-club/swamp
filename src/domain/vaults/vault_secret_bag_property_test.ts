@@ -32,20 +32,11 @@ import {
 } from "./secret_bag_registry.ts";
 import { secretOccurrencesOf } from "./secret_occurrences.ts";
 
-/** The reference every secret of these tests stands for. */
 const REF = { vaultName: "v", key: "k" };
 
-/**
- * Issues a vault.get() reference from `bag` whose key is the value a load
- * reads for it (see {@link loaded}).
- */
 const issue = (bag: VaultSecretBag, value: string, vaultName = "v") =>
   bag.addSecret({ vaultName, key: value }, "test.location");
 
-/**
- * `bag`'s delivery view, loaded as from a vault that holds each key as its
- * own value. Every vault reference of the run is loaded.
- */
 function loaded(bag: VaultSecretBag): VaultSecretBag {
   const values = new Map<string, string>();
   for (const entry of bag.registry.all()) {
@@ -56,13 +47,11 @@ function loaded(bag: VaultSecretBag): VaultSecretBag {
   return bag.withLoaded(values);
 }
 
-/** An entry's own value: a data or shipped entry's, never a reference's. */
 const ownValue = (entry: RegistryEntry) =>
   holdsValue(entry) ? entry.value : undefined;
 
 type Quote = "unquoted" | "double" | "single";
 
-/** One use of the sentinel, wrapped the way `quote` names. */
 function use(sentinel: string, quote: Quote): string {
   switch (quote) {
     case "double":
@@ -79,7 +68,6 @@ const arbQuotes = fc.array(
   { minLength: 1, maxLength: 6 },
 );
 
-/** Separators between uses, some with comments holding stray quotes. */
 const arbSeparator = fc.constantFrom(
   "; ",
   "\n",
@@ -121,11 +109,6 @@ Deno.test("VaultSecretBag.resolveForShell: singleQuoted reports a vault.get sent
   );
 });
 
-/**
- * A here-document body fragment. `inString` records, per vault.get use in
- * the fragment, whether the reference must stay bare: the author placed it
- * inside a double- or single-quoted string.
- */
 interface BodyFragment {
   lines: string[];
   inString: boolean[];
@@ -194,7 +177,6 @@ Deno.test("VaultSecretBag.resolveForShell: a vault.get use in a here-document bo
   );
 });
 
-/** A sensitive value with the vault reference it was read from. */
 const arbEntry = fc.record({
   value: fc.string({ minLength: 3, maxLength: 12 }),
   source: fc.record({
@@ -203,10 +185,6 @@ const arbEntry = fc.record({
   }),
 });
 
-/**
- * Issues each entry from `bag` as vault.get or data origin, by `data`. A
- * vault.get entry is a reference whose key {@link loaded} reads as `value`.
- */
 function issueAll(
   bag: VaultSecretBag,
   secrets: readonly {
@@ -400,7 +378,6 @@ Deno.test("VaultSecretBag.withLoaded: a vault reference resolves only through a 
 
 type Placement = Quote | "heredoc-literal";
 
-/** One use of the sentinel, including a here-document with a quoted delimiter. */
 function place(sentinel: string, placement: Placement): string {
   return placement === "heredoc-literal"
     ? `cat <<'EOF'\n${sentinel}\nEOF`
@@ -447,7 +424,6 @@ Deno.test("planShellPlacement: the plan and the resolution agree on every occurr
         assertEquals(new Set(names).size, names.length);
         for (const name of names) assertEquals(authored.includes(name), false);
         assertEquals(resolved.envNames, plan.envNames);
-        // Rebuilding the command from the plan is the resolution.
         let rebuilt = "";
         let last = 0;
         for (const o of plan.occurrences) {
@@ -459,7 +435,6 @@ Deno.test("planShellPlacement: the plan and the resolution agree on every occurr
         assertEquals(resolved.command, rebuilt);
         assertEquals(resolved.dataInCommandLine, plan.refused.length > 0);
         assertEquals(resolved.singleQuoted, [...plan.singleQuoted]);
-        // Only a data value in a quoted here-document is refused.
         assertEquals(
           plan.refused.length > 0,
           dataOrigin && placements.includes("heredoc-literal"),
@@ -497,7 +472,6 @@ Deno.test("VaultSecretBag.resolveDeep: a sentinel delivers its text everywhere b
   );
 });
 
-/** One secret of a run, issued the way `kind` names, over a vault value. */
 const arbIssued = fc.record({
   kind: fc.constantFrom(
     "vault",
@@ -522,7 +496,6 @@ Deno.test("VaultSecretBag.referenceEntriesFor: a worker that loads the shipped r
       fc.string({ maxLength: 4 }),
       (secrets, uses, filler) => {
         const bag = new VaultSecretBag(new SecretBagRegistry());
-        // The vault holds each secret's value under a key of its own.
         const vault = new Map<string, string>();
         const sentinels = secrets.map((secret, i) => {
           const reference = { vaultName: "v", key: `k${i}` };
@@ -545,7 +518,6 @@ Deno.test("VaultSecretBag.referenceEntriesFor: a worker that loads the shipped r
                 secret.jsonValue,
               );
             default:
-              // A data entry holds the value in its encoding's form.
               return secret.encoding === "json"
                 ? bag.addDataSecret(
                   jsonEscaped(secret.value),
@@ -580,13 +552,11 @@ Deno.test("VaultSecretBag.referenceEntriesFor: a worker that loads the shipped r
           return values;
         };
 
-        // Today: the orchestrator loads, then ships values a worker rebuilds.
         const shippedView = bag.withLoaded(loadedValues(bag));
         const plaintext = VaultSecretBag.fromEntries(
           shippedView.entriesFor(args),
         ).resolveDeep(args);
 
-        // Version 6: references ship, and the worker loads them itself.
         const shipped = bag.referenceEntriesFor(args);
         assertEquals(
           shipped.map((entry) => entry.reference),

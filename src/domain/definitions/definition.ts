@@ -28,22 +28,12 @@ import {
   ReportSelectionSchema,
 } from "../reports/report_selection.ts";
 
-/**
- * Branded type for Definition IDs.
- */
 export type DefinitionId = string & { readonly _brand: unique symbol };
 
-/**
- * Creates a DefinitionId from a string.
- */
 export function createDefinitionId(id: string): DefinitionId {
   return id as DefinitionId;
 }
 
-/**
- * JSON Schema property type for definition inputs.
- * Follows JSON Schema draft-07 format.
- */
 export interface JsonSchemaProperty {
   type?: "string" | "number" | "integer" | "boolean" | "array" | "object";
   description?: string;
@@ -56,9 +46,6 @@ export interface JsonSchemaProperty {
   [key: string]: unknown;
 }
 
-/**
- * Zod schema for JSON Schema properties with recursive support.
- */
 const baseJsonSchemaPropertySchema: z.ZodType<JsonSchemaProperty> = z.lazy(
   () =>
     z.object({
@@ -87,9 +74,6 @@ const baseJsonSchemaPropertySchema: z.ZodType<JsonSchemaProperty> = z.lazy(
 
 export const JsonSchemaPropertySchema = baseJsonSchemaPropertySchema;
 
-/**
- * InputsSchema type for definition inputs.
- */
 export interface InputsSchema {
   type?: "object";
   properties?: Record<string, JsonSchemaProperty>;
@@ -98,10 +82,6 @@ export interface InputsSchema {
   [key: string]: unknown;
 }
 
-/**
- * Zod schema for an inputs schema that must be present, such as the payload
- * schema of a `wait_for_signal` step.
- */
 export const RequiredInputsSchemaSchema: z.ZodType<InputsSchema> = z
   .object({
     type: z.literal("object").optional(),
@@ -112,41 +92,23 @@ export const RequiredInputsSchemaSchema: z.ZodType<InputsSchema> = z
   })
   .passthrough();
 
-/**
- * Zod schema for definition inputs.
- */
 export const InputsSchemaSchema: z.ZodType<InputsSchema | undefined> =
   RequiredInputsSchemaSchema.optional();
 
 /**
- * Zod schema for the core properties of a Definition.
- *
- * `typeVersion` records the model type version a definition's global arguments
- * were authored or migrated for, as CalVer.  A number is stringified rather
- * than rejected or discarded: definitions under `models/` are git-tracked files
- * people hand-edit, so a malformed value has to survive into the object for
- * `model get` to name it and for `DefinitionUpgradeService` to refuse it
- * (swamp-club#2412).  Rejecting here would make the definition unloadable by
- * the very command you reach for to diagnose it.
- */
-/**
- * Zod schema for per-method arguments stored in a definition.
+ * a malformed typeVersion must survive loading (a number is stringified):
+ * definitions are hand-edited, and rejecting here would make them unloadable by
+ * the very command used to diagnose them
  */
 export const MethodDataSchema = z.object({
   arguments: z.record(z.string(), z.unknown()).optional(),
 });
 
-/**
- * Schema for definition-level check selection (require/skip).
- */
 export const CheckSelectionSchema = z.object({
   require: z.array(z.string()).optional(),
   skip: z.array(z.string()).optional(),
 }).optional();
 
-/**
- * Type for definition-level check selection.
- */
 export type CheckSelection = {
   require?: string[];
   skip?: string[];
@@ -165,11 +127,7 @@ export type ResourceOverrides = Record<string, ResourceOverride>;
 const DEFINITION_NAME_MAX_LENGTH = 64;
 const DEFINITION_NAME_PATTERN = /^[a-z0-9][a-z0-9_-]*$/;
 
-/**
- * Returns true when a definition name is safe for direct use in a filename
- * (i.e. `{name}.yaml`). Legacy names that don't match the strict
- * pattern will fall back to UUID-based filenames.
- */
+/** legacy names that fail the strict pattern fall back to UUID-based filenames */
 export function isFilenameSafeDefinitionName(name: string): boolean {
   return (
     DEFINITION_NAME_PATTERN.test(name) &&
@@ -209,11 +167,6 @@ const definitionNameStrict = definitionNameBase
     },
   );
 
-/**
- * Returns the first naming rule a new definition name breaks, or `undefined`
- * when `Definition.create` would accept it. Lets callers reject user input
- * with a validation error before the factory throws.
- */
 export function definitionNameViolation(name: string): string | undefined {
   const result = definitionNameStrict.safeParse(name);
   return result.success ? undefined : result.error.issues[0]?.message;
@@ -257,40 +210,21 @@ const DefinitionStrictObjectSchema = z.object({
   resources: z.record(z.string(), ResourceOverrideSchema).optional(),
 });
 
-/**
- * Zod schema for Definition. Rejects the removed `driver`/`driverConfig`
- * fields with an actionable error (see design/enablers/remote-execution.md).
- * Uses permissive name validation for loading existing definitions.
- */
+/** uses permissive name validation so existing definitions still load */
 export const DefinitionSchema = z.preprocess(
   rejectRemovedDriverFields,
   DefinitionObjectSchema,
 );
 
-/**
- * Strict schema for new definitions. Enforces kebab-case naming.
- */
 const DefinitionStrictSchema = z.preprocess(
   rejectRemovedDriverFields,
   DefinitionStrictObjectSchema,
 );
 
-/**
- * Type representing the data stored in a Definition.
- */
 export type DefinitionData = z.infer<typeof DefinitionObjectSchema>;
 
-/**
- * Properties required to create a new Definition.
- */
-/**
- * Per-method data stored in a definition.
- */
 export type MethodData = z.infer<typeof MethodDataSchema>;
 
-/**
- * Properties required to create a new Definition.
- */
 export interface CreateDefinitionProps {
   type?: string;
   typeVersion?: string;
@@ -307,15 +241,6 @@ export interface CreateDefinitionProps {
   resources?: ResourceOverrides;
 }
 
-/**
- * Definition is an entity representing the configuration for a model instance.
- *
- * Each definition has a unique ID (UUID), a human-readable name, version,
- * optional tags, domain-specific attributes, and optional inputs schema.
- *
- * Attributes can contain CEL expressions in the format ${{ expression }}
- * which will be evaluated when the definition is instantiated.
- */
 export class Definition {
   private constructor(
     readonly type: string | undefined,
@@ -333,12 +258,6 @@ export class Definition {
     private _resources: ResourceOverrides | undefined,
   ) {}
 
-  /**
-   * Creates a new Definition instance.
-   *
-   * @param props - Properties for the new definition
-   * @returns A new Definition instance
-   */
   static create(props: CreateDefinitionProps): Definition {
     const id = props.id ?? crypto.randomUUID();
     const version = props.version ?? 1;
@@ -376,12 +295,6 @@ export class Definition {
     );
   }
 
-  /**
-   * Reconstructs a Definition from persisted data.
-   *
-   * @param data - The persisted data
-   * @returns A Definition instance
-   */
   static fromData(data: DefinitionData): Definition {
     const validated = DefinitionSchema.parse(data);
     return new Definition(
@@ -401,15 +314,6 @@ export class Definition {
     );
   }
 
-  /**
-   * Creates a new Definition with upgraded attributes and an updated typeVersion.
-   * Preserves the same id, name, version, tags, and inputs.
-   *
-   * @param original - The original definition to upgrade
-   * @param newAttributes - The upgraded attributes
-   * @param newTypeVersion - The CalVer version after upgrade
-   * @returns A new Definition with upgraded attributes
-   */
   static withUpgradedGlobalArguments(
     original: Definition,
     newGlobalArguments: Record<string, unknown>,
@@ -432,86 +336,50 @@ export class Definition {
     );
   }
 
-  /**
-   * Returns a copy of the tags.
-   */
   get tags(): Record<string, string> {
     return { ...this._tags };
   }
 
-  /**
-   * Returns a copy of the global arguments.
-   */
   get globalArguments(): Record<string, unknown> {
     return structuredClone(this._globalArguments);
   }
 
-  /**
-   * Returns a copy of the per-method data.
-   */
   get methodData(): Record<string, MethodData> {
     return structuredClone(this._methods);
   }
 
-  /**
-   * Returns a copy of the inputs schema.
-   */
   get inputs(): InputsSchema | undefined {
     return this._inputs ? structuredClone(this._inputs) : undefined;
   }
 
-  /**
-   * Returns a copy of the check selection (require/skip lists).
-   */
   get checkSelection(): CheckSelection | undefined {
     return this._checks ? structuredClone(this._checks) : undefined;
   }
 
-  /**
-   * Returns a copy of the report selection (require/skip lists).
-   */
   get reportSelection(): ReportSelection | undefined {
     return this._reports ? structuredClone(this._reports) : undefined;
   }
 
-  /**
-   * Sets a tag value.
-   */
   setTag(key: string, value: string): void {
     this._tags[key] = value;
   }
 
-  /**
-   * Removes a tag.
-   */
   removeTag(key: string): void {
     delete this._tags[key];
   }
 
-  /**
-   * Sets a global argument value.
-   */
   setGlobalArgument(key: string, value: unknown): void {
     this._globalArguments[key] = value;
   }
 
-  /**
-   * Removes a global argument.
-   */
   removeGlobalArgument(key: string): void {
     delete this._globalArguments[key];
   }
 
-  /**
-   * Gets the arguments for a specific method.
-   */
   getMethodArguments(methodName: string): Record<string, unknown> {
     return structuredClone(this._methods[methodName]?.arguments ?? {});
   }
 
-  /**
-   * Sets a single argument for a specific method.
-   */
   setMethodArgument(methodName: string, key: string, value: unknown): void {
     if (!this._methods[methodName]) {
       this._methods[methodName] = {};
@@ -522,9 +390,6 @@ export class Definition {
     this._methods[methodName].arguments![key] = value;
   }
 
-  /**
-   * Sets all arguments for a specific method.
-   */
   setMethodArguments(
     methodName: string,
     args: Record<string, unknown>,
@@ -535,16 +400,10 @@ export class Definition {
     this._methods[methodName].arguments = structuredClone(args);
   }
 
-  /**
-   * Sets the inputs schema.
-   */
   setInputs(inputs: InputsSchema | undefined): void {
     this._inputs = inputs ? structuredClone(inputs) : undefined;
   }
 
-  /**
-   * Converts the definition to a plain data object for persistence.
-   */
   get resources(): ResourceOverrides | undefined {
     return this._resources;
   }
@@ -567,10 +426,6 @@ export class Definition {
     };
   }
 
-  /**
-   * Computes a hash of the definition for use as an instantiation ID.
-   * This hash uniquely identifies the definition configuration.
-   */
   async computeHash(): Promise<string> {
     const {
       type: _type,
@@ -578,7 +433,6 @@ export class Definition {
       description: _desc,
       ...contentData
     } = this.toData();
-    // Recursively sort keys for consistent hashing
     const sortedData = JSON.stringify(contentData, (_key, value) => {
       if (
         value !== null && typeof value === "object" && !Array.isArray(value)

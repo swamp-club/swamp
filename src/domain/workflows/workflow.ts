@@ -39,9 +39,8 @@ const WORKFLOW_NAME_MAX_LENGTH = 64;
 const WORKFLOW_NAME_PATTERN = /^[a-z0-9][a-z0-9-]*$/;
 
 /**
- * Returns true when a workflow name is safe for direct use in a filename
- * (i.e. `workflow-<name>.yaml`). Legacy names that don't match the strict
- * pattern will fall back to UUID-based filenames.
+ * legacy names that do not match the strict pattern fall back to UUID-based
+ * filenames
  */
 export function isFilenameSafeName(name: string): boolean {
   return (
@@ -82,10 +81,8 @@ const workflowNameStrict = workflowNameBase
   );
 
 /**
- * Returns the first naming rule a new workflow name breaks, or `undefined`
- * when `Workflow.create` would accept it. Mirrors `Workflow.create`: scoped
- * `@collective/name` names get the base rules only. Lets callers reject user
- * input with a validation error before the factory throws.
+ * mirrors Workflow.create, where scoped @collective/name names get the base
+ * rules only, so callers can reject user input before the factory throws
  */
 export function workflowNameViolation(name: string): string | undefined {
   const schema = name.includes("/") ? workflowNameBase : workflowNameStrict;
@@ -122,20 +119,16 @@ export const WorkflowObjectSchema = z.object({
   writes: z.boolean().optional(),
   autoResume: z.boolean().optional(),
   /**
-   * The most vaults any run of this workflow may read or write: a run is
-   * refused every vault operation on a vault not listed, whoever triggers
-   * it. Nested workflows intersect their list with their parent's.
+   * a run is refused every vault operation on a vault not listed, whoever
+   * triggers it; nested workflows intersect their list with their parent's
    */
   vaults: z.array(z.string().min(1)).optional(),
   ...PlacementFieldsSchema.shape,
 });
 
 /**
- * Zod schema for Workflow aggregate root. Rejects the removed
- * `driver`/`driverConfig` fields with an actionable error (see
- * design/enablers/remote-execution.md), and rejects unknown keys — Zod's silent
- * stripping would otherwise discard misplaced or typo'd top-level keys
- * (swamp-club#1240).
+ * rejects unknown keys because Zod's silent stripping would discard misplaced
+ * or typo'd top-level keys
  */
 export const WorkflowSchema = z.preprocess(
   addRemovedDriverFieldIssues,
@@ -145,10 +138,6 @@ export const WorkflowSchema = z.preprocess(
   ),
 );
 
-/**
- * Whether a workflow's inputs schema declares any inputs: named properties,
- * or open-ended additional properties.
- */
 export function workflowDeclaresInputs(
   inputs: InputsSchema | undefined,
 ): boolean {
@@ -158,19 +147,10 @@ export function workflowDeclaresInputs(
     inputs.additionalProperties !== false;
 }
 
-/**
- * Type representing workflow data (output — defaults applied).
- */
 export type WorkflowData = z.infer<typeof WorkflowObjectSchema>;
 
-/**
- * Type representing workflow input data (defaults optional for backward compat).
- */
 export type WorkflowInput = z.input<typeof WorkflowObjectSchema>;
 
-/**
- * Properties for creating a new Workflow.
- */
 export interface CreateWorkflowProps {
   id?: string;
   name: string;
@@ -192,16 +172,6 @@ export interface CreateWorkflowProps {
   vaults?: string[];
 }
 
-/**
- * Workflow is the aggregate root for workflow orchestration.
- *
- * Each workflow has:
- * - A unique ID (UUID)
- * - A globally unique name
- * - An optional description
- * - One or more jobs
- * - A version number
- */
 export class Workflow {
   private constructor(
     readonly id: WorkflowId,
@@ -223,13 +193,9 @@ export class Workflow {
     readonly platform: string | undefined,
     readonly queueTimeout: number | undefined,
     readonly autoResume: boolean | undefined,
-    /** The workflow's `vaults:` allow-list, when it declares one. */
     readonly vaults: readonly string[] | undefined,
   ) {}
 
-  /**
-   * Creates a new Workflow.
-   */
   static create(props: CreateWorkflowProps): Workflow {
     const id = props.id ?? crypto.randomUUID();
     const version = props.version ?? 1;
@@ -293,11 +259,6 @@ export class Workflow {
     );
   }
 
-  /**
-   * Reconstructs a Workflow from persisted data.
-   *
-   * @throws WorkflowSchemaError when the data fails the workflow schema.
-   */
   static fromData(data: WorkflowInput): Workflow {
     try {
       return Workflow.reconstitute(data);
@@ -335,33 +296,18 @@ export class Workflow {
     );
   }
 
-  /**
-   * Returns the cron schedule expression, if configured.
-   */
   get schedule(): string | undefined {
     return this.trigger?.schedule;
   }
 
-  /**
-   * Returns the baseline input values declared on the trigger, if any.
-   * These are supplied by the trigger (e.g. scheduled or webhook runs), not
-   * by an operator invoking the workflow manually.
-   */
   get triggerInputs(): Record<string, unknown> | undefined {
     return this.trigger?.inputs;
   }
 
   /**
-   * Computes the baseline inputs for a trigger-initiated run by layering
-   * caller-supplied inputs over the trigger's declared inputs. Caller values
-   * win on conflict (e.g. a webhook payload overrides a trigger default).
-   * Schema defaults are applied later, downstream, for any keys still missing —
-   * yielding precedence: caller inputs > trigger.inputs > schema defaults.
-   *
-   * `resolvedTriggerInputs`, when supplied, replaces the raw `trigger.inputs`
-   * as the baseline layer. Webhook-triggered runs CEL-evaluate `trigger.inputs`
-   * against the request payload first (see TriggerInputResolver) and pass the
-   * resolved values here, so the precedence rule stays in the aggregate.
+   * precedence is caller inputs, then trigger.inputs, then schema defaults
+   * applied downstream; resolved trigger inputs replace the raw ones so the
+   * rule stays in the aggregate
    */
   baselineInputs(
     callerInputs: Record<string, unknown>,
@@ -373,30 +319,18 @@ export class Workflow {
     );
   }
 
-  /**
-   * Returns the report selection (require/skip lists).
-   */
   get reportSelection(): ReportSelection | undefined {
     return this.reports ? structuredClone(this.reports) : undefined;
   }
 
-  /**
-   * Returns the jobs for this workflow.
-   */
   get jobs(): ReadonlyArray<Job> {
     return this._jobs;
   }
 
-  /**
-   * Finds a job by name.
-   */
   getJob(name: string): Job | undefined {
     return this._jobs.find((j) => j.name === name);
   }
 
-  /**
-   * Adds a job to the workflow.
-   */
   addJob(job: Job): void {
     if (this._jobs.some((j) => j.name === job.name)) {
       throw new Error(`Job with name '${job.name}' already exists`);
@@ -405,13 +339,9 @@ export class Workflow {
   }
 
   /**
-   * Whether serve should resume a run of this workflow once every approval
-   * gate on it is decided.
-   *
-   * An explicit `autoResume` always wins. Otherwise the server default
-   * applies, but only to a workflow that declares no inputs: resume-time
-   * inputs are never declared separately, so a workflow with inputs may rely
-   * on supplying real values at resume and must opt in itself.
+   * an explicit autoResume wins; the server default applies only to a workflow
+   * with no inputs, since resume-time inputs are never declared separately and
+   * a workflow with inputs must opt in itself
    */
   shouldAutoResume(serverDefault: boolean): boolean {
     if (this.autoResume !== undefined) return this.autoResume;
@@ -427,9 +357,6 @@ export class Workflow {
     };
   }
 
-  /**
-   * Converts to plain data for persistence.
-   */
   toData(): WorkflowData {
     return {
       id: this.id,

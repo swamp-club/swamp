@@ -21,26 +21,16 @@ import { secretRefusalCode, UnresolvedExpressionError } from "./errors.ts";
 import { extractExpressions } from "./expression_parser.ts";
 
 /**
- * Expressions whose evaluation failed during a definition pass, keyed by their
- * raw `${{ ... }}` text. Definition evaluation is lenient — a failure is left
- * in place so it cannot break a method that never uses the value — and this
- * map carries the reason to the point where a method is about to run.
+ * definition evaluation is lenient: a failure is left in place so it cannot
+ * break a method that never uses the value, and this map carries the reason to
+ * where a method is about to run
  */
 export type FailedExpressions = ReadonlyMap<string, Error>;
 
 /**
- * Fails when the arguments of the method about to run still hold an expression
- * that failed to evaluate. Without this check the raw `${{ ... }}` text would
- * be handed to the method as if it were the value.
- *
- * Only expressions recorded in `failed` count: runtime (vault/env) and
- * deferred references are resolved later, and `${{ ... }}` text that arrived
- * as data content was never evaluated, so all of those pass through.
- *
- * Call it after any step or `--input` overrides are applied, so an override
- * that replaces a failing value lets the method run.
- *
- * @throws UnresolvedExpressionError for the first failed expression found
+ * only recorded failures count; runtime, deferred and data-origin text passes
+ * through. Call after step or --input overrides are applied, so an override
+ * replacing a failing value lets the method run.
  */
 export function assertMethodArgumentsEvaluated(
   methodName: string,

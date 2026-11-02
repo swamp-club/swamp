@@ -25,28 +25,19 @@ import {
   lexStep,
 } from "./cel_string_lexer.ts";
 
-/**
- * One `${{ ... }}` expression in a string.
- */
 export interface ExpressionSpan {
-  /** Offset of the opening `${{`. */
   start: number;
-  /** Offset just past the closing `}}`. */
   end: number;
-  /** The expression text, `${{` and `}}` included. */
   raw: string;
-  /** The CEL between the braces, trimmed. */
   inner: string;
 }
 
 /**
- * Counts the work one scan does, so tests can assert it stays linear in the
- * length of the value without timing anything.
+ * lets tests assert a scan stays linear in the value length without timing
+ * anything
  */
 export interface ScanWork {
-  /** Lexer steps taken by quote-aware walks. */
   lexSteps: number;
-  /** Characters handed to the CEL parser. */
   parsedChars: number;
 }
 
@@ -54,29 +45,9 @@ const OPENER = "${{";
 const CLOSER = "}}";
 
 /**
- * Finds every `${{ ... }}` expression in a string.
- *
- * Where an expression ends is decided the same way everywhere, because the
- * raw text of an expression keys the maps that carry its value:
- *
- * 1. The legacy boundary is the first `}}` after at least one character of
- *    expression text. Every expression swamp has ever accepted ends there.
- * 2. A quote-aware walk from the opening finds the first `}}` that is not
- *    inside a CEL string literal. A `}}` inside a `//` comment still ends the
- *    expression, so a comment only keeps a quote in it from opening a string.
- * 3. When the two agree, that is the boundary. When they differ, the legacy
- *    boundary stands if its text parses as CEL, so no expression that works
- *    today changes. Otherwise the walk's boundary is used if its text parses,
- *    as in `${{ literal('{{host.name}}') }}`. Otherwise the legacy boundary
- *    stands, so malformed text is guarded and reported as it always was.
- *
- * A walk that is rejected records the lexer states it passed through. A
- * later walk that reaches one of them is rejected at once and keeps its
- * legacy boundary. Each (position, lexer state) pair is walked at most once
- * by a rejected walk, and accepted walks cover disjoint text, so the scan —
- * parsing included — is linear in the length of the value.
- *
- * A string whose `${{` has no `}}` after it has no expression there.
+ * the raw text keys the value maps, so the boundary is the legacy first }}
+ * unless a quote-aware walk differs and only its text parses as CEL; rejected
+ * walks are memoized to keep the scan linear
  */
 export function scanExpressions(
   value: string,
@@ -105,10 +76,6 @@ export function scanExpressions(
   return spans;
 }
 
-/**
- * The offset of the `}}` that ends the expression whose text starts at
- * `open`, given its legacy boundary. See {@link scanExpressions}.
- */
 function chooseClose(
   value: string,
   open: number,
@@ -130,12 +97,6 @@ function chooseClose(
   return legacy;
 }
 
-/**
- * Walks from `open` to the first `}}` outside a string literal, recording
- * each (position, state) pair in `visited`. Returns undefined when a string
- * never ends, the value runs out, or the walk reaches a pair a rejected walk
- * already passed through.
- */
 function walkToClose(
   value: string,
   open: number,
@@ -172,10 +133,6 @@ function parses(text: string, work: ScanWork | undefined): boolean {
   return parsesAsCel(cel);
 }
 
-/**
- * The expression a string consists of, or null when it is not exactly one
- * `${{ ... }}` expression. Trailing whitespace is allowed unless `exact`.
- */
 export function matchSingleExpression(
   value: string,
   options: { exact?: boolean } = {},
@@ -189,10 +146,6 @@ export function matchSingleExpression(
   return span;
 }
 
-/**
- * Whether a string is one or more `${{ ... }}` expressions with only
- * whitespace around and between them.
- */
 export function isExpressionsOnly(value: string): boolean {
   const spans = scanExpressions(value);
   if (spans.length === 0) return false;

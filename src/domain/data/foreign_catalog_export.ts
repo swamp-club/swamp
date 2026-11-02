@@ -22,12 +22,9 @@ import { type Namespace, restoreNamespace } from "./namespace.ts";
 import type { CatalogExportRow } from "../datastore/datastore_sync_service.ts";
 
 /**
- * Parses the namespaces a foreign catalog pull asks for. Values are trimmed,
- * empty ones dropped and duplicates removed. Each must have a namespace's
- * shape (reserved names are accepted, as a repo may have claimed one before it
- * was reserved), and none may be the reader's own namespace: pulling it would
- * replace the reader's own catalog rows with the remote export
- * (swamp-club#3636).
+ * reserved names are accepted, as a repo may have claimed one before it was
+ * reserved; the reader's own namespace is refused, since pulling it would
+ * replace its own catalog rows with the remote export
  */
 export function parseForeignNamespaces(
   values: readonly string[],
@@ -61,18 +58,15 @@ export function parseForeignNamespaces(
   return namespaces;
 }
 
-/** The rows of one namespace's export a reader accepts, and how many it did not. */
 export interface AcceptedForeignExportRows {
   rows: CatalogExportRow[];
   rejected: number;
 }
 
 /**
- * Keeps the rows of `namespace`'s catalog export that belong to `namespace`.
- * An export is written by its namespace and speaks only for it, so a row
- * naming any other namespace — the reader's, the empty solo namespace, or a
- * third one — is dropped rather than stored under the namespace it claims
- * (swamp-club#3636).
+ * an export speaks only for its namespace, so a row naming any other (the
+ * reader's, the solo one, a third) is dropped rather than stored under the
+ * namespace it claims
  */
 export function acceptForeignExportRows(
   namespace: Namespace,

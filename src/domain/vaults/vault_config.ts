@@ -19,21 +19,12 @@
 
 import { z } from "zod";
 
-/**
- * Unique identifier for a vault configuration.
- */
 export type VaultConfigId = string;
 
-/**
- * Creates a vault config ID from a string.
- */
 export function createVaultConfigId(id: string): VaultConfigId {
   return id;
 }
 
-/**
- * Zod schema for validating vault configuration data loaded from YAML files.
- */
 export const VaultConfigDataSchema = z.object({
   id: z.string(),
   name: z.string(),
@@ -43,9 +34,6 @@ export const VaultConfigDataSchema = z.object({
   auditReads: z.boolean().optional(),
 });
 
-/**
- * Data structure for vault configuration stored in YAML files.
- */
 export interface VaultConfigData {
   id: VaultConfigId;
   name: string;
@@ -55,9 +43,6 @@ export interface VaultConfigData {
   auditReads?: boolean;
 }
 
-/**
- * Domain model for a vault configuration.
- */
 export class VaultConfig {
   private constructor(
     public readonly id: VaultConfigId,
@@ -68,9 +53,6 @@ export class VaultConfig {
     public readonly auditReads: boolean,
   ) {}
 
-  /**
-   * Creates a new VaultConfig instance.
-   */
   static create(
     id: VaultConfigId,
     name: string,
@@ -88,9 +70,6 @@ export class VaultConfig {
     );
   }
 
-  /**
-   * Reconstructs a VaultConfig from persisted data.
-   */
   static fromData(data: VaultConfigData): VaultConfig {
     return new VaultConfig(
       data.id,
@@ -102,9 +81,6 @@ export class VaultConfig {
     );
   }
 
-  /**
-   * Converts the VaultConfig to a data object for persistence.
-   */
   toData(): VaultConfigData {
     const data: VaultConfigData = {
       id: this.id,

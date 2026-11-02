@@ -37,21 +37,13 @@ import {
 } from "./provenance_map.ts";
 
 /**
- * Where data sits in the bindings an expression context exposes. Only the
- * namespaces that can hold authored values are listed; every other namespace
- * (`data`, model resources and files, `steps`, `env`, `vault`, `file`,
- * `workers`, `webhook`) is data by definition.
- *
- * A namespace with no map here is authored: data that enters `inputs`, `self`
- * or `run` is marked where it enters (workflow caller inputs, spliced step
- * inputs, routed direct-execution globals, forEach items), so an unmarked
- * binding behaves exactly as it did before provenance existed.
+ * only namespaces that can hold authored values are listed; every other
+ * namespace is data by definition. A namespace with no map is authored, with
+ * data marked where it enters.
  */
 export interface BindingProvenance {
   inputs?: ProvenanceMap;
-  /** Keyed like `self`: `globalArguments.x`, forEach variables. */
   self?: ProvenanceMap;
-  /** Keyed like `run`: `inputs.x`, `tags.x`. */
   run?: ProvenanceMap;
 }
 
@@ -66,10 +58,6 @@ interface CarriesBindingProvenance {
   [BINDING_PROVENANCE]?: BindingProvenance;
 }
 
-/**
- * Sets binding provenance on a context, replacing the namespaces `provenance`
- * names and keeping the others.
- */
 export function attachBindingProvenance<T extends object>(
   context: T,
   provenance: BindingProvenance,
@@ -82,7 +70,6 @@ export function attachBindingProvenance<T extends object>(
   return context;
 }
 
-/** The binding provenance a context carries; empty when none was attached. */
 export function bindingProvenanceOf(
   context: object | undefined,
 ): BindingProvenance {
@@ -91,10 +78,8 @@ export function bindingProvenanceOf(
   ] ?? {};
 }
 
-/** Roots whose values may be authored, with how to find their map. */
 const AUTHORED_ROOTS = new Set(["inputs", "self", "run", "model"]);
 
-/** `model.<name>.<field>` fields that hold definition source, not data. */
 const MODEL_DEFINITION_FIELDS = new Set(["definition", "input"]);
 
 function pathOf(segments: readonly (string | number)[]): string {
@@ -107,10 +92,6 @@ function pathOf(segments: readonly (string | number)[]): string {
   return path;
 }
 
-/**
- * The provenance of the value at `root` + `segments` in `context`, relative
- * to that value.
- */
 export function bindingMapAt(
   context: object | undefined,
   root: string,
@@ -138,7 +119,6 @@ export function bindingMapAt(
       if (typeof field === "string" && MODEL_DEFINITION_FIELDS.has(field)) {
         return ProvenanceMap.authored();
       }
-      // `model` itself or `model.<name>` spans definitions and data.
       return segments.length < 2
         ? modelNamespaceMap(context, segments)
         : ProvenanceMap.data();
@@ -148,7 +128,6 @@ export function bindingMapAt(
   }
 }
 
-/** `model` or `model.<name>` read whole: definition parts authored, rest data. */
 function modelNamespaceMap(
   context: object | undefined,
   segments: readonly (string | number)[],
@@ -177,10 +156,9 @@ function modelNamespaceMap(
 }
 
 /**
- * Raw text of every expression in `value` that does not overlap data. A
- * subtree that is data whole is skipped without reading it: nothing in it
- * could be authored, and reading it would fire the loaders the model
- * namespace puts on every behavior's resources and files.
+ * a subtree that is wholly data is skipped unread: nothing in it could be
+ * authored, and reading it would fire the loaders the model namespace puts on
+ * resources and files
  */
 function authoredRawsIn(
   value: unknown,
@@ -211,9 +189,8 @@ function authoredRawsIn(
 }
 
 /**
- * Raw text of every expression the `literal()` calls in `celExpression`
- * produce. The author wrote that text as text, so it is data wherever it
- * lands, even where the same expression is also written as one.
+ * the author wrote literal() output as text, so it is data wherever it lands,
+ * even where the same expression is also written as one
  */
 function literalOutputRaws(celExpression: string): Set<string> {
   const raws = new Set<string>();
@@ -225,13 +202,9 @@ function literalOutputRaws(celExpression: string): Set<string> {
 }
 
 /**
- * Where an evaluated value came from, decided by the expression that produced
- * it. A direct read of a binding carries that binding's map. Anything else is
- * a computation: its result is data except expression occurrences whose raw
- * text appears in the authored parts of the bindings it read (over-
- * approximated to whole roots), or in the expression's own text. Expression
- * text a `literal()` call produces is always data, so a computation that
- * calls one is never wholly authored.
+ * a direct binding read carries that binding's map; any computation is data
+ * except occurrences authored in the bindings it read (whole roots) or its own
+ * text. literal() output is always data.
  */
 export function spliceOrigin(
   celExpression: string,

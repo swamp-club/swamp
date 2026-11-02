@@ -66,14 +66,12 @@ export const workflowSummaryReport: ReportDefinition = {
     const skipped = stepExecutions.filter((s) => s.status === "skipped").length;
     const failures = stepExecutions.filter((s) => s.status === "failed");
 
-    // Build markdown
     const lines: string[] = [
       `# ${workflowName}: ${workflowStatus}`,
       "",
       `${succeeded} succeeded · ${failed} failed · ${skipped} skipped`,
     ];
 
-    // Failures section — only if any failed steps
     if (failures.length > 0) {
       lines.push("", "## Failures", "");
       lines.push("| Job | Step | Task | Detail |");
@@ -102,7 +100,6 @@ export const workflowSummaryReport: ReportDefinition = {
       }
     }
 
-    // Per-job sections
     const jobGroups = new Map<
       string,
       typeof stepExecutions
@@ -144,7 +141,6 @@ export const workflowSummaryReport: ReportDefinition = {
 
     const markdown = lines.join("\n");
 
-    // Build JSON
     const json: Record<string, unknown> = {
       status: workflowStatus,
       workflowId,

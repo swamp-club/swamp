@@ -23,7 +23,6 @@ import fc from "fast-check";
 import { extractContentMetadata } from "./extension_content_extractor.ts";
 import { modelCatalogGap } from "./model_catalog_gap.ts";
 
-/** How a model's `type` is written, if at all. */
 const typeArb = fc.constantFrom(
   { decl: "", field: '  type: "@acme/thing",' },
   { decl: 'const T = ModelType.create("@acme/thing");', field: "  type: T," },
@@ -31,21 +30,18 @@ const typeArb = fc.constantFrom(
   { decl: "", field: "" },
 );
 
-/** How a model's `version` is written, if at all. */
 const versionArb = fc.constantFrom(
   '  version: "2026.09.25.1",',
   "  version: VERSION,",
   "",
 );
 
-/** How the export opens. */
 const headArb = fc.constantFrom(
   "export const model = {",
   "export const model: ModelDefinition = {",
   "export const model = make({",
 );
 
-/** Text before the export that mentions the fields without declaring them. */
 const noiseArb = fc.constantFrom(
   "",
   '// type: "@acme/other", version: "2026.01.01.1"',

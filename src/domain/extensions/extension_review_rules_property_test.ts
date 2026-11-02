@@ -24,7 +24,6 @@ import {
   type ReviewSource,
 } from "./extension_review_rules.ts";
 
-/** Secret stems as segments, so camelCase and snake_case spellings are built the same way. */
 const STEMS: string[][] = [
   ["password"],
   ["passwd"],
@@ -36,7 +35,6 @@ const STEMS: string[][] = [
   ["private", "key"],
 ];
 
-/** Reference suffixes as segments, mirroring REFERENCE_SUFFIX in the rule. */
 const STOP_SUFFIXES: string[][] = [
   ["name"],
   ["id"],
@@ -60,7 +58,6 @@ const STOP_SUFFIXES: string[][] = [
 /** Lists mirror REFERENCE_SUFFIX and REFERENCE_WORD in the rule by hand; keep them in step. */
 const STOP_SEGMENTS = new Set(STOP_SUFFIXES.flat());
 
-/** Whole identifiers that are pagination or idempotency tokens, as segments. */
 const STOP_WORDS: string[][] = [
   ["next", "token"],
   ["page", "token"],
@@ -71,7 +68,6 @@ const STOP_WORDS: string[][] = [
 
 const capitalize = (s: string) => s[0].toUpperCase() + s.slice(1);
 
-/** Joins segments as camelCase (first segment lowercase) or snake_case. */
 function spell(segments: string[], style: "camel" | "snake"): string {
   if (style === "snake") return segments.join("_");
   return segments.map((s, i) => (i === 0 ? s : capitalize(s))).join("");
@@ -82,9 +78,8 @@ const arbStyle = fc.constantFrom("camel", "snake") as fc.Arbitrary<
 >;
 
 /**
- * A lowercase alphanumeric segment that is neither a stop segment, a stem
- * segment, nor a segment of a stop word (so a `next` prefix cannot turn the
- * `token` stem into `nextToken`).
+ * a segment outside the stop and stem lists, so a `next` prefix cannot turn the
+ * `token` stem into `nextToken`
  */
 const arbPlainSegment = fc.stringMatching(/^[a-z][a-z0-9]{0,7}$/).filter(
   (s) =>
@@ -92,7 +87,6 @@ const arbPlainSegment = fc.stringMatching(/^[a-z][a-z0-9]{0,7}$/).filter(
     !STOP_WORDS.flat().includes(s),
 );
 
-/** Zero or one prefix segments, so stems appear both leading and inside identifiers. */
 const arbPrefix = fc.option(arbPlainSegment, { nil: undefined }).map((p) =>
   p === undefined ? [] : [p]
 );

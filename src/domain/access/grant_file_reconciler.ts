@@ -94,10 +94,9 @@ interface StoredFileGrant {
   instanceName: string;
 }
 
-// Every stored copy of an identity is kept. Two serve instances starting
-// against one datastore can each create a copy of the same file grant, and
-// reconciling only one of them would leave the other active after the entry
-// is removed (swamp-club#2822).
+// every stored copy of an identity is kept: serve instances sharing a datastore
+// can each create a copy, and reconciling only one would leave the other active
+// after the entry is removed
 function groupByFilename(
   allFileGrants: Map<string, StoredFileGrant>,
 ): Map<string, Map<string, StoredFileGrant[]>> {
@@ -122,10 +121,9 @@ function groupByFilename(
 }
 
 /**
- * Picks the copy of a grant that reconcile keeps: the active copy with the
- * lowest modelId, or the lowest-modelId copy when none is active. The order
- * is total, so peers that see the same copies keep the same one and never
- * revoke every copy between them.
+ * keeps the active copy with the lowest modelId, else the lowest; the order is
+ * total, so peers seeing the same copies keep the same one and never revoke
+ * every copy
  */
 function selectKeeper<T extends { grant: Grant; modelId: string }>(
   copies: readonly T[],
@@ -241,9 +239,6 @@ function reconcileOneFile(
   return { result, writes };
 }
 
-// Only grants stored before swamp-club#2848 carry a path separator: a
-// repository grants/ file is a bare name, and --grants-dir and --grants-file
-// files are stored as grants-dir/<name> and grants-file.
 function isAbsolutePathSource(filename: string): boolean {
   return !isGrantsDirSourceName(filename) && /[\\/]/.test(filename);
 }
@@ -260,9 +255,8 @@ export interface ReconcileAllResult {
 
 export interface ReconcileAllOptions {
   /**
-   * True for a source whose file could not be read or validated. Its stored
-   * grants are left exactly as they are instead of being reconciled as a
-   * deleted file (swamp-club#2823).
+   * true for a source whose file could not be read or validated; its stored
+   * grants are left as they are instead of being reconciled as a deleted file
    */
   isSourceUnavailable?: (filename: string) => boolean;
 }
@@ -300,10 +294,9 @@ export async function reconcileAllFileGrants(
     totalUnchanged += result.unchanged;
   }
 
-  // A stored source no file maps to any more is reconciled as a deleted file.
-  // This is also how grants stored under the absolute path of a --grants-dir
-  // or --grants-file file are replaced: they are revoked in the same pass
-  // that creates them under their mount-independent source (swamp-club#2848).
+  // a stored source no file maps to is reconciled as a deleted file; this also
+  // replaces grants stored under an absolute path, revoked in the same pass
+  // that creates them under their mount-independent source
   for (const [filename, grantsForFile] of grantsByFile) {
     if (fileEntries.has(filename)) continue;
     if (options.isSourceUnavailable?.(filename)) continue;
@@ -345,9 +338,8 @@ export async function reconcileAllFileGrants(
 export const GRANT_DATA_NAME = "grant-main";
 
 /**
- * @param onDefinitionSaved - called with the path of each grant definition
- *   this store creates, right after it is written, so a caller can re-mark
- *   it dirty before pushing.
+ * called with the path of each grant definition this store creates, right after
+ * it is written, so a caller can re-mark it dirty before pushing
  */
 export function createFileGrantStore(
   readRepo: DefinitionRepository,
@@ -381,11 +373,8 @@ export function createFileGrantStore(
         def = Definition.create({
           type: GRANT_MODEL_TYPE.normalized,
           name: instanceName,
-          // Stamped at creation because the persistence layer no longer does
-          // it. Leaving it absent would record that nobody knows which version
-          // these arguments were authored for, and DefinitionUpgradeService
-          // declines to migrate a definition in that state
-          // (swamp-club#900, swamp-club#2412).
+          // stamped at creation because persistence does not; absent,
+          // DefinitionUpgradeService declines to migrate the definition
           typeVersion: grantModel.version,
         });
         await writeRepo.save(GRANT_MODEL_TYPE, def);

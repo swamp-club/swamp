@@ -64,8 +64,6 @@ await initializeLogging({});
 type Evaluator = ModelInvocationServiceDeps["evaluationService"];
 type RuntimeContext = Awaited<ReturnType<Evaluator["buildRuntimeContext"]>>;
 
-// An evaluator for targets that hold no expressions: both passes return the
-// definition as it is.
 const passthroughEvaluator: Evaluator = {
   hasDefinitionExpressions: () => false,
   evaluateDefinition: () => {
@@ -78,7 +76,6 @@ const passthroughEvaluator: Evaluator = {
       secretBag: new VaultSecretBag(new SecretBagRegistry()),
       provenance: ProvenanceMap.authored(),
     }),
-  // Nothing is issued, so nothing is loaded.
   secretLoader: () =>
     new SecretLoader(() => Promise.resolve(new VaultService())),
 };
@@ -189,15 +186,12 @@ Deno.test("ModelInvocationService: breadth counter is shared across calls", asyn
 
   const ctx = makeStubContext({ _invocationTracking: tracking });
 
-  // count 98 -> 99 (under limit), fails on definition lookup
   await svc.invoke({ definition: "a", method: "read" }, ctx);
   assertEquals(counter.count, 99);
 
-  // count 99 -> 100 (at limit but not over)
   await svc.invoke({ definition: "b", method: "read" }, ctx);
   assertEquals(counter.count, 100);
 
-  // count 100 -> 101 (OVER limit)
   const result = await svc.invoke(
     { definition: "c", method: "read" },
     ctx,
@@ -233,15 +227,12 @@ Deno.test("ModelInvocationService: initializes tracking when not present on cont
     ctx,
   );
 
-  // Should fail on lookup, not on tracking
   assertEquals(result.ok, false);
   assertStringIncludes(
     (result as RunModelResult & { ok: false }).error.message,
     "not found",
   );
 
-  // Tracking must be persisted on the caller context so subsequent calls
-  // share the same breadth counter
   assertEquals(ctx._invocationTracking !== undefined, true);
   assertEquals(ctx._invocationTracking!.breadthCounter.count, 1);
 });
@@ -255,7 +246,6 @@ Deno.test("ModelInvocationService: breadth limit enforced from fresh context wit
       { definition: `def-${i}`, method: "read" },
       ctx,
     );
-    // Each call increments the counter and fails on definition lookup
     assertEquals(result.ok, false);
     assertStringIncludes(
       (result as RunModelResult & { ok: false }).error.message,
@@ -263,7 +253,6 @@ Deno.test("ModelInvocationService: breadth limit enforced from fresh context wit
     );
   }
 
-  // Call 101 must be refused by the breadth guard
   const result = await svc.invoke(
     { definition: "one-too-many", method: "read" },
     ctx,
@@ -279,8 +268,6 @@ Deno.test("ModelInvocationService: depth 0 with no tracking allows first call", 
   const svc = makeSvc();
   const ctx = makeStubContext();
 
-  // No tracking = first call = depth 0. Should pass depth check
-  // and fail on definition lookup instead.
   const result = await svc.invoke(
     { definition: "nonexistent", method: "read" },
     ctx,
@@ -307,15 +294,12 @@ Deno.test("ModelInvocationService: depth 9 allows call (under limit of 10)", asy
     ctx,
   );
 
-  // Should pass depth check (9 < 10) and fail on lookup
   assertEquals(result.ok, false);
   assertStringIncludes(
     (result as RunModelResult & { ok: false }).error.message,
     "not found",
   );
 });
-
-// ── Invocation provenance tests ──
 
 const PROVENANCE_TARGET_TYPE = ModelType.create("test/provenance-target");
 if (!modelRegistry.get(PROVENANCE_TARGET_TYPE)) {
@@ -436,8 +420,6 @@ Deno.test("ModelInvocationService: parentOutputId is undefined when caller has n
     undefined,
   );
 });
-
-// ── Argument routing tests ──
 
 const ARG_ROUTING_TYPE = ModelType.create("test/arg-routing-target");
 if (!modelRegistry.get(ARG_ROUTING_TYPE)) {
@@ -745,8 +727,6 @@ Deno.test("ModelInvocationService: a missing method reads in behavior words, wit
   );
 });
 
-// ── z.record() argument routing tests ──
-
 const RECORD_ROUTING_TYPE = ModelType.create("test/record-routing-target");
 if (!modelRegistry.get(RECORD_ROUTING_TYPE)) {
   const recordModel: ModelDefinition = {
@@ -847,8 +827,6 @@ Deno.test("ModelInvocationService: z.record() method routes non-global keys to m
   });
 });
 
-// ── Expression resolution in the target definition (swamp-club#3227) ──
-
 // A per-run type name, so repeats register afresh in the global registry.
 const RESOLVE_TYPE = ModelType.create(
   `test/resolve-target-${crypto.randomUUID()}`,
@@ -891,7 +869,6 @@ defineModel({
   },
 });
 
-// A type whose global arguments include a value that is not plain data.
 const DATED_TYPE = ModelType.create(`test/dated-target-${crypto.randomUUID()}`);
 
 defineModel({
@@ -993,7 +970,6 @@ Deno.test("ModelInvocationService: target global arguments resolve vault.get and
       label: "label-target-a",
       token: "s3cret-token-value",
     });
-    // The caller's redactor scrubs what the nested run resolved.
     assertEquals(
       redactor.redact("t=s3cret-token-value").includes("s3cret-token-value"),
       false,
@@ -1033,7 +1009,6 @@ Deno.test("ModelInvocationService: caller arguments arrive literally, never eval
     for (
       const note of [
         '${{ vault.get("v", "token") }}',
-        // The same text the target's author wrote is still the caller's.
         authored,
       ]
     ) {
@@ -1069,7 +1044,6 @@ Deno.test("ModelInvocationService: refuses global arguments holding expression t
         "${{ inputs.?region }}",
         "${{ steps.build.outputs.sha }}",
         '${{ github.sha || data.latest("m", "d") }}',
-        // Root-free text evaluates too, and would trip the execution guard.
         "${{ 1 }}",
         "x-${{ not valid cel !!! }}",
         // The read guard takes the hyphen for subtraction.
@@ -1117,14 +1091,11 @@ Deno.test("ModelInvocationService: auto-creation stores another system's text wr
     for (
       const url of [
         "${{ github.sha }}",
-        // Evaluates without reading the other system's root, if stored bare.
         "${{ true || github.sha }}",
         "pre ${{ false ? github.sha : 'x' }} post",
-        // Functions swamp does not register, and ones it does.
         "${{ toJSON(matrix) }}",
         "${{ startsWith(github.ref, 'refs/tags') }}",
         "${{ matrix.os || size('ab') == 2 }}",
-        // A hyphenated name on a foreign root reads no swamp namespace.
         "${{ needs.build-env.outputs.url }}",
         "${{ needs.build-2.result }}",
         "${{ needs.e2e-tests.result }}",
@@ -1153,7 +1124,6 @@ Deno.test("ModelInvocationService: auto-creation stores another system's text wr
       assertStringIncludes(storedUrl, "literal(", label);
       assertNotEquals(storedUrl, url, label);
 
-      // A later run reads the stored text back as authored source.
       resolveCalls.length = 0;
       const byDefinition = await svc.invoke(
         { definition: name, method: "show" },
@@ -1230,8 +1200,6 @@ Deno.test("ModelInvocationService: auto-creation refuses expression text in a se
     assertEquals(await definitionRepo.findByNameGlobal(name), null);
     assertEquals(resolveCalls.length, 0);
 
-    // Applied to one invocation of an existing definition, nothing is saved,
-    // so the text reaches the method as the value it is.
     await save(Definition.create({
       name: "target-sensitive",
       type: RESOLVE_TYPE.normalized,
@@ -1289,13 +1257,11 @@ Deno.test("ModelInvocationService: routed global arguments reach the method with
       makeStubContext(),
     );
     assertEquals(result.ok, true, result.ok ? "" : errorOf(result));
-    // Set before evaluation, so self.globalArguments sees the caller's value.
     assertEquals(resolveCalls[0].globalArgs, {
       url: "https://caller.invalid",
       label: "label-https://caller.invalid",
     });
 
-    // Type mode adopting the existing definition applies them the same way.
     const byType = await svc.invoke(
       {
         modelType: RESOLVE_TYPE.normalized,
@@ -1334,7 +1300,6 @@ Deno.test("ModelInvocationService: a failed expression in the invoked method's a
     assertStringIncludes(errorOf(result), "note");
     assertEquals(resolveCalls.length, 0);
 
-    // A caller argument replacing it wins, as an --input does on the CLI.
     const overridden = await svc.invoke(
       {
         definition: "target-fail",
@@ -1383,8 +1348,6 @@ Deno.test("ModelInvocationService: the caller's vault scope applies to the targe
     assertStringIncludes(errorOf(scoped), "Reading vault 'v' is refused");
     assertEquals(resolveCalls.length, 0);
 
-    // The reference sits in a method the invocation does not run, so it is
-    // never read and there is nothing for the scope to refuse.
     const unrelatedResult = await runWithVaultAccess(
       access,
       () =>
@@ -1501,7 +1464,6 @@ Deno.test("ModelInvocationService: a nested invocation runs on an independent re
     );
     assertEquals(result.ok, true, String(typed));
 
-    // One registry for both passes and the delivery, and never the caller's.
     assertEquals(seen.length, 2, String(typed));
     const nested = seen[0];
     assertEquals(seen[1], nested);

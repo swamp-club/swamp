@@ -35,7 +35,6 @@ import { StepTask } from "./step_task.ts";
 import { TriggerCondition } from "./trigger_condition.ts";
 import type { InputsSchema } from "../definitions/definition.ts";
 
-/** Valid persisted workflow data for tests to break one field at a time. */
 function createTestWorkflowData() {
   return {
     id: "550e8400-e29b-41d4-a716-446655440000",
@@ -59,7 +58,7 @@ function createTestJob(name: string): Job {
 Deno.test("Workflow.create generates UUID if not provided", () => {
   const workflow = Workflow.create({ name: "test-workflow" });
   assertEquals(typeof workflow.id, "string");
-  assertEquals(workflow.id.length, 36); // UUID length
+  assertEquals(workflow.id.length, 36);
 });
 
 Deno.test("Workflow.create uses provided ID", () => {
@@ -241,8 +240,6 @@ Deno.test("Workflow.fromData and toData roundtrip correctly", () => {
   assertEquals(restored.version, original.version);
 });
 
-// Inputs field tests
-
 Deno.test("Workflow.create creates workflow with inputs schema", () => {
   const workflow = Workflow.create({
     name: "workflow-with-inputs",
@@ -378,8 +375,6 @@ Deno.test("Workflow.fromData and toData roundtrip with inputs", () => {
   assertEquals(restored.inputs?.required, ["environment"]);
 });
 
-// Tags field tests
-
 Deno.test("Workflow.create creates workflow with tags", () => {
   const workflow = Workflow.create({
     name: "tagged-workflow",
@@ -424,8 +419,6 @@ Deno.test("Workflow.fromData and toData roundtrip with tags", () => {
   assertEquals(restored.tags, { env: "prod", region: "us-east-1" });
 });
 
-// isFilenameSafeName tests
-
 Deno.test("isFilenameSafeName: accepts kebab-case names", () => {
   assertEquals(isFilenameSafeName("deploy-pipeline"), true);
   assertEquals(isFilenameSafeName("my-workflow-2"), true);
@@ -445,8 +438,6 @@ Deno.test("isFilenameSafeName: rejects names over 64 characters", () => {
   assertEquals(isFilenameSafeName("a".repeat(64)), true);
   assertEquals(isFilenameSafeName("a".repeat(65)), false);
 });
-
-// Path traversal validation tests
 
 Deno.test("Workflow.create rejects name with '..'", () => {
   assertThrows(
@@ -515,8 +506,6 @@ Deno.test("Workflow.create accepts scoped @collective/name", () => {
   const workflow = Workflow.create({ name: "@john/pod-inventory" });
   assertEquals(workflow.name, "@john/pod-inventory");
 });
-
-// Scoped @collective/name tests (via fromData — extension workflows)
 
 Deno.test("Workflow.fromData accepts scoped @collective/name", () => {
   const data = {
@@ -594,8 +583,6 @@ Deno.test("Workflow.fromData rejects malformed scoped names", () => {
   );
 });
 
-// Removed driver field tests (see design/enablers/remote-execution.md)
-
 Deno.test("Workflow YAML containing 'driver: docker' fails to parse with actionable message", () => {
   const yaml = `
 id: 550e8400-e29b-41d4-a716-446655440000
@@ -661,8 +648,6 @@ Deno.test("WorkflowSchema rejects removed driverConfig field with actionable err
     "The 'driverConfig' field has been removed",
   );
 });
-
-// Placement inheritance tests (swamp-club#1685)
 
 Deno.test("WorkflowSchema accepts workflow-level placement fields", () => {
   const workflow = Workflow.fromData({
@@ -750,7 +735,6 @@ Deno.test("WorkflowSchema rejects unknown top-level key with did-you-mean sugges
 });
 
 Deno.test("Workflow YAML with job-level labels parses and preserves placement", () => {
-  // swamp-club#1685: job-level placement is now supported with inheritance.
   const yaml = `
 id: 550e8400-e29b-41d4-a716-446655440000
 name: variant-a-job-labels
@@ -772,8 +756,6 @@ jobs:
   const job = workflow.getJob("placed");
   assertEquals(job?.labels, { fb28: "probe" });
 });
-
-// Reports field tests
 
 Deno.test("Workflow.create creates workflow with reports", () => {
   const workflow = Workflow.create({
@@ -826,8 +808,6 @@ Deno.test("Workflow.fromData and toData roundtrip with reports", () => {
   assertEquals(restored.reports?.require, original.reports?.require);
   assertEquals(restored.reports?.skip, ["debug-report"]);
 });
-
-// Schedule field tests
 
 Deno.test("Workflow.create creates workflow with trigger.schedule", () => {
   const workflow = Workflow.create({
@@ -937,8 +917,6 @@ Deno.test("Workflow.fromData rejects invalid cron expression", () => {
   );
 });
 
-// trigger.inputs field tests
-
 Deno.test("Workflow.create creates workflow with trigger.inputs", () => {
   const workflow = Workflow.create({
     name: "scheduled-with-inputs",
@@ -1020,7 +998,6 @@ Deno.test("Workflow.baselineInputs lets caller inputs override trigger inputs", 
     jobs: [createTestJob("job1")],
   });
 
-  // Caller value wins on conflict; non-conflicting trigger values are kept.
   assertEquals(workflow.baselineInputs({ projectId: "p2" }), {
     projectId: "p2",
     region: "us",
@@ -1077,7 +1054,6 @@ Deno.test("Workflow.baselineInputs lets caller override resolvedTriggerInputs", 
 });
 
 Deno.test("Workflow.fromData handles missing tags (backward compat)", () => {
-  // Simulate legacy data without tags field — Zod .default({}) fills it in
   const data = {
     id: "550e8400-e29b-41d4-a716-446655440000",
     name: "legacy-workflow",
@@ -1131,16 +1107,10 @@ Deno.test("Workflow: writes field is undefined when absent", () => {
   assertEquals(workflow.writes, undefined);
 });
 
-// ---------------------------------------------------------------------------
-// toData() field coverage
-// ---------------------------------------------------------------------------
-
 Deno.test("toData serialises every schema field at each level", () => {
-  // requiresModelNamespace() decides between the light and full expression
-  // context by scanning workflow.toData(). A schema field that toData() forgets
-  // is invisible to that scan, so an expression living there would silently
-  // evaluate against an empty model namespace. Pin the key sets so adding a
-  // field to a schema without wiring toData() fails here instead.
+  // requiresModelNamespace() scans workflow.toData() to pick the expression
+  // context; a schema field toData() forgets would evaluate against an empty
+  // model namespace, so the key sets are pinned
   const workflow = Workflow.fromData({
     id: "550e8400-e29b-41d4-a716-446655440000",
     name: "coverage-workflow",
@@ -1394,9 +1364,9 @@ Deno.test("Workflow.fromData: keeps the step name rule and escapes the offending
 Deno.test("Workflow.fromData: passes a non-schema error through unchanged", () => {
   const data = createTestWorkflowData();
   const job = { ...data.jobs[0] };
-  // A read that throws is not a schema failure, so it is not reworded. Every
-  // schema guard reports issues, so a throwing getter on a field the schema
-  // reads is how a test raises an error that is not one (swamp-club#3832).
+  // a read that throws is not a schema failure, so it is not reworded; a
+  // throwing getter on a field the schema reads is how a test raises such an
+  // error
   Object.defineProperty(job, "steps", {
     enumerable: true,
     get() {
@@ -1412,7 +1382,6 @@ Deno.test("Workflow.fromData: passes a non-schema error through unchanged", () =
   assertEquals(error.message, "steps could not be read");
 });
 
-/** The workflow test data with one change to its first step. */
 function withFirstStep(change: Record<string, unknown>): WorkflowInput {
   const data = createTestWorkflowData();
   return {
@@ -1424,7 +1393,6 @@ function withFirstStep(change: Record<string, unknown>): WorkflowInput {
   } as unknown as WorkflowInput;
 }
 
-/** The WorkflowSchemaError `Workflow.fromData` throws for `data`. */
 function schemaErrorOf(data: WorkflowInput): WorkflowSchemaError {
   return assertThrows(() => Workflow.fromData(data), WorkflowSchemaError);
 }

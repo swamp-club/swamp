@@ -276,7 +276,6 @@ Deno.test("workflowSummaryReport: JSON output structure matches expected shape",
   ];
   assertEquals(Object.keys(json).sort(), expectedKeys.sort());
 
-  // Verify step item shape
   const steps = json.steps as Array<Record<string, unknown>>;
   assertEquals(steps.length, 1);
   const stepKeys = [

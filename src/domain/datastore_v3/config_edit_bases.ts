@@ -20,28 +20,15 @@
 import type { PutExpect } from "./op.ts";
 
 /**
- * The version of each managed-config record a user's edit started from
- * (swamp-club#4097): the version the checkout held before another writer's
- * commit replaced it, which the user last saw by `get`, an editor or an
- * earlier command. A user's edit of the record expects this version, not
- * the one a catch-up wrote under it, so an edit of what another member
- * already changed is refused rather than saved over theirs.
- *
- * - The first version recorded for a record wins: a later catch-up never
- *   moves the base past a version the user did not see.
- * - It holds across commands until the user loads the definition again or
- *   the checkout commits the record, so retrying a refused edit unchanged
- *   is refused again.
- *
- * The v3 read model keeps them in its state.
+ * the first version recorded for a record wins, so a catch-up never moves the
+ * base past a version the user did not see; it holds until the definition is
+ * reloaded or the checkout commits the record
  */
 export interface ConfigEditBases {
-  /** The version the user started from, when another writer replaced it. */
   baseOf(
     namespace: string,
     partition: string,
     key: string,
   ): PutExpect | undefined;
-  /** Notes that the checkout committed `key`: it keeps no base from now on. */
   committed(namespace: string, partition: string, key: string): void;
 }

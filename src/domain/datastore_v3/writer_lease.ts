@@ -18,37 +18,9 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * The fenced writer lease of a v3 datastore (swamp-club#3359): one writer
- * at a time, and a fence every commit names, so a writer that lost its
- * lease can never land a commit.
- *
- * The lease is built on create-only records in the datastore's control
- * plane, under `writer/`:
- *
- * - `writer/fence-<n>`: taken with `putIfAbsent`, so of any number of
- *   writers racing for fence `n` exactly one wins. It names its holder and
- *   never changes. The highest fence key is never deleted, so a fence is
- *   never reused.
- * - `writer/heartbeat-<n>`: the holder's renewals, rewritten with `put`.
- *   Only fence `n`'s holder writes it.
- * - `writer/released-<n>`: fence `n` was given up, by its holder or by
- *   `swamp datastore lock release --force`. Created once, never changed.
- *
- * The highest fence is held until it is released, its holder's process is
- * gone (judged only on the kernel that ran it, by the identity the record
- * names: swamp-club#3564), or its last renewal is older than its TTL plus
- * {@link WRITER_LEASE_CLOCK_SKEW_MS}. A holder judged alive is taken over
- * after its TTL too: the takeover fences it, so it can land nothing more,
- * and a stopped or hung writer does not keep every writer out. Expiry only decides when another
- * writer may take over. Safety never depends on clocks: a holder that finds
- * a higher fence, or its own fence released, is fenced, and the commit store
- * refuses any commit whose fence is below the highest it has seen.
- *
- * No compare-and-swap is needed. Taking over is creating the next fence,
- * never rewriting the current one, so two writers that both see an expired
- * holder cannot both take its place.
- *
- * @module
+ * safety never depends on clocks: a takeover creates the next fence with
+ * putIfAbsent, never rewrites one, and the commit store refuses any commit
+ * whose fence is below the highest it has seen
  */
 
 import type { ControlPlaneStore } from "../datastore/control_plane_store.ts";
@@ -60,7 +32,6 @@ import {
   type ProcessVerdict,
 } from "./process_liveness.ts";
 
-/** The control-plane prefix of the lease's records. */
 export const WRITER_LEASE_PREFIX = "writer/";
 
 /**
@@ -70,37 +41,27 @@ export const WRITER_LEASE_PREFIX = "writer/";
  */
 export const WRITER_LEASE_CLOCK_SKEW_MS = 10_000;
 
-/** Error code for a writer whose lease another writer took over. */
 export const WRITER_FENCED_CODE = "datastore_v3_writer_fenced";
 
 /**
- * Error code for a second process refused as a v3 datastore's writer: a
- * temporary failure, so it exits 75 (EX_TEMPFAIL) as lock contention does.
+ * a second process refused as writer is a temporary failure, so it exits 75
+ * (EX_TEMPFAIL) as lock contention does
  */
 export const V3_WRITER_BUSY_CODE = "datastore_v3_writer_busy";
 
-/** Error code for {@link V3StorageUnreachableError}. */
 export const V3_STORAGE_UNREACHABLE_CODE = "datastore_v3_storage_unreachable";
 
 /**
- * Error code for a v3 datastore written through serve's datastore API
- * whose serve could not be reached (swamp-club#3985). Writes are refused,
- * never sent to the storage instead: a temporary failure, so it exits 75.
+ * writes are refused, never sent to the storage instead; a temporary failure,
+ * so it exits 75
  */
 export const V3_SERVE_UNREACHABLE_CODE = "datastore_v3_serve_unreachable";
 
 /**
- * A command could not reach a v3 datastore's storage while it took the
- * datastore's writer lease and readied its checkout, before it changed
- * anything (swamp-club#3802): a temporary failure, so it exits 75 and can be
- * run again once the storage is reachable. `cause` is the storage failure.
+ * raised before the command changed anything: a temporary failure, so it exits
+ * 75 and can be run again once the storage is reachable
  */
 export class V3StorageUnreachableError extends UserError {
-  /**
-   * `during` says what the command was doing: by default getting ready to
-   * write; a command that committed nothing may also be cut off while it
-   * confirms its replica as it ends (swamp-club#3882).
-   */
   constructor(
     datastorePath: string,
     cause: unknown,
@@ -119,69 +80,48 @@ export class V3StorageUnreachableError extends UserError {
   }
 }
 
-/** The store the lease's records live in: create-only puts are required. */
 export type WriterLeaseStore =
   & Pick<ControlPlaneStore, "put" | "get" | "delete" | "list">
   & { putIfAbsent(key: string, data: Uint8Array): Promise<boolean> };
 
-/** Who holds a fence. */
 export interface WriterLeaseHolder {
-  /** Who, e.g. "user@hostname". */
   readonly holder: string;
   readonly hostname: string;
   readonly pid: number;
   /**
-   * The holder's process identity, by which its liveness is judged.
-   * Undefined in a record from a swamp before swamp-club#3564, which is
-   * judged by its TTL alone.
+   * the holder's process identity, by which its liveness is judged; undefined
+   * in an older record, which is judged by its TTL alone
    */
   readonly process?: ProcessIdentity;
 }
 
-/** A fence's record, written once when it is taken. */
 export interface FenceRecord extends WriterLeaseHolder {
   readonly fence: number;
-  /** Names this acquisition, for a force release that must not race. */
   readonly nonce: string;
   readonly ttlMs: number;
-  /** ISO time the fence was taken. */
   readonly acquiredAt: string;
 }
 
-/** Whether a fence still keeps other writers out. */
 export type WriterLeaseState = "held" | "expired" | "released";
 
-/** What {@link WriterLease.inspect} reports about the highest fence. */
 export interface WriterLeaseInspection {
   readonly fence: number;
-  /** Undefined while the fence record cannot be read yet. */
   readonly record?: FenceRecord;
-  /** ISO time of the holder's last renewal, or of the acquisition. */
   readonly renewedAt?: string;
-  /**
-   * Whether the lease still keeps other writers out: `released` when its
-   * holder or a force release gave it up, `expired` when its holder is gone
-   * or stopped renewing.
-   */
   readonly state: WriterLeaseState;
 }
 
-/** The records under `writer/` that decide who holds the lease. */
 export interface WriterLeaseRecords {
-  /** The highest fence taken, or undefined when none ever was. */
   readonly fence?: number;
   /**
    * The highest fence's record: undefined when it is missing or cannot be
    * read (a holder still writing it).
    */
   readonly record?: FenceRecord;
-  /** The holder's last renewal, epoch milliseconds. */
   readonly renewedAt?: number;
-  /** Whether the highest fence was released. */
   readonly released: boolean;
 }
 
-/** What {@link judgeWriterLease} decides about the highest fence. */
 export type WriterLeaseVerdict =
   | { readonly kind: "free" }
   | { readonly kind: "held"; readonly holderUnknown: boolean }
@@ -190,33 +130,21 @@ export type WriterLeaseVerdict =
     readonly reason: "released" | "process-gone" | "ttl" | "unreadable";
   };
 
-/** What {@link judgeWriterLease} judges with. */
 export interface WriterLeaseJudgement {
-  /** Now, epoch milliseconds, on the judging host's clock. */
   readonly now: number;
   /**
    * Whether the process a fence record names still runs, as the judging
    * process can tell: only `gone` ends the lease before its TTL.
    */
   readonly judgeHolder: (record: FenceRecord) => ProcessVerdict;
-  /**
-   * The TTL to judge a fence by when its record cannot be read: the judging
-   * writer's own.
-   */
   readonly ttlMs: number;
   readonly clockSkewMs?: number;
 }
 
 /**
- * Decides whether the highest fence still keeps other writers out.
- *
- * A fence whose record cannot be read is held by an unknown holder only
- * while a heartbeat for it was written within the judging TTL: a live
- * holder writes its first heartbeat as soon as it has taken the fence, so a
- * record left half-written by a holder that crashed has none, and does not
- * keep every writer out for good. Taking over too early is safe: the slow
- * holder finds the higher fence before it writes, and the commit store
- * refuses its fence.
+ * an unreadable fence record counts as held only while a heartbeat is within
+ * the TTL, so a crashed holder's half-written record cannot lock writers out; a
+ * too-early takeover is safe, the old fence is refused
  */
 export function judgeWriterLease(
   records: WriterLeaseRecords,
@@ -245,17 +173,14 @@ export function judgeWriterLease(
   return { kind: "held", holderUnknown: false };
 }
 
-/** The key of fence `fence`'s record. */
 export function fenceKey(fence: number): string {
   return `${WRITER_LEASE_PREFIX}fence-${padFence(fence)}`;
 }
 
-/** The key of fence `fence`'s holder's renewals. */
 export function heartbeatKey(fence: number): string {
   return `${WRITER_LEASE_PREFIX}heartbeat-${padFence(fence)}`;
 }
 
-/** The key that marks fence `fence` released. */
 export function releasedKey(fence: number): string {
   return `${WRITER_LEASE_PREFIX}released-${padFence(fence)}`;
 }
@@ -280,10 +205,9 @@ const KEY_PATTERN = new RegExp(
 );
 
 /**
- * A lease key's kind and fence, or undefined for any other key. Only a key
- * `fenceKey`, `heartbeatKey` or `releasedKey` could have written counts: an
- * unpadded or out-of-range key is ignored, so it can neither alias a real
- * record nor wedge the lease (swamp-club#3375).
+ * only a key fenceKey, heartbeatKey or releasedKey could have written counts:
+ * an unpadded or out-of-range key is ignored, so it can neither alias a real
+ * record nor wedge the lease
  */
 export function parseWriterLeaseKey(
   key: string,
@@ -297,7 +221,6 @@ export function parseWriterLeaseKey(
   return { kind: match[1] as "fence" | "heartbeat" | "released", fence };
 }
 
-/** Why a writer was fenced: see {@link WriterFencedError}. */
 export type WriterFencedReason =
   | "taken-over"
   | "released"
@@ -305,13 +228,9 @@ export type WriterFencedReason =
   | "copy-restoring";
 
 /**
- * Thrown when a writer's lease was taken over or released while it held it:
- * nothing more it commits lands. With reason `published`, a replicating
- * writer found it out only after it had published its commits' head
- * (swamp-club#3482): the writer that took over may restore them, so they
- * may still land. With reason `copy-restoring`, this process holds the
- * lease again (serve's retake) but its copy is not yet current
- * (swamp-club#3491).
+ * published: the writer learned of the takeover only after publishing its head,
+ * so its commits may still land; copy-restoring: this process holds the lease
+ * again but its copy is not yet current
  */
 export class WriterFencedError extends UserError {
   constructor(
@@ -357,7 +276,6 @@ function fencedMessage(
     "this command was committed. Run the command again.";
 }
 
-/** Thrown by {@link WriterLease.acquire} when another writer holds the lease. */
 export class WriterLeaseBusyError extends Error {
   constructor(
     readonly inspection: WriterLeaseInspection,
@@ -374,29 +292,20 @@ export class WriterLeaseBusyError extends Error {
   }
 }
 
-/** What a {@link WriterLease} is built with. */
 export interface WriterLeaseOptions {
   readonly store: WriterLeaseStore;
-  /** This process, as its fence records name it. */
   readonly holder: WriterLeaseHolder;
   readonly ttlMs: number;
-  /** Now, epoch milliseconds. */
   readonly now: () => number;
-  /** Waits between attempts while another writer holds the lease. */
   readonly delay: (ms: number) => Promise<void>;
-  /** Whether the process a fence record names still runs. */
   readonly judgeHolder: (record: FenceRecord) => ProcessVerdict;
-  /** A fresh nonce for each acquisition. */
   readonly nonce: () => string;
   readonly clockSkewMs?: number;
-  /** The first wait between attempts; it doubles up to {@link maxRetryMs}. */
   readonly retryMs?: number;
   readonly maxRetryMs?: number;
 }
 
-/** What {@link WriterLease.acquire} takes. */
 export interface AcquireWriterLeaseOptions {
-  /** How long to wait for another writer; 0 makes one attempt. */
   readonly maxWaitMs: number;
   /**
    * The highest fence any commit store has seen, so a fence is never reused
@@ -405,10 +314,6 @@ export interface AcquireWriterLeaseOptions {
   readonly floor?: number;
 }
 
-/**
- * The writer lease of one datastore, over its control plane. Holds no
- * state of its own: {@link acquire} returns the hold.
- */
 export class WriterLease {
   readonly #options: WriterLeaseOptions;
 
@@ -416,12 +321,6 @@ export class WriterLease {
     this.#options = options;
   }
 
-  /**
-   * Takes the next fence, waiting up to `maxWaitMs` while another writer
-   * holds the lease, and taking over one whose lease expired.
-   *
-   * @throws WriterLeaseBusyError when another writer still holds it
-   */
   async acquire(options: AcquireWriterLeaseOptions): Promise<WriterLeaseHold> {
     const o = this.#options;
     const started = o.now();
@@ -445,7 +344,6 @@ export class WriterLease {
     }
   }
 
-  /** The highest fence and whether it is held, or null when none was ever taken. */
   async inspect(): Promise<WriterLeaseInspection | null> {
     const records = await this.#read();
     if (records.fence === undefined) return null;
@@ -461,11 +359,9 @@ export class WriterLease {
   }
 
   /**
-   * Releases the highest fence for whoever holds it, when its nonce is
-   * still `nonce`. Its holder finds it released at its next renewal (within
-   * a third of its TTL), and refuses its own commits from then on; until a
-   * new writer raises the store's fence, the store itself still takes them.
-   * Resolves false when the lease changed hands since it was inspected.
+   * the holder finds it released at its next renewal and refuses its own
+   * commits from then on; until a new writer raises the store's fence, the
+   * store itself still takes them
    */
   async forceRelease(nonce: string): Promise<boolean> {
     const records = await this.#read();
@@ -480,13 +376,9 @@ export class WriterLease {
   }
 
   /**
-   * Moves `hold` to the next fence without letting the lease go
-   * (swamp-club#3935): taking over is creating the next fence, so the
-   * holder can take over from itself, and no other writer can win the lease
-   * in between. A process that needs a fence it never used (a new
-   * replication lineage) gets one. The old hold is released. Resolves
-   * undefined, and the old hold is lost, when `hold` is no longer the
-   * lease's or another writer created the next fence first.
+   * the holder takes over from itself by creating the next fence, so no other
+   * writer can win in between; resolves undefined, and the old hold is lost, if
+   * another writer created that fence first
    */
   async advance(hold: WriterLeaseHold): Promise<WriterLeaseHold | undefined> {
     try {
@@ -502,10 +394,6 @@ export class WriterLease {
     return next;
   }
 
-  /**
-   * Creates fence `fence`, then checks that no higher fence appeared while
-   * it did. Resolves undefined when another writer won.
-   */
   async #take(fence: number): Promise<WriterLeaseHold | undefined> {
     const o = this.#options;
     const record: FenceRecord = {
@@ -576,11 +464,6 @@ export class WriterLease {
   }
 }
 
-/**
- * One acquisition of the lease. It stays the holder until it releases, or
- * until a renewal or {@link assertCurrent} finds a higher fence or its own
- * fence released, after which it is {@link lost} for good.
- */
 export class WriterLeaseHold {
   readonly #options: WriterLeaseOptions;
   readonly record: FenceRecord;
@@ -596,7 +479,6 @@ export class WriterLeaseHold {
     return this.record.fence;
   }
 
-  /** Why this hold was lost, or undefined while it holds. */
   get lost(): WriterFencedError | undefined {
     return this.#lost;
   }
@@ -619,12 +501,6 @@ export class WriterLeaseHold {
     return "held";
   }
 
-  /**
-   * Throws when this hold is no longer the lease's: the check a writer runs
-   * before it acknowledges a replicated commit.
-   *
-   * @throws WriterFencedError
-   */
   async assertCurrent(): Promise<void> {
     const lost = this.#lost ?? await this.#check();
     if (lost !== undefined) throw lost;
@@ -674,7 +550,6 @@ export class WriterLeaseHold {
   }
 }
 
-/** Reads the records that decide who holds the lease. */
 export async function readWriterLeaseRecords(
   store: Pick<WriterLeaseStore, "get" | "list">,
 ): Promise<WriterLeaseRecords> {

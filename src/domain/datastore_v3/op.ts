@@ -18,26 +18,9 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * The ops a v3 commit applies to its partition (swamp-club#3233).
- *
- * - `put`: writes a record. Its content is a chunk ({@link BlobRef}) or up
- *   to {@link MAX_INLINE_BYTES} inlined as base64. `expect` makes it
- *   conditional: `"absent"` (create only) or `{ sha256 }` (edit the version
- *   it was loaded from). `access` is the file access the writer's file had
- *   ({@link FileAccess}, swamp-club#3693); a plain file has none.
- * - `tombstone`: removes one record, by its exact key; there are no prefix
- *   tombstones. `expect` makes it conditional: `"present"`, or `{ sha256 }`
- *   (delete the version it was loaded from, swamp-club#4097).
- * - `data-version`: records a data version's metadata. The partition reads
- *   the name and version from the metadata, never from the key.
- * - `lease`: records the holder of a partition's lease and its fence
- *   (team mode).
- *
- * Ops are built by the factories here, never as literals: a put's content
- * digest is computed by {@link putOp}, so every put holds a digest that
- * matches its bytes, and the commit checks each op is one of these classes.
- *
- * @module
+ * ops are built by factories, never literals: putOp computes a put's digest so
+ * it matches its bytes, and the commit checks each op is one of these classes;
+ * tombstones are by exact key, never by prefix
  */
 
 import {
@@ -50,25 +33,16 @@ import { createIntent, type Intent } from "./intent.ts";
 import { RecordKey } from "./record_key.ts";
 import { formatUntrustedIssues, parseUntrusted } from "../untrusted_parse.ts";
 
-/** The most content a put may inline, in decoded bytes. */
 export const MAX_INLINE_BYTES = 8 * 1024;
 
-/** The longest base64 string that can decode to {@link MAX_INLINE_BYTES}. */
 const MAX_INLINE_BASE64_LENGTH = Math.ceil(MAX_INLINE_BYTES / 3) * 4;
 
-/** The longest lease holder accepted. */
 const MAX_HOLDER_LENGTH = 1024;
 
-/** A put's precondition: the record is absent, or has exactly this digest. */
 export type PutExpect = "absent" | { readonly sha256: string };
 
-/**
- * A tombstone's precondition: the record is present, or has exactly this
- * digest (swamp-club#4097).
- */
 export type TombstoneExpect = "present" | { readonly sha256: string };
 
-/** The serialized form of a {@link PutOp}. */
 export interface PutOpJSON {
   readonly kind: "put";
   readonly intent: Intent;
@@ -79,7 +53,6 @@ export interface PutOpJSON {
   readonly access?: FileAccess;
 }
 
-/** The serialized form of a {@link TombstoneOp}. */
 export interface TombstoneOpJSON {
   readonly kind: "tombstone";
   readonly intent: Intent;
@@ -87,21 +60,18 @@ export interface TombstoneOpJSON {
   readonly expect?: TombstoneExpect;
 }
 
-/** The serialized form of a {@link DataVersionOp}. */
 export interface DataVersionOpJSON {
   readonly kind: "data-version";
   readonly key: string;
   readonly metadata: DataMetadata;
 }
 
-/** The serialized form of a {@link LeaseOp}. */
 export interface LeaseOpJSON {
   readonly kind: "lease";
   readonly holder: string;
   readonly fence: number;
 }
 
-/** The serialized form of an {@link Op}. */
 export type OpJSON =
   | PutOpJSON
   | TombstoneOpJSON
@@ -111,7 +81,6 @@ export type OpJSON =
 /** Held only by this module, so ops are built through its factories. */
 const BUILD: unique symbol = Symbol("Op.build");
 
-/** Writes one record. Build it with {@link putOp}. */
 export class PutOp {
   readonly kind = "put" as const;
 
@@ -121,14 +90,11 @@ export class PutOp {
     readonly content:
       | { readonly blob: BlobRef }
       | { readonly inline: string },
-    /** The SHA-256 of the record's bytes: the blob's, or the inline bytes'. */
     readonly sha256: string,
     readonly expect: PutExpect | undefined,
-    /** The materialised file's access; undefined for a plain file. */
     readonly access: FileAccess | undefined,
   ) {}
 
-  /** @internal Only {@link putOp} can supply the token. */
   static build(
     token: typeof BUILD,
     intent: Intent,
@@ -170,7 +136,6 @@ export class PutOp {
   }
 }
 
-/** Removes one record. Build it with {@link tombstoneOp}. */
 export class TombstoneOp {
   readonly kind = "tombstone" as const;
 
@@ -180,7 +145,6 @@ export class TombstoneOp {
     readonly expect: TombstoneExpect | undefined,
   ) {}
 
-  /** @internal Only {@link tombstoneOp} can supply the token. */
   static build(
     token: typeof BUILD,
     intent: Intent,
@@ -203,7 +167,6 @@ export class TombstoneOp {
   }
 }
 
-/** Records a data version. Build it with {@link dataVersionOp}. */
 export class DataVersionOp {
   readonly kind = "data-version" as const;
 
@@ -212,7 +175,6 @@ export class DataVersionOp {
     readonly metadata: DataMetadata,
   ) {}
 
-  /** @internal Only {@link dataVersionOp} can supply the token. */
   static build(
     token: typeof BUILD,
     key: RecordKey,
@@ -233,7 +195,6 @@ export class DataVersionOp {
   }
 }
 
-/** Records a partition's lease holder and fence. Build it with {@link leaseOp}. */
 export class LeaseOp {
   readonly kind = "lease" as const;
 
@@ -242,7 +203,6 @@ export class LeaseOp {
     readonly fence: number,
   ) {}
 
-  /** @internal Only {@link leaseOp} can supply the token. */
   static build(token: typeof BUILD, holder: string, fence: number): LeaseOp {
     if (token !== BUILD) throw new Error("Use leaseOp() to build a lease");
     return Object.freeze(new LeaseOp(holder, fence));
@@ -253,19 +213,16 @@ export class LeaseOp {
   }
 }
 
-/** One change a commit applies to its partition. */
 export type Op = PutOp | TombstoneOp | DataVersionOp | LeaseOp;
 
-/** True when `value` was built by one of this module's factories. */
 export function isOp(value: unknown): value is Op {
   return value instanceof PutOp || value instanceof TombstoneOp ||
     value instanceof DataVersionOp || value instanceof LeaseOp;
 }
 
 /**
- * Builds a put. Exactly one of `blob` and `inline` is given. `inline` must be
- * canonical base64 (encoding its decoded bytes gives it back) of at most
- * {@link MAX_INLINE_BYTES} bytes; its SHA-256 is computed here.
+ * exactly one of blob and inline is given; inline must be canonical base64
+ * (re-encoding its decoded bytes gives it back) of at most MAX_INLINE_BYTES
  */
 export async function putOp(props: {
   intent: Intent;
@@ -309,7 +266,6 @@ export async function putOp(props: {
   );
 }
 
-/** Builds a tombstone for one key. */
 export function tombstoneOp(props: {
   intent: Intent;
   key: RecordKey;
@@ -323,19 +279,14 @@ export function tombstoneOp(props: {
   );
 }
 
-/** Most metadata issues a refused data-version op names. */
 const MAX_REPORTED_METADATA_ISSUES = 10;
 
-/**
- * Builds a data-version op. The metadata is checked against
- * DataMetadataSchema; its parsed form is what the op keeps.
- */
 export function dataVersionOp(props: {
   key: RecordKey;
   metadata: unknown;
 }): DataVersionOp {
-  // A commit envelope carries this from its caller, so the parse stops at
-  // the first failure in each container (swamp-club#3862).
+  // a commit envelope carries this from its caller, so the parse stops at the
+  // first failure in each container
   const parsed = parseUntrusted(DataMetadataSchema, props.metadata);
   if (!parsed.success) {
     throw new Error(
@@ -359,7 +310,6 @@ export function dataVersionOp(props: {
   );
 }
 
-/** Builds a lease op. `fence` is a non-negative integer. */
 export function leaseOp(props: { holder: string; fence: number }): LeaseOp {
   if (
     typeof props.holder !== "string" || props.holder.length === 0 ||
@@ -373,7 +323,6 @@ export function leaseOp(props: { holder: string; fence: number }): LeaseOp {
   return LeaseOp.build(BUILD, props.holder, props.fence);
 }
 
-/** Parses a serialized op, recomputing a put's inline digest. */
 export async function opFromJSON(value: unknown): Promise<Op> {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
     throw new TypeError("An op must be an object");
@@ -422,7 +371,6 @@ export async function opFromJSON(value: unknown): Promise<Op> {
   }
 }
 
-/** Throws unless `fence` is a non-negative safe integer. */
 export function requireFence(fence: unknown): asserts fence is number {
   if (typeof fence !== "number" || !Number.isSafeInteger(fence) || fence < 0) {
     throw new Error(`A fence must be a non-negative integer: ${String(fence)}`);

@@ -17,12 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Test helpers for the built-in worker-management models: an in-memory
- * MethodContext whose resource writes/reads and vault operations are backed
- * by maps, so model methods can be exercised without a datastore.
- */
-
 import { getLogger } from "@logtape/logtape";
 import type { DataHandle, MethodContext } from "../model.ts";
 import type { ModelType } from "../model_type.ts";
@@ -30,11 +24,8 @@ import { generateDataId } from "../../data/data_id.ts";
 
 export interface InMemoryWorkerContext {
   context: MethodContext;
-  /** Latest attributes per data name. */
   store: Map<string, Record<string, unknown>>;
-  /** Number of versions written per data name. */
   versions: Map<string, number>;
-  /** In-memory vault: `${vaultName}/${secretKey}` → value. */
   vault: Map<string, string>;
 }
 

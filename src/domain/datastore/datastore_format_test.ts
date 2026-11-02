@@ -290,9 +290,8 @@ Deno.test("DatastoreFormatMismatchError: names both formats, or the missing mark
   );
 });
 
-// swamp-uat pins these refusals (src/cli/helpers/datastore_format_marker.ts):
-// the regexes are copied here so a change to the texts they match fails in
-// this repository first.
+// swamp-uat pins these refusals: the regexes are copied here so a change to the
+// texts they match fails in this repository first
 const UAT_INVALID_MARKER_MESSAGE =
   /^The datastore format marker .+ is not a valid format marker \(not valid JSON\)\. swamp will not use a datastore whose format it cannot determine\. .*Nothing was changed\.$/s;
 function uatFormatMismatchMessage(configured: number, marked: number): RegExp {

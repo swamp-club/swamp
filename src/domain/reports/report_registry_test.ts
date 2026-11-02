@@ -96,8 +96,6 @@ Deno.test("ReportRegistry - getByScope filters by scope", () => {
   assertEquals(workflowReports[0].name, "workflow-1");
 });
 
-// --- Lazy loading tests ---
-
 function createLazyReportEntry(type: string): LazyReportEntry {
   return {
     type,

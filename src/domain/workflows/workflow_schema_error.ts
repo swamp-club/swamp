@@ -21,9 +21,7 @@ import { z } from "zod";
 import { escapeControlCharacters } from "../control_characters.ts";
 import { UserError } from "../errors.ts";
 
-/** One rule a workflow document breaks, and where in the document. */
 export interface WorkflowSchemaIssue {
-  /** Where the issue sits, e.g. `jobs[0].steps[0].name`; empty at the root. */
   readonly path: string;
   readonly message: string;
 }
@@ -33,12 +31,8 @@ function formatIssue(issue: WorkflowSchemaIssue): string {
 }
 
 /**
- * A workflow document that fails the workflow schema.
- *
- * The message is one `path: message` entry per issue on a single line, so it
- * reads cleanly wherever a caller embeds it (swamp-club#3062). Paths and
- * messages can carry author-controlled text — a record key, an unknown key
- * name — so control characters are escaped before they reach a terminal.
+ * paths and messages can carry author-controlled text, so control characters
+ * are escaped before they reach a terminal
  */
 export class WorkflowSchemaError extends UserError {
   readonly issues: readonly WorkflowSchemaIssue[];
@@ -60,9 +54,8 @@ export class WorkflowSchemaError extends UserError {
   }
 
   /**
-   * The same error with the file that holds the document named in front.
-   * Pass a file name, not an absolute path: `swamp serve` withholds any
-   * message that carries one from its clients.
+   * pass a file name, not an absolute path: swamp serve withholds any message
+   * that carries one from its clients
    */
   inFile(fileName: string): WorkflowSchemaError {
     return new WorkflowSchemaError(

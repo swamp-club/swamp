@@ -26,7 +26,6 @@ import {
   type DataQueryTarget,
 } from "./data_query_command.ts";
 
-/** The run id the stub `latestRun` resolves `workflow` to. */
 function latestRunOf(workflow: string): string {
   return `latest-run-of:${workflow}`;
 }
@@ -38,7 +37,6 @@ const env = new Environment({
   homogeneousAggregateLiterals: false,
 }).registerFunction("latestRun(string): dyn", latestRunOf);
 
-/** No run, a pinned run id, or the latest run of a workflow. */
 const arbRunSelector: fc.Arbitrary<
   { workflowRunId?: string } | { latestRunWorkflow: string }
 > = fc.oneof(
@@ -60,7 +58,6 @@ const arbTarget: fc.Arbitrary<DataQueryTarget> = fc.tuple(
   arbRunSelector,
 ).map(([fields, run]) => ({ ...fields, ...run }));
 
-/** The record fields a predicate built from `target` reads. */
 function recordFor(target: DataQueryTarget): Record<string, unknown> {
   return {
     name: target.dataName,
@@ -76,7 +73,6 @@ function recordFor(target: DataQueryTarget): Record<string, unknown> {
   };
 }
 
-/** Reads back one word a POSIX shell would parse from `quoteShellWord`. */
 function unquoteShellWord(word: string): string {
   if (!word.startsWith("'")) return word;
   return word.slice(1, -1).replaceAll(`'"'"'`, "'");

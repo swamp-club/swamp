@@ -36,7 +36,6 @@ Deno.test("firstRejection: reports a raw once per report", () => {
     assertEquals(firstRejection("${{ inputs.x }}"), false);
     assertEquals(firstRejection("${{ inputs.y }}"), true);
   });
-  // Entering the same report again keeps what it has seen.
   runWithRejectionReport(report, () => {
     assertEquals(firstRejection("${{ inputs.x }}"), false);
   });

@@ -18,12 +18,8 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * Parses the swamp data duration grammar (e.g. "7d", "30mo", "1y") into
- * milliseconds. The grammar is shared between lifetime values and
- * garbageCollection policies.
- *
- * Valid units: `m` (minutes), `h` (hours), `d` (days), `w` (weeks),
- * `mo` (months = 30d), `y` (years = 365d).
+ * shared by lifetime values and garbageCollection policies; mo is 30 days and y
+ * is 365 days
  */
 export function parseDataDuration(duration: string): number {
   const match = duration.match(/^(\d+)(mo|y|h|m|d|w)$/);

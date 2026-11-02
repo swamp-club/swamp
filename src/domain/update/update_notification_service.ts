@@ -40,12 +40,6 @@ export type UpdateNotification =
     versionAgeDays: number;
   };
 
-/**
- * Domain service for proactive update notifications.
- *
- * Reads the local cache to determine if a notification should be shown,
- * and fires a background check to refresh the cache when stale.
- */
 export class UpdateNotificationService {
   private readonly currentVersion: string;
   private readonly cacheRepository: UpdateCheckCacheRepository;
@@ -61,15 +55,10 @@ export class UpdateNotificationService {
     this.checker = checker;
   }
 
-  /**
-   * Determines if a notification should be shown to the user.
-   * Only reads local state (cache file + version string), no network I/O.
-   */
+  /** only reads local state, so no network I/O */
   async getNotification(): Promise<UpdateNotification | null> {
-    // Dev builds never show notifications
     if (isDevBuild(this.currentVersion)) return null;
 
-    // Check if the current version is very old
     const now = new Date();
     if (
       isVersionStale(this.currentVersion, now, VERSION_STALENESS_THRESHOLD_DAYS)
@@ -99,10 +88,7 @@ export class UpdateNotificationService {
     return null;
   }
 
-  /**
-   * Fire-and-forget: refreshes the cache if stale.
-   * Issues an HTTP HEAD check and writes the result. Never throws.
-   */
+  /** refreshes a stale cache with an HTTP HEAD check and never throws */
   backgroundCheck(platform: Platform): void {
     (async () => {
       const cache = await this.cacheRepository.read();

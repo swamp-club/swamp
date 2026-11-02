@@ -173,7 +173,6 @@ Deno.test("migrateConfigToDatastore: sentinel prevents re-migration", async () =
     assertEquals(result.copiedLockfile, false);
     assertEquals(result.copiedPulledExtensions, false);
 
-    // models dir should NOT have been created in configRoot
     try {
       await Deno.stat(join(configRoot, "models", "should-not-copy.yaml"));
       throw new Error("Expected NotFound");
@@ -189,7 +188,6 @@ Deno.test("migrateConfigToDatastore: skips missing source directories gracefully
     await ensureDir(repoDir);
     const configRoot = join(dir, "config");
 
-    // No models/, workflows/, vaults/, lockfile, or pulled-extensions exist
     const result = await migrateConfigToDatastore(
       repoDir,
       join(repoDir, "nonexistent", "upstream_extensions.json"),
@@ -212,7 +210,6 @@ Deno.test("migrateConfigToDatastore: copies only existing sources", async () => 
     await ensureDir(repoDir);
     const configRoot = join(dir, "config");
 
-    // Only models/ exists
     await ensureDir(join(repoDir, "models"));
     await Deno.writeTextFile(
       join(repoDir, "models", "partial.yaml"),

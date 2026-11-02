@@ -17,15 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Code an extension's bundles hold that no registry audit covers
- * (swamp-club#3970): modules fetched by URL, and package.json dependencies
- * installed from a path, a workspace or git. Push still ships it, inlined
- * in the bundle as today, and lists it under `unaudited` in the
- * dependency audit record with a SHA-256 of each module, so the registry
- * can score it as not audited and a consumer can check what ran.
- */
-
 import type { UnauditedDependencyKind } from "@swamp-club/extension-scoring/dependency-audit";
 
 function record(value: unknown): Record<string, unknown> {
@@ -39,25 +30,16 @@ function isUrl(specifier: unknown): specifier is string {
     (specifier.startsWith("https:") || specifier.startsWith("http:"));
 }
 
-/** One module the graph fetched, and where Deno cached it. */
 export interface FetchedModule {
   url: string;
-  /** Deno's cached copy; absent when the graph names none. */
   local?: string;
 }
 
-/** A URL a local module imports, and every module fetched through it. */
 export interface UrlImportClosure {
   origin: string;
   modules: FetchedModule[];
 }
 
-/**
- * The URL imports `json`'s local modules (`isLocal`) write, each with the
- * modules fetched through it: URL imports of URL modules, followed through
- * Deno's redirects. A `jsr:` or `npm:` import inside fetched code is the
- * registries' and is not followed. Sorted by origin, modules by URL.
- */
 export function urlImportClosures(
   json: unknown,
   isLocal: (specifier: string) => boolean,
@@ -112,11 +94,6 @@ export function urlImportClosures(
   });
 }
 
-/**
- * How a package.json dependency spec installs: from the npm registry (a
- * version, range, dist-tag or `npm:` alias), or from somewhere no registry
- * audit covers.
- */
 export function packageJsonSpecKind(
   spec: string,
 ): "registry" | UnauditedDependencyKind {
@@ -135,17 +112,12 @@ export function packageJsonSpecKind(
   return "registry";
 }
 
-/** A package.json dependency installed from outside the npm registry. */
 export interface NonRegistryDependency {
   name: string;
   spec: string;
   kind: UnauditedDependencyKind;
 }
 
-/**
- * The dependencies (and devDependencies) `packageJson` declares from
- * outside the npm registry, sorted by name.
- */
 export function nonRegistryDependencies(
   packageJson: unknown,
 ): NonRegistryDependency[] {

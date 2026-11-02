@@ -19,20 +19,15 @@
 
 import { dirname } from "@std/path";
 
-/** The display fields a type declares in its source. */
 export interface DeclaredTypeMetadata {
   name: string;
   description: string;
 }
 
 /**
- * Reads the name and description a lazily indexed type declares, from its
- * source text. Nothing is imported or run.
- *
- * Returns undefined when the source cannot be read, the extractor throws or
- * recognises no definition in it, or it defines a different type than the
- * entry claims.
- * A field the source computes comes back as an empty string.
+ * nothing is imported or run; undefined when the source is unreadable, the
+ * extractor throws or finds no definition, or it defines a different type; a
+ * computed field comes back empty
  */
 export async function readDeclaredTypeMetadata(
   entry: { type: string; sourcePath: string },

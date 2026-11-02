@@ -54,13 +54,9 @@ Deno.test("withState: returns a NEW Source, leaves original untouched", () => {
     lastError: "schema mismatch",
   });
 
-  // The original is unchanged — referential equality preserved.
   assertEquals(original.state.tag, "Indexed");
-  // The new instance is a distinct object.
   assertFalse(original === next);
-  // The new instance reflects the transition.
   assertEquals(next.state.tag, "ValidationFailed");
-  // Identity, kind, fingerprint, and mtime flow through untouched.
   assert(original.id === next.id);
   assertEquals(original.kind, next.kind);
   assertEquals(original.fingerprint, next.fingerprint);
@@ -77,7 +73,7 @@ Deno.test("withFingerprintAndState: replaces both atomically", () => {
   }, "2026-02-20T15:30:00.000Z");
 
   assertFalse(original === next);
-  assertEquals(original.fingerprint, FP); // original unchanged
+  assertEquals(original.fingerprint, FP);
   assertEquals(next.fingerprint, "def456");
   assertEquals(next.state.tag, "Indexed");
   if (next.state.tag === "Indexed") {

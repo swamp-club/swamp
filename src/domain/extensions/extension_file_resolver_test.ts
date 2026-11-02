@@ -68,7 +68,6 @@ Deno.test("resolveExtensionFile: source-mode missing file shows disk-path hint",
       UserError,
       "Extension file not found",
     );
-    // Source-mode message points at the absolute path and mentions disk/manifest.
     if (err instanceof Error) {
       const msg = err.message;
       if (!msg.includes(join(root, "missing.md"))) {
@@ -88,7 +87,6 @@ Deno.test("resolveExtensionFile: source-mode missing file shows disk-path hint",
 
 Deno.test("resolveExtensionFile: pulled-mode missing file suggests re-publish", async () => {
   await withTempRoot(async (root) => {
-    // Construct a path containing the pulled-extensions marker.
     const pulledRoot = join(
       root,
       ".swamp",

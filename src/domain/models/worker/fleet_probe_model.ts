@@ -17,16 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Built-in fleet probe model (see design/enablers/remote-execution.md,
- * "Verification: swamp worker verify").
- *
- * A lightweight model whose single method exercises every seam that can
- * break between a worker and the orchestrator: dispatch-level metadata
- * (probeMarker), the capability RPC channel (queryData), and the HTTP
- * data plane (writeResource + readResource).
- */
-
 import { z } from "zod";
 import { ModelType } from "../model_type.ts";
 import {

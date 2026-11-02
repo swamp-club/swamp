@@ -67,7 +67,6 @@ const arbStringRecord = fc.dictionary(arbKey, fc.string({ maxLength: 8 }), {
 
 const arbUnknownRecord = fc.dictionary(arbKey, arbJsonValue, { maxKeys: 3 });
 
-/** Names that satisfy WORKFLOW_NAME_PATTERN and the 64-char cap. */
 const arbStrictWorkflowName = fc
   .tuple(
     fc.constantFrom(...LOWER_ALNUM),
@@ -75,8 +74,6 @@ const arbStrictWorkflowName = fc
   )
   .map(([head, rest]) => head + rest);
 
-/** Scoped `@collective/name` names — accepted by workflowNameBase but never
- * filename-safe. */
 const arbScopedWorkflowName = fc
   .tuple(
     fc.stringOf(fc.constantFrom(...SCOPED_CHARS), {
@@ -195,8 +192,6 @@ const arbStepTask: fc.Arbitrary<StepTask> = fc.oneof(
     ),
 );
 
-/** Everything about a step except its name and dependencies, which the
- * assembler fills in so names stay unique and dependencies stay acyclic. */
 type StepShape = Omit<CreateStepProps, "name" | "dependsOn">;
 
 const arbStepShape: fc.Arbitrary<StepShape> = fc
@@ -473,7 +468,6 @@ Deno.test("property: isFilenameSafeName accepts strict names within the length c
     fc.property(arbStrictWorkflowName, (name) => {
       assert(name.length <= 64);
       assert(isFilenameSafeName(name));
-      // A strict name is also creatable, so filename-safe implies creatable.
       Workflow.create({ name, jobs: [makeJob("job-1")] });
     }),
     { numRuns: 200 },
@@ -507,7 +501,6 @@ Deno.test("property: isFilenameSafeName rejects over-long names", () => {
       (name) => {
         assert(name.length > 64);
         assertEquals(isFilenameSafeName(name), false);
-        // Unscoped names also fail the strict schema above the cap.
         assertThrows(() => Workflow.create({ name, jobs: [makeJob("job-1")] }));
       },
     ),

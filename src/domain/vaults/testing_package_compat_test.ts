@@ -17,14 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Type compatibility test for @swamp-club/swamp-testing vault types.
- *
- * Verifies that the testing package's VaultProvider type remains structurally
- * compatible with swamp's canonical VaultProvider. If someone changes the
- * canonical interface, this file will fail to type-check.
- */
-
 import type {
   VaultExistenceProvider as CanonicalVaultExistenceProvider,
   VaultProvider as CanonicalVaultProvider,
@@ -41,9 +33,7 @@ import type {
   VaultProvider as TestingVaultProvider,
 } from "../../../packages/testing/vault_types.ts";
 
-// VaultProvider: verify the testing type's methods match the canonical type.
 function _checkVaultProviderFields(vault: TestingVaultProvider) {
-  // Verify method signatures match canonical return types
   const _getResult: ReturnType<CanonicalVaultProvider["get"]> = vault.get(
     "key",
   );
@@ -70,7 +60,6 @@ function _checkVaultProviderFields(vault: TestingVaultProvider) {
   ];
 }
 
-// VaultAnnotationProvider: verify the testing type's methods match the canonical type.
 function _checkVaultAnnotationProviderFields(
   provider: TestingVaultAnnotationProvider,
 ) {
@@ -97,7 +86,6 @@ function _checkVaultAnnotationProviderFields(
   void [_getAnnotation, _putAnnotation, _deleteAnnotation, _listAnnotations];
 }
 
-// VaultAnnotationData: verify field compatibility.
 function _checkVaultAnnotationDataFields(data: TestingVaultAnnotationData) {
   const _canonical: CanonicalVaultAnnotationData = {
     updatedAt: data.updatedAt,
@@ -109,7 +97,6 @@ function _checkVaultAnnotationDataFields(data: TestingVaultAnnotationData) {
   void _canonical;
 }
 
-// VaultAnnotation: verify instance method compatibility.
 function _checkVaultAnnotationMethods(annotation: TestingVaultAnnotation) {
   const _toData: CanonicalVaultAnnotationData = annotation
     .toData() as CanonicalVaultAnnotationData;

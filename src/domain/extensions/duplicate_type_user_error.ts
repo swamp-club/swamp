@@ -20,10 +20,8 @@
 import { markErrorPaths, UserError } from "../errors.ts";
 
 /**
- * The kind of bundle entry — mirrors `ExtensionKind` in
- * `infrastructure/persistence/extension_catalog_store.ts`. Duplicated
- * here so {@link DuplicateTypeUserError} (which presentation needs to
- * import) can stay in the domain layer without pulling in infrastructure.
+ * mirrors ExtensionKind in extension_catalog_store.ts, duplicated so this stays
+ * in the domain layer without importing infrastructure
  */
 export type DuplicateTypeKind =
   | "model"
@@ -33,11 +31,6 @@ export type DuplicateTypeKind =
   | "report"
   | "webhook";
 
-/**
- * Carries enough information to point a user at one of the two
- * extensions sharing the conflicting `(kind, typeNormalized)` so they
- * can resolve the conflict by hand.
- */
 export interface DuplicateTypeOccupant {
   readonly extensionName: string;
   readonly extensionVersion: string;
@@ -45,10 +38,8 @@ export interface DuplicateTypeOccupant {
 }
 
 /**
- * How an occupant is named in a message. A catalog row written without an
- * extension identity, such as one indexed from a source-mounted file, has
- * no name to show, so it is described rather than rendered as a bare `@`
- * (swamp-club#2876).
+ * a catalog row without an extension identity, such as a source-mounted file,
+ * is described rather than rendered as a bare @
  */
 export function describeTypeClaimant(occupant: DuplicateTypeOccupant): string {
   return occupant.extensionName === ""
@@ -56,28 +47,16 @@ export function describeTypeClaimant(occupant: DuplicateTypeOccupant): string {
     : `${occupant.extensionName}@${occupant.extensionVersion}`;
 }
 
-/** One extension of an install that collided, and its version before. */
 export interface InstallChange {
   readonly name: string;
-  /** The version the install put in. */
   readonly version: string;
-  /** The version installed before, or null when there was none. */
   readonly priorVersion: string | null;
 }
 
 /**
- * How the rollback of an install that collided ended.
- *
- * - `rolled-back`: every extension in the install (listed in `reverted`)
- *   is back on its prior version, or gone where there was none.
- * - `kept`: the lockfile could not be restored and was left untouched,
- *   so every extension stays on its new version, consistently.
- * - `unsettled`: the rollback could not finish (the lockfile could not
- *   be read back, it held neither the restored entries nor the new
- *   ones, or a root could not be moved back). The install journals stay
- *   for the next extension install or removal, which settles each from
- *   its lockfile entry, or names a journal whose disk state it cannot
- *   account for.
+ * kept: lockfile could not be restored, so every extension stays on its new
+ * version. unsettled: rollback could not finish; journals stay for the next
+ * install or removal to settle
  */
 export type InstallRollbackOutcome =
   | {
@@ -88,40 +67,8 @@ export type InstallRollbackOutcome =
   | { readonly status: "unsettled"; readonly lockfilePath: string };
 
 /**
- * User-facing wrapper thrown by the W2 lifecycle services after the
- * install that collided is rolled back (see `rollback`). Extends
- * {@link UserError} so the top-level error renderer formats a clean
- * single-line message in log mode (no stack trace), and carries the
- * structured fields so JSON mode emits them alongside the message.
- *
- * **JSON shape pinned by plan v4 step 11:**
- *
- * ```json
- * {
- *   "error": "<human-readable single-line message>",
- *   "duplicateType": {
- *     "kind": "model",
- *     "type": "@scope/foo",
- *     "isGhostRow": false,
- *     "rolledBack": true,
- *     "rollback": { "status": "rolled-back" },
- *     "existing": {
- *       "extensionName": "@scopeA/aa",
- *       "extensionVersion": "1.0.0",
- *       "canonicalPath": "/repo/.swamp/pulled-extensions/@scopeA/aa/models/foo.ts"
- *     },
- *     "conflicting": {
- *       "extensionName": "@scopeB/bb",
- *       "extensionVersion": "1.0.0",
- *       "canonicalPath": "/repo/.swamp/pulled-extensions/@scopeB/bb/models/foo.ts"
- *     }
- *   }
- * }
- * ```
- *
- * `presentation/output/error_output.ts` recognises this subclass and
- * adds the `duplicateType` field to the JSON output. Log mode uses
- * just the message, as for any other UserError.
+ * error_output.ts adds the duplicateType field to JSON output; log mode uses
+ * just the message
  */
 export class DuplicateTypeUserError extends UserError {
   readonly kind: DuplicateTypeKind;
@@ -129,7 +76,6 @@ export class DuplicateTypeUserError extends UserError {
   readonly existing: DuplicateTypeOccupant;
   readonly conflicting: DuplicateTypeOccupant;
   readonly isGhostRow: boolean;
-  /** How the rollback of the install ended; `rolled-back` by default. */
   readonly rollback: InstallRollbackOutcome;
 
   constructor(args: {
@@ -140,10 +86,9 @@ export class DuplicateTypeUserError extends UserError {
     isGhostRow?: boolean;
     rollback?: InstallRollbackOutcome;
     /**
-     * `local-directories` when the two claimants are local sources in
-     * `extensions/models/` and its behavior-spelled sibling
-     * `extensions/behaviors/` (swamp-club#3338): nothing was installed,
-     * so the message names the two files instead of an install.
+     * local-directories: both claimants are local sources in extensions/models
+     * and extensions/behaviors, so nothing was installed and the message names
+     * the two files
      */
     origin?: "install" | "local-directories";
   }) {
@@ -201,17 +146,11 @@ export class DuplicateTypeUserError extends UserError {
     ]);
   }
 
-  /** True when the install that collided was rolled back. */
   get rolledBack(): boolean {
     return this.rollback.status === "rolled-back";
   }
 }
 
-/**
- * What to run to get out of a kept install: go back to each extension's
- * prior version, or remove one it installed fresh; or remove the
- * extension that already held the type.
- */
 function keptAdvice(
   kept: ReadonlyArray<InstallChange>,
   existingName: string,
@@ -238,10 +177,6 @@ function keptAdvice(
   return `To undo it, run ${steps.join(" and ")}; or ${other}.`;
 }
 
-/**
- * What a rollback left installed of the extension that collided: its
- * previous version when it had one.
- */
 function rolledBackNote(
   reverted: ReadonlyArray<InstallChange> | undefined,
   name: string,

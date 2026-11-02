@@ -30,7 +30,6 @@ import type { Intent } from "./intent.ts";
 const name = fc.stringMatching(/^[a-z][a-z0-9-]{0,15}$/);
 const type = fc.stringMatching(/^[a-z]{1,6}\/[a-z]{1,6}$/);
 
-/** A definition put whose content declares exactly what its intent and key name. */
 const bound = fc.record({
   id: fc.uuid(),
   name,

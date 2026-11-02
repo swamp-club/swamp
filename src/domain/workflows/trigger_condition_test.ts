@@ -26,9 +26,6 @@ import {
   type TriggerEvaluationContext,
 } from "./trigger_condition.ts";
 
-/**
- * Creates a mock evaluation context from a status map.
- */
 function createContext(
   statuses: Record<
     string,
@@ -85,8 +82,6 @@ Deno.test("TriggerCondition.not creates not condition", () => {
   const cond = TriggerCondition.not(TriggerCondition.failed());
   assertEquals(cond.data.type, "not");
 });
-
-// Evaluation tests
 
 Deno.test("always condition evaluates to true", () => {
   const cond = TriggerCondition.always();
@@ -193,32 +188,26 @@ Deno.test("not condition inverts the result", () => {
 });
 
 Deno.test("compound condition evaluates correctly", () => {
-  // succeeded OR failed (i.e. completed)
   const cond = TriggerCondition.or([
     TriggerCondition.succeeded(),
     TriggerCondition.failed(),
   ]);
 
-  // Test case: step succeeded
   assertEquals(
     cond.evaluate(createContext({ step1: "succeeded" }), "step1"),
     true,
   );
 
-  // Test case: step failed
   assertEquals(
     cond.evaluate(createContext({ step1: "failed" }), "step1"),
     true,
   );
 
-  // Test case: step pending (neither succeeded nor failed)
   assertEquals(
     cond.evaluate(createContext({ step1: "pending" }), "step1"),
     false,
   );
 });
-
-// equals tests
 
 Deno.test("equals returns true for identical conditions", () => {
   const cond1 = TriggerCondition.succeeded();
@@ -232,8 +221,6 @@ Deno.test("equals returns false for different conditions", () => {
   assertEquals(cond1.equals(cond2), false);
 });
 
-// fromData and toData tests
-
 Deno.test("fromData and toData roundtrip correctly", () => {
   const original = TriggerCondition.and([
     TriggerCondition.succeeded(),
@@ -243,8 +230,6 @@ Deno.test("fromData and toData roundtrip correctly", () => {
   const restored = TriggerCondition.fromData(data);
   assertEquals(original.equals(restored), true);
 });
-
-// Schema validation tests
 
 Deno.test("TriggerConditionSchema rejects and with less than 2 conditions", () => {
   assertThrows(() => {

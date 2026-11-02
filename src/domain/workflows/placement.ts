@@ -37,10 +37,8 @@ export interface ResolvedPlacement {
 }
 
 /**
- * Merges placement layers with child-wins semantics: for each field,
- * if the child's value is undefined (omitted), inherit from parent;
- * if the child's value is anything else (including explicit {} for labels),
- * use the child's value.
+ * child wins per field: undefined inherits from the parent, anything else
+ * (including an explicit {} for labels) overrides
  */
 export function mergePlacementFields(
   parent: PlacementFields | undefined,
@@ -59,10 +57,6 @@ export function mergePlacementFields(
   };
 }
 
-/**
- * Resolves merged placement fields into the dispatching form, or undefined
- * when no placement is active (step runs on the loopback executor).
- */
 export function resolvePlacement(
   fields: PlacementFields | undefined,
 ): ResolvedPlacement | undefined {
@@ -84,11 +78,8 @@ export function resolvePlacement(
 }
 
 /**
- * Resolves the worker affinity key for a step from its workflow's and job's
- * `affinity` settings. A job that sets `affinity: false` opts out of
- * workflow-level affinity, so its steps are placed independently. Otherwise
- * workflow-level affinity pins the step to the run's worker (also when the
- * job sets `affinity: true`), and job-level affinity pins it to the job's.
+ * job affinity false opts out of workflow affinity; otherwise workflow affinity
+ * pins to the run's worker and job affinity to the job's
  */
 export function resolveAffinityKey(
   workflowAffinity: boolean | undefined,

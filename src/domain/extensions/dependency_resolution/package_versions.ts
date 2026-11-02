@@ -17,34 +17,17 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * The exact versions Deno resolved each `npm:` and `jsr:` import to, read
- * from the same `deno info --json` graph the bundle is built from
- * (swamp-club#3970). Push pins each import it ships to the version this
- * reports, so the shipped source, the bundle and the audit read one answer.
- */
-
 import {
   isPlainSemver,
   parseSpecifier,
   type UnauditedDependency,
 } from "@swamp-club/extension-scoring/dependency-audit";
 
-/**
- * The package one specifier resolved to at the exact version:
- * `npm:<name>@<x.y.z>` or `jsr:@<scope>/<name>@<x.y.z>`, with no subpath.
- * `installed` when Deno read it from a package installed in node_modules
- * rather than from the registry.
- */
 export interface PackageVersion {
   specifier: string;
   installed?: true;
 }
 
-/**
- * Each `npm:` or `jsr:` specifier a graph resolved, as Deno read it (after
- * the import map), to its package at the exact version.
- */
 export type PackageVersions = Readonly<Record<string, PackageVersion>>;
 
 const NPM_TARGET_RE = /^npm:\/?(?<name>(?:@[^/@]+\/)?[^/@]+)@(?<version>[^/]+)/;
@@ -55,7 +38,6 @@ function record(value: unknown): Record<string, unknown> {
     : {};
 }
 
-/** The version a JSR module URL names for `name`: `…/@scope/name/<version>/…`. */
 function jsrVersionIn(url: string, name: string): string | undefined {
   const marker = `/${name}/`;
   const at = url.indexOf(marker);
@@ -63,7 +45,6 @@ function jsrVersionIn(url: string, name: string): string | undefined {
   return url.slice(at + marker.length).split("/")[0] || undefined;
 }
 
-/** The exact package a resolved target names for `specifier`'s package, or undefined. */
 function exactPackage(specifier: string, target: string): string | undefined {
   const parsed = parseSpecifier(specifier);
   if (!parsed) return undefined;
@@ -80,12 +61,6 @@ function exactPackage(specifier: string, target: string): string | undefined {
     : undefined;
 }
 
-/**
- * The exact package each `npm:` and `jsr:` specifier in a `deno info`
- * graph resolved to. Deno reports both in `redirects` (`npm:ms@^2` to
- * `npm:/ms@2.1.3`, `jsr:@std/assert@^1/assert` to the JSR module URL),
- * and each npm dependency's `npmPackage` (`ms@2.1.3`) as well.
- */
 export function packageVersionsFromDenoInfo(json: unknown): PackageVersions {
   const body = record(json);
   const versions: Record<string, PackageVersion> = {};
@@ -111,11 +86,6 @@ export function packageVersionsFromDenoInfo(json: unknown): PackageVersions {
   return versions;
 }
 
-/**
- * The installed package an `npm:` specifier resolved to, when Deno read it
- * from node_modules: `npm:<name>@<version>` for the package `name` names,
- * or undefined when the name does not match.
- */
 export function installedPackageVersion(
   specifier: string,
   name: string,
@@ -141,14 +111,8 @@ export function mergePackageVersions(
   return merged;
 }
 
-/**
- * What push ships for an extension's dependencies, read from the module
- * graphs its bundles are built from (swamp-club#3970).
- */
 export interface GraphDependencies {
-  /** The exact version each `npm:` and `jsr:` specifier resolved to. */
   packageVersions: PackageVersions;
-  /** Code from outside npm and JSR, with a SHA-256 of each module. */
   unaudited: UnauditedDependency[];
   /**
    * A package.json project's package-lock.json: whether it counts as a

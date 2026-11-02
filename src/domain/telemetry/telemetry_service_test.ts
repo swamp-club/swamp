@@ -26,7 +26,6 @@ import type {
 } from "./telemetry_sender.ts";
 import { TelemetryEntry, type TelemetryEntryData } from "./telemetry_entry.ts";
 
-/** Mock repository for testing */
 class MockTelemetryRepository implements TelemetryRepository {
   savedEntries: TelemetryEntry[] = [];
   mockEntries: TelemetryEntry[] = [];
@@ -36,7 +35,6 @@ class MockTelemetryRepository implements TelemetryRepository {
   deletedBefore: Date | null = null;
   deleteAllBefore: Date | null = null;
   deletedQuarantinedBefore: Date | null = null;
-  /** When true, markFlushed reports failure without recording the entry. */
   markFlushedFails = false;
 
   save(entry: TelemetryEntry): Promise<void> {
@@ -65,7 +63,6 @@ class MockTelemetryRepository implements TelemetryRepository {
     return Promise.resolve(3);
   }
 
-  /** Endpoint passed to the most recent findUnflushed call. */
   findUnflushedEndpoint: string | undefined = undefined;
 
   findUnflushed(_limit: number, endpoint?: string): Promise<TelemetryEntry[]> {
@@ -90,7 +87,6 @@ class MockTelemetryRepository implements TelemetryRepository {
   }
 }
 
-/** Mock sender for testing */
 class MockTelemetrySender implements TelemetrySender {
   sentBatches: Array<{
     entries: TelemetryEntry[];
@@ -168,7 +164,6 @@ Deno.test("TelemetryService.getStats calculates statistics correctly", async () 
   const repo = new MockTelemetryRepository();
   const service = new TelemetryService(repo, "1.0.0");
 
-  // Set up mock entries
   const now = new Date();
   const entries: TelemetryEntryData[] = [
     {
@@ -530,10 +525,6 @@ Deno.test("TelemetryService.recordChildInvocation classifies UserError as user_e
   const repo = new MockTelemetryRepository();
   const service = new TelemetryService(repo, "1.0.0");
 
-  // Reuse the runtime's UserError surface — the service imports it from
-  // ../errors.ts at the top of the file. We construct a UserError-shaped
-  // instance via dynamic import to avoid coupling this test file to the
-  // domain errors module path.
   const { UserError } = await import("../errors.ts");
 
   await service.recordChildInvocation(
@@ -627,7 +618,6 @@ Deno.test("TelemetryService stamps triggerSource on every record path", async ()
 });
 
 Deno.test("TelemetryService omits triggerSource when none is configured", async () => {
-  // The interactive CLI path must keep emitting exactly what it always has.
   const repo = new MockTelemetryRepository();
   const service = new TelemetryService(repo, "1.0.0");
 
@@ -666,7 +656,6 @@ Deno.test("TelemetryService.forkForRun returns a distinct identity over the same
     new Date(),
   );
 
-  // Same spool as the parent service.
   assertEquals(repo.savedEntries.length, 1);
   assertEquals(repo.savedEntries[0].id, fork.invocationId);
   assertEquals(repo.savedEntries[0].triggerSource, "webhook");
@@ -715,11 +704,9 @@ Deno.test("TelemetryService.forkForRun omits initiatedBy when not provided", asy
 });
 
 Deno.test("TelemetryService.pruneFlushedTelemetry never deletes unflushed entries", async () => {
-  // The executable form of the daemon retention decision. cleanupOldTelemetry
-  // also applies the hard cap, which deletes UNFLUSHED entries — safe for a
-  // CLI that will run again shortly, destructive for a daemon that has been
-  // unable to reach the endpoint for a week. If the daemon is ever rerouted
-  // through cleanupOldTelemetry, this test fails.
+  // cleanupOldTelemetry also applies the hard cap, which deletes unflushed
+  // entries: destructive for a daemon that cannot reach the endpoint. This test
+  // fails if the daemon is routed through it.
   const repo = new MockTelemetryRepository();
   const service = new TelemetryService(repo, "1.0.0");
 
@@ -743,11 +730,9 @@ Deno.test("TelemetryService.cleanupOldTelemetry still applies the hard cap", asy
 });
 
 Deno.test("TelemetryService.flushTelemetry serializes concurrent flushes", async () => {
-  // Regression test for the shutdown double-send: serve's daemon flush loop
-  // and the CLI teardown flush both target this same service. If they can
-  // both read the unflushed batch before either marks it, every entry in it
-  // is sent twice. The guard has to live on the service, because neither
-  // caller can see the other's state.
+  // serve's flush loop and the CLI teardown flush share this service;
+  // unserialized, both read the batch before either marks it and send every
+  // entry twice, so the guard lives on the service
   const repo = new MockTelemetryRepository();
   const sender = new MockTelemetrySender();
   const service = new TelemetryService(repo, "1.0.0");
@@ -951,7 +936,6 @@ Deno.test("TelemetryService.flushEntry never sends an entry recorded for another
 
   assertEquals(outcome.sentCount, 0);
   assertEquals(sender.sentBatches.length, 0);
-  // Left spooled for a run that resolves its own endpoint.
   assertEquals(repo.flushedEntries.length, 0);
 });
 

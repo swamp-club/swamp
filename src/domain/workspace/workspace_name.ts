@@ -19,12 +19,10 @@
 
 import { UserError } from "../errors.ts";
 
-/** The home workspace `swamp start` uses when none is named. */
 export const DEFAULT_WORKSPACE_NAME = "first-workspace";
 
 const WORKSPACE_NAME_PATTERN = /^[a-z0-9][a-z0-9-]{0,62}$/;
 
-/** Validates a workspace name: one path segment of lowercase letters, digits and dashes. */
 export function parseWorkspaceName(name: string): string {
   if (!WORKSPACE_NAME_PATTERN.test(name)) {
     throw new UserError(
@@ -108,11 +106,6 @@ const NAME_CREATURES = [
   "willow",
 ] as const;
 
-/**
- * Suggests a workspace name such as `misty-heron`, avoiding the names in
- * `taken`. A clash after a few draws gets a numeric suffix, so a name is
- * always returned. `random` returns values in [0, 1).
- */
 export function suggestWorkspaceName(
   taken: ReadonlySet<string>,
   random: () => number = Math.random,

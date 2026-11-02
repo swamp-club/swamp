@@ -20,36 +20,19 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { traceHeadersToEnv } from "./execution_envelope.ts";
 
-/** The env vars an execution's trace context is published under. */
 const TRACE_ENV_NAMES = ["TRACEPARENT", "TRACESTATE"] as const;
 
-/** The slice of `Deno.env` that {@link ProcessTraceEnv} reads and writes. */
 export type TraceEnvStore = Pick<typeof Deno.env, "get" | "set" | "delete">;
 
-/** One active execution, linked to the execution that nested it (if any). */
 interface Frame {
   readonly parent: Frame | undefined;
   readonly env: Readonly<Record<string, string>>;
 }
 
 /**
- * Publishes an in-process execution's trace context in the process env for
- * code that reads `TRACEPARENT` from it (in-process extension methods, and
- * subprocesses spawned with an inherited env).
- *
- * The process env is shared by every execution in the process, so it can
- * only carry one execution's context at a time. While the active executions
- * form a single nesting chain (a lone execution, plus any executions it
- * started through `runModel()` and is awaiting), the env holds the innermost
- * execution's headers, and a nested execution hands the env back to its
- * parent when it finishes. As soon as two unrelated executions overlap
- * (parallel workflow steps, concurrent `swamp serve` requests, parallel
- * `runModel()` calls), the env reverts to its baseline (the values it held
- * before the first execution started, i.e. the process's own inbound
- * context) and stays there until every execution has finished, so no
- * execution ever sees a sibling's span and nothing leaks past the last
- * execution. Per-execution context is always available on
- * `MethodContext.traceHeaders`.
+ * the shared env carries one context at a time: the innermost of a single
+ * nesting chain, reverting to baseline while unrelated executions overlap and
+ * until all finish, so no one sees a sibling's span
  */
 export class ProcessTraceEnv {
   readonly #active = new Set<Frame>();
@@ -59,11 +42,6 @@ export class ProcessTraceEnv {
 
   constructor(private readonly env: TraceEnvStore = Deno.env) {}
 
-  /**
-   * Runs one execution's method code with its trace context published in the
-   * process env whenever that is safe. Executions started from within `fn`
-   * are treated as nested in this one.
-   */
   async run<T>(
     traceHeaders: Readonly<Record<string, string>> | undefined,
     fn: () => Promise<T>,
@@ -107,10 +85,6 @@ export class ProcessTraceEnv {
     }
   }
 
-  /**
-   * The active execution no other active execution descends from. Only
-   * called while the active executions form a single chain.
-   */
   #innermostActive(): Frame {
     const ancestors = new Set<Frame>();
     for (const frame of this.#active) {
@@ -123,10 +97,6 @@ export class ProcessTraceEnv {
     return [...this.#active].find((frame) => !ancestors.has(frame))!;
   }
 
-  /**
-   * Whether the active executions are exactly `frame` and its ancestors
-   * (vacuously true when nothing is active and `frame` is undefined).
-   */
   #isActiveChain(frame: Frame | undefined): boolean {
     let depth = 0;
     for (let f = frame; f; f = f.parent) {
@@ -172,5 +142,4 @@ export class ProcessTraceEnv {
   }
 }
 
-/** The process-wide instance shared by every in-process execution. */
 export const processTraceEnv: ProcessTraceEnv = new ProcessTraceEnv();

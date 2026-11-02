@@ -34,17 +34,9 @@ import { VaultSecretBag } from "../vaults/vault_secret_bag.ts";
 export type DataRange = readonly [number, number];
 
 /**
- * Where data sits in a tree of values: for each path (in the syntax
- * {@link extractExpressions} reports, `a.b[0].c`, `""` for the root), either
- * the whole subtree is data, some `[start, end)` ranges of the string at
- * that path are, or the own keys of the object at that path are while the
- * values under them are described on their own (a caller's object holding
- * an authored expression). Everything else is authored.
- *
- * Substitution splices values into a tree as raw text, so an expression found
- * in a later pass is authored only if it does not overlap data. The map holds
- * ranges and paths only, never text, so it can be persisted beside a tree
- * without storing anything the tree does not already hold. Immutable.
+ * an expression found in a later pass is authored only if it does not overlap
+ * data; the map holds ranges and paths, never text, so it can be persisted
+ * safely
  */
 export class ProvenanceMap {
   static readonly #empty = new ProvenanceMap(new Set(), new Map(), new Set());
@@ -57,7 +49,6 @@ export class ProvenanceMap {
   private constructor(
     private readonly whole: ReadonlySet<string>,
     private readonly ranges: ReadonlyMap<string, readonly DataRange[]>,
-    /** Objects whose own keys are data, their values described on their own. */
     private readonly keys: ReadonlySet<string>,
   ) {}
 
@@ -79,28 +70,23 @@ export class ProvenanceMap {
     return ProvenanceMap.of(new Set(whole), merged, new Set(keys));
   }
 
-  /** No data anywhere: the tree is entirely authored. */
   static authored(): ProvenanceMap {
     return ProvenanceMap.#empty;
   }
 
-  /** The whole tree is data. */
   static data(): ProvenanceMap {
     return ProvenanceMap.#whole;
   }
 
-  /** True when nothing in the tree is data. */
   get isAuthored(): boolean {
     return this.whole.size === 0 && this.ranges.size === 0 &&
       this.keys.size === 0;
   }
 
-  /** True when the whole tree is data. */
   get isWholeData(): boolean {
     return this.whole.has("");
   }
 
-  /** Whether the subtree at `path` is data in its entirety. */
   isWholeDataAt(path: string): boolean {
     for (const ancestor of ancestorsOf(canonicalPath(path))) {
       if (this.whole.has(ancestor)) return true;
@@ -108,13 +94,6 @@ export class ProvenanceMap {
     return false;
   }
 
-  /**
-   * Whether the own keys of the object at `path` are data: the subtree is
-   * data in its entirety, or the keys were recorded as data on their own
-   * while the values under them are described separately, as the keys of a
-   * caller's object that holds an authored expression are
-   * (swamp-club#3681).
-   */
   hasDataKeysAt(path: string): boolean {
     return this.isWholeDataAt(path) || this.keys.has(canonicalPath(path));
   }
@@ -132,13 +111,11 @@ export class ProvenanceMap {
     return false;
   }
 
-  /** Whether anything at or below `path` is data. */
   hasDataAtOrBelow(path: string): boolean {
     if (this.isWholeDataAt(path)) return true;
     return this.dataAncestors().has(canonicalPath(path));
   }
 
-  /** Every path at or above a recorded key, built once per map. */
   #dataAncestors: Set<string> | undefined;
   private dataAncestors(): Set<string> {
     if (this.#dataAncestors) return this.#dataAncestors;
@@ -153,12 +130,10 @@ export class ProvenanceMap {
     return ancestors;
   }
 
-  /** Data ranges recorded for the string at exactly `path`. */
   rangesAt(path: string): readonly DataRange[] {
     return this.ranges.get(canonicalPath(path)) ?? [];
   }
 
-  /** The map of the subtree at `path`, re-rooted so `path` becomes `""`. */
   subtree(path: string): ProvenanceMap {
     path = canonicalPath(path);
     if (path === "") return this;
@@ -178,10 +153,6 @@ export class ProvenanceMap {
     return ProvenanceMap.of(whole, ranges, keys);
   }
 
-  /**
-   * This map with everything at or below `path` replaced by `sub`, whose
-   * root becomes `path`.
-   */
   graft(path: string, sub: ProvenanceMap): ProvenanceMap {
     path = canonicalPath(path);
     const whole = new Set<string>();
@@ -238,12 +209,10 @@ export class ProvenanceMap {
     return ProvenanceMap.of(whole, ranges, keys);
   }
 
-  /** This map with the subtree at `path` marked data in its entirety. */
   withWholeData(path: string): ProvenanceMap {
     return this.graft(path, ProvenanceMap.#whole);
   }
 
-  /** This map with the string at `path` holding exactly `ranges` of data. */
   withRanges(path: string, ranges: readonly DataRange[]): ProvenanceMap {
     path = canonicalPath(path);
     const merged = mergeRanges(ranges);
@@ -254,7 +223,6 @@ export class ProvenanceMap {
     return ProvenanceMap.of(next.whole, all, next.keys);
   }
 
-  /** Union: data in either map is data in the result. */
   union(other: ProvenanceMap): ProvenanceMap {
     if (other.isAuthored) return this;
     if (this.isAuthored) return other;
@@ -270,14 +238,12 @@ export class ProvenanceMap {
     );
   }
 
-  /** Every path the map records, for path rewriting by callers. */
   paths(): string[] {
     return [
       ...new Set([...this.whole, ...this.ranges.keys(), ...this.keys]),
     ];
   }
 
-  /** This map with each recorded path passed through `rename`. */
   mapPaths(rename: (path: string) => string): ProvenanceMap {
     const whole = new Set<string>();
     const ranges = new Map<string, readonly DataRange[]>();
@@ -312,7 +278,6 @@ export class ProvenanceMap {
     };
   }
 
-  /** Parses {@link toData} output; throws on a malformed map. */
   static fromData(data: unknown): ProvenanceMap {
     const parsed = ProvenanceMapDataSchema.parse(data);
     const ranges = new Map<string, readonly DataRange[]>();
@@ -363,10 +328,6 @@ export class ProvenanceMap {
   }
 }
 
-/**
- * Where data sits in the inputs a direct execution receives, relative to its
- * `inputs` and to its explicit global arguments.
- */
 export interface DirectInputsProvenance {
   inputs: ProvenanceMap;
   globalArgs: ProvenanceMap;
@@ -396,11 +357,9 @@ export function routedGlobalProvenance(
   return map;
 }
 
-/** The persisted form of a {@link ProvenanceMap}. */
 export interface ProvenanceMapData {
   whole: string[];
   ranges: Record<string, [number, number][]>;
-  /** Objects whose own keys are data; absent when there are none. */
   keys?: string[];
 }
 
@@ -430,7 +389,6 @@ export const ProvenanceMapDataSchema = z.object({
   }),
 });
 
-/** Sorted, non-overlapping, non-empty ranges covering the same characters. */
 export function mergeRanges(ranges: readonly DataRange[]): DataRange[] {
   const sorted = ranges.filter(([s, e]) => e > s).map(([s, e]) =>
     [s, e] as [number, number]
@@ -445,13 +403,9 @@ export function mergeRanges(ranges: readonly DataRange[]): DataRange[] {
 }
 
 /**
- * The canonical spelling of a path. Expression extraction writes an object
- * key as `.key` and an array index as `[i]`, so a key that itself starts with
- * `[` (`{"[0]": …}`) is spelled `x.[0]` there but `x[0]` when a relative path
- * is prefixed. Folding `.[` into `[` makes both the same path; a real index
- * and such a key then share one entry, which can only mark more as data.
- * Folding never applies inside a JSON-quoted key (`["a.[b"]`), which is
- * already unambiguous.
+ * folds an unquoted .[ into [ so an extracted key like x.[0] and a prefixed
+ * x[0] are one path; an index and such a key then share an entry, which can
+ * only mark more as data
  */
 export function canonicalPath(path: string): string {
   if (!path.includes(".[")) return path;
@@ -475,35 +429,25 @@ export function canonicalPath(path: string): string {
 }
 
 /**
- * The path segment for an object key. A key that is a plain identifier-like
- * segment is written `key` (joined with `.`); any other key (containing `.`,
- * `[`, `]` or `"`, or empty) is written `["…"]` with the key JSON-quoted, so
- * it can never be read as a nested path or an array index. Expression
- * extraction and provenance build paths with the same rule.
+ * keys with . [ ] " or empty are JSON-quoted so they can never read as a nested
+ * path or index; expression extraction and provenance share this rule
  */
 export function keySegment(key: string): string {
   return key !== "" && !/[.[\]"]/.test(key) ? key : `[${JSON.stringify(key)}]`;
 }
 
-/** The path of object key `key` under `parent`. */
 export function keyPath(parent: string, key: string): string {
   return prefix(parent, keySegment(key));
 }
 
-/** The path of method `method`'s argument `key` in definition data. */
 export function methodArgumentPath(method: string, key: string): string {
   return keyPath(keyPath(keyPath("", "methods"), method) + ".arguments", key);
 }
 
-/** The path of array index `index` under `parent`. */
 export function indexPath(parent: string, index: number): string {
   return `${parent}[${index}]`;
 }
 
-/**
- * Offsets in `path` where a segment starts (a `.` or `[` that is not inside
- * a quoted key).
- */
 function segmentBoundaries(path: string): number[] {
   const boundaries: number[] = [];
   let quoted = false;
@@ -520,7 +464,6 @@ function segmentBoundaries(path: string): number[] {
   return boundaries;
 }
 
-/** `path` and every ancestor of it, root (`""`) included. */
 export function* ancestorsOf(path: string): Generator<string> {
   yield path;
   if (!path.includes('"')) {
@@ -537,38 +480,30 @@ export function* ancestorsOf(path: string): Generator<string> {
   if (path !== "") yield "";
 }
 
-/** True when `path` is `root` or lies under it. */
 export function isAtOrUnder(path: string, root: string): boolean {
   if (root === "") return true;
   return path === root || path.startsWith(root + ".") ||
     path.startsWith(root + "[");
 }
 
-/** `path` relative to `root`, which it must be at or under. */
 function reroot(path: string, root: string): string {
   if (path === root) return "";
   const rest = path.slice(root.length);
   return rest.startsWith(".") ? rest.slice(1) : rest;
 }
 
-/** `path`, given relative to `root`, as an absolute path. */
 export function prefix(root: string, path: string): string {
   if (root === "") return path;
   if (path === "") return root;
   return path.startsWith("[") ? root + path : `${root}.${path}`;
 }
 
-/** The real value a sentinel stands for, or undefined when it is not one. */
 export type SentinelResolver = (sentinel: string) => string | undefined;
 
 /**
- * Stands each sentinel `registry` issued in for what the other copy of an
- * alignment holds in its place, without reading a vault: a data entry for
- * its value, which the data read put into the raw copy, and a vault
- * reference for its identity ({@link sentinelIdentityOf}), since no copy
- * holds a vault.get() value. Pass it for both copies: a raw copy can carry
- * a sentinel from an earlier pass, or its rehomed twin, and standing it in
- * on one side only would make the copies differ.
+ * stands in a data entry for the value and a vault reference for identity,
+ * reading no vault. Pass it for both copies, or a sentinel from an earlier pass
+ * or its rehomed twin would make them differ.
  */
 export function sentinelStandInOf(
   registry: SecretBagRegistry,
@@ -601,11 +536,9 @@ export function sentinelIdentityOf(
 }
 
 /**
- * Stands each sentinel `registry` issued in for the reference text the
- * persisted form writes it as, without reading a value, so a persisted copy
- * (reference text) and a sentinel copy resolve to one text and their ranges
- * align exactly whatever the sentinels' lengths (typed-secrets 4.4). Text
- * that is not a sentinel of the run is left alone.
+ * maps each sentinel to the reference text the persisted form writes, so a
+ * persisted copy and a sentinel copy resolve to one text and their ranges align
+ * whatever the sentinel lengths
  */
 export function sentinelReferenceTextOf(
   registry: SecretBagRegistry,
@@ -628,7 +561,6 @@ interface Segment {
   sentinel: boolean;
 }
 
-/** A string as literal segments and resolved sentinels, with its raw text. */
 function resolveSegments(
   text: string,
   resolve: SentinelResolver | undefined,
@@ -667,7 +599,6 @@ function resolveSegments(
   return { segments, raw };
 }
 
-/** Ranges of one copy mapped to raw-text coordinates, or back. */
 function mapThroughSegments(
   ranges: readonly DataRange[],
   segments: readonly Segment[],
@@ -761,20 +692,15 @@ function alignRanges(
 }
 
 /**
- * The map for another copy of the same tree (the sanitized copy, or one
- * rebuilt from a cache), given the map of `raw`. Where the copies agree the
- * map carries over unchanged. A string that differs keeps its ranges around
- * the one differing span, which is data when it touches data; any other value
- * that differs and holds data is data in its entirety, so nothing can
- * misalign into authored.
+ * a differing string keeps its ranges around the one differing span, which is
+ * data when it touches data; any other differing value holding data is wholly
+ * data, so nothing can misalign into authored
  */
 export function alignProvenance(
   map: ProvenanceMap,
   raw: unknown,
   other: unknown,
-  /** Real value of a sentinel in `raw`, when its copy holds sentinels. */
   resolveRaw?: SentinelResolver,
-  /** Real value of a sentinel in `other`. */
   resolveOther?: SentinelResolver,
 ): ProvenanceMap {
   if (map.isAuthored) return map;

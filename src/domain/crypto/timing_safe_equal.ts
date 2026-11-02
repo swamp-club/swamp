@@ -18,8 +18,8 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * Constant-time string comparison so a presented credential cannot be
- * probed byte-by-byte through timing.
+ * constant-time comparison so a presented credential cannot be probed
+ * byte-by-byte through timing
  */
 export function timingSafeEqual(a: string, b: string): boolean {
   const encoder = new TextEncoder();

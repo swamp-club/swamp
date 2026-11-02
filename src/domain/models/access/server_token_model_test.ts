@@ -557,8 +557,6 @@ Deno.test("serverTokenModel: old credentials fail after rotate", async () => {
   );
 });
 
-// ── updateCollectives ─────────────────────────────────────────────────
-
 Deno.test("serverTokenModel: updateCollectives replaces collectives on active token", async () => {
   const { context, store } = await mintToken();
   await serverTokenModel.methods.updateCollectives.execute(
@@ -612,8 +610,6 @@ Deno.test("serverTokenModel: updateCollectives is a no-op on expired token", asy
   );
   assertEquals(versions.get("token-main"), versionBefore);
 });
-
-// --- outputLifetime ---
 
 Deno.test("serverTokenModel: all methods declare an outputLifetime", () => {
   for (const [name, method] of Object.entries(serverTokenModel.methods)) {
@@ -707,7 +703,6 @@ Deno.test("verifyServerTokenSecret: a record without a fingerprint passes", asyn
 });
 
 Deno.test("serverTokenModel: redeem rejects a record paired with another mint's secret", async () => {
-  // The vault holds a second mint's secret while the record is the first's.
   const { context, vault } = await mintToken();
   const other = await mintToken();
   vault.set(`local/${serverTokenSecretKey("user-token-1")}`, other.plaintext);

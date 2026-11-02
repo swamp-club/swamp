@@ -19,10 +19,6 @@
 
 import { parseDataDuration } from "../data/duration.ts";
 
-/**
- * The kinds of history retention applies to, each with its own key in the
- * `.swamp.yaml` `garbageCollection` block (swamp-club#3473).
- */
 export const RETENTION_KINDS = [
   "workflowRuns",
   "evaluatedSnapshots",
@@ -34,14 +30,12 @@ export const RETENTION_KINDS = [
 
 export type RetentionKind = typeof RETENTION_KINDS[number];
 
-/** The `.swamp.yaml` `garbageCollection` block. */
 export interface RetentionConfig {
   /**
    * Default timeframe for every kind without its own value, except `data`
    * and `bookkeeping`, which must be set on their own.
    */
   retention?: string;
-  /** Apply retention automatically (serve timer, CLI end of command). */
   automatic?: boolean;
   workflowRuns?: string;
   evaluatedSnapshots?: string;
@@ -51,46 +45,29 @@ export interface RetentionConfig {
   bookkeeping?: string;
 }
 
-/** Every key the block accepts; anything else is warned about and ignored. */
 export const RETENTION_CONFIG_KEYS: readonly string[] = [
   "retention",
   "automatic",
   ...RETENTION_KINDS,
 ];
 
-/**
- * A problem with a `garbageCollection` block. `field` is the key path under
- * the block (e.g. `workflowRuns`), or undefined for the block itself.
- */
 export interface RetentionConfigProblem {
   field?: string;
   message: string;
-  /** The value used instead; absent, the key is dropped. */
   replacement?: string;
 }
 
 /**
- * The longest retention accepted: far beyond any real need, and far inside
- * the range a Date can hold, so `now - retention` is always a valid cutoff.
- * A longer value (say `300000y`, meant as "forever") would give an invalid
- * date, against which every age check fails.
+ * capped so now - retention is always a valid Date; a longer value would give
+ * an invalid date that fails every age check
  */
 export const MAX_RETENTION_MS = 1000 * 365 * 24 * 60 * 60 * 1000;
 
-/** Keys `garbageCollection` accepted before swamp-club#3473. */
 const LEGACY_KEYS: readonly string[] = ["workflowRuns", "outputs"];
 
 /**
- * Checks a raw `garbageCollection` value.
- *
- * - `errors` refuse the file. Only what was refused before swamp-club#3473
- *   is: a block that is not a mapping, and a `workflowRuns` or `outputs`
- *   that is not a positive duration.
- * - `ignored` keys are dropped with a warning: a bad value in a key
- *   recognised since then (a repo may already carry one, silently ignored
- *   until now), a legacy key too long for a date, and an `evaluatedSnapshots`
- *   longer than the run retention.
- * - `unknownKeys` are warned about and ignored, as before.
+ * errors refuse the file; ignored keys are dropped with a warning; unknownKeys
+ * are warned about and ignored
  */
 export function checkRetentionConfig(
   raw: unknown,
@@ -140,9 +117,8 @@ export function checkRetentionConfig(
           `garbageCollection.${field} must be a positive duration like 1h, 7d, or 2w`,
       });
     } else if (ms > MAX_RETENTION_MS) {
-      // Too long for a date: means "forever", so it is held at the longest
-      // retention rather than dropped (a dropped key would fall back to a
-      // shorter default).
+      // too long for a date means forever, so hold it at the longest retention;
+      // dropping it would fall back to a shorter default
       ignored.push({
         field,
         message:
@@ -182,7 +158,6 @@ export function checkRetentionConfig(
   return { errors, ignored, unknownKeys };
 }
 
-/** The config with every ignored key dropped or replaced. */
 export function withoutIgnored(
   config: RetentionConfig,
   ignored: readonly RetentionConfigProblem[],
@@ -200,20 +175,15 @@ export function withoutIgnored(
 }
 
 /**
- * Resolves how long each kind of history is kept. Precedence for a kind:
- * a one-off override (e.g. `--older-than`), then the kind's own key, then
- * `retention`. A kind with none of these has no retention: automatic
- * retention leaves it alone, and the manual commands fall back to their
- * own built-in defaults.
+ * precedence: one-off override, then the kind's own key, then retention; a kind
+ * with none has no retention and manual commands use their own defaults
  */
 export class RetentionPolicy {
   private constructor(private readonly config: RetentionConfig) {}
 
   /**
-   * The policy of a `garbageCollection` block as `.swamp.yaml` holds it.
-   * Values {@link checkRetentionConfig} ignores are dropped or held here,
-   * never in the file: a command that rewrites `.swamp.yaml` must save the
-   * user's block as written.
+   * ignored values are dropped here, never in the file: a command that rewrites
+   * .swamp.yaml must save the user's block as written
    */
   static fromConfig(config: RetentionConfig | undefined): RetentionPolicy {
     if (config === undefined) return new RetentionPolicy({});
@@ -223,16 +193,10 @@ export class RetentionPolicy {
     );
   }
 
-  /** True when retention runs on its own (serve timer, CLI end of command). */
   get automatic(): boolean {
     return this.config.automatic === true;
   }
 
-  /**
-   * The configured duration string for a kind, after precedence. Evaluated
-   * snapshots without their own value follow the run retention, so they go
-   * with their runs (and orphans are swept) whenever runs are reaped.
-   */
   durationFor(kind: RetentionKind): string | undefined {
     // Data retention deletes latest versions, a behavior's current state
     // included: it applies only when `data` is set, never from the shared
@@ -248,22 +212,16 @@ export class RetentionPolicy {
     return this.config[kind] ?? this.config.retention;
   }
 
-  /** True when the kind has its own key rather than a default it follows. */
   isExplicit(kind: RetentionKind): boolean {
     return this.config[kind] !== undefined;
   }
 
-  /** How long a kind is kept, in milliseconds; undefined when unset. */
   retentionMs(kind: RetentionKind, overrideMs?: number): number | undefined {
     if (overrideMs !== undefined) return overrideMs;
     const duration = this.durationFor(kind);
     return duration === undefined ? undefined : parseDataDuration(duration);
   }
 
-  /**
-   * The instant before which items of a kind are reaped; undefined when the
-   * kind has no retention.
-   */
   cutoff(
     kind: RetentionKind,
     now: Date,
@@ -276,7 +234,6 @@ export class RetentionPolicy {
     return Number.isFinite(cutoff.getTime()) ? cutoff : undefined;
   }
 
-  /** True when any kind has a retention. */
   get hasAnyRetention(): boolean {
     return RETENTION_KINDS.some((kind) => this.durationFor(kind) !== undefined);
   }

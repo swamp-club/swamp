@@ -18,20 +18,9 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * Where a step context's outputs came from (design/enablers/typed-secrets.md
- * Section 6.1, typed-secrets 4.2). `steps.<name>.outputs` is a flat merge of
- * the attributes of the JSON resources a step wrote, which loses each
- * record's identity and its sensitive-fields tag. The sources keep both: the
- * stored records, in write order, so the typed evaluator can view the
- * outputs through the accessor adapter, with each tagged field a `Secret`,
- * and name a refusal by record without a value.
- *
- * A step context carries its sources under a symbol key, as the expression
- * context carries the run's sensitive values (`sensitive_context.ts`): CEL
- * reads string keys only, `JSON.stringify` drops it, and object spread and
- * `Object.getOwnPropertyDescriptors` copy it. Where a step context must
- * cross a string-keyed copy, the deferred-binding capture, the persisted form
- * below carries the sources as plain data and is re-attached on rebind.
+ * steps.<name>.outputs merges attributes, losing identity and sensitive tags,
+ * so the stored records are kept in write order under a symbol key CEL cannot
+ * read; a persisted form carries them across copies
  */
 
 import { z } from "zod";
@@ -70,10 +59,6 @@ interface CarriesStepOutputSources {
   [STEP_OUTPUT_SOURCES]?: StepOutputSources;
 }
 
-/**
- * Attaches the sources a step context's outputs were merged from, or
- * nothing when `sources` is undefined or empty. Returns the context.
- */
 export function attachStepOutputSources<T extends object>(
   stepContext: T,
   sources: StepOutputSources | undefined,
@@ -84,7 +69,6 @@ export function attachStepOutputSources<T extends object>(
   return stepContext;
 }
 
-/** The sources a step context carries, if any. */
 export function stepOutputSourcesOf(
   stepContext: unknown,
 ): StepOutputSources | undefined {
@@ -94,7 +78,6 @@ export function stepOutputSourcesOf(
   return (stepContext as CarriesStepOutputSources)[STEP_OUTPUT_SOURCES];
 }
 
-/** The persisted form of one record: plain data, validated on read. */
 export const StepOutputRecordSchema = z.object({
   id: z.string(),
   name: z.string(),
@@ -105,13 +88,11 @@ export const StepOutputRecordSchema = z.object({
   attributes: z.record(z.string(), z.unknown()),
 });
 
-/** The persisted form of a step context's sources. */
 export const StepOutputSourcesSchema = z.array(z.object({
   path: z.array(z.string()),
   records: z.array(StepOutputRecordSchema),
 }));
 
-/** The key the persisted form carries the sources under. */
 const SOURCES_KEY = "sources";
 
 /** Defines an own enumerable key, so a step named __proto__ stays a key. */

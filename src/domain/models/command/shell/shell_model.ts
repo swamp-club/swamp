@@ -48,15 +48,11 @@ import {
 
 const shellStrategy = selectShellStrategy();
 
-/**
- * Schema for shell model input attributes.
- */
 export const ShellInputAttributesSchema = z.object({
   run: z.string().min(1).meta({ foreignTemplate: true }).describe(
     "The shell command to execute",
   ),
-  // A path destination: a secret never becomes a working directory
-  // (design/enablers/typed-secrets.md Section 7.1).
+  // a path destination: a secret never becomes a working directory
   workingDir: z.string().meta({ secrets: "refuse" }).optional().describe(
     "Working directory for command execution",
   ),
@@ -71,15 +67,11 @@ export const ShellInputAttributesSchema = z.object({
   ),
 });
 
-/**
- * Type for shell model input attributes.
- */
 export type ShellInputAttributes = z.infer<typeof ShellInputAttributesSchema>;
 
 /**
- * Schema for shell model data attributes.
- * Note: stdout/stderr are now stored in log artifacts, but kept here for
- * backward compatibility with existing outputs and for structured access.
+ * stdout and stderr live in log artifacts but stay here for compatibility with
+ * existing outputs and structured access
  */
 export const ShellDataAttributesSchema = z.object({
   exitCode: z.number().int().describe("Exit code of the command"),
@@ -94,14 +86,8 @@ export const ShellDataAttributesSchema = z.object({
   stderr: z.string().optional().describe("Standard error from the command"),
 });
 
-/**
- * Type for shell model data attributes.
- */
 export type ShellDataAttributes = z.infer<typeof ShellDataAttributesSchema>;
 
-/**
- * The shell model type identifier.
- */
 export const SHELL_MODEL_TYPE = ModelType.create("command/shell");
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
@@ -111,18 +97,9 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 }
 
 /**
- * The shell's own destination policy (design/enablers/typed-secrets.md
- * Section 7.2), run by the method boundary before any secret is loaded, over
- * the arguments as `unresolvedMethodArgs` carries them, so `run` and `env`
- * authored under `globalArguments` are covered too. A secret in an
- * environment variable name is refused: expression evaluation never reaches
- * an object key, but an `env` authored as a JSON string is parsed by argument
- * coercion, which is why the boundary coerces the arguments before this runs.
- * A data-origin secret at a
- * position no environment reference can expand (a here-document with a
- * quoted delimiter; PowerShell single quotes) is refused instead of pasted
- * into the command. A `run` that is not a string or an `env` that is not an
- * object is left to argument validation.
+ * refuses a secret in an env variable name, and a data-origin secret where no
+ * env reference can expand (quoted here-doc delimiter, PowerShell single
+ * quotes); runs before any secret loads
  */
 export function refuseShellSecretDestinations(
   { arguments: args, secrets }: SecretDestinationArgs,
@@ -160,24 +137,17 @@ export function refuseShellSecretDestinations(
   );
 }
 
-/** The error code of data text placed where the shell cannot take it. */
 export const SHELL_DATA_PLACEMENT_REFUSED = "shell_data_placement_refused";
 
-/** How to pass data that is meant to be split or run, in every refusal. */
 const DATA_IN_RUN_WORKAROUND =
   "To split a value into words or run it as code, pass it in the env " +
   "argument and reference the variable in run (POSIX: an unquoted $NAME " +
   "splits it, eval runs it; PowerShell: $env:NAME)";
 
 /**
- * The shell's data placement (swamp-club#3868, design/enablers/expressions.md
- * Shell Safety): text in `run` that came from data (a caller's or a webhook's
- * input, a data read, a step output, an environment variable) reaches the
- * shell as one literal word through a generated `__SWAMP_IN_<n>` variable in
- * `env`, never as syntax. Authored text is unchanged. A data range where no
- * reference expands, a `run` that is nothing but data, and a host whose
- * shell swamp does not know are refused. An `env` authored as a JSON string
- * is coerced as argument validation would, so the generated names join it.
+ * data text in run reaches the shell as one literal word through a generated
+ * __SWAMP_IN_<n> env variable, never as syntax; a data range with no expanding
+ * reference, an all-data run or an unknown shell is refused
  */
 export function placeShellDataSplices(
   { arguments: args, dataRangesOf, platform }: DataSpliceArgs,
@@ -236,17 +206,13 @@ export function placeShellDataSplices(
   return { run: placed.command, env: { ...authoredEnv, ...placed.env } };
 }
 
-/** The error code of a child environment value swamp cannot pass on. */
 export const SHELL_ENVIRONMENT_VALUE_REFUSED =
   "shell_environment_value_refused";
 
 /**
- * Refuses a child environment value that holds a NUL character, which no
- * process environment can carry, before anything is launched
- * (design/enablers/typed-secrets.md Section 7.1). The message names the
- * authored variable, or for a generated name the vault and key the value
- * was loaded for, never the value. This check depends on loaded values, so
- * it comes after the load, unlike the destination refusals, which need none.
+ * the message names the variable, or the vault and key for a generated name,
+ * never the value; depends on loaded values so it runs after the load, unlike
+ * the destination refusals
  */
 function assertNoNulInEnvironment(
   env: Record<string, string>,
@@ -275,9 +241,6 @@ function assertNoNulInEnvironment(
   }
 }
 
-/**
- * Executes a shell command and captures the output.
- */
 async function executeCommand(
   args: ShellInputAttributes,
   context: MethodContext,
@@ -291,14 +254,9 @@ async function executeCommand(
   const redact = (text: string) =>
     context.redactor?.hasSecrets ? context.redactor.redact(text) : text;
 
-  // Resolve vault secrets via environment variables to prevent shell injection.
-  // The unresolved run field contains sentinel tokens for vault secrets.
-  // The strategy replaces sentinels with shell-appropriate env var references
-  // (`${VAR}` on POSIX, `$env:VAR` on PowerShell) and returns the raw secret
-  // values to inject via the process environment, so the shell never parses
-  // secret content as syntax. Done before the lock hand-off and the try
-  // below: a refusal here is an error of the step, with no result written
-  // for a command that never launched.
+  // sentinels become env var references and raw values go via the process
+  // environment, so the shell never parses secret content; done before the lock
+  // hand-off so a refusal writes no result
   let shellCommand = args.run;
   let shellEnv = args.env ?? {};
   let envNames: ReadonlyMap<string, string> = new Map();
@@ -385,27 +343,20 @@ async function executeCommand(
     exitCode = result.exitCode;
     durationMs = result.durationMs;
   } catch (error) {
-    // Handle execution errors (command not found, timeout, etc.)
     const rawError = error instanceof Error ? error.message : String(error);
     stderr = redact(rawError);
     exitCode = -1;
     stoppedByCancel = context.signal.aborted;
   }
 
-  // The command has returned, so this run no longer waits on anything it
-  // left running. Take the locks back before writing under them; a failure
-  // here fails the method with nothing written. A command the cancel
-  // stopped does not wait for a structural command still working under
-  // them: the end rejects and the step stays cancelled. A command that
-  // finished first waits, so a later cancel does not discard its output.
+  // take the locks back before writing under them; a cancel-stopped command
+  // does not wait for work still under them, one that finished first does, so a
+  // later cancel keeps its output
   await lockHandOff.end(stoppedByCancel ? context.signal : undefined);
 
-  // Persisted before the exit code is judged, not after. The output is the
-  // only account of what the command did, and a command that failed is the one
-  // whose account is worth having: a red gate used to arrive as
-  // `Command exited with code 1` and nothing else, so a review that genuinely
-  // voted to reject and a review whose CLI crashed were indistinguishable, and
-  // a failing test suite named no failing test.
+  // persisted before the exit code is judged: the output is the only account of
+  // what the command did, and a failed command is the one whose account is
+  // worth having
   const resultAttributes = {
     exitCode,
     executedAt: new Date().toISOString(),
@@ -415,7 +366,6 @@ async function executeCommand(
     stderr,
   };
 
-  // Create output log content
   const outputLogParts: string[] = [];
   if (stdout) {
     outputLogParts.push(`[stdout]\n${stdout}`);
@@ -435,11 +385,8 @@ async function executeCommand(
   const logHandle = await logWriter.writeText(outputLogContent);
 
   if (exitCode !== 0 && !args.ignoreExitCode) {
-    // The handles ride along on the error. The execution service looks for
-    // exactly this and turns them into data artifacts on the failed step, so
-    // `swamp data get` reaches the output of a step that failed — the same
-    // route a model that writes data and then throws on a FAIL verdict
-    // already takes.
+    // the handles ride on the error; the execution service turns them into data
+    // artifacts on the failed step so swamp data get reaches its output
     const failure = new Error(`Command exited with code ${exitCode}`) as
       & Error
       & {
@@ -452,14 +399,6 @@ async function executeCommand(
   return { dataHandles: [resultHandle, logHandle] };
 }
 
-/**
- * The shell model definition.
- *
- * A model that executes shell commands on the host system and captures
- * the output (stdout, stderr, exit code).
- *
- * Self-registers with the global model registry when this module is imported.
- */
 export const shellModel: ModelDefinition = defineModel({
   type: SHELL_MODEL_TYPE,
   version: "2026.02.09.1",

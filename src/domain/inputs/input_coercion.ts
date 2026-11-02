@@ -22,11 +22,6 @@ import type {
   JsonSchemaProperty,
 } from "../definitions/definition.ts";
 
-/**
- * Coerces string input values to match their declared types in an InputsSchema.
- * Only coerces values that are strings and have a declared type in the schema.
- * Without a schema, values are returned unchanged.
- */
 export function coerceInputTypes(
   inputs: Record<string, unknown>,
   schema?: InputsSchema,

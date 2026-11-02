@@ -18,13 +18,8 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * Reports whether a parsed YAML document is a workflow definition — an
- * object with a top-level `jobs` key — rather than some other YAML that
- * happens to live next to workflows, such as an extension manifest or a
- * data file an extension ships for a model to read.
- *
- * Only the key's presence is checked, not its shape, so a workflow whose
- * `jobs` is malformed still counts and its construction error surfaces.
+ * only the presence of jobs is checked, not its shape, so a workflow with
+ * malformed jobs still counts and its construction error surfaces
  */
 export function isWorkflowDocument(
   data: unknown,

@@ -114,7 +114,6 @@ Deno.test("CompositeDataQueryService: query deduplicates when same record exists
   const { composite, persistentRepo, ephemeralRepo } =
     createCompositeQueryService();
 
-  // Same name saved to both stores — ephemeral should win
   const ephData = createTestData({ name: "shared", ownerRef: "eph" });
   const persData = createTestData({ name: "shared", ownerRef: "pers" });
 
@@ -142,15 +141,10 @@ Deno.test("CompositeDataQueryService: querySync returns merged and deduplicated 
   const { composite, persistentRepo, ephemeralRepo } =
     createCompositeQueryService();
 
-  // Use synchronous save by calling the sync-populated repos directly.
-  // InMemoryUnifiedDataRepository.save is async, but the catalog is already
-  // populated after construction, so querySync works once data is present.
-  // We need to save data first, then query synchronously.
   const ephData = createTestData({ name: "shared", ownerRef: "eph" });
   const persData = createTestData({ name: "shared", ownerRef: "pers" });
   const persOnly = createTestData({ name: "pers-only", ownerRef: "pers" });
 
-  // Save all data then query synchronously
   const setup = Promise.all([
     ephemeralRepo.save(
       TEST_TYPE,
@@ -179,7 +173,6 @@ Deno.test("CompositeDataQueryService: querySync returns merged and deduplicated 
     const names = results.map((r) => r.name).sort();
     assertEquals(names, ["pers-only", "shared"]);
 
-    // "shared" should come from the ephemeral store
     const shared = results.find((r) => r.name === "shared");
     assertEquals(shared?.ownerRef, "eph");
   });
@@ -210,7 +203,6 @@ Deno.test("CompositeDataQueryService: query with select concatenates without ded
 
   const results = await composite.query("true", { select: "name" });
 
-  // Both projected values are included — no dedup on projections
   assertEquals(results.length, 2);
   assertEquals(results[0], "shared");
   assertEquals(results[1], "shared");

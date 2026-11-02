@@ -63,12 +63,10 @@ type OfflineSpec = {
   append: boolean;
 }[];
 
-/** What the oracle knows of each write, by its origin tag. */
 interface Write {
   readonly observedAt: number;
 }
 
-/** Applies the online writes, each committed at its own minute. */
 async function landOnline(
   history: FixtureHistory,
   online: OnlineSpec,
@@ -95,17 +93,12 @@ async function landOnline(
   }
 }
 
-/**
- * A member's offline commits, numbered from its copy's high-water marks and
- * its own queue, as the outbox numbers them.
- */
 async function offlineCommits(
   member: string,
   copyHighWater: (name: string) => number,
   specs: OfflineSpec,
   writes: Map<string, Write>,
 ): Promise<Commit[]> {
-  /** Each name's last queued version: its number, origin and createdAt. */
   const queued = new Map<
     string,
     { version: number; origin: string; createdAt: string }
@@ -159,7 +152,6 @@ async function offlineCommits(
   return commits;
 }
 
-/** The origin of the content a name's latest holds. */
 function latestOrigin(
   history: FixtureHistory,
   name: string,
@@ -169,7 +161,6 @@ function latestOrigin(
   return history.lookups().content(name, latest)?.metadata.tags.origin;
 }
 
-/** Lands a flush, checking bindings and partition rules on every commit. */
 async function flush(
   history: FixtureHistory,
   commits: Commit[],
@@ -238,7 +229,6 @@ Deno.test("rebaseOfflineCommits: never renumbers or changes a committed version,
             assert(history.partition.versions(name).includes(version));
           }
         }
-        // Commits rebased together never share a version.
         for (const name of NAMES) {
           const landed = results.flatMap((r) =>
             r.kind === "rebased"
@@ -263,7 +253,6 @@ Deno.test("rebaseOfflineCommits: latest is the highest live version and holds th
         const writes = new Map<string, Write>();
         const copy = new Map(NAMES.map((n) => [n, 0]));
         await landOnline(history, online, writes, "o");
-        // The oracle: process the offline saves in order.
         const current = new Map<string, number | undefined>();
         for (const name of NAMES) {
           const origin = latestOrigin(history, name);

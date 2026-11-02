@@ -17,19 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * The partition aggregate (swamp-club#3233): the storage of one aggregate
- * instance, and the rules every commit to it must keep.
- *
- * In memory and pure. Persisting partitions is the commit store's job
- * (swamp-club#3236): it applies every commit through
- * {@link Partition.append} to enforce the same rules, and rebuilds a
- * partition from its latest {@link Partition.snapshot} plus the commits
- * after it.
- *
- * @module
- */
-
 import { maxOf } from "../array_extrema.ts";
 import { isSha256Hex } from "./blob_ref.ts";
 import type { Commit } from "./commit.ts";
@@ -39,31 +26,26 @@ import type { PartitionKey } from "./partition_key.ts";
 import { RecordKey } from "./record_key.ts";
 import { type VersionRange, VersionRanges } from "./version_ranges.ts";
 
-/** Why a partition refused a commit. */
 export type CommitRejection =
-  /** The commit is for another partition. */
   | "partition-mismatch"
   /**
    * The commit's seq is not the partition's seq plus one; for
    * {@link Partition.appendObserved}, not past the partition's seq.
    */
   | "seq-gap"
-  /** The commit's fence is below the partition's highest. */
   | "stale-fence"
   /**
-   * A lease op's fence is below the partition's lease fence: the lease it
-   * was taken under has since changed hands (swamp-club#4121).
+   * a lease op's fence is below the partition's lease fence: the lease it was
+   * taken under has since changed hands
    */
   | "stale-lease"
   /**
-   * The commit names a model lease serve does not hold for the caller and
-   * this partition, or names none while one covers it (swamp-club#4121).
-   * Raised by serve, never by the partition.
+   * the commit names a model lease serve does not hold for the caller and this
+   * partition, or none while one covers it; raised by serve, never by the
+   * partition
    */
   | "lease-lost"
-  /** The commit carries no fence, but the partition has seen one. */
   | "unfenced"
-  /** A put's or tombstone's `expect` does not hold. */
   | "expect-failed"
   /**
    * A data-version op names a version its name already holds live, and the
@@ -71,24 +53,19 @@ export type CommitRejection =
    */
   | "version-live"
   /**
-   * A data-version op names a version its name recorded and then removed,
-   * and the commit carries no `data.append` put for that version
-   * (swamp-club#3532): a version number never names different content.
+   * a data-version op names a version its name recorded and then removed, with
+   * no data.append put for it in the commit: a version number never names
+   * different content
    */
   | "version-reused"
   /**
-   * A retry older than the commit outbox's retry bound (swamp-club#3490):
-   * refused before it is appended, since the store may no longer know its
-   * txnId. Raised by the writer, never by the partition.
+   * a retry older than the commit outbox's retry bound is refused before
+   * appending, since the store may not know its txnId; raised by the writer,
+   * never by the partition
    */
   | "retry-expired";
 
-/** A commit the partition refused. The partition is unchanged. */
 export class CommitRejectedError extends Error {
-  /**
-   * The record whose `expect` did not hold, for reason `expect-failed`
-   * (swamp-club#3915); undefined for every other reason.
-   */
   readonly key?: RecordKey;
 
   constructor(
@@ -102,9 +79,7 @@ export class CommitRejectedError extends Error {
   }
 }
 
-/** What {@link Partition.append} did with a commit it accepted. */
 export type AppendResult =
-  /** The commit applied and is the partition's new last commit. */
   | { readonly kind: "appended"; readonly seq: number }
   /**
    * The partition already holds a commit with this txnId: a retry of a
@@ -114,40 +89,28 @@ export type AppendResult =
   | { readonly kind: "duplicate" };
 
 /**
- * A partition's state at one seq, as plain data: what the commit store keeps
- * so it can rebuild a partition without replaying every commit. Lists are
- * sorted, so equal states serialize equally.
- *
- * It leaves out the txnIds applied so far. They grow with every commit the
- * partition ever had, while the rest grows only with its live records and
- * names, so {@link Partition.restore} takes a lookup for them instead.
+ * leaves out applied txnIds, which grow with every commit the partition ever
+ * had; Partition.restore takes a lookup for them instead
  */
 export interface PartitionSnapshot {
   readonly v: 1;
   readonly partition: string;
   readonly seq: number;
   readonly highestFence?: number;
-  /** The highest fence a lease op carried (swamp-club#4121). */
   readonly leaseFence?: number;
   readonly leaseHolder?: string;
-  /** Each present record's key and SHA-256. */
   readonly records: readonly (readonly [string, string])[];
   readonly names: readonly {
     readonly name: string;
     readonly live: readonly number[];
     readonly highWater: number;
-    /** The versions recorded and then removed, as ranges; absent when none. */
     readonly removed?: readonly VersionRange[];
   }[];
 }
 
-/** One data name's versions. */
 interface DataName {
-  /** The versions not yet removed. */
   readonly live: Set<number>;
-  /** The greatest version ever recorded; it never decreases. */
   highWater: number;
-  /** The versions recorded and then removed; never recorded again. */
   removed: VersionRanges;
 }
 
@@ -155,50 +118,12 @@ function nameVersion(name: string, version: number): string {
   return `${version}:${name}`;
 }
 
-/** The SHA-256 of a present record; null marks a removal in a draft. */
 type RecordState = string | null;
 
 /**
- * The storage of one aggregate instance. Its rules, kept by
- * {@link Partition.append} for every commit:
- *
- * - `seq` is gapless: a partition accepts only its current seq plus one.
- *   {@link Partition.appendObserved}, for a follower's copy of another
- *   store's log (swamp-club#3985), accepts any later seq instead.
- * - A commit whose txnId the partition holds is a no-op, not a second commit.
- * - A data version is recorded only when its name does not hold it live, so
- *   two writers can never both claim one live version, and has never held
- *   it, so one version number never names two contents (swamp-club#3532):
- *   a version recorded and then removed is refused as `version-reused`.
- *   Versions may still arrive out of order (swamp-club#3250): a deferred
- *   version promoted after a higher one, or parallel writers finishing out
- *   of order, records a version below the high-water mark that was never
- *   recorded. The one exception re-records a version, live or removed: an
- *   append, whose `data.append` put for that name and version comes earlier
- *   in the commit than the data-version op; each such put lets one op
- *   through, and a removed version it re-records is no longer removed. Each
- *   name has exactly one latest, its greatest live version.
- *
- *   Writers allocate above the high-water mark, so a refusal means a writer
- *   bypassed that: for example orphan reclaim re-staging, under a new
- *   txnId, a promoted version that has since been removed. The refused
- *   partition fails the step that wrote it instead of reusing the number.
- * - A put's or tombstone's `expect` that does not hold refuses the commit.
- * - A commit carrying a fence below the highest the partition has seen is
- *   refused. Once a partition has seen a
- *   fence, a commit without one is refused too, so a writer cannot slip past
- *   fencing by leaving it out. Every v3 writer holds a fence, the solo writer
- *   lock's in solo mode and the leader lease's in team mode
- *   (swamp-club#3234), so only a partition that has never seen one accepts
- *   an unfenced commit.
- * - A lease op carrying a fence below the partition's lease fence is
- *   refused as `stale-lease`. A lease fence is a model lease's
- *   (swamp-club#4121), counted per partition apart from the writer's fence:
- *   the two never compare.
- *
- * A commit applies whole or not at all: a refused commit leaves the
- * partition exactly as it was. `append` is synchronous, so its checks and its
- * changes never interleave with another call.
+ * a data version already live or once removed is refused unless a data.append
+ * put re-records it, so a number never names two contents; a refusal means a
+ * writer bypassed allocating above the high-water mark
  */
 export class Partition {
   #seq = 0;
@@ -206,26 +131,20 @@ export class Partition {
   #leaseFence: number | undefined;
   #leaseHolder: string | undefined;
   readonly #txnIds = new Set<string>();
-  /** For a restored partition, whether a txnId applied before its snapshot. */
   #priorTxn: (txnId: string) => boolean = () => false;
   readonly #records = new Map<string, string>();
   readonly #names = new Map<string, DataName>();
 
   private constructor(readonly key: PartitionKey) {}
 
-  /** A partition with no commits. */
   static empty(key: PartitionKey): Partition {
     return new Partition(key);
   }
 
   /**
-   * Rebuilds a partition from {@link Partition.snapshot}'s output. Throws
-   * when the value is not a snapshot of `key` or breaks the partition's
-   * invariants, so a damaged snapshot is never trusted.
-   *
-   * `priorTxn` answers whether a txnId applied at or before the snapshot's
-   * seq, which the snapshot does not hold. It must be synchronous and exact:
-   * a false negative would let a retry of an earlier commit apply twice.
+   * throws on a value that is not a snapshot of key or breaks the invariants;
+   * priorTxn must be synchronous and exact, since a false negative would let a
+   * retry of an earlier commit apply twice
    */
   static restore(
     key: PartitionKey,
@@ -372,7 +291,6 @@ export class Partition {
     return partition;
   }
 
-  /** The partition's whole state, for {@link Partition.restore}. */
   snapshot(): PartitionSnapshot {
     return {
       v: 1,
@@ -401,61 +319,47 @@ export class Partition {
     };
   }
 
-  /** The seq of the last commit applied; 0 before any. */
   get seq(): number {
     return this.#seq;
   }
 
-  /** The highest fence any accepted commit carried. */
   get highestFence(): number | undefined {
     return this.#highestFence;
   }
 
-  /** The highest fence any accepted lease op carried (swamp-club#4121). */
   get leaseFence(): number | undefined {
     return this.#leaseFence;
   }
 
-  /** The holder named by the last lease op applied. */
   get leaseHolder(): string | undefined {
     return this.#leaseHolder;
   }
 
   /**
-   * How many txnIds the partition holds in memory: those applied since it
-   * was created or restored. The ones before a snapshot are looked up
-   * instead. For bounding a long-cached partition (swamp-club#3915).
+   * txnIds applied since the partition was created or restored; earlier ones
+   * are looked up instead; for bounding a long-cached partition
    */
   get txnIdCount(): number {
     return this.#txnIds.size;
   }
 
-  /** Whether a commit with this txnId has applied. */
   hasTxn(txnId: string): boolean {
     return this.#txnIds.has(txnId) || this.#priorTxn(txnId);
   }
 
-  /** The digest of the record at `key`, or undefined when it is absent. */
   record(key: RecordKey): { readonly sha256: string } | undefined {
     const sha256 = this.#records.get(key.toString());
     return sha256 === undefined ? undefined : { sha256 };
   }
 
-  /** The keys of every present record, sorted. */
   recordKeys(): readonly string[] {
     return [...this.#records.keys()].sort();
   }
 
-  /** Every data name that has ever had a version, sorted. */
   dataNames(): readonly string[] {
     return [...this.#names.keys()].sort();
   }
 
-  /**
-   * Each data name's version marks, sorted by name: what
-   * {@link snapshot} records of it less its live versions, built without
-   * the records (swamp-club#4166).
-   */
   dataNameMarks(): DataNameMarks[] {
     return [...this.#names.entries()]
       .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
@@ -466,32 +370,26 @@ export class Partition {
       }));
   }
 
-  /** A name's live versions, ascending. */
   versions(name: string): readonly number[] {
     return [...(this.#names.get(name)?.live ?? [])].sort((a, b) => a - b);
   }
 
-  /** A name's latest version: its greatest live one, if any. */
   latest(name: string): number | undefined {
     return maxOf(this.#names.get(name)?.live ?? []);
   }
 
-  /** The greatest version a name ever had; 0 for a name never written. */
   highWater(name: string): number {
     return this.#names.get(name)?.highWater ?? 0;
   }
 
-  /** Whether a name recorded `version` and then removed it. */
   removed(name: string, version: number): boolean {
     return this.#names.get(name)?.removed.has(version) ?? false;
   }
 
   /**
-   * Keeps versions a truncation dropped from being handed out again
-   * (swamp-club#3532): raises the name's high-water mark to them and counts
-   * each one not live here as removed. A writer whose commits were truncated
-   * away may have shared those versions already. Returns whether anything
-   * changed.
+   * keeps versions a truncation dropped from being handed out again: raises the
+   * high-water mark and counts each non-live one as removed, since a truncated
+   * writer may have shared them
    */
   retainDroppedVersions(name: string, versions: readonly number[]): boolean {
     let entry = this.#names.get(name);
@@ -514,11 +412,9 @@ export class Partition {
   }
 
   /**
-   * Keeps what `later`, a state of this partition past this one, knew of its
-   * names' versions: each high-water mark, and each removed version not live
-   * here. A truncation below the head of an earlier one uses it, so the
-   * versions that one retained are not lost (swamp-club#3532). Returns
-   * whether anything changed.
+   * keeps each high-water mark and removed version of a later state, so a
+   * truncation below an earlier one's head does not lose the versions that one
+   * retained
    */
   retainVersionsOf(later: Partition): boolean {
     let changed = false;
@@ -543,42 +439,18 @@ export class Partition {
   }
 
   /**
-   * Applies a commit, or refuses it with a {@link CommitRejectedError} and
-   * changes nothing. A commit for another partition is refused first. Then a
-   * commit whose txnId the partition already holds is a duplicate, checked
-   * before seq, so retrying a commit that landed is a no-op even though its
-   * seq is now behind. Retries go to the same partition, so checking the
-   * partition first never turns a retry into a refusal.
-   *
-   * `replay` is for commits the store already holds: they were accepted
-   * under the rules of their time, and a store written before
-   * `version-reused` existed may hold a reused version, so replay does not
-   * refuse one. It still tracks removed versions, so the next live commit
-   * is checked against the whole history.
+   * a duplicate txnId is checked before seq, so retrying a landed commit is a
+   * no-op; replay does not refuse a reused version an older store may hold, but
+   * still tracks removed versions
    */
   append(commit: Commit, options: { replay?: boolean } = {}): AppendResult {
     return this.#apply(commit, options.replay === true, false);
   }
 
   /**
-   * Applies a commit observed in another store's log, or refuses it with a
-   * {@link CommitRejectedError} and changes nothing (swamp-club#3985).
-   *
-   * In team mode a checkout's commit log is a copy of serve's, filled from
-   * serve's changes feed, and serve leaves out the commits a caller may not
-   * read: the seqs a follower sees of a partition can have permanent holes.
-   * So this accepts any commit whose seq is past the partition's, not only
-   * the next one, and the partition's seq becomes the commit's. A duplicate
-   * txnId is still a no-op, a seq at or below the partition's under a new
-   * txnId is still refused as `seq-gap`, and the partition and fence rules
-   * still hold.
-   *
-   * A hidden commit's changes are not applied here, so a follower partition
-   * is the state of the commits it saw, not the writer's partition. The
-   * rules that read that state (an op's `expect`, `version-live` and
-   * `version-reused`) are therefore serve's to judge, which it did before
-   * the commit landed: a follower never refuses a landed commit for a
-   * record a hidden commit changed.
+   * a follower's log copy can have permanent seq holes since serve omits
+   * unreadable commits, so any later seq is accepted; expect, version-live and
+   * version-reused are serve's to judge, not the follower's
    */
   appendObserved(
     commit: Commit,

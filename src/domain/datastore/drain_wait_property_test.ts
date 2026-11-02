@@ -43,7 +43,6 @@ const arbDrainWait = (id: string): fc.Arbitrary<DrainWait> =>
     waitingOn: fc.uniqueArray(arbLockId),
   });
 
-/** Up to five drains with distinct ids. */
 const arbDrainWaits: fc.Arbitrary<DrainWait[]> = fc
   .integer({ min: 1, max: 5 })
   .chain((count) =>

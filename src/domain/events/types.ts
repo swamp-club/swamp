@@ -17,28 +17,11 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Domain Events for the swamp repository system.
- *
- * These events are emitted by repositories when mutations occur,
- * allowing the RepoIndexService to maintain logical views.
- */
-
-/**
- * Base interface for all domain events.
- */
 export interface DomainEvent {
   readonly type: string;
   readonly timestamp: Date;
 }
 
-// ============================================================================
-// Model Events
-// ============================================================================
-
-/**
- * Emitted when a new model input is created.
- */
 export interface ModelCreated extends DomainEvent {
   readonly type: "ModelCreated";
   readonly modelType: string;
@@ -46,32 +29,23 @@ export interface ModelCreated extends DomainEvent {
   readonly modelName: string;
 }
 
-/**
- * Emitted when a model input or its associated artifacts are updated.
- */
 export interface ModelUpdated extends DomainEvent {
   readonly type: "ModelUpdated";
   readonly modelType: string;
   readonly modelInputId: string;
   readonly modelName: string;
   /**
-   * The data versions the update wrote, by data name, when the publisher
-   * knows them. Serve on a filesystem datastore matches them against the
-   * versions it sees on disk to tell its own writes from a peer's
-   * (swamp-club#3371).
+   * serve on a filesystem datastore matches them against the versions it sees
+   * on disk to tell its own writes from a peer's
    */
   readonly dataVersions?: readonly DataVersionRef[];
 }
 
-/** One version of a named data item, as it is laid out on disk. */
 export interface DataVersionRef {
   readonly name: string;
   readonly version: number;
 }
 
-/**
- * Emitted when a model input is deleted.
- */
 export interface ModelDeleted extends DomainEvent {
   readonly type: "ModelDeleted";
   readonly modelType: string;
@@ -79,13 +53,6 @@ export interface ModelDeleted extends DomainEvent {
   readonly modelName: string;
 }
 
-// ============================================================================
-// Definition Events
-// ============================================================================
-
-/**
- * Emitted when a new definition is created.
- */
 export interface DefinitionCreated extends DomainEvent {
   readonly type: "DefinitionCreated";
   readonly modelType: string;
@@ -93,9 +60,6 @@ export interface DefinitionCreated extends DomainEvent {
   readonly definitionName: string;
 }
 
-/**
- * Emitted when a definition is updated.
- */
 export interface DefinitionUpdated extends DomainEvent {
   readonly type: "DefinitionUpdated";
   readonly modelType: string;
@@ -103,9 +67,6 @@ export interface DefinitionUpdated extends DomainEvent {
   readonly definitionName: string;
 }
 
-/**
- * Emitted when a definition is deleted.
- */
 export interface DefinitionDeleted extends DomainEvent {
   readonly type: "DefinitionDeleted";
   readonly modelType: string;
@@ -113,44 +74,24 @@ export interface DefinitionDeleted extends DomainEvent {
   readonly definitionName: string;
 }
 
-// ============================================================================
-// Workflow Events
-// ============================================================================
-
-/**
- * Emitted when a new workflow is created.
- */
 export interface WorkflowCreated extends DomainEvent {
   readonly type: "WorkflowCreated";
   readonly workflowId: string;
   readonly workflowName: string;
 }
 
-/**
- * Emitted when a workflow is updated.
- */
 export interface WorkflowUpdated extends DomainEvent {
   readonly type: "WorkflowUpdated";
   readonly workflowId: string;
   readonly workflowName: string;
 }
 
-/**
- * Emitted when a workflow is deleted.
- */
 export interface WorkflowDeleted extends DomainEvent {
   readonly type: "WorkflowDeleted";
   readonly workflowId: string;
   readonly workflowName: string;
 }
 
-// ============================================================================
-// WorkflowRun Events
-// ============================================================================
-
-/**
- * Emitted when a workflow run starts execution.
- */
 export interface WorkflowRunStarted extends DomainEvent {
   readonly type: "WorkflowRunStarted";
   readonly workflowId: string;
@@ -158,9 +99,6 @@ export interface WorkflowRunStarted extends DomainEvent {
   readonly runId: string;
 }
 
-/**
- * Emitted when a workflow run completes successfully.
- */
 export interface WorkflowRunCompleted extends DomainEvent {
   readonly type: "WorkflowRunCompleted";
   readonly workflowId: string;
@@ -168,9 +106,6 @@ export interface WorkflowRunCompleted extends DomainEvent {
   readonly runId: string;
 }
 
-/**
- * Emitted when a workflow run fails.
- */
 export interface WorkflowRunFailed extends DomainEvent {
   readonly type: "WorkflowRunFailed";
   readonly workflowId: string;
@@ -178,13 +113,6 @@ export interface WorkflowRunFailed extends DomainEvent {
   readonly runId: string;
 }
 
-// ============================================================================
-// Event Type Union
-// ============================================================================
-
-/**
- * Union type of all domain events.
- */
 export type RepositoryEvent =
   | ModelCreated
   | ModelUpdated
@@ -206,18 +134,8 @@ export type RepositoryEvent =
   | VaultSecretRead
   | VaultSecretAnnotated;
 
-/**
- * Event type discriminator values.
- */
 export type EventType = RepositoryEvent["type"];
 
-// ============================================================================
-// Event Factory Functions
-// ============================================================================
-
-/**
- * Creates a ModelCreated event.
- */
 export function createModelCreated(
   modelType: string,
   modelInputId: string,
@@ -232,9 +150,6 @@ export function createModelCreated(
   };
 }
 
-/**
- * Creates a ModelUpdated event.
- */
 export function createModelUpdated(
   modelType: string,
   modelInputId: string,
@@ -251,9 +166,6 @@ export function createModelUpdated(
   };
 }
 
-/**
- * Creates a ModelDeleted event.
- */
 export function createModelDeleted(
   modelType: string,
   modelInputId: string,
@@ -268,9 +180,6 @@ export function createModelDeleted(
   };
 }
 
-/**
- * Creates a DefinitionCreated event.
- */
 export function createDefinitionCreated(
   modelType: string,
   definitionId: string,
@@ -285,9 +194,6 @@ export function createDefinitionCreated(
   };
 }
 
-/**
- * Creates a DefinitionUpdated event.
- */
 export function createDefinitionUpdated(
   modelType: string,
   definitionId: string,
@@ -302,9 +208,6 @@ export function createDefinitionUpdated(
   };
 }
 
-/**
- * Creates a DefinitionDeleted event.
- */
 export function createDefinitionDeleted(
   modelType: string,
   definitionId: string,
@@ -319,9 +222,6 @@ export function createDefinitionDeleted(
   };
 }
 
-/**
- * Creates a WorkflowCreated event.
- */
 export function createWorkflowCreated(
   workflowId: string,
   workflowName: string,
@@ -334,9 +234,6 @@ export function createWorkflowCreated(
   };
 }
 
-/**
- * Creates a WorkflowUpdated event.
- */
 export function createWorkflowUpdated(
   workflowId: string,
   workflowName: string,
@@ -349,9 +246,6 @@ export function createWorkflowUpdated(
   };
 }
 
-/**
- * Creates a WorkflowDeleted event.
- */
 export function createWorkflowDeleted(
   workflowId: string,
   workflowName: string,
@@ -364,9 +258,6 @@ export function createWorkflowDeleted(
   };
 }
 
-/**
- * Creates a WorkflowRunStarted event.
- */
 export function createWorkflowRunStarted(
   workflowId: string,
   workflowName: string,
@@ -381,9 +272,6 @@ export function createWorkflowRunStarted(
   };
 }
 
-/**
- * Creates a WorkflowRunCompleted event.
- */
 export function createWorkflowRunCompleted(
   workflowId: string,
   workflowName: string,
@@ -398,9 +286,6 @@ export function createWorkflowRunCompleted(
   };
 }
 
-/**
- * Creates a WorkflowRunFailed event.
- */
 export function createWorkflowRunFailed(
   workflowId: string,
   workflowName: string,
@@ -415,13 +300,6 @@ export function createWorkflowRunFailed(
   };
 }
 
-// ============================================================================
-// Vault Events
-// ============================================================================
-
-/**
- * Emitted when a new vault configuration is created.
- */
 export interface VaultCreated extends DomainEvent {
   readonly type: "VaultCreated";
   readonly vaultId: string;
@@ -429,9 +307,6 @@ export interface VaultCreated extends DomainEvent {
   readonly vaultName: string;
 }
 
-/**
- * Emitted when a vault configuration is updated.
- */
 export interface VaultUpdated extends DomainEvent {
   readonly type: "VaultUpdated";
   readonly vaultId: string;
@@ -439,9 +314,6 @@ export interface VaultUpdated extends DomainEvent {
   readonly vaultName: string;
 }
 
-/**
- * Emitted when a vault configuration is deleted.
- */
 export interface VaultDeleted extends DomainEvent {
   readonly type: "VaultDeleted";
   readonly vaultId: string;
@@ -449,9 +321,6 @@ export interface VaultDeleted extends DomainEvent {
   readonly vaultName: string;
 }
 
-/**
- * Emitted when a secret is added or updated in a vault.
- */
 export interface VaultSecretUpdated extends DomainEvent {
   readonly type: "VaultSecretUpdated";
   readonly vaultId: string;
@@ -460,9 +329,6 @@ export interface VaultSecretUpdated extends DomainEvent {
   readonly secretKey: string;
 }
 
-/**
- * Creates a VaultCreated event.
- */
 export function createVaultCreated(
   vaultId: string,
   vaultType: string,
@@ -477,9 +343,6 @@ export function createVaultCreated(
   };
 }
 
-/**
- * Creates a VaultUpdated event.
- */
 export function createVaultUpdated(
   vaultId: string,
   vaultType: string,
@@ -494,9 +357,6 @@ export function createVaultUpdated(
   };
 }
 
-/**
- * Creates a VaultDeleted event.
- */
 export function createVaultDeleted(
   vaultId: string,
   vaultType: string,
@@ -511,9 +371,6 @@ export function createVaultDeleted(
   };
 }
 
-/**
- * Emitted when a secret is deleted from a vault.
- */
 export interface VaultSecretDeleted extends DomainEvent {
   readonly type: "VaultSecretDeleted";
   readonly vaultId: string;
@@ -522,9 +379,6 @@ export interface VaultSecretDeleted extends DomainEvent {
   readonly secretKey: string;
 }
 
-/**
- * Creates a VaultSecretDeleted event.
- */
 export function createVaultSecretDeleted(
   vaultId: string,
   vaultType: string,
@@ -541,9 +395,6 @@ export function createVaultSecretDeleted(
   };
 }
 
-/**
- * Emitted when a secret is read from a vault via CLI.
- */
 export interface VaultSecretRead extends DomainEvent {
   readonly type: "VaultSecretRead";
   readonly vaultId: string;
@@ -552,9 +403,6 @@ export interface VaultSecretRead extends DomainEvent {
   readonly secretKey: string;
 }
 
-/**
- * Creates a VaultSecretUpdated event.
- */
 export function createVaultSecretUpdated(
   vaultId: string,
   vaultType: string,
@@ -571,9 +419,6 @@ export function createVaultSecretUpdated(
   };
 }
 
-/**
- * Creates a VaultSecretRead event.
- */
 export function createVaultSecretRead(
   vaultId: string,
   vaultType: string,
@@ -590,9 +435,6 @@ export function createVaultSecretRead(
   };
 }
 
-/**
- * Emitted when a secret's annotation is updated in a vault.
- */
 export interface VaultSecretAnnotated extends DomainEvent {
   readonly type: "VaultSecretAnnotated";
   readonly vaultId: string;
@@ -602,9 +444,6 @@ export interface VaultSecretAnnotated extends DomainEvent {
   readonly annotationFields: readonly string[];
 }
 
-/**
- * Creates a VaultSecretAnnotated event.
- */
 export function createVaultSecretAnnotated(
   vaultId: string,
   vaultType: string,

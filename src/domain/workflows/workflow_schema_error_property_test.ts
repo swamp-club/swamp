@@ -24,7 +24,6 @@ import { hasControlCharacter } from "../control_characters.ts";
 import { Workflow, type WorkflowInput } from "./workflow.ts";
 import { WorkflowSchemaError } from "./workflow_schema_error.ts";
 
-/** Any string, with control characters made likely. */
 const arbText = fc.oneof(
   fc.string(),
   fc.tuple(
@@ -37,7 +36,6 @@ const arbText = fc.oneof(
   ).map(([before, control, after]) => before + control + after),
 );
 
-/** A JSON-like value whose keys and strings are author-controlled text. */
 const arbValue = fc.letrec((tie) => ({
   value: fc.oneof(
     { depthSize: "small" },
@@ -50,7 +48,6 @@ const arbValue = fc.letrec((tie) => ({
   ),
 })).value;
 
-/** A workflow document with arbitrary values in and around its known keys. */
 const arbDocument = fc.record({
   id: arbValue,
   name: arbValue,
@@ -94,6 +91,5 @@ Deno.test("property: a workflow schema failure is one line with no control chara
       }
     }),
   );
-  // The generator must actually exercise the failure path.
   assertEquals(rejected > 0, true);
 });

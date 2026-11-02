@@ -18,100 +18,57 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * A change serve refused because its author lacks a grant it needs, kept
- * for an admin to accept or discard (swamp-club#4195). A member's offline work that
- * meets a grant revoked while it was offline is never dropped: its flush
- * hands it to serve, which keeps it in the shared control plane until an
- * admin accepts it, or discards it so it never lands.
- *
- * Serve keeps two records per change:
- *
- * - its **record** ({@link QuarantineRecord}), small, under
- *   `quarantine/<txnId>/<principalKey>` while it is held,
- *   `quarantine-accepted/<txnId>/<principalKey>` once accepted and
- *   `quarantine-discarded/<txnId>/<principalKey>` once discarded. The key
- *   alone names the change and its author, so caps are counted from a
- *   listing of held keys without reading any record;
- * - its **content** ({@link QuarantineContent}): the commit, the head it
- *   was built on and the chunks it names, under `quarantine-content/<txnId>`,
- *   removed once accepted or discarded.
- *
- * Content is written before the record, so a held record always has its
- * content; a crash between leaves only content no record names.
- *
- * @module
+ * content is written before the record, so a held record always has its
+ * content; a crash between leaves only content no record names
  */
 
-/** Where held records live. */
 export const QUARANTINE_HELD_PREFIX = "quarantine/";
-/** Where accepted records live. */
 export const QUARANTINE_ACCEPTED_PREFIX = "quarantine-accepted/";
-/** Where discarded records live. */
 export const QUARANTINE_DISCARDED_PREFIX = "quarantine-discarded/";
-/** Where a held change's content lives. */
 export const QUARANTINE_CONTENT_PREFIX = "quarantine-content/";
 
 /**
- * The most bytes one deposit carries: its chunks and its commit. A control
- * plane write holds the whole record in memory, so it stays far below what
- * one commit may carry; a larger change stays quarantined in its author's
- * checkout only.
+ * a control plane write holds the whole record in memory, so this stays far
+ * below what one commit may carry; a larger change stays quarantined in its
+ * author's checkout only
  */
 export const MAX_QUARANTINE_DEPOSIT_BYTES = 32 * 1024 * 1024;
-/** The most changes one principal has held at once. */
 export const MAX_QUARANTINED_PER_PRINCIPAL = 32;
-/** The most changes serve holds at once, from everyone. */
 export const MAX_QUARANTINED = 1024;
 /**
  * The most bytes of deposits one principal has held at once: with the
  * count cap, so 32 deposits near the per-deposit limit cannot all be kept.
  */
 export const MAX_QUARANTINED_BYTES_PER_PRINCIPAL = 128 * 1024 * 1024;
-/** The longest refusal reason a record keeps. */
 const MAX_REASON_LENGTH = 2048;
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const SHA256_HEX = /^[0-9a-f]{64}$/;
 
-/** A held, accepted or discarded change, without its content. */
 export interface QuarantineRecord {
-  /** The change's txnId: lowercase UUID, the same it lands under. */
   readonly txnId: string;
-  /** The partition it changes. */
   readonly partition: string;
-  /** Its author, as serve stamped the deposit: the principal it lands as. */
   readonly principal: string;
   /**
-   * The author's groups and collectives when it deposited: an accept judges
-   * the change's content with the author's access, never the admin's, and
-   * this is the membership serve last saw for it. Absent on a record kept
-   * before they were recorded, which then judges with none.
+   * an accept judges the content with the author's access, never the admin's,
+   * using the membership serve last saw; absent on a record kept before they
+   * were recorded, which then judges with none
    */
   readonly groups?: readonly string[];
   readonly collectives?: readonly string[];
-  /** Why serve refused it. */
   readonly reason: string;
-  /** When serve took it (ISO). */
   readonly depositedAt: string;
-  /** The deposit's size, in bytes. */
   readonly bytes: number;
   readonly state: "held" | "accepted" | "discarded";
-  /** The admin who accepted it. */
   readonly acceptedBy?: string;
-  /** When it was accepted (ISO). */
   readonly acceptedAt?: string;
-  /** The seq it landed at. */
   readonly seq?: number;
-  /** The admin who discarded it, so it never lands. */
   readonly discardedBy?: string;
-  /** When it was discarded (ISO). */
   readonly discardedAt?: string;
 }
 
-/** The most groups, or collectives, a record keeps for its author. */
 export const MAX_RECORDED_MEMBERSHIPS = 256;
 
-/** The prefix records in `state` live under. */
 function prefixOf(state: QuarantineRecord["state"]): string {
   switch (state) {
     case "held":
@@ -123,22 +80,17 @@ function prefixOf(state: QuarantineRecord["state"]): string {
   }
 }
 
-/** A chunk a held change names, with its bytes. */
 export interface QuarantineChunk {
   readonly sha256: string;
   readonly bytes: Uint8Array;
 }
 
-/** What a held change lands from once accepted. */
 export interface QuarantineContent {
-  /** The commit as its author's checkout built it, `Commit.toJSON` form. */
   readonly commit: unknown;
-  /** The partition head it was built on. */
   readonly base: { readonly seq: number; readonly txnId?: string };
   readonly chunks: readonly QuarantineChunk[];
 }
 
-/** Thrown for a record or content that does not hold what it must. */
 export class QuarantineRecordInvalidError extends Error {
   constructor(what: string, detail: string) {
     super(`The quarantined change's ${what} is not valid: ${detail}`);
@@ -146,15 +98,10 @@ export class QuarantineRecordInvalidError extends Error {
   }
 }
 
-/** Whether `value` is a txnId as a quarantine key names it. */
 export function isQuarantineTxnId(value: unknown): value is string {
   return typeof value === "string" && UUID.test(value);
 }
 
-/**
- * The key a record lives under: its state's prefix, its txnId and its
- * author's key ({@link principalKeyOf}).
- */
 export function quarantineRecordKey(
   state: QuarantineRecord["state"],
   txnId: string,
@@ -163,7 +110,6 @@ export function quarantineRecordKey(
   return `${prefixOf(state)}${txnId}/${principalKey}`;
 }
 
-/** The key a held change's content lives under. */
 export function quarantineContentKey(txnId: string): string {
   return `${QUARANTINE_CONTENT_PREFIX}${txnId}`;
 }
@@ -182,7 +128,6 @@ export async function principalKeyOf(principal: string): Promise<string> {
   ).join("");
 }
 
-/** A record key's txnId and author key; undefined for any other key. */
 export function parseQuarantineRecordKey(
   key: string,
 ): {
@@ -207,13 +152,6 @@ export function parseQuarantineRecordKey(
   return { state, txnId: rest[0], principalKey: rest[1] };
 }
 
-/**
- * Whether one more change by the author `principalKey` may be held, from
- * the held record keys serve lists: within {@link MAX_QUARANTINED} for
- * everyone and {@link MAX_QUARANTINED_PER_PRINCIPAL} for the author, and,
- * given `bytes` (the author's held bytes and the deposit's), within
- * {@link MAX_QUARANTINED_BYTES_PER_PRINCIPAL}.
- */
 export function quarantineHasRoom(
   heldKeys: readonly string[],
   principalKey: string,
@@ -236,7 +174,6 @@ export function quarantineHasRoom(
   return total < MAX_QUARANTINED && mine < MAX_QUARANTINED_PER_PRINCIPAL;
 }
 
-/** A record as stored. */
 export function serializeQuarantineRecord(
   record: QuarantineRecord,
 ): Uint8Array {
@@ -244,10 +181,8 @@ export function serializeQuarantineRecord(
 }
 
 /**
- * A stored record, checked: it is read back from a store anyone with
- * storage access could write, so every field is validated.
- *
- * @throws QuarantineRecordInvalidError for a record that is not one
+ * read back from a store anyone with storage access could write, so every field
+ * is validated
  */
 export function parseQuarantineRecord(bytes: Uint8Array): QuarantineRecord {
   let raw: unknown;
@@ -332,14 +267,12 @@ function seqOf(value: unknown): number {
   return value;
 }
 
-/** A refusal reason as a record keeps it: bounded. */
 export function boundedQuarantineReason(reason: string): string {
   return reason.length <= MAX_REASON_LENGTH
     ? reason
     : `${reason.slice(0, MAX_REASON_LENGTH - 1)}…`;
 }
 
-/** Content as stored: chunk bytes in base64. */
 export function serializeQuarantineContent(
   content: QuarantineContent,
 ): Uint8Array {
@@ -354,12 +287,6 @@ export function serializeQuarantineContent(
   }));
 }
 
-/**
- * Stored content, checked: base64 that decodes and hashes as named, a base
- * seq that is a seq. The commit stays unparsed; `Commit.fromJSON` checks it.
- *
- * @throws QuarantineRecordInvalidError for content that is not valid
- */
 export async function parseQuarantineContent(
   bytes: Uint8Array,
 ): Promise<QuarantineContent> {
@@ -382,11 +309,6 @@ export async function parseQuarantineContent(
   };
 }
 
-/**
- * A deposit's base, checked.
- *
- * @throws QuarantineRecordInvalidError for one that is not a head
- */
 export function baseOf(
   value: unknown,
 ): { readonly seq: number; readonly txnId?: string } {
@@ -409,12 +331,8 @@ export function baseOf(
 }
 
 /**
- * Chunks in their wire form (`{sha256, data}`, base64), each decoded and
- * hashed: bytes that do not hash as named are refused, and so is a chunk
- * named twice, which could stand in for one the commit names but the
- * deposit does not carry.
- *
- * @throws QuarantineRecordInvalidError for a chunk that is not valid
+ * bytes that do not hash as named are refused, and so is a chunk named twice,
+ * which could stand in for one the commit names but the deposit does not carry
  */
 export async function chunksOf(value: unknown): Promise<QuarantineChunk[]> {
   if (!Array.isArray(value)) {
@@ -457,9 +375,8 @@ export async function chunksOf(value: unknown): Promise<QuarantineChunk[]> {
 }
 
 /**
- * Whether `chunks` are exactly the chunks `named`, each once: what a deposit
- * carries and what an accept lands must not lean on anyone's access for a
- * chunk the author never provided.
+ * what a deposit carries and an accept lands must not lean on anyone's access
+ * for a chunk the author never provided
  */
 export function carriesExactly(
   chunks: readonly QuarantineChunk[],
@@ -475,7 +392,6 @@ export function carriesExactly(
   return true;
 }
 
-/** Chunks in their wire form. */
 export function chunksToWire(
   chunks: readonly QuarantineChunk[],
 ): { sha256: string; data: string }[] {
@@ -508,21 +424,10 @@ function bytesOf(base64: string): Uint8Array {
   return bytes;
 }
 
-/** Where serve keeps quarantined changes: the port its adapter implements. */
 export interface QuarantineStore {
-  /** The keys of every held record. */
   heldKeys(): Promise<string[]>;
-  /**
-   * The bytes of every change `principalKey`'s author has held, from its
-   * held records (at most {@link MAX_QUARANTINED_PER_PRINCIPAL} of them).
-   */
   heldBytesOf(principalKey: string): Promise<number>;
-  /**
-   * The change `txnId`, accepted, discarded or held; undefined when serve
-   * has none.
-   */
   find(txnId: string): Promise<QuarantineRecord | undefined>;
-  /** A held change's content; undefined when it has none. */
   content(txnId: string): Promise<QuarantineContent | undefined>;
   /** Keeps a change: its content first, then its record. */
   deposit(record: QuarantineRecord, content: QuarantineContent): Promise<void>;
@@ -536,10 +441,6 @@ export interface QuarantineStore {
    * and its content: it no longer counts against any cap.
    */
   markDiscarded(discarded: QuarantineRecord): Promise<void>;
-  /**
-   * Every held record and up to `maxAccepted` accepted or discarded ones,
-   * newest first; `truncated` when more were accepted or discarded.
-   */
   list(maxAccepted: number): Promise<{
     readonly records: readonly QuarantineRecord[];
     readonly truncated: boolean;

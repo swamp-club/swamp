@@ -19,27 +19,13 @@
 
 import type { BashCommandEntry } from "./audit_command_entry.ts";
 
-/**
- * Repository interface for persisting and retrieving bash command audit entries.
- */
 export interface AuditRepository {
-  /**
-   * Appends a bash command entry to the audit log.
-   * Should never throw - errors are logged silently.
-   */
   append(entry: BashCommandEntry): Promise<void>;
 
-  /**
-   * Finds all bash command entries within a time range.
-   */
   findByTimeRange(
     startTime: Date,
     endTime: Date,
   ): Promise<BashCommandEntry[]>;
 
-  /**
-   * Deletes audit files older than the given date.
-   * Returns the number of files deleted.
-   */
   deleteOlderThan(date: Date): Promise<number>;
 }

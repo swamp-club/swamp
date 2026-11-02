@@ -35,36 +35,22 @@ import {
   TopologicalSortService,
 } from "./topological_sort_service.ts";
 
-/**
- * Settles the work a run's abort or cancellation left unfinished, the same
- * way whether the abort fired during a live walk (ExecutionService), a
- * cancel reached a stored run that no process drives (workflow cancel,
- * supersede, serve's suspended-run cancel, the stranded-run backstops), or a
- * rejected approval gate failed a suspended run (workflow reject).
- */
-
 const sortService = new TopologicalSortService();
 const logger = getLogger(["swamp", "workflows", "abort-settlement"]);
 
 /**
- * Reads a run's own evaluated workflow snapshot by its id. Injected by the
- * caller, which binds it to the evaluated-workflow repository, so this
- * domain module never imports infrastructure.
+ * injected by the caller, bound to the evaluated-workflow repository, so this
+ * domain module never imports infrastructure
  */
 export type EvaluatedWorkflowLookup = (
   runId: string,
 ) => Promise<Workflow | null>;
 
-/**
- * True when every `dependsOn` condition of the job holds against the run.
- */
 export function shouldJobRun(job: Job, run: WorkflowRun): boolean {
-  // If no dependencies, always run
   if (job.dependsOn.length === 0) {
     return true;
   }
 
-  // Check all dependency conditions
   for (const dep of job.dependsOn) {
     if (!dep.condition.evaluate(run, dep.job)) {
       return false;
@@ -74,16 +60,11 @@ export function shouldJobRun(job: Job, run: WorkflowRun): boolean {
   return true;
 }
 
-/**
- * True when every `dependsOn` condition of the step holds against its job.
- */
 export function shouldStepRun(step: Step, jobRun: JobRun): boolean {
-  // If no dependencies, always run
   if (step.dependsOn.length === 0) {
     return true;
   }
 
-  // Check all dependency conditions
   for (const dep of step.dependsOn) {
     if (!dep.condition.evaluate(jobRun, dep.step)) {
       return false;
@@ -94,17 +75,9 @@ export function shouldStepRun(step: Step, jobRun: JobRun): boolean {
 }
 
 /**
- * True for a cleanup step: one that would still run had all the work before
- * the run's abort failed. Every `dependsOn` condition must hold with its
- * dependency failed, or, for a dependency that is itself a cleanup step and
- * succeeded or was skipped by its guard, with that real status, so a teardown
- * chain runs to its end. A dependency skipped on its `dependsOn` answers failed
- * like work does: had the work failed it might have run, so its skip says
- * nothing. A step with no `dependsOn` is work, and so is an approval gate or a
- * wait for a signal: it would turn the cancel into a suspended run. Conditions
- * are evaluated, so `and`, `or` and `not` need no special case. Read from the
- * definition and the records, so it does not matter when the abort fired or
- * which walk finished a dependency.
+ * a cleanup step would still run had the earlier work failed; cleanup
+ * dependencies count with their real status so a teardown chain runs to its
+ * end; no dependsOn, an approval gate or a signal wait is work
  */
 export function runsAfterFailure(
   step: Step,
@@ -136,13 +109,9 @@ export function runsAfterFailure(
 }
 
 /**
- * True for a cleanup job: one that would still run had all the work before the
- * run's abort failed. The job counterpart of {@link runsAfterFailure}. Every
- * `dependsOn` condition must hold with its dependency failed, or, for a
- * dependency that is itself a cleanup job and succeeded, with that real status,
- * so a teardown chain runs to its end. A job with no `dependsOn` is work, and so
- * is one holding an approval gate or a wait for a signal: it would turn the
- * cancel into a suspended run.
+ * job counterpart of runsAfterFailure; a job with no dependsOn, or holding an
+ * approval gate or signal wait, is work since it would turn the cancel into a
+ * suspended run
  */
 export function jobRunsAfterFailure(
   job: Job,
@@ -173,19 +142,11 @@ export function jobRunsAfterFailure(
   return isCleanup(job);
 }
 
-/** True for an approval gate or a wait for a signal. */
 function suspendsRun(step: Step): boolean {
   const taskType = step.task.data.type;
   return taskType === "manual_approval" || taskType === "wait_for_signal";
 }
 
-/**
- * Fails the job's steps still `running` with `error` (by default
- * {@link CANCELLED_STEP_ERROR}) and reports whether there were any. A level of
- * several steps does not wait for them once the abort fires, so their
- * generators end without recording an outcome. Each is marked
- * {@link StepRun.stoppedByAbort}.
- */
 export function failAbandonedSteps(
   jobRun: JobRun,
   error: string = CANCELLED_STEP_ERROR,
@@ -201,12 +162,9 @@ export function failAbandonedSteps(
 }
 
 /**
- * Settles a step the run's abort left unstarted as runStep would have on
- * reaching it: skipped when its dependsOn is unmet, otherwise failed as
- * cancelled like an in-flight step. Either way it is marked
- * `settledByAbort`, so a resume runs it. A step with a guard stays pending:
- * its guard never decided whether the step's work was already done, so
- * neither `succeeded`, `failed`, `completed` nor `skipped` may hold for it.
+ * a guarded step stays pending: its guard never decided whether the work was
+ * done, so neither succeeded, failed, completed nor skipped may hold;
+ * settledByAbort makes a resume run it
  */
 export function settleUnstartedStep(
   step: Step | undefined,
@@ -220,10 +178,6 @@ export function settleUnstartedStep(
   }
 }
 
-/**
- * Settles the job's pending steps in dependency order, each as
- * {@link settleUnstartedStep} does.
- */
 export function settleUnstartedSteps(job: Job, jobRun: JobRun): void {
   const sorted = sortService.sort(
     job.steps.map((step) => ({
@@ -241,21 +195,11 @@ export function settleUnstartedSteps(job: Job, jobRun: JobRun): void {
   }
 }
 
-/**
- * Settles a job the run's abort left unstarted: its steps in dependency
- * order, each as {@link settleUnstartedStep} does, then the job from their
- * outcome ({@link JobRun.settleNotStarted}).
- */
 export function settleNotStartedJob(job: Job, jobRun: JobRun): void {
   settleUnstartedSteps(job, jobRun);
   jobRun.settleNotStarted();
 }
 
-/**
- * Settles a job the run's abort left unstarted, gated on its `dependsOn`:
- * skipped when it is unmet, otherwise as {@link settleNotStartedJob} does.
- * Either way a resume walks it again.
- */
 export function settleUnstartedJob(
   job: Job,
   jobRun: JobRun,
@@ -268,23 +212,15 @@ export function settleUnstartedJob(
   }
 }
 
-/**
- * Settles a job a resume inherited as running that its abort kept from
- * starting: its pending steps as {@link settleNotStartedJob} does, then the
- * job from its steps' outcome ({@link JobRun.settleNotResumed}).
- */
 export function settleNotResumedJob(job: Job, jobRun: JobRun): void {
   settleUnstartedSteps(job, jobRun);
   jobRun.settleNotResumed();
 }
 
 /**
- * Picks the definition a cancelled run is settled against: the run's own
- * evaluated snapshot, saved when it started, whose job and step names and
- * `dependsOn` references are the evaluated ones its records were created
- * with, as the live walk uses. Without one (a `--last-evaluated` or older
- * run, a snapshot removed by run gc, or one that cannot be read) it falls
- * back to the repository definition, which may itself be undefined.
+ * settles against the run's own evaluated snapshot, whose names match its
+ * records; without one (older run, gc'd, unreadable) falls back to the
+ * repository definition, which may be undefined
  */
 export async function resolveSettlementWorkflow(
   run: WorkflowRun,
@@ -307,22 +243,13 @@ export async function resolveSettlementWorkflow(
   return repositoryWorkflow;
 }
 
-/** How {@link settleCancelledRun} records the steps it finds in flight. */
 export interface SettleOptions {
-  /**
-   * The error a step still `running` fails with. Defaults to
-   * {@link CANCELLED_STEP_ERROR}; a cancel that stopped the run's owning
-   * process passes `OWNER_STOPPED_STEP_ERROR`.
-   */
   inFlightStepError?: string;
 }
 
 /**
- * Settles the run's unfinished work, then marks it cancelled with the
- * reason. No-op unless the run {@link WorkflowRun.isCancellable}. Every
- * production cancel of a run goes through here, so a cancelled record never
- * keeps a job `running` or a step `running`, `waiting_approval` or
- * `waiting`.
+ * every production cancel goes through here, so a cancelled record never keeps
+ * a job running or a step running, waiting_approval or waiting
  */
 export function cancelAndSettle(
   run: WorkflowRun,
@@ -336,15 +263,9 @@ export function cancelAndSettle(
 }
 
 /**
- * Settles the run's unfinished work, then completes it: failed, since the
- * rejected approval gate that ends it has failed. No-op unless the run
- * {@link WorkflowRun.isCancellable}. A reject goes through here, so a run it
- * fails never keeps a job `running` or a step `waiting_approval`
- * (swamp-club#2905).
- *
- * The caller fails the rejected gate and leaves its job open: the settlement
- * ends that job from its failed gate and settles the gate's dependents. A
- * job already failed is not settled, so its pending steps would stay.
+ * the caller fails the rejected gate and leaves its job open so settlement ends
+ * it from the failed gate; a job already failed is not settled, so its pending
+ * steps would stay
  */
 export function completeAndSettle(
   run: WorkflowRun,
@@ -356,29 +277,9 @@ export function completeAndSettle(
 }
 
 /**
- * Settles every job and step a cancellation, or a rejected approval gate,
- * left unfinished, as the live abort does for the work it interrupts:
- *
- * - a step waiting on a nested workflow's run is detached from it first
- *   ({@link WorkflowRun.detachNestedWaits}), so the child stays suspended on
- *   its own and is reported as detached;
- * - a step still `running` (its owner died) fails as cancelled;
- * - an undecided approval gate, or a wait no signal settled, fails as
- *   cancelled, marked `settledByAbort`;
- * - a pending step is skipped when its `dependsOn` is unmet, otherwise
- *   cancelled, marked `settledByAbort`; a guarded step stays pending;
- * - a pending job whose `dependsOn` is unmet is skipped; any other job
- *   still pending or running is settled from its steps once they are.
- *
- * Job records the definition cannot name (a job it dropped, or one whose
- * evaluated name the repository definition does not carry) are settled
- * first, from their records alone, so no job that depends on one is
- * evaluated while it is still open. The definition's jobs follow in
- * dependency order. With no definition, or one whose jobs or steps cannot
- * be ordered (edited into a cycle), every job is settled from its records.
- * Settling touches only pending, running, waiting_approval and waiting
- * records, so
- * settling a run twice changes nothing.
+ * jobs the definition cannot name are settled first from their records; with no
+ * definition or an unorderable one (a cycle) every job is settled from records;
+ * only open records change, so settling twice is a no-op
  */
 export function settleCancelledRun(
   run: WorkflowRun,
@@ -420,16 +321,10 @@ export function settleCancelledRun(
   }
 }
 
-/** True for a job a cancellation may leave unfinished. */
 function isOpenJob(jobRun: JobRun): boolean {
   return jobRun.status === "pending" || jobRun.status === "running";
 }
 
-/**
- * Fails the job's in-flight steps with `inFlightError` and its undecided
- * approval gates and unsignalled waits as cancelled. Nothing will finish them once the run is
- * cancelled.
- */
 function settleInFlightSteps(jobRun: JobRun, inFlightError: string): void {
   failAbandonedSteps(jobRun, inFlightError);
   for (const step of jobRun.steps) {
@@ -438,10 +333,6 @@ function settleInFlightSteps(jobRun: JobRun, inFlightError: string): void {
   }
 }
 
-/**
- * Ends a job from its records alone: every unfinished step cancelled, then
- * the job settled from their outcome.
- */
 function settleJobFromRecords(jobRun: JobRun, inFlightError: string): void {
   if (!isOpenJob(jobRun)) return;
   settleInFlightSteps(jobRun, inFlightError);
@@ -451,10 +342,6 @@ function settleJobFromRecords(jobRun: JobRun, inFlightError: string): void {
   settleOpenJob(jobRun);
 }
 
-/**
- * Ends a job the definition names: skipped when its `dependsOn` is unmet
- * and it never started, otherwise its steps settled, then the job.
- */
 function settleDefinedJob(
   job: Job,
   jobRun: JobRun,
@@ -480,13 +367,9 @@ function settleOpenJob(jobRun: JobRun): void {
 }
 
 /**
- * Settles the job's pending steps in dependency order, built from its
- * records as runJob builds them: a forEach step whose record was replaced
- * by its iterations stands for those iterations, each settled with the
- * forEach step's definition, and the expansion is registered on the job so
- * a condition naming the forEach step aggregates over them on a run loaded
- * from storage. Records the definition cannot name that are not iterations
- * are cancelled first.
+ * a forEach step replaced by its iterations stands for them, and the expansion
+ * is registered on the job so a condition naming it aggregates over them on a
+ * run loaded from storage
  */
 function settlePendingSteps(job: Job, jobRun: JobRun): void {
   const definedSteps = new Set(job.steps.map((step) => step.name));

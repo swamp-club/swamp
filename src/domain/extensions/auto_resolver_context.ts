@@ -25,18 +25,12 @@ import type { ExtensionAutoResolver } from "./extension_auto_resolver.ts";
  */
 let resolver: ExtensionAutoResolver | null = null;
 
-/**
- * Sets the auto-resolver instance for the current CLI session.
- */
 export function setAutoResolver(
   instance: ExtensionAutoResolver | null,
 ): void {
   resolver = instance;
 }
 
-/**
- * Gets the current auto-resolver instance, or null if not configured.
- */
 export function getAutoResolver(): ExtensionAutoResolver | null {
   return resolver;
 }

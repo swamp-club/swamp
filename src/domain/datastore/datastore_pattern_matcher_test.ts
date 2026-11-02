@@ -25,7 +25,6 @@ Deno.test("globToRegExp - matches simple wildcard", () => {
   assertEquals(regex.test("foo.json"), true);
   assertEquals(regex.test("bar.json"), true);
   assertEquals(regex.test("foo.yaml"), false);
-  // * should not match path separators
   assertEquals(regex.test("dir/foo.json"), false);
 });
 
@@ -74,7 +73,6 @@ Deno.test("isExcluded - negation re-includes", () => {
     "!data/**/temp-important",
   ];
   assertEquals(isExcluded("data/foo/temp-scratch", patterns), true);
-  // ! pattern re-includes temp-important
   assertEquals(isExcluded("data/foo/temp-important", patterns), false);
   assertEquals(isExcluded("data/bar/temp-important", patterns), false);
 });

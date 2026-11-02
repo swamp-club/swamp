@@ -75,12 +75,6 @@ import {
 
 const logger = getLogger(["swamp", "data-writer"]);
 
-/**
- * Default implementation of the DataWriter domain service.
- *
- * Writes data directly to disk during method execution, returning
- * lightweight DataHandle references instead of buffering full content.
- */
 export class DefaultDataWriter implements DataWriter {
   readonly dataId: DataId;
   readonly name: string;
@@ -101,14 +95,13 @@ export class DefaultDataWriter implements DataWriter {
     }
     | null = null;
   /**
-   * Whether writeStream synced the content on its own handle, so finalize
-   * need not have the repository sync it (swamp-club#4017).
+   * whether writeStream synced the content on its own handle, so finalize need
+   * not have the repository sync it
    */
   private contentSynced = false;
   private data: Data | null = null;
   private lineBuffer: string[] | null = null;
   private finalized = false;
-  /** Whether `getFilePath` handed the caller the content path. */
   private pathHandedOut = false;
   private readonly deferred: boolean;
   private deferredReceipt: DeferredWriteReceipt | null = null;
@@ -146,9 +139,9 @@ export class DefaultDataWriter implements DataWriter {
   }
 
   /**
-   * The version a non-deferred writer allocated through `getFilePath` but
-   * never finalised: content with no metadata, which nothing commits or
-   * claims later, so a failed method rolls it back (swamp-club#3736).
+   * a non-deferred writer's version allocated through getFilePath but never
+   * finalised is content with no metadata that nothing commits or claims, so a
+   * failed method rolls it back
    */
   getUnfinalizedReceipt(): DeferredWriteReceipt | null {
     if (
@@ -203,7 +196,6 @@ export class DefaultDataWriter implements DataWriter {
     this.ensureNotFinalized();
 
     if (!this.allocated) {
-      // First call: allocate version and create initial empty file
       const data = this.createDataEntity();
       this.data = data;
       this.allocated = await this.repo.allocateVersion(
@@ -212,12 +204,10 @@ export class DefaultDataWriter implements DataWriter {
         data,
         { deferred: this.deferred },
       );
-      // Write empty file to create it
       await Deno.writeFile(this.allocated.contentPath, new Uint8Array());
       this.lineBuffer = [];
     }
 
-    // Append line
     const lineContent = line + "\n";
     const file = await Deno.open(this.allocated.contentPath, { append: true });
     try {
@@ -228,7 +218,6 @@ export class DefaultDataWriter implements DataWriter {
 
     this.lineBuffer!.push(line);
 
-    // Invoke callback
     if (this.callbacks.onLine) {
       this.callbacks.onLine(this.name, line);
     }
@@ -249,7 +238,6 @@ export class DefaultDataWriter implements DataWriter {
       { deferred: this.deferred },
     );
 
-    // Open file for writing
     const file = await Deno.open(this.allocated.contentPath, {
       write: true,
       create: true,
@@ -265,10 +253,8 @@ export class DefaultDataWriter implements DataWriter {
         const { done, value } = await reader.read();
         if (done) break;
 
-        // Write raw bytes to file
         await file.write(value);
 
-        // Decode for line callbacks if needed
         if (options?.onLine || this.callbacks.onLine) {
           buffer += decoder.decode(value, { stream: true });
           const lines = buffer.split("\n");
@@ -283,16 +269,14 @@ export class DefaultDataWriter implements DataWriter {
         }
       }
 
-      // Process remaining buffer
       if (buffer && (options?.onLine || this.callbacks.onLine)) {
         options?.onLine?.(buffer);
         this.callbacks.onLine?.(this.name, buffer);
       }
 
-      // Synced on the handle that wrote it, through the repository's sync
-      // policy (swamp-club#4032): Linux reports a write-back error reliably
-      // only to handles open when it happened. Not in the
-      // finally, so a sync error never hides a stream error.
+      // sync on the writing handle through the repository policy, as Linux
+      // reports a write-back error only to handles open at the time; outside
+      // finally so a sync error never hides a stream error
       if (this.allocated.durable) {
         try {
           await (this.allocated.syncContent ?? ((f) => f.sync()))(file);
@@ -380,7 +364,7 @@ export class DefaultDataWriter implements DataWriter {
     return Data.create({
       id: this.dataId,
       name: this.options.name,
-      version: 1, // Will be updated by repo operations
+      version: 1,
       contentType: this.options.contentType,
       lifetime: this.options.lifetime,
       garbageCollection: this.options.garbageCollection,
@@ -425,12 +409,9 @@ export class DefaultDataWriter implements DataWriter {
 }
 
 /**
- * Sanitizes a vault key by replacing characters that are invalid in vault
- * secret keys (path separators, `@`, `..`). Vault providers like
- * local_encryption map keys to filenames, so `/`, `\`, `..`, and null bytes
- * are rejected.
- *
- * Replaces `@` with empty string and `/` or `\` with `-`.
+ * vault providers like local_encryption map keys to filenames, so path
+ * separators, .. and null bytes are rejected; @ is dropped and / or backslash
+ * become -
  */
 export function sanitizeVaultKey(key: string): string {
   return key
@@ -440,7 +421,6 @@ export function sanitizeVaultKey(key: string): string {
     .replace(/\0/g, "");
 }
 
-/** Bytes of a segment's SHA-256 a hashed vault key segment carries. */
 const VAULT_KEY_SEGMENT_DIGEST_BYTES = 16;
 
 /**
@@ -451,20 +431,9 @@ const VAULT_KEY_SEGMENT_DIGEST_BYTES = 16;
 const MAX_VERBATIM_VAULT_KEY_SEGMENT_LENGTH = 32;
 
 /**
- * The form a vary suffix or dotted own-field name takes inside a generated
- * vault key (swamp-club#3633, swamp-club#3529). A segment of at most 32
- * lowercase letters, digits and `-`
- * is kept as written, so the key names the instance the record is stored
- * under. Any other suffix becomes `h-` and the first 32 hex digits of its
- * SHA-256: other characters do not survive into a readable key
- * ({@link sanitizeVaultKey} drops `@`, so `x@y` and `xy` would share one; a
- * `'` ends the key inside its vault reference; Azure Key Vault names allow
- * only letters, digits and `-`), capitals would fold onto lowercase in a
- * case-insensitive vault (Azure Key Vault, or local_encryption on a
- * case-insensitive file system), and a long value would overflow the file name
- * a file-backed vault stores the key under. The hashed form is longer than any
- * suffix kept as written, so for one data name the two forms cannot produce
- * the same key.
+ * lowercase letter/digit/dash suffixes of at most 32 chars stay as written;
+ * others become h- plus 32 hex of SHA-256, since @, capitals and long values
+ * break or collide in vault keys
  */
 async function vaultKeySegment(suffix: string): Promise<string> {
   if (
@@ -485,11 +454,6 @@ async function vaultKeySegment(suffix: string): Promise<string> {
   return `h-${hex}`;
 }
 
-/**
- * Returns true if any resource output spec in the model requires a vault
- * (has fields marked `{ sensitive: true }`, wherever they sit in the schema,
- * or `sensitiveOutput: true`).
- */
 export function modelRequiresVault(
   resources: Record<string, ResourceOutputSpec> | undefined,
 ): boolean {
@@ -502,11 +466,9 @@ export function modelRequiresVault(
 }
 
 /**
- * Where a vaulted value sits in resource data. A string is a dot-separated
- * path (`spec.services.0.image.token`, an array index written as its digits),
- * the form every swamp release reads from {@link SENSITIVE_FIELDS_TAG}. An
- * array lists the object keys and array indexes that lead to the value, for a
- * place a dot path cannot name (see {@link SENSITIVE_FIELD_KEYS_TAG}).
+ * a string is a dot path, the form every release reads from
+ * SENSITIVE_FIELDS_TAG; an array lists the keys and indexes, for a place a dot
+ * path cannot name
  */
 export type SensitiveFieldPath =
   | string
@@ -514,38 +476,31 @@ export type SensitiveFieldPath =
   | JsonSensitiveField;
 
 /**
- * A vaulted place whose vault value is JSON text written for a value that was
- * not a string (see {@link SENSITIVE_FIELD_JSON_TAG}): it is parsed back to
- * that value once resolved.
+ * a vaulted place whose vault value is JSON text for a non-string value, parsed
+ * back once resolved
  */
 export interface JsonSensitiveField {
   keys: (string | number)[];
   json: true;
 }
 
-/** What {@link processSensitiveResourceData} stored. */
 export interface VaultedFields {
   /**
-   * Where each value whose reference the data now holds sits, and each
-   * stored sensitive field inside one of them, whose value readers register
-   * as a secret once the outer value is restored: a dot path where one names
-   * it for every swamp release, else its keys.
+   * where each stored value and each sensitive field inside one sits, which
+   * readers register as a secret once the outer value is restored: a dot path
+   * where one names it for every release, else its keys
    */
   paths: (string | (string | number)[])[];
   /**
-   * The keys of each value that was not a string, and so is stored as JSON
-   * text, that the writer before swamp-club#3038 did not vault: one inside an
-   * array element or record value, a union member's field, a field under a
-   * lazy schema.
+   * keys of non-string values stored as JSON text that older writers did not
+   * vault: inside an array element or record value, a union member's field, or
+   * a field under a lazy schema
    */
   jsonKeys: (string | number)[][];
 }
 
-/** A value in resource data to be stored in a vault. */
 interface SensitiveTarget {
-  /** The object keys and array indexes that lead to the value. */
   keys: (string | number)[];
-  /** The path shown in messages and events. */
   path: string;
   vaultName?: string;
   vaultKey?: string;
@@ -554,39 +509,28 @@ interface SensitiveTarget {
    * needs a vault key of its own per element.
    */
   perElement: boolean;
-  /** The value before any reference replaced it. */
   originalValue: unknown;
   /**
-   * Whether the value sits inside another value being stored. It is still
-   * stored under its own key, as it always has been, so a reader of that
-   * key keeps getting the current value, but the data keeps the outer
-   * reference in its place.
+   * still stored under its own key so a reader of that key keeps getting the
+   * current value, while the data keeps the outer reference in its place
    */
   insideStored?: boolean;
   /**
-   * Whether another value being stored sits inside this one, marked
-   * `insideStored`: outside a `sensitiveOutput` spec the data then holds an
-   * object of those values' references here, not one reference.
+   * outside a sensitiveOutput spec the data then holds an object of those
+   * values' references here, not one reference
    */
   holdsStored?: boolean;
   /**
-   * Whether the value is a top-level value of a `sensitiveOutput` spec, read
-   * and written by its own key, never as a dot path (swamp-club#3529).
+   * a top-level value of a sensitiveOutput spec, read and written by its own
+   * key, never as a dot path
    */
   ownKey?: boolean;
 }
 
 /**
- * Finds the values in `data` to store in a vault: every value under a field
- * marked `{ sensitive: true }` wherever it sits — nested objects, array
- * elements, record values, union members — and, for a `sensitiveOutput`
- * spec, every top-level value. Absent and null values are left out. A value
- * inside another one being stored is carried by the outer value: one outside
- * any array element or record value is still stored under its own key
- * (marked `insideStored`), one inside an element is not stored again.
- *
- * @returns The values to store, and the keys of every value found, those
- *   carried by an outer value included, in the order found
+ * a value inside another being stored is carried by the outer value: one
+ * outside any array element or record value is still stored under its own key,
+ * one inside an element is not stored again
  */
 function findSensitiveTargets(
   data: Record<string, unknown>,
@@ -652,12 +596,9 @@ function findSensitiveTargets(
 }
 
 /**
- * Whether the writer before swamp-club#3038 stored the value `keys` lead to
- * in a vault: a field it found by walking nested objects alone
- * ({@link extractSensitiveFields}), looked up by a dot path, so through keys
- * holding no dot. Such a value has always read back as its JSON text when it
- * was not a string (swamp-club#3480); any other is newly vaulted, and reads
- * back as written.
+ * values reached by walking nested objects alone were vaulted by the earlier
+ * writer and read back as JSON text when not a string; any other is newly
+ * vaulted and reads back as written
  */
 function vaultedBefore3038(
   spec: ResourceOutputSpec,
@@ -668,11 +609,6 @@ function vaultedBefore3038(
     paths.has(keys.join("."));
 }
 
-/**
- * The JSON of the shortest strict prefix of `keys` that is one of the
- * `stored` key lists, or undefined when there is none. That prefix has no
- * stored ancestor itself, so the data holds its reference.
- */
 function outermostStoredAncestor(
   keys: (string | number)[],
   stored: Set<string>,
@@ -686,11 +622,6 @@ function outermostStoredAncestor(
   return undefined;
 }
 
-/**
- * Names the sensitive fields of a spec for an error message: the fields in
- * nested objects, else the values found in `data` inside array elements,
- * record values and union members.
- */
 function sensitiveFieldList(
   spec: ResourceOutputSpec,
   data: Record<string, unknown>,
@@ -705,14 +636,11 @@ function sensitiveFieldList(
 }
 
 /**
- * A record key kept as written in an element vault key: lowercase only, since
- * capitals fold onto lowercase in a case-insensitive vault (Azure Key Vault,
- * or local_encryption on a case-insensitive file system), as
- * {@link vaultKeySegment} keeps a vary suffix.
+ * a record key kept as written in an element vault key: lowercase only, since
+ * capitals fold onto lowercase in a case-insensitive vault
  */
 const PLAIN_KEY = /^[a-z0-9_-]+$/;
 
-/** The first `hexDigits` hex digits of the SHA-256 of `text`. */
 async function shortHash(text: string, hexDigits: number): Promise<string> {
   const digest = await crypto.subtle.digest(
     "SHA-256",
@@ -725,21 +653,15 @@ async function shortHash(text: string, hexDigits: number): Promise<string> {
 }
 
 /**
- * The longest vault key given to a value inside an element. Vault providers
- * map keys to file and secret names, which have length limits of their own.
+ * vault providers map keys to file and secret names, which have length limits
+ * of their own
  */
 const MAX_ELEMENT_VAULT_KEY_LENGTH = 200;
 
 /**
- * Encodes the place of a value inside an array element or record value for a
- * vault key: keys and indexes joined with dots, each run of other characters
- * in a key turned into `-`. Record keys come from resource data, so this
- * keeps quotes, slashes and `..` out of the key. When a key is not
- * {@link PLAIN_KEY} (it holds a capital or another character), the first 12
- * hex digits of the SHA-256 of the exact keys are appended, so two keys that
- * differ only in such characters, or only in case, still get distinct vault
- * keys in a case-insensitive vault, and every element keeps the same vault
- * key from write to write.
+ * record keys come from resource data, so other characters become -; a
+ * non-plain key also gets 12 hex digits of SHA-256 of the exact keys, keeping
+ * case-only differences distinct and each key stable across writes
  */
 async function encodeElementKeys(keys: (string | number)[]): Promise<string> {
   let changed = false;
@@ -757,14 +679,9 @@ async function encodeElementKeys(keys: (string | number)[]): Promise<string> {
 }
 
 /**
- * The vault key a target is stored under. A value outside any element keeps
- * the key swamp has always given it: the field's `vaultKey`, or one derived
- * from the model, method, spec, instance and field path (for a dotted own
- * key of a `sensitiveOutput` spec, a hash of its name). A value inside an
- * element gets one key per element: its encoded place is appended to the
- * field's `vaultKey`, or derived the same way, so elements never share a key.
- * Such a key longer than {@link MAX_ELEMENT_VAULT_KEY_LENGTH} is cut, and ends
- * in a hash of the whole key.
+ * outside an element the key is the field vaultKey or derived from model,
+ * method, spec, instance and path; inside an element its encoded place is
+ * appended so elements never share a key; long keys end in a hash
  */
 async function vaultKeyFor(
   target: SensitiveTarget,
@@ -794,10 +711,8 @@ async function vaultKeyFor(
 }
 
 /**
- * Whether a dot path names exactly the place `keys` lead to for every swamp
- * release reading it: no key holds a dot, which those readers would split
- * on, and none is empty or one of {@link UNSAFE_PATH_SEGMENTS}, which
- * {@link readSensitiveFieldsTag} refuses.
+ * no key may hold a dot, which older readers split on, or be empty or one of
+ * UNSAFE_PATH_SEGMENTS, which readSensitiveFieldsTag refuses
  */
 function writableAsDotPath(keys: (string | number)[]): boolean {
   return keys.every((key) =>
@@ -806,9 +721,6 @@ function writableAsDotPath(keys: (string | number)[]): boolean {
   );
 }
 
-/**
- * Reads the value `keys` lead to in `data`, following own properties only.
- */
 function getValueAtKeys(
   data: Record<string, unknown>,
   keys: (string | number)[],
@@ -827,9 +739,8 @@ function getValueAtKeys(
 }
 
 /**
- * Replaces the value `keys` lead to in `data`. Nothing is written when that
- * place does not exist: no container is created, and a key is only ever
- * written as an own property (never through `__proto__`).
+ * nothing is written when the place does not exist: no container is created,
+ * and a key is only written as an own property, never through __proto__
  */
 function setValueAtKeys(
   data: Record<string, unknown>,
@@ -852,11 +763,6 @@ function setValueAtKeys(
   });
 }
 
-/**
- * Sets the value `keys` lead to in `data`, replacing each missing or
- * non-object step on the way with an empty object, as {@link setNestedValue}
- * does, but writing every key as an own property.
- */
 function setValueCreatingAtKeys(
   data: Record<string, unknown>,
   keys: (string | number)[],
@@ -886,28 +792,9 @@ function setValueCreatingAtKeys(
 }
 
 /**
- * Processes sensitive fields in resource data before persistence.
- *
- * For each value under a field marked with `{ sensitive: true }` metadata in
- * the schema — in nested objects, array elements, record values and union
- * members — or every top-level value when `sensitiveOutput` is true on the
- * spec:
- * 1. Snapshots original values before any mutation
- * 2. Prepares vault references and validates all write targets
- * 3. Stores the snapshotted values in the vault
- *
- * A value inside an array element or record value is stored under a vault
- * key of its own per element (see {@link vaultKeyFor}).
- *
- * @param data - The resource data to process (mutated in place)
- * @param spec - The resource output specification
- * @param vaultService - The vault service for storing values
- * @param modelType - The model type (for vault key generation)
- * @param modelId - The model ID (for vault key generation)
- * @param methodName - The method name (for vault key generation)
- * @returns The places to tag, each value whose reference the data now
- *   holds and each marked field inside one of them, and which of those
- *   values are stored as JSON text
+ * snapshots original values before any mutation, prepares vault references and
+ * validates all write targets, then stores the snapshots in the vault; data is
+ * mutated in place
  */
 export async function processSensitiveResourceData(
   data: Record<string, unknown>,
@@ -940,10 +827,9 @@ interface PreparedSensitiveResourceData extends VaultedFields {
 }
 
 /**
- * Replaces fields in the working data with their references without writing
- * the vault. The resource writer validates the final serialized bytes before
- * committing these snapshotted values, so a rejected update cannot change
- * the secrets an existing resource still references.
+ * the resource writer validates the final serialized bytes before committing
+ * these snapshotted values, so a rejected update cannot change the secrets an
+ * existing resource still references
  */
 async function prepareSensitiveResourceData(
   data: Record<string, unknown>,
@@ -974,10 +860,9 @@ async function prepareSensitiveResourceData(
     );
   }
 
-  // Every target and key is resolved, and decided under the run's vault
-  // access with the key the put will name, before the first value is stored,
-  // so a refusal (including one from a grant revoked mid-run, or a grant
-  // conditioned on the key) leaves no earlier field's value orphaned.
+  // every target and key is resolved and decided under the run's vault access
+  // before the first value is stored, so a refusal (even a mid-run grant revoke
+  // or key-conditioned grant) leaves no field orphaned
   const keyPrefix =
     `${modelType.normalized}/${modelId}/${methodName}/${specName}/${instanceName}`;
   const targets = [];
@@ -1027,12 +912,9 @@ async function prepareSensitiveResourceData(
   }));
   const refOf = (targetVault: string, vaultKey: string) =>
     `\${{ vault.get('${targetVault}', '${vaultKey}') }}`;
-  // A container that holds another stored field keeps the shape it has
-  // always had: an object of those fields' references, the whole container
-  // stored under its own key as well. Expressions read each field as a
-  // Secret, through the container. Its unmarked fields are not in the data,
-  // as before swamp-club#3038; the vault holds them in the container's value.
-  // A sensitiveOutput spec keeps each top-level value as one reference.
+  // a container holding another stored field is an object of those fields'
+  // references, the whole container also stored under its own key; a
+  // sensitiveOutput spec keeps one reference per top-level value
   const asObject = (field: SensitiveTarget) =>
     field.holdsStored === true && !spec.sensitiveOutput;
   for (const { field, targetVault, vaultKey } of writes) {
@@ -1062,10 +944,9 @@ async function prepareSensitiveResourceData(
     // finds nothing to resolve there; a reader that restores the outer value
     // registers the field's value as a secret.
     paths: found.map((keys) => writableAsDotPath(keys) ? keys.join(".") : keys),
-    // Before this release such a value was not vaulted, so it read back as
-    // itself, not as text: an element, a union member's field, a field under
-    // a lazy schema. A container that holds a stored field is an object of
-    // references, not one, so it is never listed.
+    // listed as JSON-text values: those inside an element, a union member's
+    // field, a field under a lazy schema, or otherwise not vaulted by older
+    // writers; a container holding a stored field is never listed
     jsonKeys: referenced
       .filter((f) =>
         typeof f.originalValue !== "string" && !f.holdsStored &&
@@ -1091,22 +972,9 @@ async function prepareSensitiveResourceData(
 }
 
 /**
- * Redacts registered secrets from the resource payload as it will be
- * persisted, except inside the vault references
- * {@link processSensitiveResourceData} put at `vaultedPaths`. A generated
- * vault key embeds the instance name, which can contain a resolved secret,
- * so redacting the reference would point it at a key the vault does not
- * hold (swamp-club#3585).
- *
- * The payload is redacted node by node in its JSON shape and serialized
- * after, so what is persisted stays valid JSON (swamp-club#3754). A string,
- * and an object key, is redacted as it reads in the JSON text, as the whole
- * text was before, and a mask that breaks its quoting covers it whole. A
- * number, boolean or null whose JSON text is itself a registered secret (a
- * sensitive number) becomes the string `***`, and so does an object or array
- * whose JSON text is (a JSON secret written back as an object); a number
- * that only contains a secret's digits is kept, where masking the substring
- * would have broken the syntax.
+ * redacts registered secrets except inside vault references: a generated key
+ * embeds the instance name, which may hold a secret, and redacting it would
+ * point the reference at a key the vault lacks
  */
 function redactOutsideVaultReferences(
   data: Record<string, unknown>,
@@ -1184,10 +1052,9 @@ function redactOutsideVaultReferences(
 }
 
 /**
- * Applies {@link dataNamePortability} to a data name about to be written
- * (swamp-club#3568). Throws when this host cannot store the name; otherwise
- * emits one warning per name for a name that will not store correctly on
- * Windows, so an author on Linux or macOS sees it. The name is never changed.
+ * throws when this host cannot store the name; warns once per name that will
+ * not store correctly on Windows so a Linux or macOS author sees it; the name
+ * is never changed
  */
 function checkDataNamePortability(
   name: string,
@@ -1216,23 +1083,6 @@ function checkDataNamePortability(
   }
 }
 
-/**
- * Creates a writeResource function bound to a specific execution context.
- *
- * The returned function validates data against the resource's Zod schema (warn on failure),
- * processes sensitive fields (storing values in vault and replacing with references),
- * serializes to JSON, writes via DefaultDataWriter, and returns a DataHandle.
- *
- * @param repo - The unified data repository
- * @param modelType - The model type
- * @param modelId - The model ID (definition ID)
- * @param resources - The model's declared resource output specifications
- * @param tagOverrides - Tags merged into every writer (e.g., workflow step tags)
- * @param dataOutputOverrides - Overrides for specific spec names
- * @param vaultService - Optional vault service for sensitive field storage
- * @param methodName - Method name for vault key generation
- * @returns A tuple of [writeResource, getHandles]
- */
 export function createResourceWriter(
   repo: UnifiedDataRepository,
   modelType: ModelType,
@@ -1319,7 +1169,6 @@ export function createResourceWriter(
       });
     }
 
-    // Validate name is a non-empty string
     if (typeof name !== "string" || name.trim() === "") {
       throw wordedError(
         wordedText((w) =>
@@ -1329,7 +1178,6 @@ export function createResourceWriter(
       );
     }
 
-    // Validate name is not reserved for internal use
     if (isReservedDataName(name)) {
       throw wordedError(
         wordedText((w) =>
@@ -1344,10 +1192,8 @@ export function createResourceWriter(
 
     assertWriteTagsUnreserved("resource", specName, spec.tags, overrides?.tags);
 
-    // Resolve tags with full resolution chain:
-    // 1. type auto-tag → 2. definition tags → 3. spec defaults →
-    // 4. method overrides → 5. specName auto-tag → 6. workflow/tag overrides →
-    // 7. runtime tags → 8. data output overrides
+    // tag precedence, lowest to highest: type, definition, spec defaults,
+    // method overrides, specName, workflow, runtime, data output overrides
     const resolvedTags: Record<string, string> = {
       type: "resource",
       ...(definitionTags ?? {}),
@@ -1355,30 +1201,25 @@ export function createResourceWriter(
       ...(overrides?.tags ?? {}),
     };
 
-    // Auto-inject specName tag for findBySpec discovery
     resolvedTags["specName"] = specName;
 
-    // Auto-inject modelName tag for orphan data recovery (issue #370)
+    // the modelName tag lets orphan data be recovered
     if (definitionName) {
       resolvedTags["modelName"] = definitionName;
     }
 
-    // Apply global tag overrides (workflow step tags)
     if (tagOverrides) {
       Object.assign(resolvedTags, tagOverrides);
     }
 
-    // Apply runtime tags (--tag flags)
     if (runtimeTags) {
       Object.assign(resolvedTags, runtimeTags);
     }
 
-    // Resolve lifetime and gc with overrides
     let lifetime = overrides?.lifetime ?? spec.lifetime;
     let garbageCollection = overrides?.garbageCollection ??
       spec.garbageCollection;
 
-    // Apply data output overrides for this spec name
     let effectiveSpec = spec;
     if (dataOutputOverrides) {
       const override = dataOutputOverrides.find(
@@ -1415,7 +1256,6 @@ export function createResourceWriter(
       onEvent,
     );
 
-    // Process sensitive fields before serialization
     const hasSensitiveFields = effectiveSpec.sensitiveOutput ||
       schemaHoldsSensitiveFields(effectiveSpec.schema);
     if (hasSensitiveFields && !vaultService) {
@@ -1440,8 +1280,8 @@ export function createResourceWriter(
         modelId,
         methodName,
         specName,
-        // The vary suffix is part of the key, so each vary instance keeps its
-        // own secret (swamp-club#3633).
+        // the vary suffix is part of the key, so each vary instance keeps its
+        // own secret
         varySuffix === undefined
           ? name
           : `${name}-${await vaultKeySegment(varySuffix)}`,
@@ -1484,7 +1324,7 @@ export function createResourceWriter(
       )
       : JSON.stringify(data);
     if (vaultedPaths.length > 0) {
-      // Redaction keeps the payload valid JSON (swamp-club#3754).
+      // redaction keeps the payload valid JSON
       const persisted: unknown = JSON.parse(serialized);
       if (
         persisted === null || typeof persisted !== "object" ||
@@ -1555,55 +1395,36 @@ export function createResourceWriter(
 }
 
 /**
- * Tag key used to record which field paths were vaulted on write.
- * Read sites use this tag to limit vault reference resolution to only
- * those paths, preventing untrusted data in non-sensitive fields from
- * being resolved as vault references.
+ * read sites use this tag to limit vault reference resolution to these paths,
+ * so untrusted data in non-sensitive fields is never resolved as a vault
+ * reference
  */
 export const SENSITIVE_FIELDS_TAG = "_swamp.sensitiveFields";
 
 /**
- * Marks records vaulted after reserved tags, dotted own-key handling and
- * final serialized reference validation became write-path invariants.
- * Older records can contain forged tags or
- * unvaulted reference text, so their field tag alone cannot authorize a
- * remote resource claim (swamp-club#3529). Only the resource writer sets it.
+ * marks records written under the current write-path invariants; older records
+ * can carry forged tags or unvaulted reference text, so their field tag alone
+ * cannot authorize a remote resource claim
  */
 export const SENSITIVE_FIELDS_VERSION_TAG = "_swamp.sensitiveFieldsVersion";
 export const SENSITIVE_FIELDS_VERSION = "1";
 
 /**
- * Tag key recording which writer made a record: `resource` or `file`. Both
- * writers stamp it after every override, and it sits under
- * {@link RESERVED_TAG_PREFIX}, so no user source can set it. A record that
- * carries it was written by a writer that tags every field it vaults with
- * {@link SENSITIVE_FIELDS_TAG}, so {@link getSensitiveFieldsForResolution}
- * keeps the schema fallback for records without it (swamp-club#3684).
+ * stamped by both writers after every override and under the reserved prefix,
+ * so no user source sets it; records without it keep the schema fallback in
+ * getSensitiveFieldsForResolution
  */
 export const RECORD_KIND_TAG = "_swamp.kind";
 
-/**
- * Sentinel value for the {@link SENSITIVE_FIELDS_TAG} tag when all fields
- * are sensitive (`sensitiveOutput: true` on the resource spec).
- */
 export const SENSITIVE_FIELDS_ALL = "*";
 
-/** Who must remove a reserved tag that a type's own code supplies. */
 const typeAuthorRemedy = (w: BehaviorWords) =>
   `The ${w.noun} type's author must remove it.`;
 
 /**
- * The refusal of a reserved tag key (`isReservedTagKey`: one under
- * {@link RESERVED_TAG_PREFIX}, or `specName`) from a source swamp does not
- * control (swamp-club#3635, swamp-club#3684), or undefined when `tags` holds
- * none. Readers trust these tags as swamp's own, and
- * {@link SENSITIVE_FIELDS_TAG} chooses which fields resolve vault references,
- * so the vaulting step must be the only way one reaches a record. The message
- * names the key and its source, never the value, which may be sensitive.
- *
- * @param tags - The tags from one source, if any
- * @param source - Completes "Tag 'x' from …"
- * @param remedy - The sentence that says how to fix it
+ * readers trust reserved tags and SENSITIVE_FIELDS_TAG picks which fields
+ * resolve vault references, so only vaulting may set one; the message names the
+ * key and source, never the possibly sensitive value
  */
 export function reservedTagRefusal(
   tags: Record<string, string> | undefined,
@@ -1621,7 +1442,6 @@ export function reservedTagRefusal(
   );
 }
 
-/** Throws the {@link reservedTagRefusal} of `tags`, if there is one. */
 export function assertNoReservedTags(
   tags: Record<string, string> | undefined,
   source: (w: BehaviorWords) => string,
@@ -1632,8 +1452,8 @@ export function assertNoReservedTags(
 }
 
 /**
- * The tag sources of one method run that exist before the method runs. A
- * caller checking only workflow-authored sources leaves out `modelType`.
+ * tag sources that exist before the method runs; a caller checking only
+ * workflow-authored sources leaves out modelType
  */
 export interface RunTagSources {
   modelType?: ModelType;
@@ -1651,11 +1471,6 @@ export interface RunTagSources {
   }>;
 }
 
-/**
- * The first refusal of a reserved tag key in any source of a method run known
- * before the method runs: the definition, spec defaults, workflow tags,
- * `--tag` and data output overrides. Validation reports it; a run throws it.
- */
 export function reservedRunTagRefusal(
   sources: RunTagSources,
 ): WordedText | undefined {
@@ -1695,7 +1510,6 @@ export function reservedRunTagRefusal(
   return undefined;
 }
 
-/** The default tags of every resource and file spec a type declares. */
 export function outputSpecTags(
   modelDef: Pick<ModelDefinition, "resources" | "files">,
 ): NonNullable<RunTagSources["specs"]> {
@@ -1714,20 +1528,15 @@ export function outputSpecTags(
 }
 
 /**
- * Throws the {@link reservedRunTagRefusal} of a method run's sources. The
- * method execution service calls it before anything executes; the writers
- * call it again on every write, with the method's own write overrides, as
- * the backstop.
+ * the method execution service calls it before anything executes; the writers
+ * call it again on every write, with the method's own write overrides, as the
+ * backstop
  */
 export function assertNoReservedRunTags(sources: RunTagSources): void {
   const refusal = reservedRunTagRefusal(sources);
   if (refusal) throw wordedError(refusal);
 }
 
-/**
- * Binds {@link assertNoReservedRunTags} to one writer factory's sources and
- * adds the write's own spec and method overrides.
- */
 function writeTagsGuard(
   modelType: ModelType,
   definitionTags: Record<string, string> | undefined,
@@ -1763,23 +1572,16 @@ function writeTagsGuard(
 }
 
 /**
- * Tag key recording vaulted places a dot path cannot name for every swamp
- * release — a place reached through a key holding a dot, or through
- * `__proto__` — as a JSON array of key lists
- * (`[["accounts","eu.west","token"]]`). Releases that predate it ignore it
- * and leave those references unresolved; it is read only alongside
- * {@link SENSITIVE_FIELDS_TAG}.
+ * vaulted places a dot path cannot name (a key holding a dot, or __proto__) as
+ * a JSON array of key lists; older releases ignore it and leave those
+ * unresolved; read only alongside SENSITIVE_FIELDS_TAG
  */
 export const SENSITIVE_FIELD_KEYS_TAG = "_swamp.sensitiveFieldKeys";
 
 /**
- * Tag key recording vaulted places whose value was not a string and that the
- * writer before swamp-club#3038 did not vault (inside array elements and
- * record values, union members' fields), as a JSON array of key lists. Their
- * vault value is the JSON text of that value, which readers parse back so it
- * reads as it was written (a number, an object). Releases that
- * predate it ignore it and read the JSON text; it is read only alongside
- * {@link SENSITIVE_FIELDS_TAG}, and only for places that tag lists.
+ * vaulted places holding a non-string value stored as JSON text, as a JSON
+ * array of key lists; readers parse the text back; older releases read the
+ * text; used only for places SENSITIVE_FIELDS_TAG lists
  */
 export const SENSITIVE_FIELD_JSON_TAG = "_swamp.sensitiveFieldJson";
 
@@ -1792,9 +1594,8 @@ function isKeyPath(value: unknown): value is (string | number)[] {
 }
 
 /**
- * Reads a tag holding key lists ({@link SENSITIVE_FIELD_KEYS_TAG},
- * {@link SENSITIVE_FIELD_JSON_TAG}). A tag that is not a list of key lists is
- * ignored whole, so nothing is read from it.
+ * a tag that is not a list of key lists is ignored whole, so nothing is read
+ * from it
  */
 function parseKeyListTag(
   tags: Record<string, string>,
@@ -1811,15 +1612,9 @@ function parseKeyListTag(
 }
 
 /**
- * Parses the `_swamp.sensitiveFields` tag from a data record's tags, with the
- * places {@link SENSITIVE_FIELD_KEYS_TAG} adds to it. A place
- * {@link SENSITIVE_FIELD_JSON_TAG} lists comes back as a
- * {@link JsonSensitiveField}; one it lists that neither of the other tags
- * names is ignored.
- *
- * @returns The vaulted places (dot paths, then key lists), `"*"` when all
- *          fields are sensitive, or `null` when the tag is absent (legacy
- *          data).
+ * returns the vaulted places (dot paths, then key lists), * when all fields are
+ * sensitive, or null when the tag is absent (legacy data); a place only the
+ * JSON tag lists is ignored
  */
 export function parseSensitiveFieldsTag(
   tags: Record<string, string>,
@@ -1847,11 +1642,6 @@ export function parseSensitiveFieldsTag(
   }
 }
 
-/**
- * Replaces each place in `places` that `jsonKeys` lists with a
- * {@link JsonSensitiveField}. A dot path matches the keys it joins; a key
- * list matches the same keys.
- */
 function markJsonPlaces(
   places: (string | (string | number)[])[],
   jsonKeys: (string | number)[][],
@@ -1872,17 +1662,12 @@ function markJsonPlaces(
   });
 }
 
-/**
- * Regex matching vault expression strings produced by `processSensitiveResourceData()`.
- * Captures the vault name (group 1) and key (group 2).
- */
 const VAULT_REF_REGEX =
   /^\$\{\{\s*vault\.get\(\s*'([^']+)'\s*,\s*'([^']+)'\s*\)\s*\}\}$/;
 
 /**
- * The vault name and key of `text` when it is exactly one stored reference:
- * the anchored text {@link processSensitiveResourceData} writes at a vaulted
- * path. Undefined for any other text, reference-looking or not.
+ * matches only the anchored text the writer puts at a vaulted path; any other
+ * text, reference-looking or not, gives undefined
  */
 export function parseStoredVaultReference(
   text: string,
@@ -1891,17 +1676,12 @@ export function parseStoredVaultReference(
   return match ? { vaultName: match[1], key: match[2] } : undefined;
 }
 
-/** A path segment, or field name, that would reach a prototype rather than a field. */
 export const UNSAFE_PATH_SEGMENTS: ReadonlySet<string> = new Set([
   "__proto__",
   "constructor",
   "prototype",
 ]);
 
-/**
- * The strict reading of a record's {@link SENSITIVE_FIELDS_TAG}: no tag,
- * every top-level field, or the writer's dot-paths as segment lists.
- */
 export type SensitiveFieldsTag =
   | { readonly kind: "none" }
   | { readonly kind: "all" }
@@ -1911,9 +1691,8 @@ export type SensitiveFieldsTag =
   };
 
 /**
- * A {@link SENSITIVE_FIELDS_TAG} the writer could not have produced. The
- * message names the reason only, never the tag's text, which can be data
- * from outside this repository.
+ * the message names the reason only, never the tag's text, which can be data
+ * from outside this repository
  */
 export class SensitiveFieldsTagInvalidError extends Error {
   constructor(readonly reason: string) {
@@ -1923,14 +1702,9 @@ export class SensitiveFieldsTagInvalidError extends Error {
 }
 
 /**
- * Reads the {@link SENSITIVE_FIELDS_TAG} strictly, as the expression-facing
- * accessors do (design/enablers/typed-secrets.md Section 6.1): an absent tag
- * means no sensitive fields, the star value means every top-level field, and
- * anything else must be the JSON list of dot-paths the writer stores. A tag
- * that is not text, not JSON, not a list of strings, or that holds an empty
- * path, an empty segment or an unsafe segment throws
- * {@link SensitiveFieldsTagInvalidError}. Unlike {@link parseSensitiveFieldsTag},
- * a malformed tag is never read as absent.
+ * strict read: an absent tag means no sensitive fields, * means every top-level
+ * field, anything else must be the writer's JSON list of dot paths; a malformed
+ * tag throws and is never read as absent
  */
 export function readSensitiveFieldsTag(
   tags: Record<string, string>,
@@ -1972,16 +1746,9 @@ export function readSensitiveFieldsTag(
 }
 
 /**
- * The vaulted places of a record as the expression-facing accessors read
- * them: {@link readSensitiveFieldsTag}, strictly, with each key list
- * {@link SENSITIVE_FIELD_KEYS_TAG} adds to a path list as one more path of
- * segments, an array index written as its digits. The key-list tag is read as
- * {@link parseSensitiveFieldsTag} reads it, only alongside a path list and a
- * malformed one ignored whole, so its places stay as stored text. Its segments
- * may be empty or name a prototype property: they are object keys, never a
- * dot path, and must be read and written as own properties.
- * {@link SENSITIVE_FIELD_JSON_TAG} adds nothing here: a place it lists is
- * already a path of one of the other two tags.
+ * key-list segments may be empty or name a prototype property: they are object
+ * keys, never a dot path, and must be read and written as own properties; a
+ * malformed key-list tag is ignored whole
  */
 export function readSensitiveFieldPlaces(
   tags: Record<string, string>,
@@ -2000,13 +1767,8 @@ export function readSensitiveFieldPlaces(
 }
 
 /**
- * The vaulted places of a record whose vault value is the JSON text of a
- * value that is not a string, as {@link SENSITIVE_FIELD_JSON_TAG} lists
- * them: segment lists, an array index written as its digits, as
- * {@link readSensitiveFieldPlaces} spells them. The tag is read as
- * {@link parseSensitiveFieldsTag} reads it, only alongside a path list and a
- * malformed one ignored whole, and a place it lists that
- * {@link readSensitiveFieldPlaces} does not is ignored.
+ * a malformed tag is ignored whole, and a place it lists that
+ * readSensitiveFieldPlaces does not is ignored
  */
 export function readSensitiveFieldJsonPlaces(
   tags: Record<string, string>,
@@ -2020,15 +1782,8 @@ export function readSensitiveFieldJsonPlaces(
 }
 
 /**
- * Recursively walks an object/array and resolves any string values that match
- * the vault expression pattern `${{ vault.get('name', 'key') }}`.
- *
- * Resolved secret values are registered with the optional `redactor` to prevent
- * log leakage (mirrors the pattern in `model_resolver.ts`).
- *
- * @param data - The object to walk (mutated in place)
- * @param vaultService - The vault service for retrieving secrets
- * @param redactor - Optional secret redactor to register resolved values
+ * resolved values are registered with the redactor to prevent log leakage; data
+ * is mutated in place
  */
 export async function resolveVaultRefsInData(
   data: Record<string, unknown>,
@@ -2077,12 +1832,8 @@ async function walkAndResolve(
 }
 
 /**
- * Resolves vault references only at the specified field paths (or all fields
- * when `sensitiveFields` is `"*"`). Unlike {@link resolveVaultRefsInData} which
- * walks the entire object tree, this function targets only the paths that were
- * written by {@link processSensitiveResourceData}, preventing untrusted data in
- * non-sensitive fields from being resolved as vault references. A read that
- * fails throws.
+ * targets only the paths the writer vaulted, so untrusted data in non-sensitive
+ * fields is never resolved as a vault reference; a failed read throws
  */
 export async function resolveSensitiveVaultRefs(
   data: Record<string, unknown>,
@@ -2100,12 +1851,9 @@ export async function resolveSensitiveVaultRefs(
 }
 
 /**
- * {@link resolveSensitiveVaultRefs} for an expression's data read, where a
- * reference whose vault cannot be read stays as stored text. Each reference
- * is read on its own: one that fails is logged at debug and goes to
- * `redactor.recordUnread` with the vault, key and provider error, and the
- * remaining references are still read (swamp-club#3806). A refusal by the
- * run's vault access is rethrown.
+ * for an expression read, a reference whose vault cannot be read stays as
+ * stored text and is recorded unread with the provider error; the rest are
+ * still read; a refusal by the run's vault access is rethrown
  */
 export async function resolveSensitiveVaultRefsLeavingUnread(
   data: Record<string, unknown>,
@@ -2123,11 +1871,8 @@ export async function resolveSensitiveVaultRefsLeavingUnread(
 }
 
 /**
- * Records every reference at a record's tagged sensitive locations as unread
- * with `error`, for a read whose vault service could not be built at all. The
- * references stay as stored, as
- * {@link resolveSensitiveVaultRefsLeavingUnread} leaves a reference whose
- * read fails.
+ * for a read whose vault service could not be built at all; the references stay
+ * as stored
  */
 export async function recordSensitiveVaultRefsUnread(
   data: Record<string, unknown>,
@@ -2146,7 +1891,6 @@ export async function recordSensitiveVaultRefsUnread(
   );
 }
 
-/** Reads the secret a stored reference names. */
 type VaultRead = (vaultName: string, key: string) => Promise<string>;
 
 function vaultReadOf(vaultService: VaultService): VaultRead {
@@ -2174,15 +1918,10 @@ async function resolveSensitiveLocations(
     }
     return;
   }
-  // Each JSON place restored to a value, by its keys, with the reference
-  // it was read from.
   const restored = new Map<string, SecretReference>();
-  // Every place already resolved. A place is resolved once: under a place
-  // resolved before it, what is there is a value read from a vault,
-  // reference-shaped text included, never a reference to read again. A
-  // container tagged beside its fields resolves their references as it is
-  // walked; inside a restored JSON place a tagged field is only registered,
-  // below. Outer places come first, so each is resolved before its fields.
+  // a place is resolved once: under an already-resolved place the content is a
+  // vault-read value, never a reference to read again; outer places come first
+  // so each is resolved before its fields
   const done = new Set<string>();
   const outerFirst = [...sensitiveFields].sort((a, b) =>
     placeKeysOf(a).length - placeKeysOf(b).length
@@ -2229,20 +1968,14 @@ async function resolveSensitiveLocations(
   }
 }
 
-/** Identifies a place by its keys, an array index and its digits alike. */
 function placeId(keys: readonly (string | number)[]): string {
   return JSON.stringify(keys.map(String));
 }
 
-/** The keys of any vaulted place, a dot path split at its dots. */
 function placeKeysOf(place: SensitiveFieldPath): (string | number)[] {
   return typeof place === "string" ? place.split(".") : placeKeys(place);
 }
 
-/**
- * The reference of the restored JSON place a strict prefix of `keys` names,
- * or undefined when no prefix is one.
- */
 function restoredAncestor(
   keys: readonly (string | number)[],
   restored: ReadonlyMap<string, SecretReference>,
@@ -2255,13 +1988,9 @@ function restoredAncestor(
 }
 
 /**
- * Registers with `redactor` the value of each tagged place inside a JSON
- * place that was restored: a sensitive field the schema marks inside a
- * stored container, which the writer tags beside the container. The rest of
- * a restored value is registered only as the whole text it was stored as,
- * as any non-string sensitive value is: registering every string inside it
- * would mask ordinary text (a region, a user name) wherever it appears for
- * the rest of the run, in logs and in the records the run persists.
+ * registers only tagged fields inside a restored JSON place; the rest registers
+ * as the whole stored text, since registering every inner string would mask
+ * ordinary text (a region, a user name) all run
  */
 function registerFieldsInsideRestored(
   data: Record<string, unknown>,
@@ -2282,9 +2011,6 @@ function registerFieldsInsideRestored(
   }
 }
 
-/**
- * The object keys and array indexes of a vaulted place named by its keys.
- */
 function placeKeys(
   place: Exclude<SensitiveFieldPath, string>,
 ): (string | number)[] {
@@ -2292,13 +2018,9 @@ function placeKeys(
 }
 
 /**
- * Resolves the vault reference at a place named by its keys. At a
- * {@link JsonSensitiveField} only a reference is resolved, and the secret is
- * parsed back from the JSON text it was stored as; text that does not parse
- * is kept as the secret. The secret is registered with `redactor` as the
- * text it was stored as, as every resolved reference is.
- *
- * @returns The reference a JSON place was restored from, else undefined
+ * at a JsonSensitiveField only a reference is resolved and the secret is parsed
+ * back from its JSON text, kept as text if it does not parse; it is registered
+ * as the text it was stored as
  */
 async function resolveAtKeys(
   data: Record<string, unknown>,
@@ -2335,28 +2057,9 @@ async function resolveAtKeys(
 }
 
 /**
- * The vault references a record's sensitive fields hold, in the shape
- * {@link processSensitiveResourceData} leaves them: one whole-string
- * reference exactly at each tagged location, which is the value at each
- * path the sensitive-fields tags list, or the value of each top-level key
- * by its own name for the `*` tag. Listed in document order without
- * repeats, so serve can authorize a worker's read of a tagged field
- * against the record itself (swamp-club#3529). A null `sensitiveFields`
- * (no tag, or a malformed one, as {@link parseSensitiveFieldsTag} reads it)
- * names none.
- *
- * Nothing nested inside a tagged location is named: the writer vaults the
- * whole value there, so a reference below it is not one the writer made.
- * {@link resolveSensitiveVaultRefs} still walks below a tagged location for
- * records written before that shape was relied on; a remote read of such a
- * record needs independent allowlist authorization on serve.
- *
- * That authorization rests on two guards of the write path: the writer
- * vaults every present value of a sensitive field, reference text included,
- * so a tagged location only ever holds a reference the writer generated;
- * and the tag sits under {@link RESERVED_TAG_PREFIX}, which swamp alone
- * writes. Serve also requires {@link SENSITIVE_FIELDS_VERSION_TAG}, so a
- * record written before those guards existed cannot authorize a claim.
+ * one whole-string reference at each tagged location, so serve can authorize a
+ * worker's read against the record; nothing nested below one is named, since
+ * the writer vaults the whole value there
  */
 export function sensitiveVaultReferences(
   data: Record<string, unknown>,
@@ -2456,26 +2159,9 @@ async function resolveValueAtPath(
 }
 
 /**
- * Creates a readResource function bound to a specific execution context.
- *
- * The returned function reads previously stored resource data by instance name,
- * returning the parsed JSON object or null if no data exists.
- * When a VaultService is provided, vault reference expressions are resolved
- * only in the fields {@link getSensitiveFieldsForResolution} chooses: those
- * the `_swamp.sensitiveFields` tag names, or, for an untagged record written
- * before the writers stamped {@link RECORD_KIND_TAG}, those the resource spec
- * schema marks sensitive. A malformed tag fails the read.
- * The worker's remote method context builds the same reader over its proxies
- * with the verified bundle's specs, so both executors read alike
- * (swamp-club#3530).
- *
- * @param repo - The unified data repository
- * @param modelType - The model type
- * @param modelId - The model ID (definition ID)
- * @param vaultService - Optional vault service, or a factory scoped to the record being read
- * @param redactor - Optional secret redactor to register resolved secrets
- * @param resourceSpecs - Optional resource specs for the untagged-record schema fallback
- * @returns A readResource function
+ * vault references resolve only in the fields getSensitiveFieldsForResolution
+ * chooses, and a malformed tag fails the read; the worker's remote context
+ * builds the same reader so both executors read alike
  */
 export function createResourceReader(
   repo: UnifiedDataRepository,
@@ -2549,20 +2235,9 @@ export function createResourceReader(
 }
 
 /**
- * Decides which fields of a stored resource resolve vault references, for
- * `readResource` on both executors. The record's `_swamp.sensitiveFields` tag
- * is read strictly, as the accessor adapter reads it
- * ({@link readSensitiveFieldsTag}): a present tag names the fields, and a tag
- * the writer could not have produced fails the read with
- * {@link ResourceSensitiveFieldsInvalidError}, naming the record, rather than
- * being read as absent. Without the tag, a record carrying
- * {@link RECORD_KIND_TAG} had nothing vaulted at write time, so nothing
- * resolves: its `specName` and `type` tags are never consulted, since user
- * tag sources could once overwrite them (swamp-club#3684). Only a record
- * written before the writers stamped their kind falls back to the resource
- * spec's schema, found by the record's `specName` tag, and only when its
- * `type` tag says it is a resource; without specs, a spec name or a matching
- * spec nothing resolves, the secure default.
+ * a present tag names the fields, an invalid one fails the read; a kind-tagged
+ * record without it resolves nothing; only older untagged resources fall back
+ * to the spec schema, and no spec resolves nothing
  */
 export function getSensitiveFieldsForResolution(
   tags: Record<string, string>,
@@ -2598,14 +2273,6 @@ export function getSensitiveFieldsForResolution(
   return fields.length > 0 ? fields.map((f) => f.path) : null;
 }
 
-/**
- * Creates a deleteResource function bound to a specific execution context.
- *
- * @param repo - The unified data repository
- * @param modelType - The model type
- * @param modelId - The model ID (definition ID)
- * @returns A deleteResource function
- */
 export function createResourceDeleter(
   repo: UnifiedDataRepository,
   modelType: ModelType,
@@ -2616,21 +2283,6 @@ export function createResourceDeleter(
   };
 }
 
-/**
- * Creates a createFileWriter function bound to a specific execution context.
- *
- * The returned function creates DefaultDataWriter instances for writing
- * binary/streaming file content.
- *
- * @param repo - The unified data repository
- * @param modelType - The model type
- * @param modelId - The model ID (definition ID)
- * @param files - The model's declared file output specifications
- * @param tagOverrides - Tags merged into every writer (e.g., workflow step tags)
- * @param dataOutputOverrides - Overrides for specific spec names
- * @param callbacks - Optional callbacks for streaming events
- * @returns A tuple of [createFileWriter, getHandles]
- */
 export function createFileWriterFactory(
   repo: UnifiedDataRepository,
   modelType: ModelType,
@@ -2688,7 +2340,6 @@ export function createFileWriterFactory(
       );
     }
 
-    // Validate name is a non-empty string
     if (typeof name !== "string" || name.trim() === "") {
       throw wordedError(
         wordedText((w) =>
@@ -2698,7 +2349,6 @@ export function createFileWriterFactory(
       );
     }
 
-    // Validate name is not reserved for internal use
     if (isReservedDataName(name)) {
       throw wordedError(
         wordedText((w) =>
@@ -2712,10 +2362,8 @@ export function createFileWriterFactory(
 
     assertWriteTagsUnreserved("file", specName, spec.tags, overrides?.tags);
 
-    // Resolve tags with full resolution chain:
-    // 1. type auto-tag → 2. definition tags → 3. spec defaults →
-    // 4. method overrides → 5. specName auto-tag → 6. workflow/tag overrides →
-    // 7. runtime tags → 8. data output overrides
+    // tag precedence, lowest to highest: type, definition, spec defaults,
+    // method overrides, specName, workflow, runtime, data output overrides
     const resolvedTags: Record<string, string> = {
       type: "file",
       ...(definitionTags ?? {}),
@@ -2723,32 +2371,27 @@ export function createFileWriterFactory(
       ...(overrides?.tags ?? {}),
     };
 
-    // Auto-inject specName tag for findBySpec discovery
     resolvedTags["specName"] = specName;
 
-    // Auto-inject modelName tag for orphan data recovery (issue #370)
+    // the modelName tag lets orphan data be recovered
     if (definitionName) {
       resolvedTags["modelName"] = definitionName;
     }
 
-    // Apply global tag overrides (workflow step tags)
     if (tagOverrides) {
       Object.assign(resolvedTags, tagOverrides);
     }
 
-    // Apply runtime tags (--tag flags)
     if (runtimeTags) {
       Object.assign(resolvedTags, runtimeTags);
     }
 
-    // Resolve options with overrides
     const contentType = overrides?.contentType ?? spec.contentType;
     let lifetime = overrides?.lifetime ?? spec.lifetime;
     let garbageCollection = overrides?.garbageCollection ??
       spec.garbageCollection;
     const streaming = overrides?.streaming ?? spec.streaming;
 
-    // Apply data output overrides for this spec name
     if (dataOutputOverrides) {
       const override = dataOutputOverrides.find(
         (o) => o.specName === specName,
@@ -2759,7 +2402,6 @@ export function createFileWriterFactory(
         if (override.tags) {
           Object.assign(resolvedTags, override.tags);
         }
-        // Apply vary suffix to produce composite instance names
         if (override.resolvedVarySuffix) {
           instanceName = `${instanceName}-${override.resolvedVarySuffix}`;
         }
@@ -2813,7 +2455,6 @@ export function createFileWriterFactory(
     );
     writers.push(writer);
 
-    // Wrap write methods to track handles
     const originalWriteAll = writer.writeAll.bind(writer);
     const originalFinalize = writer.finalize.bind(writer);
 

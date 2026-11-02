@@ -204,7 +204,6 @@ Deno.test("coerces zero string to number", () => {
 
 Deno.test("does not coerce empty string to number", () => {
   const schema = z.object({ count: z.number() });
-  // Number("") is 0 which is not NaN, but empty string is a valid coercion to 0
   const result = coerceMethodArgs({ count: "" }, schema);
   assertEquals(result, { count: 0 });
 });
@@ -318,8 +317,6 @@ Deno.test("coerces JSON object string to a Zod v3 record (swamp-club#3286)", () 
   assertEquals(result, { labels: { env: "prod" } });
 });
 
-// ---------- getObjectShape ----------
-
 Deno.test("getObjectShape returns shape for plain ZodObject", () => {
   const schema = z.object({ name: z.string(), count: z.number() });
   const shape = getObjectShape(schema);
@@ -377,8 +374,6 @@ Deno.test("getObjectShape handles Zod v3 ZodEffects (typeName + .schema)", () =>
   const shape = getObjectShape(v3LikeRefined);
   assertEquals(Object.keys(shape ?? {}), ["name"]);
 });
-
-// ---------- isRecordSchema ----------
 
 Deno.test("isRecordSchema: returns true for plain z.record()", () => {
   const schema = z.record(z.string(), z.string());
@@ -786,7 +781,6 @@ Deno.test("parseGlobalArgumentsLeniently: refuses a parse that delivers anything
     ),
     { success: true, data: { key: "k" } },
   );
-  // An instance is stored by its own properties, as before.
   class Delivered {
     constructor(readonly key: string) {}
   }

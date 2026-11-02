@@ -31,9 +31,9 @@ import {
   type ResolvedModelReference,
 } from "./data_query_service.ts";
 
-// behaviorName and behavior("x") are exact synonyms of modelName and
-// model("x") (swamp-club#3410): respelling any occurrence of one as the other
-// must give the same records and the same SQL pushdown.
+// behaviorName and behavior(x) are exact synonyms of modelName and model(x):
+// respelling any occurrence must give the same records and the same SQL
+// pushdown
 
 const INGEST_ID = "11111111-1111-4111-8111-111111111111";
 const OTHER_ID = "22222222-2222-4222-8222-222222222222";
@@ -79,7 +79,6 @@ function row(
   };
 }
 
-/** A predicate tree whose model-name terms can be spelled either way. */
 type Term =
   | { kind: "name"; op: "==" | "!="; value: string }
   | { kind: "prefix"; value: string }
@@ -122,10 +121,6 @@ const { term: arbTerm } = fc.letrec<{ term: Term }>((tie) => ({
   ),
 }));
 
-/**
- * Renders `term` as CEL. `respell` picks, per model-name occurrence in
- * render order, whether to write the behavior spelling.
- */
 function render(term: Term, respell: () => boolean): string {
   const field = () => respell() ? "behaviorName" : "modelName";
   switch (term.kind) {

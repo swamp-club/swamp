@@ -19,18 +19,13 @@
 
 import { UserError } from "../errors.ts";
 
-/** The largest task, in UTF-8 bytes, a start session accepts. */
 export const MAX_TASK_BYTES = 32 * 1024;
 
-/** The longest task title before it is cut and "…" appended. */
 export const MAX_TITLE_CHARS = 120;
 
 /**
- * What the user asked their agent to do, as typed in the start page.
- *
- * The text is kept verbatim (only outer whitespace is trimmed) because it
- * goes into the brief unchanged; Swamp hosts no model and never summarises
- * or interprets it.
+ * kept verbatim (only outer whitespace trimmed) because it goes into the brief
+ * unchanged; swamp never summarises or interprets it
  */
 export class StartTask {
   private constructor(readonly text: string) {}
@@ -50,7 +45,6 @@ export class StartTask {
     return new StartTask(trimmed);
   }
 
-  /** The first non-empty line, cut to {@link MAX_TITLE_CHARS} characters. */
   title(): string {
     const first =
       this.text.split(/\r\n|\r|\n/).map((l) => l.trim()).find((l) =>

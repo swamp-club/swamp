@@ -85,21 +85,16 @@ function makeRun(
   });
 }
 
-// Helper: no tracker record for any run (legacy fallback path)
 const noTracker = () => null;
 
-// Helper: tracker says run is still running
 const trackerRunning = () => ({ status: "running" });
 
-// Helper: tracker says run was reaped (stale)
 const trackerReaped = () => ({ status: "failed" });
 
-// Helper: for cases decided before any pid check
 const unexpectedPidCheck = (pid: number): boolean => {
   throw new Error(`unexpected pid check for ${pid}`);
 };
 
-// Helper: an output repository holding no method-run records
 const noOutputs: MethodRunOutputs = {
   findByIds: () => Promise.resolve(new Map()),
   save: () => Promise.reject(new Error("unexpected output save")),
@@ -177,7 +172,7 @@ Deno.test("reapOrphanedWorkflowRuns: legacy run with live PID is skipped", async
       return Promise.resolve();
     },
     noTracker,
-    (_pid) => false, // PID is alive
+    (_pid) => false,
   );
   assertEquals(result.reaped, 0);
   assertEquals(result.skipped, 1);
@@ -195,7 +190,7 @@ Deno.test("reapOrphanedWorkflowRuns: legacy run with dead PID is interrupted", a
       return Promise.resolve();
     },
     noTracker,
-    (_pid) => true, // PID is dead
+    (_pid) => true,
   );
   assertEquals(result.reaped, 1);
   assertEquals(result.skipped, 0);
@@ -204,7 +199,7 @@ Deno.test("reapOrphanedWorkflowRuns: legacy run with dead PID is interrupted", a
 });
 
 Deno.test("reapOrphanedWorkflowRuns: legacy run with no PID is interrupted", async () => {
-  const run = makeRun(); // no pid
+  const run = makeRun();
   const saved: string[] = [];
   const result = await reapOrphanedWorkflowRuns(
     [{ run, workflowId: WORKFLOW_ID }],
@@ -266,10 +261,10 @@ Deno.test("reapOrphanedWorkflowRuns: mixed scenario with tracker and legacy runs
       return Promise.resolve();
     },
     (runId) => trackerMap.get(runId) ?? null,
-    (pid) => pid === 300, // only PID 300 is dead
+    (pid) => pid === 300,
   );
-  assertEquals(result.reaped, 3); // tracker-stale + legacy dead PID + legacy no PID
-  assertEquals(result.skipped, 1); // tracker-live
+  assertEquals(result.reaped, 3);
+  assertEquals(result.skipped, 1);
   assertEquals(trackedLive.status, "running");
   assertEquals(trackedStale.status, "interrupted");
   assertEquals(legacyDeadPid.status, "interrupted");
@@ -309,7 +304,7 @@ Deno.test("reapOrphanedWorkflowRuns: reaps run with matching instanceId when tra
       return Promise.resolve();
     },
     noTracker,
-    (_pid) => true, // PID is dead
+    (_pid) => true,
     "local-1",
   );
   assertEquals(result.reaped, 1);
@@ -319,7 +314,7 @@ Deno.test("reapOrphanedWorkflowRuns: reaps run with matching instanceId when tra
 });
 
 Deno.test("reapOrphanedWorkflowRuns: reaps run with no instanceId when tracker miss and PID dead", async () => {
-  const run = makeRun({ pid: 42 }); // no instanceId — legacy run
+  const run = makeRun({ pid: 42 });
   const saved: string[] = [];
   const result = await reapOrphanedWorkflowRuns(
     [{ run, workflowId: WORKFLOW_ID }],
@@ -328,7 +323,7 @@ Deno.test("reapOrphanedWorkflowRuns: reaps run with no instanceId when tracker m
       return Promise.resolve();
     },
     noTracker,
-    (_pid) => true, // PID is dead
+    (_pid) => true,
     "local-1",
   );
   assertEquals(result.reaped, 1);
@@ -351,7 +346,7 @@ Deno.test("reapOrphanedWorkflowRuns: reaps foreign run when heartbeat lookup rep
       throw new Error("should not check PID for foreign instance");
     },
     "local-1",
-    (_instanceId) => Promise.resolve(false), // no heartbeat
+    (_instanceId) => Promise.resolve(false),
   );
   assertEquals(result.reaped, 1);
   assertEquals(result.skipped, 0);
@@ -373,7 +368,7 @@ Deno.test("reapOrphanedWorkflowRuns: skips foreign run when heartbeat lookup rep
       throw new Error("should not check PID for foreign instance");
     },
     "local-1",
-    (_instanceId) => Promise.resolve(true), // heartbeat exists
+    (_instanceId) => Promise.resolve(true),
   );
   assertEquals(result.reaped, 0);
   assertEquals(result.skipped, 1);
@@ -445,7 +440,7 @@ Deno.test("reapOrphanedWorkflowRuns: skips foreign run when no heartbeat lookup 
       throw new Error("should not check PID for foreign instance");
     },
     "local-1",
-    undefined, // no heartbeat lookup — preserves old behavior
+    undefined,
   );
   assertEquals(result.reaped, 0);
   assertEquals(result.skipped, 1);
@@ -462,7 +457,7 @@ Deno.test("reapOrphanedWorkflowRuns: reaps run with foreign instanceId when trac
       saved.push(r.id);
       return Promise.resolve();
     },
-    trackerReaped, // tracker says stale — overrides instanceId check
+    trackerReaped,
     () => {
       throw new Error("should not check PID when tracker confirms stale");
     },
@@ -473,8 +468,6 @@ Deno.test("reapOrphanedWorkflowRuns: reaps run with foreign instanceId when trac
   assertEquals(run.status, "interrupted");
   assertEquals(saved.length, 1);
 });
-
-// --- settleDeadOwnerRun and its checks ---
 
 const HOST = "this-host";
 
@@ -512,14 +505,9 @@ function trackerRow(
 interface Recorded {
   saved: { runId: string; status: string }[];
   completed: { runId: string; status: ActiveRunStatus }[];
-  /** Every repository and tracker write, in order. */
   writes: string[];
 }
 
-/**
- * A run repository that returns `stored` on read, so a test can stand in a
- * fresher record than the one the caller listed.
- */
 function stubs(stored: WorkflowRun[], rows: ActiveRun[]): {
   runRepo: WorkflowRunRepository;
   runTracker: RunTrackerRepository;
@@ -772,8 +760,8 @@ Deno.test("settleDeadOwnerRun: interrupts a running run whose local owner is dea
 });
 
 Deno.test("settleDeadOwnerRun: a step whose start was never saved becomes unknown, not pending", async () => {
-  // As a pre-#2896 swamp left it: the job is running, its in-flight step
-  // still reads pending.
+  // as an older swamp left it: the job is running, its in-flight step still
+  // reads pending
   const run = WorkflowRun.fromData({
     id: crypto.randomUUID(),
     workflowId: WORKFLOW_ID,
@@ -961,8 +949,6 @@ Deno.test("settleDeadOwnerRun: leaves a run another process took over", async ()
   assertEquals(recorded.saved, []);
 });
 
-// --- method runs a dead owner left running ---
-
 const MODEL_TYPE = "command/shell";
 
 function methodRow(
@@ -992,7 +978,6 @@ function methodRow(
   });
 }
 
-/** An output saved running by process `pid`, with the row's id. */
 function runningOutput(row: ActiveRun, pid = row.pid): ModelOutput {
   const output = ModelOutput.fromData({
     id: row.id,
@@ -1012,7 +997,6 @@ function runningOutput(row: ActiveRun, pid = row.pid): ModelOutput {
   return output;
 }
 
-/** An output repository over `outputs`, recording reads and saves. */
 function outputStub(outputs: ModelOutput[], writes: string[] = []): {
   outputRepo: MethodRunOutputs;
   reads: string[];
@@ -1316,15 +1300,9 @@ Deno.test("cancelOrphanedMethodRuns: a failed read leaves every row failed", asy
   assertEquals(failed.map((r) => r.id), [row.id]);
 });
 
-// --- runRecordFinder and settleInterruptedWorkflowRows (swamp-club#2917) ---
-
 const NAMED_WORKFLOW = "11111111-1111-4111-8111-111111111111" as WorkflowId;
 const OTHER_WORKFLOW = "22222222-2222-4222-8222-222222222222" as WorkflowId;
 
-/**
- * A record store holding `byWorkflow`, and a workflow lookup that knows only
- * "test-workflow", as NAMED_WORKFLOW. `failing` run ids throw on read.
- */
 function recordFinder(
   byWorkflow: Map<WorkflowId, WorkflowRun[]>,
   failing: string[] = [],
@@ -1439,19 +1417,16 @@ Deno.test("suspendedRunOwnerStillRuns: true only while a live local owner's trac
   const alive = liveness();
   const dead = liveness([4242]);
 
-  // Mid-level: the record says suspended, the row still says running.
   const midLevel = stubs([], [trackerRow(run.id, { pid: 4242 })]);
   assertEquals(
     suspendedRunOwnerStillRuns(run, midLevel.runTracker, alive),
     true,
   );
-  // The same row under a dead owner: nothing will save the record again.
   assertEquals(
     suspendedRunOwnerStillRuns(run, midLevel.runTracker, dead),
     false,
   );
 
-  // The owner drained the level and marked its row suspended.
   const drained = stubs([], [
     trackerRow(run.id, { pid: 4242, status: "suspended" }),
   ]);
@@ -1460,7 +1435,6 @@ Deno.test("suspendedRunOwnerStillRuns: true only while a live local owner's trac
     false,
   );
 
-  // No tracker row to judge by.
   assertEquals(
     suspendedRunOwnerStillRuns(run, stubs([], []).runTracker, alive),
     false,
@@ -1475,7 +1449,6 @@ Deno.test("suspendedRunOwnerStillRuns: true only while a live local owner's trac
     false,
   );
 
-  // A run that is not suspended is not this predicate's to judge.
   const running = makeRun({ pid: 4242 });
   const runningRows = stubs([], [trackerRow(running.id, { pid: 4242 })]);
   assertEquals(

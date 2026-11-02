@@ -21,17 +21,9 @@ import { UserError } from "../errors.ts";
 import { normalizeServerUrl, redactServerUrl } from "../auth/server_url.ts";
 
 /**
- * Check that a serve URL can be stored as `serverAddress` in `.swamp.yaml`.
- *
- * `.swamp.yaml` is usually committed, so the stored URL must carry no
- * credential. A userinfo part, a query string (serve accepts `?token=`)
- * or a fragment is refused. Connections never use those parts anyway: the
- * token comes from `--token`, `SWAMP_SERVER_TOKEN` or stored credentials.
- *
- * Error messages show the URL only in its {@link redactServerUrl} form.
- *
- * @throws {UserError} if the value is not an http, https, ws or wss URL with
- *   a host, or if it has a userinfo part, a query string or a fragment
+ * .swamp.yaml is usually committed, so the stored URL must carry no credential:
+ * userinfo, a query (serve accepts ?token=) and a fragment are refused; errors
+ * show only the redacted URL
  */
 export function assertStorableServerAddress(value: string): void {
   const shown = redactServerUrl(value);

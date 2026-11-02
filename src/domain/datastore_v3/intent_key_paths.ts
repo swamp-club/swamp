@@ -18,59 +18,28 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * Which record keys an intent's aggregate may project to, and which op
- * kinds an intent may ride (swamp-club#3915).
- *
- * Serve authorises a forwarded op on its intent, so it must also check that
- * the op's key is one the intent's aggregate owns. Otherwise a principal
- * allowed to save data on one behavior could write any other aggregate's
- * file, such as a grant's. The layouts here are the ones the repositories
- * write ("v3 repository staging" in `design/enablers/datastores.md`):
- *
- * - `data/{type}/{modelId}/{name}/{version}/raw|metadata.yaml` and
- *   `data/{type}/{modelId}/{name}/latest`;
- * - `outputs/{type}/{method}/{modelId}-{stamp}.yaml`;
- * - `definitions-evaluated/{type}/{name|id}.yaml`;
- * - `workflow-runs/{workflowId}/workflow-run-{runId}.yaml` and
- *   `workflows-evaluated/runs/{runId}/evaluated-workflow.yaml`;
- * - `config/models/{type}/{name|id}.yaml`,
- *   `config/workflows/workflow-{name|id}.yaml`,
- *   `config/vaults/{type}/{id}.yaml` and
- *   `workflows-evaluated/workflow-{name|id}.yaml`;
- * - `auto-definitions/{type}/{name|id}.yaml`;
- * - `config/upstream_extensions.json`.
- *
- * A key a repository names by a uuid rather than a name belongs to whichever
- * definition holds that id, which only a lookup can tell: the binding
- * returns the id, and the authoriser's key-ownership rule guards the key.
- * `integration/v3_write_path_authorization_test.ts` runs every repository
- * write through these rules, so the two cannot drift.
- *
- * @module
+ * serve authorises on the intent, so it must also check the op's key belongs to
+ * the intent's aggregate; else a principal allowed to save one behavior's data
+ * could write another aggregate's file, such as a grant's
  */
 
 import { ModelType } from "../models/model_type.ts";
 import type { Intent, IntentKind } from "./intent.ts";
 import type { RecordKey } from "./record_key.ts";
 
-/** The op kinds that carry an intent. */
 export type IntentOpKind = "put" | "tombstone";
 
-/** Why a key is not one an intent's aggregate owns. */
 export type KeyBindingRefusal =
   | "key-outside-aggregate"
   | "op-kind-not-allowed"
   | "definition-type-unknown";
 
-/** The outcome of binding an op's key to its intent. */
 export type KeyBinding =
   | {
     readonly ok: true;
     /**
-     * The id a definition file is named by, when it is named by one. The
-     * layout alone cannot tie it to the intent's definition: authorisation
-     * relies on key ownership (a key another partition owns is refused) and,
-     * for the puts whose content serve checks, on admin.
+     * the layout cannot tie it to the intent's definition; authorisation relies
+     * on key ownership and, for puts whose content serve checks, on admin
      */
     readonly fileId?: string;
     /**
@@ -78,11 +47,6 @@ export type KeyBinding =
      * named by. As for {@link fileId}, ownership guards it, not the name.
      */
     readonly fileName?: string;
-    /**
-     * The behavior type the key's directory names, for a behavior
-     * definition, an auto-definition, an evaluated definition or a vault
-     * config.
-     */
     readonly type?: ModelType;
   }
   | { readonly ok: false; readonly reason: KeyBindingRefusal };
@@ -92,12 +56,9 @@ const PUT: readonly IntentOpKind[] = ["put"];
 const TOMBSTONE: readonly IntentOpKind[] = ["tombstone"];
 
 /**
- * Which op kinds each intent kind may ride, from what the repositories
- * stage. It is not a verb split:
- * - a version-less `data.delete` or `data.gc` puts the lowered latest marker
- *   or tombstones it;
- * - a move's old key is tombstoned under its create or edit intent;
- * - the control-plane kinds write new record versions, so they are puts.
+ * not a verb split: a version-less data.delete or data.gc puts the lowered
+ * latest marker or tombstones it; a move tombstones its old key under create or
+ * edit; control-plane kinds write new versions, so put
  */
 const OP_KINDS: Readonly<Record<IntentKind, readonly IntentOpKind[]>> = {
   "data.save": PUT,
@@ -136,21 +97,15 @@ const OP_KINDS: Readonly<Record<IntentKind, readonly IntentOpKind[]>> = {
   "lockfile.write": PUT,
 };
 
-/** Whether `intent` may ride an op of `opKind`. */
 export function opKindAllowed(intent: Intent, opKind: IntentOpKind): boolean {
   return OP_KINDS[intent.kind].includes(opKind);
 }
 
-/** The key of the managed-config extension lockfile. */
 export const LOCKFILE_RECORD_KEY = "config/upstream_extensions.json";
 
 const UUID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
-/**
- * Binds an op's key to its intent: whether the key is one the intent's
- * aggregate owns, and whether the intent may ride this op kind.
- */
 export function bindKey(
   intent: Intent,
   opKind: IntentOpKind,
@@ -263,11 +218,8 @@ function bindSegments(
 }
 
 /**
- * What a record key of a behavior's partition holds, from its layout alone
- * (swamp-club#4006): `data` for a key under the behavior's data directory,
- * `model` for one of its outputs or evaluated definitions, undefined for a
- * key the behavior's intents never write. A compacted record no longer
- * carries the intent that wrote it, so the base is filtered on this.
+ * judged from layout alone because a compacted record does not carry the intent
+ * that wrote it, so the base is filtered on this
  */
 export function modelRecordKind(
   model: { readonly type: string; readonly id: string },
@@ -286,12 +238,6 @@ export function modelRecordKind(
   return undefined;
 }
 
-/**
- * A key under the behavior's data directory, in the data layout. With
- * `names`, the key must be under one of those data names; with a version, under that version's
- * directory or the name's latest marker. `only` narrows it to one of the
- * two.
- */
 function dataKey(
   model: { readonly type: string; readonly id: string },
   segments: readonly string[],
@@ -300,8 +246,6 @@ function dataKey(
   only?: "latest" | "version",
 ): KeyBinding | undefined {
   if (segments[0] !== "data") return undefined;
-  // `data/{type}/{id}/...`: the type spans one or more segments, so find
-  // the id that follows it.
   const typeSegments = model.type.split("/");
   const idIndex = 1 + typeSegments.length;
   for (let i = 0; i < typeSegments.length; i++) {
@@ -325,14 +269,12 @@ function dataKey(
   return { ok: true };
 }
 
-/** An output file name, `<definitionId>-<stamp>.yaml` as the repository writes it. */
 const OUTPUT_FILE = /^(.+)-(\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-\d{3}Z)\.yaml$/;
 
 function isOutputFileOf(file: string, modelId: string): boolean {
   return OUTPUT_FILE.exec(file)?.[1] === modelId;
 }
 
-/** A managed-config definition's file, by its kind's layout. */
 function definitionKey(
   definition: { readonly kind: string; readonly name: string },
   segments: readonly string[],
@@ -353,20 +295,12 @@ function definitionKey(
   return undefined;
 }
 
-/** How a typed file may be named. */
 interface FileNaming {
-  /** Ids the file may be named by; a uuid stem must be one of them. */
   readonly ids?: readonly string[];
-  /** Names the file may be named by. */
   readonly names?: readonly string[];
-  /** Any other name is accepted, returned for the caller to check. */
   readonly anyName?: boolean;
 }
 
-/**
- * `{root}/{type}/{file}.yaml`. A uuid stem must be one of `ids` when they
- * are given, and is returned for the caller to check otherwise.
- */
 function typedFile(
   segments: readonly string[],
   root: string,
@@ -392,7 +326,6 @@ function typedFile(
   return naming.anyName ? { ok: true, fileName: stem, type } : undefined;
 }
 
-/** `{prefix}{name}.yaml` for one of `names`, or `{prefix}{uuid}.yaml`. */
 function namedFile(
   file: string,
   prefix: string,
@@ -404,10 +337,6 @@ function namedFile(
   return names.includes(stem) ? { ok: true } : undefined;
 }
 
-/**
- * The behavior type spelled by `segments[from..to)`, when it is a type in
- * its normalized form: a key never holds another spelling.
- */
 function typeUnder(
   segments: readonly string[],
   from: number,

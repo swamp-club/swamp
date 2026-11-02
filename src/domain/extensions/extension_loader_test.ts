@@ -63,8 +63,6 @@ import {
   resetExtensionLoadWarnings,
 } from "../../infrastructure/logging/extension_load_warnings.ts";
 
-// -- Content-addressed bundle import URLs (swamp-club#1140, #2340) -------
-
 Deno.test("bundleImportUrl: identical content produces the same URL", async () => {
   const js = 'export const v = "V1";\n';
   const first = await bundleImportUrl("/tmp/bundle.js", js, "abc");
@@ -142,8 +140,6 @@ Deno.test("importBundleByPath: changed bundle imports the new code", async () =>
     await Deno.remove(dir, { recursive: true }).catch(() => {});
   }
 });
-
-// -- Discovery _test.ts filtering (swamp-club#389) -----------------------
 
 class StubCatalog implements FreshnessCatalog {
   findByKind(): ExtensionTypeRow[] {
@@ -271,8 +267,6 @@ Deno.test("fingerprint URL guard: distinct fingerprints produce distinct URLs", 
   assertEquals(url4, url3);
 });
 
-// -- BundleBuildFailed stale-entry preservation (swamp-club#894) -----------
-
 Deno.test("findStaleFiles: BundleBuildFailed entries for missing sources are preserved in catalog", async () => {
   const dir = await Deno.makeTempDir({ prefix: "swamp_stale_bbf_" });
   try {
@@ -389,8 +383,6 @@ Deno.test("findStaleFiles: ValidationFailed entries for missing sources are remo
   }
 });
 
-// -- loadSingleType skip-with-warning for broken bundles (swamp-club#1018) ----
-
 function makeStubAdapter(loaded: Set<string>): KindAdapter {
   return {
     kind: "model",
@@ -426,26 +418,14 @@ function makeStubAdapter(loaded: Set<string>): KindAdapter {
 }
 
 /**
- * A DenoRuntime whose binary does not exist.
- *
- * The path used to be `/usr/bin/deno`, which is where a distro package puts a
- * perfectly real Deno. `load: indexOnly records bundling failures` needs
- * bundling to fail, and it fails by not finding the binary — so on any machine
- * that installed Deno from its package manager the bundle succeeded,
- * `result.failed` came back empty, and the assertion blew up. It passed only
- * where Deno happened to live somewhere else, which is why it read as a flake
- * belonging to whoever hit it rather than as a wrong constant.
- *
- * Keep the path fictional. Nothing here wants a working Deno: the tests that
- * bundle successfully take the `trustPulledCache` fast path, which never
- * spawns one.
+ * the deno path is fictional on purpose: a real Deno there would let bundling
+ * succeed where tests need it to fail; passing-bundle tests take the
+ * trustPulledCache fast path and never spawn one
  */
 const stubDenoRuntime: DenoRuntime = {
   ensureDeno: () => Promise.resolve("/nonexistent/swamp-test/deno"),
   getDenoEnv: () => Deno.env.toObject(),
 };
-
-// -- load() indexOnly (swamp-club#1684) -----------------------------------
 
 Deno.test("load: indexOnly bundles files without importing or registering types", async () => {
   const dir = await Deno.makeTempDir({ prefix: "swamp_1684_" });
@@ -594,12 +574,6 @@ Deno.test("load: without indexOnly imports and registers types normally", async 
   }
 });
 
-// -- load() skipSourcePaths (swamp-club#2355) ------------------------------
-
-/**
- * Writes a pulled model source plus a pre-built bundle, so bundleWithCache
- * takes the trustPulledCache fast path. Returns the source path.
- */
 async function writePulledModel(
   repoDir: string,
   modelsDir: string,
@@ -948,7 +922,6 @@ export const extension = {
 };
 `,
   );
-  // Rows whose source is missing are dropped (swamp-club#2490).
   await Deno.writeTextFile(join(dir, "base.ts"), "");
   await Deno.writeTextFile(join(dir, "ext.ts"), "");
   const catalog = new ExtensionCatalogStore(join(dir, "catalog.db"));
@@ -1034,12 +1007,10 @@ Deno.test("importBundle: file URL import error propagates instead of falling to 
       `export const model = { type: "@test/propagate" };\n`;
     await Deno.writeTextFile(bundlePath, throwingJs);
 
-    // Importing from a file URL should succeed (createRequire accepts file URLs)
     const baseUrl = toFileUrl(bundlePath).href;
     const mod = await import(`${baseUrl}?fp=test`);
     assertEquals(mod.model.type, "@test/propagate");
 
-    // Importing from a data: URL should fail (createRequire rejects data: URLs)
     const encoded = btoa(throwingJs);
     await assertRejects(
       () => import(`data:application/javascript;base64,${encoded}`),
@@ -1050,8 +1021,6 @@ Deno.test("importBundle: file URL import error propagates instead of falling to 
     await Deno.remove(dir, { recursive: true }).catch(() => {});
   }
 });
-
-// -- helper-module skip message (swamp-club#2318) ----------------------------
 
 async function loadHelperOnlyDir(
   indexOnly: boolean,
@@ -1118,8 +1087,6 @@ for (const indexOnly of [true, false]) {
   });
 }
 
-// -- load() cached-bundle logging (swamp-club#2354) -----------------------
-
 async function loadWithExistingBundle(args: {
   pulled: boolean;
   indexOnly: boolean;
@@ -1160,7 +1127,6 @@ async function loadWithExistingBundle(args: {
       makeStubAdapter(new Set<string>()),
       dir,
     );
-    // Any rebundle attempt fails, without spawning a process.
     const { result, calls } = await withMockedCommand(
       () => ({ stdout: "", stderr: "simulated bundle failure", code: 1 }),
       () => loader.load(modelsDir, { indexOnly: args.indexOnly }),
@@ -1271,8 +1237,6 @@ Deno.test("buildIndex: a layout-version eviction keeps install staging (swamp-cl
     await Deno.remove(dir, { recursive: true }).catch(() => {});
   }
 });
-
-// -- Probed indexing (swamp-club#3374) ------------------------------------
 
 /**
  * Indexes one pulled source through `bundleAndIndexOne` with a prober that
@@ -1427,8 +1391,6 @@ for (
   });
 }
 
-// -- Bundle check (swamp-club#3383) ---------------------------------------
-
 for (
   const [label, trustPulledCache] of [
     ["a trusted pulled bundle", true],
@@ -1459,8 +1421,6 @@ for (
     }
   });
 }
-
-// -- Pulled types named like a built-in (swamp-club#2746) -----------------
 
 const shadowingModelCode = (description: string) =>
   `const { z } = globalThis.__swamp_zod;
@@ -1508,7 +1468,6 @@ Deno.test("buildIndex: a changed pulled source typed command/shell leaves the bu
   );
   await Deno.writeTextFile(sourcePath, shadowingModelCode("first"));
   const catalog = new ExtensionCatalogStore(join(dir, ".swamp", "catalog.db"));
-  // Mock `deno bundle`: copies the source file to the `-o` output path.
   const copyingBundler = async (_cmd: string, args: string[]) => {
     const out = args[args.indexOf("-o") + 1];
     await Deno.writeTextFile(
@@ -1530,7 +1489,6 @@ Deno.test("buildIndex: a changed pulled source typed command/shell leaves the bu
       }),
     );
     await withMockedCommand(copyingBundler, () => loader.buildIndex(modelsDir));
-    // An update of the pulled extension: new content, newer mtime.
     await Deno.writeTextFile(sourcePath, shadowingModelCode("second"));
     const later = new Date(Date.now() + 60_000);
     await Deno.utime(sourcePath, later, later);
@@ -1549,9 +1507,6 @@ Deno.test("buildIndex: a changed pulled source typed command/shell leaves the bu
   }
 });
 
-// -- Recorded source modules (swamp-club#3385) ---------------------------
-
-/** A catalog whose writes of recorded source modules fail once armed. */
 class RecordThrowingCatalogStore extends ExtensionCatalogStore {
   armed = false;
   override recordSourceModules(
@@ -1564,11 +1519,6 @@ class RecordThrowingCatalogStore extends ExtensionCatalogStore {
   }
 }
 
-/**
- * Bundles `rec.ts`, which imports `../lib/msg.ts` and side-effect imports
- * `./side.ts`, once through `load({ indexOnly: true })` with `deno bundle`
- * mocked, and returns the modules the catalog recorded for it.
- */
 async function recordedAfterOneBundle(args: {
   pulled?: boolean;
   bundleFails?: boolean;
@@ -1577,11 +1527,8 @@ async function recordedAfterOneBundle(args: {
     | SourceModuleGraph
     | Error;
   seed?: (paths: { entry: string; lib: string }) => string[];
-  /** Records the seeded list graph pending (swamp-club#3487). */
   seedGraphPending?: boolean;
-  /** Bundles through buildIndex, which rebundles the warm scan's stale list. */
   viaBuildIndex?: boolean;
-  /** The catalog throws on every recordSourceModules. */
   recordThrows?: boolean;
 }): Promise<{
   recorded: readonly string[] | undefined;
@@ -1885,7 +1832,6 @@ Deno.test("buildIndex: a row with no recorded modules whose source no longer dec
       undefined,
       repository(),
     );
-    // The cold pass populates the catalog; the warm pass writes the row.
     await withMockedCommand(bundler, () => loader.buildIndex(modelsDir));
     await withMockedCommand(bundler, () => loader.buildIndex(modelsDir));
     assertNotEquals(
@@ -1893,8 +1839,6 @@ Deno.test("buildIndex: a row with no recorded modules whose source no longer dec
       undefined,
       "the row exists",
     );
-    // A catalog an earlier binary wrote, read by an adapter whose export
-    // the source does not declare.
     catalog.deleteSourceModules(entry);
     const noExport = new ExtensionLoader(
       stubDenoRuntime,

@@ -24,7 +24,6 @@ import { isStagingEntryName } from "../extensions/install_journal.ts";
 
 const logger = getLogger(["swamp", "datastore", "managed-config-migration"]);
 
-/** The file a config tier holds once a migration into it is published. */
 export const MIGRATION_SENTINEL = "managed-config-migrated.json";
 
 export interface MigrationResult {
@@ -34,16 +33,12 @@ export interface MigrationResult {
   copiedLockfile: boolean;
   copiedPulledExtensions: boolean;
   alreadyMigrated: boolean;
-  /** The source paths the migration copies from, for the sentinel. */
   sources: readonly string[];
 }
 
 /**
- * Copies config into the config tier unless its migration sentinel exists.
- * The sentinel is not written here: the caller writes it with
- * {@link writeMigrationSentinel} once the copied files are published, so a
+ * the caller writes the sentinel once the copied files are published, so a
  * datastore's sentinel always means its migration is published
- * (swamp-club#3117).
  */
 export async function migrateConfigToDatastore(
   repoDir: string,
@@ -142,7 +137,6 @@ export async function migrateConfigToDatastore(
   return { ...result, sources: sources.map((s) => s.src) };
 }
 
-/** Writes the migration sentinel into `configRoot`. */
 export async function writeMigrationSentinel(
   configRoot: string,
   sources: readonly string[],
@@ -158,15 +152,12 @@ export function getMigrationSentinelPath(configRoot: string): string {
   return join(configRoot, MIGRATION_SENTINEL);
 }
 
-/** Config tier subdirectories that hold definitions. */
 const DEFINITION_SUBDIRS = ["models", "workflows", "vaults"] as const;
 
 /**
- * Whether a config tier holds config: the migration sentinel, or any model,
- * workflow or vault definition. The sentinel alone is not enough, because
- * managedConfig can be switched on in `.swamp.yaml` by hand and definitions
- * then created directly in a tier that was never migrated (swamp-club#2845).
- * A missing `configRoot` is an empty tier.
+ * the sentinel alone is not enough: managedConfig can be switched on by hand
+ * and definitions created directly in a never-migrated tier; a missing
+ * configRoot is an empty tier
  */
 export async function isConfigTierPopulated(
   configRoot: string,
@@ -196,13 +187,9 @@ export async function isConfigTierPopulated(
 }
 
 /**
- * Copies the pulled-extensions root extension by extension, leaving out
- * install staging: an interrupted install's journal names paths under the
- * root it was written in, so it stays there for crash recovery. Each
- * extension's earlier copy is removed first: a re-run after a failed push
- * copies again, and an extension's read-only `manifest.yaml` cannot be
- * overwritten (swamp-club#3117). Only this repo's extensions are replaced;
- * others in the same `@scope` directory are left as they are.
+ * skips install staging (its journal names paths under the original root);
+ * removes each extension's earlier copy first because read-only manifest.yaml
+ * cannot be overwritten; others in the scope are left
  */
 export async function copyPulledExtensions(
   src: string,

@@ -174,7 +174,6 @@ Deno.test("VaultService - missing vault configuration error handling", async (t)
     async () => {
       const vaultService = new VaultService();
 
-      // Register one vault to test the "available vaults" error case
       vaultService.registerVault({
         name: "production",
         type: "mock",
@@ -381,7 +380,6 @@ Deno.test("VaultService - rejects invalid provider from createProvider", async (
   await t.step(
     "should throw when createProvider returns an empty object",
     () => {
-      // Register a user-defined type that returns an invalid provider
       if (!vaultTypeRegistry.has(testType)) {
         vaultTypeRegistry.register({
           type: testType,
@@ -450,7 +448,6 @@ Deno.test("VaultService - rejects invalid provider from createProvider", async (
             ({
               get: (_key: string) => Promise.resolve("value"),
               getName: () => name,
-              // missing put and list
             }) as never,
         });
       }
@@ -589,7 +586,6 @@ Deno.test("VaultService - refresh-aware get", async (t) => {
   );
 });
 
-/** Runs `fn` with the vaults warnings captured, as messages. */
 async function capturingVaultWarnings(
   fn: () => Promise<void>,
 ): Promise<string[]> {
@@ -665,7 +661,6 @@ Deno.test("VaultService.authorizeRead: holds a read to the run scope with no pro
 Deno.test("VaultService - fromRepository continues loading after a bad vault config", async () => {
   const tempDir = await Deno.makeTempDir();
   try {
-    // Vault "bad" has an unsupported type — it should fail to load
     const badDir = join(tempDir, "vaults", "bad");
     await ensureDir(badDir);
     await Deno.writeTextFile(
@@ -679,7 +674,6 @@ Deno.test("VaultService - fromRepository continues loading after a bad vault con
       }),
     );
 
-    // Vault "good" has a valid type — it should still load even though "bad" failed
     const goodDir = join(tempDir, "vaults", "good");
     await ensureDir(goodDir);
     await Deno.writeTextFile(
@@ -696,10 +690,8 @@ Deno.test("VaultService - fromRepository continues loading after a bad vault con
     const vaultService = await VaultService.fromRepository(tempDir);
     const names = vaultService.getVaultNames();
 
-    // "good" must be registered despite "bad" failing
     assertStringIncludes(names.join(","), "good");
 
-    // Verify we can actually use the good vault
     const secret = await vaultService.get("good", "key");
     assertEquals(secret, "value");
   } finally {
@@ -749,7 +741,6 @@ Deno.test("VaultService - fromRepository auto-remaps renamed vault types", async
     async () => {
       const tempDir = await Deno.makeTempDir();
       try {
-        // Create a vault config YAML with the old 'aws' type
         const vaultDir = join(tempDir, "vaults", "aws");
         await ensureDir(vaultDir);
         const vaultYaml = stringifyYaml({
@@ -768,7 +759,6 @@ Deno.test("VaultService - fromRepository auto-remaps renamed vault types", async
         // to register but should not throw — fromRepository catches the error.
         // The key behavior is that the type gets remapped before resolution.
         const vaultService = await VaultService.fromRepository(tempDir);
-        // Vault won't be registered without the extension, but no crash
         assertEquals(typeof vaultService.getVaultNames(), "object");
       } finally {
         await Deno.remove(tempDir, { recursive: true });
@@ -781,7 +771,6 @@ Deno.test("VaultService - fromRepository auto-remaps renamed vault types", async
     async () => {
       const tempDir = await Deno.makeTempDir();
       try {
-        // Create a vault config YAML with the old 'azure' type
         const vaultDir = join(tempDir, "vaults", "azure");
         await ensureDir(vaultDir);
         const vaultYaml = stringifyYaml({
@@ -796,7 +785,6 @@ Deno.test("VaultService - fromRepository auto-remaps renamed vault types", async
           vaultYaml,
         );
 
-        // Same as above — remaps but extension not installed in test
         const vaultService = await VaultService.fromRepository(tempDir);
         assertEquals(typeof vaultService.getVaultNames(), "object");
       } finally {
@@ -1078,7 +1066,6 @@ Deno.test("VaultService - audit trail", async (t) => {
         auditReads: true,
       });
 
-      // Should not throw even though auditReads is true but no repo
       const result = await svc.get("vault", "key");
       assertEquals(result, "val");
     },
@@ -1213,7 +1200,6 @@ Deno.test("VaultService - audit trail", async (t) => {
         config: {},
       });
 
-      // Should not throw — put succeeds, audit is silently skipped
       await svc.put("vault", "key", "val");
     },
   );
@@ -1246,10 +1232,6 @@ Deno.test("VaultService - getDefaultVaultName", async (t) => {
   );
 });
 
-/**
- * Registers a per-run spy vault type whose provider supports every optional
- * capability and records each call, and returns a service with vault `name`.
- */
 function serviceWithSpyVault(
   name: string,
 ): { service: VaultService; calls: string[]; type: string } {
@@ -1425,7 +1407,6 @@ Deno.test("requireRefreshHookProvider: names the vault's configured type, not it
 
 Deno.test("requireDeleteProvider: names the vault's configured type, not its instance name, when the provider does not support deleting secrets", async () => {
   const type = `@test/no-delete-${crypto.randomUUID()}`;
-  // Answers getName() with the instance name, as the built-in providers do.
   vaultTypeRegistry.register({
     type,
     name: "No delete",
@@ -1458,7 +1439,6 @@ Deno.test("requireDeleteProvider: names the vault's configured type, not its ins
 
 Deno.test("requireExistenceProvider: names the vault's configured type, not its instance name, when the provider does not support existence checks", async () => {
   const type = `@test/no-has-${crypto.randomUUID()}`;
-  // Answers getName() with the instance name, as the built-in providers do.
   vaultTypeRegistry.register({
     type,
     name: "No has",

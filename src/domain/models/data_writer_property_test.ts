@@ -44,20 +44,10 @@ import { SecretRedactor } from "../secrets/secret_redactor.ts";
 const modelType = ModelType.create("swamp/test");
 const modelId = "test-model-id";
 
-/** Secrets for the instance name, kept to characters a data name accepts. */
 const arbNameSecret = fc.stringMatching(/^[A-Z]{3,8}$/);
 
-/**
- * Secrets for the payload, including the characters JSON escapes or uses as
- * structure, and two-character escape sequences such as a one-line key's
- * literal backslash-n.
- */
 const arbSecret = fc.stringMatching(/^(?:[A-Z"{}:,\n]|\\n){3,8}$/);
 
-/**
- * A secret that is itself JSON, as a vault value a method parses and writes
- * back as structure: an array or an object of uppercase strings.
- */
 const arbJsonSecret = fc.oneof(
   fc.array(fc.stringMatching(/^[A-Z]{1,4}$/), { minLength: 1, maxLength: 3 }),
   fc.dictionary(
@@ -145,7 +135,6 @@ Deno.test("createResourceWriter: persisted content keeps vault references exact 
           note,
           extra,
           structured: { inner: jsonSecret, beside: note },
-          // A secret's escape sequences written back as the characters.
           unescaped: secrets.map((s) => s.replaceAll("\\n", "\n")),
         };
 
@@ -162,13 +151,9 @@ Deno.test("createResourceWriter: persisted content keeps vault references exact 
             `${reference} missing`,
           );
         }
-        // Outside the references, no node of the payload holds a registered
-        // secret. The check is per node, as the writer redacts
-        // (swamp-club#3754): the JSON punctuation between nodes is structure,
-        // not data, and a secret made only of punctuation, such as
-        // quote-colon-quote, matches it (swamp-club#3798). A node must be
-        // unchanged by redaction, and must not hold a drawn secret as raw
-        // text either, which does not rely on how its literal is escaped.
+        // checked per node, as the writer redacts: JSON punctuation between
+        // nodes is structure, not data, and a punctuation-only secret such as
+        // quote-colon-quote would match it
         const drawnSecrets = [nameSecret, ...secrets];
         const checkText = (value: string): void => {
           const literal = JSON.stringify(value);
@@ -365,8 +350,8 @@ Deno.test("createResourceWriter: distinct dotted own keys retain distinct values
 });
 
 /**
- * Tag keys a user might write: ordinary ones, keys under `_swamp.`, and the
- * reserved `specName` the writer sets itself (swamp-club#3684).
+ * tag keys a user might write: ordinary ones, keys under `_swamp.`, and the
+ * reserved `specName` the writer sets itself
  */
 const arbTagKey = fc.oneof(
   fc.string({ minLength: 1, maxLength: 12 }),
@@ -506,7 +491,6 @@ Deno.test("getSensitiveFieldsForResolution: a stamped record without a sensitive
   );
 });
 
-/** Dot-paths as the vaulting step writes them into the tag. */
 const arbFieldPaths = fc.array(
   fc.stringMatching(/^[a-z]{1,6}(?:\.[a-z]{1,6}){0,2}$/),
   { maxLength: 4 },
@@ -530,10 +514,9 @@ Deno.test("sensitive-fields tag: a JSON array of paths round-trips through both 
     }),
   );
 
-  // For every tag text: a tag the lenient parse reads as absent is one the
-  // strict reading refuses, and whenever the strict reading accepts a tag it
-  // returns what the lenient parse does. The strict reading also refuses
-  // tags the lenient parse accepts (an empty or unsafe path segment).
+  // a tag the lenient parse reads as absent is one the strict reading refuses;
+  // when strict accepts, it returns what lenient does; strict also refuses some
+  // tags lenient accepts
   fc.assert(
     fc.property(fc.string(), (raw) => {
       const tags = { specName: "creds", [SENSITIVE_FIELDS_TAG]: raw };
@@ -557,13 +540,6 @@ Deno.test("sensitive-fields tag: a JSON array of paths round-trips through both 
   );
 });
 
-/**
- * A record in the shape the writer leaves it: a string (a vault reference
- * or plain text) or null at every tagged location, and anything at all
- * elsewhere. Under the star tag every top-level key is a tagged location,
- * dotted keys included; with listed paths the tagged keys and the untagged
- * keys come from disjoint alphabets.
- */
 const arbRefName = fc.stringMatching(/^[a-z0-9_-]{1,6}$/);
 const arbReferenceText = fc.tuple(arbRefName, arbRefName).map(([v, k]) =>
   `\${{ vault.get('${v}', '${k}') }}`

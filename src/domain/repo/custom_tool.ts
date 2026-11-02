@@ -40,7 +40,6 @@ export interface ToolConfig {
   frontmatter?: string;
   skillReferenceStyle: "name" | "path";
   gitignoreEntries?: string;
-  /** Adds an `@AGENTS.md` import to the managed instructions section. */
   importAgentsMd?: boolean;
 }
 
@@ -201,32 +200,22 @@ export function builtInToolConfig(tool: AiTool): ToolConfig {
   }
 }
 
-/** Swamp's Claude rules file when the repo keeps its own rules in AGENTS.md. */
 export const CLAUDE_RULES_FILE = ".claude/rules/swamp.md";
 
-/** What the claude tool needs to know about a repo's instruction files. */
 export interface ClaudeInstructionsState {
-  /** `.claude/rules/swamp.md` exists. */
   rulesFileExists: boolean;
-  /** Root `CLAUDE.md` exists. */
   claudeMdExists: boolean;
   /** Root `CLAUDE.md` is a symlink (e.g. to `AGENTS.md`); never write through it. */
   claudeMdIsSymlink: boolean;
-  /** Root `CLAUDE.md` carries swamp's managed section (marked or legacy). */
   claudeMdHasSwampSection: boolean;
-  /** Root `CLAUDE.md` has content outside swamp's managed section. */
   claudeMdHasUserContent: boolean;
-  /** Root `AGENTS.md` has content outside swamp's managed section. */
   agentsMdHasUserContent: boolean;
 }
 
 /**
- * Picks where the claude tool writes swamp's instructions. Claude Code reads
- * `AGENTS.md` only when no `CLAUDE.md` exists, so swamp never creates a
- * `CLAUDE.md` next to a repo's own `AGENTS.md`, and never writes through a
- * symlinked `CLAUDE.md`: it writes a rules file, which Claude Code loads
- * alongside `AGENTS.md`. A repo keeps whichever target it already has, so
- * upgrades never move swamp's section between files.
+ * Claude Code reads AGENTS.md only when no CLAUDE.md exists, so swamp never
+ * creates CLAUDE.md beside AGENTS.md or writes through a symlinked one; it
+ * writes a rules file; an existing target is kept
  */
 export function claudeToolConfigFor(
   state: ClaudeInstructionsState,
@@ -365,7 +354,6 @@ export async function detectToolConfig(
     }
   }
 
-  // Check for a bare skills/ directory (e.g. deepAgents convention)
   try {
     const stat = await Deno.stat(join(repoDir, "skills"));
     if (stat.isDirectory) {

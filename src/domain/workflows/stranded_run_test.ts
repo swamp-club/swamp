@@ -48,7 +48,6 @@ function runningRun(workflow: Workflow): WorkflowRun {
   return run;
 }
 
-/** A run with no evaluated snapshot: settles against the workflow passed. */
 const noSnapshot = () => Promise.resolve(null);
 
 interface Recorded {

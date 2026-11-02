@@ -44,10 +44,8 @@ import {
 } from "@swamp-club/extension-scoring/dependency-audit";
 
 /**
- * The dependency trust audit's lookups: npm's packument and download
- * count, OSV's advisories and JSR's `meta.json`. Every decision about what
- * they say is the shared `@swamp-club/extension-scoring` evaluator's, the
- * same one the registry's scorecard runs (swamp-club#3781).
+ * every decision about what the lookups say belongs to the shared
+ * extension-scoring evaluator, the same one the registry scorecard runs
  */
 
 const OSV_QUERY_URL = "https://api.osv.dev/v1/query";
@@ -201,7 +199,6 @@ async function fetchJsrMeta(
   }
 }
 
-/** Looks up one npm package and the OSV advisories for each version it ships. */
 async function auditNpmPackage(
   name: string,
   specs: DependencySpecifier[],
@@ -221,10 +218,8 @@ async function auditNpmPackage(
 }
 
 /**
- * Audits each dependency at the version push ships: an exact pin, else the
- * version `lock` records, else what the registry resolves today. Each
- * package is looked up once, however many specifiers name it, and at most
- * the shared dependency limit are looked up at all.
+ * each package is looked up once however many specifiers name it, and at most
+ * the shared dependency limit are looked up
  */
 export async function checkDependencyTrust(
   specifiers: DependencySpecifier[],

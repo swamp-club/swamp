@@ -23,7 +23,6 @@ import {
   type ShellContext,
 } from "./shell_context_scanner.ts";
 
-/** Classifies the position of every `X` marker in the command. */
 function contexts(command: string): ShellContext[] {
   const positions: number[] = [];
   for (

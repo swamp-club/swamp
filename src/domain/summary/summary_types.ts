@@ -20,29 +20,20 @@
 import type { Data } from "../data/data.ts";
 import type { ModelType } from "../models/model_type.ts";
 
-/**
- * Minimal read-only interface for data repository access in summaries.
- * Defined at the domain level to avoid importing from infrastructure.
- */
 export interface DataRepositoryReader {
   findAllGlobal(): Promise<
     Array<{ data: Data; modelType: ModelType; modelId: string }>
   >;
 
   /**
-   * Finds all data items whose `createdAt` is at or after the given cutoff.
-   * Prefer this over `findAllGlobal()` when the caller has a time bound;
-   * implementations may short-circuit the underlying scan and skip work that
-   * `findAllGlobal()` would do unconditionally.
+   * prefer over findAllGlobal when the caller has a time bound; implementations
+   * may short-circuit the scan
    */
   findAllGlobalSince(
     cutoff: Date,
   ): Promise<Array<{ data: Data; modelType: ModelType; modelId: string }>>;
 }
 
-/**
- * Detail for a single method execution run.
- */
 export interface MethodRunDetail {
   id: string;
   definitionId: string;
@@ -54,13 +45,9 @@ export interface MethodRunDetail {
 }
 
 /**
- * A group of runs for a single method on a model.
- *
- * `runs` may be capped by an opt-in `--limit` flag; when that happens the
- * group sets `truncated: true` so consumers can tell the detail list was
- * shortened. Counts (`succeeded`, `failed`, `total`) always reflect every
- * matching run in the window — `truncated` only signals that `runs` does
- * not. The field is omitted when no truncation occurred.
+ * runs may be capped by --limit, which sets truncated: true; counts always
+ * reflect every matching run in the window; truncated is omitted when nothing
+ * was cut
  */
 export interface MethodGroup {
   method: string;
@@ -71,9 +58,6 @@ export interface MethodGroup {
   truncated?: boolean;
 }
 
-/**
- * A model's method execution activity, grouped by method.
- */
 export interface ModelExecutionGroup {
   modelName: string;
   type: string;
@@ -83,9 +67,6 @@ export interface ModelExecutionGroup {
   methods: MethodGroup[];
 }
 
-/**
- * Detail for a step within a workflow run.
- */
 export interface StepRunSummary {
   jobName: string;
   stepName: string;
@@ -95,9 +76,6 @@ export interface StepRunSummary {
   error?: string;
 }
 
-/**
- * Detail for a single workflow run.
- */
 export interface WorkflowRunDetail {
   id: string;
   startedAt?: string;
@@ -107,15 +85,6 @@ export interface WorkflowRunDetail {
   steps: StepRunSummary[];
 }
 
-/**
- * A group of workflow runs for a given workflow name.
- *
- * `runs` may be capped by an opt-in `--limit` flag; when that happens the
- * group sets `truncated: true` so consumers can tell the detail list was
- * shortened. Counts (`succeeded`, `failed`, `total`) always reflect every
- * matching run in the window. The field is omitted when no truncation
- * occurred.
- */
 export interface WorkflowRunGroup {
   workflowName: string;
   succeeded: number;
@@ -125,18 +94,12 @@ export interface WorkflowRunGroup {
   truncated?: boolean;
 }
 
-/**
- * Data grouped by model type for the summary breakdown.
- */
 export interface DataModelGroup {
   modelType: string;
   items: number;
   versions: number;
 }
 
-/**
- * Summary of data produced in the time window.
- */
 export interface DataSummary {
   totalItems: number;
   totalVersions: number;
@@ -144,9 +107,6 @@ export interface DataSummary {
   byModelType: DataModelGroup[];
 }
 
-/**
- * Top-level activity summary for a repo over a time window.
- */
 export interface ActivitySummary {
   since: string;
   methodExecutions: ModelExecutionGroup[];

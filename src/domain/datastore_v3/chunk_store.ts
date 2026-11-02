@@ -18,43 +18,9 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * The chunk store: content stored as content-addressed chunks over a
- * `storage/1` {@link DatastoreStorage} (swamp-club#3237).
- *
- * - **Writing** cuts content into chunks of `min(16 MiB, maxChunkBytes)`
- *   and uploads each one unless the storage already has it. A chunk found
- *   present is refreshed (touched, or put again without `touch`), so a
- *   commit never names a chunk that is about to expire.
- * - **Reading** checks each chunk's size and SHA-256 before handing its
- *   bytes on, and, for content in several chunks, the whole content's
- *   SHA-256 at the end. A mismatch errors the stream; unchecked bytes are
- *   never returned. Keep what a read yields only once it ends cleanly.
- * - **A chunk is present only at its size** (swamp-club#3617). On a storage
- *   that reads sizes ({@link ChunkStatReader}: the filesystem storage), a
- *   chunk a crash left short (a torn chunk) counts as missing: writing puts
- *   it again, and `missing` and `refresh` report it. Elsewhere a chunk the
- *   storage has is present. An existing chunk is trusted by its size, so a
- *   write never stores again a chunk damaged at the same size; the chunk
- *   verification of serve's maintenance timer finds that. On a storage that syncs chunk directories
- *   ({@link ChunkDirectorySync}), `syncStored` makes stored chunks' names
- *   durable.
- * - **One barrier per commit group** (swamp-club#3617): a commit-log unit
- *   writes a group's content into a {@link ChunkBatch} (`beginBatch`) and
- *   commits it before the commit is prepared or appended. On a storage that
- *   stages chunks ({@link ChunkStaging}) the batch's new chunks are synced
- *   together, then renamed, then every chunk the group names, found present
- *   or new, has its name made durable in one `syncStored`.
- * - **Storing a checkout copy's parts again** (swamp-club#3617): `refOf`
- *   cuts content exactly as `write` does without storing anything;
- *   `putParts` puts the listed parts straight from a source read by byte
- *   range, skipping any part whose bytes no longer match its name; and
- *   `verifyParts` reads and hashes stored parts to find damaged ones. The
- *   read model's checkout-copy guard uses them.
- *
- * Whether content is inlined in a commit or stored here is decided by
- * `putOp` (`MAX_INLINE_BYTES` in `op.ts`), not by this store.
- *
- * @module
+ * a read checks each chunk's size and SHA-256 and errors the stream on
+ * mismatch, so keep its bytes only once it ends cleanly; where sizes are
+ * readable a short (torn) chunk counts as missing
  */
 
 // node:crypto, not WebCrypto: the whole-content digest is computed chunk by
@@ -75,7 +41,6 @@ import {
 import { isEmptyNamespace, type Namespace } from "../data/namespace.ts";
 import { type BlobPart, BlobRef } from "./blob_ref.ts";
 
-/** The largest chunk core cuts, whatever the storage allows. */
 export const CHUNK_BYTES = 16 * 1024 * 1024;
 
 /**
@@ -85,11 +50,6 @@ export const CHUNK_BYTES = 16 * 1024 * 1024;
  */
 export const UNNAMESPACED_STORAGE_NAMESPACE = "_default";
 
-/**
- * A chunk's bytes do not match its reference, or content its digest.
- * `sha256` names the failing chunk; it is absent when every chunk matched
- * and only the whole content's digest did not.
- */
 export class ChunkIntegrityError extends Error {
   readonly namespace?: string;
   readonly sha256?: string;
@@ -107,7 +67,6 @@ export class ChunkIntegrityError extends Error {
   }
 }
 
-/** A chunk a reference names is not in the storage. */
 export class ChunkMissingError extends Error {
   constructor(readonly namespace: string, readonly sha256: string) {
     super(`Chunk ${sha256} is missing from storage namespace ${namespace}`);
@@ -115,11 +74,6 @@ export class ChunkMissingError extends Error {
   }
 }
 
-/**
- * Storing a chunk failed in {@link ChunkStore.putParts}: the storage refused
- * the put (not an abort). Distinct from a source that changed, which
- * `putParts` reports instead of throwing.
- */
 export class ChunkPutError extends Error {
   constructor(
     readonly namespace: string,
@@ -135,29 +89,20 @@ export class ChunkPutError extends Error {
   }
 }
 
-/** One part of content, with the byte offset it starts at. */
 export interface ContentPart extends BlobPart {
   readonly offset: number;
 }
 
-/**
- * What {@link ChunkStore.refOf} finds: the reference `write` would return
- * for the content, and every part it would store, in order (one part for
- * content in a single chunk).
- */
 export interface ContentParts {
   readonly ref: BlobRef;
-  /** The whole content's SHA-256, as `ref.sha256`. */
   readonly sha256: string;
-  /** The whole content's size, as `ref.size`. */
   readonly size: number;
   readonly parts: readonly ContentPart[];
 }
 
 /**
- * Reads up to `length` bytes of content starting at byte `offset`; fewer
- * (or none) when the content now ends sooner. Called again for each part,
- * so a file can be reopened or read by range.
+ * returns fewer bytes (or none) when the content now ends sooner; called again
+ * for each part, so a file can be reopened or read by range
  */
 export type ContentRangeReader = (
   offset: number,
@@ -165,28 +110,19 @@ export type ContentRangeReader = (
   signal: AbortSignal,
 ) => Promise<Uint8Array>;
 
-/** What {@link ChunkStore.putParts} did. */
 export interface PutPartsResult {
-  /** The hashes it put, in order. */
   readonly stored: readonly string[];
   /**
-   * The hashes it skipped because the source no longer gives their bytes
-   * at their offset: the source changed since it was cut. Never put.
+   * skipped because the source does not give their bytes at their offset (it
+   * changed since it was cut); never put
    */
   readonly changed: readonly string[];
 }
 
 /**
- * Chunks a commit group stores or names, made durable together by one
- * barrier ({@link commit}) before the commit is prepared or appended
- * (swamp-club#3617). Made by {@link ChunkStore.beginBatch}; content goes in
- * through {@link ChunkStore.write}, and content stored before (a retry's
- * reused op) through {@link include}. Call {@link discard} when done,
- * whatever happened.
- *
- * On a storage that stages chunks ({@link ChunkStaging}) a chunk put into
- * the batch is not stored until {@link commit}: no reference to it may be
- * committed before then. Elsewhere it is put at once.
+ * on a staging storage a chunk put into the batch is not stored until commit,
+ * so no reference to it may be committed before then; call discard when done,
+ * whatever happened
  */
 export class ChunkBatch {
   readonly namespace: Namespace;
@@ -194,11 +130,9 @@ export class ChunkBatch {
   readonly #storage: DatastoreStorage;
   readonly #stage: ChunkStage | undefined;
   readonly #directorySync: ChunkDirectorySync | undefined;
-  /** Every chunk the barrier covers: put into the batch or found present. */
   readonly #named = new Set<string>();
   #ended = false;
 
-  /** Use {@link ChunkStore.beginBatch}. */
   constructor(
     namespace: Namespace,
     storage: DatastoreStorage,
@@ -212,16 +146,10 @@ export class ChunkBatch {
     this.#directorySync = directorySync;
   }
 
-  /** Whether the batch already covers `sha256`. */
   covers(sha256: string): boolean {
     return this.#named.has(sha256);
   }
 
-  /**
-   * Stores `bytes` as the chunk `sha256` with the batch: staged until
-   * {@link commit} on a storage that stages chunks, put at once elsewhere.
-   * {@link ChunkStore.write} calls it.
-   */
   async put(
     sha256: string,
     bytes: Uint8Array,
@@ -236,18 +164,15 @@ export class ChunkBatch {
     this.#named.add(sha256);
   }
 
-  /** Adds chunks already stored, so the barrier covers their names too. */
   include(hashes: Iterable<string>): void {
     if (this.#ended) throw new Error("This chunk batch has ended");
     for (const sha256 of hashes) this.#named.add(sha256);
   }
 
   /**
-   * The barrier: stores every staged chunk, its bytes synced before its
-   * rename, then makes the name of every chunk the batch covers durable
-   * (`syncChunkDirectories`, which skips names known durable). Ends the
-   * batch. A failure stores nothing more, and nothing the batch covers may
-   * be committed.
+   * stores staged chunks (bytes synced before rename), then makes every covered
+   * chunk's name durable; a failure stores nothing more and nothing the batch
+   * covers may be committed
    */
   async commit(signal: AbortSignal): Promise<void> {
     if (this.#ended) throw new Error("This chunk batch has ended");
@@ -261,23 +186,19 @@ export class ChunkBatch {
     );
   }
 
-  /** Ends the batch, removing whatever it staged and did not commit. */
   async discard(): Promise<void> {
     this.#ended = true;
     await this.#stage?.discard();
   }
 }
 
-/** The storage namespace of a repository's namespace. */
 export function storageNamespaceOf(namespace: Namespace): string {
   return isEmptyNamespace(namespace)
     ? UNNAMESPACED_STORAGE_NAMESPACE
     : namespace;
 }
 
-/** Stores and reads content as chunks. A domain service; holds no state. */
 export class ChunkStore {
-  /** The size of every chunk but the last of a piece of content. */
   readonly chunkBytes: number;
   readonly #storage: DatastoreStorage;
   readonly #touch: boolean;
@@ -285,11 +206,6 @@ export class ChunkStore {
   readonly #directorySync: ChunkDirectorySync | undefined;
   readonly #staging: ChunkStaging | undefined;
 
-  /**
-   * Throws when the storage does not declare `storage/1`, declares a
-   * `maxChunkBytes` that is not a positive safe integer, or declares
-   * `touch` without implementing it (or the reverse).
-   */
   constructor(storage: DatastoreStorage) {
     if (storage.contract !== STORAGE_CONTRACT) {
       throw new Error(
@@ -319,7 +235,6 @@ export class ChunkStore {
     this.#staging = isChunkStaging(storage) ? storage : undefined;
   }
 
-  /** A new {@link ChunkBatch} for content of `namespace`. */
   beginBatch(namespace: Namespace): ChunkBatch {
     return new ChunkBatch(
       namespace,
@@ -330,14 +245,9 @@ export class ChunkStore {
   }
 
   /**
-   * Stores `content` and returns its reference. Empty content is one empty
-   * chunk. Rejects when `signal` aborts; chunks already uploaded stay, and
-   * are harmless because no commit names them.
-   *
-   * With `batch`, every chunk goes into it: a new one is put with the batch
-   * (on a storage that stages chunks, stored only at the batch's commit),
-   * and one found present is refreshed and covered by its barrier. The
-   * reference may be committed only once the batch has committed.
+   * chunks already uploaded when aborted stay and are harmless since no commit
+   * names them; with batch, the reference may be committed only once the batch
+   * has committed
    */
   async write(
     namespace: Namespace,
@@ -368,11 +278,6 @@ export class ChunkStore {
       : BlobRef.create({ sha256, size, parts });
   }
 
-  /**
-   * The reference {@link write} would return for `content`, and the parts it
-   * would store with their offsets, cut exactly as `write` cuts them.
-   * Stores nothing. Rejects when `signal` aborts.
-   */
   async refOf(
     content: Uint8Array | ReadableStream<Uint8Array>,
     signal: AbortSignal,
@@ -402,14 +307,9 @@ export class ChunkStore {
   }
 
   /**
-   * Puts each of `parts` straight into the storage, present or not (no
-   * dedupe), reading its bytes from `source` at its offset. Each part is
-   * hashed as it is read: a part whose bytes no longer match its size and
-   * name is skipped and reported in `changed`, never put, so a source that
-   * changed since {@link refOf} cannot store wrong bytes under a chunk's
-   * name. A put the storage refuses throws {@link ChunkPutError}; an abort
-   * rejects with the abort reason; a source that fails to read rejects
-   * with its error. Parts put before a failure stay, and are harmless.
+   * a part whose bytes do not match its size and name is skipped and reported
+   * in changed, never put, so a changed source cannot store wrong bytes under a
+   * chunk's name
    */
   async putParts(
     namespace: Namespace,
@@ -440,9 +340,8 @@ export class ChunkStore {
   }
 
   /**
-   * The parts of `parts` the storage holds damaged or not at all: each is
-   * read and checked against its size and SHA-256. Costs a read of every
-   * part; for the read model's replays, not routine checks.
+   * costs a read of every part; for the read model's replays, not routine
+   * checks
    */
   async verifyParts<P extends BlobPart>(
     namespace: Namespace,
@@ -464,11 +363,6 @@ export class ChunkStore {
     return damaged;
   }
 
-  /**
-   * The size and modification time of each of `hashes` stored, a hash not
-   * stored left out; undefined when the storage cannot read sizes
-   * ({@link ChunkStatReader}).
-   */
   async stat(
     namespace: Namespace,
     hashes: readonly string[],
@@ -482,16 +376,10 @@ export class ChunkStore {
     );
   }
 
-  /** Whether {@link stat} reads sizes on this storage. */
   get readsSizes(): boolean {
     return this.#stat !== undefined;
   }
 
-  /**
-   * Makes the names of the stored chunks `hashes` durable, on a storage
-   * that syncs chunk directories ({@link ChunkDirectorySync}); otherwise,
-   * and for no hashes, does nothing.
-   */
   async syncStored(
     namespace: Namespace,
     hashes: readonly string[],
@@ -506,10 +394,8 @@ export class ChunkStore {
   }
 
   /**
-   * Streams the content `ref` names, from v3 chunks only: a `legacyKey`
-   * (content still in a pre-v3 layout) is not read here. The stream errors with
-   * {@link ChunkMissingError} or {@link ChunkIntegrityError}, or with the
-   * abort reason when `signal` aborts.
+   * reads v3 chunks only: a legacyKey (content still in a pre-v3 layout) is not
+   * read here
    */
   read(
     namespace: Namespace,
@@ -551,15 +437,12 @@ export class ChunkStore {
         controller.enqueue(bytes);
         if (last) controller.close();
       },
-    }, { highWaterMark: 0 }); // fetch nothing until the stream is read
+    }, { highWaterMark: 0 });
   }
 
   /**
-   * The chunks of `ref` the storage does not hold, in order, each once
-   * however many parts repeat it; on a storage that reads sizes, a chunk
-   * held at the wrong size (torn) too. A writer
-   * checks this after its commit lands, so a chunk garbage collection
-   * deleted meanwhile is stored again (swamp-club#3249).
+   * a writer checks this after its commit lands, so a chunk garbage collection
+   * deleted meanwhile is stored again
    */
   async missing(
     namespace: Namespace,
@@ -577,10 +460,8 @@ export class ChunkStore {
   }
 
   /**
-   * Refreshes the chunks of `ref`, so a sweep's grace period counts from
-   * now, and returns the ones the storage does not hold, in order, each
-   * once (swamp-club#3586); on a storage that reads sizes, the ones held at the
-   * wrong size too. A storage that cannot touch is only checked.
+   * refreshes the chunks so a sweep's grace period counts from now; a storage
+   * that cannot touch is only checked
    */
   async refresh(
     namespace: Namespace,
@@ -599,12 +480,6 @@ export class ChunkStore {
     return wrongSize(partsOf(ref), stats);
   }
 
-  /**
-   * Makes one chunk present and fresh: put, touched, or put again. A chunk
-   * held at the wrong size is put again. With `batch`, a put goes into it,
-   * a chunk found present is covered by its barrier, and a chunk it already
-   * covers is left alone.
-   */
   async #store(
     ns: string,
     sha256: string,
@@ -629,12 +504,10 @@ export class ChunkStore {
   }
 }
 
-/** Every part of `ref`, one for content in a single chunk. */
 function partsOf(ref: BlobRef): readonly BlobPart[] {
   return ref.parts ?? [{ sha256: ref.sha256, size: ref.size }];
 }
 
-/** The hashes of `parts` not in `stats` at their size, in order. */
 function wrongSize(
   parts: readonly BlobPart[],
   stats: ReadonlyMap<string, ChunkStat>,
@@ -646,7 +519,6 @@ function wrongSize(
   );
 }
 
-/** `hashes` in order, each once: a chunk can back several parts. */
 function unique(hashes: readonly string[]): string[] {
   return [...new Set(hashes)];
 }
@@ -655,10 +527,6 @@ function sha256Hex(bytes: Uint8Array): string {
   return createHash("sha256").update(bytes).digest("hex");
 }
 
-/**
- * Cuts content into chunks of `size` bytes, the last one shorter. Empty
- * content gives one empty chunk.
- */
 async function* cut(
   content: Uint8Array | ReadableStream<Uint8Array>,
   size: number,

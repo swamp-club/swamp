@@ -32,10 +32,6 @@ import {
 } from "./local_encryption_vault_provider.ts";
 import { VaultAnnotation } from "./vault_annotation.ts";
 
-/**
- * Windows-only helper: grants Everyone Read access to a file via icacls.
- * Returns the icacls process exit code so callers can assert success.
- */
 async function grantEveryoneReadAcl(path: string): Promise<number> {
   const cmd = new Deno.Command("icacls", {
     args: [path, "/grant", "Everyone:(R)"],
@@ -62,17 +58,12 @@ async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
   }
 }
 
-// Create a mock SSH private key for testing
 const MOCK_SSH_PRIVATE_KEY = `-----BEGIN OPENSSH PRIVATE KEY-----
 b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAFwAAAAdzc2gtcn
 NhAAAAAwEAAQAAAQEA7V3jKJJHtN4N4N4N4N4N4N4N4N4N4N4N4N4N4N4N4N4N4N4N4N
 4N4N4N4N4N4N4N4N4N4N4N4N4N4N4N4N4N4N4N4N4N4N4N4N4N4N4N4N4N4N4N4N4N
 -----END OPENSSH PRIVATE KEY-----`;
 
-/**
- * Returns the computed secrets_dir path for a vault.
- * This matches the path computed by LocalEncryptionVaultProvider.
- */
 function secretsDir(baseDir: string, vaultName: string): string {
   return join(baseDir, ".swamp", "secrets", "local_encryption", vaultName);
 }
@@ -86,14 +77,12 @@ Deno.test("LocalEncryptionVaultProvider - uses computed secrets path", async (t)
         base_dir: "/tmp/test-repo",
       });
       assertEquals(vault.getName(), "test-vault");
-      // The vault should compute its path as /tmp/test-repo/.swamp/secrets/local_encryption/test-vault
     },
   );
 
   await t.step(
     "should use current directory when base_dir is not provided",
     () => {
-      // This should not throw - it defaults to Deno.cwd()
       const vault = new LocalEncryptionVaultProvider("default-vault", {
         auto_generate: true,
       });
@@ -105,7 +94,6 @@ Deno.test("LocalEncryptionVaultProvider - uses computed secrets path", async (t)
 Deno.test("LocalEncryptionVaultProvider - SSH key-based encryption", async (t) => {
   await t.step("should encrypt and decrypt secrets with SSH key", async () => {
     await withTempDir(async (dir) => {
-      // Create a mock SSH key file
       await Deno.writeTextFile(
         join(dir, "test_ssh_key"),
         MOCK_SSH_PRIVATE_KEY,
@@ -177,7 +165,6 @@ Deno.test("LocalEncryptionVaultProvider - SSH key-based encryption", async (t) =
       assertEquals(secret1File.isFile, true);
       assertEquals(secret2File.isFile, true);
 
-      // Verify files contain encrypted data (not plaintext)
       const content1 = await Deno.readTextFile(
         join(vaultSecretsDir, "secret1.enc"),
       );
@@ -185,7 +172,6 @@ Deno.test("LocalEncryptionVaultProvider - SSH key-based encryption", async (t) =
         join(vaultSecretsDir, "secret2.enc"),
       );
 
-      // Should be JSON with encrypted data
       const parsed1 = JSON.parse(content1);
       const _parsed2 = JSON.parse(content2);
 
@@ -194,7 +180,6 @@ Deno.test("LocalEncryptionVaultProvider - SSH key-based encryption", async (t) =
       assertEquals(typeof parsed1.salt, "string");
       assertEquals(parsed1.version, 2);
 
-      // Should not contain plaintext
       assertStringIncludes(content1, '"data"');
       assertEquals(content1.includes("value1"), false);
       assertEquals(content2.includes("value2"), false);
@@ -223,12 +208,10 @@ Deno.test("LocalEncryptionVaultProvider - SSH key-based encryption", async (t) =
         "jwt-secret": "jwt-token-789",
       };
 
-      // Store all secrets
       for (const [key, value] of Object.entries(secrets)) {
         await vault.put(key, value);
       }
 
-      // Retrieve and verify all secrets
       for (const [key, expectedValue] of Object.entries(secrets)) {
         const retrievedValue = await vault.get(key);
         assertEquals(retrievedValue, expectedValue);
@@ -252,7 +235,6 @@ Deno.test("LocalEncryptionVaultProvider - auto-generated keys", async (t) => {
 
       assertEquals(retrieved, "test-value");
 
-      // Should have created a key file in the secrets directory
       const keyFile = await Deno.stat(join(vaultSecretsDir, ".key"));
       assertEquals(keyFile.isFile, true);
     });
@@ -266,14 +248,12 @@ Deno.test("LocalEncryptionVaultProvider - auto-generated keys", async (t) => {
         base_dir: dir,
       };
 
-      // First vault instance
       const vault1 = new LocalEncryptionVaultProvider(
         "persistent-vault",
         config,
       );
       await vault1.put("secret1", "value1");
 
-      // Second vault instance (should use same key)
       const vault2 = new LocalEncryptionVaultProvider(
         "persistent-vault",
         config,
@@ -282,7 +262,6 @@ Deno.test("LocalEncryptionVaultProvider - auto-generated keys", async (t) => {
 
       assertEquals(retrieved, "value1");
 
-      // Should have only one key file
       const keyFile = await Deno.stat(join(vaultSecretsDir, ".key"));
       assertEquals(keyFile.isFile, true);
     });
@@ -306,7 +285,6 @@ Deno.test("LocalEncryptionVaultProvider - auto-generated keys", async (t) => {
 
       assertEquals(retrieved, "test-value");
 
-      // Should have created key at custom location
       const keyFile = await Deno.stat(customKeyPath);
       assertEquals(keyFile.isFile, true);
     });
@@ -322,7 +300,6 @@ Deno.test("LocalEncryptionVaultProvider - auto-generated keys", async (t) => {
           base_dir: dir,
         };
 
-        // Create two vault instances pointing at the same vault directory
         const vault1 = new LocalEncryptionVaultProvider(
           "concurrent-vault",
           config,
@@ -332,18 +309,14 @@ Deno.test("LocalEncryptionVaultProvider - auto-generated keys", async (t) => {
           config,
         );
 
-        // Concurrently put secrets from both instances
         await Promise.all([
           vault1.put("secret-from-1", "value1"),
           vault2.put("secret-from-2", "value2"),
         ]);
 
-        // Both vaults should be able to read each other's secrets,
-        // proving they share the same encryption key
         assertEquals(await vault1.get("secret-from-2"), "value2");
         assertEquals(await vault2.get("secret-from-1"), "value1");
 
-        // Only one .key file should exist on disk
         const keyEntries: string[] = [];
         for await (const entry of Deno.readDir(vaultSecretsDir)) {
           if (entry.name === ".key") {
@@ -375,7 +348,6 @@ Deno.test("LocalEncryptionVaultProvider - auto-generated keys", async (t) => {
 
         assertEquals(retrieved, "fallback-value");
 
-        // Should have created auto-generated key file
         const keyFile = await Deno.stat(join(vaultSecretsDir, ".key"));
         assertEquals(keyFile.isFile, true);
       });
@@ -436,7 +408,6 @@ Deno.test("LocalEncryptionVaultProvider - error handling", async (t) => {
       };
       const vault = new LocalEncryptionVaultProvider("corrupt-vault", config);
 
-      // Create vault directory and write corrupted file
       await Deno.mkdir(vaultSecretsDir, { recursive: true });
       await Deno.writeTextFile(
         join(vaultSecretsDir, "corrupted.enc"),
@@ -496,11 +467,8 @@ Deno.test({
     await t.step(
       "should create vault directory with 0o700 permissions",
       async () => {
-        // Stream-0 regression net: the vault directory created by put()
-        // must be 0o700 on POSIX so other users on the host cannot list
-        // or read encrypted secrets. Pins existing behavior before the
-        // Windows-readiness refactor — Stream A may move directory
-        // creation but must preserve POSIX perms.
+        // the vault directory created by put() must be 0o700 on POSIX so other
+        // users on the host cannot list or read encrypted secrets
         await withTempDir(async (dir) => {
           await Deno.writeTextFile(
             join(dir, "test_ssh_key"),
@@ -518,7 +486,6 @@ Deno.test({
             config,
           );
 
-          // put() triggers ensureVaultDirectory()
           await vault.put("trigger-key", "trigger-value");
 
           const stat = await Deno.stat(vaultSecretsDir);
@@ -546,7 +513,6 @@ Deno.test({
       const keyPath = join(dir, "test_ssh_key");
       await Deno.writeTextFile(keyPath, MOCK_SSH_PRIVATE_KEY);
 
-      // Grant Everyone Read access to simulate a leaked ACL on the key.
       const grantCode = await grantEveryoneReadAcl(keyPath);
       assertEquals(grantCode, 0, "icacls grant Everyone:(R) failed");
 
@@ -590,7 +556,6 @@ Deno.test("LocalEncryptionVaultProvider - security properties", async (t) => {
       await vault.put("secret1", "same-value");
       await vault.put("secret2", "same-value");
 
-      // Read encrypted files and verify different salts
       const content1 = await Deno.readTextFile(
         join(vaultSecretsDir, "secret1.enc"),
       );
@@ -601,7 +566,6 @@ Deno.test("LocalEncryptionVaultProvider - security properties", async (t) => {
       const parsed1 = JSON.parse(content1);
       const parsed2 = JSON.parse(content2);
 
-      // Same plaintext, same SSH key, but should have different salts and encrypted data
       assertEquals(parsed1.salt === parsed2.salt, false);
       assertEquals(parsed1.data === parsed2.data, false);
       assertEquals(parsed1.iv === parsed2.iv, false);
@@ -625,13 +589,12 @@ Deno.test("LocalEncryptionVaultProvider - security properties", async (t) => {
         };
         const vault = new LocalEncryptionVaultProvider("iv-test-vault", config);
 
-        // Store same secret twice
         await vault.put("test-key", "same-value");
         const content1 = await Deno.readTextFile(
           join(vaultSecretsDir, "test-key.enc"),
         );
 
-        await vault.put("test-key", "same-value"); // Overwrite with same value
+        await vault.put("test-key", "same-value");
         const content2 = await Deno.readTextFile(
           join(vaultSecretsDir, "test-key.enc"),
         );
@@ -639,11 +602,9 @@ Deno.test("LocalEncryptionVaultProvider - security properties", async (t) => {
         const parsed1 = JSON.parse(content1);
         const parsed2 = JSON.parse(content2);
 
-        // Should have different IVs and salts even for same value
         assertEquals(parsed1.iv === parsed2.iv, false);
         assertEquals(parsed1.salt === parsed2.salt, false);
 
-        // But should decrypt to same value
         const retrieved = await vault.get("test-key");
         assertEquals(retrieved, "same-value");
       });
@@ -674,12 +635,10 @@ Deno.test("LocalEncryptionVaultProvider - security properties", async (t) => {
           "json": '{"key": "value", "number": 42, "bool": true}',
         };
 
-        // Store all special secrets
         for (const [key, value] of Object.entries(specialSecrets)) {
           await vault.put(key, value);
         }
 
-        // Retrieve and verify all special secrets
         for (const [key, expectedValue] of Object.entries(specialSecrets)) {
           const retrievedValue = await vault.get(key);
           assertEquals(retrievedValue, expectedValue);
@@ -737,7 +696,6 @@ Deno.test("LocalEncryptionVaultProvider - list secrets", async (t) => {
         config,
       );
 
-      // Store in non-alphabetical order
       await vault.put("zebra", "z");
       await vault.put("apple", "a");
       await vault.put("mango", "m");
@@ -759,10 +717,8 @@ Deno.test("LocalEncryptionVaultProvider - list secrets", async (t) => {
       };
       const vault = new LocalEncryptionVaultProvider("enc-only-vault", config);
 
-      // Store a secret first to create the directory
       await vault.put("real-secret", "value");
 
-      // Create a non-.enc file in the vault directory
       await Deno.writeTextFile(
         join(vaultSecretsDir, "not-a-secret.txt"),
         "other",
@@ -1054,15 +1010,11 @@ Deno.test("LocalEncryptionVaultProvider - path traversal prevention", async (t) 
   );
 });
 
-/**
- * Builds a mock encrypted OpenSSH private key with the given cipher name
- * in the binary format header.
- */
 function createMockEncryptedOpenSshKey(cipher: string): string {
   const magic = new TextEncoder().encode("openssh-key-v1\0");
   const cipherBytes = new TextEncoder().encode(cipher);
   const cipherLenBuf = new DataView(new ArrayBuffer(4));
-  cipherLenBuf.setUint32(0, cipherBytes.length, false); // big-endian
+  cipherLenBuf.setUint32(0, cipherBytes.length, false);
   const padding = new Uint8Array(64);
 
   const total = magic.length + 4 + cipherBytes.length + padding.length;
@@ -1200,8 +1152,6 @@ Deno.test("LocalEncryptionVaultProvider - SSH key validation", async (t) => {
     {
       name:
         "should reject SSH key with broad NTFS ACL (Windows: Everyone:Read)",
-      // Companion to the POSIX 0644 step: drives the same vault code path
-      // through the Windows ACL branch of checkFileNotBroadlyReadable.
       ignore: Deno.build.os !== "windows",
       fn: async () => {
         await withTempDir(async (dir) => {
@@ -1289,10 +1239,6 @@ Deno.test("LocalEncryptionVaultProvider - SSH key validation", async (t) => {
   );
 });
 
-/**
- * Runs `fn` with LogTape capturing the local-encryption vault's warnings and
- * returns their rendered messages.
- */
 async function captureKeyFileWarnings(
   fn: () => Promise<void>,
 ): Promise<string[]> {
@@ -1743,7 +1689,6 @@ Deno.test("removeLocalEncryptionSecrets: unlinks a symlinked vault directory wit
 
 Deno.test("removeLocalEncryptionSecrets: refuses storage outside the repository being changed", async () => {
   await withTempDir(async (dir) => {
-    // A base_dir another checkout recorded in the committed config.
     const other = join(dir, "other-checkout");
     const provider = new LocalEncryptionVaultProvider("trip-planner", {
       auto_generate: true,

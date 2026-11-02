@@ -18,26 +18,18 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * The characters a terminal interprets instead of printing, as the body of a
- * regular-expression character class: C0 controls (U+0000–U+001F, including
- * tab and newline), DEL (U+007F) and C1 controls (U+0080–U+009F). Step and job
- * name validation and shell-word quoting both build on this one definition so
- * their ranges cannot drift (swamp-club#3027).
+ * one definition of the characters a terminal interprets instead of printing,
+ * shared by name validation and shell-word quoting so their ranges cannot drift
  */
 export const CONTROL_CHARACTER_CLASS = "\\x00-\\x1f\\x7f-\\x9f";
 
 const CONTROL_CHARACTER = new RegExp(`[${CONTROL_CHARACTER_CLASS}]`);
 const EVERY_CONTROL_CHARACTER = new RegExp(`[${CONTROL_CHARACTER_CLASS}]`, "g");
 
-/** Whether `value` holds any control character. */
 export function hasControlCharacter(value: string): boolean {
   return CONTROL_CHARACTER.test(value);
 }
 
-/**
- * Replaces each control character in `value` with what `replacement` returns
- * for it. Text without control characters is returned unchanged.
- */
 export function mapControlCharacters(
   value: string,
   replacement: (character: string) => string,
@@ -46,19 +38,13 @@ export function mapControlCharacters(
 }
 
 /**
- * Rewrites each control character in `value` as a visible `\xNN` escape, so
- * author-controlled text can be printed without driving the terminal. Text
- * without control characters is returned unchanged.
+ * author-controlled text is escaped as visible \xNN so it can be printed
+ * without driving the terminal
  */
 export function escapeControlCharacters(value: string): string {
   return mapControlCharacters(value, escapeControlCharacter);
 }
 
-/**
- * {@link escapeControlCharacters} for a message that may span lines, such as
- * an error's list of remedies: a line feed is kept, and every other control
- * character is escaped.
- */
 export function escapeControlCharactersInMessage(value: string): string {
   return mapControlCharacters(
     value,

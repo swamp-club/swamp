@@ -27,10 +27,8 @@ import {
 } from "./server_token_model.ts";
 
 /**
- * A mint writes its secret and its record to two separate stores. This models
- * each mint as those two writes and lets concurrent mints of one name
- * interleave freely, which is what happens when nothing serialises them
- * (swamp-club#2482).
+ * a mint writes its secret and its record to two separate stores; concurrent
+ * mints of one name interleave freely when nothing serialises them
  */
 const NAME = "shared-name";
 
@@ -65,10 +63,6 @@ async function recordFor(
   };
 }
 
-/**
- * Applies the mints' writes in `order`: each entry names a mint, whose first
- * appearance is its vault put and whose second is its record write.
- */
 async function runInterleaving(
   mints: Mint[],
   order: number[],
@@ -87,7 +81,6 @@ async function runInterleaving(
   return stores;
 }
 
-/** The principal a credential authenticates as, or null when rejected. */
 async function authenticate(
   stores: Stores,
   secret: string,
@@ -103,7 +96,6 @@ async function authenticate(
   }
 }
 
-/** Between two and four mints, and an order of their two writes each. */
 const arbRace = fc.integer({ min: 2, max: 4 }).chain((count) =>
   fc.tuple(
     fc.constant(
@@ -152,7 +144,6 @@ Deno.test("server token pairing: without a fingerprint the interleaving authenti
     { principalId: "user:a", secret: "a".repeat(64) },
     { principalId: "user:b", secret: "b".repeat(64) },
   ];
-  // secret A, secret B, record B, record A — the order from the issue.
   const order = [0, 1, 1, 0];
 
   const legacy = await runInterleaving(mints, order, false);

@@ -21,29 +21,9 @@ import type { DetectableAiTool } from "./agent_harness_detection.ts";
 import type { AuthMode } from "../auth/auth_gate_policy.ts";
 
 /**
- * Captures the runtime conditions of a single CLI invocation: which AI
- * tools the repo is configured for, which agent harness (if any) wraps the
- * process, and whether stdin is attached to a terminal.
- *
- * `agentSessionDetected` is a SOFT SIGNAL — it can flip true on generic
- * AGENT/AI_AGENT/IS_AGENT env vars that unrelated tooling also sets.
- * Consumers needing precision (dashboards, leaderboards, billing-relevant
- * counts) MUST cross-reference `detectedAiTool`. When detectedAiTool is
- * undefined and agentSessionDetected is true, an agent context is present
- * but the harness could not be identified.
- *
- * `configuredAiTools` distinguishes two states with different downstream
- * meanings:
- *  - `undefined` — the entry was recorded outside a swamp repo. Telemetry is
- *    global (user-level), so repo-less runs are recorded; with no marker there
- *    is no configured tool list to report.
- *  - `[]` — the repo exists with `tools: []` (legacy `tool: none`
- *    normalised), an explicit opt-out of tool integration.
- *
- * `authMode` is how the auth gate let the run through: `verified` (a valid
- * proof or a live verification), `offline` (swamp-club could not be checked
- * and a proof or the 24-hour fail-open window carried the run), or `none`
- * (exempt or blocked). Absent from entries spooled before the gate existed.
+ * agentSessionDetected is a soft signal (generic AGENT vars are set by other
+ * tooling); configuredAiTools undefined means outside a repo, [] means an
+ * explicit tool opt-out
  */
 export interface InvocationContext {
   readonly configuredAiTools?: string[];
@@ -56,9 +36,6 @@ export interface InvocationContext {
   readonly authMode?: AuthMode;
 }
 
-/**
- * Data transfer object for InvocationContext.
- */
 export interface InvocationContextData {
   configuredAiTools?: string[];
   detectedAiTool?: DetectableAiTool;
@@ -70,9 +47,6 @@ export interface InvocationContextData {
   authMode?: AuthMode;
 }
 
-/**
- * Creates an InvocationContext value object.
- */
 export function createInvocationContext(
   props: InvocationContextData,
 ): InvocationContext {
@@ -90,9 +64,6 @@ export function createInvocationContext(
   };
 }
 
-/**
- * Converts an InvocationContext to its data representation.
- */
 export function invocationContextToData(
   context: InvocationContext,
 ): InvocationContextData {
@@ -117,9 +88,6 @@ export function invocationContextToData(
   return data;
 }
 
-/**
- * Reconstructs an InvocationContext from data.
- */
 export function invocationContextFromData(
   data: InvocationContextData,
 ): InvocationContext {

@@ -20,17 +20,8 @@
 import type { RepoMarkerData } from "../../infrastructure/persistence/repo_marker_repository.ts";
 
 /**
- * Resolves the primary AI tool for a repository.
- *
- * A swamp repo can be enrolled for multiple AI tools (`marker.tools`). Some
- * commands still operate on a single tool — audit recording, extension skills
- * directory resolution, the doctor checks. Those callers use this helper to
- * pick the conventional one.
- *
- * The rule: the first entry in `marker.tools`, or `"claude"` when the marker
- * is missing or has no enrolled tools. `"none"` is a CLI sentinel that means
- * "no tools enrolled" (represented as `tools: []`); it never appears inside
- * `tools` and is therefore never returned.
+ * the first entry in marker.tools, or claude when the marker is missing or
+ * empty; the none sentinel never appears in tools, so it is never returned
  */
 export function resolvePrimaryTool(marker: RepoMarkerData | null): string {
   return marker?.tools?.[0] ?? "claude";

@@ -22,16 +22,8 @@ import type { ModelDefinition } from "./model.ts";
 import { extractFieldsWithMetadata } from "./zod_field_metadata.ts";
 
 /**
- * Extracts the dot paths of fields a schema declares as foreign template text
- * with `.meta({ foreignTemplate: true })`.
- *
- * A foreign template field holds another service's template syntax (Datadog
- * `{{host.name}}`, shell `${HOME}`) that swamp passes through unchanged. The
- * declaration only silences the dropped-dollar check in `model validate`:
- * `${{ ... }}` expressions in the field are still validated and evaluated.
- *
- * @param schema - A Zod object schema, or undefined
- * @returns Dot paths of the declared fields
+ * the declaration only silences the dropped-dollar check in model validate;
+ * expressions in the field are still validated and evaluated
  */
 export function extractForeignTemplateFields(
   schema: z.ZodTypeAny | undefined,
@@ -43,15 +35,6 @@ export function extractForeignTemplateFields(
   ).map((field) => field.path);
 }
 
-/**
- * Builds a predicate saying whether a definition path lies inside a field the
- * model type declares as foreign template text. Paths use the definition's
- * layout: `globalArguments.<field>` and `methods.<method>.arguments.<field>`.
- * A declared path covers its whole subtree: the path itself, and any
- * `path.x` or `path[i]` below it.
- *
- * @param modelDef - The model type whose schemas carry the declarations
- */
 export function foreignTemplatePathPredicate(
   modelDef: Pick<ModelDefinition, "globalArguments" | "methods">,
 ): (path: string) => boolean {

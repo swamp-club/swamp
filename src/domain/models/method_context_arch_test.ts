@@ -17,11 +17,8 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// Architecture guard: production MethodContext construction must go through
-// buildMethodContext. This test walks src/ and fails if a new inline
-// MethodContext object literal appears outside the allowed files. If this
-// test fails, route the construction through buildMethodContext in
-// src/domain/models/method_context.ts.
+// production MethodContext construction must go through buildMethodContext;
+// this fails on a new inline literal outside the allowed files
 
 import { assertEquals } from "@std/assert";
 import { walk } from "@std/fs";
@@ -33,18 +30,14 @@ const REPO_ROOT = fromFileUrl(new URL("../../..", import.meta.url));
 const SRC_ROOT = join(REPO_ROOT, "src");
 
 const ALLOWED_FILES: ReadonlySet<string> = new Set([
-  // The factory itself.
   "src/domain/models/method_context.ts",
-  // The interface declaration uses `MethodContext["logger"]` typeof lookups.
   "src/domain/models/model.ts",
   // Spread-based enrichment overlays `globalArgs`/`unresolvedMethodArgs` onto
   // an already-built context during method execution. Not a new construction
   // site — inherits every field the factory populated.
   "src/domain/models/method_execution_service.ts",
-  // Worker-side remote MethodContext (see design/enablers/remote-execution.md):
-  // deliberately constructs a scratch-repo context whose repositories and
-  // writers proxy the orchestrator's data plane — the local factory's
-  // startup-scoped deps do not exist on a worker.
+  // the worker builds a scratch-repo context proxying the orchestrator's data
+  // plane; the local factory's startup-scoped deps do not exist on a worker
   "src/worker/remote_method_context.ts",
   // Test-only fixture builders. Not `_test.ts` themselves, but they exist
   // solely to fabricate a stub context for unit tests via
@@ -53,17 +46,9 @@ const ALLOWED_FILES: ReadonlySet<string> = new Set([
   "src/domain/models/worker/worker_test_helpers.ts",
 ]);
 
-// Matches the three ways a MethodContext gets constructed outside the factory:
-//   - `: MethodContext = {` / `MethodContext = {`  — object literal assignment
-//   - `satisfies MethodContext`                    — literal validated in place
-//   - `as MethodContext` / `as unknown as MethodContext` — cast fabrication
-//
-// The negative lookahead excludes indexed-access *type* references such as
-// `as unknown as MethodContext["logger"]`, which name one field's type rather
-// than fabricating a whole context. src/domain/models/validation_service.ts
-// relies on that form to build a partial logger; it is a type lookup, not a
-// construction site, so it is deliberately out of scope for this guard rather
-// than allowlisted.
+// the lookahead excludes indexed-access type references such as `as unknown as
+// MethodContext["logger"]`, which name one field's type rather than fabricating
+// a whole context
 const INLINE_LITERAL =
   /\bMethodContext\s*=\s*\{|(?:satisfies|as)\s+MethodContext\b(?!\s*\[)/;
 

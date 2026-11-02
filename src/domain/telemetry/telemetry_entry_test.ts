@@ -295,8 +295,6 @@ Deno.test("TelemetryEntry round-trips invocationContext through toData/fromData"
 });
 
 Deno.test("TelemetryEntry.fromData decodes legacy entries without invocationContext", () => {
-  // Lock in the back-compat contract: entries written before the field was
-  // introduced must continue to decode without loss.
   const legacyData: TelemetryEntryData = {
     id: "legacy-1",
     invocation: {
@@ -396,8 +394,6 @@ Deno.test("TelemetryEntry round-trips parentInvocationId and workflowContext thr
 });
 
 Deno.test("TelemetryEntry.fromData decodes legacy entries without parentInvocationId or workflowContext", () => {
-  // Forward-compat contract for the new fields, mirroring the
-  // invocationContext regression above.
   const legacyData: TelemetryEntryData = {
     id: "legacy-2",
     invocation: {
@@ -449,8 +445,7 @@ Deno.test("TelemetryEntry round-trips triggerSource through toData/fromData", ()
 });
 
 Deno.test("TelemetryEntry omits triggerSource for interactive invocations", () => {
-  // The CLI never sets a trigger source, so its events must stay
-  // byte-identical to what shipped before the field existed.
+  // the CLI never sets a trigger source, so its events must stay byte-identical
   const entry = TelemetryEntry.create({
     invocation: {
       command: "model",

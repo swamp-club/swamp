@@ -121,28 +121,22 @@ import {
   secretOccurrencesOf,
 } from "../vaults/secret_occurrences.ts";
 
-/** The prepared delivery of one attempt; see `#prepareDelivery`. */
 interface PreparedDelivery {
-  /** The definition with the global arguments resolved and parsed. */
   definition: Definition;
-  /** The attempt's context: its delivery view and `unresolvedMethodArgs`. */
   context: MethodContext;
-  /** What the global-arguments parse received. */
   globalArgsParseInput: Record<string, unknown>;
-  /** The merge the pre-flight checks receive as `unresolvedMethodArgs`. */
   checkUnresolvedMethodArgs: Record<string, unknown>;
 }
 
-/** How a remotely placed step's attempt is delivered once a worker is chosen. */
 interface RemoteDelivery {
   legacyDelivery: () => Promise<LegacyStepDelivery>;
   validated: (() => Promise<void>) | undefined;
 }
 
 /**
- * `hook`, called at most once however often the result is: a remote
- * attempt that is re-dispatched reports its arguments validated from each
- * worker, and the caller's record is written once (swamp-club#3681).
+ * called at most once however often the result is: a re-dispatched remote
+ * attempt reports validated arguments from each worker, and the caller's record
+ * is written once
  */
 function onceOnly(
   hook: (() => Promise<void>) | undefined,
@@ -153,11 +147,9 @@ function onceOnly(
 }
 
 /**
- * `hook` as a version 6 worker's report of its parse calls it: while the
- * method runs on the worker, so an error it throws cannot stop the method.
- * It is logged as a warning, and the step keeps the outcome the method
- * reported; failing a step whose method ran would invite a retry that runs
- * it again.
+ * called while the method runs on the worker, so a thrown error cannot stop it:
+ * it is logged as a warning and the step keeps the reported outcome, since
+ * failing a step that ran would invite a rerun
  */
 function reportedOnly(
   hook: (() => Promise<void>) | undefined,
@@ -178,10 +170,8 @@ function reportedOnly(
 }
 
 /**
- * `definition` with each sentinel of the run written as the reference text
- * a persisted definition holds for it, so it hashes the same on every run
- * and the hash is computed from no value. Text that is not a sentinel of the
- * run is left as it is.
+ * each sentinel is written as the reference text a persisted definition holds,
+ * so the hash is stable across runs and computed from no value
  */
 function withReferenceText(
   definition: Definition,
@@ -211,10 +201,6 @@ function withReferenceText(
   );
 }
 
-/**
- * Filters data entries to only those belonging to declared resource specs.
- * Uses the `specName` tag that `writeResource()` auto-injects on every write.
- */
 function filterDeclaredResourceData(
   allData: Data[],
   declaredResources: Record<string, unknown>,
@@ -223,7 +209,6 @@ function filterDeclaredResourceData(
   return allData.filter((d) => isDeclaredResourceData(d, specNames));
 }
 
-/** Whether `data` was written for one of the declared resource specs. */
 function isDeclaredResourceData(
   data: Data,
   specNames: ReadonlySet<string>,
@@ -233,11 +218,6 @@ function isDeclaredResourceData(
     specNames.has(data.tags["specName"]);
 }
 
-/**
- * Extracts DataHandle[] from "persisted" execution outputs.
- * In-process execution persists data as it runs, so every output already
- * references existing data.
- */
 function collectPersistedHandles(outputs: ExecutionOutput[]): DataHandle[] {
   const handles: DataHandle[] = [];
   for (const output of outputs) {
@@ -248,10 +228,6 @@ function collectPersistedHandles(outputs: ExecutionOutput[]): DataHandle[] {
   return handles;
 }
 
-/**
- * Formats the issues of a refused parse, as {@link maskRefusedIssues}
- * reports them, into a human-readable string.
- */
 function formatZodError(error: { issues: readonly ReportedIssue[] }): string {
   if (error.issues.length === 1) {
     const issue = error.issues[0];
@@ -266,19 +242,7 @@ function formatZodError(error: { issues: readonly ReportedIssue[] }): string {
     .join("; ");
 }
 
-/**
- * Domain service interface for method execution.
- */
 export interface MethodExecutionService {
-  /**
-   * Executes a model method with the given definition and context.
-   *
-   * @param definition - The definition containing attributes
-   * @param method - The method definition to execute
-   * @param context - Execution context
-   * @returns The method result
-   * @throws Error if definition validation fails
-   */
   execute(
     definition: Definition,
     method: MethodDefinition,
@@ -286,16 +250,8 @@ export interface MethodExecutionService {
   ): Promise<MethodResult>;
 
   /**
-   * Executes a method through the full pipeline (workflow execution). One
-   * call is one delivery attempt: it loads the vault references in the
-   * definition's global arguments and the method's arguments once.
-   *
-   * @param definition - The definition containing attributes
-   * @param modelDef - The complete model definition (for accessing other methods)
-   * @param methodName - Name of the method to execute
-   * @param context - Execution context
-   * @param options - The loader for `context.vaultSecrets`
-   * @returns The final method result
+   * one call is one delivery attempt: it loads the vault references in the
+   * global arguments and the method's arguments once
    */
   executeWorkflow(
     definition: Definition,
@@ -306,54 +262,33 @@ export interface MethodExecutionService {
   ): Promise<MethodResult>;
 }
 
-/** How one execution delivers the step's vault secrets. */
 export interface MethodDeliveryOptions {
   /**
-   * Where data sits in `definition`'s data, after the runtime pass, so the
-   * method's {@link MethodDefinition.placeDataSplices} hook puts data text
-   * where its method cannot parse it as syntax (swamp-club#3868). Required:
-   * a caller that leaves it out would run data as authored text. A caller
-   * whose definition holds no data passes `ProvenanceMap.authored()`.
+   * where data sits after the runtime pass, so placeDataSplices keeps data text
+   * from being parsed as syntax; required, since leaving it out would run data
+   * as authored text (pass ProvenanceMap.authored() if none)
    */
   argumentProvenance: ProvenanceMap;
   /**
-   * Loads the vault references in the step's arguments at delivery. It is
-   * the loader of the evaluator whose runtime pass issued them, and is not
-   * part of the context a method or check receives. Without one, a vault
-   * reference the arguments carry fails at delivery.
+   * the loader of the evaluator whose runtime pass issued the references, not
+   * part of the context a method or check receives; without one, a vault
+   * reference in the arguments fails at delivery
    */
   secretLoader?: SecretLoader;
   /**
-   * Called once the method's arguments have passed their schema, before the
-   * method body runs (in process or on a worker). A caller that keeps a
-   * record of the evaluation the run is about to execute writes it here, so
-   * arguments the schema refuses never replace the last good record
-   * (swamp-club#3681). In process it follows the one parse of the run, the
-   * parse whose result the method receives, so a schema transform runs
-   * once; a remote dispatch parses here and again on the worker. Not called
-   * when validation fails; an error it throws fails the run before the
-   * method runs. The one exception is a remotely placed step whose
-   * arguments hold a secret, dispatched to a worker that validates them
-   * itself: the hook is called on the worker's report, while the method
-   * runs, so an error it throws is logged as a warning and the step keeps
-   * the method's outcome.
+   * called once arguments pass their schema, before the method runs, so refused
+   * arguments never replace the last good record; a thrown error fails the run,
+   * except on a worker's report, where it is only logged
    */
   onArgumentsValidated?: () => Promise<void>;
   /**
-   * The run's record of stored sensitive-field references whose vault read
-   * failed. An argument still holding one fails naming the vault, key and
-   * provider error, where the method reads it (a global argument) or at
-   * delivery (a method argument), rather than as an unresolved expression
-   * (swamp-club#3806). Not part of the context a method receives.
+   * stored sensitive-field references whose vault read failed: an argument
+   * still holding one fails naming the vault, key and provider error, not as an
+   * unresolved expression; not part of the method's context
    */
   unreadReferences?: UnreadReferenceLookup;
 }
 
-/**
- * The error for an argument that still holds the stored reference of a
- * sensitive field whose vault could not be read in this run, naming the
- * vault, key and provider error; undefined when `value` holds none.
- */
 function unreadReferenceError(
   location: string,
   value: unknown,
@@ -376,10 +311,9 @@ function unreadReferenceError(
 }
 
 /**
- * The lock hand-offs of a dispatch built now, one per attempt, bound to the
- * lock scope this is called from. A run that holds more locks than a worker
- * accepts lends none: the step then runs without them, and a structural
- * swamp it starts waits on the locks held for the run.
+ * a run holding more locks than a worker accepts lends none: the step runs
+ * without them, and a structural swamp it starts waits on the locks held for
+ * the run
  */
 function lockHandOffFor(
   context: Pick<MethodContext, "logger">,
@@ -398,12 +332,9 @@ function lockHandOffFor(
 }
 
 /**
- * Writes an output line a worker streamed back through the run logger, so a
- * remote step's run log holds what a local step's does (swamp-club#3080).
- * A worker supplies the event, so it is checked here rather than trusted: a
- * line is split on every line separator so it cannot pass for several
- * records, and an
- * unrecognised level falls back to the stream.
+ * a worker supplies the event, so it is checked, not trusted: a line is split
+ * on every line separator so it cannot pass for several records, and an
+ * unrecognised level falls back to the stream
  */
 function logRemoteOutput(logger: Logger, event: unknown): void {
   if (typeof event !== "object" || event === null) return;
@@ -427,10 +358,9 @@ function logRemoteOutput(logger: Logger, event: unknown): void {
 }
 
 /**
- * The data versions a worker wrote before its dispatch failed, which the
- * dispatch attaches to the error as `writtenVersions` (swamp-club#3146). Only
- * the lock's flush reads them, to publish what the worker left behind; they
- * are never shown as the step's artifacts.
+ * attached to the dispatch error as writtenVersions; only the lock's flush
+ * reads them to publish what the worker left behind, never shown as the step's
+ * artifacts
  */
 export function writtenVersionsOf(error: unknown): WrittenVersion[] {
   if (typeof error !== "object" || error === null) return [];
@@ -445,14 +375,8 @@ export function writtenVersionsOf(error: unknown): WrittenVersion[] {
 }
 
 /**
- * Returns the data handles attached to an error thrown by a method that
- * persisted data before failing, or [] when there are none.
- *
- * Method execution attaches them as `error.dataHandles` (see
- * `executeWorkflow`, and models such as `command/shell` that write output
- * before throwing) so failure-path reports and step records can still point
- * at that data. The error can come from extension code, so entries without
- * the fields a handle is identified and recorded by are dropped.
+ * the error can come from extension code, so entries without the fields a
+ * handle is identified and recorded by are dropped
  */
 export function recoveredDataHandles(error: unknown): DataHandle[] {
   if (typeof error !== "object" || error === null) return [];
@@ -471,12 +395,9 @@ function isDataHandleShaped(value: unknown): value is DataHandle {
 }
 
 /**
- * The method's arguments as `unresolvedMethodArgs` carries them, from the
- * definition as evaluated: the raw method arguments over the raw global
- * arguments, sentinels in place of secrets. A global argument holding an
- * unresolved `${{ ... }}` expression is left out, as the merge in `execute()`
- * leaves it out; another templating system's `${{ ... }}` text is kept, see
- * `containsSwampExpression`.
+ * raw method arguments over raw global arguments, sentinels in place of
+ * secrets; a global holding an unresolved swamp expression is left out as in
+ * execute(), while another system's template text is kept
  */
 export function unresolvedArgumentsOf(
   definition: Definition,
@@ -490,22 +411,15 @@ export function unresolvedArgumentsOf(
   return { ...merged, ...definition.getMethodArguments(methodName) };
 }
 
-/** A step's global and method arguments, as a dispatch carries them. */
 export interface StepArguments {
   globalArgs: Record<string, unknown>;
   methodArgs: Record<string, unknown>;
 }
 
 /**
- * Places data text in a step's arguments for the platform of the host that
- * runs the method body, through the method's
- * {@link MethodDefinition.placeDataSplices} hook (swamp-club#3868). Built
- * from the definition `provenance` describes; the arguments it is given may
- * be a later form of them (a remote frame, an upgraded definition). A
- * string argument holding data whose text differs from the one the
- * provenance was recorded on cannot be placed, so it is refused rather than
- * run as authored text. Identity when the method has no hook or its
- * arguments hold no data.
+ * a string argument holding data whose text differs from the one the provenance
+ * was recorded on cannot be placed, so it is refused rather than run as
+ * authored text; identity when there is no hook or no data
  */
 export function dataSplicePlacer(
   definition: Definition,
@@ -576,7 +490,6 @@ export function dataSplicePlacer(
   };
 }
 
-/** `definition` with `placed` as its global and `methodName`'s arguments. */
 function withStepArguments(
   definition: Definition,
   methodName: string,
@@ -590,35 +503,16 @@ function withStepArguments(
   return copy;
 }
 
-/** What one delivery attempt carries into its checks and its method. */
 export interface StepSecretDelivery {
-  /**
-   * The bag the attempt delivers from: loaded when the step holds a secret
-   * and a loader was given, else the step's own.
-   */
   vaultSecrets: VaultSecretBag | undefined;
-  /**
-   * The merge the checks and the method see as `unresolvedMethodArgs`,
-   * sentinels in place. Undefined when the step holds no secret.
-   */
   sentinelArguments: Record<string, unknown> | undefined;
-  /** The run's sentinels, value-free. Undefined when the step holds no secret. */
   secrets: SecretOccurrences | undefined;
 }
 
 /**
- * The shared refuse-then-load step of a delivery attempt
- * (design/enablers/typed-secrets.md Sections 3.3 and 6.3), for the method
- * boundary and for the pre-flight checks `swamp behavior validate` runs in a
- * typed run. First the merge the checks and the method will see is built
- * while the arguments still hold their sentinels. Then, behind the internal
- * option a typed registry carries, a secret at a destination that takes
- * none is refused before any load: a field marked secrets: "refuse" in the
- * global or merged arguments, then the method's own destinations for a
- * local placement. The decision reads the run's sentinels, never a value,
- * so a refused attempt reads no vault. Last the references the arguments
- * carry are loaded, once, for this attempt only; the step's own bag stays
- * unloaded, so the next attempt loads again.
+ * refuse then load: a secret at a destination that takes none is refused from
+ * sentinels alone, before any vault read; references are then loaded once for
+ * this attempt only, so the next attempt loads again
  */
 export async function deliverStepSecrets(input: {
   definition: Definition;
@@ -631,9 +525,9 @@ export async function deliverStepSecrets(input: {
   /** False for a remotely placed step, whose shell is the worker's. */
   localPlacement: boolean;
   /**
-   * False when this attempt's refusals already ran: serve runs them for a
-   * remotely placed step before it is scheduled, and the delivery once a
-   * worker is chosen does not repeat them. Defaults to true.
+   * false when this attempt's refusals already ran: serve runs them for a
+   * remotely placed step before scheduling and delivery does not repeat them;
+   * defaults to true
    */
   refuse?: boolean;
 }): Promise<StepSecretDelivery> {
@@ -668,14 +562,9 @@ export async function deliverStepSecrets(input: {
 }
 
 /**
- * The merge of a run that holds secrets with the parsed global arguments
- * laid under it: a global argument takes the value global validation parsed
- * (its Zod defaults and coercions, as the merge of a run with no secrets has
- * them), except that every leaf holding a sentinel keeps its authored form,
- * so a secret stays a sentinel for the shell's fill while its siblings are
- * parsed. A global whose parsed value reads as an expression is left out, as
- * every other merge leaves it out. Method arguments stay as authored, as
- * they always have in `unresolvedMethodArgs`.
+ * a global takes the value global validation parsed, except leaves holding a
+ * sentinel keep their authored form so a secret stays a sentinel for the
+ * shell's fill; method arguments stay as authored
  */
 function withParsedGlobals(
   merged: Record<string, unknown>,
@@ -697,7 +586,6 @@ function withParsedGlobals(
     typeof value === "object" && value !== null && !Array.isArray(value) &&
     (Object.getPrototypeOf(value) === Object.prototype ||
       Object.getPrototypeOf(value) === null);
-  /** `parsed` with each leaf of `authored` that holds a sentinel put back. */
   const overlay = (parsed: unknown, authored: unknown): unknown => {
     if (!holdsSentinel(authored)) return parsed;
     if (typeof authored === "string") return authored;
@@ -733,9 +621,8 @@ function withParsedGlobals(
 }
 
 /**
- * The refusal of a pre-run vault check, ending in one fix: list the vault in
- * the workflow when the workflow's `vaults:` list refused, otherwise the
- * grant advice the refusal gives (or, when it gives none, a grant change).
+ * ends in one fix: list the vault in the workflow when its vaults list refused,
+ * otherwise the refusal's grant advice, or a grant change when it gives none
  */
 function preRunRefusalHint(
   error: VaultAccessDeniedError,
@@ -758,15 +645,9 @@ function preRunRefusalHint(
 }
 
 /**
- * The method's arguments as the method receives them, parsed by its schema:
- * vault sentinels resolved through `secretBag`, the global arguments that
- * hold no unresolved expression merged underneath (per
- * design/primitives/behaviors.md, per-method arguments take precedence),
- * then coerced and parsed. Throws the validation failure the run reports,
- * with what the refusal may echo registered with `redactor` first and the
- * message passed through it (swamp-club#3681). The raw method arguments
- * and the filtered raw globals keep their sentinels, for the shell's
- * env-var delivery; `parseInput` is what the schema received.
+ * per-method arguments take precedence over merged globals that hold no
+ * unresolved expression; raw arguments keep their sentinels for the shell's
+ * env-var delivery; parseInput is what the schema received
  */
 function parseMethodArguments(
   definition: Definition,
@@ -782,11 +663,9 @@ function parseMethodArguments(
   parseInput: Record<string, unknown>;
   parsed: { data: unknown };
 } {
-  // Get raw method arguments (may contain vault sentinel tokens)
   const rawMethodArgs = definition.getMethodArguments(methodName);
 
-  // Resolve vault sentinels to raw values for method args and global args.
-  // This ensures extension models receive exact secret values with no escaping.
+  // resolved so extension models receive exact secret values with no escaping
   const resolvedMethodArgs = secretBag?.resolvesAny
     ? secretBag.resolveDeep(rawMethodArgs) as Record<string, unknown>
     : rawMethodArgs;
@@ -796,15 +675,9 @@ function parseMethodArguments(
     ) as Record<string, unknown>
     : definition.globalArguments;
 
-  // Merge global args as fallback under per-method args (per design/primitives/behaviors.md:
-  // "at execution time receives the merged set of global arguments and
-  // per-method arguments"). Per-method arguments take precedence.
-  // Exclude global args with unresolved ${{ ... }} expressions (recursively,
-  // including nested objects/arrays) — those are guarded by a Proxy on
-  // context.globalArgs and should not be injected into per-method arguments
-  // where they could pass schema validation as plain strings. Another
-  // templating system's ${{ ... }} text (${{ github.sha }}) is not swamp's
-  // and is merged as the value it is — see containsSwampExpression.
+  // globals with unresolved swamp expressions are excluded recursively: a Proxy
+  // on context.globalArgs guards them and they could pass validation as plain
+  // strings; other systems' template text merges as is
   const filteredGlobalArgs: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(resolvedGlobalArgs)) {
     if (containsSwampExpression(value)) {
@@ -812,8 +685,8 @@ function parseMethodArguments(
     }
     filteredGlobalArgs[key] = value;
   }
-  // Build a separate filter from raw (pre-vault-resolution) global args so
-  // vault sentinel tokens are preserved for unresolvedMethodArgs.
+  // a separate filter over raw globals so vault sentinels are preserved for
+  // unresolvedMethodArgs
   const filteredRawGlobalArgs: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(definition.globalArguments)) {
     if (containsSwampExpression(value)) {
@@ -836,10 +709,9 @@ function parseMethodArguments(
     ? resolvedMethodArgs
     : { ...filteredGlobalArgs, ...resolvedMethodArgs };
   const methodArgs = coerceMethodArgs(mergedArgs, method.arguments);
-  // Each issue carries what its failing check received, so a refusal under
-  // a transform can register the transformed spelling before it is shown.
-  // Under serve's untrusted policy the parse also stops at the first failure
-  // in each container (swamp-club#3862).
+  // each issue carries what its failing check received, so a refusal under a
+  // transform can register the transformed spelling first; under serve's
+  // untrusted policy the parse stops at the first failure per container
   let argsResult: z.ZodSafeParseResult<unknown>;
   try {
     argsResult = method.arguments.safeParse(methodArgs, argumentParseContext());
@@ -865,7 +737,6 @@ function parseMethodArguments(
   };
 }
 
-/** `text` through `redactor`, when it holds anything to mask. */
 function redacted(
   text: string,
   redactor: SecretRedactor | undefined,
@@ -874,13 +745,9 @@ function redacted(
 }
 
 /**
- * The error a run reports for a parse its schema refused. What the refusal
- * may echo is registered with the run's redactor first: the input of each
- * issue at a sensitive position, which under a transform is the transformed
- * spelling the values registered before the parse do not cover, and any
- * key the parse introduced. The issues are then reported as
- * {@link maskRefusedIssues} describes them, through the redactor
- * (swamp-club#3681).
+ * registers with the run's redactor what the refusal may echo (each issue's
+ * input at a sensitive position, transformed spellings, keys the parse
+ * introduced) before reporting through it
  */
 function refusedParse(
   subject: "Method arguments" | "Global arguments",
@@ -905,20 +772,9 @@ function refusedParse(
 }
 
 /**
- * Registers with the run's redactor what the method is about to receive
- * under the sensitive positions of `schema`, as the schema parsed them: the
- * value a transform produced, a number, and an object key the parse
- * introduced, which a transform derived from a value; the method's error or
- * output can echo any of them and the values registered before the parse
- * do not cover them (swamp-club#3681). A key `parseInput` already spelled
- * is the type's own or one the run registered as a data key. The delivered
- * value is read whatever its shape: a schema may deliver a sensitive array
- * or scalar in place of a record, and the global arguments a method reads
- * from its context are parsed the same way. The values a transform
- * enclosing a sensitive position delivered are registered whole, since it
- * may have moved the value under any key, less the values the input holds at
- * positions the schema leaves plain; the keys its own code wrote are not
- * (see {@link extractDeliveredSensitiveValues}).
+ * registers what the method will receive at sensitive positions as parsed
+ * (transform output, numbers, derived keys), since its error or output can echo
+ * them; any shape, as a schema may deliver an array or scalar
  */
 function registerDeliveredSecrets(
   schema: z.ZodTypeAny,
@@ -939,11 +795,9 @@ function registerDeliveredSecrets(
 }
 
 /**
- * The lenient parse of the global arguments every delivery makes: a field
- * holding an unresolved `${{ ... }}` expression is skipped, as is each key
- * in `skip`, and every other field is coerced and checked, with an unknown
- * key refused. Throws the refusal the run reports. Returns what the parse
- * received and what it made.
+ * lenient: a field holding an unresolved expression is skipped, as is each key
+ * in skip; every other field is coerced and checked, with an unknown key
+ * refused
  */
 function parseGlobalArguments(
   schema: z.ZodTypeAny,
@@ -951,10 +805,6 @@ function parseGlobalArguments(
   redactor: SecretRedactor | undefined,
   skip: ReadonlySet<string> = new Set(),
 ): { coerced: Record<string, unknown>; data: Record<string, unknown> } {
-  // Identify globalArg fields with unresolved expressions (inputs,
-  // model resource/file refs, or any other swamp ${{ ... }} that wasn't
-  // evaluated). Uses containsSwampExpression for recursive detection of
-  // expressions inside nested objects and arrays.
   const skipKeys = new Set(skip);
   const resolvedGlobalArgs: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(rawGlobalArgs)) {
@@ -982,12 +832,9 @@ function parseGlobalArguments(
     }
   }
 
-  // Use lenient validation: validate provided fields but don't
-  // require missing ones. Direct execution creates ephemeral instances
-  // where not all globalArgs are needed (e.g. get doesn't need
-  // creation-time fields). swamp model create validates strictly.
-  // Unresolved fields are skipped — the Proxy on context.globalArgs
-  // guards them — while resolved fields still get their Zod defaults.
+  // lenient: provided fields are validated, missing ones not required, as
+  // direct execution makes ephemeral instances; unresolved fields are skipped
+  // (the globalArgs Proxy guards them), resolved ones get defaults
   let result: ReturnType<typeof parseGlobalArgumentsLeniently>;
   try {
     result = parseGlobalArgumentsLeniently(schema, coerced, skipKeys);
@@ -995,7 +842,6 @@ function parseGlobalArguments(
     throw schemaThrew(error, schema, "Global arguments");
   }
   if (!result.success) {
-    // As a method argument's refusal (swamp-club#3681).
     throw refusedParse(
       "Global arguments",
       schema,
@@ -1008,9 +854,8 @@ function parseGlobalArguments(
 }
 
 /**
- * The keys of `args` whose value holds a sentinel of the run, at any depth:
  * the arguments serve cannot validate before a worker is chosen, since their
- * values are loaded only then.
+ * values are loaded only then
  */
 function keysHoldingSentinels(
   args: Record<string, unknown>,
@@ -1035,13 +880,6 @@ function keysHoldingSentinels(
   return keys;
 }
 
-/**
- * Default implementation of the method execution service.
- *
- * Validates definition attributes against the method's schema before execution.
- * Creates writeResource/createFileWriter and injects them into context so methods
- * write data directly to disk. The result contains DataHandle[] (already persisted).
- */
 export class DefaultMethodExecutionService implements MethodExecutionService {
   private readonly dataOutputValidationService =
     new DataOutputValidationService();
@@ -1065,9 +903,8 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
   }
 
   /**
-   * {@link execute}, with the caller's `onArgumentsValidated` called once
-   * the arguments have passed their schema: this is the run's one parse of
-   * them, whose result the method receives (swamp-club#3681).
+   * this is the run's one parse of the arguments, whose result the method
+   * receives
    */
   async #execute(
     definition: Definition,
@@ -1099,11 +936,9 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
     if (onArgumentsValidated) await onArgumentsValidated();
     const secretBag = context.vaultSecrets;
 
-    // Populate context with global args and definition metadata.
-    // Wrap globalArgs in a Proxy that throws a clear error when the method
-    // accesses a field with an unresolved swamp ${{ ... }} expression.
-    // This allows methods that don't need certain fields to succeed while
-    // failing fast with a helpful message if they do.
+    // globalArgs is wrapped in a Proxy that throws a clear error when the
+    // method accesses a field with an unresolved swamp expression, so methods
+    // that do not need it succeed
     const globalArgsProxy = new Proxy(resolvedGlobalArgs, {
       get(target, prop, receiver) {
         const value = Reflect.get(target, prop, receiver);
@@ -1149,26 +984,16 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
         version: definition.version,
         tags: definition.tags,
       },
-      // Store unresolved args (with sentinels) so the shell model can
-      // resolve vault secrets via env vars instead of command string injection.
-      // Merge raw (pre-vault-resolution) global args as fallback so vault
-      // sentinel tokens from either source are preserved for env-var isolation.
-      // Filter out unresolved ${{ }} expressions (same policy as the method
-      // args merge above). A run that holds secrets reaches this method
-      // through executeWorkflow, which built the merge before it resolved the
-      // global arguments and hands it in through the context, since by now
-      // `definition` holds the values (swamp-club#3627); a caller that hands
-      // in none gets the merge built here, and a run with no secrets never
-      // reads the context's.
+      // keep sentinels so the shell model resolves secrets via env vars; a run
+      // with secrets reads the merge executeWorkflow built before resolving
+      // globals, since definition now holds values, else it is built here
       unresolvedMethodArgs:
         (secretBag?.resolvesAny && context.unresolvedMethodArgs) ||
         { ...filteredRawGlobalArgs, ...rawMethodArgs },
     };
 
-    // Execute the method with pre-validated args
     const result = await method.execute(argsResult.data, enrichedContext);
 
-    // Validate data handles
     if (result.dataHandles) {
       const validation = this.dataOutputValidationService.validate(
         result.dataHandles,
@@ -1185,10 +1010,8 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
   }
 
   /**
-   * Rebuild a full DataHandle from the orchestrator's durable record of a
-   * remotely-written output. The dispatch result carries only identities;
-   * metadata (content type, lifetime, ownerDefinition, tags) comes from the
-   * datastore, which the data plane wrote moments ago.
+   * the dispatch result carries only identities; metadata comes from the
+   * datastore, which the data plane wrote moments ago
    */
   async #rebuildRemoteHandle(
     context: MethodContext,
@@ -1228,12 +1051,9 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
   }
 
   /**
-   * Dispatch the method body to a remote worker through the registered
-   * dispatcher port. The arguments travel as the definition holds them,
-   * sentinels in place, with the reference behind each sentinel and no value
-   * (design/enablers/typed-secrets.md Section 9): a version 6 worker loads
-   * them itself. A version 5 worker gets the frame {@link #legacyDelivery}
-   * builds, which the dispatcher asks for only once it has chosen one.
+   * arguments travel with sentinels in place plus the reference behind each, no
+   * value; a version 6 worker loads them itself, a version 5 worker gets the
+   * legacyDelivery frame, built only once a worker is chosen
    */
   async #executeRemotely(
     context: MethodContext,
@@ -1255,10 +1075,9 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
 
     const { globalArgs, methodArgs } = executionRequest;
     const secretBag = context.vaultSecrets;
-    // The entries this step's arguments carry, whichever bag of the run
-    // issued them, and the references behind them, which serve admits to
-    // the dispatch's loads (swamp-club#3529): one computation, so what serve
-    // authorizes is what the worker loads.
+    // one computation for the entries the step's arguments carry and the
+    // references serve admits to the dispatch's loads, so what serve authorizes
+    // is what the worker loads
     const referenceBag = secretBag?.resolvesAny
       ? secretBag.referenceEntriesFor({ methodArgs, globalArgs })
       : [];
@@ -1270,10 +1089,9 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
       seen.add(id);
       secretReferences.push(reference);
     }
-    // A literal a schema marks sensitive is authored text, outside the
-    // typed-secrets contract (Section 1.3); serve's dispatch redactor masks
-    // it, as the worker's does once it has parsed it. Text holding a
-    // sentinel is not a value.
+    // a literal a schema marks sensitive is authored text outside the
+    // typed-secrets contract; serve's dispatch redactor masks it as the
+    // worker's does; text holding a sentinel is not a value
     const redactorSeeds: string[] = [];
     const methodArgSchema = modelDef.methods[methodName]?.arguments;
     for (
@@ -1355,15 +1173,9 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
   }
 
   /**
-   * The delivery prelude of one attempt, shared by every path that runs a
-   * method body: a run in this process, the version 5 frame serve builds for
-   * a remotely placed step, and a protocol version 6 runner
-   * ({@link executeDispatched}). It builds the merge the checks and the
-   * method see as `unresolvedMethodArgs` while the arguments still hold
-   * their sentinels, refuses a secret at a destination that takes none
-   * (unless the caller already did, before dispatch), loads the references
-   * the arguments carry once, resolves and validates the global arguments,
-   * and lays the parsed globals under the merge (swamp-club#3627).
+   * shared by every path that runs a method body: build the sentinel merge,
+   * refuse secret destinations unless done before dispatch, load references
+   * once, validate globals, lay them under the merge
    */
   async #prepareDelivery(input: {
     definition: Definition;
@@ -1372,9 +1184,7 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
     methodName: string;
     context: MethodContext;
     secretLoader: SecretLoader | undefined;
-    /** False for a remotely placed step, whose shell is the worker's. */
     localPlacement: boolean;
-    /** False when the destination refusals already ran for this attempt. */
     refuse: boolean;
   }): Promise<PreparedDelivery> {
     const { modelDef, method, methodName } = input;
@@ -1395,15 +1205,9 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
       context = { ...context, vaultSecrets: delivery.vaultSecrets };
     }
 
-    // Resolve vault sentinels in globalArguments before validation.
-    // Sentinels must be replaced with raw values so Zod schemas (e.g., url(),
-    // regex()) validate against actual secret values, not sentinel tokens.
-    // The values go into a copy of the definition, never into the object the
-    // caller passed (its own when no upgrade ran): that object keeps its
-    // sentinels, so no value outlives the attempt in it, and a second
-    // delivery of the same instance loads again and starts from the
-    // sentinels, as a freshly evaluated definition does (swamp-club#3627).
-    // Global validation below writes its parsed values into the same copy.
+    // sentinels are resolved into a copy of the definition, never the caller's
+    // object, so no value outlives the attempt and a second delivery loads
+    // again from sentinels; validators like url() need real values
     const secretBag = context.vaultSecrets;
     if (secretBag?.resolvesAny) {
       currentDefinition = Definition.fromData({
@@ -1414,14 +1218,9 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
       });
     }
 
-    // Validate globalArguments against schema (after upgrade and runtime resolution).
-    // GlobalArguments may contain unevaluated ${{ inputs.* }} expressions when
-    // the user didn't provide those inputs (e.g., running "delete" without
-    // create-time inputs). Strip unresolved fields before Zod validation so
-    // methods that don't need them can proceed. A Proxy on context.globalArgs
-    // will throw a clear error if the method actually accesses an unresolved field.
-    // What the global-arguments parse received, for a placed step's
-    // secret values (swamp-club#3754).
+    // strip unresolved fields before validation (e.g. delete without
+    // create-time inputs) so methods that do not need them proceed; a Proxy on
+    // context.globalArgs throws if the method accesses one
     let globalArgsParseInput: Record<string, unknown> = {};
     if (modelDef.globalArguments) {
       const rawGlobalArgs = currentDefinition.globalArguments;
@@ -1431,9 +1230,9 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
         rawGlobalArgs,
         context.redactor,
       );
-      // What the method reads from its context is what this parse made,
-      // a transform's output included, so it is registered as a method
-      // argument's parse is (swamp-club#3681).
+      // what the method reads from its context is what this parse made, a
+      // transform's output included, so it is registered as a method argument's
+      // parse is
       registerDeliveredSecrets(
         globalArgsSchema,
         coercedGlobalArgs,
@@ -1442,18 +1241,14 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
       );
       // The unresolved fields the parse skipped travel too, as written.
       globalArgsParseInput = { ...rawGlobalArgs, ...coercedGlobalArgs };
-      // Update definition with parsed values so methods receive correct types
       for (const [key, value] of Object.entries(data)) {
         currentDefinition.setGlobalArgument(key, value);
       }
     }
 
-    // Build unresolvedMethodArgs for pre-flight checks so they can
-    // validate method arguments. Mirrors the merge in execute():
-    // per-method args override global args, with unresolved ${{ }}
-    // expressions filtered from global args. In a run that holds secrets
-    // it is the merge built before the resolution, with the values
-    // validation parsed laid under its non-secret globals.
+    // mirrors execute()'s merge: per-method args override globals, unresolved
+    // expressions filtered; with secrets it is the pre-resolution merge with
+    // validation-parsed values under its non-secret globals
     const checkUnresolvedMethodArgs =
       sentinelArguments === undefined || secrets === undefined
         ? unresolvedArgumentsOf(currentDefinition, methodName)
@@ -1464,9 +1259,9 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
           secrets,
         );
     if (sentinelArguments !== undefined) {
-      // The checks and the method see this merge, with the sentinels in
-      // place, as `unresolvedMethodArgs` (Section 6.3): execute() reads it
-      // from the context, since by then the definition holds the values.
+      // the checks and the method see this merge with sentinels in place as
+      // unresolvedMethodArgs; execute() reads it from the context since the
+      // definition now holds the values
       context = {
         ...context,
         unresolvedMethodArgs: checkUnresolvedMethodArgs,
@@ -1482,17 +1277,9 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
   }
 
   /**
-   * The parse a remotely placed step's arguments get on serve before it is
-   * scheduled, so a bad argument fails the step at once rather than once a
-   * worker is chosen, or as a queue timeout when none is free. An argument
-   * holding no sentinel is parsed as a run in this process parses it,
-   * reading no vault. One holding a sentinel is left to the delivery once a
-   * worker is chosen, which loads its value; a method argument set missing
-   * such a field is checked leniently, as the global arguments always are,
-   * so a required field it lacks is reported only by that delivery.
-   * When nothing is left out, the parse is the method's own and the
-   * caller's hook is called here, as the deliveries after it then call it
-   * no more. It works on a copy of the definition.
+   * parses a remote step's sentinel-free arguments on serve before scheduling,
+   * so a bad one fails at once, not as a queue timeout; sentinel-holding ones
+   * are left to delivery; works on a copy of the definition
    */
   async #checkBeforeScheduling(input: {
     definition: Definition;
@@ -1548,10 +1335,9 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
       return;
     }
 
-    // A method argument still holding a stored reference its vault could not
-    // read fails here, as the method's own parse fails it: a version 6
-    // worker has no record of the run's unread references (swamp-club#3806).
-    // It reads expression text, never a value.
+    // fails here as the method's own parse does: a version 6 worker has no
+    // record of the run's unread references; this reads expression text, never
+    // a value
     const unreadError = unreadReferenceError(
       "methodArguments",
       rawMethodArgs,
@@ -1608,14 +1394,9 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
   }
 
   /**
-   * The frame a protocol version 5 worker receives, built once the
-   * dispatcher has chosen one: today's delivery, for the deprecation window
-   * typed-secrets 5.3 ends (design/enablers/typed-secrets.md Section 9). It
-   * loads and resolves the step's references here, validates the global and
-   * method arguments, calls the caller's hook, and returns the arguments
-   * resolved, with the bag entries and their values for the worker's
-   * redactor. It works on a copy of the definition, so the one the step
-   * dispatches keeps its sentinels.
+   * version 5 worker frame, built once a worker is chosen: loads and resolves
+   * references, validates arguments, calls the caller's hook; works on a copy
+   * so the dispatched definition keeps its sentinels
    */
   async #legacyDelivery(input: {
     definition: Definition;
@@ -1639,9 +1420,9 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
       refuse: false,
     });
     const { context, definition } = prepared;
-    // The worker parses the shipped arguments itself. The caller's record of
+    // the worker parses the shipped arguments itself; the caller's record of
     // the evaluation and the redactor still need the parse here, before
-    // anything leaves (swamp-club#3681).
+    // anything leaves
     const { parseInput, parsed } = parseMethodArguments(
       definition,
       method,
@@ -1680,13 +1461,9 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
       : [];
     const secretValues = shippedEntries.map((entry) => entry.value);
     if (modelDef.globalArguments) {
-      // The definition holds the global arguments as their parse delivered
-      // them, a transform's output included, beside what it was given. The
-      // worker's redactor gets what a local run registers: the delivered
-      // secrets less the text the parse input held only at plain positions
-      // and the keys the schema declares, read against that input as
-      // resolved, so a region or a port is not masked on the worker
-      // (swamp-club#3754).
+      // the worker's redactor gets what a local run registers: delivered
+      // secrets less text the parse input held only at plain positions and
+      // schema-declared keys, so a region or port is not masked there
       const parseInput = secretBag?.resolvesAny
         ? secretBag.resolveDeep(prepared.globalArgsParseInput) as Record<
           string,
@@ -1711,9 +1488,9 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
       globalArgs,
       methodArgs,
       secretValues: secretValues.length > 0 ? secretValues : undefined,
-      // The worker rebuilds the bag from these and resolves the args
-      // itself, so a command/shell step gets its secrets as environment
-      // variables there, as it does locally (swamp-club#2760).
+      // the worker rebuilds the bag from these and resolves the args itself, so
+      // a command/shell step gets its secrets as environment variables there,
+      // as it does locally
       ...(shippedEntries.length > 0
         ? { unresolvedMethodArgs, secretBag: shippedEntries }
         : {}),
@@ -1721,12 +1498,8 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
   }
 
   /**
-   * Runs `method` on a protocol version 6 worker: the delivery prelude a
-   * run in this process takes ({@link #prepareDelivery}), loading the
-   * dispatch's references through `secretLoader`, then the method's one
-   * parse and its body. The refusals ran on serve before dispatch, as they
-   * run for every remotely placed step, so they are not repeated here.
-   * `onArgumentsValidated` is called once the arguments pass their schema.
+   * the refusals ran on serve before dispatch, as for every remotely placed
+   * step, so they are not repeated here
    */
   async executeDispatched(
     definition: Definition,
@@ -1783,9 +1556,9 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
         );
       }
 
-      // Refuse a reserved tag before anything runs, so the run fails ahead
-      // of the method's side effects (swamp-club#3635). The writers refuse
-      // the method's own write overrides when it writes.
+      // refuse a reserved tag before anything runs, so the run fails ahead of
+      // the method's side effects; the writers refuse the method's own write
+      // overrides when it writes
       assertNoReservedRunTags({
         modelType: context.modelType,
         definitionTags: definition.tags,
@@ -1795,16 +1568,13 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
         dataOutputOverrides: context.dataOutputOverrides,
       });
 
-      // Upgrade definition if needed
       const upgradeService = new DefinitionUpgradeService();
       const upgradeResult = upgradeService.upgrade(definition, modelDef);
       let currentDefinition = upgradeResult.definition;
 
-      // Surface a definition whose arguments will not be migrated. Two states
-      // warrant a warning, one per run, derived from the resolved state rather
-      // than a per-argument diff. `upgradable` was just migrated above,
-      // `current` is fine, and `invalid` already threw from the upgrade
-      // service (swamp-club#900, swamp-club#2412).
+      // warn once per run for a definition whose arguments will not be
+      // migrated, derived from the resolved state: upgradable was just
+      // migrated, current is fine, invalid already threw
       if (!upgradeResult.upgraded) {
         const upgradeToVersions = (modelDef.upgrades ?? []).map(
           (upgrade) => upgrade.toVersion,
@@ -1828,12 +1598,9 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
         }
       }
 
-      // Persist upgraded definition if it was upgraded.
-      // IMPORTANT: The in-memory definition may have vault sentinel tokens
-      // (from runtime expression resolution). Sentinels are per-process random
-      // strings that become meaningless once the process exits. We must re-read
-      // the original definition from disk (which has vault CEL expressions
-      // intact), apply the upgrade to that copy, and persist it.
+      // the in-memory definition may hold per-process sentinels that are
+      // meaningless after exit, so re-read the original from disk, apply the
+      // upgrade to that copy and persist it
       if (upgradeResult.upgraded && context.definitionRepository) {
         const originalDefinition = await context.definitionRepository.findById(
           context.modelType,
@@ -1854,8 +1621,7 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
           );
           context.logger
             .info`Upgraded definition ${definition.name} from typeVersion ${diskUpgrade.fromVersion} to ${diskUpgrade.toVersion}`;
-          // Saving also moves a legacy uuid-named file to its name-based path
-          // (swamp-club#3502).
+          // saving also moves a legacy uuid-named file to its name-based path
           const toPath = context.definitionRepository.getPath(
             context.modelType,
             definition.id,
@@ -1873,10 +1639,9 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
       const isRemotePlacement = context.placement &&
         hasPlacement(context.placement);
 
-      // Data text in the arguments is placed for the shell of the host that
-      // runs the method body (swamp-club#3868): this host's for a local step,
-      // before the merge, the refusals and the checks read the arguments;
-      // the chosen worker's, on every dispatch attempt, for a remote one.
+      // data text is placed for the shell of the host that runs the body: this
+      // host's before the merge and checks read the arguments, or the chosen
+      // worker's on every dispatch attempt
       const placeData = dataSplicePlacer(
         definition,
         method,
@@ -1898,28 +1663,9 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
         }
       }
 
-      // The merge as `unresolvedMethodArgs` carries it, built while the
-      // global arguments still hold their sentinels: resolution below writes
-      // values into them, and a
-      // method such as command/shell reads `run` from this merge wherever it
-      // was authored, so a secret under globalArguments is placed through
-      // the environment and never reaches the command line (swamp-club#3627).
-      // A run with no secrets has nothing to keep and builds no merge. Then
-      // the destination refusals, then the load of the vault
-      // references this attempt delivers, once and before anything receives
-      // them (design/enablers/typed-secrets.md Sections 3.3 and 6.3). From
-      // here on `context` is the attempt's: global argument validation, the
-      // pre-flight checks, the method, the shell and a remote dispatch all
-      // read its delivery view. The step's own bag stays unloaded, so the
-      // next attempt loads again; a step a guard skipped never gets here and
-      // loads nothing.
-      // A run in this process delivers here. A remotely placed step is
-      // delivered once a worker is chosen: by serve for a version 5 worker,
-      // by the worker itself for version 6 (design/enablers/typed-secrets.md
-      // Section 9). Before scheduling it runs the destination refusals,
-      // which read the run's sentinels and no value, and validates every
-      // argument holding no sentinel, so nothing is loaded before dispatch
-      // and a bad argument does not wait for a worker.
+      // the sentinel merge is built before resolution writes values, so a
+      // secret under globalArguments goes through the environment, never the
+      // command line; then refusals, then one load per attempt
       const validated = onceOnly(options.onArgumentsValidated);
       let remoteDelivery: RemoteDelivery | undefined;
       let checkUnresolvedMethodArgs: Record<string, unknown> = {};
@@ -1973,7 +1719,6 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
         checkUnresolvedMethodArgs = prepared.checkUnresolvedMethodArgs;
       }
 
-      // Infer method kind for lifecycle checks
       const methodKind = inferMethodKind(methodName, method);
 
       // Skip pre-flight checks for remotely-placed steps — checks run on
@@ -1984,7 +1729,6 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
         );
       }
 
-      // Run pre-flight checks for mutating methods
       if (modelDef.checks && isMutatingKind(methodKind) && !isRemotePlacement) {
         const defChecks = currentDefinition.checkSelection;
         const requiredCheckNames = new Set(defChecks?.require ?? []);
@@ -1992,15 +1736,11 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
 
         const applicableChecks = Object.entries(modelDef.checks).filter(
           ([name, check]) => {
-            // Definition-level skip always wins
             if (skippedCheckNames.has(name)) return false;
-            // Respect appliesTo for all checks (including required)
             if (check.appliesTo && !check.appliesTo.includes(methodName)) {
               return false;
             }
-            // Required checks are immune to CLI skip flags
             if (requiredCheckNames.has(name)) return true;
-            // Non-required: honor CLI skip flags
             if (context.skipAllChecks) return false;
             if (context.skipCheckNames?.includes(name)) return false;
             if (
@@ -2072,7 +1812,6 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
         }
       }
 
-      // Fast-fail: reject methods that write sensitive output without a vault.
       if (
         isMutatingKind(methodKind) && modelRequiresVault(modelDef.resources)
       ) {
@@ -2089,11 +1828,9 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
             ),
           );
         }
-        // A refusal at the put would land after the method's side effects,
-        // so every vault its sensitive outputs may land in is decided here,
-        // for the write and for the read-back of its reference. A key
-        // generated at write time is not known yet: an outcome that depends
-        // on a grant's key condition is left to the put, which knows it.
+        // a refusal at the put would land after the method's side effects, so
+        // every vault its sensitive outputs may land in is decided here; a
+        // key-dependent grant outcome is left to the put, which knows the key
         const access = currentVaultAccess();
         if (access && context.vaultService) {
           const targets = sensitiveOutputTargets(
@@ -2126,12 +1863,9 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
         }
       }
 
-      // Fast-fail: reject read/update on deleted resources.
-      // Only check declared resource data (tagged with specName matching a
-      // declared resource spec). Block only when ALL declared resource data
-      // is deleted — old historical data entries should not cause false positives.
-      // Reads stop at the first live resource, so the check costs the same
-      // however much data the model holds (swamp-club#3755).
+      // block only when all declared resource data is deleted, so old
+      // historical entries cause no false positives; reads stop at the first
+      // live resource, so cost does not grow with data
       if (methodKind === "read" || methodKind === "update") {
         const resources = modelDef.resources ?? {};
         if (Object.keys(resources).length > 0) {
@@ -2177,10 +1911,9 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
         }
       }
 
-      // A remotely placed step's definition still holds its sentinels,
-      // which differ on every run: it is hashed with each one written as its
-      // reference, as a persisted definition holds it, so the hash is stable
-      // and holds no value.
+      // a remote step's definition holds per-run sentinels, so hash it with
+      // each written as its reference text; the hash stays stable and holds no
+      // value
       const definitionHash = await (isRemotePlacement
         ? withReferenceText(currentDefinition, context.vaultSecrets)
         : currentDefinition).computeHash();
@@ -2260,10 +1993,9 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
 
       try {
         if (isRemotePlacement) {
-          // Remote placement: the method body runs on a matching worker; the
-          // surrounding pipeline (output records below)
-          // stays at the orchestrator. Pre-flight checks are skipped (they
-          // cannot access worker-local state). See design/enablers/remote-execution.md.
+          // remote placement runs only the method body on a worker; output
+          // records stay at the orchestrator, and pre-flight checks are skipped
+          // because they cannot see worker-local state
           const remoteResult = await this.#executeRemotely(
             context,
             executionRequest,
@@ -2273,10 +2005,9 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
             remoteDelivery!,
             placeData,
           );
-          // Rebuild full handles from the durable records the data plane
-          // persisted — downstream consumers (data-record mapping, workflow
-          // artifact tracking) read metadata like ownerDefinition, which the
-          // wire-thin dispatch outputs do not carry.
+          // rebuild full handles from the persisted records: downstream
+          // consumers read metadata like ownerDefinition, which the wire-thin
+          // dispatch outputs do not carry
           currentHandles = await Promise.all(
             remoteResult.outputs.map((output) =>
               this.#rebuildRemoteHandle(context, output)
@@ -2300,12 +2031,10 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
             ),
           );
         } else {
-          // Execute in-process — the single-host path (see
-          // design/enablers/remote-execution.md "No execution drivers").
           const inProcessExecutor = new InProcessExecutor(
             {
-              // The run's one parse of the arguments, in #execute, calls
-              // the caller's hook before the method body (swamp-club#3681).
+              // the run's one parse of the arguments happens in #execute, which
+              // calls the caller's hook before the method body
               execute: (definition, method, context) =>
                 this.#execute(
                   definition,
@@ -2335,14 +2064,13 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
                 "persisted outputs",
             );
           }
-          // Process outputs first — even on error, data may have been written
-          // to disk before the method threw (e.g. code-review writes log then
-          // throws on verdict=FAIL). Handles must survive the error path.
+          // process outputs first, even on error: data may be written before
+          // the method throws, and handles must survive the error path
           currentHandles = collectPersistedHandles(executionResult.outputs);
 
           if (executionResult.status === "error") {
-            // A coded UserError comes back as one, so a failed workflow step
-            // records its code (swamp-club#3773).
+            // a coded UserError comes back as one, so a failed workflow step
+            // records its code
             const message = executionResult.error ?? "Method execution failed";
             const err = markErrorPaths(
               executionResult.errorCode !== undefined
@@ -2362,8 +2090,8 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
         }
       } catch (error) {
         if (output && context.outputRepository) {
-          // The record holds the error with every delivered value, and in a
-          // typed run every sentinel, masked (Section 7.1).
+          // the record holds the error with every delivered value and, in a
+          // typed run, every sentinel, masked
           output.markFailed(executionErrorFrom(error, context.redactor));
           await context.outputRepository.save(
             modelDef.type,
@@ -2374,7 +2102,6 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
         throw error;
       }
 
-      // Collect artifact refs from handles (data is already persisted)
       const storedArtifacts: DataArtifactRef[] = currentHandles.map((h) => ({
         dataId: h.dataId,
         name: h.name,
@@ -2390,10 +2117,9 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
         await context.outputRepository.save(modelDef.type, methodName, output);
       }
 
-      // Write deletion markers after a successful delete method.
-      // Only mark declared resource data — untagged or non-resource data is left alone.
-      // Markers include the last known active state so that data.latest() still
-      // resolves original attributes after deletion (enables idempotent workflow re-runs).
+      // mark only declared resource data; markers keep the last known active
+      // state so data.latest() still resolves attributes after deletion,
+      // keeping workflow re-runs idempotent
       if (methodKind === "delete") {
         const resources = modelDef.resources ?? {};
         if (Object.keys(resources).length > 0) {
@@ -2407,7 +2133,6 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
           );
           for (const data of resourceData) {
             if (!data.isDeleted) {
-              // Read last known active state to preserve in tombstone
               let lastKnownState: Record<string, unknown> = {};
               if (data.contentType === "application/json") {
                 try {
@@ -2441,8 +2166,6 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
                 markerContent,
               );
 
-              // Append deletion marker as a data handle so it surfaces
-              // in the method response as a data artifact.
               currentHandles.push({
                 name: data.name,
                 specName: data.tags["specName"] ?? data.name,
@@ -2470,6 +2193,6 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
         ...result,
         dataHandles: currentHandles,
       };
-    }); // end withSpan
+    });
   }
 }

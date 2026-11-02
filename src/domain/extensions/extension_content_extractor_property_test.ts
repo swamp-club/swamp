@@ -25,14 +25,12 @@ import { extractContentMetadata } from "./extension_content_extractor.ts";
 const identifierArb = fc.stringMatching(/^[a-z][a-zA-Z0-9_]{0,10}$/);
 const kebabArb = fc.stringMatching(/^[a-z][a-z0-9]{0,6}(-[a-z0-9]{1,6}){1,3}$/);
 
-/** A method key and how it is written in source. */
 const methodKeyArb = fc.oneof(
   identifierArb.map((name) => ({ name, source: name })),
   kebabArb.map((name) => ({ name, source: `"${name}"` })),
   kebabArb.map((name) => ({ name, source: `'${name}'` })),
 );
 
-/** Properties nested inside a method that must never be listed as methods. */
 const nestedArb = fc.array(
   fc.oneof(identifierArb, kebabArb.map((k) => `"${k}"`)).map((key) =>
     `      ${key}: { description: "nested", inner: { x: 1 } },`
@@ -85,7 +83,6 @@ Deno.test("extractContentMetadata: extracted method names are exactly the top-le
   }
 });
 
-/** Characters that confuse a scanner that counts braces in literals. */
 const noiseArb = fc.string({
   unit: fc.constantFrom(
     ..."{}[]()\"'`/\\$*,;: ab".split(""),
@@ -223,7 +220,6 @@ Deno.test("extractContentMetadata: braces in describe text never change the extr
   }
 });
 
-/** Zod factories a field may start with, namespaced ones included. */
 const fieldTypeArb = fc.constantFrom(
   "string",
   "number",

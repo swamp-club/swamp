@@ -73,7 +73,6 @@ Deno.test("putAnnotation: delegates to provider", async () => {
     });
     await service.putAnnotation("test-vault", "my-key", annotation);
 
-    // Verify the annotation was stored by reading it back
     const retrieved = await service.getAnnotation("test-vault", "my-key");
     assertEquals(retrieved !== null, true);
     assertEquals(retrieved!.labels, { env: "prod" });
@@ -88,10 +87,8 @@ Deno.test("deleteAnnotation: delegates to provider", async () => {
     const annotation = VaultAnnotation.create({ notes: "to be deleted" });
     await service.putAnnotation("test-vault", "my-key", annotation);
 
-    // Delete the annotation
     await service.deleteAnnotation("test-vault", "my-key");
 
-    // Verify it is gone
     const retrieved = await service.getAnnotation("test-vault", "my-key");
     assertEquals(retrieved, null);
   });

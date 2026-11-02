@@ -109,7 +109,6 @@ Deno.test("Commit.create: serve's lease op does not count toward the op limit (s
       .ops.length,
     MAX_COMMIT_OPS + 1,
   );
-  // Only one op past the limit, whatever its kind.
   assertThrows(
     () => Commit.create(props([...full, lease, lease])),
     Error,

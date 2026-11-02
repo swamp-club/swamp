@@ -206,7 +206,6 @@ Deno.test("DataAccessService.readModelData: returns empty array when model has n
 
 Deno.test("DataAccessService.readModelData: skips renamed data entries", async () => {
   const def = createTestDefinition();
-  // Create a normal data item, then make a rename marker from it
   const originalData = await createTestData("old-name", {
     type: "resource",
     specName: "episode",
@@ -273,7 +272,6 @@ Deno.test("DataAccessService.readModelData: handles non-JSON content gracefully"
     type: "file",
     specName: "log",
   });
-  // Override contentType to non-JSON by creating data manually
   const definitionHash = await computeDefinitionHash({
     type: "model-method",
     ref: "test:create",
@@ -302,7 +300,6 @@ Deno.test("DataAccessService.readModelData: handles non-JSON content gracefully"
   const service = new DataAccessService(defRepo, dataRepo);
   const records = await service.readModelData(TEST_MODEL_NAME, "log");
 
-  // text/plain file should have empty attributes (not parsed as JSON)
   const logRecord = records.find((r) => r.name === "log-file");
   assertEquals(logRecord?.attributes, {});
 });
@@ -328,7 +325,6 @@ Deno.test("DataAccessService.readModelData: returns one latest record when workf
           specName: "item",
           modelName: TEST_MODEL_NAME,
         },
-        // Workflow steps write as the model method, tagged with the step.
         ownerDefinition: {
           definitionHash: await computeDefinitionHash({
             type: "model-method",
@@ -420,7 +416,6 @@ Deno.test("DataAccessService.readModelData: recovers orphan data via modelName t
     // Content keyed on oldId — verifies DataAccessService uses the orphan's
     // modelId (not the current definition's ID) for content lookup
     new Map([[`${oldId}:orphan-episode`, orphanContent]]),
-    // Global data includes orphan under old UUID
     [{ data: orphanData, modelType: TEST_MODEL_TYPE, modelId: oldId }],
   );
 
@@ -467,7 +462,6 @@ Deno.test("DataAccessService.readModelData: scopes to workflowRunId when provide
     TEST_MODEL_NAME,
   );
 
-  // With workflowRunId removed from readModelData signature, all data is returned
   assertEquals(records.length, 2);
 });
 
@@ -548,11 +542,8 @@ Deno.test("DataAccessService.readModelData: filters orphan data by workflowRunId
     TEST_MODEL_NAME,
   );
 
-  // With workflowRunId removed from readModelData signature, all orphan data is returned
   assertEquals(records.length, 2);
 });
-
-// --- Model instance renames on the catalog path (swamp-club#3011) ---
 
 const RENAME_OLD_NAME = "old-name";
 const RENAME_NEW_NAME = "new-name";

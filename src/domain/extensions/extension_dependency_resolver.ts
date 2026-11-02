@@ -25,36 +25,19 @@ import { ModelType } from "../models/model_type.ts";
 
 const MAX_WORKFLOW_DEPTH = 10;
 
-/** Result of resolving workflow dependencies. */
 export interface ResolvedDependencies {
-  /** Absolute paths to model .ts files needed. */
   modelFiles: string[];
-  /** Absolute paths to workflow YAML files needed. */
   workflowFiles: string[];
-  /** Model names that couldn't be resolved to source files. */
   unresolvedModels: string[];
-  /** Built-in model types that don't need bundling. */
   skippedBuiltinModels: string[];
 }
 
-/** Dependencies required for resolving. */
 export interface DependencyResolverContext {
   workflowRepo: WorkflowRepository;
   definitionRepo: DefinitionRepository;
   modelsDir: string;
 }
 
-/**
- * Resolves which models and sub-workflows a set of workflows references.
- *
- * Parses workflow jobs/steps for `model_method` tasks, looks up definitions
- * to get model types, and finds matching source files in `extensions/models/`
- * for `@`-namespaced types. Handles nested `workflow` step tasks recursively.
- *
- * @param workflowNames - Names of workflows to resolve
- * @param ctx - Repository context for lookups
- * @returns Resolved model files, workflow files, and unresolved/skipped info
- */
 export async function resolveWorkflowDependencies(
   workflowNames: string[],
   ctx: DependencyResolverContext,
@@ -76,7 +59,6 @@ export async function resolveWorkflowDependencies(
     const workflow = await ctx.workflowRepo.findByName(workflowName);
     if (!workflow) return;
 
-    // Record the workflow file path
     const wfPath = ctx.workflowRepo.getPath(workflow.id);
     workflowPaths.add(wfPath);
 
@@ -109,7 +91,6 @@ export async function resolveWorkflowDependencies(
   }
 
   async function resolveModel(modelIdOrName: string): Promise<void> {
-    // Look up the definition to get its type
     const result = await ctx.definitionRepo.findByNameGlobal(modelIdOrName);
     if (!result) {
       unresolvedModels.add(modelIdOrName);
@@ -118,13 +99,11 @@ export async function resolveWorkflowDependencies(
 
     const typeNormalized = result.type.toNormalized();
 
-    // Skip built-in models (non user-namespace)
     if (!ModelType.isUserNamespace(typeNormalized)) {
       skippedBuiltinModels.add(typeNormalized);
       return;
     }
 
-    // Find the source file: modelsDir / type-path / model.ts
     const modelPath = join(ctx.modelsDir, typeNormalized, "model.ts");
     modelFiles.add(modelPath);
   }

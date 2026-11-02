@@ -94,12 +94,9 @@ function buildCelEnvironment(kind: ResourceKind): Environment {
 }
 
 /**
- * The evaluator serve decides grant conditions with. Before evaluating, it
- * checks which condition variables the condition references: a request field
- * the request lacks is evaluated as its zero value, and a resource field the
- * resource lacks throws {@link MissingConditionFieldError}, so a deny that
- * needs it fails closed. The check is structural — on the parsed condition —
- * never on the evaluator's error text.
+ * a request field the request lacks is evaluated as its zero value, and a
+ * missing resource field throws so a deny needing it fails closed; the check is
+ * structural on the parsed condition, never on error text
  */
 export function createConditionEvaluator(): ConditionEvaluator {
   const environments = new Map<ResourceKind, Environment>();
@@ -150,10 +147,8 @@ export function createConditionEvaluator(): ConditionEvaluator {
 const referenceEnvironments = new Map<ResourceKind, Environment>();
 
 /**
- * Whether grant `condition` on resource kind `kind` references condition
- * variable `field` (structurally, on the parsed condition). A condition that
- * does not parse counts as referencing it, so a caller that skips deciding
- * on that variable never decides on a condition it cannot read.
+ * a condition that does not parse counts as referencing the field, so a caller
+ * that skips deciding on it never decides on a condition it cannot read
  */
 export function conditionReferencesField(
   condition: string,
@@ -174,9 +169,8 @@ export function conditionReferencesField(
 }
 
 /**
- * The stored grants whose condition references a variable no handler
- * supplies yet. A deny among them now refuses every request of its kind,
- * so the loader names them.
+ * a deny referencing a variable no handler supplies yet now refuses every
+ * request of its kind, so the loader names these grants
  */
 function grantsReferencingUnsupplied(grants: readonly Grant[]): Grant[] {
   return grants.filter((grant) => {
@@ -204,10 +198,9 @@ function grantsReferencingUnsupplied(grants: readonly Grant[]): Grant[] {
 export type PolicyReloadMode = "manual" | "auto";
 
 /**
- * The grant a snapshot keeps for a grant record it cannot read: the version
- * an earlier build read if that was an active deny (fail closed), and
- * nothing otherwise. Leaving out an allow is fail safe; a deny never read
- * cannot be kept.
+ * keeps the version an earlier build read if it was an active deny (fail
+ * closed), else nothing; dropping an allow is fail safe, but a deny never read
+ * cannot be kept
  */
 export function retainedUnreadableGrant(
   lastKnown: Grant | undefined,
@@ -219,10 +212,9 @@ export function retainedUnreadableGrant(
 }
 
 /**
- * The grants a snapshot enforces when the groups in `suspendedGroups` could
- * not be read: their last-known members still meet deny grants on them, but
- * an allow grant to such a group is suspended, so a member removed in the
- * version that cannot be read gets no allow through it.
+ * last-known members of unreadable groups still meet deny grants on them, but
+ * allow grants to such a group are suspended, so a removed member gets no allow
+ * through it
  */
 export function withoutAllowsToGroups(
   grants: readonly Grant[],
@@ -234,17 +226,14 @@ export function withoutAllowsToGroups(
   );
 }
 
-/** The contents of a record, or why they could not be read. */
 type RecordRead =
   | { attrs: Record<string, unknown> }
   | { error: unknown; cause: UnreadableAccessRecord["cause"] }
   | null;
 
 /**
- * Whether a record failed only because part of it is missing (NotFound),
- * and no earlier build read it. Like content gone missing (see
- * `#readRecord`), that is a record mid-write, skipped as before; once read,
- * a record that goes missing keeps what it carried.
+ * a record failing only on NotFound that no earlier build read is mid-write and
+ * skipped; once read, a record that goes missing keeps what it carried
  */
 function missingAndNeverRead(
   failed: FailedRecord,
@@ -254,12 +243,10 @@ function missingAndNeverRead(
     !lastKnown.has(recordKey(failed.modelType, failed.modelId));
 }
 
-/** What a build's log and retry check compare a record across builds by. */
 function reportedAs(record: UnreadableAccessRecord): string {
   return `${record.outcome}|${record.cause}|${record.errorName}`;
 }
 
-/** Identifies the grants and groups a build loaded, in any order. */
 function snapshotSignature(
   grants: readonly Grant[],
   groups: readonly Group[],
@@ -277,46 +264,36 @@ export class PolicySnapshotLoader {
   #snapshot: PolicySnapshot = PolicySnapshot.empty();
   #pendingRebuild: Promise<void> = Promise.resolve();
   /**
-   * The builds queued so far, run one at a time: each reads the last-known
-   * records the one before committed, and commits in the order they ran,
-   * so an older build never overwrites a newer one's snapshot or state.
+   * builds run one at a time, each reading what the one before committed, so an
+   * older build never overwrites a newer one's snapshot or state
    */
   #builds: Promise<void> = Promise.resolve();
-  /** Builds queued or running that a new build waits behind. */
   #buildsAhead = 0;
   #rebuildTimer: ReturnType<typeof setTimeout> | null = null;
   #cachedDecisionService: GrantBasedAccessDecisionService | null = null;
   readonly #decisionOptions: GrantBasedAccessDecisionServiceOptions;
   /**
-   * The grants and groups the last successful build parsed, by record, so a
-   * record that later cannot be read keeps a deny or members it had.
+   * the grants and groups the last successful build parsed, so a record that
+   * later cannot be read keeps a deny or members it had
    */
   #lastKnownGrants = new Map<string, Grant>();
   #lastKnownGroups = new Map<string, Group>();
-  /** The records the last successful build could not read. */
   #unreadable: readonly UnreadableAccessRecord[] = [];
   /**
-   * Each unreadable record already logged at error, with the error and
-   * outcome it was logged as, so a reload that finds it the same logs at
-   * debug instead of repeating the error.
+   * unreadable records already logged at error, with their error and outcome,
+   * so a reload finding the same logs at debug instead
    */
   #reportedUnreadable = new Map<string, string>();
-  /** Whether a build has succeeded, so last-known versions exist. */
   #built = false;
-  /** The grants and groups the last successful build loaded. */
   #loadedSignature = "";
   /**
-   * Each active grant already checked for spellings, by id, with the effect,
-   * selector and condition it was checked as, so a reload neither repeats
-   * its findings nor parses its condition again.
+   * each active grant already checked for spellings, with the effect, selector
+   * and condition it was checked as, so a reload neither repeats findings nor
+   * reparses conditions
    */
   readonly #checkedSpellings = new Map<string, string>();
   readonly #readTypeLiterals: ConditionTypeLiteralReader | undefined;
 
-  /**
-   * `readTypeLiterals` lets the loader report condition literals no type is
-   * spelled as; without it only selectors are checked.
-   */
   constructor(
     dataRepo: UnifiedDataRepository,
     eventBus: EventBus,
@@ -369,9 +346,8 @@ export class PolicySnapshotLoader {
   }
 
   /**
-   * The grant and group records the last successful build could not read.
-   * Empty when the snapshot is whole; otherwise a caller that can reload
-   * (the access data poller) retries until it is.
+   * empty when the snapshot is whole; otherwise a caller that can reload
+   * retries until it is
    */
   get unreadable(): readonly UnreadableAccessRecord[] {
     return this.#unreadable;
@@ -402,7 +378,6 @@ export class PolicySnapshotLoader {
     return this.#build();
   }
 
-  /** Builds and installs a snapshot, after every build queued before it. */
   #build(): Promise<{
     snapshot: PolicySnapshot;
     grantCount: number;
@@ -454,13 +429,9 @@ export class PolicySnapshotLoader {
   }
 
   /**
-   * Builds the snapshot. A record that cannot be read never fails the
-   * build (swamp-club#3386): an active deny or the group members an earlier
-   * build read stay in force, and anything else is left out. The first
-   * build has nothing to fall back on, so it throws
-   * {@link UnreadableAccessRecordsError} instead. The records' last-known
-   * versions and the unreadable list are committed only when the build
-   * succeeds, so a build that throws leaves them as they were.
+   * an unreadable record never fails the build: an earlier active deny or group
+   * members stay in force; the first build has nothing to fall back on and
+   * throws; last-known state commits only on success
    */
   async #buildSnapshotWithCounts(phase: DiagnosticPhaseHandle): Promise<{
     snapshot: PolicySnapshot;
@@ -597,10 +568,9 @@ export class PolicySnapshotLoader {
       throw new UnreadableAccessRecordsError(unreadable);
     }
 
-    // The poller rebuilds every cycle while records cannot be read; a build
-    // that finds them as the last one did is a retry, logged at debug.
-    // It must also load the same grants and groups: a peer's change in the
-    // same cycle is logged, and warned about, as usual.
+    // a build finding the same unreadable records as the last is a retry,
+    // logged at debug, but only if it loads the same grants and groups: a
+    // peer's change in the same cycle is logged and warned as usual
     const loaded = snapshotSignature(grants, groups);
     tally.add("grants_active", grants.length);
     tally.add("groups", groups.length);
@@ -644,9 +614,8 @@ export class PolicySnapshotLoader {
   }
 
   /**
-   * Logs each unreadable record at error the first time it is found with a
-   * given error and outcome, at debug while it stays that way, and at info
-   * once it is no longer found unreadable.
+   * logs an unreadable record at error the first time it is found with a given
+   * error and outcome, debug while it stays that way, info once it is readable
    */
   #reportUnreadable(
     unreadable: readonly UnreadableAccessRecord[],
@@ -700,10 +669,9 @@ export class PolicySnapshotLoader {
   }
 
   /**
-   * Names each active grant whose type spelling matches no type as written,
-   * once per grant and spelling (swamp-club#3130). The grant keeps working
-   * as it did: a deny matches its type in any spelling, an allow or a
-   * condition literal only as written.
+   * the grant keeps working as it did: a deny matches its type in any spelling,
+   * an allow or a condition literal only as written; reported once per grant
+   * and spelling
    */
   #reportSpellings(grants: readonly Grant[]): void {
     // Forget grants no longer active, so the map stays bounded by the
@@ -733,12 +701,9 @@ export class PolicySnapshotLoader {
   }
 
   /**
-   * A record's parsed JSON, or the error that kept it from being read or
-   * parsed. A failed read is unreadable whatever its error class, since a
-   * remote read can fail any way and a retry may succeed; JSON that does not
-   * parse is corrupt. Content that is missing is null for a record never
-   * read, and a failed read for one that was (`known`): its content went
-   * missing mid-write or was lost, and it must not drop a deny it carried.
+   * a failed read is unreadable whatever its error class, since a remote read
+   * can fail any way and a retry may succeed; missing content on a known record
+   * is a failed read so it cannot drop a deny it carried
    */
   async #readRecord(
     modelType: ModelType,

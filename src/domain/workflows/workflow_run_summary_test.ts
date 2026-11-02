@@ -64,7 +64,6 @@ Deno.test("parseWorkflowRunSummary: never retains the heavy jobs/output subtree"
     workflowName: "deploy",
     status: "succeeded",
     startedAt: "2026-01-01T00:00:00.000Z",
-    // A run carries the full job/step tree with unbounded inline step outputs.
     jobs: [
       {
         jobName: "job1",
@@ -77,8 +76,6 @@ Deno.test("parseWorkflowRunSummary: never retains the heavy jobs/output subtree"
     workflowDataArtifacts: [{ some: "artifact" }],
   });
 
-  // The projection keeps only the summary fields — the heavy subtrees are
-  // stripped and never held on the returned object.
   assert(!("jobs" in summary), "summary must not carry jobs");
   assert(!("output" in summary), "summary must not carry output");
   assert(
@@ -176,20 +173,15 @@ Deno.test("parseWorkflowRunSummary: rejects records missing required identity fi
   );
 });
 
-// Regression guard for the OOM in #1173. A YAML parser returns scalar fields as
-// V8 sliced strings that pin the whole source buffer; retaining thousands of
-// summaries would therefore keep every run file (jobs and all) alive and blow
-// the heap. This runs the real parseYaml -> parseWorkflowRunSummary path in a
-// child process under a tight old-space cap: if the projection stops detaching
-// its strings, the child OOMs and this test fails. Run as a subprocess so the
-// heap flag is isolated from the main test runner.
+// oom guard: yaml scalars are sliced strings pinning the source buffer, so a
+// projection that stops detaching them keeps every run file alive; runs in a
+// child so the heap cap is isolated
 Deno.test("parseWorkflowRunSummary: does not retain the parsed source buffer (OOM guard)", async () => {
   const summaryModule = import.meta.resolve("./workflow_run_summary.ts");
   const denoConfig = fromFileUrl(import.meta.resolve("../../../deno.json"));
 
-  // 6000 runs x ~80 KB source = ~480 MB if the source buffers are retained;
-  // the detached summaries need only a few MB, so a 128 MB old-space cap
-  // passes when detached and OOMs when not.
+  // retained source buffers dwarf what detached summaries need, so a tight
+  // old-space cap passes when detached and OOMs when not
   const child = `
     import { parse as parseYaml } from "@std/yaml";
     import { parseWorkflowRunSummary } from ${JSON.stringify(summaryModule)};
@@ -238,7 +230,6 @@ Deno.test("parseWorkflowRunSummary: does not retain the parsed source buffer (OO
 });
 
 Deno.test("parseWorkflowRunSummary: derives awaitingResume for a legacy approved run", () => {
-  // Written before awaitingResume was persisted: suspended, gate decided.
   const summary = parseWorkflowRunSummary({
     id: "run-1",
     workflowId: "wf-1",

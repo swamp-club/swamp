@@ -26,17 +26,9 @@ import {
 } from "./nested_run_ref.ts";
 
 /**
- * Lightweight read-model (query projection) of a workflow run.
- *
- * A `WorkflowRunSummary` is the *listing* view of a run — identity, workflow,
- * status, timing, tags, and inputs — distinct from the full {@link WorkflowRun}
- * aggregate. Run-listing/search paths render only these fields, so they must
- * NOT reconstruct the aggregate: each persisted run YAML carries the full
- * `jobs[] -> steps[] -> output` tree, and step outputs are unbounded arbitrary
- * data. Hydrating every run into a full aggregate just to show a summary row
- * makes peak memory scale with total on-disk run size, which OOMs on workflows
- * with a large accumulated history. This projection keeps only the displayed
- * fields and never retains the heavy subtrees.
+ * listing paths must not reconstruct the aggregate: step outputs are unbounded,
+ * so hydrating every run makes peak memory scale with on-disk run size and OOMs
+ * on large histories
  */
 export interface WorkflowRunSummary {
   id: string;
@@ -53,32 +45,18 @@ export interface WorkflowRunSummary {
   failureReason?: string;
   stepProgress?: { completed: number; total: number };
   awaitingResume?: boolean;
-  /** On a nested workflow's run, the parent step that started it. */
   parentRun?: ParentRunRef;
   /**
-   * The child runs this run's nested workflow steps wait on. A run waiting on
-   * any is not `awaitingResume`; whether it can resume is derived from the
-   * children.
+   * a run waiting on any is not awaitingResume; whether it can resume is
+   * derived from the children
    */
   waitingOnRun?: NestedRunRef[];
-  /**
-   * True when every waiting step waits on a nested run, so no gate of this
-   * run's own needs a decision: it can resume once those runs finish.
-   */
   waitsOnlyOnNestedRuns?: boolean;
 }
 
 /**
- * Zod schema for the projection. It intentionally declares ONLY the summary
- * fields — the heavy `jobs`/`steps`/`output`/`dataArtifacts` subtrees are left
- * out entirely so they are stripped from the result and never validated.
- *
- * Field constraints are deliberately lenient (looser than `WorkflowRunSchema`):
- * `status` is a bare string rather than the run-status enum, and identity
- * fields are not UUID-validated. A summary read must succeed for any run record
- * that has the displayed fields, even one whose heavy subtree would fail
- * full-aggregate validation — the listing should never be blocked by an
- * unrelated malformed field the summary never looks at.
+ * lenient on purpose: status is a bare string and ids are not UUID-validated,
+ * so a listing is never blocked by a malformed field the summary never reads
  */
 const WorkflowRunSummarySchema = z.object({
   id: z.string().min(1),
@@ -101,11 +79,8 @@ const WorkflowRunSummarySchema = z.object({
 });
 
 /**
- * Recovers `awaitingResume` for a run record written before the flag was
- * persisted, and for one that omits it. A suspended run with no step still
- * `waiting_approval` or `waiting` has every gate decided and every wait
- * settled, and is waiting for a resume. Only step status strings are read
- * and only a boolean is kept, so nothing from the heavy subtree is retained.
+ * only step status strings are read and only a boolean kept, so nothing from
+ * the heavy subtree is retained
  */
 function deriveAwaitingResume(
   data: unknown,
@@ -130,10 +105,6 @@ function deriveAwaitingResume(
   return true;
 }
 
-/**
- * The child runs nested workflow steps wait on: steps still
- * `waiting_approval` whose `nestedRun` link is valid. Only the link is read.
- */
 function deriveWaitingOnRun(
   data: unknown,
 ): { waitingOnRun?: NestedRunRef[]; waitsOnlyOnNestedRuns?: true } {
@@ -169,21 +140,9 @@ function deriveWaitingOnRun(
 }
 
 /**
- * Projects raw persisted run data onto a {@link WorkflowRunSummary}.
- *
- * This is the memory-safe read path: it never calls `WorkflowRun.fromData` and
- * never touches the heavy `jobs`/`output` subtrees, so the caller can parse a
- * run file, extract the summary, and let the full parsed tree be garbage
- * collected before moving to the next file.
- *
- * Critically, the retained string fields are *detached* from the parsed source
- * via a JSON round-trip. A YAML/JSON parser returns scalar strings as V8
- * sliced strings that keep a reference to the entire source buffer — so
- * holding a run's tiny `id` would pin its whole (largely `jobs`) file in
- * memory, and holding thousands of them reproduces the very OOM this projection
- * exists to prevent. Round-tripping reallocates each string fresh, dropping the
- * backing buffer. `startedAt`/`completedAt` become `Date`s (which store a
- * number, not the source string) so they need no detaching.
+ * retained strings are detached by a JSON round-trip because parser sliced
+ * strings pin the whole source buffer, and thousands of them reproduce the OOM
+ * this projection prevents
  */
 export function parseWorkflowRunSummary(data: unknown): WorkflowRunSummary {
   const v = WorkflowRunSummarySchema.parse(data);

@@ -59,9 +59,8 @@ export class RingBuffer<T> {
   }
 
   /**
-   * Returns the items after `afterSeq`. `startSeq` is the sequence of the
-   * first returned item, which is later than `afterSeq + 1` once the buffer
-   * has overwritten the items in between.
+   * startSeq is later than afterSeq + 1 once the buffer has overwritten the
+   * items in between
    */
   readFrom(
     afterSeq: number,

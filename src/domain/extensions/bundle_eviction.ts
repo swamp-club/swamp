@@ -21,30 +21,19 @@ import { getLogger } from "@logtape/logtape";
 
 const logger = getLogger(["swamp", "extensions", "bundle-eviction"]);
 
-/** The parts of a removed catalog row that bundle eviction needs. */
 export interface RemovedCatalogRow {
   readonly source_path: string;
   readonly bundle_path?: string;
 }
 
-/** The catalog query bundle eviction needs. */
 export interface BundleReferenceLookup {
   hasRowWithBundlePath(bundlePath: string): boolean;
 }
 
 /**
- * Deletes the bundle files of catalog rows that were just removed, so
- * doctor does not report them as orphans (swamp-club#2490).
- *
- * A bundle is kept when the row's source still exists — checked through
- * `realPath`, so the same file reached through another spelling of the
- * repo root (`/tmp` vs `/private/tmp`, swamp-club#2570) counts as
- * existing, and its bundle may be the one a live row uses — or when any
- * remaining row references the same bundle path. Best-effort: a failed
- * delete is logged, never thrown.
- *
- * Call only after the transaction that removed the rows has committed,
- * so a rollback never costs a bundle.
+ * a bundle is kept when the row's source still exists (via realPath, so
+ * repo-root spellings match) or a remaining row references it. Best-effort;
+ * call only after the removing transaction commits.
  */
 export function evictRemovedBundles(
   removed: readonly RemovedCatalogRow[],

@@ -72,7 +72,6 @@ import {
   unlistedForeignRoots,
 } from "../expressions/swamp_namespaces.ts";
 
-/** Collect template expressions and bare assertion predicates from source. */
 export function collectWorkflowAuthoredExpressions(
   workflow: Workflow,
   into: Set<string> = new Set(),
@@ -92,34 +91,16 @@ export function collectWorkflowAuthoredExpressions(
 }
 
 /**
- * Builds the rule deciding which task-target expressions in `workflow` defer
- * past run-start evaluation. Shared by the run path and `workflow evaluate`,
- * whose cache `--last-evaluated` replays, so both leave the same targets raw.
- *
- * A step's task target — what it executes — defers for either of two
- * reasons, each sufficient on its own:
- *
- *   - it reads step output, so the data it names does not exist yet;
- *   - its step carries a guard, so the step may not run at all, and a
- *     target evaluated for a step that will skip is exactly the defect in
- *     swamp-club#2304: an empty result failed StepTask validation and killed
- *     the whole run before any step executed.
- *
- * An unguarded target with no step-output dependency still resolves at run
- * start, so a mistyped name fails where the error is cheapest — deferral buys
- * nothing for a step that is going to run.
- *
- * @param workflow - The unexpanded workflow whose expressions are evaluated
- * @returns True for an expression location that is a deferred task target
+ * task targets defer past run-start evaluation when they read step output or
+ * their step has a guard (a skipped step's empty target would fail validation);
+ * unguarded targets resolve at start so typos fail early
  */
 export function createTaskTargetDeferral(
   workflow: Workflow,
 ): (expr: ExpressionLocation) => boolean {
-  // Path prefixes of steps carrying a guard. Prefix matching is sound because
-  // expression paths are positional — `jobs[i].steps[j].task.modelIdOrName` —
-  // and derived from the same unexpanded definition walked here. forEach
-  // changes nothing: expansion rewrites the job *run* at job start, long
-  // after this.
+  // prefix matching is sound as expression paths are positional and derived
+  // from the same unexpanded definition; forEach expansion happens later and
+  // changes nothing here
   const guardedStepPrefixes: string[] = [];
   for (const [jobIndex, job] of workflow.jobs.entries()) {
     for (const [stepIndex, step] of job.steps.entries()) {
@@ -134,11 +115,6 @@ export function createTaskTargetDeferral(
       guardedStepPrefixes.some((prefix) => expr.path.startsWith(prefix)));
 }
 
-/**
- * Result of evaluating a workflow's CEL expressions.
- * `expressionsEvaluated` is exposed for callers that record it as a
- * tracing-span attribute.
- */
 export interface WorkflowEvaluationResult {
   workflow: Workflow;
   /** Distinct successfully evaluated raw expressions (kept for compatibility). */
@@ -150,45 +126,29 @@ export interface WorkflowEvaluationResult {
    * any. Held in memory only; see {@link SanitizedTaskOverlay}.
    */
   sanitizedTasks?: SanitizedTaskOverlay;
-  /** Where data sits in each evaluated step, keyed by Step instance. */
   stepProvenance: StepProvenanceOverlay;
-  /** Where data sits in the evaluated workflow's data. */
   provenance: ProvenanceMap;
   /**
-   * Another templating system's `${{ ... }}` text still in step arguments
-   * after evaluation, for the caller to report: text that failed to evaluate
-   * and was left raw, and text deferred to step time, where it is left raw
-   * the same way if it fails there.
+   * foreign ${{ }} text still in step arguments, for the caller to report: text
+   * that failed to evaluate, and text deferred to step time, left raw the same
+   * way if it fails there
    */
   foreignTaskArguments: ForeignTaskArgument[];
 }
 
-/** Invocation-local work counters; no expression text or values are recorded. */
 export interface WorkflowEvaluationDiagnostics {
-  /** Authored occurrences after the position gate, before runtime deferral. */
   expressionOccurrences: number;
-  /** Distinct raw text among those occurrences, including deferred expressions. */
   distinctExpressions: number;
-  /** evaluateAsync attempts, including handled foreign-text failures. */
   celEvaluations: number;
-  /** Namespace keys, including both name and UUID aliases. */
   modelKeys: number;
-  /** Time awaiting CEL, including handled failures. */
   celDurationMs: number;
-  /** Time computing splice origins; excludes subsequent substitution. */
   provenanceDurationMs: number;
 }
 
-/**
- * One `${{ ... }}` expression in a step's task that is another templating
- * system's (see {@link isForeignExpression}).
- */
 export interface ForeignTaskArgument {
   jobName: string;
   stepName: string;
-  /** Path within the task, such as `globalArgs.env.SHA`. */
   path: string;
-  /** The text as written, such as `${{ github.sha }}`. */
   text: string;
   /**
    * Set when run-start evaluation deferred the expression (it also reads
@@ -197,25 +157,15 @@ export interface ForeignTaskArgument {
   deferred?: true;
 }
 
-/**
- * One `${{ ... }}` expression in a step's arguments that reads a root which
- * is neither a swamp namespace nor a known foreign root (see
- * {@link unlistedForeignRoots}). A run fails on it.
- */
 export interface UnlistedTaskArgument {
   jobName: string;
   stepName: string;
-  /** Path within the task, such as `inputs.run`. */
   path: string;
-  /** The text as written, such as `${{ nonexistent.variable }}`. */
   text: string;
-  /** The unlisted roots it reads, such as `nonexistent`. */
   roots: string[];
-  /** Set when a root nearly spells a swamp namespace (`input` for `inputs`). */
   misspelt?: MisspeltNamespace;
 }
 
-/** Where data sits in one evaluated step, relative to the step's data. */
 export interface StepProvenance {
   /** For the raw copy: CEL contexts, guards, caches. */
   raw: ProvenanceMap;
@@ -231,15 +181,10 @@ export interface StepProvenance {
 export class StepProvenanceOverlay {
   private constructor(private readonly entries: Map<Step, StepProvenance>) {}
 
-  /** No data in any step. */
   static authored(): StepProvenanceOverlay {
     return new StepProvenanceOverlay(new Map());
   }
 
-  /**
-   * Builds the overlay from the evaluated workflow's maps, taking each step's
-   * subtree at `jobs[i].steps[j]`.
-   */
   static fromWorkflowMaps(
     evaluated: Workflow,
     raw: ProvenanceMap,
@@ -261,7 +206,6 @@ export class StepProvenanceOverlay {
     return new StepProvenanceOverlay(entries);
   }
 
-  /** The step's maps; authored when nothing in it is data. */
   forStep(step: Step | undefined): StepProvenance {
     const entry = step ? this.entries.get(step) : undefined;
     return entry ??
@@ -269,32 +213,23 @@ export class StepProvenanceOverlay {
   }
 }
 
-/** A step's task inputs and global arguments as the step should execute them. */
 export interface SanitizedTaskFields {
   inputs?: unknown;
   globalArgs?: unknown;
 }
 
 /**
- * Sanitized task fields for the steps of one evaluated workflow, keyed by
- * the Step instance (forEach expansion keeps it, so every iteration shares
- * the entry). Its sentinels come from a workflow-level bag, a view of the
- * run's registry like each step's bag, and are re-issued from each step's
- * own bag when the step reads them so the step ships what it delivers.
+ * sanitized task fields per step; sentinels come from a workflow-level bag and
+ * are re-issued from each step's own bag when read, so the step ships what it
+ * delivers
  */
 export class SanitizedTaskOverlay {
   private constructor(
-    /** The workflow-level bag the sanitized data's sentinels come from. */
     readonly bag: VaultSecretBag,
     private readonly entries: Map<Step, SanitizedTaskFields>,
-    /** The whole evaluated workflow data with those sentinels in place. */
     readonly sanitizedData: WorkflowInput,
   ) {}
 
-  /**
-   * Builds the overlay from sanitized workflow data, keying each step's
-   * fields by the Step instance at the same position of `evaluated`.
-   */
   static fromSanitizedData(
     bag: VaultSecretBag,
     sanitizedData: WorkflowInput,
@@ -320,15 +255,10 @@ export class SanitizedTaskOverlay {
     return new SanitizedTaskOverlay(bag, entries, sanitizedData);
   }
 
-  /**
-   * The step's sanitized fields as evaluation spliced them, with the
-   * workflow-level bag's sentinels, the coordinates its provenance map uses.
-   */
   entryFor(step: Step): SanitizedTaskFields | undefined {
     return this.entries.get(step);
   }
 
-  /** The step's sanitized fields, with sentinels issued from `stepBag`. */
   forStep(
     step: Step,
     stepBag: VaultSecretBag,
@@ -342,10 +272,8 @@ export class SanitizedTaskOverlay {
   }
 }
 
-/** A field of a step's task, with its job and step positions. */
 const TASK_FIELD_PATH = /^jobs\[(\d+)\]\.steps\[(\d+)\]\.task\.(.+)$/;
 
-/** A value inside a task's inputs or global arguments record. */
 const NESTED_TASK_ARGUMENT = /^(?:inputs|globalArgs)[.[]/;
 
 /**
@@ -355,7 +283,6 @@ const NESTED_TASK_ARGUMENT = /^(?:inputs|globalArgs)[.[]/;
 const TASK_TARGET_OR_RECORD =
   /^(?:modelIdOrName|modelName|modelType|methodName|workflowIdOrName|inputs|globalArgs)$/;
 
-/** Another templating system's `${{ ... }}` text in the tasks of a workflow. */
 export interface ForeignTaskText {
   /**
    * In step arguments, with every foreign root a known one: left raw, and
@@ -371,7 +298,6 @@ export interface ForeignTaskText {
   unresolvable: ForeignTaskArgument[];
 }
 
-/** Finds the foreign `${{ ... }}` text in the tasks of `workflow`, as authored. */
 export function findForeignTaskText(workflow: Workflow): ForeignTaskText {
   const found: ForeignTaskText = {
     arguments: [],
@@ -418,27 +344,9 @@ function foreignTaskText(
 }
 
 /**
- * Evaluates CEL expressions in a workflow definition, leaving vault
- * expressions, runtime-only expressions, self.* references, run.* and
- * steps.* references, bare workflowRunId, forEach.in expressions,
- * task.inputs with step-output dependencies, and deferred task targets
- * raw. Those are resolved at runtime when their inputs become available.
- *
- * **Strict** about per-expression evaluation errors: any throw during
- * `evaluateAsync` propagates out, surfacing the error to the caller.
- * This pairs intentionally with DefinitionExpressionEvaluator's lenient
- * behaviour — workflows declare their evaluation order explicitly, so
- * a thrown CEL error is a real bug.
- *
- * The one exception is another templating system's text nested in a step's
- * task inputs or global arguments, such as GitHub Actions
- * `${{ github.sha }}` (swamp-club#2528). It is classified only after it
- * fails on its foreign root (any other error still propagates), left raw so
- * it reaches the method as literal text, and
- * returned in `foreignTaskArguments`, along with such text deferred to step
- * time. Every root swamp does not bind must be a known foreign one: text
- * reading any other root, such as `${{ nonexistent.variable }}`, fails like
- * any expression (swamp-club#3400).
+ * strict: evaluation errors propagate; the exception is foreign text (e.g. ${{
+ * github.sha }}) in task inputs or global args failing on a known foreign root,
+ * left raw and returned; unlisted roots still fail
  */
 export class WorkflowExpressionEvaluator {
   constructor(private readonly celEvaluator: CelExpressionEvaluator) {}
@@ -496,12 +404,9 @@ export class WorkflowExpressionEvaluator {
     }
     const isDeferredTaskTarget = createTaskTargetDeferral(workflow);
 
-    // Deferral is decided per path, but substitution below is keyed on the raw
-    // expression text and rewrites every occurrence of it. Two steps can carry
-    // the identical expression — `${{ inputs.name }}` on a guarded step and on
-    // a plain one — and without this the plain step's evaluated value would be
-    // written into the guarded step's deferred target, silently undoing the
-    // deferral. Recording which paths deferred lets them be skipped by path.
+    // deferral is decided per path but substitution is keyed on raw text and
+    // rewrites every occurrence, so a plain step's value would overwrite a
+    // guarded step's deferred target; skip deferred paths by path
     const deferredTargetPaths = new Set<string>();
 
     const evaluatedValues = new Map<string, unknown>();
@@ -530,7 +435,6 @@ export class WorkflowExpressionEvaluator {
       if (hasStepsNamespaceReference(expr.celExpression)) {
         continue;
       }
-      // forEach.in expressions must remain as strings for expansion.
       if (forEachInExpressions.has(expr.raw)) {
         continue;
       }
@@ -556,18 +460,14 @@ export class WorkflowExpressionEvaluator {
       ) {
         continue;
       }
-      // A step's task target defers when it reads step output or its step
-      // carries a guard — see createTaskTargetDeferral.
       if (isDeferredTaskTarget(expr)) {
         deferredTargetPaths.add(expr.path);
         continue;
       }
 
-      // Strict: per-expression eval errors propagate, except for another
-      // templating system's text in a step argument, which stays raw. CEL
-      // stops at the first unknown name, so the failing root being a known
-      // one says nothing about the others: every root is checked, and the
-      // error names the unlisted one.
+      // strict: errors propagate except foreign text in a step argument, which
+      // stays raw; CEL stops at the first unknown name, so every root is
+      // checked and the error names the unlisted one
       let value: unknown;
       diagnostics.celEvaluations++;
       const celStarted = performance.now();
@@ -655,15 +555,9 @@ export class WorkflowExpressionEvaluator {
 }
 
 /**
- * Keeps a secret out of a step name the run-start pass resolves. A name is
- * an identifier, so a recorded value spliced into one becomes its
- * `sensitive-<vault>.<key>` stand-in, and in a typed run so does a sentinel,
- * taken from the sentinel without reading a value
- * (design/enablers/typed-secrets.md, Identifiers). The name of a forEach
- * step is the identity of its iterations in events and the run record
- * (`forEachTemplate`), so it is held to the same rule as a plain step's.
- * Substitution is keyed on raw expression text, so the stand-in is applied
- * per path: the same expression in a task input keeps its value.
+ * keeps a secret out of a step name: a recorded value (or a typed run's
+ * sentinel) spliced into one becomes its stand-in, applied per path because
+ * substitution is keyed on raw text
  */
 function stepNameSanitizer(values: RunSensitiveValues): SpliceSanitizer {
   const sanitizer = sensitiveSpliceSanitizer(
@@ -683,12 +577,6 @@ function stepNameSanitizer(values: RunSensitiveValues): SpliceSanitizer {
   };
 }
 
-/**
- * Splices the same evaluated values into the step task inputs and global
- * arguments again, replacing recorded sensitive values with sentinels, and
- * keys the result by the evaluated workflow's Step instances. Returns
- * undefined when the run has recorded no sensitive value.
- */
 function sanitizeTasks(
   workflowData: ReturnType<Workflow["toData"]>,
   values: Map<string, unknown>,
@@ -700,7 +588,6 @@ function sanitizeTasks(
 ): { overlay: SanitizedTaskOverlay; provenance: ProvenanceMap } | undefined {
   const sensitiveValues = sensitiveValuesOf(context);
   if (!sensitiveValues || sensitiveValues.isEmpty) return undefined;
-  // The run-start pass issues into the run's registry like every other.
   const bag = new VaultSecretBag(sensitiveValues.sentinels);
   const sanitized = replaceExpressionsTracked(
     workflowData,
@@ -724,21 +611,9 @@ function sanitizeTasks(
 }
 
 /**
- * Evaluates CEL expressions in a definition, leaving vault expressions
- * and runtime-only expressions raw.
- *
- * **Lenient** about per-expression evaluation errors: catches them and
- * leaves the expression unresolved. This pairs intentionally with
- * WorkflowExpressionEvaluator's strict behaviour — definitions are
- * built up over time and may legitimately reference inputs that are
- * absent when CEL eval first runs, for a method other than the one
- * being run. Each failure is returned with its reason, so the caller can
- * fail the step if the method it runs uses the value
- * (assertMethodArgumentsEvaluated); the Proxy on globalArgs covers
- * global arguments the method reads directly.
- *
- * See {@link evaluateDefinitionExpressions} for evaluation order and the
- * handling of model data that is not yet available.
+ * lenient: evaluation errors leave the expression unresolved, as definitions
+ * may reference inputs absent for a method not being run; failures are returned
+ * so the caller can fail the step if its method uses them
  */
 export class DefinitionExpressionEvaluator {
   constructor(
@@ -748,31 +623,21 @@ export class DefinitionExpressionEvaluator {
   ) {}
 
   /**
-   * @param authored - Expressions the author wrote, collected from the
-   *   workflow and model source before any substitution. A direct-execution
-   *   definition is synthesised from step inputs that already had data
-   *   substituted into them, so anything not in the set is data content and
-   *   is left as literal text. `"unrestricted"` only for unsubstituted source.
+   * authored: expressions the author wrote, collected before substitution; a
+   * direct-execution definition is built from already-substituted inputs, so
+   * anything not in the set is data, left literal
    */
   async evaluate(
     definition: Definition,
     context: ExpressionContext,
     authored: AuthoredExpressions,
     secretBag?: VaultSecretBag,
-    /** The executed copy's base when it already differs; see evaluateDefinitionExpressions. */
     sanitizedBase: Definition = definition,
-    /** Where data already sits in `definition` and `sanitizedBase`. */
     provenance: DefinitionPassProvenance = AUTHORED_DEFINITION,
   ): Promise<{
     definition: Definition;
-    /**
-     * The definition to execute, with sensitive data values in its
-     * arguments replaced by sentinels from `secretBag`. Equal to
-     * `definition` when no bag was given or nothing sensitive was spliced.
-     */
     sanitizedDefinition: Definition;
     failedExpressions: FailedExpressions;
-    /** Where data sits in `definition`'s and `sanitizedDefinition`'s data. */
     provenance: DefinitionPassProvenance;
   }> {
     const definitionData = definition.toData();

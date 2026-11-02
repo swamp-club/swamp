@@ -17,14 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Base error for user-facing errors that should not show a stack trace.
- * Use this for validation errors, "model not found" messages, and other
- * expected error conditions where the stack trace would be noise.
- *
- * The optional `code` carries a machine-readable identifier (e.g.
- * `"cancelled"`, `"timeout"`) that surfaces in JSON error output.
- */
 export class UserError extends Error {
   readonly code?: string;
   constructor(message: string, code?: string) {
@@ -41,18 +33,12 @@ export class UserError extends Error {
  */
 const ERROR_PATHS = Symbol("swamp.errorPaths");
 
-/** How far {@link errorPaths} follows `cause` and `AggregateError` links. */
 const MAX_ERROR_DEPTH = 8;
 
 /**
- * Marks the filesystem paths an error's message names, so telemetry can remove
- * them exactly instead of guessing where each one ends (swamp-club#2830). Mark
- * the value as it appears in the message. Undefined and empty values are
- * skipped, and marking again appends.
- *
- * @param error - The error whose message names the paths
- * @param paths - The paths, exactly as interpolated into the message
- * @returns The same error, so a call site can `throw markErrorPaths(...)`
+ * marks the paths an error's message names so telemetry can remove them exactly
+ * instead of guessing where each ends; mark the value as it appears in the
+ * message
  */
 export function markErrorPaths<E extends Error>(
   error: E,
@@ -78,13 +64,6 @@ export function markErrorPaths<E extends Error>(
   return error;
 }
 
-/**
- * The paths marked on an error with {@link markErrorPaths}, including those on
- * its `cause` chain and on an `AggregateError`'s errors. De-duplicated, safe
- * against cycles, and empty for anything that is not an Error.
- *
- * @param value - A caught value
- */
 export function errorPaths(value: unknown): string[] {
   const found = new Set<string>();
   const seen = new Set<unknown>();
@@ -106,9 +85,8 @@ export function errorPaths(value: unknown): string[] {
 }
 
 /**
- * Join an error's message with those of its causes. Deno's fetch rejects
- * with "fetch failed" and puts the reason (connection refused, TLS failure)
- * in `cause`.
+ * Deno's fetch rejects with "fetch failed" and puts the reason (connection
+ * refused, TLS failure) in cause
  */
 export function describeCauses(err: unknown): string {
   const parts: string[] = [];
@@ -124,14 +102,8 @@ export function describeCauses(err: unknown): string {
 }
 
 /**
- * The stable code of a `UserError`, or `undefined` for an error without one,
- * one whose code is empty, and anything that is not a `UserError`. Reads only
- * the error itself, never its `cause`, as the workflow job loop does when it
- * records a step's `errorCode`, so an executor result can carry the code to
- * the error rebuilt from its message (swamp-club#3773).
- *
- * @param error - The thrown value
- * @returns The code, or `undefined`
+ * reads only the error itself, never its cause, as the workflow job loop does
+ * when it records a step's errorCode
  */
 export function userErrorCode(error: unknown): string | undefined {
   if (!(error instanceof UserError)) return undefined;
@@ -140,10 +112,6 @@ export function userErrorCode(error: unknown): string | undefined {
     : undefined;
 }
 
-/**
- * Exhaustiveness check for switch statements.
- * TypeScript will error at compile time if a case is missing.
- */
 export function assertNever(value: never): never {
   throw new Error(`Unexpected value: ${value}`);
 }

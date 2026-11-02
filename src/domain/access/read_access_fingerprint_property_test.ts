@@ -30,7 +30,6 @@ import { GrantBasedAccessDecisionService } from "./grant_based_access_decision_s
 import { PolicySnapshot } from "./policy_snapshot.ts";
 import type { Subject } from "./subject.ts";
 
-/** Conditions are the literals "true" and "false", evaluated as themselves. */
 const literalEvaluator = (condition: string): boolean => condition === "true";
 
 const GROUPS: readonly Group[] = [
@@ -54,7 +53,6 @@ const ADAM: AccessPrincipal = {
   groups: ["idp-ops"],
 };
 
-/** Subjects that are adam's, and subjects that are not. */
 const ADAM_SUBJECTS: readonly Subject[] = [
   { kind: "user", name: "adam" },
   { kind: "group", name: "ops" },
@@ -69,7 +67,6 @@ const OTHER_SUBJECTS: readonly Subject[] = [
 const KINDS = ["data", "model", "workflow", "access"] as const;
 const NAMES = ["web", "api", "db"] as const;
 
-/** Every resource the decisions are compared over. */
 const RESOURCES: readonly AccessResource[] = KINDS.flatMap((kind) =>
   NAMES.map((name) => ({ kind, name, fields: { name } }))
 );
@@ -96,7 +93,6 @@ const grantArb = (subjects: readonly Subject[]): fc.Arbitrary<Grant> =>
     createdAt: "2026-01-01T00:00:00Z",
   }));
 
-/** Adam's read and admin decisions over every resource, as serve's filter makes them. */
 function readDecisions(service: GrantBasedAccessDecisionService): string[] {
   return (["read", "admin"] as const).flatMap((action) =>
     RESOURCES.map((resource) => {

@@ -77,9 +77,6 @@ import {
 } from "../vaults/run_vault_access.ts";
 import { ResourceSensitiveFieldsInvalidError } from "../vaults/secret_reference_errors.ts";
 
-/**
- * Creates a minimal mock UnifiedDataRepository for tag resolution tests.
- */
 function createMockRepo(): UnifiedDataRepository {
   return {
     namespace: SOLO_NAMESPACE,
@@ -178,8 +175,6 @@ const testFiles = {
   },
 };
 
-// --- createResourceWriter tag resolution tests ---
-
 Deno.test("createResourceWriter: definition tags appear on produced data", async () => {
   const repo = createMockRepo();
   const definitionTags = { env: "dev", team: "platform" };
@@ -189,8 +184,8 @@ Deno.test("createResourceWriter: definition tags appear on produced data", async
     modelType,
     modelId,
     testResources,
-    undefined, // tagOverrides
-    undefined, // dataOutputOverrides
+    undefined,
+    undefined,
     definitionTags,
   );
 
@@ -289,19 +284,12 @@ Deno.test("createResourceWriter: full tag resolution chain", async () => {
   );
 
   const handle = await writeResource("item", "test-item", { value: "hello" });
-  // runtime overrides definition
   assertEquals(handle.tags["env"], "prod");
-  // definition tag preserved
   assertEquals(handle.tags["team"], "platform");
-  // workflow tag overridden by runtime
   assertEquals(handle.tags["source"], "step-output");
-  // runtime tag added
   assertEquals(handle.tags["runId"], "123");
-  // dataOutputOverrides has highest priority
   assertEquals(handle.tags["scope"], "override");
 });
-
-// --- createFileWriterFactory tag resolution tests ---
 
 Deno.test("createFileWriterFactory: definition tags appear on produced data", async () => {
   const repo = createMockRepo();
@@ -314,7 +302,7 @@ Deno.test("createFileWriterFactory: definition tags appear on produced data", as
     testFiles,
     undefined,
     undefined,
-    undefined, // callbacks
+    undefined,
     definitionTags,
   );
 
@@ -771,8 +759,6 @@ Deno.test("createResourceWriter: no definition or runtime tags still works", asy
   assertEquals(handle.tags["specName"], "item");
 });
 
-// --- processSensitiveResourceData tests ---
-
 function createTestVaultService(vaultName = "test-vault"): VaultService {
   const service = new VaultService();
   service.registerVault({ name: vaultName, type: "mock", config: {} });
@@ -903,7 +889,7 @@ Deno.test("processSensitiveResourceData: throws error when no vault configured",
   };
 
   const data: Record<string, unknown> = { secret: "my-secret" };
-  const vaultService = new VaultService(); // No vaults registered
+  const vaultService = new VaultService();
 
   await assertRejects(
     () =>
@@ -922,9 +908,9 @@ Deno.test("processSensitiveResourceData: throws error when no vault configured",
   );
 });
 
-// swamp-club#2422: serve registers the reserved _token-secrets vault
-// everywhere. It must not count as a configured vault, or a repo with no user
-// vault gets a misleading reserved-vault error instead of the no-vault one.
+// serve registers the reserved _token-secrets vault everywhere; it must not
+// count as configured, or a repo with no user vault gets a misleading
+// reserved-vault error instead of the no-vault one
 Deno.test("processSensitiveResourceData: throws no-vault error when only a reserved vault is registered", async () => {
   const spec: ResourceOutputSpec = {
     schema: z.object({
@@ -1224,10 +1210,8 @@ Deno.test("processSensitiveResourceData: snapshots values before mutation", asyn
     "main",
   );
 
-  // Top-level "credentials" should also be a vault ref
   assertStringIncludes(data.credentials as string, "vault.get");
 
-  // The nested apiKey's original value should be stored
   const nestedKey =
     `swamp-test-${modelId}-create-creds-main-credentials.apiKey`;
   assertEquals(
@@ -1235,7 +1219,6 @@ Deno.test("processSensitiveResourceData: snapshots values before mutation", asyn
     "original-secret",
   );
 
-  // The top-level object stored should contain ORIGINAL values
   const topKey = `swamp-test-${modelId}-create-creds-main-credentials`;
   const storedObject = JSON.parse(
     await vaultService.get("test-vault", topKey),
@@ -1331,8 +1314,6 @@ Deno.test("processSensitiveResourceData: different spec names produce distinct v
   assertEquals(await vaultService.get("test-vault", keyB), "key-from-spec-b");
 });
 
-// --- sanitizeVaultKey tests ---
-
 Deno.test("sanitizeVaultKey: replaces slashes with dashes", () => {
   assertEquals(sanitizeVaultKey("a/b/c"), "a-b-c");
 });
@@ -1340,8 +1321,6 @@ Deno.test("sanitizeVaultKey: replaces slashes with dashes", () => {
 Deno.test("sanitizeVaultKey: removes @ prefix", () => {
   assertEquals(sanitizeVaultKey("@user/aws/ec2"), "user-aws-ec2");
 });
-
-// --- createResourceReader tests ---
 
 Deno.test("createResourceReader: returns parsed JSON for existing data", async () => {
   const data = { name: "test", count: 42 };
@@ -1569,8 +1548,6 @@ Deno.test("sanitizeVaultKey: handles full namespaced model type path", () => {
   );
 });
 
-// --- resolveVaultRefsInData tests ---
-
 Deno.test("resolveVaultRefsInData: resolves top-level vault expressions", async () => {
   const vaultService = createTestVaultService();
   await vaultService.put("test-vault", "k1", "secret-value");
@@ -1681,7 +1658,6 @@ Deno.test("processSensitiveResourceData: handles namespaced model types (#447)",
     "main",
   );
 
-  // Should not throw — key is sanitized
   const expectedKey =
     `user-aws-ec2-keypair-${id}-create-keypair-main-KeyMaterial`;
   assertStringIncludes(data.KeyMaterial as string, expectedKey);
@@ -1689,8 +1665,6 @@ Deno.test("processSensitiveResourceData: handles namespaced model types (#447)",
   const stored = await vaultService.get("test-vault", expectedKey);
   assertEquals(stored, "-----BEGIN RSA PRIVATE KEY-----");
 });
-
-// --- modelRequiresVault tests ---
 
 Deno.test("modelRequiresVault: returns false for undefined resources", () => {
   assertEquals(modelRequiresVault(undefined), false);
@@ -1749,8 +1723,6 @@ Deno.test("modelRequiresVault: returns false when no spec is sensitive", () => {
   assertEquals(modelRequiresVault(resources), false);
 });
 
-// --- createResourceWriter defense-in-depth tests ---
-
 Deno.test("createResourceWriter: throws when sensitive fields present but no vaultService", async () => {
   const resources: Record<string, ResourceOutputSpec> = {
     creds: {
@@ -1773,7 +1745,7 @@ Deno.test("createResourceWriter: throws when sensitive fields present but no vau
     undefined,
     undefined,
     undefined,
-    undefined, // no vaultService
+    undefined,
     "create",
   );
 
@@ -1809,8 +1781,6 @@ Deno.test("createResourceWriter: succeeds for non-sensitive resources without va
   });
   assertEquals(handle.name, "main");
 });
-
-// --- getHandles deduplication tests ---
 
 Deno.test("createFileWriterFactory: getHandles returns one handle per writeText call", async () => {
   const repo = createMockRepo();
@@ -1876,8 +1846,6 @@ Deno.test("createFileWriterFactory: getHandles returns one handle per writeStrea
     await Deno.remove(tmpFile).catch(() => {});
   }
 });
-
-// --- createResourceDeleter tests ---
 
 Deno.test("createResourceDeleter: delegates to repo.delete with correct arguments", async () => {
   let capturedType: ModelType | undefined;
@@ -1983,13 +1951,13 @@ Deno.test("createResourceWriter: definition-level vaultName override routes sens
     modelType,
     modelId,
     sensitiveResources,
-    undefined, // tagOverrides
-    [{ specName: "creds", vaultName: "override-vault" }], // dataOutputOverrides
-    undefined, // definitionTags
-    undefined, // runtimeTags
-    undefined, // definitionName
+    undefined,
+    [{ specName: "creds", vaultName: "override-vault" }],
+    undefined,
+    undefined,
+    undefined,
     vaultService,
-    "create", // methodName
+    "create",
   );
 
   const data = { secret: "my-secret-value" };
@@ -2025,27 +1993,25 @@ Deno.test("createResourceWriter: an empty vaultName override is ignored, so sens
     modelType,
     modelId,
     sensitiveResources,
-    undefined, // tagOverrides
-    overrides, // dataOutputOverrides
-    undefined, // definitionTags
-    undefined, // runtimeTags
-    undefined, // definitionName
+    undefined,
+    overrides,
+    undefined,
+    undefined,
+    undefined,
     vaultService,
-    "create", // methodName
+    "create",
   );
 
   const data = { secret: "my-secret-value" };
   await writeResource("creds", "main", data);
 
   assertStringIncludes(data.secret as string, "'spec-vault'");
-  // The pre-run prediction resolves the same vault.
   assertEquals(
     sensitiveOutputTargetVaults(sensitiveResources, overrides, vaultService),
     ["spec-vault"],
   );
 });
 
-/** The key a stored vault reference names: the one a reader resolves. */
 function referencedVaultKey(reference: unknown): string {
   const match = /vault\.get\('[^']+', '([^']+)'\)/.exec(String(reference));
   if (!match) throw new Error(`Not a vault reference: ${String(reference)}`);
@@ -2065,11 +2031,9 @@ const varySensitiveResources: Record<string, ResourceOutputSpec> = {
 };
 
 /**
- * A resource writer for one vary instance. These tests are about the vault
- * key a vary suffix makes, so the writer runs as `os` (linux unless a test
- * says otherwise) rather than the host: on Windows the data-name portability
- * rule (swamp-club#3568), which has tests of its own, refuses some suffixes
- * before any vault key is made.
+ * the writer runs as `os` (linux by default) rather than the host, because on
+ * Windows the data-name portability rule refuses some suffixes before any vault
+ * key is made
  */
 function varyResourceWriter(
   vaultService: VaultService,
@@ -2081,18 +2045,18 @@ function varyResourceWriter(
     modelType,
     modelId,
     varySensitiveResources,
-    undefined, // tagOverrides
+    undefined,
     resolvedVarySuffix === undefined
       ? undefined
-      : [{ specName: "creds", resolvedVarySuffix }], // dataOutputOverrides
-    undefined, // definitionTags
-    undefined, // runtimeTags
-    undefined, // definitionName
+      : [{ specName: "creds", resolvedVarySuffix }],
+    undefined,
+    undefined,
+    undefined,
     vaultService,
-    "create", // methodName
-    undefined, // onEvent
-    undefined, // redactor
-    false, // deferred
+    "create",
+    undefined,
+    undefined,
+    false,
     os,
   ).writeResource;
 }
@@ -2129,7 +2093,6 @@ Deno.test("createResourceWriter: vary instances keep their own secret for a sens
       `${modelType.normalized}/${modelId}/create/creds/creds-eu/secret`,
     ),
   );
-  // Each record's reference reads back its own instance's value.
   assertEquals(await vaultService.get("v", usKey), "US-SECRET");
   assertEquals(await vaultService.get("v", euKey), "EU-SECRET");
 });
@@ -2153,7 +2116,6 @@ Deno.test("createResourceWriter: a multi-dimension vary suffix lands in the gene
   );
 });
 
-/** The instance segment a vary write's generated key ends up with. */
 async function varyKeySegment(suffix: string): Promise<string> {
   const vaultService = new VaultService();
   vaultService.registerVault({ name: "v", type: "mock", config: {} });
@@ -2167,7 +2129,6 @@ async function varyKeySegment(suffix: string): Promise<string> {
   return key.slice(prefix.length, -"-secret".length);
 }
 
-/** Writes each vary value's own secret, then reads each one back. */
 async function assertEachVaryValueReadsItsOwnSecret(
   suffixes: string[],
 ): Promise<void> {
@@ -2208,7 +2169,6 @@ Deno.test("createResourceWriter: a vary suffix outside the verbatim form is hash
       "ip-10-0-0-1.ec2.internal",
       "v1_2",
       "a".repeat(33),
-      // An ARN as coerceToSuffix hands it over, with / already turned to --.
       "arn:aws:iam::123456789012:role--" + "r".repeat(180),
     ]
   ) {
@@ -2404,8 +2364,6 @@ Deno.test("processSensitiveResourceData: throws when target vault name starts wi
   );
 });
 
-// --- createResourceWriter attributes tests ---
-
 Deno.test("createResourceWriter: resource handle includes attributes from written data", async () => {
   const repo = createMockRepo();
 
@@ -2437,8 +2395,6 @@ Deno.test("createResourceWriter: attributes is a shallow copy of the data", asyn
   data.value = "mutated";
   assertEquals(handle.attributes, { value: "hello" });
 });
-
-// --- resolveSensitiveVaultRefs tests ---
 
 Deno.test("resolveSensitiveVaultRefs: resolves only specified field paths", async () => {
   const vaultService = createTestVaultService();
@@ -2540,8 +2496,6 @@ Deno.test("resolveSensitiveVaultRefs: registers resolved secrets with redactor",
   );
 });
 
-// --- parseSensitiveFieldsTag tests ---
-
 Deno.test("parseSensitiveFieldsTag: parses JSON array of paths", () => {
   const tags = { [SENSITIVE_FIELDS_TAG]: '["apiKey","config.token"]' };
   assertEquals(parseSensitiveFieldsTag(tags), ["apiKey", "config.token"]);
@@ -2556,15 +2510,13 @@ Deno.test("parseSensitiveFieldsTag: returns null when tag absent", () => {
   assertEquals(parseSensitiveFieldsTag({}), null);
 });
 
-// The lenient contract is the expression-facing accessors' until the
+// the lenient contract is the expression-facing accessors' until the
 // typed-secrets accessor adapter refuses a malformed tag; readResource refuses
-// it today through getSensitiveFieldsForResolution (swamp-club#3530).
+// it through getSensitiveFieldsForResolution
 Deno.test("parseSensitiveFieldsTag: returns null for invalid JSON", () => {
   const tags = { [SENSITIVE_FIELDS_TAG]: "not-json" };
   assertEquals(parseSensitiveFieldsTag(tags), null);
 });
-
-// --- getSensitiveFieldsForResolution tests ---
 
 const fallbackSpecs: Record<string, ResourceOutputSpec> = {
   creds: {
@@ -2602,7 +2554,6 @@ Deno.test("getSensitiveFieldsForResolution: a present tag wins over the schema",
   );
 });
 
-/** Tags of a resource record written before the writers stamped their kind. */
 function legacyTags(specName?: string): Record<string, string> {
   return { type: "resource", ...(specName ? { specName } : {}) };
 }
@@ -2707,8 +2658,6 @@ Deno.test("getSensitiveFieldsForResolution: a malformed tag fails with secret_re
     }
   }
 });
-
-// --- createResourceReader: non-sensitive fields NOT resolved ---
 
 Deno.test("createResourceReader: does NOT resolve vault refs in non-sensitive fields", async () => {
   const vaultService = createTestVaultService();
@@ -2936,7 +2885,6 @@ Deno.test("processSensitiveResourceData: decides every target vault before stori
       ),
   );
 
-  // The allowed field was not stored ahead of the refusal: no orphan.
   assertEquals(await vaultService.list("outputs"), outputsBefore);
   assertEquals(data, { allowed: "a", refused: "b" });
 });
@@ -2991,17 +2939,10 @@ Deno.test("processSensitiveResourceData: decides each target with the key the pu
     `${modelType.normalized}/${modelId}/create/creds/main/generated`,
   );
   assertEquals(decided, ["api-token", generatedKey]);
-  // The allowed field was not stored ahead of the refusal: no orphan.
   assertEquals(await vaultService.list("outputs"), outputsBefore);
   assertEquals(data, { pinned: "a", generated: "b" });
 });
 
-// --- createResourceWriter persisted redaction tests (swamp-club#3585) ---
-
-/**
- * A mock repository that keeps the last record and content saved, so a reader
- * built on it reads back what the writer persisted.
- */
 function createCapturingRepo(): UnifiedDataRepository & {
   persisted: () => string;
 } {
@@ -3018,7 +2959,6 @@ function createCapturingRepo(): UnifiedDataRepository & {
   };
 }
 
-/** Writes one resource through a writer whose redactor knows `secrets`. */
 async function writeRedacted(
   spec: ResourceOutputSpec,
   instanceName: string,
@@ -3035,14 +2975,14 @@ async function writeRedacted(
     modelType,
     modelId,
     { r: spec },
-    undefined, // tagOverrides
-    undefined, // dataOutputOverrides
-    undefined, // definitionTags
-    undefined, // runtimeTags
-    undefined, // definitionName
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
     vaultService,
     "put",
-    undefined, // onEvent
+    undefined,
     redactor,
   );
   await writeResource("r", instanceName, data);
@@ -3052,8 +2992,8 @@ async function writeRedacted(
     modelId,
     vaultService,
   );
-  // Redaction keeps the payload valid JSON (swamp-club#3754); a payload that
-  // does not parse reads as undefined, which a test then reports.
+  // redaction keeps the payload valid JSON; a payload that does not parse reads
+  // as undefined, which the test then reports
   let persisted;
   try {
     persisted = JSON.parse(repo.persisted());
@@ -3469,9 +3409,6 @@ Deno.test("createResourceWriter: a secret holding an escape sequence written bac
   assertEquals(repo.persisted().includes("MIIEsecretbody"), false);
 });
 
-// --- data name portability (swamp-club#3568) ---
-
-/** A mock repository that counts every call that could write data. */
 function createCountingRepo(): UnifiedDataRepository & {
   writes: () => number;
   savedNames: () => string[];
@@ -3685,13 +3622,9 @@ Deno.test("createFileWriter: the portability check covers the vary suffix", asyn
   assertEquals(windowsRepo.writes(), 0);
 });
 
-// --- Reserved tag refusal (swamp-club#3635) ---
-
-/** A forged sensitive-fields tag value: it would mark `value` sensitive. */
 const FORGED_TAG_VALUE = JSON.stringify(["value"]);
 const FORGED_TAG = { [SENSITIVE_FIELDS_TAG]: FORGED_TAG_VALUE };
 
-/** A reserved tag key a source forges, and how the refusal explains it. */
 interface ForgedTag {
   key: string;
   value: string;
@@ -3709,8 +3642,8 @@ const FORGED_TAGS: ForgedTag[] = [
     value: "forged-kind",
     reason: "tag keys starting with '_swamp.' are written by swamp alone",
   },
-  // swamp-club#3684: a forged specName pointed an untagged record at a
-  // sensitive spec, so readResource resolved reference text in it.
+  // a forged specName would point an untagged record at a sensitive spec, so
+  // readResource would resolve reference text in it
   {
     key: "specName",
     value: "forged-spec",
@@ -3719,7 +3652,6 @@ const FORGED_TAGS: ForgedTag[] = [
   },
 ];
 
-/** Where a reserved tag enters one write, and how the refusal names it. */
 interface ReservedTagSource {
   label: string;
   forged: ForgedTag;
@@ -3729,7 +3661,6 @@ interface ReservedTagSource {
   tagOverrides?: Record<string, string>;
   runtimeTags?: Record<string, string>;
   dataOutputTags?: Record<string, string>;
-  /** Text the refusal must contain, given the write's kind and spec. */
   expected: (kind: "resource" | "file", specName: string) => string[];
 }
 
@@ -3891,10 +3822,9 @@ for (const source of RESERVED_TAG_SOURCES) {
 }
 
 Deno.test("createResourceWriter: a forged sensitive-fields tag cannot make reference text in a plain field resolve", async () => {
-  // swamp-club#3635: the field's value is ordinary method output (an HTTP
-  // body, say) that happens to look like a stored vault reference. Before the
-  // fix the forged tag was persisted, and createResourceReader resolved the
-  // text to the vault's plaintext.
+  // the field's value is ordinary method output that looks like a stored vault
+  // reference; a forged tag must not make createResourceReader resolve it to
+  // plaintext
   const vaultService = createTestVaultService();
   await vaultService.put("test-vault", "db-password", "hunter2");
   const reference = "${{ vault.get('test-vault', 'db-password') }}";
@@ -3923,9 +3853,9 @@ Deno.test("createResourceWriter: a forged sensitive-fields tag cannot make refer
 });
 
 Deno.test("createResourceWriter: a forged specName cannot point an untagged record at a sensitive spec", async () => {
-  // swamp-club#3684: nothing in `item` is sensitive, so the record carried no
-  // sensitive-fields tag, and readResource chose its fields by the specName
-  // tag a --tag flag had overwritten with a sensitiveOutput spec's name.
+  // nothing in `item` is sensitive, so the record has no sensitive-fields tag;
+  // a --tag flag must not overwrite specName to point readResource at a
+  // sensitive spec
   const repo = createCountingRepo();
   const { writeResource } = createResourceWriter(
     repo,
@@ -3968,7 +3898,6 @@ Deno.test("createResourceWriter: stamps the record kind after every tag source",
   const handle = await writeResource("item", "main", { value: "v" });
   assertEquals(handle.tags[RECORD_KIND_TAG], "resource");
   assertEquals(handle.tags["specName"], "item");
-  // The plain type tag stays a user tag.
   assertEquals(handle.tags["type"], "override-type");
 });
 
@@ -4069,8 +3998,6 @@ Deno.test("createResourceWriter: a data output override for another spec is not 
   assertEquals(handle.tags[SENSITIVE_FIELDS_TAG], undefined);
 });
 
-// --- readSensitiveFieldsTag and parseStoredVaultReference (typed-secrets 3.3) ---
-
 Deno.test("readSensitiveFieldsTag: an absent tag means no sensitive fields, and the star value every top-level field", () => {
   assertEquals(readSensitiveFieldsTag({}), { kind: "none" });
   assertEquals(
@@ -4143,7 +4070,6 @@ Deno.test("readSensitiveFieldJsonPlaces: the JSON places a path list lists, as s
     [SENSITIVE_FIELD_JSON_TAG]: JSON.stringify([
       ["spec", "services", 0, "port"],
       ["env", "eu.west"],
-      // Listed by neither path tag, so ignored.
       ["spec", "services", 1, "port"],
     ]),
   };
@@ -4308,12 +4234,9 @@ Deno.test("sensitiveVaultReferences: names the whole-string reference at each li
 Deno.test("sensitiveVaultReferences: the star tag names each top-level key's whole-string reference by its own name, once; no tag names none", () => {
   const data = {
     a: "${{ vault.get('v', 'a') }}",
-    // A dotted key is a top-level key of its own under the star tag.
     "b.c": "${{ vault.get('w', 'a') }}",
     repeat: "${{ vault.get('v', 'a') }}",
-    // Nested below a top-level key: not where the writer puts a reference.
     nested: { d: "${{ vault.get('v', 'nested') }}" },
-    // Not a whole-string reference, so not one the resolver resolves.
     e: "text ${{ vault.get('v', 'x') }}",
   };
   assertEquals(sensitiveVaultReferences(data, SENSITIVE_FIELDS_ALL), [
@@ -4344,7 +4267,6 @@ Deno.test("processSensitiveResourceData: under sensitiveOutput a top-level key h
     "all",
     "main",
   );
-  // The dotted own key is named by its keys, never as a dot path.
   assertEquals(vaulted.paths, ["note", ["a.b"]]);
   assertEquals(Object.keys(data).sort(), ["a.b", "note"]);
   // The crafted text is a value the vault holds, behind a reference the
@@ -4352,7 +4274,6 @@ Deno.test("processSensitiveResourceData: under sensitiveOutput a top-level key h
   const stored = data["a.b"] as string;
   assertEquals(stored === crafted, false);
   assertStringIncludes(stored, "vault.get('test-vault'");
-  // Under the star tag the dotted key is a location of its own.
   const [, dotted] = sensitiveVaultReferences(data, SENSITIVE_FIELDS_ALL);
   assertEquals(sensitiveVaultReferences({ x: stored }, ["x"]), [dotted]);
   assertEquals(await vaultService.get("test-vault", dotted.key), crafted);
@@ -4462,7 +4383,6 @@ Deno.test("createFileWriterFactory.getUnfinalizedReceipts: names a writer whose 
     const finished = factory.createFileWriter(spec, "finished");
     await finished.getFilePath();
     await finished.finalize();
-    // A line writer's partial content keeps its behaviour on failure.
     const lines = factory.createFileWriter(spec, "lines");
     await lines.writeLine("first");
     factory.createFileWriter(spec, "unused");
@@ -4479,9 +4399,6 @@ Deno.test("createFileWriterFactory.getUnfinalizedReceipts: names a writer whose 
   }
 });
 
-// --- unreadable sensitive references (swamp-club#3806) ---
-
-/** A sink that keeps what it is given. */
 function recordingSink(): SecretSink & {
   secrets: string[];
   unread: UnreadSensitiveReference[];
@@ -4616,8 +4533,6 @@ Deno.test("recordSensitiveVaultRefsUnread: records every tagged reference with t
   );
 });
 
-// --- sensitive fields inside arrays, records and unions (swamp-club#3038) ---
-
 const elementSpec: ResourceOutputSpec = {
   schema: z.object({
     name: z.string(),
@@ -4660,7 +4575,6 @@ function elementData(): Record<string, unknown> {
 
 const elementKeyPrefix = `swamp-test-${modelId}-create-creds-main`;
 
-/** The keys a test stored, without the ones the mock vault starts with. */
 async function storedKeys(vaultService: VaultService): Promise<string[]> {
   const seeded = new Set(await createTestVaultService().list("test-vault"));
   return (await vaultService.list("test-vault")).filter((k) => !seeded.has(k));
@@ -4775,7 +4689,6 @@ Deno.test("processSensitiveResourceData: a record key outside plain characters g
     assertEquals(/['"/\\\0]|\.\./.test(key), false, key);
   }
   const accounts = data.accounts as Record<string, Record<string, string>>;
-  // Each reference is one the readers match, and names its own value.
   const refPattern = /^\$\{\{ vault\.get\('test-vault', '([^']+)'\) \}\}$/;
   const resolved = await Promise.all(
     Object.values(accounts).map((account) => {
@@ -4903,7 +4816,6 @@ Deno.test("processSensitiveResourceData: a sensitive container holding a sensiti
   );
   assertEquals(paths, ["credentials", "credentials.apiKey"]);
   assertEquals(jsonKeys, []);
-  // The unmarked field is held only in the container's vault value.
   assertEquals(data.credentials, {
     apiKey:
       `\${{ vault.get('test-vault', '${elementKeyPrefix}-credentials.apiKey') }}`,
@@ -4947,7 +4859,6 @@ Deno.test("processSensitiveResourceData: a declared vaultKey inside a sensitiveO
     "main",
   );
   assertEquals(await vaultService.get("test-vault", "prod-api-key"), "rotated");
-  // The data holds the reference to the whole value, not a nested one.
   assertEquals(
     data.creds,
     `\${{ vault.get('test-vault', '${elementKeyPrefix}-creds') }}`,
@@ -5291,8 +5202,6 @@ Deno.test("createFileWriterFactory: refuses a supplied key-list or JSON tag, as 
   }
 });
 
-// --- element values read back with their original type ---
-
 const typedSpec: ResourceOutputSpec = {
   schema: z.object({
     port: z.number().meta({ sensitive: true }),
@@ -5489,7 +5398,6 @@ Deno.test("resolveSensitiveVaultRefs: element values read back as written, top-l
     vaultService,
     redactor,
   );
-  // A top-level value keeps reading back as its JSON text, as on main.
   assertEquals(data.port, "5432");
   const [service] = data.services as Record<string, unknown>[];
   assertEquals(service.port, 8080);
@@ -5503,7 +5411,6 @@ Deno.test("resolveSensitiveVaultRefs: element values read back as written, top-l
     "***",
   );
   assertEquals(redactor.redact("login admin"), "login admin");
-  // A marked value is registered as itself.
   assertEquals(
     redactor.redact("port 8080, token tok-web"),
     "port ***, token ***",
@@ -5547,7 +5454,6 @@ Deno.test("resolveSensitiveVaultRefs: registers the fields marked inside a resto
       },
     }],
   });
-  // The token is tagged beside its element object, and not stored again.
   assertEquals(JSON.parse(handle.tags[SENSITIVE_FIELDS_TAG]), [
     "services.0.image",
     "services.0.image.token",
@@ -5619,7 +5525,6 @@ Deno.test("createResourceWriter: a plain resource written after a container was 
     credentials: { apiKey: "key-value", region: "us-east-1" },
   });
 
-  // A method reads its prior state, as readResource does ...
   const prior = structuredClone(handle.attributes) as Record<string, unknown>;
   await resolveSensitiveVaultRefs(
     prior,
@@ -5628,7 +5533,6 @@ Deno.test("createResourceWriter: a plain resource written after a container was 
     redactor,
   );
   const credentials = prior.credentials as Record<string, string>;
-  // ... and writes a plain resource from it and its own ordinary values.
   const out = await writeResource("out", "out", {
     region: "us-east-1",
     note: `key ${credentials.apiKey}`,
@@ -5836,8 +5740,6 @@ Deno.test("createResourceReader: a sensitive container holding sensitive fields 
     "plain",
   ]);
   assertEquals(handle.tags[SENSITIVE_FIELD_JSON_TAG], undefined);
-  // The declared key keeps getting the current value, and the container's
-  // own key holds all of it.
   assertEquals(
     await vaultService.get("test-vault", "prod-api-key"),
     "key-value",
@@ -5868,8 +5770,7 @@ Deno.test("createResourceReader: a sensitive container holding sensitive fields 
     apiKey: "key-value",
     db: { password: "db-pass" },
   });
-  // A container holding no stored field reads back as JSON text, as it
-  // always has (swamp-club#3480).
+  // a container holding no stored field reads back as JSON text
   assertEquals(prior?.plain, '{"token":"tok"}');
   assertEquals(
     redactor.redact("key-value db-pass us-east-1 db.internal"),
@@ -5952,7 +5853,6 @@ Deno.test("createResourceReader: reference-shaped text written in a marked field
     vaultService,
   );
   const prior = await readResource("main");
-  // The field's own reference is resolved, to the text that was written.
   assertEquals(prior?.credentials, { apiKey: planted });
   assertEquals(prior?.services, [{ image: { token: planted } }]);
 });
@@ -6005,7 +5905,6 @@ Deno.test("processSensitiveResourceData: record keys that differ only in case ge
   // Folded to lowercase, as Azure Key Vault or a case-insensitive file
   // system stores them, the keys are still three.
   assertEquals(new Set(keys.map((key) => key.toLowerCase())).size, 3);
-  // A lowercase key is kept as written.
   assert(keys.includes(`${elementKeyPrefix}-env.token`));
 });
 
@@ -6058,7 +5957,6 @@ Deno.test("createResourceWriter: an update that reads its prior state and writes
     },
   );
 
-  // The next run reads its prior state ...
   const redactor = new SecretRedactor();
   const prior = structuredClone(first.attributes) as Record<string, unknown>;
   await resolveSensitiveVaultRefs(
@@ -6072,7 +5970,6 @@ Deno.test("createResourceWriter: an update that reads its prior state and writes
     NODE_ENV: "production",
     API_KEY: "sk-live-123",
   });
-  // ... and writes it back with one change.
   services[0].port = 9090;
   await writerFor(redactor).writeResource("app", "main", prior);
 
@@ -6086,12 +5983,6 @@ Deno.test("createResourceWriter: an update that reads its prior state and writes
   );
 });
 
-// --- Durable streamed content (swamp-club#4017) ---
-
-/**
- * A repository that allocates a real temp file, reports `durable`, and
- * records the options each finalize is given.
- */
 async function withDurableAllocation(
   durable: boolean | undefined,
   fn: (

@@ -42,7 +42,6 @@ import {
 const REF = { vaultName: "v", key: "k" };
 const DATA_REF = { vaultName: "w", key: "j" };
 
-/** A typed run that issued one vault.get() reference and one data reference. */
 function issued(): {
   registry: SecretBagRegistry;
   sentinel: string;
@@ -99,8 +98,6 @@ Deno.test("refuseSecretsInRefusingFields: a sentinel anywhere under a refusing f
     assertEquals(error.message.includes(sentinel), false);
     assertEquals(error.message.includes(data), false);
   }
-  // A secret in a field that takes secrets, text the run did not issue, and
-  // plain text pass.
   refuseSecretsInRefusingFields(
     schema,
     { free: sentinel },
@@ -188,8 +185,6 @@ Deno.test("assertNoSensitiveRefuseConflict: a field marked both sensitive and re
           .meta({ sensitive: true }),
       }),
     ],
-    // A refusing schema one field already uses is still read under the
-    // union that marks it sensitive.
     [
       "b",
       z.object({
@@ -277,7 +272,6 @@ Deno.test("assertModelSecretsMetadataValid: checks the global arguments and ever
   );
 });
 
-/** A type whose `root` global and `workingDir` method argument refuse secrets. */
 function stageModel(
   hook?: (args: SecretDestinationArgs) => void,
 ): ModelDefinition {
@@ -330,7 +324,6 @@ Deno.test("refuseSecretDestinations: refuses a refusing global argument, then a 
     SecretDestinationRefusedError,
   );
   assertEquals(merged.destination, "method argument 'workingDir'");
-  // A secret in a field that takes secrets passes.
   stage({ token: sentinel }, { token: sentinel, command: `echo ${sentinel}` });
 });
 
@@ -364,10 +357,8 @@ Deno.test("refuseSecretDestinations: the method hook sees the merged arguments a
     "occurrencesIn",
     "originOf",
   ]);
-  // Nothing issued: nothing to refuse, and the hook is not called.
   run(true, new SecretBagRegistry());
   assertEquals(seen.length, 1);
-  // A hook refusal propagates as it is.
   const refusingModel = stageModel(() => {
     throw new SecretDestinationRefusedError(
       "the shell command",
@@ -470,7 +461,6 @@ Deno.test("refuseSecretDestinations: with no method named, only the global argum
     SecretDestinationRefusedError,
   );
   assertEquals(global.destination, "global argument 'root'");
-  // A refusing method field and the method hook are not consulted.
   stage({ workingDir: sentinel }, { workingDir: sentinel });
   assertEquals(hookCalls, 0);
 });

@@ -91,7 +91,7 @@ Deno.test("computePackageCacheHash: identical inputs produce identical hashes", 
     const h1 = await computePackageCacheHash(input);
     const h2 = await computePackageCacheHash(input);
     assertEquals(h1, h2);
-    assertEquals(h1.length, 64); // SHA-256 hex
+    assertEquals(h1.length, 64);
   } finally {
     await Deno.remove(tmp, { recursive: true });
   }
@@ -213,7 +213,6 @@ Deno.test("computePackageCacheHash: resolutions the config's top-level imports g
       ...base,
       bareImports: [
         { importer, specifier: "ms", target: "npm:ms@2.1.3" },
-        // Deno writes a subpath and a local target in its own forms.
         {
           importer,
           specifier: "@std/path/posix",
@@ -250,7 +249,6 @@ Deno.test("computePackageCacheHash: a resolution only an importMap file, scope o
       ...base,
       bareImports: [{ importer, specifier: "ms", target: "npm:ms@2.1.2" }],
     });
-    // The import map file changed; deno.json did not.
     const h2 = await computePackageCacheHash({
       ...base,
       bareImports: [{ importer, specifier: "ms", target: "npm:ms@2.1.3" }],
@@ -488,8 +486,6 @@ Deno.test("computePackageCacheHash: the quality.yaml sidecar beside the manifest
   const tmp = await Deno.makeTempDir();
   try {
     const without = await computePackageCacheHash(await makeHashInput(tmp));
-    // No sidecar leaves the hash exactly as before the sidecar existed: the
-    // marker is only hashed when the file is present.
     assertEquals(
       without,
       await computePackageCacheHash(await makeHashInput(tmp)),
@@ -602,7 +598,6 @@ Deno.test("computePackageCacheHash: the lock the bundler honours joins the hash,
   try {
     const lockPath = join(tmp, "deno.lock");
     const without = await computePackageCacheHash(await makeHashInput(tmp));
-    // A lock path that does not exist hashes as no lock at all.
     assertEquals(
       await computePackageCacheHash({ ...await makeHashInput(tmp), lockPath }),
       without,
@@ -648,8 +643,6 @@ Deno.test("computePackageCacheHash: a lockless range that resolves to a new vers
       await makeHashInput(tmp, { graphDependencies: graph("2.1.4") }),
     );
     assertNotEquals(today, tomorrow);
-    // With a lock the source and the lock fix the version, so neither
-    // joins the hash.
     const lockPath = join(tmp, "deno.lock");
     await Deno.writeTextFile(lockPath, "{}\n");
     assertEquals(

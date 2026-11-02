@@ -18,44 +18,29 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * The one resolver for which vault a sensitive output field is stored in.
- * The data writer stores with it, and the pre-run fast-fail and
- * `workflow validate` predict with it, so the three cannot drift.
- *
- * @module
+ * the one resolver for which vault a sensitive output field is stored in; the
+ * data writer, the pre-run fast-fail and workflow validate all use it so they
+ * cannot drift
  */
 
 import type { ResourceOutputSpec } from "./model.ts";
 import { collectSensitiveFieldMetadata } from "./sensitive_field_extractor.ts";
 
-/** The vault configuration the resolver falls back to. */
 export interface SensitiveOutputVaultConfig {
-  /** The repo's configured default vault, when it is registered. */
   getDefaultVaultName(): string | undefined;
-  /** The user (non-reserved) vaults, in registration order. */
   getUserVaultNames(): string[];
 }
 
-/** Where a sensitive field's vault may be named, most specific first. */
 export interface SensitiveOutputVaultChoice {
-  /** The field's own `vaultName` metadata. */
   fieldVaultName?: string;
   /**
-   * A data output override's `vaultName` for the field's spec (definition
-   * `resources` or a workflow step's `dataOutputOverrides`). It replaces the
-   * spec's own, as the data writer has always applied it; an empty name is
-   * ignored (see {@link overriddenSpecVaultName}).
+   * an override replaces the spec's own vaultName, as the data writer applies
+   * it; an empty name is ignored
    */
   overrideVaultName?: string;
-  /** The resource spec's `vaultName`. */
   specVaultName?: string;
 }
 
-/**
- * A spec's `vaultName` once a data output override applies: the override's
- * when it names a vault, else the spec's own. An empty override name is
- * ignored, as the data writer has always treated it.
- */
 export function overriddenSpecVaultName(
   specVaultName: string | undefined,
   overrideVaultName: string | undefined,
@@ -63,12 +48,6 @@ export function overriddenSpecVaultName(
   return overrideVaultName ? overrideVaultName : specVaultName;
 }
 
-/**
- * The vault a sensitive field is stored in: the field's `vaultName`, else the
- * override's (when not empty), else the spec's, else the default vault, else
- * the first user vault. `undefined` when none applies (no vault is
- * configured).
- */
 export function resolveSensitiveOutputVault(
   choice: SensitiveOutputVaultChoice,
   vaults: SensitiveOutputVaultConfig,
@@ -78,28 +57,19 @@ export function resolveSensitiveOutputVault(
     vaults.getDefaultVaultName() ?? vaults.getUserVaultNames()[0];
 }
 
-/** A vault a sensitive output may be stored in, and the key when known. */
 export interface SensitiveOutputTarget {
   vaultName: string;
   /**
-   * The field's own `vaultKey`. Absent when the key is generated at write
-   * time (from the instance name, and per element for a field inside an
-   * array element or record value), so it is not known before the run.
+   * absent when the key is generated at write time (per instance, and per
+   * element inside arrays or records), so it is not known before the run
    */
   vaultKey?: string;
 }
 
 /**
- * Every vault, and key where a field fixes one, that the sensitive outputs of
- * `resources` may be stored under, given the data output overrides in force:
- * one per field naming its own vault, wherever the field sits in the schema
- * (nested objects, array elements, record values, union members), plus the
- * spec-level target for fields that do not (and for every field of a
- * `sensitiveOutput` spec, whose fields are only known at write time). A field
- * inside an array element or record value has a key per element, so its
- * target names no key. Each vault and key pair appears once, in
- * first-seen order; a target that resolves to no vault is left out (the
- * no-vault check reports it).
+ * every vault, and key where a field fixes one, a sensitive output may use,
+ * deduplicated in first-seen order. Per-element fields name no key; targets
+ * resolving to no vault are left to the no-vault check.
  */
 export function sensitiveOutputTargets(
   resources: Record<string, ResourceOutputSpec> | undefined,
@@ -128,11 +98,6 @@ export function sensitiveOutputTargets(
   return [...targets.values()];
 }
 
-/**
- * Whether any sensitive output of `resources` names no vault of its own (no
- * field, override or spec `vaultName`), so it is stored in the default vault,
- * or in the first user vault when no default vault is in effect.
- */
 export function reliesOnVaultFallback(
   resources: Record<string, ResourceOutputSpec> | undefined,
   dataOutputOverrides:
@@ -148,11 +113,6 @@ export function reliesOnVaultFallback(
   );
 }
 
-/**
- * The vault choice of every sensitive output of `resources`: one per
- * sensitive field, with the field's own key, plus one for a
- * `sensitiveOutput` spec, whose fields are only known at write time.
- */
 function sensitiveOutputChoices(
   resources: Record<string, ResourceOutputSpec> | undefined,
   dataOutputOverrides:
@@ -187,10 +147,6 @@ function sensitiveOutputChoices(
   return choices;
 }
 
-/**
- * Every vault the sensitive outputs of `resources` may be stored in (the
- * vaults of {@link sensitiveOutputTargets}), each once, in first-seen order.
- */
 export function sensitiveOutputTargetVaults(
   resources: Record<string, ResourceOutputSpec> | undefined,
   dataOutputOverrides:

@@ -85,40 +85,33 @@ const INSTRUCTIONS_SECTION_BEGIN =
 const INSTRUCTIONS_SECTION_END = "<!-- END swamp managed section -->";
 const LEGACY_INSTRUCTIONS_SIGNATURE = "This repository is managed with [swamp]";
 
-// Earlier versions allowed every vault subcommand in Claude settings, which
-// pre-approves `swamp vault read-secret`. Upgrade removes this exact entry.
+// legacy entry that pre-approves swamp vault read-secret; upgrade removes this
+// exact entry
 const LEGACY_CLAUDE_VAULT_ALLOW = "Bash(swamp vault:*)";
 
 const KIRO_AUDIT_COMMAND = "swamp audit record --from-hook --tool kiro";
-// swamp's Kiro audit hook command exactly as some version wrote it: bare
-// `swamp`, or the absolute path to the binary (quoted) older versions wrote,
-// followed by the audit arguments and nothing else. Upgrade deletes hooks that
-// match, so a command the user extended (e.g. `... && ./notify.sh`) is kept.
+// matches swamp's audit hook command exactly (bare or absolute-path binary,
+// nothing after), so upgrade deletes only that and keeps a command the user
+// extended
 const KIRO_AUDIT_COMMAND_PATTERN =
   /^(?:swamp|"[^"]*swamp(?:\.exe)?"|\S*[\\/]swamp(?:\.exe)?) audit record --from-hook --tool kiro$/;
 
-// Kiro IDE 0.x settings earlier versions wrote to .vscode/settings.local.json.
-// Kiro IDE 1.0 no longer reads them (permission rules moved to
-// permissions.yaml outside the repo), so upgrade removes these exact entries.
+// legacy Kiro IDE settings that Kiro IDE 1.0 does not read (rules moved to
+// permissions.yaml outside the repo); upgrade removes these exact entries
 const LEGACY_KIRO_IDE_SETTINGS: Record<string, string> = {
   "kiroAgent.trustedCommands": "swamp *",
   "kiroAgent.commandDenylist": "read-secret",
 };
 
-// The allowlist entry earlier versions wrote to .amp/settings.json. Amp no
-// longer reads `amp.commands`; upgrade removes this exact entry.
+// legacy Amp allowlist entry that Amp does not read as amp.commands; upgrade
+// removes this exact entry
 const LEGACY_AMP_ALLOW = "swamp *";
 
-/** Whether a Kiro hook command is swamp's audit hook command, unchanged. */
 function isKiroAuditCommand(command: unknown): boolean {
   return typeof command === "string" &&
     KIRO_AUDIT_COMMAND_PATTERN.test(command.trim());
 }
 
-/**
- * Whether a Kiro v1 hook entry is a copy of swamp's audit hook: a post-tool
- * trigger that runs swamp's audit hook command, unchanged.
- */
 function isKiroAuditHookEntry(hook: unknown): boolean {
   const entry = hook as
     | { trigger?: unknown; action?: { command?: unknown } }
@@ -128,19 +121,8 @@ function isKiroAuditHookEntry(hook: unknown): boolean {
     isKiroAuditCommand(entry?.action?.command);
 }
 
-/**
- * Describes what happened to the .gitignore during init/upgrade.
- * - "created": a new .gitignore file was created with the managed section
- * - "updated": an existing .gitignore had its managed section added or refreshed
- * - "unchanged": the managed section already existed and was up-to-date
- * - "skipped": gitignore management was not opted in
- */
 export type GitignoreAction = "created" | "updated" | "unchanged" | "skipped";
 
-/**
- * Dedupes a tools list while preserving first-seen order, so set semantics
- * on `marker.tools` are enforced at the domain boundary.
- */
 function normalizeToolsList(tools: string[]): string[] {
   const seen = new Set<string>();
   const result: string[] = [];
@@ -153,10 +135,6 @@ function normalizeToolsList(tools: string[]): string[] {
   return result;
 }
 
-/**
- * Renders a tools list for human-readable error/diagnostic messages.
- * Empty list renders as "none" so output is never ambiguous.
- */
 function formatToolsList(tools: string[]): string {
   return tools.length === 0 ? "none" : tools.join(", ");
 }
@@ -168,10 +146,6 @@ export {
 
 export const BUNDLED_SKILL_NAMES = ["swamp", "swamp-getting-started"];
 
-/**
- * Removes local bundled skill copies from a repo's tool skill directories.
- * Currently used in tests; will be wired into an interactive upgrade prompt.
- */
 export async function removeLocalBundledSkills(
   localCopies: LocalSkillCopy[],
 ): Promise<void> {
@@ -188,10 +162,6 @@ export async function removeLocalBundledSkills(
   }
 }
 
-/**
- * Detects local (repo-level) copies of bundled skills that should now be
- * installed globally.
- */
 export async function detectLocalBundledSkills(
   repoDir: string,
   tools: readonly string[],
@@ -220,20 +190,11 @@ export async function detectLocalBundledSkills(
   return results;
 }
 
-/**
- * Pulled extensions present for one of the previously-enrolled tools that
- * were NOT copied into a newly-added tool's skills directory. Surfaced so
- * the renderer can advise the user to re-run `swamp extension pull <name>`
- * for the new tool.
- */
 export interface ExtensionsToReinstall {
   tool: string;
   names: string[];
 }
 
-/**
- * Result of a repository initialization operation.
- */
 export interface RepoInitResult {
   path: string;
   version: string;
@@ -243,12 +204,8 @@ export interface RepoInitResult {
   settingsCreated: boolean;
   gitignoreAction: GitignoreAction;
   tools: string[];
-  /**
-   * Tools previously enrolled (when `--force` reinit drops some) whose
-   * scaffolding files were left on disk. Empty for fresh inits.
-   */
+  /** tools dropped by a force reinit whose scaffolding files were left on disk */
   removedTools: string[];
-  /** The default vault, or null when init did not set one up. */
   vault: RepoInitVault | null;
 }
 
@@ -262,18 +219,11 @@ export interface RepoInitVault {
   created: boolean;
 }
 
-/**
- * A local bundled skill copy that should be cleaned up after migration
- * to global skills.
- */
 export interface LocalSkillCopy {
   skillsDir: string;
   names: string[];
 }
 
-/**
- * Result of a repository upgrade operation.
- */
 export interface RepoUpgradeResult {
   path: string;
   previousVersion: string;
@@ -283,82 +233,64 @@ export interface RepoUpgradeResult {
   instructionsUpdated: boolean;
   settingsUpdated: boolean;
   gitignoreAction: GitignoreAction;
-  /** Enrolled tools as recorded by `marker.tools` BEFORE this upgrade. */
   previousTools: string[];
   tools: string[];
   addedTools: string[];
   removedTools: string[];
   extensionsToReinstall: ExtensionsToReinstall[];
-  /** Local bundled skill copies found that should be migrated to global. */
   localSkillCopies: LocalSkillCopy[];
-  /** Repo-relative paths of files modified during this upgrade. */
   changedFiles: string[];
-  /** Collectives referenced in the lockfile that are not trusted (swamp-club#1217). */
   untrustedCollectives: string[];
 }
 
 /**
- * Options for initialization. `tools` is the canonical input; defaults to
- * `["claude"]` when omitted. An empty array means "no tool scaffolding".
+ * tools defaults to ["claude"] when omitted; an empty array means no tool
+ * scaffolding
  */
 export interface RepoInitOptions {
   force?: boolean;
   tools?: string[];
   serverAddress?: string;
   /**
-   * Where the repository's vault configs live. When given, init creates the
-   * `default` local_encryption vault unless a vault of that name exists, and
-   * records it as the marker's `defaultVault` (a `--force` reinit keeps the
-   * `defaultVault` already recorded). When omitted, no vault is set up.
+   * when given, init creates the default local_encryption vault unless one
+   * exists and records it as defaultVault (a force reinit keeps the recorded
+   * one); omitted means no vault
    */
   defaultVaultStore?: DefaultVaultStore;
 }
 
 /**
- * Options for upgrade. `tools` semantics:
- *  - undefined: preserve the existing `marker.tools` (no-op-tool-change path)
- *  - []: clear (the `--tool none` case)
- *  - [list]: replace
+ * tools: undefined preserves marker.tools, [] clears (--tool none), a list
+ * replaces
  */
 export interface RepoUpgradeOptions {
   tools?: string[];
   includeGitignore?: boolean;
   /**
-   * The resolved extension lockfile to scan for untrusted collectives. The
-   * caller resolves it (under managedConfig it lives at the datastore's
-   * config base; swamp-club#2483). `null` means it could not be resolved,
-   * and the check is skipped. When omitted, `<modelsDir>/upstream_extensions.json`
-   * is read.
+   * the caller resolves the lockfile (under managedConfig it lives at the
+   * datastore config base); null means unresolved and the check is skipped;
+   * omitted reads <modelsDir>/upstream_extensions.json
    */
   lockfilePath?: string | null;
 }
 
 /**
- * User-level directories that init and upgrade write to outside the repo.
- *
- * Both default to the ambient environment (`HOME` / `XDG_CONFIG_HOME`).
- * Callers that must keep those writes inside a directory they own — tests
- * above all, since the suite shares one process and one `Deno.env` — pass
- * them explicitly instead of repointing the environment.
+ * default to the ambient environment; callers that must keep writes inside a
+ * directory they own, tests above all, pass them explicitly instead of
+ * repointing the environment
  */
 export interface RepoServiceUserDirs {
-  /** Home directory that global skill installs are rooted in. */
   homeDir?: string;
-  /** Config directory holding the skill-dir registries. */
   configDir?: string;
 }
 
 /**
- * How one AI tool's hook config is laid out, as far as finding the swamp
- * audit hook in it goes. Claude nests commands under matcher entries; Cursor
- * and Copilot list flat `{ command }` entries with no matcher.
+ * Claude nests commands under matcher entries; Cursor and Copilot list flat
+ * command entries with no matcher
  */
 export interface AuditHookShape {
-  /** Substring that marks a hook command as the swamp audit hook. */
   marker: string;
-  /** The hook command strings one entry runs. */
   commandsOf(entry: Record<string, unknown>): string[];
-  /** Whether the entry fires for the tool calls swamp records. */
   applies(entry: Record<string, unknown>): boolean;
 }
 
@@ -414,9 +346,8 @@ export const COPILOT_AUDIT_HOOK_SHAPE: AuditHookShape = flatAuditHookShape(
 );
 
 /**
- * Counts the swamp audit hooks among one event's hook entries. The config is
- * repo-controlled, so entries of an unexpected shape are skipped, never
- * thrown on.
+ * the config is repo-controlled, so entries of an unexpected shape are skipped,
+ * never thrown on
  */
 export function countAuditHooks(
   entries: unknown,
@@ -434,14 +365,9 @@ export function countAuditHooks(
 }
 
 /**
- * Merges swamp's audit hook entries into an existing hooks config.
- *
- * An event that already runs the audit hook in any form keeps it, and swamp's
- * own entry is not added beside it — two hooks would record every tool call
- * twice. Where an earlier upgrade did add swamp's entry next to a user's
- * variant, swamp's entry is removed again; a repeated copy of swamp's entry
- * is collapsed to one. Only entries whose serialised JSON equals swamp's
- * are ever removed, and all other entries keep their content and order.
+ * an event already running the audit hook keeps it and swamp's entry is not
+ * added beside it (two hooks would record every call twice); only entries whose
+ * JSON equals swamp's are removed or collapsed
  */
 export function mergeAuditHooks(
   existing: Record<string, unknown>,
@@ -475,9 +401,6 @@ export function mergeAuditHooks(
   return merged;
 }
 
-/**
- * RepoService handles repository initialization and upgrade operations.
- */
 export class RepoService {
   private readonly markerRepo: RepoMarkerRepository;
   private readonly skillAssets: SkillAssets;
@@ -500,17 +423,10 @@ export class RepoService {
     return configDir ? join(configDir, name) : undefined;
   }
 
-  /**
-   * Checks if a path is already initialized as a swamp repository.
-   */
   isInitialized(repoPath: RepoPath): Promise<boolean> {
     return this.markerRepo.exists(repoPath);
   }
 
-  /**
-   * Checks whether a `.swamp/` runtime directory exists without a
-   * `.swamp.yaml` marker — i.e. a partially initialized or corrupted repo.
-   */
   async hasOrphanedSwampDir(repoPath: RepoPath): Promise<boolean> {
     try {
       const stat = await Deno.stat(swampPath(repoPath.value));
@@ -520,13 +436,6 @@ export class RepoService {
     }
   }
 
-  /**
-   * Initializes a new swamp repository.
-   *
-   * @param repoPath - The path to initialize
-   * @param options - Initialization options
-   * @throws Error if already initialized and force is not set
-   */
   async init(
     repoPath: RepoPath,
     options: RepoInitOptions = {},
@@ -564,17 +473,14 @@ export class RepoService {
       removedTools = existingTools.filter((t) => !tools.includes(t));
     }
 
-    // Ensure the directory exists
     await ensureDir(repoPath.value);
 
-    // Create marker with the new tools list
     const markerData = this.markerRepo.createInitMarker(this.currentVersion);
     markerData.tools = tools;
     if (options.serverAddress) {
       markerData.serverAddress = options.serverAddress;
     }
 
-    // Create data directory structure
     await this.createDataDirectoryStructure(repoPath);
 
     let vault: RepoInitVault | null = null;
@@ -583,11 +489,8 @@ export class RepoService {
       markerData.defaultVault = existingDefaultVault ?? vault.name;
     }
 
-    // Install skills globally (deduplicated across tools)
     let skillsCopied = await this.installGlobalSkills(tools);
 
-    // Resolve tools to configs and run per-repo scaffolding (instructions,
-    // settings, hooks — but NOT skills, which are now global)
     const resolver = new ToolResolver(repoPath.value, readCustomTools);
     const resolvedConfigs: ToolConfig[] = [];
     let instructionsFileCreated = false;
@@ -608,10 +511,8 @@ export class RepoService {
       settingsCreated = settingsCreated || r.settingsChanged;
     }
 
-    // Install skills for custom tools with global (~/prefixed) skillsDir
     await this.installCustomToolGlobalSkills(resolvedConfigs);
 
-    // Install skills for custom tools with repo-relative skillsDir
     const localSkillNames = await this.installCustomToolLocalSkills(
       repoPath,
       resolvedConfigs,
@@ -620,7 +521,6 @@ export class RepoService {
       skillsCopied = localSkillNames;
     }
 
-    // Always manage .gitignore on init (single call with resolved configs)
     const gitignoreAction = await this.ensureGitignoreSection(
       repoPath,
       resolvedConfigs,
@@ -659,13 +559,6 @@ export class RepoService {
     return { name: config.name, type: config.type, created: true };
   }
 
-  /**
-   * Upgrades an existing swamp repository.
-   *
-   * @param repoPath - The path to upgrade
-   * @param options - Upgrade options
-   * @throws Error if not initialized
-   */
   async upgrade(
     repoPath: RepoPath,
     options: RepoUpgradeOptions = {},
@@ -699,9 +592,6 @@ export class RepoService {
     const oldPrimary = resolvePrimaryTool(existingMarker);
     const oldPrimarySkillsDir = resolveSkillsDir(repoPath.value, oldPrimary);
 
-    // Determine the requested tools list:
-    //  - undefined: preserve the existing tools (no-op-tool-change path)
-    //  - else (incl. []): replace
     const tools = options.tools === undefined
       ? oldTools
       : normalizeToolsList(options.tools);
@@ -726,28 +616,22 @@ export class RepoService {
       }
     }
 
-    // Update marker with new version and tool list
     const updatedMarker = this.markerRepo.createUpgradeMarker(
       existingMarker,
       this.currentVersion,
     );
     updatedMarker.tools = tools;
 
-    // Install skills globally (deduplicated across tools)
     let skillsUpdated = await this.installGlobalSkills(tools);
 
-    // Remove superseded skills from the repo-local skills dirs
     await removeSupersededLocalSkills(repoPath.value, tools);
 
-    // Resolve tools to configs and run per-repo scaffolding (instructions,
-    // settings, hooks — but NOT skills, which are now global)
     const resolver = new ToolResolver(repoPath.value, readCustomTools);
     const resolvedConfigs: ToolConfig[] = [];
     let instructionsUpdated = false;
     let settingsUpdated = false;
     const changedFiles: string[] = [];
 
-    // .swamp.yaml is always written during upgrade
     changedFiles.push(".swamp.yaml");
 
     const claudeState = await this.readClaudeInstructionsState(repoPath);
@@ -762,10 +646,8 @@ export class RepoService {
       changedFiles.push(...r.changedFiles);
     }
 
-    // Install skills for custom tools with global (~/prefixed) skillsDir
     await this.installCustomToolGlobalSkills(resolvedConfigs);
 
-    // Install skills for custom tools with repo-relative skillsDir
     const localSkillNames = await this.installCustomToolLocalSkills(
       repoPath,
       resolvedConfigs,
@@ -774,11 +656,9 @@ export class RepoService {
       skillsUpdated = localSkillNames;
     }
 
-    // Determine gitignore management: CLI flag > marker preference > default off
     const shouldManageGitignore = options.includeGitignore ??
       existingMarker.gitignoreManaged ?? false;
 
-    // Persist the CLI flag choice if explicitly provided
     if (options.includeGitignore !== undefined) {
       updatedMarker.gitignoreManaged = options.includeGitignore;
     }
@@ -797,17 +677,13 @@ export class RepoService {
       changedFiles.push(".gitignore");
     }
 
-    // Detect local bundled skill copies that should be migrated to global
     const localSkillCopies = await detectLocalBundledSkills(
       repoPath.value,
       tools,
     );
 
-    // Migrate from symlink-based layout to datastore layout
     await this.migrateFromSymlinks(repoPath);
 
-    // Migrate any unflushed entries from a legacy repo-local telemetry spool
-    // to the user-global spool (telemetry is no longer repo-scoped).
     await this.migrateRepoLocalTelemetry(repoPath, existingMarker);
 
     if (localSkillCopies.length === 0) {
@@ -817,8 +693,8 @@ export class RepoService {
     // the flag can be set manually in .swamp.yaml for repos that
     // intentionally keep local skills (e.g., the swamp source repo).
 
-    // Strip legacy runtime-state fields that were previously written to
-    // the tracked .swamp.yaml (see swamp-club#1792).
+    // runtime-state fields do not belong in the tracked .swamp.yaml, so any
+    // left there are stripped
     // deno-lint-ignore no-explicit-any
     const raw = updatedMarker as Record<string, any>;
     delete raw.lastSkillMigrationWarning;
@@ -826,7 +702,6 @@ export class RepoService {
 
     await this.markerRepo.write(repoPath, updatedMarker);
 
-    // createUpgradeMarker always sets upgradedAt, but TypeScript doesn't know this
     if (!updatedMarker.upgradedAt) {
       throw new Error(
         "Internal error: upgradedAt was not set by createUpgradeMarker",
@@ -859,10 +734,6 @@ export class RepoService {
     };
   }
 
-  /**
-   * Installs bundled skills to each tool's global (user-level) directory,
-   * deduplicated so shared paths are only written once.
-   */
   private async installGlobalSkills(
     tools: readonly string[],
   ): Promise<string[]> {
@@ -870,7 +741,6 @@ export class RepoService {
     try {
       globalDirs = resolveUniqueGlobalSkillsDirs(tools, this.userDirs.homeDir);
     } catch {
-      // HOME/USERPROFILE not set — skip global installation
       logger.warn`Skipping global skill install: home directory not available`;
       return [];
     }
@@ -899,9 +769,8 @@ export class RepoService {
   }
 
   /**
-   * Installs bundled skills to global directories for custom tools whose
-   * skillsDir starts with ~/ (home-relative). Registers each directory
-   * in custom-tool-skill-dirs.json so swamp update can discover them.
+   * registers each directory in custom-tool-skill-dirs.json so swamp update can
+   * discover them
    */
   private async installCustomToolGlobalSkills(
     configs: readonly ToolConfig[],
@@ -958,10 +827,8 @@ export class RepoService {
   }
 
   /**
-   * Installs bundled skills to repo-local directories for custom tools whose
-   * skillsDir is a relative path (not ~/prefixed). These are project-local
-   * directories that can't be discovered by `swamp update`, so they are only
-   * synced during repo init and upgrade.
+   * project-local directories that swamp update cannot discover, so they are
+   * only synced during repo init and upgrade
    */
   private async installCustomToolLocalSkills(
     repoPath: RepoPath,
@@ -997,13 +864,8 @@ export class RepoService {
   }
 
   /**
-   * Runs all per-tool scaffolding for a single tool: instructions
-   * file, settings/hooks/configs. Idempotent across calls — when the same
-   * tool runs twice, the writers no-op or re-sync existing content.
-   *
-   * `alreadyExists` controls whether settings writers run their "create new"
-   * or "update existing" path; `true` for upgrades and force-reinit, `false`
-   * for fresh init.
+   * idempotent across calls; alreadyExists picks the update path over create:
+   * true for upgrades and force-reinit, false for fresh init
    */
   private async applyToolScaffolding(
     repoPath: RepoPath,
@@ -1035,7 +897,6 @@ export class RepoService {
       }
     }
 
-    // Create or update instructions file
     const instructionsFileChanged = alreadyExists
       ? await this.updateInstructionsFile(repoPath, config)
       : await this.createInstructionsFileIfNotExists(repoPath, config);
@@ -1044,7 +905,6 @@ export class RepoService {
       changedFiles.push(config.instructionsFile);
     }
 
-    // Create or update tool-specific settings (built-in tools only)
     let settingsChanged = false;
     if (config.isBuiltIn) {
       const tool = config.name as AiTool;
@@ -1136,11 +996,6 @@ export class RepoService {
     return { instructionsFileChanged, settingsChanged, changedFiles };
   }
 
-  /**
-   * Lists pulled-extension subdirectory names in a skills directory —
-   * everything that's NOT a bundled scaffolding skill. Returns an empty list
-   * when the directory doesn't exist.
-   */
   private async listPulledExtensions(skillsDir: string): Promise<string[]> {
     const bundled = new Set(this.skillAssets.getSkillNames());
     const result: string[] = [];
@@ -1160,11 +1015,7 @@ export class RepoService {
     return result;
   }
 
-  /**
-   * Reads the lockfile and returns collectives that are referenced but not
-   * trusted (swamp-club#1217). Failures are swallowed — a missing or
-   * corrupt lockfile simply yields an empty list.
-   */
+  /** failures are swallowed: a missing or corrupt lockfile yields an empty list */
   private async detectUntrustedCollectives(
     repoPath: RepoPath,
     marker: RepoMarkerData,
@@ -1210,25 +1061,20 @@ export class RepoService {
       .sort();
   }
 
-  /**
-   * Gets the current marker data for a repository.
-   */
   getMarker(repoPath: RepoPath): Promise<RepoMarkerData | null> {
     return this.markerRepo.read(repoPath);
   }
 
   /**
-   * Reads the instruction files that decide where the claude tool writes
-   * swamp's instructions. Taken once, before any tool writes, so the choice
-   * does not depend on the order tools are listed in.
+   * taken once, before any tool writes, so the choice does not depend on the
+   * order tools are listed in
    */
   private async readClaudeInstructionsState(
     repoPath: RepoPath,
   ): Promise<ClaudeInstructionsState> {
     const path = (relative: string) => join(repoPath.value, relative);
-    // A file that can't be read or stat'ed (a directory, no permission)
-    // counts as absent, so the choice falls back to today's CLAUDE.md rather
-    // than failing here.
+    // a file that cannot be read or stat'ed counts as absent, so the choice
+    // falls back to CLAUDE.md rather than failing
     const readIfExists = async (relative: string): Promise<string | null> => {
       try {
         return await Deno.readTextFile(path(relative));
@@ -1283,10 +1129,6 @@ export class RepoService {
     return outside.trim().length > 0;
   }
 
-  /**
-   * Creates the tool-appropriate instructions file if it doesn't already exist.
-   * For shared-file tools, creates with section markers from the start.
-   */
   private async createInstructionsFileIfNotExists(
     repoPath: RepoPath,
     config: ToolConfig,
@@ -1318,11 +1160,6 @@ export class RepoService {
     }
   }
 
-  /**
-   * Updates the tool-appropriate instructions file.
-   * For tool-specific files (cursor/kiro): overwrites entirely.
-   * For shared files (claude/opencode/codex): merges using section markers.
-   */
   private updateInstructionsFile(
     repoPath: RepoPath,
     config: ToolConfig,
@@ -1338,14 +1175,6 @@ export class RepoService {
     return this.ensureInstructionsSection(filePath, config);
   }
 
-  /**
-   * Ensures the shared instructions file contains an up-to-date managed section.
-   *
-   * - If no file exists: creates with managed section.
-   * - If file has markers: replaces content between markers.
-   * - If file has legacy swamp content (no markers): migrates to marked section.
-   * - If file has no swamp content: prepends managed section.
-   */
   private async ensureInstructionsSection(
     filePath: string,
     config: ToolConfig,
@@ -1361,7 +1190,6 @@ export class RepoService {
       }
     }
 
-    // Case 1: No file exists — create with managed section
     if (existingContent === null) {
       await ensureDir(join(filePath, ".."));
       const prefix = config.frontmatter ?? "";
@@ -1399,7 +1227,6 @@ export class RepoService {
       ).replace(INSTRUCTIONS_SECTION_BEGIN, "");
     }
 
-    // Case 4: File has legacy swamp content (no markers) — migrate
     if (this.hasLegacyInstructionsContent(existingContent)) {
       const updatedContent = this.migrateLegacyInstructions(
         existingContent,
@@ -1409,7 +1236,6 @@ export class RepoService {
       return true;
     }
 
-    // Case 5: File has no swamp content — prepend managed section
     const separator = existingContent.startsWith("\n") ? "" : "\n";
     await atomicWriteTextFile(
       filePath,
@@ -1418,30 +1244,19 @@ export class RepoService {
     return true;
   }
 
-  /**
-   * Detects legacy swamp-generated instructions content (without markers).
-   */
   private hasLegacyInstructionsContent(content: string): boolean {
     return content.includes(LEGACY_INSTRUCTIONS_SIGNATURE);
   }
 
-  /**
-   * Migrates legacy instructions content to the marked section format.
-   * Finds the old template boundaries and replaces with the marked section,
-   * preserving any user content before/after.
-   * Falls back to prepend if boundaries can't be found.
-   */
   private migrateLegacyInstructions(
     content: string,
     newSection: string,
   ): string {
-    // Find start: "# Project\n\nThis repository is managed with [swamp]"
     const startPattern =
       /# Project\n\nThis repository is managed with \[swamp\]/;
     const startMatch = startPattern.exec(content);
 
     if (!startMatch) {
-      // Can't find boundaries — prepend
       const separator = content.startsWith("\n") ? "" : "\n";
       return newSection + "\n" + separator + content;
     }
@@ -1461,11 +1276,9 @@ export class RepoService {
     }
 
     if (endIndex === -1) {
-      // Start matched but end didn't — the user edited the template.
-      // We can't determine where the legacy template ends, so prepend the
-      // new managed section to preserve ALL existing content (including user
-      // additions). This may leave some duplicate template text in the file,
-      // but that's preferable to silently deleting user content.
+      // the user edited the template, so where it ends is unknown: prepend the
+      // managed section to keep all existing content, even if some template
+      // text is duplicated
       const separator = content.startsWith("\n") ? "" : "\n";
       return newSection + "\n" + separator + content;
     }
@@ -1481,9 +1294,6 @@ export class RepoService {
     return prefix + newSection + "\n" + suffix;
   }
 
-  /**
-   * Generates the raw instructions body without any frontmatter or markers.
-   */
   private generateInstructionsBody(config: ToolConfig): string {
     const skillsDir = config.skillsDir;
     const useSkillNames = config.skillReferenceStyle === "name";
@@ -1587,9 +1397,6 @@ directly). Every \`swamp model …\` spelling remains supported.
 `;
   }
 
-  /**
-   * Wraps the instructions body in BEGIN/END markers for shared files.
-   */
   private buildInstructionsSection(config: ToolConfig): string {
     const body = this.generateInstructionsBody(config);
     const agentsImport = config.importAgentsMd ? "\n@AGENTS.md\n" : "";
@@ -1597,10 +1404,6 @@ directly). Every \`swamp model …\` spelling remains supported.
       INSTRUCTIONS_SECTION_END;
   }
 
-  /**
-   * Generates the full instructions content for tool-specific files (cursor/kiro).
-   * Shared-file tools should use buildInstructionsSection() instead.
-   */
   private generateInstructionsContent(config: ToolConfig): string {
     const body = this.generateInstructionsBody(config);
     if (config.frontmatter) {
@@ -1609,14 +1412,6 @@ directly). Every \`swamp model …\` spelling remains supported.
     return body;
   }
 
-  /**
-   * Ensures the .gitignore contains an up-to-date swamp managed section.
-   *
-   * - If no .gitignore exists: creates one with the managed section.
-   * - If .gitignore exists without a swamp section: appends the managed section.
-   * - If .gitignore exists with a swamp section: replaces the section if content differs.
-   * - If .gitignore has legacy format (pre-marker): migrates to managed section.
-   */
   private async ensureGitignoreSection(
     repoPath: RepoPath,
     configs: ToolConfig[],
@@ -1633,13 +1428,11 @@ directly). Every \`swamp model …\` spelling remains supported.
       }
     }
 
-    // Case 1: No .gitignore exists — create new file
     if (existingContent === null) {
       await Deno.writeTextFile(gitignorePath, newSection + "\n");
       return "created";
     }
 
-    // Case 2: File exists with markers — replace managed section
     if (existingContent.includes(GITIGNORE_SECTION_BEGIN)) {
       const updatedContent = this.replaceManagedSection(
         existingContent,
@@ -1654,7 +1447,6 @@ directly). Every \`swamp model …\` spelling remains supported.
       return "updated";
     }
 
-    // Case 3: File exists with legacy header — migrate
     if (existingContent.includes(GITIGNORE_LEGACY_HEADER)) {
       const updatedContent = this.migrateLegacyGitignore(
         existingContent,
@@ -1664,7 +1456,6 @@ directly). Every \`swamp model …\` spelling remains supported.
       return "updated";
     }
 
-    // Case 4: File exists without any swamp content — append section
     const separator = existingContent.endsWith("\n") ? "\n" : "\n\n";
     await atomicWriteTextFile(
       gitignorePath,
@@ -1673,19 +1464,11 @@ directly). Every \`swamp model …\` spelling remains supported.
     return "updated";
   }
 
-  /**
-   * Builds the full managed section including BEGIN/END markers.
-   */
   private buildGitignoreSection(configs: ToolConfig[]): string {
     const body = this.generateGitignoreSectionBody(configs);
     return GITIGNORE_SECTION_BEGIN + "\n" + body + GITIGNORE_SECTION_END;
   }
 
-  /**
-   * Generates the content between markers (not including the markers).
-   * Emits one entry per enrolled tool that has tool-specific gitignore
-   * entries (currently only Claude for local config files).
-   */
   private generateGitignoreSectionBody(configs: ToolConfig[]): string {
     const lines = [
       "",
@@ -1709,11 +1492,6 @@ directly). Every \`swamp model …\` spelling remains supported.
     return lines.join("\n");
   }
 
-  /**
-   * Replaces the managed section between BEGIN and END markers.
-   * Preserves all content outside the markers exactly as-is.
-   * Works for both gitignore and instructions files.
-   */
   private replaceManagedSection(
     content: string,
     newSection: string,
@@ -1733,7 +1511,6 @@ directly). Every \`swamp model …\` spelling remains supported.
       );
     }
 
-    // Detect duplicate marker pairs
     const secondBegin = content.indexOf(beginMarker, beginIndex + 1);
     const secondEnd = content.indexOf(endMarker, endIndex + 1);
     if (secondBegin !== -1 || secondEnd !== -1) {
@@ -1744,7 +1521,6 @@ directly). Every \`swamp model …\` spelling remains supported.
     }
 
     const endOfEndMarker = endIndex + endMarker.length;
-    // Consume the trailing newline after END marker if present
     const nextChar = content[endOfEndMarker];
     const endSlice = nextChar === "\n" ? endOfEndMarker + 1 : endOfEndMarker;
 
@@ -1754,11 +1530,6 @@ directly). Every \`swamp model …\` spelling remains supported.
     return before + newSection + "\n" + after;
   }
 
-  /**
-   * Migrates a legacy .gitignore (with "Swamp managed defaults" header
-   * but no section markers) to the new managed section format.
-   * Replaces the legacy swamp block; preserves user content after it.
-   */
   private migrateLegacyGitignore(
     content: string,
     newSection: string,
@@ -1772,8 +1543,6 @@ directly). Every \`swamp model …\` spelling remains supported.
       throw new Error("Internal error: legacy header not found");
     }
 
-    // Scan forward from the header to find the end of the legacy block.
-    // The legacy block consists of comments and entries that match known patterns.
     const swampPatterns = [
       ".swamp/telemetry/",
       ".swamp/secrets/keyfile",
@@ -1816,15 +1585,11 @@ directly). Every \`swamp model …\` spelling remains supported.
     return prefix + newSection + suffix;
   }
 
-  /**
-   * Gets the list of allowed swamp commands for Claude settings.
-   */
   private getClaudeAllowedCommands(): string[] {
     return [
-      // Each preferred `swamp behavior` command sits right after its legacy
-      // `swamp model` twin; both spellings stay pre-approved (swamp-club#3332).
-      // The British `swamp behaviour` alias follows each behavior entry, since
-      // a permission pattern matches the typed words (swamp-club#3409).
+      // each preferred swamp behavior command follows its legacy swamp model
+      // twin, and the British behaviour alias follows each, since a permission
+      // pattern matches the typed words
       "Bash(swamp model type search:*)",
       "Bash(swamp behavior type search:*)",
       "Bash(swamp behaviour type search:*)",
@@ -1863,8 +1628,8 @@ directly). Every \`swamp model …\` spelling remains supported.
       "Bash(swamp workflow validate:*)",
       "Bash(swamp workflow schema:*)",
       "Bash(swamp workflow history:*)",
-      // Every vault subcommand except read-secret, which reveals a secret
-      // value and must ask first (swamp-club#3219).
+      // every vault subcommand except read-secret, which reveals a secret value
+      // and must ask first
       "Bash(swamp vault type:*)",
       "Bash(swamp vault search:*)",
       "Bash(swamp vault list:*)",
@@ -1891,9 +1656,6 @@ directly). Every \`swamp model …\` spelling remains supported.
     ];
   }
 
-  /**
-   * Generates the content for settings.local.json.
-   */
   private generateClaudeSettingsContent(): string {
     const settings = {
       permissions: {
@@ -1904,9 +1666,6 @@ directly). Every \`swamp model …\` spelling remains supported.
     return JSON.stringify(settings, null, 2) + "\n";
   }
 
-  /**
-   * Gets the hooks configuration for Claude settings.
-   */
   private getClaudeHooks(): Record<string, unknown[]> {
     return {
       PostToolUse: [
@@ -1934,10 +1693,6 @@ directly). Every \`swamp model …\` spelling remains supported.
     };
   }
 
-  /**
-   * Creates a file if it doesn't already exist, ensuring parent directories exist.
-   * Returns true if the file was created, false if it already existed.
-   */
   private async createFileIfNotExists(
     filePath: string,
     content: string,
@@ -1955,10 +1710,6 @@ directly). Every \`swamp model …\` spelling remains supported.
     }
   }
 
-  /**
-   * Overwrites a managed file if its content has changed.
-   * Returns true if the file was written, false if content was identical.
-   */
   private async overwriteIfChanged(
     filePath: string,
     newContent: string,
@@ -1974,9 +1725,6 @@ directly). Every \`swamp model …\` spelling remains supported.
     return true;
   }
 
-  /**
-   * Creates settings.local.json if it doesn't already exist.
-   */
   private createClaudeSettingsIfNotExists(
     repoPath: RepoPath,
   ): Promise<boolean> {
@@ -1987,15 +1735,10 @@ directly). Every \`swamp model …\` spelling remains supported.
     );
   }
 
-  /**
-   * Updates settings.local.json, merging new permissions with existing ones.
-   * If the file doesn't exist, it creates it.
-   */
   private async updateClaudeSettings(repoPath: RepoPath): Promise<boolean> {
     const claudeDir = join(repoPath.value, ".claude");
     const settingsPath = join(claudeDir, "settings.local.json");
 
-    // Ensure .claude directory exists
     await ensureDir(claudeDir);
 
     let existingSettings: {
@@ -2012,21 +1755,18 @@ directly). Every \`swamp model …\` spelling remains supported.
       if (!(error instanceof Deno.errors.NotFound)) {
         throw error;
       }
-      // File doesn't exist, will create new
     }
 
-    // Get our allowed commands
     const ourCommands = this.getClaudeAllowedCommands();
 
-    // Merge with existing permissions, dropping the vault wildcard earlier
-    // versions wrote because it pre-approves read-secret.
+    // merge with existing permissions, dropping the vault wildcard because it
+    // pre-approves read-secret
     const existingAllow = existingSettings.permissions?.allow ?? [];
     const keptAllow = existingAllow.filter((cmd) =>
       cmd !== LEGACY_CLAUDE_VAULT_ALLOW
     );
     const mergedAllow = [...new Set([...keptAllow, ...ourCommands])];
 
-    // Merge hooks
     const ourHooks = this.getClaudeHooks();
     const mergedHooks = mergeAuditHooks(
       existingSettings.hooks ?? {},
@@ -2034,7 +1774,6 @@ directly). Every \`swamp model …\` spelling remains supported.
       CLAUDE_AUDIT_HOOK_SHAPE,
     );
 
-    // Check if anything changed
     const permissionsChanged = mergedAllow.length !== existingAllow.length ||
       keptAllow.length !== existingAllow.length ||
       !ourCommands.every((cmd) => existingAllow.includes(cmd));
@@ -2046,7 +1785,6 @@ directly). Every \`swamp model …\` spelling remains supported.
       return false;
     }
 
-    // Write merged settings
     const newSettings = {
       ...existingSettings,
       permissions: {
@@ -2063,11 +1801,9 @@ directly). Every \`swamp model …\` spelling remains supported.
   }
 
   /**
-   * Generates the content for the Amp plugin at .amp/plugins/swamp.ts.
-   * Amp runs tools without asking by default and no longer reads the
-   * `amp.commands` allowlist, so command control goes through a plugin. This
-   * one asks before a shell command that reads a vault secret.
-   * Upstream contract: https://ampcode.com/docs/customize/plugins
+   * Amp runs tools without asking by default and ignores amp.commands, so
+   * command control goes through a plugin that asks before a shell command
+   * reads a vault secret
    */
   private generateAmpPluginContent(): string {
     return `// Swamp permissions plugin for Amp
@@ -2107,9 +1843,6 @@ export default function (amp: PluginAPI) {
 `;
   }
 
-  /**
-   * Creates .amp/plugins/swamp.ts if it doesn't already exist.
-   */
   private createAmpPluginIfNotExists(repoPath: RepoPath): Promise<boolean> {
     return this.createFileIfNotExists(
       join(repoPath.value, ".amp", "plugins", "swamp.ts"),
@@ -2117,9 +1850,6 @@ export default function (amp: PluginAPI) {
     );
   }
 
-  /**
-   * Updates .amp/plugins/swamp.ts, always overwriting with latest content.
-   */
   private updateAmpPlugin(repoPath: RepoPath): Promise<boolean> {
     return this.overwriteIfChanged(
       join(repoPath.value, ".amp", "plugins", "swamp.ts"),
@@ -2128,11 +1858,9 @@ export default function (amp: PluginAPI) {
   }
 
   /**
-   * Reads a JSON file an earlier swamp version wrote, so upgrade can remove
-   * swamp's own entries from it. Returns undefined when the file is absent,
-   * is not a regular file, or does not hold a JSON object: upgrade then
-   * leaves it alone rather than failing over a file swamp no longer needs,
-   * warning unless `quiet` is set (for files that are the user's own).
+   * upgrade leaves an absent, non-regular or non-object file alone rather than
+   * failing over a file swamp does not need; it warns unless quiet (the user's
+   * own files)
    */
   private async readLegacyJsonFile(
     path: string,
@@ -2164,9 +1892,6 @@ export default function (amp: PluginAPI) {
     return parsed as Record<string, unknown>;
   }
 
-  /**
-   * Writes a settings file swamp cleaned up, deleting it when nothing is left.
-   */
   private async writeOrRemoveSettingsFile(
     path: string,
     settings: Record<string, unknown>,
@@ -2179,10 +1904,8 @@ export default function (amp: PluginAPI) {
   }
 
   /**
-   * Removes the `amp.commands` allowlist entry earlier versions wrote to
-   * .amp/settings.json. The user's own entries and settings are kept; the
-   * block goes when nothing but `strict` is left in it, and the file goes
-   * when nothing is left in it.
+   * keeps the user's own entries and settings; the block goes when only strict
+   * is left in it, and the file goes when nothing is left
    */
   private async removeLegacyAmpCommands(repoPath: RepoPath): Promise<boolean> {
     const settingsPath = join(repoPath.value, ".amp", "settings.json");
@@ -2213,10 +1936,8 @@ export default function (amp: PluginAPI) {
   }
 
   /**
-   * Removes the Kiro IDE 0.x entries earlier versions wrote to
-   * .vscode/settings.local.json. The user's own entries and settings are
-   * kept; an emptied key is dropped, and the file goes when nothing is left
-   * in it.
+   * keeps the user's own entries and settings; an emptied key is dropped, and
+   * the file goes when nothing is left
    */
   private async removeLegacyKiroIdeSettings(
     repoPath: RepoPath,
@@ -2240,9 +1961,6 @@ export default function (amp: PluginAPI) {
     return true;
   }
 
-  /**
-   * Generates the content for Cursor's .cursor/hooks.json.
-   */
   private generateCursorHooksContent(): string {
     const hooks = {
       version: 1,
@@ -2258,9 +1976,6 @@ export default function (amp: PluginAPI) {
     return JSON.stringify(hooks, null, 2) + "\n";
   }
 
-  /**
-   * Creates .cursor/hooks.json if it doesn't already exist.
-   */
   private createCursorHooksIfNotExists(
     repoPath: RepoPath,
   ): Promise<boolean> {
@@ -2271,9 +1986,6 @@ export default function (amp: PluginAPI) {
     );
   }
 
-  /**
-   * Updates .cursor/hooks.json, merging new hook entries with existing ones.
-   */
   private async updateCursorHooks(repoPath: RepoPath): Promise<boolean> {
     const cursorDir = join(repoPath.value, ".cursor");
     const hooksPath = join(cursorDir, "hooks.json");
@@ -2330,9 +2042,8 @@ export default function (amp: PluginAPI) {
   }
 
   /**
-   * Generates the content for Kiro's .kiro/hooks/swamp-audit.json, a hook in
-   * Kiro's v1 hook schema. Kiro IDE 1.0 no longer runs legacy `.kiro.hook`
-   * files. Upstream contract: https://kiro.dev/docs/hooks/
+   * uses Kiro's v1 hook schema, since Kiro IDE 1.0 does not run legacy
+   * .kiro.hook files
    */
   private generateKiroHookContent(): string {
     const hooks = {
@@ -2349,10 +2060,6 @@ export default function (amp: PluginAPI) {
     return JSON.stringify(hooks, null, 2) + "\n";
   }
 
-  /**
-   * Creates .kiro/hooks/swamp-audit.json if it doesn't already exist.
-   * Returns the paths it created.
-   */
   private async createKiroHooksIfNotExists(
     repoPath: RepoPath,
   ): Promise<string[]> {
@@ -2364,11 +2071,9 @@ export default function (amp: PluginAPI) {
   }
 
   /**
-   * Updates .kiro/hooks/swamp-audit.json, always overwriting with latest
-   * content, and removes the audit hooks earlier versions leave behind:
-   * swamp's legacy `swamp-audit.kiro.hook`, and copies of the audit hook in
-   * other v1 hook files (Kiro IDE auto-migrates legacy hooks), each of which
-   * would record every tool call again. Returns the paths it changed.
+   * always overwrites, and removes the legacy swamp-audit.kiro.hook and
+   * audit-hook copies in other v1 hook files, each of which would record every
+   * tool call again
    */
   private async updateKiroHooks(repoPath: RepoPath): Promise<string[]> {
     const hooksDir = join(repoPath.value, ".kiro", "hooks");
@@ -2403,8 +2108,8 @@ export default function (amp: PluginAPI) {
   }
 
   /**
-   * Deletes the Kiro IDE 0.x hook file earlier versions wrote, if it is
-   * still swamp's audit hook. Any other file at that path is left alone.
+   * deletes the Kiro IDE 0.x hook file only if it is still swamp's audit hook;
+   * any other file at that path is left alone
    */
   private async removeLegacyKiroHookFile(path: string): Promise<boolean> {
     const hook = await this.readLegacyJsonFile(path);
@@ -2415,10 +2120,9 @@ export default function (amp: PluginAPI) {
   }
 
   /**
-   * Removes copies of swamp's audit hook from a v1 Kiro hook file: post-tool
-   * entries whose command is swamp's audit hook command, however the binary
-   * is spelled. Everything else in the file is kept, and
-   * the file is deleted only when no hooks and no other settings are left.
+   * removes post-tool entries running swamp's audit hook command, however the
+   * binary is spelled; the file is deleted only when no hooks and no other
+   * settings are left
    */
   private async removeKiroAuditHookCopies(path: string): Promise<boolean> {
     // Any hook file can be swept, most of them the user's own, so one that
@@ -2443,10 +2147,6 @@ export default function (amp: PluginAPI) {
     return true;
   }
 
-  /**
-   * Generates the content for Copilot's .github/hooks/swamp-audit.json.
-   * Upstream contract: https://docs.github.com/en/copilot/reference/hooks-configuration
-   */
   private generateCopilotHooksContent(): string {
     const hooks = {
       version: 1,
@@ -2468,9 +2168,6 @@ export default function (amp: PluginAPI) {
     return JSON.stringify(hooks, null, 2) + "\n";
   }
 
-  /**
-   * Creates .github/hooks/swamp-audit.json if it doesn't already exist.
-   */
   private createCopilotHooksIfNotExists(
     repoPath: RepoPath,
   ): Promise<boolean> {
@@ -2486,10 +2183,6 @@ export default function (amp: PluginAPI) {
     );
   }
 
-  /**
-   * Updates .github/hooks/swamp-audit.json, merging new hook entries with
-   * existing ones.
-   */
   private async updateCopilotHooks(repoPath: RepoPath): Promise<boolean> {
     const githubDir = join(repoPath.value, ".github", "hooks");
     const hooksPath = join(githubDir, "swamp-audit.json");
@@ -2552,19 +2245,9 @@ export default function (amp: PluginAPI) {
   }
 
   /**
-   * Generates the content for the kiro CLI agent config at .kiro/agents/swamp.json.
-   * This provides kiro-cli (not Kiro IDE) with trusted commands, the audit
-   * hook, and resource references.
-   *
-   * The config is in kiro-cli's universal format, which both its 2.x engine
-   * (the default) and its opt-in 3.0 engine load: the 2.x `toolsSettings`
-   * alongside the 3.0 `permissions.rules` that mirror them, and the array
-   * form of `hooks`. This is the shape `kiro-cli agent upgrade` writes
-   * (checked against kiro-cli 2.29). kiro-cli treats a profile whose
-   * permissions or tools differ from what it would derive from
-   * `toolsSettings` as out of sync, so keep `tools` sorted and the two rule
-   * sets equivalent. Kiro IDE 1.0 ignores agent configs that contain `hooks`;
-   * the IDE runs the audit hook from .kiro/hooks/swamp-audit.json instead.
+   * kiro-cli universal format: 2.x toolsSettings plus mirroring 3.0
+   * permissions.rules; keep tools sorted and rule sets equivalent or kiro-cli
+   * reports the profile out of sync; Kiro IDE ignores configs with hooks
    */
   private generateKiroAgentConfigContent(): string {
     const config = {
@@ -2589,9 +2272,9 @@ export default function (amp: PluginAPI) {
       toolsSettings: {
         shell: {
           allowedCommands: ["swamp .*"],
-          // Denied wins over allowed. kiro-cli blocks a denied command
-          // rather than asking, and its regex has no look-ahead to exclude
-          // read-secret from the allow pattern (swamp-club#3219).
+          // denied wins over allowed: kiro-cli blocks a denied command rather
+          // than asking, and its regex has no look-ahead to exclude read-secret
+          // from the allow pattern
           deniedCommands: [".*read-secret.*"],
         },
       },
@@ -2615,9 +2298,6 @@ export default function (amp: PluginAPI) {
     return JSON.stringify(config, null, 2) + "\n";
   }
 
-  /**
-   * Creates .kiro/agents/swamp.json if it doesn't already exist.
-   */
   private async createKiroAgentConfigIfNotExists(
     repoPath: RepoPath,
   ): Promise<boolean> {
@@ -2633,9 +2313,6 @@ export default function (amp: PluginAPI) {
     );
   }
 
-  /**
-   * Updates .kiro/agents/swamp.json, overwriting with latest content.
-   */
   private async updateKiroAgentConfig(repoPath: RepoPath): Promise<boolean> {
     const configPath = join(
       repoPath.value,
@@ -2650,14 +2327,9 @@ export default function (amp: PluginAPI) {
   }
 
   /**
-   * Ensures `.kiro/settings/cli.json` selects the swamp agent as the workspace
-   * default. Without this, plain `kiro-cli chat` (no --agent flag) loads the
-   * built-in `kiro_default` agent and the swamp audit hook never fires.
-   *
-   * If the file doesn't exist, creates it with `{ "chat.defaultAgent": "swamp" }`.
-   * If it exists, merges the key — preserving any unrelated settings the user
-   * has set. If `chat.defaultAgent` is already set to a non-"swamp" value, the
-   * user's preference wins and we log a warning.
+   * without this, plain kiro-cli chat loads the built-in default agent and the
+   * audit hook never fires; an existing non-swamp chat.defaultAgent wins with a
+   * warning; unrelated settings are kept
    */
   private async ensureKiroCliDefaultAgent(
     repoPath: RepoPath,
@@ -2708,14 +2380,9 @@ export default function (amp: PluginAPI) {
   }
 
   /**
-   * Generates the content for OpenCode's .opencode/plugins/swamp-audit.ts.
-   *
-   * One file serves OpenCode 1 and OpenCode 2. OpenCode 1.3.4+ uses
-   * `default.server` and ignores the other exports; OpenCode 2 requires a
-   * default object with `id` and `setup` and ignores named exports. The named
-   * `SwampAudit` export keeps the original V1 shape. OpenCode 1 builds before
-   * 1.3.4 call every export as a function, so they cannot load any file
-   * OpenCode 2 accepts.
+   * one file serves OpenCode 1.3.4+ (default.server) and OpenCode 2 (default
+   * object with id and setup); builds before 1.3.4 call every export as a
+   * function and cannot load it
    */
   private generateOpenCodePluginContent(): string {
     return `// Swamp audit plugin for OpenCode
@@ -2782,9 +2449,6 @@ export default {
 `;
   }
 
-  /**
-   * Creates .opencode/plugins/swamp-audit.ts if it doesn't already exist.
-   */
   private createOpenCodePluginIfNotExists(
     repoPath: RepoPath,
   ): Promise<boolean> {
@@ -2800,9 +2464,6 @@ export default {
     );
   }
 
-  /**
-   * Updates .opencode/plugins/swamp-audit.ts, always overwriting with latest content.
-   */
   private updateOpenCodePlugin(repoPath: RepoPath): Promise<boolean> {
     const pluginPath = join(
       repoPath.value,
@@ -2954,19 +2615,14 @@ export default function swampAudit(pi) {
     return true;
   }
 
-  /**
-   * Creates the data directory structure for storing repository artifacts.
-   */
   private async createDataDirectoryStructure(
     repoPath: RepoPath,
   ): Promise<void> {
-    // Top-level directories for source-of-truth files
     const topLevelDirs = ["models", "workflows", "vaults", "grants"];
     for (const dir of topLevelDirs) {
       await ensureDir(join(repoPath.value, dir));
     }
 
-    // Runtime data directories under .swamp/
     const runtimeSubdirs = [
       SWAMP_SUBDIRS.data,
       SWAMP_SUBDIRS.outputs,
@@ -2986,11 +2642,9 @@ export default function swampAudit(pi) {
   }
 
   /**
-   * Drains a legacy repo-local telemetry spool into the user-global spool
-   * during upgrade. Repos that opted out of telemetry are skipped so their
-   * leftover entries are never sent. The repo-local directory is left orphaned,
-   * never deleted. Best-effort — telemetry migration must never fail an
-   * upgrade.
+   * repos that opted out of telemetry are skipped so leftovers are never sent;
+   * the repo-local directory is left orphaned, never deleted; best-effort, must
+   * never fail an upgrade
    */
   private async migrateRepoLocalTelemetry(
     repoPath: RepoPath,
@@ -3007,29 +2661,17 @@ export default function swampAudit(pi) {
     }
   }
 
-  /**
-   * Migrates to top-level directory layout:
-   * - Replaces `latest` symlinks in data dirs with text files
-   * - Removes old symlink directories at models/, workflows/, vaults/
-   * - Moves files from .swamp/definitions/ → models/
-   * - Moves files from .swamp/workflows/ → workflows/
-   * - Moves files from .swamp/vault/ → vaults/
-   */
   private async migrateFromSymlinks(repoPath: RepoPath): Promise<void> {
-    // Replace latest symlinks with text files in data directory
     const dataDir = swampPath(repoPath.value, SWAMP_SUBDIRS.data);
     await this.replaceLatestSymlinks(dataDir);
 
-    // Clean up old symlink-based index directories
     for (const dir of ["models", "workflows", "vaults"]) {
       const dirPath = join(repoPath.value, dir);
       try {
         const stat = await Deno.lstat(dirPath);
         if (stat.isSymlink) {
-          // Top-level symlink: remove it entirely
           await Deno.remove(dirPath);
         } else if (stat.isDirectory) {
-          // Real directory from old index: remove all symlinks inside
           await this.removeSymlinksRecursively(dirPath);
         }
       } catch (error) {
@@ -3039,34 +2681,26 @@ export default function swampAudit(pi) {
       }
     }
 
-    // Create top-level directories
     for (const dir of ["models", "workflows", "vaults"]) {
       await ensureDir(join(repoPath.value, dir));
     }
 
-    // Move files from .swamp/definitions/ → models/
     await this.moveDirectoryContents(
       swampPath(repoPath.value, SWAMP_SUBDIRS.definitions),
       join(repoPath.value, "models"),
     );
 
-    // Move files from .swamp/workflows/ → workflows/
     await this.moveDirectoryContents(
       swampPath(repoPath.value, SWAMP_SUBDIRS.workflows),
       join(repoPath.value, "workflows"),
     );
 
-    // Move files from .swamp/vault/ → vaults/
     await this.moveDirectoryContents(
       swampPath(repoPath.value, SWAMP_SUBDIRS.vault),
       join(repoPath.value, "vaults"),
     );
   }
 
-  /**
-   * Recursively moves all contents from source to destination directory,
-   * preserving directory structure. Removes empty source directories after moving.
-   */
   private async moveDirectoryContents(
     srcDir: string,
     destDir: string,
@@ -3079,14 +2713,12 @@ export default function swampAudit(pi) {
         if (entry.isDirectory) {
           await ensureDir(destPath);
           await this.moveDirectoryContents(srcPath, destPath);
-          // Remove the now-empty source directory
           try {
             await Deno.remove(srcPath);
           } catch {
             // Non-fatal: directory may not be empty
           }
         } else if (entry.isFile) {
-          // Only move if destination doesn't already exist
           try {
             await Deno.stat(destPath);
           } catch (error) {
@@ -3102,7 +2734,6 @@ export default function swampAudit(pi) {
       }
     }
 
-    // Try to remove the now-empty source directory
     try {
       await Deno.remove(srcDir);
     } catch {
@@ -3110,11 +2741,6 @@ export default function swampAudit(pi) {
     }
   }
 
-  /**
-   * Recursively removes all symlinks from a directory, then removes
-   * any empty directories left behind. Used to clean up old symlink-based
-   * index structures (models/name/definition.yaml → ..., etc.).
-   */
   private async removeSymlinksRecursively(dir: string): Promise<void> {
     try {
       for await (const entry of Deno.readDir(dir)) {
@@ -3125,7 +2751,6 @@ export default function swampAudit(pi) {
           await Deno.remove(fullPath);
         } else if (stat.isDirectory) {
           await this.removeSymlinksRecursively(fullPath);
-          // Try to remove the directory if it's now empty
           try {
             await Deno.remove(fullPath);
           } catch {
@@ -3140,10 +2765,6 @@ export default function swampAudit(pi) {
     }
   }
 
-  /**
-   * Recursively replaces `latest` symlinks with text files containing
-   * the version number.
-   */
   private async replaceLatestSymlinks(dir: string): Promise<void> {
     try {
       for await (const entry of Deno.readDir(dir)) {

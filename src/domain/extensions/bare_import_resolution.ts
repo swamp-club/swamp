@@ -18,12 +18,9 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * What a bare import resolves to, as Deno resolves it: the project config
- * (`deno.json` or `deno.jsonc`), an `importMap` file it references, the scope
- * covering the importing module, and a workspace root's imports. Push reads
- * the answer from the module graph Deno reports rather than reading the
- * config itself, so it never ships or audits a different target than the
- * one the extension was bundled with (swamp-club#3612).
+ * push reads the answer from the module graph Deno reports rather than the
+ * config itself, so it never ships or audits a different target than the one
+ * the extension was bundled with
  */
 
 import {
@@ -37,56 +34,28 @@ import {
 import { format, satisfies, tryParse, tryParseRange } from "@std/semver";
 import { isBareSpecifier } from "./dependency_resolution/specifier.ts";
 
-/** One bare import a local module writes, and what Deno resolved it to. */
 export interface ResolvedBareImport {
-  /** Absolute path of the importing module. */
   importer: string;
-  /** The specifier as the importer writes it. */
   specifier: string;
-  /**
-   * The specifier Deno resolved it to (`npm:ms@2.1.2`,
-   * `jsr:/@std/path@1/posix`, a `file:` or `https:` URL), or undefined when
-   * Deno could not resolve it.
-   */
   target?: string;
-  /**
-   * The file in a node_modules directory Deno resolved it to, when it did:
-   * a package.json project's installed package (swamp-club#3630).
-   */
   installedFile?: string;
-  /**
-   * The version installed in a package.json project's node_modules, when
-   * `target` names that installed package (swamp-club#3630).
-   */
   installedVersion?: string;
-  /**
-   * The `npm:` specifier the project's package.json declares for the
-   * package (`npm:ms@^2.1.0`), when `target` names the installed version
-   * and package.json declares it.
-   */
   declared?: string;
 }
 
 /**
- * Port: what a bare import resolves to from the module that writes it.
- * Undefined means unresolved: the import ships as written and the
+ * undefined means unresolved: the import ships as written and the
  * bare-specifiers finding names it. An implementation never answers with a
  * target Deno would not use for that importer.
  */
 export interface BareImportResolver {
   resolve(importer: string, specifier: string): string | undefined;
-  /**
-   * The installed package a bare import `resolve` answers with in a
-   * package.json project, and the `npm:` specifier package.json declares
-   * for it when it does (swamp-club#3630); undefined otherwise.
-   */
   installed?(
     importer: string,
     specifier: string,
   ): { version: string; declared?: string } | undefined;
 }
 
-/** A resolver that resolves nothing: every bare import ships as written. */
 export const NO_BARE_IMPORT_RESOLUTION: BareImportResolver = {
   resolve: () => undefined,
 };
@@ -95,10 +64,6 @@ function resolutionKey(importer: string, specifier: string): string {
   return `${resolve(importer)}\0${specifier}`;
 }
 
-/**
- * A resolver answering exactly what `resolutions` records for each importer
- * and specifier; anything not recorded is unresolved.
- */
 export function bareImportResolverFrom(
   resolutions: readonly ResolvedBareImport[],
 ): BareImportResolver {
@@ -122,7 +87,6 @@ export function bareImportResolverFrom(
   };
 }
 
-/** Each resolution once per importer and specifier, the first kept. */
 export function uniqueBareImports(
   resolutions: readonly ResolvedBareImport[],
 ): ResolvedBareImport[] {
@@ -150,11 +114,6 @@ interface DenoInfoModuleEntry {
   dependencies?: unknown;
 }
 
-/**
- * The directory of the entry point `deno info --json` output was read from
- * (its first root), which {@link isLocalModuleSpecifier} reads paths
- * relative to; undefined when the output names no `file:` root.
- */
 export function denoInfoRootDir(json: unknown): string | undefined {
   const root = (json as { roots?: unknown })?.roots;
   const first = Array.isArray(root) ? root[0] : undefined;
@@ -164,10 +123,9 @@ export function denoInfoRootDir(json: unknown): string | undefined {
 }
 
 /**
- * A `file:` module that is not an npm package installed in a node_modules
- * directory: the extension's own source. Only the path from `rootDir`, the
- * entry point's directory, is read, so a repository checked out under a
- * directory named node_modules still has local modules.
+ * only the path from rootDir (the entry point's directory) is read, so a
+ * repository checked out under a directory named node_modules still has local
+ * modules
  */
 export function isLocalModuleSpecifier(
   specifier: unknown,
@@ -181,19 +139,15 @@ export function isLocalModuleSpecifier(
     .split(SEPARATOR_PATTERN).includes("node_modules");
 }
 
-/** A `file:` URL inside a node_modules directory below `rootDir`. */
 function isInstalledPackageFile(specifier: string, rootDir?: string): boolean {
   return specifier.startsWith("file:") &&
     !isLocalModuleSpecifier(specifier, rootDir);
 }
 
 /**
- * The bare imports each local module in `deno info --json` output writes,
- * with the specifier Deno resolved each to. A code import's resolution
- * wins over a type import's; one Deno reports an error for is unresolved,
- * and so is one Deno resolves into a node_modules directory (a manual
- * `nodeModulesDir`): the graph names a file there, not a specifier push
- * can ship. {@link withPackageSpecifiers} fills these from a second read.
+ * a code import's resolution wins over a type import's; errors and imports
+ * resolved into node_modules are unresolved, since the graph names a file
+ * there, not a specifier push can ship
  */
 export function bareImportsFromDenoInfo(json: unknown): ResolvedBareImport[] {
   const modules = (json as { modules?: unknown })?.modules;
@@ -222,7 +176,6 @@ export function bareImportsFromDenoInfo(json: unknown): ResolvedBareImport[] {
   return uniqueBareImports(found);
 }
 
-/** A bare import's package name and the subpath after it (`/posix`). */
 function packageOfBareImport(
   specifier: string,
 ): { name: string; subpath: string } {
@@ -244,10 +197,8 @@ const STRICT_SEMVER_RE =
   /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/;
 
 /**
- * What a package.json declares for a dependency: an npm registry range or
- * dist-tag, read through an `npm:` alias to its target package; undefined
- * for a non-registry source (`file:`, `link:`, `workspace:`, git, a URL or
- * `user/repo`), which the registry never serves.
+ * non-registry sources (file:, link:, workspace:, git, a URL, user/repo) give
+ * undefined, since the registry never serves them
  */
 function registryDeclaration(
   name: string,
@@ -265,7 +216,6 @@ function registryDeclaration(
   return declared;
 }
 
-/** `dependencies` then `devDependencies`, as the bundler resolves them. */
 function declaredDependency(
   packageJson: unknown,
   name: string,
@@ -281,11 +231,6 @@ function declaredDependency(
   return undefined;
 }
 
-/**
- * The installed package directory a node_modules file belongs to, and the
- * package name its path gives: the segments after the last `node_modules`
- * (one, or two for a scope). Undefined for a file not under one.
- */
 export function installedPackageDir(
   file: string,
 ): { dir: string; name: string } | undefined {
@@ -303,51 +248,25 @@ export function installedPackageDir(
   };
 }
 
-/**
- * A bare import package.json declares at a registry range whose package
- * node_modules does not hold, or holds at a version outside that range.
- */
 export interface StaleInstalledImport {
   importer: string;
   specifier: string;
-  /** The package as package.json names it. */
   packageName: string;
-  /** The range package.json declares. */
   declaredRange: string;
-  /** The installed version, when one is installed. */
   installedVersion?: string;
-  /**
-   * The package installed in its place, when it is not the one package.json
-   * declares (an `npm:` alias changed without reinstalling).
-   */
   installedName?: string;
-  /** The package package.json declares, when `installedName` is set. */
   declaredName?: string;
 }
 
-/** {@link installedPackageImports}' answer. */
 export interface InstalledPackageImports {
   resolutions: ResolvedBareImport[];
   stale: StaleInstalledImport[];
 }
 
 /**
- * `resolutions` from a package.json project's graph, read with
- * `--node-modules-dir=manual`, with each import Deno resolved into
- * node_modules given the specifier of the package installed there:
- * `npm:<name>@<installed version><subpath>`, the code the bundle inlines
- * (swamp-club#3630). `declared` records the range package.json lists for
- * it, `dependencies` then `devDependencies`.
- *
- * The installed manifest is repo-controlled, so it names a package only
- * when its name is a valid npm name, its version is strict semver, and the
- * name is the package package.json declares (the `npm:` alias target, when
- * it is one) or, for a package package.json does not declare, its
- * node_modules directory: the shipped specifier and the audited one are
- * always the same package. Otherwise, or for a non-registry declaration,
- * the import stays unresolved and ships as written. An import package.json
- * declares at a registry range that is not installed, is installed outside
- * that range, or is installed as another package, is reported in `stale`.
+ * the installed manifest is repo-controlled, so it counts only with a valid npm
+ * name, strict semver and the declared name; the shipped and audited specifier
+ * are then one package, else the import ships as written
  */
 export async function installedPackageImports(
   resolutions: readonly ResolvedBareImport[],
@@ -460,12 +379,9 @@ export async function installedPackageImports(
 }
 
 /**
- * Whether any bare import is unresolved: Deno reported an error for it or
- * resolved it into node_modules. Under a manual `nodeModulesDir` (a
- * package.json beside the config) Deno applies the import map and then
- * looks the npm package up in node_modules, so a mapped name reads as
- * unresolved whenever the package is not installed, or names a file there
- * when it is.
+ * under a manual nodeModulesDir Deno applies the import map then looks in
+ * node_modules, so a mapped name reads as unresolved when the package is not
+ * installed, or names a file there when it is
  */
 export function hasUnresolvedBareImports(
   resolutions: readonly ResolvedBareImport[],
@@ -474,13 +390,9 @@ export function hasUnresolvedBareImports(
 }
 
 /**
- * `resolutions` with each unresolved import filled from `packageRead`, the
- * same graph read with `--node-modules-dir=none` (swamp-club#3612): there
- * Deno names the npm specifier the config maps the name to rather than a
- * place in node_modules. Where to install a package does not change which
- * specifier a name maps to, so this is still Deno's answer. A resolved
- * import keeps its first answer, and one the second read cannot resolve
- * either stays unresolved.
+ * the second read, with node-modules-dir none, names the npm specifier the
+ * config maps to; where to install does not change that mapping, so it is still
+ * Deno's answer. A resolved import keeps its first.
  */
 export function withPackageSpecifiers(
   resolutions: readonly ResolvedBareImport[],

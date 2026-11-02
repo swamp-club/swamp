@@ -81,8 +81,6 @@ Deno.test("buildMethodContext: passes through required common deps", () => {
     makeInvocation(),
   );
 
-  // dataRepository is wrapped with name resolution — verify the wrapper
-  // delegates to the original via prototype chain
   assertEquals(Object.getPrototypeOf(ctx.dataRepository), dataRepository);
   assertStrictEquals(ctx.definitionRepository, definitionRepository);
 });

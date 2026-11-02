@@ -19,31 +19,23 @@
 
 import { CHECK_INTERVAL_MS } from "../update/update_check_cache.ts";
 
-/** Cached update check result for a single extension. */
 export interface ExtensionUpdateCheckEntry {
-  checkedAt: string; // ISO 8601
+  checkedAt: string;
   latestVersion: string;
 }
 
 /**
- * Map of extension name → last update check result.
- *
- * Stored in .swamp/extension-update-checks.json. For S3-backed datastores
- * this file is synced to the remote, so all machines sharing the datastore
- * share the 24h cooldown — avoiding redundant registry checks.
+ * for S3-backed datastores this file syncs to the remote, so machines sharing
+ * the datastore share the cooldown and avoid redundant registry checks
  */
 export type ExtensionUpdateCheckMap = Record<string, ExtensionUpdateCheckEntry>;
 
-/** Port for reading/writing per-extension update check cache. */
 export interface ExtensionUpdateCheckRepository {
   read(): Promise<ExtensionUpdateCheckMap>;
   write(data: ExtensionUpdateCheckMap): Promise<void>;
 }
 
-/**
- * Builds a cache key from extension name and optional channel.
- * Stable (or absent) channel uses the bare name for backward compat.
- */
+/** a stable or absent channel uses the bare name for backward compatibility */
 export function extensionCacheKey(
   extensionName: string,
   channel?: string,
@@ -54,10 +46,6 @@ export function extensionCacheKey(
   return extensionName;
 }
 
-/**
- * Returns true if the cache entry for the given extension is stale
- * (older than 24 hours) or does not exist.
- */
 export function isExtensionCheckStale(
   cache: ExtensionUpdateCheckMap,
   extensionName: string,

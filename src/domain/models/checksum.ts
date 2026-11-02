@@ -17,12 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Computes a SHA-256 checksum for the given data.
- *
- * @param data - The data to compute the checksum for
- * @returns The hex-encoded checksum
- */
 export async function computeChecksum(data: Uint8Array): Promise<string> {
   // Convert Uint8Array to ArrayBuffer to satisfy TypeScript's strict typing
   const buffer = new ArrayBuffer(data.length);

@@ -17,9 +17,8 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// An import map only adds the bare imports it resolves (swamp-club#3611): a
-// module that writes every dependency out audits exactly what it audited
-// before the audit read the map, whatever the map holds.
+// an import map only adds the bare imports it resolves: a module that writes
+// every dependency out audits the same whatever the map holds
 
 import { assertEquals } from "@std/assert";
 import fc from "fast-check";

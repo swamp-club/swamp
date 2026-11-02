@@ -381,8 +381,6 @@ Deno.test("applySpecifierRewrites: refuses a span that does not cover the specif
   );
 });
 
-// ── Bare-import rewrites (swamp-club#3637) ──────────────────────────────
-
 const IMPORTS = {
   "ms": "npm:ms@^2",
   "@std/path": "jsr:@std/path@^1",

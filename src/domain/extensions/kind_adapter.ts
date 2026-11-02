@@ -64,14 +64,10 @@ export interface RegistrationContext {
   denoPath: string;
   denoRuntime: DenoRuntime;
   repoDir: string | null;
-  /**
-   * The source is a pulled extension's, so its rebuilds read no Deno
-   * config (swamp-club#3970).
-   */
+  /** the source is a pulled extension's, so its rebuilds read no Deno config */
   pulled?: boolean;
   extensionName?: string;
   sourceFingerprint?: string;
-  /** The source as it stood at registration (swamp-club#3594). */
   sourceSnapshot?: SourceSnapshot;
 }
 
@@ -81,9 +77,9 @@ export interface KindAdapter {
   readonly catalogKinds: readonly FreshnessKind[];
   readonly primaryExportKey: string;
   /**
-   * Other export names that declare the primary kind, e.g. `behavior` for
-   * the model kind (swamp-club#3338). A module exports the key or one
-   * alias, never two of them: read it through {@link primaryExport}.
+   * other export names that declare the primary kind, e.g. behavior for model;
+   * a module exports the key or one alias, never two, so read it through
+   * primaryExport
    */
   readonly primaryExportAliases?: readonly string[];
   readonly secondaryExportKey?: string;
@@ -123,16 +119,12 @@ export interface KindAdapter {
     context: RegistrationContext,
   ): void;
 
-  // Returns true if the type is registered in any form — including
-  // lazy entries from buildIndex that haven't been promoted yet.
-  // Use for "is this type known?" checks (e.g., duplicate detection
-  // during load/register).
+  // true if registered in any form, including lazy entries not yet promoted;
+  // for 'is this type known?' checks such as duplicate detection
   hasType(typeNormalized: string): boolean;
 
-  // Returns true only if the type is fully loaded — bundle imported,
-  // definition constructed, ready for invocation. Returns false for
-  // lazy entries. Use for "should I skip the import?" checks (e.g.,
-  // importAndRegisterBundle's early-return guard).
+  // true only when fully loaded (bundle imported, definition built), false for
+  // lazy entries; for 'skip the import?' checks
   isFullyLoaded(typeNormalized: string): boolean;
 
   updateSourceFingerprint?(
@@ -143,10 +135,9 @@ export interface KindAdapter {
   validateNamespace?(rawType: string): string | undefined;
 
   /**
-   * Attaches a secondary export (e.g. `export const extension`) to its
-   * target type. `contributor` ranks it against other extensions that add
-   * the same member (swamp-club#2562); `attach`, when known, marks the
-   * catalog source attached so later attach passes skip it.
+   * contributor ranks it against other extensions adding the same member;
+   * attach, when known, marks the catalog source attached so later attach
+   * passes skip it
    */
   processSecondaryExport?(
     file: string,
@@ -195,10 +186,6 @@ export interface KindAdapter {
   ): string | undefined;
 }
 
-/**
- * The names of every export that declares `adapter`'s primary kind: its
- * key first, then its aliases.
- */
 export function primaryExportNames(
   adapter: Pick<KindAdapter, "primaryExportKey" | "primaryExportAliases">,
 ): readonly string[] {
@@ -206,13 +193,9 @@ export function primaryExportNames(
 }
 
 /**
- * True when an alias export reads as a definition: an object with both a
- * `type` and `methods`, as every model definition has. A module that
- * predates the alias may export an unrelated binding of the same name
- * (`export const behavior = "strict"`, or a config object such as
- * `{ type: "retry" }`); such a binding neither makes a helper module an
- * entry point nor collides with the module's real export, so a file that
- * loaded, or was skipped as a helper, before the alias still does.
+ * an alias export counts only with type and methods: an older module may export
+ * an unrelated binding of that name, which must not make a helper an entry
+ * point or collide with its real export
  */
 function isDefinitionLike(value: unknown): boolean {
   return typeof value === "object" && value !== null && "type" in value &&
@@ -220,12 +203,9 @@ function isDefinitionLike(value: unknown): boolean {
 }
 
 /**
- * The module's primary export, under the adapter's key or one of its
- * aliases (`model` or `behavior` for models), or undefined when it has
- * none. An alias counts only when it reads as a definition (see
- * {@link isDefinitionLike}). Throws when the module exports the key and an
- * alias, or two aliases, as definitions: which one it means cannot be
- * told, so the module is refused rather than one of them winning silently.
+ * an alias counts only when it reads as a definition; throws when the key and
+ * an alias, or two aliases, are definitions, since which is meant cannot be
+ * told
  */
 export function primaryExport(
   module: Record<string, unknown>,

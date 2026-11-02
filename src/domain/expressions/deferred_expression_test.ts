@@ -71,7 +71,6 @@ Deno.test("captureDeferredBindings: an omitted key is one key, and no path reach
     "inputs.constructor",
     "other.key",
   ]);
-  // The dotted key is removed whole; the nested one is untouched.
   assertEquals(bindings.inputs as unknown, { a: { b: "nested" }, keep: 1 });
   assertEquals(bindings.run as unknown, { id: "r1", inputs: {} });
   assertEquals(Object.prototype.toString, toString);
@@ -79,8 +78,6 @@ Deno.test("captureDeferredBindings: an omitted key is one key, and no path reach
 });
 
 Deno.test("captureDeferredBindings: a typed run copies each step's output sources as plain data the schema accepts, and an untyped run's copy is what it always was (typed-secrets 4.2)", () => {
-  // A mutable literal: the record schema's form and the context's both
-  // take it.
   const sources = [{
     path: [] as string[],
     records: [{
@@ -133,7 +130,6 @@ Deno.test("captureDeferredBindings: a typed run copies each step's output source
     },
     plain: { status: "skipped" },
   });
-  // The copy is plain data the record schema accepts, in both forms.
   for (const bindings of [typed]) {
     const parsed = DeferredExpressionSchema.parse({
       id: crypto.randomUUID(),
@@ -142,7 +138,6 @@ Deno.test("captureDeferredBindings: a typed run copies each step's output source
     });
     assertEquals(parsed.bindings.steps?.plain, { status: "skipped" });
   }
-  // A context without a registry captures as the untyped run does.
   assertEquals(
     captureDeferredBindings(
       { ...base, steps: steps() } as unknown as ExpressionContext,

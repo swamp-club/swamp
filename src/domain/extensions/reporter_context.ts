@@ -18,13 +18,8 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * Reproducibility context attached to every extension-scoped issue
- * report so the publisher sees which version / runtime the reporter hit
- * the bug on.
- *
- * The field list is intentionally narrow — extending it widens a trust
- * boundary (this data is shipped to third-party repos) and must be an
- * explicit decision, not an incidental one.
+ * the field list is narrow on purpose: this data ships to third-party repos, so
+ * extending it widens a trust boundary and must be an explicit decision
  */
 export interface ReporterContext {
   extensionName: string;
@@ -36,12 +31,6 @@ export interface ReporterContext {
   denoVersion: string;
 }
 
-/**
- * Renders the reporter context as a Markdown section suitable for
- * appending to the body of an issue. The "## Environment" header shape
- * mirrors the existing bug/security templates so users who know those
- * see something familiar.
- */
 export function formatReporterContextMarkdown(ctx: ReporterContext): string {
   return [
     "## Environment",
@@ -54,22 +43,8 @@ export function formatReporterContextMarkdown(ctx: ReporterContext): string {
 }
 
 /**
- * Assembles the final issue body for an extension-scoped report.
- *
- * Shared by the @swamp Lab path (libswamp) and the third-party
- * repository path (CLI dispatcher) so the two destinations produce
- * identical formatting — readers comparing an @swamp report to a
- * third-party one shouldn't find cosmetic drift.
- *
- * Layout:
- *   <user body>
- *
- *   Upstream repository: <url>        ← only when repositoryUrl is set
- *
- *   ## Environment
- *   - Extension: `@name@version`
- *   - swamp: ...
- *   - ...
+ * shared by the @swamp Lab path and the third-party repository path so both
+ * destinations produce identical formatting
  */
 export function assembleExtensionReportBody(
   userBody: string,

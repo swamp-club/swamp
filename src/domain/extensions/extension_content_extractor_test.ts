@@ -511,7 +511,6 @@ Deno.test("extractContentMetadata skips unparseable files gracefully", async () 
     const modelsDir = join(tmpDir, "models");
     await Deno.mkdir(modelsDir, { recursive: true });
 
-    // A good model file
     const goodModel = join(modelsDir, "good.ts");
     await Deno.writeTextFile(
       goodModel,
@@ -530,10 +529,8 @@ Deno.test("extractContentMetadata skips unparseable files gracefully", async () 
       ].join("\n"),
     );
 
-    // A nonexistent file path
     const badModel = join(modelsDir, "nonexistent.ts");
 
-    // A good workflow
     const goodWf = join(tmpDir, "good.yaml");
     await Deno.writeTextFile(
       goodWf,
@@ -555,7 +552,6 @@ Deno.test("extractContentMetadata skips unparseable files gracefully", async () 
       }),
     );
 
-    // A bad workflow (nonexistent file)
     const badWf = join(tmpDir, "nonexistent.yaml");
 
     const result = await extractContentMetadata(
@@ -567,7 +563,6 @@ Deno.test("extractContentMetadata skips unparseable files gracefully", async () 
       ],
     );
 
-    // Should have partial results — the good files are extracted
     assertEquals(result.models.length, 1);
     assertEquals(result.models[0].type, "test/good");
     assertEquals(result.workflows.length, 1);
@@ -1078,7 +1073,6 @@ Deno.test("extractContentMetadata extracts webhook type, name, and description",
         "};",
       ].join("\n"),
     );
-    // Missing createHandler — not a webhook file.
     const notWebhook = join(webhooksDir, "other.ts");
     await Deno.writeTextFile(
       notWebhook,
@@ -1697,7 +1691,6 @@ Deno.test("extractContentMetadata: ignores type: inside template literal in meth
   }
 });
 
-/** Writes one model source file and returns its extracted content metadata. */
 async function extractFromSource(lines: string[]) {
   const tmpDir = await Deno.makeTempDir();
   try {
@@ -2058,7 +2051,6 @@ Deno.test("extractContentMetadata: lists every method of a container-image shape
   ]);
 });
 
-/** A three-method model whose first method's execute body is `body`. */
 function modelWithFirstMethodBody(body: string): string[] {
   return [
     'import { z } from "npm:zod@4";',
@@ -2164,7 +2156,6 @@ Deno.test("extractContentMetadata: a brace in an expression-bodied entry value d
 });
 
 Deno.test("extractContentMetadata: lists every global argument when regex strings contain an escaped dollar-brace", async () => {
-  // Shape of swamp-extensions model/aws/wellarchitected agent_goal.ts.
   const pattern = 'new RegExp("^(?:(?!\\\\$\\\\{[a-zA-Z]+:)[\\\\P{C}])+$")';
   const result = await extractFromSource([
     'import { z } from "npm:zod@4";',
@@ -2188,7 +2179,6 @@ Deno.test("extractContentMetadata: lists every global argument when regex string
 });
 
 Deno.test("extractContentMetadata: lists every global argument when a description has an extra closing brace", async () => {
-  // Shape of swamp-extensions model/gcp/apigee apiproducts_rateplans.ts.
   const result = await extractFromSource([
     'import { z } from "npm:zod@4";',
     "export const model = {",
@@ -2522,7 +2512,6 @@ Deno.test("extractContentMetadata: never reads a symlinked source, so its target
   }
 });
 
-/** Extracts the global arguments of a model whose schema body is `fields`. */
 async function extractGlobalArguments(fields: string[]) {
   const tmpDir = await Deno.makeTempDir();
   try {
@@ -2582,8 +2571,8 @@ Deno.test("extractContentMetadata reads a template literal description without i
 Deno.test("extractContentMetadata keeps a quoted describe first, and otherwise takes the last call that sets a description", async () => {
   const args = await extractGlobalArguments([
     'metaThenDescribe: z.string().meta({ foreignTemplate: true }).describe("Alert body")',
-    // A quoted describe anywhere in the chain is read as it always was, so
-    // published descriptions do not change.
+    // a quoted describe anywhere in the chain is read the same way, so
+    // published descriptions do not change
     'describeThenMeta: z.string().describe("First").meta({ description: "Second" })',
     'nested: z.string().pipe(z.string().describe("Inner")).meta({ description: "Outer" })',
     'metaThenTemplate: z.string().meta({ description: "Meta" }).describe(`Template`)',

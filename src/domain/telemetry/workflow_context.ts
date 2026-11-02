@@ -18,13 +18,8 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * Captures the workflow context surrounding a method invocation that
- * happened inside a workflow run. Present only on child telemetry entries
- * — direct CLI invocations and parent workflow-run entries omit it.
- *
- * Fields are individually optional so the bridge can populate what is
- * known at the failure point. For example, a step that fails before the
- * model can be resolved leaves `modelType` undefined.
+ * present only on child entries; fields are individually optional so the bridge
+ * can fill what is known at the failure point
  */
 export interface WorkflowContext {
   readonly workflowName: string;
@@ -32,13 +27,9 @@ export interface WorkflowContext {
   readonly jobName: string;
   readonly stepName: string;
   readonly modelType?: string;
-  /** "loopback" or the worker name that executed the step's method. */
   readonly executor?: string;
 }
 
-/**
- * Data transfer object for WorkflowContext.
- */
 export interface WorkflowContextData {
   workflowName: string;
   runId: string;
@@ -48,9 +39,6 @@ export interface WorkflowContextData {
   executor?: string;
 }
 
-/**
- * Creates a WorkflowContext value object.
- */
 export function createWorkflowContext(
   props: WorkflowContextData,
 ): WorkflowContext {
@@ -64,9 +52,6 @@ export function createWorkflowContext(
   };
 }
 
-/**
- * Converts a WorkflowContext to its data representation.
- */
 export function workflowContextToData(
   context: WorkflowContext,
 ): WorkflowContextData {
@@ -85,9 +70,6 @@ export function workflowContextToData(
   return data;
 }
 
-/**
- * Reconstructs a WorkflowContext from data.
- */
 export function workflowContextFromData(
   data: WorkflowContextData,
 ): WorkflowContext {

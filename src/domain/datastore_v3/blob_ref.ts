@@ -17,28 +17,19 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * References to content stored as chunks (swamp-club#3233).
- *
- * @module
- */
-
 import { RecordKey } from "./record_key.ts";
 
 const SHA256_HEX = /^[0-9a-f]{64}$/;
 
-/** True when `value` is a SHA-256 digest in lowercase hex. */
 export function isSha256Hex(value: unknown): value is string {
   return typeof value === "string" && SHA256_HEX.test(value);
 }
 
-/** One chunk of content stored as several, in order. */
 export interface BlobPart {
   readonly sha256: string;
   readonly size: number;
 }
 
-/** The serialized form of a {@link BlobRef}. */
 export interface BlobRefJSON {
   readonly sha256: string;
   readonly size: number;
@@ -47,12 +38,9 @@ export interface BlobRefJSON {
 }
 
 /**
- * Content too large to inline in a commit, addressed by its SHA-256. The
- * chunk store holds the bytes; a put op carries only this reference.
- * `sha256` is always the digest of the whole content. Content stored as one
- * chunk has no `parts`, and that chunk's key is `sha256`; content stored as
- * several lists them in `parts`, in order (swamp-club#3237).
- * `legacyKey` names where a migrated blob still lives in a pre-v3 layout.
+ * sha256 digests the whole content; one chunk has no parts and its key is
+ * sha256, several are listed in parts in order; legacyKey is where a migrated
+ * blob still lives in a pre-v3 layout
  */
 export class BlobRef {
   private constructor(
@@ -62,12 +50,6 @@ export class BlobRef {
     readonly legacyKey: RecordKey | undefined,
   ) {}
 
-  /**
-   * Throws when `sha256` is not 64 lowercase hex characters or `size` is not
-   * a non-negative safe integer, or when `parts` is given with fewer than
-   * two parts, a malformed part digest, a part size that is not a positive
-   * safe integer, or part sizes that do not add up to `size`.
-   */
   static create(props: {
     sha256: string;
     size: number;
@@ -99,7 +81,6 @@ export class BlobRef {
     );
   }
 
-  /** Parses the serialized form; the same rules as {@link BlobRef.create}. */
   static fromJSON(value: unknown): BlobRef {
     if (typeof value !== "object" || value === null || Array.isArray(value)) {
       throw new TypeError("Blob reference must be an object");
@@ -133,10 +114,6 @@ export class BlobRef {
     };
   }
 
-  /**
-   * The keys of the chunks holding this content: its `sha256` when stored
-   * as one chunk, otherwise each part's, in order.
-   */
   chunkHashes(): readonly string[] {
     return this.parts === undefined
       ? [this.sha256]

@@ -18,20 +18,9 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * Authorises a forwarded commit op by op on its intents (swamp-club#3915).
- *
- * Serve accepts commits that a client built, so nothing in them is trusted.
- * {@link checkCommitBindings} applies the binding rules that need no
- * policy, and {@link authorizeCommit} adds key ownership and the access
- * decision of every op. The first refusal fails the whole commit. The
- * tables are in "Team mode: serve's datastore API" in
- * `design/enablers/datastores.md`.
- *
- * The service is pure: what it needs to know about aggregates (a behavior's
- * name and tags, a workflow's, a key's current owner) and the caller's
- * authority come in through ports.
- *
- * @module
+ * serve accepts commits a client built, so nothing in them is trusted; the
+ * first refusal fails the whole commit; the service is pure, with aggregate
+ * lookups and caller authority passed in through ports
  */
 
 import type { AccessResource } from "../access/access_decision_service.ts";
@@ -63,7 +52,6 @@ import { type DefinitionKind, partitionOf } from "./partition_key.ts";
 import type { PartitionKey } from "./partition_key.ts";
 import type { RecordKey } from "./record_key.ts";
 
-/** Why a forwarded commit was refused. */
 export type CommitRefusalReason =
   | KeyBindingRefusal
   | "lease-op"
@@ -74,7 +62,6 @@ export type CommitRefusalReason =
   | "forbidden"
   | "content-refused";
 
-/** A refused op: the first one, by its index in the commit. */
 export interface CommitRefusal {
   readonly ok: false;
   readonly reason: CommitRefusalReason;
@@ -82,52 +69,34 @@ export interface CommitRefusal {
   readonly message: string;
 }
 
-/** The outcome of authorising a commit. */
 export type CommitAuthorization = { readonly ok: true } | CommitRefusal;
 
-/** What a workflow resolves to, for its access resource. */
 export interface ResolvedWorkflow {
   readonly name: string;
   readonly tags?: Record<string, string>;
 }
 
-/** A key's current owner in the commit store. */
 export interface KeyOwnership {
-  /** The partition whose put the key shows, or showed before removal. */
   readonly owner: string;
-  /** False once the owner removed the key. */
   readonly present: boolean;
 }
 
 /**
- * What the authoriser needs to know about aggregates. Every lookup is by
- * the canonical identity an intent holds (a lowercased id), so the identity
- * authorised is the one the commit writes.
+ * every lookup is by the canonical identity an intent holds (a lowercased id),
+ * so the identity authorised is the one the commit writes
  */
 export interface AggregateResourceResolver {
-  /** A behavior's definition by its id, or undefined when none holds it. */
   model(ref: ModelRef): Promise<DefinitionLookupResult | undefined>;
-  /**
-   * A managed-config definition's current tags, by kind and name, and for a
-   * behavior definition its type.
-   */
   definitionTags(
     kind: DefinitionKind,
     name: string,
     type?: ModelType,
   ): Promise<Record<string, string> | undefined>;
-  /** A workflow by its id. */
   workflow(workflowId: string): Promise<ResolvedWorkflow | undefined>;
-  /** Who owns a record key now; undefined when no commit put it. */
   keyOwner(key: string): Promise<KeyOwnership | undefined>;
-  /** Whether a behavior type is restricted to admins on this server. */
   isRestrictedType(type: ModelType): boolean;
 }
 
-/**
- * The caller's authority: whether it may take `action` on `resource`. Serve
- * answers it as it answers every request, including its admin fallback.
- */
 export interface CallerAuthority {
   /**
    * With `every`, the decision covers every resource of the kind, as
@@ -136,27 +105,15 @@ export interface CallerAuthority {
   allows(action: Action, resource: AccessResource, every?: boolean): boolean;
 }
 
-/** Everything a write needs authorised on, besides the ops' bindings. */
 export interface RequiredAccess {
   readonly action: Action;
   readonly resource: AccessResource;
-  /** Decided for every resource of the kind (`resource` is `<kind>:*`). */
   readonly every?: true;
 }
 
 /**
- * Puts whose content serve checks beyond the write itself (swamp-club#3922):
- * - a behavior, workflow or vault definition: retags, renames, the
- *   expressions and steps an edit adds, and the identity and name its
- *   content declares, which serve looks it up by;
- * - an auto-definition, checked as direct execution writes one;
- * - an evaluated definition or workflow, and a run snapshot, bound to the
- *   aggregate their intent names;
- * - a run record, whose authority fields, executable state and approvals
- *   serve acts on when it resumes or settles the run;
- * - a data save, whose sensitive fields name vault references serve admits
- *   to later runs, and a data removal or rename, which may only move or
- *   lower what the repository wrote.
+ * puts whose content serve checks beyond the write: definitions, evaluated
+ * workflows, run records and snapshots, and data saves, removals and renames
  */
 const CONTENT_CHECKED_PUTS: ReadonlySet<string> = new Set([
   "definition.create",
@@ -175,52 +132,34 @@ const CONTENT_CHECKED_PUTS: ReadonlySet<string> = new Set([
   "data.rename",
 ]);
 
-/** Whether serve checks `op`'s content beyond its intent. */
 export function isContentChecked(op: Op): op is PutOp {
   return op.kind === "put" && CONTENT_CHECKED_PUTS.has(op.intent.kind);
 }
 
-/** Why a {@link ContentAuthority} refused a put. */
 export interface ContentRefusal {
   readonly message: string;
 }
 
 /**
- * Checks what a put's content carries beyond its intent, as serve's
- * handlers check the same write (swamp-club#3922). Serve implements it: it
- * parses the content and reads the record the put replaces. `commit` is
- * every op of the put's commit, for a put judged with its counterparts (a
- * move's tombstone, a data version's metadata).
+ * serve implements it; commit is every op of the put's commit, for a put judged
+ * with its counterparts (a move's tombstone, a data version's metadata)
  */
 export interface ContentAuthority {
   check(op: PutOp, commit: readonly Op[]): Promise<ContentRefusal | undefined>;
 }
 
 /**
- * The content checks {@link authorizeCommit} applies: a
- * {@link ContentAuthority}, or `"deferred"` for the pass serve makes before
- * a commit's content has arrived, which must be followed by one with the
- * content before the commit is appended.
+ * deferred is the pass serve makes before a commit's content has arrived; one
+ * with the content must follow before the commit is appended
  */
 export type CommitContentCheck = ContentAuthority | "deferred";
 
-/** The resource every admin-only operation is decided on. */
 export const ADMIN_RESOURCE: AccessResource = {
   kind: "access",
   name: "*",
   fields: {},
 };
 
-/**
- * The binding rules that need no lookup:
- * - a lease op is refused: only the lease machinery writes leases;
- * - every intent belongs to the commit's partition;
- * - every key is one its intent's aggregate owns, and the intent may ride
- *   the op's kind;
- * - a behavior definition's ops agree on the type their keys name;
- * - every data-version op pairs with a data.save, data.append or
- *   data.rename put of the same name and version in the commit.
- */
 export function checkCommitBindings(
   partition: PartitionKey,
   ops: readonly Op[],
@@ -275,11 +214,6 @@ export function checkCommitBindings(
   return { ok: true };
 }
 
-/**
- * Authorises a forwarded commit: its bindings, the ownership of every key,
- * the caller's access to every op's intent and, unless `content` is
- * `"deferred"`, what each content-checked put carries.
- */
 export async function authorizeCommit(
   partition: PartitionKey,
   ops: readonly Op[],
@@ -341,11 +275,9 @@ export async function authorizeCommit(
 }
 
 /**
- * Whether a vault rename's removal may land: only once its rename-to has,
- * so the key, which a vault config is named by its id, is owned by the
- * vault's new name. A client sends the two halves as separate commits, one
- * per partition; the rename-to's content is checked, the removal's has
- * none. Other ops need nothing here.
+ * a vault rename's removal lands only once its rename-to has, so the key is
+ * owned by the vault's new name; the client sends the two halves as separate
+ * commits, one per partition
  */
 async function vaultRenameLanded(
   op: PutOp | TombstoneOp,
@@ -364,11 +296,9 @@ async function vaultRenameLanded(
 }
 
 /**
- * Every access a put or tombstone needs: {@link writeAccessOf}, for a half
- * of a definition rename the same write on the other name. A rename
- * may write a key the other name's partition owns, and its other name is
- * the client's to choose, so a caller must be able to change both
- * definitions the rename joins.
+ * a rename may write a key the other name's partition owns and the other name
+ * is the client's choice, so the caller must be able to change both definitions
+ * the rename joins
  */
 export async function writeAccessesOf(
   op: PutOp | TombstoneOp,
@@ -395,9 +325,8 @@ export async function writeAccessesOf(
 }
 
 /**
- * The access a put or tombstone needs, copied from what serve's handlers
- * check for the same write. A control-plane behavior, a restricted type and
- * the lockfile need admin.
+ * copied from what serve's handlers check for the same write; a control-plane
+ * behavior, a restricted type and the lockfile need admin
  */
 export async function writeAccessOf(
   op: PutOp | TombstoneOp,
@@ -444,8 +373,8 @@ export async function writeAccessOf(
       return { action: "admin", resource: ADMIN_RESOURCE };
     }
     const write = await definitionAccessOf(op, intent.definition, resolver);
-    // A saved evaluation is decided as model.evaluate and workflow.evaluate
-    // decide saving one (swamp-club#3940): run on what it evaluates.
+    // a saved evaluation is decided as model.evaluate and workflow.evaluate
+    // decide saving one: run on what it evaluates
     return intent.kind === "evaluated-workflow.save" &&
         write.action === "write"
       ? { action: "run", resource: write.resource }
@@ -478,16 +407,8 @@ export async function writeAccessOf(
 }
 
 /**
- * The access a write to a behavior's partition needs, as serve's handlers
- * decide the same write:
- * - data and outputs are saved only by running a method, decided as `run`
- *   on the behavior (`model.method.run`);
- * - a data delete or rename is `write` on the behavior's data
- *   (`data.delete`, `data.rename`);
- * - data garbage collection is `write` on all data, decided for the whole
- *   kind (`data.gc`);
- * - an output or evaluated definition removed, as a behavior delete
- *   removes them, is `write` on the behavior.
+ * decided as serve's handlers decide the same write: data and outputs saved by
+ * running a method are run; deletes, renames, gc and removed outputs are write
  */
 async function modelWriteAccessOf(
   intent: Intent & { readonly model: ModelRef },
@@ -503,8 +424,7 @@ async function modelWriteAccessOf(
     case "data.save":
     case "data.append":
     case "output.save":
-    // Saving an evaluation needs run on the behavior, as model.evaluate
-    // decides saving one (swamp-club#3940).
+    // saving an evaluation needs run on the behavior, as model.evaluate decides
     case "evaluated-definition.save":
       return { action: "run", resource: resourceAs("model") };
     case "data.delete":
@@ -522,10 +442,9 @@ async function modelWriteAccessOf(
 }
 
 /**
- * The access needed to read an op's record: in the changes feed, a commit
- * is kept only when the caller may read every op. Undefined when any
- * authenticated caller may read it (the extension lockfile, and
- * data-version ops, which are read with their partition's other ops).
+ * a commit in the changes feed is kept only when the caller may read every op;
+ * undefined when any authenticated caller may read it (the lockfile, and
+ * data-version ops read with their partition's ops)
  */
 export async function readAccessOf(
   op: Op,
@@ -592,11 +511,9 @@ export async function readAccessOf(
 }
 
 /**
- * What a caller needs to read one record of a behavior definition's config
- * partition named `name`, decided as {@link readAccessOf} decides the op that
- * wrote it: by the behavior type its key names. A control-plane or
- * restricted type, or a key that names no type, needs admin
- * (swamp-club#3938).
+ * decided as readAccessOf decides the op that wrote it, by the behavior type
+ * its key names; a control-plane or restricted type, or a key naming no type,
+ * needs admin
  */
 export async function definitionRecordReadAccessOf(
   name: string,
@@ -618,23 +535,9 @@ export async function definitionRecordReadAccessOf(
 }
 
 /**
- * What a caller needs to read one record of the compacted base
- * (swamp-club#4006), every entry of the list: an empty list means any
- * authenticated caller. A base record no longer carries the intent that
- * wrote it, so it is decided by its partition and key. The list always
- * holds what {@link readAccessOf} requires of the op that wrote the key,
- * so the base is never read more loosely than the changes feed:
- *
- * - a behavior's partition: a data key needs read on its data, an output
- *   or evaluated definition read on the behavior, as their ops do; a
- *   control-plane behavior admin. A key its intents never write needs
- *   admin and both reads, since no op tells what it holds;
- * - a definition's config partition: as {@link definitionAccessOf} decides
- *   a write of the key, read in place of write;
- * - a workflow run's partition: read on its workflow;
- * - an auto-definition's partition: as its op is decided, by the type its
- *   key names;
- * - the lockfile: any authenticated caller.
+ * a base record carries no intent, so it is decided by partition and key; the
+ * list holds at least what readAccessOf requires of the writing op, so the base
+ * is never read more loosely than the feed
  */
 export async function baseRecordReadAccessOf(
   partition: PartitionKey,
@@ -728,11 +631,8 @@ export async function baseRecordReadAccessOf(
 }
 
 /**
- * What a caller needs to read a compacted data name's versions, catalog
- * rows, forward and marks (swamp-club#4006): read on the behavior's data,
- * as its data records need, or admin for a control-plane behavior. Only a
- * behavior's partition holds data names; any other needs admin and every
- * read of the partition.
+ * only a behavior's partition holds data names; any other needs admin and every
+ * read of the partition
  */
 export async function baseDataReadAccessOf(
   partition: PartitionKey,
@@ -763,10 +663,8 @@ export async function baseDataReadAccessOf(
 }
 
 /**
- * What a caller needs to read anything a partition holds, for a chunk read
- * or a catch-up of the whole partition. It is conservative: a behavior's
- * partition holds its data and its outputs, so both reads are needed. An
- * empty list means any authenticated caller may read it (the lockfile).
+ * conservative: a behavior's partition holds data and outputs, so both reads
+ * are needed; an empty list means any authenticated caller (the lockfile)
  */
 export async function partitionReadAccessOf(
   partition: PartitionKey,
@@ -848,13 +746,9 @@ export async function partitionReadAccessOf(
 }
 
 /**
- * The least access any write to a partition needs, for a chunk uploaded to
- * be named by a commit to it (swamp-club#3922): run on a behavior or a
- * workflow, whose saves and run records need it, write on a workflow or a
- * vault config. It gates who may spend serve's storage, not what a commit
- * may write, which {@link authorizeCommit} decides. A behavior definition's
- * config partition names no type, an auto-definition's neither type nor
- * name, so they need admin, as do the lockfile and control-plane behaviors.
+ * gates who may spend serve's storage, not what a commit may write, which
+ * authorizeCommit decides; partitions naming no type or name, the lockfile and
+ * control-plane behaviors need admin
  */
 export async function partitionWriteAccessOf(
   partition: PartitionKey,
@@ -968,10 +862,6 @@ async function definitionAccessOf(
   }
 }
 
-/**
- * Whether an op may write its key: no other aggregate holds it, or the
- * other one is the counterpart of a definition rename.
- */
 async function ownsKey(
   op: PutOp | TombstoneOp,
   partition: PartitionKey,
@@ -1033,11 +923,6 @@ function isBehaviorDefinition(intent: Intent): boolean {
   return "definition" in intent && intent.definition.kind === "model";
 }
 
-/**
- * Whether a data-version op is recorded by a put of its own metadata key, of
- * the name and version its metadata states. A rename records versions under
- * both names: the new name's, and the old name's `renamedTo` marker.
- */
 function pairsWithPut(op: DataVersionOp, ops: readonly Op[]): boolean {
   const metadata = op.metadata;
   const segments = op.key.toString().split("/");

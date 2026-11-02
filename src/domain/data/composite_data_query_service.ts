@@ -98,8 +98,7 @@ export class CompositeDataQueryService extends DataQueryService {
     predicate: string,
     options?: DataQueryOptions,
   ): Promise<DataRecord[] | unknown[]> {
-    // Merging two sorted streams into one keyset order is not supported
-    // (swamp-club#4177).
+    // merging two sorted streams into one keyset order is not supported
     if (options?.sort || options?.after) {
       throw new UserError(
         "Sorted and cursor-paged queries are not supported during a " +

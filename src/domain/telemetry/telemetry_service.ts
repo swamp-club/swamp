@@ -36,12 +36,8 @@ import type { WorkflowTriggerSource } from "./trigger_source.ts";
 import type { AuthMode } from "../auth/auth_gate_policy.ts";
 import { UserError } from "../errors.ts";
 
-/** Default flush batch size */
 const DEFAULT_FLUSH_BATCH_SIZE = 25;
 
-/**
- * Configuration for flushing telemetry to a remote endpoint.
- */
 export interface TelemetryFlushConfig {
   sender: TelemetrySender;
   distinctId: string;
@@ -51,17 +47,12 @@ export interface TelemetryFlushConfig {
   keepFlushed?: boolean;
   signal?: AbortSignal;
   /**
-   * Entry ids the caller has already sent successfully but could not mark
-   * as flushed. They are still on disk, so `findUnflushed` keeps returning
-   * them; skipping them here prevents a repeatedly-flushing caller from
-   * sending the same invocation once per attempt.
+   * ids already sent but not marked flushed stay on disk, so skip them to avoid
+   * sending the same invocation once per attempt
    */
   skipIds?: ReadonlySet<string>;
 }
 
-/**
- * Configuration for sending one specific entry, bypassing batch selection.
- */
 export interface TelemetrySingleFlushConfig {
   entry: TelemetryEntry;
   sender: TelemetrySender;
@@ -73,92 +64,51 @@ export interface TelemetrySingleFlushConfig {
 }
 
 /**
- * Result of a flush, from the service's point of view.
- *
- * Distinct from {@link TelemetryFlushResult}, which is the *sender's*
- * vocabulary and knows nothing about the local spool. Marking is a
- * persistence concern, so it is reported here rather than being folded into
- * the sender's contract.
+ * distinct from TelemetryFlushResult, which is the sender's vocabulary; marking
+ * is a persistence concern so it is reported here
  */
 export interface TelemetryFlushOutcome {
-  /** The sender's verdict for the batch it attempted. */
   result: TelemetryFlushResult;
-  /** Ids that were accepted by the endpoint but could not be marked flushed. */
   unmarkedIds: string[];
-  /** Entries sent in this flush. Zero means the spool was already drained. */
   sentCount: number;
 }
 
-/**
- * Aggregated telemetry statistics.
- */
 export interface TelemetryStats {
-  /** Total number of invocations */
   totalInvocations: number;
-  /** Number of successful invocations */
   successCount: number;
-  /** Number of error invocations */
   errorCount: number;
-  /** Number of user error invocations */
   userErrorCount: number;
-  /** Success rate as a percentage */
   successRate: number;
-  /** Error rate as a percentage */
   errorRate: number;
-  /** Command frequency map (command -> count) */
   commandFrequency: Record<string, number>;
-  /** Option frequency map (option -> count) */
   optionFrequency: Record<string, number>;
-  /** Average duration by command (command -> average ms) */
   averageDurationByCommand: Record<string, number>;
-  /** Platform distribution (platform -> count) */
   platformDistribution: Record<string, number>;
-  /** Number of days analyzed */
   daysAnalyzed: number;
 }
 
-/** Default retention period for flushed entries in days */
 const DEFAULT_RETENTION_DAYS = 2;
 
-/** Hard retention cap for all entries (including unflushed) in days */
 const HARD_RETENTION_DAYS = 7;
 
 /**
- * Retention for quarantined entries in days. Longer than the flushed
- * retention because a quarantined entry is evidence — the reason an endpoint
- * refuses a payload is usually only visible in the payload — but bounded,
- * since unlike unflushed entries it is not data we still expect to deliver.
+ * longer than flushed retention because a quarantined entry is evidence, but
+ * bounded since it is not data we still expect to deliver
  */
 const QUARANTINE_RETENTION_DAYS = 30;
 
 /**
- * Service for recording and analyzing CLI telemetry.
- *
- * The optional `invocationContext` is captured once at construction time —
- * the runtime conditions of one CLI invocation (configured AI tools,
- * detected harness, stdin tty state) do not change between recording a
- * success and recording an error, so a single context applies to every
- * entry the service writes.
- *
- * The `invocationId` is pre-allocated at construction time so the same id
- * can be referenced as `parentInvocationId` by child entries written
- * during the invocation (e.g. workflow-internal method invocations) before
- * the parent entry itself is recorded at the end of the CLI lifecycle.
+ * invocationContext is captured once as it does not change within an
+ * invocation; invocationId is pre-allocated so child entries can use it as
+ * parentInvocationId before the parent is recorded
  */
 export class TelemetryService {
   readonly invocationId: TelemetryId;
 
   /**
-   * Tail of the serialized flush chain. Every operation that reads
-   * unflushed entries and marks them queues behind this, so two callers
-   * holding this same service can never both read the same batch before
-   * either marks it — which would send every entry in it twice. `swamp
-   * serve` has exactly that shape at shutdown, when its daemon flush loop
-   * and the CLI teardown flush overlap.
-   *
-   * The lock protects one service over one spool. Services produced by
-   * {@link forkForRun} share the spool but not this field, which is safe
-   * only because forks are write-only — see forkForRun.
+   * serializes flushes so two callers cannot read the same batch before either
+   * marks it and send it twice; forks do not share this lock, which is safe
+   * only because forks are write-only
    */
   #flushChain: Promise<unknown> = Promise.resolve();
 
@@ -170,10 +120,9 @@ export class TelemetryService {
     private readonly triggerSource?: WorkflowTriggerSource,
     private readonly initiatedBy?: string,
     /**
-     * The endpoint this invocation resolved. Every entry this service records
-     * is stamped with it, and a flush only drains entries stamped for it (or
-     * written before stamping existed), so an entry is never sent to an
-     * endpoint other than the one in effect when it was recorded.
+     * entries are stamped with the endpoint in effect and a flush drains only
+     * entries stamped for it or unstamped, so an entry never goes to a
+     * different endpoint
      */
     private readonly endpoint?: string,
   ) {
@@ -181,9 +130,8 @@ export class TelemetryService {
   }
 
   /**
-   * Stamps how the auth gate let this invocation through. The gate runs
-   * after the service is built, so this is the one part of the context set
-   * later; every entry recorded afterwards, and every fork, carries it.
+   * the auth gate runs after the service is built, so this is the one context
+   * part set later; later entries and forks carry it
    */
   setAuthMode(authMode: AuthMode): void {
     if (!this.invocationContext) return;
@@ -191,22 +139,9 @@ export class TelemetryService {
   }
 
   /**
-   * Creates a sibling service for one workflow run executed by a daemon.
-   *
-   * The CLI assumes one process is one invocation, so `invocationId` is
-   * allocated once per process. A long-lived `swamp serve` breaks that
-   * assumption: its unit of invocation is a workflow run, and its own
-   * process-level entry is not written until exit — possibly weeks later.
-   * A fork gives each run its own identity to parent its child method
-   * invocations to, sharing this service's repository, version, and
-   * invocation context.
-   *
-   * IMPORTANT: forks are WRITE-ONLY. They record entries; they must never
-   * flush. Flushing is serialized by a per-instance mutex (see
-   * {@link #flushChain}), and a fork does not share it — so a fork that
-   * flushed could race the root service over the same spool and send a batch
-   * twice. If a fork ever needs to flush, move the lock down to the
-   * repository first.
+   * a daemon's unit of invocation is a workflow run, so a fork gives each its
+   * own id; forks are write-only and must never flush, as they do not share the
+   * flush lock and could send a batch twice
    */
   forkForRun(
     triggerSource?: WorkflowTriggerSource,
@@ -223,12 +158,6 @@ export class TelemetryService {
     );
   }
 
-  /**
-   * Records a successful CLI invocation.
-   *
-   * @param invocation - The command invocation data
-   * @param startedAt - When the command started
-   */
   async recordSuccess(
     invocation: CommandInvocationData,
     startedAt: Date,
@@ -251,15 +180,6 @@ export class TelemetryService {
     await this.repository.save(entry);
   }
 
-  /**
-   * Records a failed CLI invocation.
-   *
-   * @param invocation - The command invocation data
-   * @param startedAt - When the command started
-   * @param error - The error that occurred
-   * @param knownValues - Values known to be sensitive for this invocation,
-   *   removed exactly from the error message. Never persisted.
-   */
   async recordError(
     invocation: CommandInvocationData,
     startedAt: Date,
@@ -290,31 +210,9 @@ export class TelemetryService {
   }
 
   /**
-   * Records a child invocation that happened inside a workflow run.
-   *
-   * Produces the same wire shape as recordSuccess/recordError plus a
-   * `parentInvocationId` pointer to the outer CLI invocation and a
-   * `workflowContext` block describing the surrounding workflow/job/step.
-   *
-   * The caller supplies `completedAt` rather than letting the service
-   * stamp `new Date()` because workflow-internal invocations finalize via
-   * a bridge that may close them after a deferred event arrives. For
-   * pre-method-executing failures the caller passes the same instant for
-   * `startedAt` and `completedAt`, producing `durationMs = 0` — the
-   * method was never actually invoked.
-   *
-   * @param invocation - The command invocation data shaped like a direct
-   *   `model method run <name> <method>` invocation, with the same
-   *   redactions
-   * @param startedAt - When the method invocation started (or `now` for
-   *   pre-method-executing failures)
-   * @param completedAt - When the method invocation ended (or `now` for
-   *   pre-method-executing failures)
-   * @param error - The error that occurred, or `null` for success. Caller
-   *   classifies UserError vs Error via instanceof — this method mirrors
-   *   recordError's classification.
-   * @param parentInvocationId - Id of the parent CLI invocation
-   * @param workflowContext - Workflow/job/step/modelType context
+   * the caller supplies completedAt because the bridge may close invocations
+   * after a deferred event; pre-method failures pass one instant for both,
+   * giving durationMs 0 as the method never ran
    */
   async recordChildInvocation(
     invocation: CommandInvocationData,
@@ -348,12 +246,9 @@ export class TelemetryService {
   }
 
   /**
-   * Cleans up telemetry entries older than the retention period.
-   * Flushed entries are cleaned after `retentionDays` (default 2).
-   * Unflushed entries survive until the hard cap (`HARD_RETENTION_DAYS`,
-   * 7 days) to allow retry, then are deleted to prevent unbounded growth.
-   *
-   * @param retentionDays - Number of days to retain flushed entries (default: 2)
+   * flushed entries are cleaned after retentionDays; unflushed ones survive
+   * until HARD_RETENTION_DAYS to allow retry, then are deleted to prevent
+   * unbounded growth
    */
   async cleanupOldTelemetry(
     retentionDays: number = DEFAULT_RETENTION_DAYS,
@@ -377,19 +272,9 @@ export class TelemetryService {
   }
 
   /**
-   * Removes flushed telemetry entries older than the retention period, and
-   * quarantined entries past their (longer) retention. Never touches
-   * unflushed entries.
-   *
-   * This is the only cleanup a long-lived daemon may run.
-   * {@link cleanupOldTelemetry} also applies `HARD_RETENTION_DAYS`, which
-   * deletes UNFLUSHED entries — safe for a CLI process that will be started
-   * again shortly, and destructive for a daemon that has been unable to reach
-   * the endpoint for a week, since it would discard telemetry that is still
-   * perfectly sendable. Undelivered data on disk beats silently discarded
-   * data, so the daemon keeps unflushed entries indefinitely.
-   *
-   * @param retentionDays - Number of days to retain flushed entries (default: 2)
+   * the only cleanup a daemon may run: cleanupOldTelemetry also deletes
+   * unflushed entries, which would discard sendable telemetry while the
+   * endpoint is unreachable, so the daemon keeps them
    */
   async pruneFlushedTelemetry(
     retentionDays: number = DEFAULT_RETENTION_DAYS,
@@ -414,26 +299,14 @@ export class TelemetryService {
     }
   }
 
-  /**
-   * Sets an entry aside as undeliverable so it stops blocking newer entries.
-   */
   async quarantineEntry(entry: TelemetryEntry): Promise<void> {
     await this.repository.quarantine(entry);
   }
 
   /**
-   * Flushes unflushed telemetry entries to a remote endpoint.
-   * Returns the sender's verdict plus any entries that were accepted but
-   * could not be marked flushed. Never throws.
-   *
-   * Concurrent calls on the same service are serialized: a caller arriving
-   * while a flush is running awaits that flush rather than starting a second
-   * one. Without this, two callers can both read the same unflushed batch
-   * before either marks it and send every entry twice — the shape `swamp
-   * serve` produces at shutdown, when its daemon flush loop and the CLI
-   * teardown flush overlap.
-   *
-   * @param config - Flush configuration with sender and distinctId
+   * concurrent calls are serialized: a caller arriving mid-flush awaits it,
+   * else two callers could read the same batch before either marks it and send
+   * every entry twice
    */
   flushTelemetry(
     config: TelemetryFlushConfig,
@@ -463,10 +336,6 @@ export class TelemetryService {
     });
   }
 
-  /**
-   * Returns unflushed entries excluding ones the caller has already
-   * delivered, for callers that need to retry a stuck batch entry by entry.
-   */
   async findUnflushedForIsolation(
     limit: number,
     skipIds?: ReadonlySet<string>,
@@ -478,11 +347,8 @@ export class TelemetryService {
   }
 
   /**
-   * Sends a single entry, marking it flushed on success.
-   *
-   * Used to find the offender in a batch the endpoint keeps rejecting: a
-   * batch is all-or-nothing, so one bad entry hides behind the same failure
-   * as its blameless neighbours until they are sent apart.
+   * a batch is all-or-nothing, so one bad entry hides behind the same failure
+   * as its blameless neighbours until they are sent apart
    */
   flushEntry(
     config: TelemetrySingleFlushConfig,
@@ -523,9 +389,6 @@ export class TelemetryService {
     });
   }
 
-  /**
-   * Runs `fn` after every previously-queued flush operation has settled.
-   */
   #serialize<T>(fn: () => Promise<T>): Promise<T> {
     const run = this.#flushChain.then(fn, fn);
     // Swallow on the chain only — the caller still sees the real outcome.
@@ -573,12 +436,6 @@ export class TelemetryService {
     return { result, unmarkedIds, sentCount: result.ok ? entries.length : 0 };
   }
 
-  /**
-   * Gets aggregated statistics from recent telemetry.
-   *
-   * @param days - Number of days to analyze (default: 2)
-   * @returns Aggregated statistics
-   */
   async getStats(
     days: number = DEFAULT_RETENTION_DAYS,
   ): Promise<TelemetryStats> {
@@ -606,11 +463,9 @@ export class TelemetryService {
       return stats;
     }
 
-    // Track durations for averaging
     const durationsByCommand: Record<string, number[]> = {};
 
     for (const entry of entries) {
-      // Count statuses
       switch (entry.result.status) {
         case "success":
           stats.successCount++;
@@ -623,20 +478,17 @@ export class TelemetryService {
           break;
       }
 
-      // Count commands
       const commandKey = entry.invocation.subcommand
         ? `${entry.invocation.command} ${entry.invocation.subcommand}`
         : entry.invocation.command;
       stats.commandFrequency[commandKey] =
         (stats.commandFrequency[commandKey] || 0) + 1;
 
-      // Track duration for averaging
       if (!durationsByCommand[commandKey]) {
         durationsByCommand[commandKey] = [];
       }
       durationsByCommand[commandKey].push(entry.durationMs);
 
-      // Count options
       for (const option of entry.invocation.optionKeys) {
         stats.optionFrequency[option] = (stats.optionFrequency[option] || 0) +
           1;
@@ -646,18 +498,15 @@ export class TelemetryService {
           1;
       }
 
-      // Count platforms
       stats.platformDistribution[entry.platform] =
         (stats.platformDistribution[entry.platform] || 0) + 1;
     }
 
-    // Calculate rates
     stats.successRate = (stats.successCount / stats.totalInvocations) * 100;
     stats.errorRate =
       ((stats.errorCount + stats.userErrorCount) / stats.totalInvocations) *
       100;
 
-    // Calculate average durations
     for (const [command, durations] of Object.entries(durationsByCommand)) {
       const sum = durations.reduce((a, b) => a + b, 0);
       stats.averageDurationByCommand[command] = Math.round(

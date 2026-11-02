@@ -24,7 +24,6 @@ export interface WorkerDaemonStatus {
   readonly running: boolean;
   readonly pid?: number;
   readonly logPath?: string;
-  /** Set when this platform has no supported service manager. */
   readonly unsupportedReason?: string;
 }
 

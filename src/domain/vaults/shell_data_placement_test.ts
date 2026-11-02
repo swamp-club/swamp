@@ -22,7 +22,6 @@ import { placeShellData, shellDialectFor } from "./shell_data_placement.ts";
 import { SecretBagRegistry } from "./secret_bag_registry.ts";
 import { VaultSecretBag } from "./vault_secret_bag.ts";
 
-/** `before` + `data` + `after`, with the range of `data`. */
 function spliced(before: string, data: string, after = "") {
   return {
     command: before + data + after,
@@ -99,7 +98,6 @@ Deno.test("placeShellData: data in shell arithmetic is refused, quoted or not", 
     );
     assertEquals(placed.env, {});
   }
-  // A default value and a glob bracket are words, not arithmetic.
   for (
     const [before, after, expected] of [
       ["echo ${X:-", "}", 'echo ${X:-"${__SWAMP_IN_0}"}'],
@@ -116,7 +114,6 @@ Deno.test("placeShellData: data in shell arithmetic is refused, quoted or not", 
       before,
     );
   }
-  // Text after the arithmetic is back in its own context.
   const after = spliced('echo "$(( 1 + 1 )) ', "$(id)", '"');
   assertEquals(
     placeShellData(after.command, after.ranges, [], "posix").command,

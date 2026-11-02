@@ -57,7 +57,6 @@ Deno.test("isDeliveredWithMethod: accepts paths outside methods and under the na
     isDeliveredWithMethod("methods.run.arguments.list[0]", "run"),
     true,
   );
-  // A name that merely starts with the method's is another method.
   assertEquals(
     isDeliveredWithMethod("methods.runner.arguments.key", "run"),
     false,
@@ -66,7 +65,6 @@ Deno.test("isDeliveredWithMethod: accepts paths outside methods and under the na
     isDeliveredWithMethod("methods.other.arguments.key", "run"),
     false,
   );
-  // A quoted method name is spelled as expression extraction spells it.
   assertEquals(
     isDeliveredWithMethod('methods["a.b"].arguments.key', "a.b"),
     true,
@@ -75,7 +73,6 @@ Deno.test("isDeliveredWithMethod: accepts paths outside methods and under the na
     isDeliveredWithMethod('methods["a.b"].arguments.key', "a"),
     false,
   );
-  // No method: the global arguments alone.
   assertEquals(isDeliveredWithMethod("globalArguments.token", ""), true);
   assertEquals(isDeliveredWithMethod("methods.run.arguments.key", ""), false);
 });

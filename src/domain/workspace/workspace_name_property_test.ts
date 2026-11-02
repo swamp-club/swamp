@@ -20,7 +20,6 @@
 import fc from "fast-check";
 import { parseWorkspaceName, suggestWorkspaceName } from "./workspace_name.ts";
 
-/** Names a suggestion can collide with: real draws, suffixed draws and noise. */
 const arbTaken = fc.array(
   fc.oneof(
     fc.constant(""),

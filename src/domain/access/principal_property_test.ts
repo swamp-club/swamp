@@ -40,7 +40,6 @@ Deno.test("parsePrincipal: round-trips through principalToString for every kind"
       anyId,
       serviceId,
     ) => {
-      // A service principal is one of the built-ins; other kinds take any id.
       const id = kind === "service" ? serviceId : anyId;
       const text = `${kind}:${id}`;
       const parsed = parsePrincipal(text);

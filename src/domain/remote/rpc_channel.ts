@@ -17,18 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Symmetric RPC channel over a message transport (see
- * design/enablers/remote-execution.md, "A symmetric control protocol, two handler
- * registries").
- *
- * Both the orchestrator and the worker hold one RpcChannel per control
- * socket. Each side registers handlers for the methods it serves and calls
- * the methods the peer serves — the same framing in both directions. A call
- * may receive streamed events (run events for a dispatch) before its final
- * response.
- */
-
 import {
   parseRpcFrame,
   type RpcErrorDetail,
@@ -54,22 +42,16 @@ function observedRpcOperation(method: string): string {
     : "other";
 }
 
-/** Minimal outbound transport: a WebSocket or an in-memory test pipe. */
 export interface RpcTransport {
   send(data: string): void;
 }
 
-/** Context handed to a registered handler. */
 export interface RpcHandlerContext {
-  /** The caller-assigned request id for this inbound request. */
   requestId: string;
   /** Observational metadata; handlers validate it against dispatch authority. */
   trace?: TraceCarrier;
-  /** Set by an authenticated handler to parent terminal transport submission. */
   responseTrace?: TraceCarrier;
-  /** Aborted when the peer cancels the request or the channel closes. */
   signal: AbortSignal;
-  /** Emit a stream event for this request before the final response. */
   stream(event: RpcStreamEvent): void;
 }
 
@@ -79,26 +61,21 @@ export type RpcHandler = (
 ) => Promise<unknown>;
 
 export interface RpcCallOptions {
-  /** Caller-controlled cancellation; sends rpc.cancel to the peer. */
   signal?: AbortSignal;
   /**
-   * Per-call timeout. Defaults to DEFAULT_CALL_TIMEOUT_MS; pass null for
-   * calls with no upper bound (a dispatch runs as long as the method does).
+   * defaults to DEFAULT_CALL_TIMEOUT_MS; null means no upper bound, since a
+   * dispatch runs as long as the method does
    */
   timeoutMs?: number | null;
-  /** Receives stream events emitted by the peer's handler. */
   onStream?: (event: RpcStreamEvent) => void;
   /**
-   * On signal abort, send rpc.cancel but keep the call pending until the
-   * peer's terminal frame arrives (its handler has fully unwound), bounded
-   * by CANCEL_GRACE_MS. Without this, abort rejects locally and the peer
-   * may still be unwinding — wrong for dispatches, where "the worker is
-   * free again" must mean exactly that.
+   * on abort, send rpc.cancel but stay pending until the peer's terminal frame
+   * (handler unwound), bounded by CANCEL_GRACE_MS, so a worker reported free
+   * really is free
    */
   waitForPeerOnCancel?: boolean;
 }
 
-/** Error raised at the caller when the peer answers with rpc.error. */
 export class RpcError extends Error {
   readonly code: string;
   readonly details?: unknown;
@@ -114,16 +91,14 @@ export class RpcError extends Error {
 export const DEFAULT_CALL_TIMEOUT_MS = 30_000;
 
 /**
- * After a cooperative cancel (waitForPeerOnCancel), how long to wait for the
- * peer's terminal frame before giving up and rejecting locally — a
- * misbehaving handler that ignores its abort signal must not pin the caller
- * forever.
+ * after a cooperative cancel, how long to wait for the peer's terminal frame; a
+ * handler that ignores its abort signal must not pin the caller forever
  */
 export const CANCEL_GRACE_MS = 30_000;
 
 /**
- * Rejection raised for calls pending when the channel closes — the signal
- * the dispatcher uses to enter grace-window failure semantics.
+ * rejection for calls pending when the channel closes; the dispatcher uses it
+ * to enter grace-window failure semantics
  */
 export class ChannelClosedError extends Error {
   constructor(reason?: string) {
@@ -155,11 +130,6 @@ export class RpcChannel {
     this.#handlers.set(method, handler);
   }
 
-  /**
-   * Call a method on the peer. Resolves with the peer's result, rejects with
-   * RpcError (peer-reported), an abort error (cancelled/timeout), or a
-   * channel-closed error.
-   */
   call<T>(
     method: string,
     params: unknown,
@@ -288,11 +258,6 @@ export class RpcChannel {
     });
   }
 
-  /**
-   * Feed one raw inbound message. Returns true when the message was an RPC
-   * frame (consumed), false when it belongs to another protocol on the same
-   * socket.
-   */
   handleRaw(raw: string): boolean {
     let parsed: unknown;
     try {
@@ -303,7 +268,6 @@ export class RpcChannel {
     return this.handleParsed(parsed);
   }
 
-  /** As handleRaw, for callers that already parsed the JSON. */
   handleParsed(parsed: unknown): boolean {
     const frame = parseRpcFrame(parsed);
     if (frame === null) {
@@ -317,10 +281,6 @@ export class RpcChannel {
     return true;
   }
 
-  /**
-   * Close the channel: reject every pending outbound call and abort every
-   * in-flight inbound handler. Call this from the socket's close handler.
-   */
   close(reason?: string): void {
     if (this.#closed) {
       return;

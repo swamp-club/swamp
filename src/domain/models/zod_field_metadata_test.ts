@@ -103,7 +103,6 @@ Deno.test("findValuesWithMetadata: with rawInputs, under a pipe whose input side
   const transform = (): { token: string } => {
     throw new Error("must not execute");
   };
-  // Both sides mark `token`; only the input side marks `bearer`.
   assertEquals(
     reported(
       z.object({ token: marked, alias: z.string() }).transform(transform).pipe(
@@ -130,7 +129,6 @@ Deno.test("findValuesWithMetadata: with rawInputs, under a pipe whose input side
       { keys: ["alias"], rawInput: true },
     ],
   );
-  // A transform on a sibling's own chain leaves `token` exact.
   assertEquals(
     reported(
       z.object({ token: z.string(), n: z.string().transform(Number) }).pipe(
@@ -500,8 +498,6 @@ Deno.test("findValuesWithMetadata: does not report metadata on the root schema",
 });
 
 Deno.test("findValuesWithMetadata: returns nothing for a schema this Zod did not build", () => {
-  // The shape of a Zod v3 schema: `typeName` in place of `type`, a function
-  // for `shape`, and no registry entry.
   const v3Like = {
     _def: {
       typeName: "ZodObject",
@@ -747,7 +743,6 @@ Deno.test("findValuesWithMetadata: escapes control and bidirectional characters 
     'rec["esc\\u001b[31m"]',
   ]);
   for (const path of paths) {
-    // Nothing outside printable ASCII is left in the path.
     assertEquals(/^[\x20-\x7e]+$/.test(path), true);
   }
 });
@@ -793,7 +788,6 @@ Deno.test("findValuesWithMetadata: a date member takes a date, and a number fall
   const schema = z.object({
     at: z.union([z.string().meta({ marked: true }), z.date()]),
   });
-  // No member accepts a number, so every member is kept.
   assertEquals(markedPaths(schema, { at: 5 }), ["at"]);
   assertEquals(markedPaths(schema, { at: "text" }), ["at"]);
 });
@@ -827,7 +821,6 @@ Deno.test("findValuesWithMetadata: reports a value of the wrong shape for any co
   assertEquals(markedPaths(schema, { rec: "x" }), ["rec"]);
   assertEquals(markedPaths(schema, { tup: { a: "x" } }), ["tup"]);
   assertEquals(markedPaths(schema, { arr: 7 }), ["arr"]);
-  // A container that marks nothing has nothing to report.
   assertEquals(markedPaths(schema, { plain: "x" }), []);
 });
 
@@ -934,7 +927,6 @@ Deno.test("schemaHoldsMetadata: searches a schema once per matches function", ()
   const afterFirst = calls;
   assertEquals(schemaHoldsMetadata(schema, counting), true);
   assertEquals(calls, afterFirst);
-  // Another function gets its own answer.
   assertEquals(schemaHoldsMetadata(schema, () => false), false);
 });
 
@@ -975,7 +967,6 @@ Deno.test("findFieldsWhere: reads a field's metadata across its wrapper chain an
     "union.u",
   ]);
   assertEquals(findFieldsWhere(schema, both), ["piped", "split"]);
-  // Metadata on the root schema itself is not a field.
   assertEquals(
     findFieldsWhere(z.object({ x: z.string() }).meta({ marked: true }), marked),
     [],
@@ -1014,8 +1005,6 @@ Deno.test("findFieldsWhere: metadata on a union and on one of its members are re
     nested: z.union([z.object({ x: z.string().meta({ b: true }) }), z.number()])
       .meta({ a: true }),
   });
-  // The chain continues into a member, which describes the same field, not
-  // into a member's own fields, which are fields of their own.
   assertEquals(findFieldsWhere(schema, both), ["choice"]);
 });
 
@@ -1029,8 +1018,6 @@ Deno.test("findFieldsWhere: a schema two fields share is read under each of them
     chain.some((meta) => meta.a === true) &&
     chain.some((meta) => meta.b === true);
   assertEquals(findFieldsWhere(schema, both), ["b"]);
-  // Under the union's chain the shared schema is read again, so both fields
-  // report it.
   assertEquals(
     findFieldsWhere(schema, (chain) => chain.some((meta) => meta.b === true)),
     ["a", "b"],
@@ -1052,8 +1039,6 @@ Deno.test("findFieldsWhere: a DAG-shaped schema costs one visit per node and cha
   assertEquals(findFieldsWhere(level, marked), [
     Array(30).fill("left").join("."),
   ]);
-  // Only a node with metadata is asked, and the shared leaf is read once
-  // under its first path: one question, not a billion.
   assertEquals(asked, 1);
 });
 
@@ -1075,7 +1060,6 @@ Deno.test("findValuesWithMetadata: with reportRoot, a match on the root schema's
     [""],
   );
   assertEquals(findValuesWithMetadata(whole, { a: "x" }, isMarked), []);
-  // A marked field under an unmarked root is reported the same either way.
   const under = z.object({ a: z.string().meta({ marked: true }) });
   assertEquals(
     findValuesWithMetadata(under, { a: "x" }, isMarked, { reportRoot: true })
@@ -1122,20 +1106,16 @@ Deno.test("findValuesWithMetadata: with transformed, what a transform, codec, ov
     ),
     [{ keys: ["creds"], value: { k: "SECRET" }, rawInput: true }],
   );
-  // Read as stored, the delivered shape is walked against the input shape
-  // and holds nothing the schema can name.
   assertEquals(
     findValuesWithMetadata(inner.transform((v) => v), delivered, isMarked, {
       reportRoot: true,
     }),
     [],
   );
-  // What a preprocess delivers conforms to the schema behind it.
   assertEquals(
     whole(z.preprocess((v) => v, inner), { secret: "s", label: "x" }),
     [{ keys: ["secret"], value: "s", rawInput: undefined }],
   );
-  // A transform beside the field cannot reach it.
   assertEquals(
     whole(
       z.object({ secret: marked, other: z.string().transform((s) => s) }),
@@ -1143,7 +1123,6 @@ Deno.test("findValuesWithMetadata: with transformed, what a transform, codec, ov
     ),
     [{ keys: ["secret"], value: "s", rawInput: undefined }],
   );
-  // A transform enclosing nothing marked delivers nothing marked.
   assertEquals(
     whole(z.object({ a: z.string() }).transform((v) => v), { a: "x" }),
     [],
@@ -1211,7 +1190,6 @@ Deno.test("codeAroundMetadata: a refinement, a node-level error map or a pipe on
     ),
     both,
   );
-  // Code on the marked node itself adds issues at its own position only.
   assertEquals(code(z.object({ a: marked.superRefine(() => {}) })), {
     messages: false,
     issues: true,
@@ -1220,13 +1198,11 @@ Deno.test("codeAroundMetadata: a refinement, a node-level error map or a pipe on
     messages: false,
     issues: true,
   });
-  // A schema that contains itself is entered once.
   type Node = { a: string; next?: Node | undefined };
   const node: z.ZodType<Node> = z.lazy(() =>
     z.object({ a: marked, next: node.optional() }).refine(() => true, "no")
   );
   assertEquals(code(node), messages);
-  // The answer is kept per schema.
   const kept = z.object({ a: marked }).superRefine(() => {});
   assertEquals(code(kept), code(kept));
 });

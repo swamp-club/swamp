@@ -27,7 +27,6 @@ import { stripCommentsAndStrings } from "./extension_quality_checker.ts";
 
 const MODEL = EXPORT_DECLARATION_PATTERNS.model;
 
-/** Fixture text: a declaration with an arbitrary type, plus noise. */
 const arbFixtureBody = fc
   .tuple(
     fc.stringOf(fc.constantFrom(..."abz@/-_.".split("")), {
@@ -40,10 +39,6 @@ const arbFixtureBody = fc
     `export const model = {\n  type: "${type}",\n};${noise}`
   );
 
-/**
- * Code lines holding regex literals whose bodies look like the start of a
- * template or comment, which a tokenizer without regex support misreads.
- */
 const arbRegexLine = fc.constantFrom(
   'const esc = (s: string) => s.replace(/[`$"\\\\]/g, "");\n',
   "const slashes = /^\\/*$/;\n",
@@ -51,7 +46,6 @@ const arbRegexLine = fc.constantFrom(
   "const half = total / 2;\n",
 );
 
-/** Wraps fixture text in each literal or comment form TypeScript has. */
 const arbWrapped = fc
   .tuple(
     arbFixtureBody,

@@ -18,35 +18,24 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * Worker scheduling (see design/enablers/remote-execution.md, "Scheduling, fan-out,
- * and provisioning").
- *
- * A pure domain service: given a step's placement requirements and a pool
- * snapshot, decide where the dispatch goes. Matching order is direct target
- * → labels → platform; the tiebreak among idle eligible workers is the name
- * ordering (deterministic round-robin emerges from busy/idle rotation), and
- * a step queues — never fails — when every eligible worker is busy.
+ * matching order is direct target, labels, platform; ties among idle eligible
+ * workers break by name; a step queues, never fails, when every eligible worker
+ * is busy
  */
 
-/** A step's placement requirements, from workflow YAML. */
 export interface StepPlacement {
-  /** Pin to a specific worker by name or instance UUID. */
   target?: string;
-  /** Labels the worker must carry (exact key=value match on every entry). */
   labels?: Record<string, string>;
-  /** Required platform, e.g. "linux" or "linux/x86_64". */
   platform?: string;
-  /** Per-step queue timeout in milliseconds; overrides the serve-level default. */
   queueTimeoutMs?: number;
   /**
-   * When set, all steps sharing the same key are pinned to the worker that
-   * executed the first step in the group. The dispatch service maintains
-   * the key→worker mapping and fails steps whose pinned worker disconnects.
+   * steps sharing a key are pinned to the worker that ran the first; the
+   * dispatch service keeps the key-to-worker mapping and fails steps whose
+   * pinned worker disconnects
    */
   affinityKey?: string;
 }
 
-/** The slice of worker state scheduling looks at. */
 export interface SchedulableWorker {
   name: string;
   instanceUuid: string;
@@ -63,10 +52,6 @@ export type ScheduleDecision =
   | { kind: "dispatch"; worker: SchedulableWorker }
   | { kind: "queue" };
 
-/**
- * Human-readable description of a placement requirement, for use in
- * timeout errors and step_queued events.
- */
 export function describePlacement(placement: StepPlacement): string {
   if (placement.target !== undefined) {
     return `target '${placement.target}'`;
@@ -83,7 +68,6 @@ export function describePlacement(placement: StepPlacement): string {
   return parts || "any worker";
 }
 
-/** True when a step declares any placement requirement at all. */
 export function hasPlacement(placement: StepPlacement | undefined): boolean {
   return placement !== undefined && (
     placement.target !== undefined ||
@@ -113,7 +97,6 @@ function matchesLabels(
   );
 }
 
-/** Workers eligible for a placement, ignoring busy/idle. */
 export function eligibleWorkers(
   placement: StepPlacement,
   pool: SchedulableWorker[],
@@ -146,11 +129,8 @@ export function eligibleWorkers(
 }
 
 /**
- * The first of a placement's own requirements a worker does not meet, or
- * null when the worker meets them all. As in {@link eligibleWorkers}, a
- * target stands in for labels and platform; otherwise each label, then the
- * platform, is checked. Ignores connection and status, which decide
- * whether the worker can take a dispatch now, not whether it may.
+ * a target stands in for labels and platform; ignores connection and status,
+ * which decide whether the worker can take a dispatch now, not whether it may
  */
 export function unmetPlacement(
   placement: StepPlacement,
@@ -178,10 +158,8 @@ export function unmetPlacement(
 }
 
 /**
- * Decide where a step goes right now. `dispatch` names an eligible worker
- * with available capacity; `queue` means every eligible worker is at
- * capacity, or no connected worker matches the placement at all.
- * Tiebreak: most free slots first, then name for determinism.
+ * queue means every eligible worker is at capacity or no connected worker
+ * matches; tiebreak is most free slots first, then name for determinism
  */
 export function scheduleStep(
   placement: StepPlacement,

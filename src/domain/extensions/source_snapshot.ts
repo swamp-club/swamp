@@ -22,13 +22,9 @@ import { resolveLocalImports } from "../models/local_import_resolver.ts";
 import { hashFile, type SourceModuleLookup } from "./bundle_freshness.ts";
 
 /**
- * The source files a registered extension type was loaded from, as they
- * stood before it was bundled and imported: one line per file with its
- * content hash. A long-lived process compares it with the files on disk
- * before it bundles the source again (swamp-club#3594), so it never ships
- * code other than the code it loaded. Holds no catalog reference: the
- * catalog a reload registered from is closed by the time a run needs the
- * bundle.
+ * a long-lived process compares it with the files on disk before bundling
+ * again, so it never ships code other than what it loaded; holds no catalog
+ * reference, which is closed by the time a run needs the bundle
  */
 export interface SourceSnapshot {
   readonly files: readonly string[];
@@ -36,9 +32,8 @@ export interface SourceSnapshot {
 }
 
 /**
- * Snapshots `absolutePath` and the local modules it imports: those the
- * catalog recorded, or, when it recorded none (a pulled extension whose
- * bundle shipped pre-built), its relative-import closure.
+ * when the catalog recorded no modules (a pulled extension with a pre-built
+ * bundle), uses the relative-import closure
  */
 export async function captureSourceSnapshot(
   absolutePath: string,
@@ -52,7 +47,6 @@ export async function captureSourceSnapshot(
   return { files, signature: await signFiles(files) };
 }
 
-/** Whether any snapshotted file was changed, replaced or removed since. */
 export async function sourceSnapshotChanged(
   snapshot: SourceSnapshot,
 ): Promise<boolean> {
@@ -72,10 +66,8 @@ async function signFiles(files: readonly string[]): Promise<string> {
 }
 
 /**
- * A registered extension type's source changed on disk after the process
- * loaded it, so bundling it now would ship code the process does not run.
- * The message names the type and extension only, never a path: it reaches
- * remote clients.
+ * the message names the type and extension only, never a path, since it reaches
+ * remote clients
  */
 export class StaleExtensionSourceError extends Error {
   constructor(typeNormalized: string, extensionName?: string) {

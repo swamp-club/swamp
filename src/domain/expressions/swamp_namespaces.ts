@@ -36,10 +36,6 @@ import {
 
 export { BINDING_MACROS, parsesAsCel } from "./cel_grammar.ts";
 
-/**
- * Root identifiers swamp binds when it evaluates CEL (the CEL-visible keys of
- * ExpressionContext).
- */
 const SWAMP_ROOT_NAMESPACES: ReadonlySet<string> = new Set([
   "model",
   "self",
@@ -77,10 +73,6 @@ export const KNOWN_FOREIGN_ROOTS: ReadonlySet<string> = new Set([
   "strategy",
 ]);
 
-/**
- * A member chain on a known foreign root, written with no spaces and holding
- * hyphens: `matrix.node-version`, `needs.build-app.outputs.sha`.
- */
 const HYPHENATED_FOREIGN_REF = new RegExp(
   `(?<![A-Za-z0-9_.])(?:${[...KNOWN_FOREIGN_ROOTS].join("|")})` +
     "\\.[A-Za-z0-9_.-]*[A-Za-z0-9_]",
@@ -88,11 +80,9 @@ const HYPHENATED_FOREIGN_REF = new RegExp(
 );
 
 /**
- * Reads the hyphens in a member chain on a known foreign root as part of its
- * names. Those systems have no subtraction, and name things with hyphens
- * (`matrix.node-version`), which CEL parses as `matrix.node - version` with
- * `version` a root of its own. Text inside string literals and comments is
- * left alone.
+ * foreign systems have no subtraction and name things with hyphens, which CEL
+ * would parse as matrix.node - version; string literals and comments are left
+ * alone
  */
 function joinHyphenatedForeignRefs(celExpression: string): string {
   let out = "";
@@ -108,26 +98,15 @@ function joinHyphenatedForeignRefs(celExpression: string): string {
   return out;
 }
 
-/** What a swamp evaluation provides, to judge whether an expression is swamp's. */
 export interface SwampScope {
-  /** Whether this evaluation binds the root identifier. */
   isBound(root: string): boolean;
-  /**
-   * Input names the definition declares in its `inputs` schema, or `"any"`
-   * to attribute every `inputs.X` to swamp.
-   */
   declaredInputs: ReadonlySet<string> | "any";
 }
 
 /**
- * The scope to judge `${{ ... }}` text by where no single evaluation is in
- * view: the guard on a method's global arguments, which may run on a remote
- * worker that never saw the definition's `inputs`, and `model validate`, which
- * must agree with that guard. Every namespace counts as bound and every input
- * as declared.
- *
- * {@link isSwampExpression} can only gain `true` answers as its scope widens,
- * so anything a definition pass attributes to swamp is swamp's here too.
+ * for guards that may run on a remote worker that never saw the definition's
+ * inputs, and for model validate, which must agree: every namespace is bound
+ * and every input declared, widening only to more true answers
  */
 export const WIDEST_SWAMP_SCOPE: SwampScope = {
   isBound: () => true,
@@ -135,19 +114,9 @@ export const WIDEST_SWAMP_SCOPE: SwampScope = {
 };
 
 /**
- * Whether `${{ ... }}` text is another templating system's, such as GitHub
- * Actions `${{ github.sha }}`: it parses as CEL, and no swamp evaluation could
- * own it (see {@link WIDEST_SWAMP_SCOPE}).
- *
- * Text that does not parse is never foreign. That covers prose, and a
- * malformed swamp expression such as one whose string literal never closes,
- * which must stay guarded rather than reach a method as literal text.
- *
- * Text that reads the `vault` namespace is never foreign either, whatever
- * else it reads. The runtime pass resolves every such expression and then
- * evaluates it, so `${{ vault.get(t, KEY) + github.sha }}` fails on `github`
- * rather than reaching a method as written; see
- * {@link foreignRootsBesideVault}.
+ * text that does not parse is never foreign, so a malformed swamp expression
+ * stays guarded; text reading vault is never foreign, since the runtime pass
+ * evaluates it and fails on github
  */
 export function isForeignExpression(celExpression: string): boolean {
   const roots = attributedRoots(celExpression);
@@ -155,13 +124,6 @@ export function isForeignExpression(celExpression: string): boolean {
     !isSwampExpression(celExpression, WIDEST_SWAMP_SCOPE);
 }
 
-/**
- * The root identifiers that swamp does not provide in an expression that
- * also reads the `vault` namespace, such as `github` in
- * `vault.get(t, KEY) + github.sha`. Swamp evaluates the whole expression
- * because of the vault read, so each of these fails the run. Empty for an
- * expression that does not read `vault`, or does not parse.
- */
 export function foreignRootsBesideVault(celExpression: string): string[] {
   const roots = attributedRoots(celExpression);
   if (roots === undefined || !roots.has("vault")) return [];
@@ -169,17 +131,9 @@ export function foreignRootsBesideVault(celExpression: string): string[] {
 }
 
 /**
- * The free root identifiers of an expression that are neither a swamp
- * namespace nor a known foreign root (see {@link KNOWN_FOREIGN_ROOTS}), such
- * as `nonexistent` in `github.sha + nonexistent.variable`. A workflow step
- * argument passes through as another templating system's text only when
- * there are none: an unlisted root is far more likely a typo, so it fails
- * (swamp-club#3400). Empty for text that does not parse.
- *
- * A hyphenated name on a known foreign root is one name, so `version` is no
- * root of `matrix.node-version` (see {@link joinHyphenatedForeignRefs}).
- * Swamp's own reference to a deferred expression is no unlisted root either:
- * it is judged where the reference is resolved.
+ * a step argument passes through as foreign text only with no unlisted root,
+ * since one is far more likely a typo; swamp's own deferred-expression
+ * reference is judged where it is resolved
  */
 export function unlistedForeignRoots(celExpression: string): string[] {
   const roots = attributedRoots(joinHyphenatedForeignRefs(celExpression)) ??
@@ -214,13 +168,9 @@ export function unlistedForeignRootError(
 }
 
 /**
- * The free root identifiers of an expression, with each `vault.get` argument
- * read as the resolver reads it, or undefined when the text does not parse.
- *
- * Parsed with the grammar {@link isSwampExpression} uses, deliberately not
- * {@link parsesAsCel}. Text only the evaluation grammar accepts (`inputs.?x`)
- * is text `isSwampExpression` cannot attribute, so it must not count as
- * foreign: it stays claimed and guarded.
+ * uses the isSwampExpression grammar, not parsesAsCel: text only the evaluation
+ * grammar accepts cannot be attributed, so it must not count as foreign and
+ * stays guarded
  */
 function attributedRoots(celExpression: string): Set<string> | undefined {
   let ast: ASTNode;
@@ -238,24 +188,14 @@ function attributedRoots(celExpression: string): Set<string> | undefined {
   return refs.roots;
 }
 
-/**
- * Whether a value (a string, or an object or array holding strings) carries
- * `${{ ... }}` text that is not foreign (see {@link isForeignExpression}).
- * After definition evaluation such text is an expression that did not
- * resolve; a value whose only `${{ ... }}` text is another templating
- * system's holds none.
- */
 export function containsSwampExpression(value: unknown): boolean {
   return extractExpressions(value).some((expr) =>
     !isForeignExpression(expr.celExpression)
   );
 }
 
-/** A root identifier that nearly spells a swamp namespace. */
 export interface MisspeltNamespace {
-  /** The root as written, such as `input`. */
   root: string;
-  /** The swamp namespace it resembles, such as `inputs`. */
   namespace: string;
 }
 
@@ -282,16 +222,9 @@ function isSlipOf(root: string, namespace: string): boolean {
 }
 
 /**
- * The first free root identifier of a CEL expression that is not a swamp
- * namespace but nearly spells one (see {@link isSlipOf}): `input` for
- * `inputs`, `modle` for `model`. Such a root is unlisted (see
- * {@link unlistedForeignRoots}), so the expression fails either way; this
- * only supplies the "Did you mean" hint.
- *
- * The known foreign roots are never named, and are near no namespace anyway.
- * Neither are ordinary words such as `node`, `stats` or `date`.
- *
- * Returns undefined for text that does not parse.
+ * only supplies the Did you mean hint, since an unlisted root fails anyway;
+ * known foreign roots and ordinary words like node, stats or date are never
+ * named
  */
 export function misspeltSwampNamespace(
   celExpression: string,
@@ -320,13 +253,9 @@ export function misspeltSwampNamespace(
 }
 
 /**
- * Whether an evaluation failed because the expression read a known foreign
- * root (see {@link KNOWN_FOREIGN_ROOTS}): CEL's "Unknown variable" error,
- * naming such a root, or swamp's own reference to a deferred expression,
- * which is left raw as before. Any other failure of an expression that mentions a
- * foreign root is a real error. In `has(inputs.cache) ? data.latest("m", "d") : github.sha`,
- * a datastore error from `data.latest` must surface, not turn the whole
- * expression into literal text.
+ * only an unknown-variable error naming a foreign root (or swamp's deferred
+ * reference) counts; any other failure, such as a data.latest datastore error,
+ * must surface rather than become literal text
  */
 export function failedOnForeignRoot(error: unknown): boolean {
   for (
@@ -346,26 +275,9 @@ export function failedOnForeignRoot(error: unknown): boolean {
 }
 
 /**
- * Parses an expression to attribute its free root identifiers, reading each
- * `vault.get` argument the way the resolver does. The resolver rewrites
- * `vault.get(vaultName, secretKey)` before CEL ever sees it, so no argument
- * reaches a method as text:
- *
- * - A quoted argument is a literal name. It is kept as written, except that
- *   a backtick-quoted one, which the resolver's matcher accepts and CEL
- *   cannot parse, is parsed as a string constant.
- * - A simple unquoted token is used verbatim as a literal name, so
- *   `t` and `KEY` in `vault.get(t, KEY)` are names, not identifiers CEL would
- *   look up. It is parsed as a string constant.
- * - A member access, call or other computation is evaluated as CEL.
- *   `inputs.vaultName` keeps its roots, so an undeclared input is still judged
- *   by the scope. One that
- *   reads nothing swamp provides (`db.password`, `github.repo`) fails that
- *   evaluation rather than passing through, so it is no sign of another
- *   templating system and is parsed as a string constant too; see
- *   {@link unresolvableVaultArguments}.
- *
- * Throws when the text does not parse.
+ * the resolver rewrites vault.get before CEL sees it, so quoted and bare-token
+ * arguments are literal names parsed as string constants; computed ones are
+ * evaluated as CEL, unresolvable ones too
  */
 function parseForAttribution(celExpression: string): ASTNode {
   let text = "";
@@ -386,7 +298,6 @@ function attributedVaultArg(arg: { text: string; literal?: string }): string {
   return readsOnlySwampBindings(arg.text) ? arg.text : "''";
 }
 
-/** Whether an unquoted `vault.get` argument is CEL over swamp's namespaces. */
 function readsOnlySwampBindings(bareToken: string): boolean {
   return isDynamicVaultArgument(bareToken) &&
     isSwampExpression(bareToken, WIDEST_SWAMP_SCOPE);
@@ -412,14 +323,8 @@ export function unresolvableVaultArguments(celExpression: string): string[] {
 }
 
 /**
- * Whether evaluating a CEL expression could read anything swamp binds: some
- * free root identifier is a swamp namespace (`vault`, `data`, `self`,
- * `inputs`, ...). Fails closed — text the attribution grammar cannot parse
- * (prose, a malformed expression, `inputs.?x`) counts as reading one.
- *
- * Unlike {@link isForeignExpression}, a single swamp root is enough, so
- * `${{ github.sha || data.latest("x", "y") }}` reads a swamp binding even
- * though `github` is not swamp's.
+ * fails closed: text the attribution grammar cannot parse counts as reading a
+ * swamp binding; one swamp root is enough, unlike isForeignExpression
  */
 export function readsSwampBinding(celExpression: string): boolean {
   let ast: ASTNode;
@@ -441,19 +346,9 @@ export function readsSwampBinding(celExpression: string): boolean {
 }
 
 /**
- * Why `${{ ... }}` text from data cannot be saved in a definition, in words
- * that complete "the text ...", or undefined when it can: when it is another
- * templating system's text (see {@link isForeignExpression}) and reads no
- * swamp binding (see {@link readsSwampBinding}). Text that can be saved is
- * stored wrapped in `literal()` (see `literalOccurrence`), so no later load
- * evaluates it; this decides only whose text it is.
- *
- * A hyphenated name on a known foreign root is one name when deciding what
- * the text reads, so `needs.build-env.outputs.url` reads no `env`. Whether it
- * is another system's text is judged on the text as written, as a run judges
- * it when the method reads the argument: CEL reads `needs.build-vault.x` as
- * `needs.build - vault.x`, which reads `vault`, and `matrix.node-18x` does
- * not parse, so a run would refuse both.
+ * hyphenated foreign names count as one name when deciding what the text reads,
+ * but foreignness is judged as written, as a run judges it, since CEL reads
+ * needs.build-vault.x as a vault read
  */
 export function storedTextRefusal(celExpression: string): string | undefined {
   const joined = joinHyphenatedForeignRefs(celExpression);
@@ -480,10 +375,6 @@ export function storedTextRefusal(celExpression: string): string | undefined {
   return undefined;
 }
 
-/**
- * A hyphenated name on a known foreign root, outside strings: the first that
- * is not another system's text on its own as written, else the first.
- */
 function hyphenatedForeignRef(celExpression: string): string | undefined {
   const refs: string[] = [];
   for (const seg of lexSegments(celExpression)) {
@@ -496,13 +387,9 @@ function hyphenatedForeignRef(celExpression: string): string | undefined {
   return refs.find((ref) => !isForeignExpression(ref)) ?? refs[0];
 }
 
-/** The most of a refused expression's text a message repeats. */
 const MAX_REFUSED_TEXT_LENGTH = 120;
 
-/**
- * One line of a refusal message: where the text sits, the text (cut short
- * when long, since it can be data), and why it was refused.
- */
+/** the text is cut short when long, since it can be data */
 export function refusedOccurrenceLine(
   path: string,
   raw: string,
@@ -522,20 +409,9 @@ export function refusedOccurrenceLine(
 }
 
 /**
- * Whether a CEL expression that failed to evaluate was written for swamp.
- *
- * The `${{ ... }}` syntax is shared with other templating systems — a shell
- * model writing a GitHub Actions file carries `${{ github.sha }}`,
- * `${{ inputs.version }}` or `${{ steps.build.outputs.sha }}` — and that text
- * has always passed through to the method as literal text. It counts as
- * swamp's only when every free root identifier is a swamp namespace bound in
- * this evaluation, and every `inputs.X` names an input the definition
- * declares. A declared input with no value is swamp's; `inputs.version` in a
- * definition that declares no `version` is not.
- *
- * Returns false when the expression cannot be parsed, or reads `inputs` in a
- * way that names no single input (unless the scope declares `"any"` input), so
- * anything swamp cannot attribute keeps that literal pass-through.
+ * text is swamp's only when every free root is a bound swamp namespace and
+ * every inputs.X names a declared input; anything unattributable keeps the
+ * literal pass-through, as other systems share this syntax
  */
 export function isSwampExpression(
   celExpression: string,

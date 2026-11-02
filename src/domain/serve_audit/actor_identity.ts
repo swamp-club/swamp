@@ -21,11 +21,8 @@ import type { Principal } from "../access/principal.ts";
 import type { ActorIdentity } from "./audit_event.ts";
 
 /**
- * The username and email an audit event records for a principal
- * (swamp-club#3076). Only users have them. The email and username come from
- * the identity the OAuth provider supplied at login; a user it gave no
- * username for falls back to the name configured for their id. Returns
- * `undefined` when nothing is known, so the event keeps its old shape.
+ * a user the provider gave no username falls back to the name configured for
+ * their id; undefined when nothing is known
  */
 export function resolveActorIdentity(
   principal: Principal | null,

@@ -41,11 +41,9 @@ export interface ReapResult {
 }
 
 /**
- * Interrupts workflow runs that a previous `swamp serve` process left
- * `running`. Serve calls this at boot, before it starts any run of its own,
- * so a tracker row that is no longer running is trusted as the verdict, and
- * a run with no tracker row falls back to a pid check. Not safe while other
- * swamp processes may be running; the CLI uses {@link settleDeadOwnerRun}.
+ * serve calls this at boot before starting any run, so a tracker row not
+ * running is trusted as the verdict and a run with no row falls back to a pid
+ * check; not safe while other swamp processes run
  */
 export async function reapOrphanedWorkflowRuns(
   runs: { run: WorkflowRun; workflowId: WorkflowId }[],
@@ -58,10 +56,9 @@ export async function reapOrphanedWorkflowRuns(
   heartbeatLookup?: (instanceId: string) => Promise<boolean>,
   options: {
     /**
-     * Judge a tracker row another serve instance left as a run of that
-     * instance, by `heartbeatLookup`, rather than trust it as the verdict:
-     * serve's team mode (swamp-club#4096), where only the leader runs work
-     * and a row of any other instance says nothing about the run.
+     * judge a tracker row another serve instance left by heartbeatLookup
+     * instead of trusting it: in team mode only the leader runs work, so a row
+     * of any other instance says nothing about the run
      */
     readonly judgeForeignRows?: boolean;
   } = {},
@@ -73,11 +70,9 @@ export async function reapOrphanedWorkflowRuns(
     if (run.status !== "running") continue;
 
     const tracked = trackerLookup(run.id);
-    // A row of one instance against a record another instance now owns:
-    // that instance took the run over, as a resume does, so the row says
-    // nothing about the run as it stands. It is judged by that instance's
-    // heartbeat below (swamp-club#3958). Without heartbeats to judge it by,
-    // the row decides, as before.
+    // a row of one instance against a record another instance now owns says
+    // nothing about the run as it stands, so that instance's heartbeat judges
+    // it; without heartbeats the row decides
     const takenOver = heartbeatLookup !== undefined && tracked !== null &&
       tracked.instanceId !== undefined && run.instanceId !== undefined &&
       (tracked.instanceId !== run.instanceId ||
@@ -152,7 +147,6 @@ export async function reapOrphanedWorkflowRuns(
       continue;
     }
 
-    // Legacy run or same-instance run — fall back to PID check
     const pid = run.pid;
     if (pid !== undefined && !isDeadFn(pid)) {
       logger.info(
@@ -178,10 +172,6 @@ export async function reapOrphanedWorkflowRuns(
   return { reaped, skipped };
 }
 
-/**
- * How the caller sees a tracker row's owner: the host and serve instance it
- * runs on, and a pid liveness check that is only meaningful for this host.
- */
 export interface OwnerLiveness {
   readonly hostname: string;
   readonly instanceId?: string;
@@ -189,15 +179,9 @@ export interface OwnerLiveness {
 }
 
 /**
- * Whether a tracker row says its owner is gone: the row is owned on this
- * host, is `running` or already reaped as `interrupted`, and its pid is
- * dead. The pid is checked for an `interrupted` row too, because the reaper
- * that marked it may not have checked it: a serve instance reaps another
- * instance's row on heartbeat age alone, even when both share this host and
- * its tracker. Rows the owner settled itself (completed, failed, cancelled,
- * suspended) never count, and neither do rows owned elsewhere. So this is
- * safe to ask while other swamp processes are running; a reused pid can
- * only make a dead owner look alive.
+ * a row owned on this host, running or interrupted, with a dead pid; an
+ * interrupted row's pid is checked too as its reaper may not have;
+ * owner-settled or foreign rows never count, so a reused pid only looks alive
  */
 export function trackerShowsDeadOwner(
   tracked: ActiveRun | null,
@@ -211,36 +195,19 @@ export function trackerShowsDeadOwner(
     liveness.isDead(tracked.pid);
 }
 
-/** What {@link goneInstanceIds} needs to judge a serve instance's rows. */
 export interface GoneInstanceCheck {
-  /** The caller's host and serve instance id, and a pid check for this host. */
   readonly liveness: OwnerLiveness & { readonly instanceId: string };
   /** The caller's own pid, which says nothing about another instance's row. */
   readonly selfPid: number;
-  /** Whether the control-plane store holds a heartbeat for the instance. */
   hasHeartbeat(instanceId: string): boolean;
-  /** How old a row must be before it is judged on its age. */
   readonly staleTtlMs: number;
   readonly now: number;
 }
 
 /**
- * The serve instances whose `running` tracker rows show they are gone: not
- * the caller, no heartbeat in the control-plane store, and every row either
- * owned on this host by a dead pid, or with a tracker heartbeat older than
- * the stale TTL. A peer that reaps a crashed instance deletes its heartbeat
- * without seeing its runs, so a missing heartbeat is the only signal left to
- * the instance that restarts on the same tracker (swamp-club#3355).
- *
- * A row is judged on its age when its pid cannot be checked here: it is
- * owned on another host, or it carries the caller's own pid. A restarted
- * container reuses its pid, but so does a live sibling container with the
- * same hostname, and only a row its owner stopped refreshing tells them
- * apart. The age wait also covers a live instance sharing this tracker that
- * has started listening but not yet written its first heartbeat. A row on
- * this host with a live pid always keeps its instance. As in
- * {@link trackerShowsDeadOwner}, a pid that is not the caller's is checked
- * against this host's process table.
+ * a missing heartbeat is the only signal left once a peer reaps a crashed
+ * instance; rows whose pid cannot be checked here are judged on age, as a
+ * reused pid or same-hostname sibling container looks alive
  */
 export function goneInstanceIds(
   running: readonly ActiveRun[],
@@ -284,15 +251,9 @@ export function runHasDeadOwner(
 }
 
 /**
- * Whether the process that suspended a run is still running the level it
- * suspended in: its tracker row is owned on this host, still says `running`
- * (an owner that finishes the level marks the row `suspended` only after
- * its last save) and its pid is alive. Until the level drains that owner
- * keeps saving the record from memory, without the run's claim, so a resume
- * that took the run over now would be saved over.
- *
- * A row owned on another host, or no row, is never judged: that owner
- * cannot be checked from here.
+ * until the level drains, the suspending owner keeps saving the record from
+ * memory without the claim, so a resume taking the run over now would be saved
+ * over; foreign or absent rows are never judged
  */
 export function suspendedRunOwnerStillRuns(
   run: WorkflowRun,
@@ -307,20 +268,9 @@ export function suspendedRunOwnerStillRuns(
 }
 
 /**
- * Interrupts a run whose owning process died without settling it, for
- * example a `workflow run` or `resume` force-exited by a second Ctrl-C, and
- * marks its tracker row `interrupted` and then settled. The run then shows
- * its in-flight steps as `unknown` and `swamp workflow recover` accepts it.
- *
- * The run is read fresh from the repository and settled only while it is
- * still `running` under the dead owner's pid, so a run its owner finished
- * or another process took over is never overwritten. The row is marked
- * settled only after the record is saved, so retention keeps it while the
- * record may still say `running`. The method runs of its steps that the dead
- * owner left `running` are then settled too, best-effort (see
- * {@link settleDeadOwnerMethodRuns}).
- *
- * Returns true when the run was interrupted.
+ * the run is read fresh and settled only while still running under the dead
+ * owner's pid, so one its owner finished or another process took over is never
+ * overwritten; the row is settled only after the save
  */
 export async function settleDeadOwnerRun(
   runRepo: WorkflowRunRepository,
@@ -358,10 +308,6 @@ export async function settleDeadOwnerRun(
   return true;
 }
 
-/**
- * The runs of a workflow, or the one run `runId` names, that are still
- * `running` while their tracker row shows a dead owner.
- */
 export async function findDeadOwnerRuns(
   runRepo: WorkflowRunRepository,
   runTracker: RunTrackerRepository,
@@ -377,28 +323,19 @@ export async function findDeadOwnerRuns(
   );
 }
 
-/** A workflow run record and the workflow it is stored under. */
 export interface RunRecord {
   readonly run: WorkflowRun;
   readonly workflowId: WorkflowId;
 }
 
-/** The run record reads {@link runRecordFinder} needs. */
 export interface RunRecordStore {
   findById(
     workflowId: WorkflowId,
     runId: WorkflowRunId,
   ): Promise<WorkflowRun | null>;
-  /** Every workflow with a runs directory, whether or not it still exists. */
   listWorkflowIds(): Promise<WorkflowId[]>;
 }
 
-/**
- * Finds the run record behind a workflow tracker row: under the workflow
- * the row names, and failing that under any workflow, so a run of a
- * workflow since renamed or deleted is still found by its run id. Null only
- * when no workflow stores it; a read that fails otherwise throws.
- */
 export function runRecordFinder(
   runRepo: RunRecordStore,
   workflowRepo: Pick<WorkflowRepository, "findByName">,
@@ -412,11 +349,8 @@ export function runRecordFinder(
       const run = await runRepo.findById(workflow.id, runId);
       if (run) return { run, workflowId: workflow.id };
     }
-    // Listed afresh for each miss, never from a snapshot: a record that
-    // arrives meanwhile must not have its row settled as missing. In the
-    // settle sweep a miss settles its row, so the sweep pays this once per
-    // row; doctor's dead-owner lookup pays it on each run for a row whose
-    // workflow was renamed.
+    // listed afresh for each miss, never from a snapshot: a record arriving
+    // meanwhile must not have its row settled as missing
     for (const workflowId of await runRepo.listWorkflowIds()) {
       if (workflowId === workflow?.id) continue;
       const run = await runRepo.findById(workflowId, runId);
@@ -427,14 +361,9 @@ export function runRecordFinder(
 }
 
 /**
- * Marks settled every `interrupted` workflow row whose run record no longer
- * says `running`: `record_settled` when the record finished some other way,
- * `record_missing` when no workflow stores it any more. Retention can then
- * purge the row. A row whose record is still `running` is left for the
- * dead-owner settle, and a row whose record cannot be read is left as it
- * is. Safe while other swamp processes run: an interrupted row is never
- * taken back by its owner, and only its record decides. Returns how many
- * rows were settled (swamp-club#2917).
+ * safe while other swamp processes run: an interrupted row is never taken back
+ * by its owner and only its record decides; a row whose record is still running
+ * or unreadable is left as it is
  */
 export async function settleInterruptedWorkflowRows(
   runTracker: RunTrackerRepository,
@@ -469,27 +398,19 @@ export async function settleInterruptedWorkflowRows(
   return settled;
 }
 
-/** The output repository reads and writes method-run settlement needs. */
 export type MethodRunOutputs = Pick<OutputRepository, "findByIds" | "save">;
 
-/**
- * The reason a method run is settled `cancelled` with when its owning process
- * exited before saving the run's final state.
- */
 export function ownerExitedReason(pid: number): string {
   return `cancelled: the process running this method run (pid ${pid}) exited before it finished`;
 }
 
-/** A method-run row whose output record is still `running` under its pid. */
 export interface OrphanedMethodRun {
   readonly row: ActiveRun;
   readonly type: ModelType;
   readonly output: ModelOutput;
 }
 
-/** How method-run rows matched their output records. */
 export interface MethodRunMatch {
-  /** Rows whose output is still `running` under the row's pid. */
   readonly running: OrphanedMethodRun[];
   /**
    * Rows with nothing left to settle: the output is missing, finished, or
@@ -498,11 +419,6 @@ export interface MethodRunMatch {
   readonly done: ActiveRun[];
 }
 
-/**
- * The type a model_method row's output is stored under, or null when the row
- * cannot name one: it has no type or method, or the method name would leave
- * the type's output directory.
- */
 function outputTypeOf(row: ActiveRun): ModelType | null {
   const method = row.methodName;
   if (
@@ -518,11 +434,6 @@ function outputTypeOf(row: ActiveRun): ModelType | null {
   }
 }
 
-/**
- * Reads the output records behind method-run rows, one read per model type
- * and method however many rows share them. A row's output has its id, and
- * the row's model type and method locate it.
- */
 export async function matchMethodRunOutputs(
   outputRepo: Pick<OutputRepository, "findByIds">,
   rows: readonly ActiveRun[],
@@ -566,11 +477,6 @@ export async function matchMethodRunOutputs(
   return { running, done };
 }
 
-/**
- * Settles one method run its owner left `running`: marks the output
- * `cancelled` with `reason` and saves it. The caller has matched the output
- * against its row, so the owner is known to be gone.
- */
 export async function settleOrphanedMethodRun(
   outputRepo: Pick<OutputRepository, "save">,
   { row, type, output }: OrphanedMethodRun,
@@ -580,12 +486,6 @@ export async function settleOrphanedMethodRun(
   await outputRepo.save(type, row.methodName!, output);
 }
 
-/**
- * The method-run rows owned on this host whose owner is gone (see
- * {@link trackerShowsDeadOwner}), or only those of process `pid`, matched
- * against their output records. A row already settled is skipped, so its
- * outputs are not read again while retention keeps it.
- */
 export async function findDeadOwnerMethodRuns(
   outputRepo: Pick<OutputRepository, "findByIds">,
   runTracker: RunTrackerRepository,
@@ -600,18 +500,6 @@ export async function findDeadOwnerMethodRuns(
   return await matchMethodRunOutputs(outputRepo, rows);
 }
 
-/**
- * Settles the method runs a dead owner left `running`, for example the steps
- * of a workflow run whose process was force-exited or killed after a cancel
- * grace. Only rows owned on this host with a dead pid count, as for
- * {@link settleDeadOwnerRun}, and an output is written only while it is still
- * `running` under that pid. Each row is marked `interrupted`, its output
- * `cancelled` with {@link ownerExitedReason}, and the row settled only after
- * the output is saved. A row with no output left to settle is marked settled
- * too, so retention may purge it.
- *
- * Returns the method runs whose output was settled.
- */
 export async function settleDeadOwnerMethodRuns(
   outputRepo: MethodRunOutputs,
   runTracker: RunTrackerRepository,
@@ -650,20 +538,15 @@ export async function settleDeadOwnerMethodRuns(
   return running;
 }
 
-/** How a cancel's attempt to cancel stopped method runs' outputs went. */
 export interface MethodRunCancellation {
-  /** Rows whose output was cancelled, or had nothing left to cancel. */
   readonly closed: ActiveRun[];
-  /** Rows whose output could not be read or saved; still `running`. */
   readonly failed: ActiveRun[];
   readonly errors: unknown[];
 }
 
 /**
- * Cancels the outputs a stopped owner left `running` for `rows`, with
- * `reason`, one model type and method at a time. A failed read or save is
- * collected, not thrown, so the cancel can still settle its run; the caller
- * leaves a failed row `interrupted` for `run doctor --fix`.
+ * a failed read or save is collected, not thrown, so the cancel can still
+ * settle its run; the caller leaves a failed row interrupted
  */
 export async function cancelOrphanedMethodRuns(
   outputRepo: MethodRunOutputs,
@@ -691,10 +574,6 @@ export async function cancelOrphanedMethodRuns(
   return { closed, failed, errors };
 }
 
-/**
- * Logs that `count` method runs were left `interrupted` for
- * `run doctor --fix` because their outputs could not be read or saved.
- */
 export function warnUnsettledMethodRuns(
   count: number,
   errors: readonly unknown[],

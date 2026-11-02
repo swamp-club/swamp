@@ -19,10 +19,6 @@
 
 import { z } from "zod";
 
-/**
- * A report reference: either a string (report name, applies to all methods)
- * or an object with optional method scoping.
- */
 const ReportRefSchema = z.union([
   z.string(),
   z.object({
@@ -31,22 +27,13 @@ const ReportRefSchema = z.union([
   }),
 ]);
 
-/**
- * Schema for report selection in definition/workflow YAML.
- */
 export const ReportSelectionSchema = z.object({
   require: z.array(ReportRefSchema).optional(),
   skip: z.array(z.string()).optional(),
 }).optional();
 
-/**
- * A report reference: string shorthand or object with method scoping.
- */
 export type ReportRef = string | { name: string; methods?: string[] };
 
-/**
- * Report selection (require/skip) from a definition or workflow.
- */
 export type ReportSelection = {
   require?: ReportRef[];
   skip?: string[];

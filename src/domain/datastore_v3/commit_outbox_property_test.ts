@@ -41,9 +41,7 @@ Deno.test("decideFenceChain (property): the chain start is a fence this copy too
     fc.property(
       fc.array(
         fc.record({
-          // Who takes the next fence: this copy, or another copy.
           ours: fc.boolean(),
-          // A recovery completes on this copy at its fence.
           recovers: fc.boolean(),
         }),
         { minLength: 1, maxLength: 40 },
@@ -61,7 +59,6 @@ Deno.test("decideFenceChain (property): the chain start is a fence this copy too
           assert(ourFences.has(chain.chainStart));
           assert(chain.chainStart <= chain.lastFence);
           assert(chain.floor <= chain.lastFence);
-          // Every fence from the start to the last is this copy's.
           for (
             let fence = chain.chainStart;
             fence <= chain.lastFence;

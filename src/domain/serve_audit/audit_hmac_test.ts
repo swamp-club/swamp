@@ -161,8 +161,6 @@ Deno.test("applyHmac: verification round-trip works", async () => {
   assertEquals(hashed.resourceName, expectedHash);
 });
 
-// HmacKeyRegistry tests
-
 async function makeKeyVersion(version: number) {
   const raw = await generateHmacKeyBytes();
   const key = await importHmacKey(raw);

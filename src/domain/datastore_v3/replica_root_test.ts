@@ -33,13 +33,10 @@ Deno.test("ReplicaRoot.s3: matches every spelling of the endpoint of its bucket 
   for (
     const recorded of [
       "s3:http://localhost:47441:bucket:pre/fix",
-      // Proxy vs direct.
       "s3:http://localhost:47411:bucket:pre/fix",
-      // A trailing slash, another scheme, another case.
       "s3:http://localhost:47441/:bucket:pre/fix",
       "s3:https://localhost:47441:bucket:pre/fix",
       "s3:HTTP://LOCALHOST:47441:bucket:pre/fix",
-      // The default endpoint, implicit or explicit, with or without a scheme.
       "s3::bucket:pre/fix",
       "s3:https://s3.us-east-1.amazonaws.com:bucket:pre/fix",
       "s3:s3.us-east-1.amazonaws.com:bucket:pre/fix",
@@ -64,7 +61,6 @@ Deno.test("ReplicaRoot.s3: never matches another bucket, path or replica type", 
       "s3:http://e:bucket:fix",
       "s3:http://e:xbucket:pre/fix",
       "s3:http://e:bucket:xpre/fix",
-      // No endpoint, another bucket, a path that ends in this bucket and path.
       "s3::other:x:bucket:pre/fix",
       "gcs:bucket:pre/fix",
       "file:bucket:pre/fix",

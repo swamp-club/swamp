@@ -27,7 +27,6 @@ import { InMemoryUnifiedDataRepository } from "../../infrastructure/persistence/
 import { FileSystemUnifiedDataRepository } from "../../infrastructure/persistence/unified_data_repository.ts";
 import { CatalogStore } from "../../infrastructure/persistence/catalog_store.ts";
 
-/** The exemption the retention context injects, kept local to the test. */
 const isExempt = (modelType: string): boolean => modelType === "swamp/grant";
 
 const TYPE = ModelType.create("test/retention");
@@ -208,7 +207,6 @@ Deno.test("deleteDataOlderThan: ages out a name whose latest version is a deleti
   assertEquals(await repo.listVersions(TYPE, "model-1", "gone"), []);
 });
 
-/** Runs `fn` with a filesystem repository and its catalog in a temp dir. */
 async function withFsRepo(
   fn: (
     repo: FileSystemUnifiedDataRepository,
@@ -344,10 +342,7 @@ Deno.test("deleteDataOlderThan: a name emptied on the filesystem keeps counting 
 
 Deno.test("deleteDataOlderThan: a scan kept across batches reads each kept name once per pass", async () => {
   const repo = inMemory();
-  // Names whose old version retention trims while keeping a newer latest
-  // ...
   for (const name of ["k1", "k2", "k3", "k4"]) await save(repo, name);
-  // ... and one with more old versions to trim behind them.
   for (let i = 0; i < 5; i++) await save(repo, "trim");
   const oldest = await repo.findByName(TYPE, "model-1", "trim", 5);
   const cutoff = cutoffAfter(oldest!);

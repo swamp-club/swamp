@@ -39,31 +39,24 @@ import { escapeControlCharacters } from "../control_characters.ts";
 import { remediationFor } from "./extension_rule_catalog.ts";
 import { directiveSpans, withoutDirective } from "./extension_acceptances.ts";
 
-/** A safety issue found during analysis. */
 export interface SafetyIssue {
-  /** The rule that produced the issue; listed in the rule catalog. */
   ruleId: string;
   file: string;
   /**
-   * The 1-based line the issue is on. Absent for file-level issues (a
-   * hidden file, a size cap) and extension-level ones (file count, total
-   * size). Together with `file` and `ruleId` it is the identity a declared
-   * acceptance names.
+   * absent for file-level and extension-level issues; with file and ruleId it
+   * is the identity a declared acceptance names
    */
   line?: number;
   message: string;
-  /** How to fix the issue properly, from the rule catalog. */
   remediation?: string;
 }
 
-/** Rule ids of the warnings the analyzer emits on `.ts` files. */
 export const SAFETY_WARNING_RULE_IDS = [
   "long-line",
   "base64-run",
   "deno-command",
 ] as const;
 
-/** Rule ids of the errors the analyzer emits. */
 export const SAFETY_ERROR_RULE_IDS = [
   "file-count",
   "hidden-file",
@@ -75,7 +68,6 @@ export const SAFETY_ERROR_RULE_IDS = [
   "dynamic-code",
 ] as const;
 
-/** Builds an issue, attaching the catalog's remediation when the rule has one. */
 function issue(
   ruleId: string,
   file: string,
@@ -93,9 +85,8 @@ function issue(
 }
 
 /**
- * The symlink-rule error for `file`, whose path has the symlink `link` on
- * it: the file itself, or a directory above it below the extension's root
- * (swamp-club#3421). Names the link, never its target.
+ * link is the file itself or a directory above it below the extension's root;
+ * names the link, never its target
  */
 export function symlinkIssue(file: string, link: string): SafetyIssue {
   return issue(
@@ -108,65 +99,36 @@ export function symlinkIssue(file: string, link: string): SafetyIssue {
   );
 }
 
-/** A detection a content rule reports: its message, and the line when it has one. */
 export interface ContentDetection {
   message: string;
-  /** 1-based line of the match; omitted for file-level findings. */
   line?: number;
 }
 
-/** Result of the safety analysis. */
 export interface SafetyCheckResult {
-  /** Hard errors that block the push. */
   errors: SafetyIssue[];
-  /** Warnings that prompt the user but don't block. */
   warnings: SafetyIssue[];
 }
 
-// ── Content rule framework ───────────────────────────────────────────
-
-/**
- * A pluggable content hygiene rule for non-code files. Each rule declares
- * which file extensions it inspects and a pure detect function that returns
- * one message per issue found. Append new rules to
- * {@link DEFAULT_CONTENT_RULES} to grow the enforced set.
- */
 export interface ContentRule {
-  /** Stable identifier, e.g. `ipv4-address-literals`. */
   id: string;
-  /** Whether findings block the push (`"error"`) or only warn (`"warning"`). */
   severity: "error" | "warning";
-  /** File extensions this rule inspects, e.g. `new Set([".md", ".txt"])`. */
   fileExtensions: Set<string>;
-  /**
-   * Returns one entry per issue found (a bare message, or a
-   * {@link ContentDetection} carrying the line); empty array means the file
-   * passes.
-   */
   detect: (content: string, file: string) => Array<string | ContentDetection>;
 }
-
-// ── IPv4 detection helpers ───────────────────────────────────────────
 
 const IPV4_PATTERN =
   /(?<![.\w])(?:(?:25[0-5]|2[0-4]\d|1\d{2}|[1-9]\d|\d)\.){3}(?:25[0-5]|2[0-4]\d|1\d{2}|[1-9]\d|\d)(?![.\w])/g;
 
 function isDocumentationIp(ip: string): boolean {
   const octets = ip.split(".").map(Number);
-  // RFC 5737 documentation ranges
   if (octets[0] === 192 && octets[1] === 0 && octets[2] === 2) return true;
   if (octets[0] === 198 && octets[1] === 51 && octets[2] === 100) return true;
   if (octets[0] === 203 && octets[1] === 0 && octets[2] === 113) return true;
-  // Loopback (127.x.x.x)
   if (octets[0] === 127) return true;
-  // Unspecified (0.0.0.0)
   if (octets.every((o) => o === 0)) return true;
-  // Link-local (169.254.x.x)
   if (octets[0] === 169 && octets[1] === 254) return true;
   return false;
 }
-
-// ── Default content rules ────────────────────────────────────────────
 
 export const DEFAULT_CONTENT_RULES: ContentRule[] = [
   {
@@ -203,8 +165,6 @@ export const DEFAULT_CONTENT_RULES: ContentRule[] = [
   },
 ];
 
-// ── Constants ────────────────────────────────────────────────────────
-
 export const ALLOWED_EXTENSIONS = new Set([
   ".ts",
   ".json",
@@ -225,8 +185,8 @@ export const LEGAL_BASENAMES = new Set([
 ]);
 
 const MAX_FILE_COUNT = 150;
-const MAX_INDIVIDUAL_FILE_SIZE = 1_000_000; // 1 MB
-const MAX_TOTAL_SIZE = 10_000_000; // 10 MB
+const MAX_INDIVIDUAL_FILE_SIZE = 1_000_000;
+const MAX_TOTAL_SIZE = 10_000_000;
 const LONG_LINE_THRESHOLD = 500;
 const BASE64_PATTERN = /[A-Za-z0-9+/=]{100,}/;
 const MAX_REPORTED_LOCATIONS = 5;
@@ -242,8 +202,8 @@ const DYNAMIC_CODE_LABELS: Record<DynamicCodeFinding["kind"], string> = {
 };
 
 /**
- * The `deno-command` message for a line, from the findings on it. A direct
- * `Deno.Command` reference names the line over an alias of `Deno`.
+ * a direct Deno.Command reference names the line in preference to an alias of
+ * Deno
  */
 function describeDenoCommand(
   line: number,
@@ -269,14 +229,6 @@ function describeDynamicCode(findings: DynamicCodeFinding[]): string {
   return `${shown.join(", ")}${more > 0 ? `; and ${more} more` : ""}`;
 }
 
-/**
- * Analyzes files to be bundled for safety issues.
- *
- * Hard errors block the push; warnings prompt the user.
- *
- * @param files - Absolute paths of all files to include in the extension
- * @returns Safety check result with errors and warnings
- */
 export async function analyzeExtensionSafety(
   files: string[],
   exemptFromExtensionCheck?: Set<string>,
@@ -285,7 +237,6 @@ export async function analyzeExtensionSafety(
   const errors: SafetyIssue[] = [];
   const warnings: SafetyIssue[] = [];
 
-  // Check file count
   if (files.length > MAX_FILE_COUNT) {
     errors.push(issue(
       "file-count",
@@ -299,7 +250,6 @@ export async function analyzeExtensionSafety(
   for (const file of files) {
     const name = basename(file);
 
-    // Check for hidden files
     if (name.startsWith(".")) {
       errors.push(
         issue(
@@ -311,7 +261,6 @@ export async function analyzeExtensionSafety(
       continue;
     }
 
-    // Check allowed extensions (exempt files and legal basenames skip this check)
     const ext = extname(file).toLowerCase();
     const isExempt = exemptFromExtensionCheck?.has(file) ?? false;
     if (
@@ -327,7 +276,6 @@ export async function analyzeExtensionSafety(
       continue;
     }
 
-    // Check for symlinks
     let stat: Deno.FileInfo;
     try {
       stat = await Deno.lstat(file);
@@ -341,7 +289,6 @@ export async function analyzeExtensionSafety(
       continue;
     }
 
-    // Check individual file size
     if (stat.size > MAX_INDIVIDUAL_FILE_SIZE) {
       errors.push(issue(
         "file-size",
@@ -355,7 +302,6 @@ export async function analyzeExtensionSafety(
 
     totalSize += stat.size;
 
-    // Content checks for .ts files
     if (ext === ".ts") {
       let content: string;
       try {
@@ -368,7 +314,6 @@ export async function analyzeExtensionSafety(
       // back to each rule's text check.
       const program = parseExtensionSource(content, { path: file });
 
-      // Hard errors: dangerous patterns
       const dynamicCode = findDynamicCodeExecution(content, program);
       if (dynamicCode.length > 0) {
         errors.push(issue(
@@ -393,13 +338,10 @@ export async function analyzeExtensionSafety(
       const lines = content.split("\n");
       const spans = directiveSpans(content, file);
       for (let i = 0; i < lines.length; i++) {
-        // The long-line and base64 checks scan the line as written, so
-        // nothing can hide behind a directive (a directive's reason may not
-        // carry Deno.Command( or a base64 run, so it cannot trigger these
-        // rules). Only the long-line count discounts the directive's own
-        // text. deno-command reads the syntax tree, where a directive is a
-        // comment; only its text fallback, for a file that does not parse,
-        // scans the line as written.
+        // Long-line and base64 scan the line as written so nothing hides behind
+        // a directive; only the long-line count discounts directive text.
+        // deno-command reads the tree, using text only when the file does not
+        // parse
         const line = lines[i];
         const stripped = withoutDirective(line, spans.get(i + 1))
           .replace(/\s/g, "");
@@ -434,7 +376,6 @@ export async function analyzeExtensionSafety(
       }
     }
 
-    // Content rules for non-.ts files
     if (ext !== ".ts") {
       const matchingRules = contentRules.filter((r) =>
         r.fileExtensions.has(ext)
@@ -446,10 +387,9 @@ export async function analyzeExtensionSafety(
         } catch {
           continue;
         }
-        // As for `.ts` lines: a Markdown directive's own text (its reason
-        // may quote an address) must not trigger the rule it accepts. Inside
-        // a fenced code block a directive is documentation, not parsed, so
-        // its text is scanned as written.
+        // a Markdown directive's own text is skipped since its reason may quote
+        // an address; inside a fenced code block it is documentation, not a
+        // directive, so it is scanned as written
         const spans = directiveSpans(content, file);
         const scanned = content.split("\n").map((l, i) =>
           withoutDirective(l, spans.get(i + 1))
@@ -476,7 +416,6 @@ export async function analyzeExtensionSafety(
     }
   }
 
-  // Check total size
   if (totalSize > MAX_TOTAL_SIZE) {
     errors.push(issue(
       "total-size",
@@ -490,22 +429,17 @@ export async function analyzeExtensionSafety(
   return { errors, warnings };
 }
 
-/** A dependency module's dynamic-code findings in one bundle. */
 export interface BundleDependencyIssue {
-  /** The dependency module, as {@link dependencyLabel} names it, printable. */
   dependency: string;
-  /** The warning, its file being the bundle. */
   issue: SafetyIssue;
 }
 
-/** What {@link analyzeBundleSafety} found in one bundle. */
 export interface BundleSafetyResult {
   /**
    * Findings in the extension's own modules, above the first module
    * comment, or in a bundle without module comments: one per module.
    */
   errors: SafetyIssue[];
-  /** Findings in dependency modules: one per module, not blocking. */
   dependencyIssues: BundleDependencyIssue[];
 }
 
@@ -522,7 +456,6 @@ function isDependencyCode(
   return isExtensionModule?.(module.path) !== true;
 }
 
-/** The longest module path a bundle finding prints. */
 const MAX_PRINTED_MODULE_PATH = 200;
 
 /**
@@ -537,23 +470,9 @@ function printableModulePath(path: string): string {
 }
 
 /**
- * Runs the dynamic-code rule, the one hard-error rule that reads content,
- * over a bundle, and attributes each finding to the module it is in through
- * the module comments `deno bundle` writes. The file rules (type, size,
- * count) are for sources and do not apply to a bundle.
- *
- * Findings in the extension's own modules are errors. So are findings above
- * the first module comment and, in a bundle without module comments, every
- * finding: that code cannot be shown to be a dependency's. Findings in a
- * dependency module are reported, not refused.
- *
- * @param source - The bundle's text
- * @param bundleFile - How to name the bundle in findings, e.g. `bundles/foo.js`
- * @param options.isExtensionModule - Says a module path is the extension's
- *   own even where it reads like a dependency's. A bundle built on this
- *   machine knows where the extension is installed; a module there under a
- *   `node_modules` directory is still the extension's code. Given only for
- *   such a bundle, which is then attributed through parsed comments alone.
+ * own-module findings, those above the first module comment, and all findings
+ * in a bundle without module comments are errors; dependency-module findings
+ * are reported, not refused
  */
 export function analyzeBundleSafety(
   source: string,
@@ -574,7 +493,6 @@ export function analyzeBundleSafety(
     ? BundleModuleMap.fromText("")
     : BundleModuleMap.fromText(source);
 
-  // Grouped by module, in the order each module's first finding appears.
   const groups = new Map<
     string,
     { path?: string; dependency: boolean; findings: DynamicCodeFinding[] }

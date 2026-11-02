@@ -22,21 +22,8 @@ import { UserError } from "../errors.ts";
 import { MIGRATION_SENTINEL } from "./managed_config_migration.ts";
 
 /**
- * Datastore configuration types for configurable runtime data storage.
- *
- * The datastore determines where runtime data (versioned model data,
- * workflow runs, outputs, audit logs, etc.) is stored. By default, model
- * definitions, workflow definitions, and vault configs live in top-level
- * directories. When `managedConfig` is enabled, they move into the
- * `.swamp/config/` datastore tier so the datastore becomes the single
- * source of truth across all instances.
- */
-
-/**
- * Subdirectories that always remain in local `.swamp/` regardless of
- * datastore configuration. These contain security-sensitive or
- * platform-specific derived artifacts that should not traverse the
- * datastore.
+ * security-sensitive or platform-specific derived artifacts that must not
+ * traverse the datastore
  */
 export const ALWAYS_LOCAL_SUBDIRS = [
   "secrets",
@@ -47,10 +34,6 @@ export const ALWAYS_LOCAL_SUBDIRS = [
   "audit-wal",
 ] as const;
 
-/**
- * Default subdirectories that belong to the datastore tier.
- * These contain derived/runtime data that can be stored externally.
- */
 export const DEFAULT_DATASTORE_SUBDIRS = [
   "auto-definitions",
   "definitions-evaluated",
@@ -70,22 +53,14 @@ export const DEFAULT_DATASTORE_SUBDIRS = [
 ] as const;
 
 /**
- * Every first-level name swamp itself uses in a checkout's `.swamp/`
- * (swamp-club#3691): the datastore layout directories, the always-local
- * ones, the rest of `SWAMP_SUBDIRS` in `infrastructure/persistence/paths.ts`
- * (by first segment), the package cache, and the names swamp keeps in
- * `~/.swamp`, which is a checkout's `.swamp/` when the repository is the
- * home directory. A v3 checkout materialises a namespace at
- * `.swamp/{namespace}/`, so a namespace may take none of these names.
- * Kept in the domain so the namespace rules need no infrastructure import;
- * `integration/namespace_reserved_names_rules_test.ts` fails when swamp
- * starts using a first-level name this list does not hold.
+ * a v3 checkout materialises a namespace at .swamp/<namespace>/, so a namespace
+ * may take none of these names; kept in the domain so namespace rules need no
+ * infrastructure import, and guarded by a fitness test
  */
 export const SWAMP_OWNED_DIR_NAMES: readonly string[] = [
   ...new Set<string>([
     ...DEFAULT_DATASTORE_SUBDIRS,
     ...ALWAYS_LOCAL_SUBDIRS,
-    // The rest of SWAMP_SUBDIRS.
     "definitions",
     "workflows",
     "vault",
@@ -94,14 +69,11 @@ export const SWAMP_OWNED_DIR_NAMES: readonly string[] = [
     "resources",
     "datastore-bundles",
     "pulled-extensions",
-    // Checkout-only names outside SWAMP_SUBDIRS.
     "cache",
     "start",
-    // Records a checkout held before joining v3 (swamp-club#3690).
     "pre-v3-records",
     // A file: a pending managedConfig lockfile publish.
     "managed-config-lockfile-unpublished",
-    // ~/.swamp names.
     "repos",
     "deno",
     "deno-cache",
@@ -112,154 +84,91 @@ export const SWAMP_OWNED_DIR_NAMES: readonly string[] = [
   ]),
 ];
 
-// All bundle directories are always-local: bundles are derived artifacts
-// rebuildable from source (local extensions) or re-extractable from archives
-// (pulled extensions). Syncing them via the datastore allows a stale remote
-// copy to shadow a freshly rebuilt local bundle (swamp-club#869).
-//
-// "datastore-bundles" has an additional constraint: the datastore loader runs
-// during bootstrap BEFORE the DatastorePathResolver exists, so it must remain
-// in local .swamp/ regardless.
+// bundles are rebuildable derived artifacts, and syncing them lets a stale
+// remote copy shadow a fresh local one; datastore-bundles also loads before
+// DatastorePathResolver exists
 
 /**
- * Default timeout (milliseconds) for a single direction of datastore sync.
- *
- * Each direction (push and pull) is bounded independently by this value —
- * it is not a combined sync budget. The default is deliberately generous
- * (5 minutes): the failure mode this bound was introduced for (see #157) is
- * an ~8.5 minute hang, so 5 minutes prevents the upstream Deno TLS panic
- * with ample margin while still covering legitimate slow-path pushes on
- * large datastores over slow networks. This default is PROVISIONAL — tune
- * down once production telemetry shows a realistic slow-path distribution.
+ * per direction, not combined; deliberately generous so the upstream Deno TLS
+ * panic hang is prevented while slow pushes still fit; provisional, tune down
+ * once telemetry shows real slow-path times
  */
 export const DEFAULT_SYNC_TIMEOUT_MS = 300_000;
 
-/** Env var that overrides `DEFAULT_SYNC_TIMEOUT_MS` at runtime. */
 export const SYNC_TIMEOUT_ENV_VAR = "SWAMP_DATASTORE_SYNC_TIMEOUT_MS";
 
 /**
- * Default timeout (milliseconds) for acquiring a distributed lock.
- *
- * Per-step locking means each model method step gets a fresh timeout
- * budget. 60 seconds is sufficient for the vast majority of workloads;
- * users running extreme concurrency (10+ parallel writers on the same
- * model) can raise this via `SWAMP_LOCK_TIMEOUT_MS`.
+ * per-step locking gives each model method step a fresh budget; raise via
+ * SWAMP_LOCK_TIMEOUT_MS under extreme concurrency
  */
 export const DEFAULT_LOCK_TIMEOUT_MS = 60_000;
 
-/** Env var that overrides `DEFAULT_LOCK_TIMEOUT_MS` at runtime. */
 export const LOCK_TIMEOUT_ENV_VAR = "SWAMP_LOCK_TIMEOUT_MS";
 
-/**
- * Env var that sets whether data writes are durable when the datastore
- * config does not say (swamp-club#4017). See {@link resolveDurableWrites}.
- */
 export const DURABLE_WRITES_ENV_VAR = "SWAMP_DATASTORE_DURABLE";
 
-/**
- * Filesystem-based datastore configuration.
- * Data is stored at a specified filesystem path.
- */
 export interface FilesystemDatastoreConfig {
   readonly type: "filesystem";
-  /** Absolute path to the datastore directory */
   readonly path: string;
-  /** Which subdirectories belong to the datastore (defaults to DEFAULT_DATASTORE_SUBDIRS) */
   readonly directories?: string[];
-  /** Gitignore-style patterns to exclude files from the datastore */
   readonly exclude?: string[];
-  /** Namespace for giga-swamp multi-repo shared datastores */
   readonly namespace?: string;
   /**
-   * The format `swamp datastore setup` created the datastore in: 2 (files,
-   * the default) or 3 (the v3 commit log, swamp-club#3279). It records the
-   * choice; the datastore's format marker decides which engine opens it, and
-   * a config that disagrees with its marker is refused.
+   * records the choice; the datastore's format marker decides which engine
+   * opens it, and a config that disagrees with its marker is refused
    */
   readonly format?: 2 | 3;
   /**
-   * Whether data writes are synced to disk before they are published, so
-   * they survive a power cut (swamp-club#4017). Absent means off: writes
-   * are atomic but unsynced. See {@link resolveDurableWrites}.
+   * whether data writes are synced to disk before they are published; absent
+   * means off: writes are atomic but unsynced
    */
   readonly durable?: boolean;
 }
 
-/**
- * Custom datastore configuration for user-defined datastore types.
- * Resolved eagerly during config resolution via the DatastoreProvider.
- */
 export interface CustomDatastoreConfig {
-  readonly type: string; // anything other than "filesystem"
+  readonly type: string;
   readonly config: Record<string, unknown>;
   /**
-   * 3 when setup created the datastore as v3 (swamp-club#3534); absent for
-   * v2. The datastore's format marker decides the engine: a config that
-   * disagrees with it is refused.
+   * 3 when setup created the datastore as v3, absent for v2; the datastore's
+   * format marker decides the engine and a config that disagrees with it is
+   * refused
    */
   readonly format?: 3;
   /**
-   * True when the config came from `SWAMP_DATASTORE` or `--datastore`, not
-   * from `.swamp.yaml`: nothing persisted says its format, so the format
-   * guard never opens it as v2 while its marker cannot be read
-   * (swamp-club#3534). A `.swamp.yaml` config of a v3 datastore always says
-   * `format: 3`.
+   * true when the config came from SWAMP_DATASTORE or --datastore: nothing
+   * persisted says its format, so the format guard never opens it as v2 while
+   * its marker cannot be read
    */
   readonly override?: true;
   readonly datastorePath: string;
   readonly cachePath?: string;
   readonly directories?: string[];
   readonly exclude?: string[];
-  /**
-   * Timeout (milliseconds) for a single direction of sync (push or pull).
-   * Each direction is bounded independently — this is not a combined
-   * budget. Defaults to `DEFAULT_SYNC_TIMEOUT_MS` (5 minutes), overridable
-   * via the `SWAMP_DATASTORE_SYNC_TIMEOUT_MS` env var. See
-   * `resolveSyncTimeoutMs`.
-   */
   readonly syncTimeoutMs?: number;
   /**
-   * Controls how the initial pull populates the local cache.
-   *
-   * - `"full"` (default): download all files including content (`raw`).
-   * - `"lazy"`: download only metadata (`metadata.yaml`, `latest` markers,
-   *   partition indexes) and hydrate content on demand when first accessed.
-   *
-   * Lazy hydration gives full catalog visibility (`data list`, `data query`,
-   * CEL expressions) immediately while deferring the expensive content
-   * download until the data is actually needed.
+   * lazy downloads only metadata and hydrates content on first access, giving
+   * full catalog visibility immediately while deferring the expensive content
+   * download
    */
   readonly hydrationStrategy?: "full" | "lazy";
-  /** Namespace for giga-swamp multi-repo shared datastores */
   readonly namespace?: string;
   /**
-   * Whether data writes to the local cache are synced to disk before they
-   * are published, so they survive a power cut (swamp-club#4017). Absent
-   * means off: writes are atomic but unsynced. See
-   * {@link resolveDurableWrites}.
+   * whether data writes to the local cache are synced to disk before they are
+   * published; absent means off: writes are atomic but unsynced
    */
   readonly durable?: boolean;
 }
 
-/**
- * Discriminated union of all datastore configurations.
- */
 export type DatastoreConfig =
   | FilesystemDatastoreConfig
   | CustomDatastoreConfig;
 
-/**
- * Type guard for CustomDatastoreConfig.
- */
 export function isCustomDatastoreConfig(
   config: DatastoreConfig,
 ): config is CustomDatastoreConfig {
   return config.type !== "filesystem";
 }
 
-/**
- * Serializable datastore configuration for .swamp.yaml storage.
- */
 export interface DatastoreConfigData {
   type: string;
   path?: string;
@@ -273,33 +182,24 @@ export interface DatastoreConfigData {
   exclude?: string[];
   hydrationStrategy?: "full" | "lazy";
   namespace?: string;
-  /** Whether data writes are synced to disk (swamp-club#4017); absent is off. */
   durable?: boolean;
   /**
-   * The format setup created the datastore in: 2 or 3 on a filesystem
-   * datastore, 3 only on an extension datastore (absent means 2).
+   * 2 or 3 on a filesystem datastore, 3 only on an extension datastore (absent
+   * means 2)
    */
   format?: number;
   /**
-   * When `true`, model definitions, workflow definitions, vault configs and
-   * the extension lockfile are stored in the datastore's `config/` tier
-   * instead of top-level directories. Pulled extension sources stay in the
-   * repo's `.swamp/config/pulled-extensions` (swamp-club#2612). The datastore
-   * becomes the source of truth for that configuration — instances hydrate
-   * from it on startup and a ConfigPoller refreshes periodically.
+   * the datastore becomes the source of truth: instances hydrate from it on
+   * startup and a ConfigPoller refreshes it; pulled extension sources stay in
+   * the repo's .swamp/config/pulled-extensions
    */
   managedConfig?: boolean;
 }
 
 /**
- * Reads the `format` key of a `.swamp.yaml` datastore block, or the
- * `--format` flag of `swamp datastore setup`. It must be 2 or 3. Format 3
- * on an extension datastore needs a provider that can host v3
- * (swamp-club#3534), which is checked where the provider is known: setup,
- * and the format guard when a command opens the datastore. Format 2 on an
- * extension datastore is the default and is read as no key.
- *
- * @throws UserError for any other value
+ * format 3 on an extension datastore needs a provider that can host v3, checked
+ * where the provider is known; format 2 on an extension datastore is the
+ * default and reads as no key
  */
 export function readDatastoreFormatKey(
   type: string,
@@ -315,10 +215,6 @@ export function readDatastoreFormatKey(
   return undefined;
 }
 
-/**
- * Returns the effective list of datastore subdirectories from config,
- * falling back to the defaults. Filters out any always-local subdirs.
- */
 export function getDatastoreDirectories(
   config: DatastoreConfig,
 ): readonly string[] {
@@ -327,7 +223,6 @@ export function getDatastoreDirectories(
   return dirs.filter((d) => !localSet.has(d));
 }
 
-/** File names of the catalog database and its SQLite sidecars. */
 export const CATALOG_FILE_NAMES: readonly string[] = [
   "_catalog.db",
   "_catalog.db-journal",
@@ -335,31 +230,23 @@ export const CATALOG_FILE_NAMES: readonly string[] = [
   "_catalog.db-shm",
 ];
 
-/** True for the catalog database or one of its SQLite sidecars. */
 export function isCatalogFileName(name: string): boolean {
   return CATALOG_FILE_NAMES.includes(name);
 }
 
 /**
- * The catalog database and its SQLite sidecars, relative to a datastore
- * root. The catalog is a local index of the datastore, kept in the repo's
- * own `.swamp/data` whatever the datastore, so datastore setup never copies
- * it: a copy found on a datastore path is a stale leftover (swamp-club#3238).
+ * the catalog is a local index kept in the repo's own .swamp/data whatever the
+ * datastore, so setup never copies it; a copy on a datastore path is a stale
+ * leftover
  */
 export const CATALOG_FILES: readonly string[] = CATALOG_FILE_NAMES.map(
   (name) => join("data", name),
 );
 
 /**
- * Datastore subdirectories that have no v3 home because nothing writes them
- * through the datastore (swamp-club#3278). Audit, vault-audit and telemetry
- * files are written to the checkout's own `.swamp`, or the user-global
- * telemetry spool, whatever the datastore, and nothing writes `logs/` or
- * `files/`. They stay repo-local on v3, so no commit may materialise into
- * them: a key there could overwrite a checkout's own audit trail in solo
- * layout. Datastore setup leaves them in `.swamp` for the same reason
- * (swamp-club#3281). See "v3 stream directories" in
- * `design/enablers/datastores.md`.
+ * nothing writes these through the datastore, so they stay repo-local on v3 and
+ * no commit may materialise into them, where a key could overwrite a checkout's
+ * own audit trail
  */
 export const REPO_LOCAL_STREAM_SUBDIRS = [
   "audit",
@@ -369,49 +256,29 @@ export const REPO_LOCAL_STREAM_SUBDIRS = [
 ] as const;
 
 /**
- * Datastore subdirectories whose run and output records sit beside a run
- * log: the plain-text `.log` file a run writes into the checkout's own
- * `.swamp`, whatever the datastore. Records store its path relative to the
- * repository, so the log stays local when its record moves.
+ * records store the log path relative to the repository, so the log stays local
+ * when its record moves
  */
 export const RUN_LOG_SUBDIRS: readonly string[] = [
   "outputs",
   "workflow-runs",
 ];
 
-/**
- * Whether `subdir`, a top-level datastore subdirectory, is a repo-local
- * stream directory that datastore setup leaves in `.swamp`.
- */
 export function isRepoLocalStreamSubdir(subdir: string): boolean {
   return (REPO_LOCAL_STREAM_SUBDIRS as readonly string[]).includes(subdir);
 }
 
-/**
- * Whether a file named `fileName`, anywhere under the top-level datastore
- * subdirectory `subdir`, is a run log that datastore setup leaves in
- * `.swamp` (swamp-club#3281).
- */
 export function isRunLogFile(subdir: string, fileName: string): boolean {
   return RUN_LOG_SUBDIRS.includes(subdir) && fileName.endsWith(".log");
 }
 
-/**
- * Whether the subdirectory `subdir` can hold a run log, so removing it
- * must walk it rather than delete it whole.
- */
 export function mayHoldRunLogs(subdir: string): boolean {
   return RUN_LOG_SUBDIRS.includes(subdir);
 }
 
 /**
- * The on-disk root a filesystem datastore keeps its tier under
- * (`{path}/{namespace}` when namespaced), when that root is not the repo's
- * own `.swamp/`. Datastore setup migrates from it (swamp-club#3238).
- *
- * Undefined for an extension datastore, whose data setup reads from its
- * local cache, and for a root that resolves lexically to `repoSwampDir`.
- * Setup compares real paths before it acts on the result.
+ * undefined for an extension datastore and for a root that resolves lexically
+ * to repoSwampDir; setup compares real paths before it acts on the result
  */
 export function externalFilesystemDatastoreRoot(
   config: DatastoreConfig,
@@ -424,19 +291,13 @@ export function externalFilesystemDatastoreRoot(
   return resolve(root) === resolve(repoSwampDir) ? undefined : root;
 }
 
-/**
- * Checks whether a subdirectory name is always local (never goes to datastore).
- */
 export function isAlwaysLocal(subdir: string): boolean {
   return (ALWAYS_LOCAL_SUBDIRS as readonly string[]).includes(subdir);
 }
 
 /**
- * Datastore block keys that `swamp datastore setup` does not own. Setup
- * writes the keys that describe the backend (type, path, config,
- * directories, namespace, hydrationStrategy); these belong to the user and
- * survive a re-run or a backend switch. A new key added to
- * {@link DatastoreConfigData} is dropped by setup unless it is listed here.
+ * these keys belong to the user and survive a re-run or backend switch; a new
+ * key added to DatastoreConfigData is dropped by setup unless listed here
  */
 export const SETUP_PRESERVED_DATASTORE_KEYS = [
   "managedConfig",
@@ -445,10 +306,8 @@ export const SETUP_PRESERVED_DATASTORE_KEYS = [
 ] as const satisfies readonly (keyof DatastoreConfigData)[];
 
 /**
- * Builds the datastore block setup persists: the block setup produced, plus
- * any {@link SETUP_PRESERVED_DATASTORE_KEYS} from the existing block that
- * the new one does not set. Every other key of the existing block, such as
- * an old backend's `path` or `config`, is dropped (swamp-club#2837).
+ * every other key of the existing block, such as an old backend's path or
+ * config, is dropped
  */
 export function mergeSetupDatastoreBlock(
   existing: DatastoreConfigData | undefined,
@@ -465,35 +324,22 @@ export function mergeSetupDatastoreBlock(
 }
 
 /**
- * The directory under the config dir that holds pulled extension sources.
- * Under managedConfig they stay in the repo's `.swamp/config` whatever the
- * config tier (swamp-club#2612), so they never move with a datastore.
+ * pulled extension sources stay in the repo's .swamp/config whatever the config
+ * tier, so they never move with a datastore
  */
 export const PULLED_EXTENSIONS_SUBDIR = "pulled-extensions";
 
 /**
- * What the repo's own `.swamp/config` holds, for datastore setup:
- *
- * - `unmanaged`: managedConfig is off; `config` is an ordinary datastore
- *   subdir.
- * - `tier`: managedConfig is on and `.swamp/config` is the config tier; it
- *   moves with the datastore, except the pulled extension sources.
- * - `instance_local`: managedConfig is on and the tier lives elsewhere (or
- *   cannot be resolved), so `.swamp/config` holds only this instance's
- *   state: pulled extension sources and the transitional auto-resolve
- *   lockfile (swamp-club#2483). It never moves with a datastore.
+ * instance_local: managedConfig is on but the tier lives elsewhere, so
+ * .swamp/config holds only this instance's pulled extension sources and
+ * transitional lockfile, and never moves with a datastore
  */
 export type InRepoConfigRole = "unmanaged" | "tier" | "instance_local";
 
 /**
- * Classifies the repo's `.swamp/config` directory.
- *
- * @param managedConfig Whether `.swamp.yaml` enables managedConfig.
- * @param configTierPath The current datastore's resolved config tier path,
- *   or undefined when the current datastore cannot be resolved. Only an
- *   extension datastore can fail to resolve, and its tier is never in the
- *   repo, so undefined classifies as `instance_local`.
- * @param inRepoConfigPath The repo's `.swamp/config` path.
+ * an undefined tier path means the datastore could not be resolved (only an
+ * extension datastore can fail, and its tier is never in the repo), so it
+ * classifies as instance_local
  */
 export function classifyInRepoConfig(
   managedConfig: boolean,
@@ -510,10 +356,6 @@ export function classifyInRepoConfig(
   return "instance_local";
 }
 
-/**
- * Paths, relative to a migration source, that datastore setup must neither
- * copy nor clean up for the given role of the in-repo `.swamp/config`.
- */
 export function inRepoConfigMigrationSkips(
   role: InRepoConfigRole,
 ): readonly string[] {
@@ -527,34 +369,21 @@ export function inRepoConfigMigrationSkips(
   }
 }
 
-/**
- * A file of the in-repo config tier that already exists in the config tier
- * of the datastore setup is moving to.
- */
 export interface ConfigTierConflict {
-  /** Path relative to the config tier root. */
   path: string;
-  /** Whether the local bytes differ from the destination copy. */
   differs: boolean;
 }
 
-/** How datastore setup merges an in-repo config tier into an existing one. */
 export interface ConfigTierMerge {
-  /** Paths, relative to the migration source, that are not copied. */
   copySkips: string[];
-  /** Paths, relative to the migration source, that cleanup leaves. */
   cleanupKeeps: string[];
-  /** Config-relative paths of local copies kept because they differ. */
   keptPaths: string[];
 }
 
 /**
- * Merges an in-repo config tier into a destination that already holds one
- * (swamp-club#2844). The destination copy wins on every path both hold, so
- * no conflicting file is copied. A local copy that differs stays in the
- * repo for the user to reconcile; an identical one is cleaned up as usual.
- * The migration sentinel always differs (it records when and from where
- * its tier was migrated), so it is never kept or reported.
+ * the destination copy wins on every shared path; a differing local copy stays
+ * for the user to reconcile; the migration sentinel always differs, so it is
+ * never kept or reported
  */
 export function planConfigTierMerge(
   conflicts: readonly ConfigTierConflict[],
@@ -576,21 +405,8 @@ export function planConfigTierMerge(
 }
 
 /**
- * Resolve the effective sync timeout for a datastore config.
- *
- * Resolution order:
- *   1. `overrideMs` (per-invocation override, e.g. from a CLI flag)
- *   2. `config.syncTimeoutMs` (explicit per-datastore config)
- *   3. `SWAMP_DATASTORE_SYNC_TIMEOUT_MS` env var (must parse as positive int)
- *   4. `DEFAULT_SYNC_TIMEOUT_MS` (5 minutes)
- *
- * `overrideMs` is intended for the `swamp datastore sync --timeout` flag,
- * which is validated at the CLI boundary (positive integer, capped). Any
- * value reaching here must already be `> 0` — an out-of-band `<= 0`
- * override is ignored and resolution falls through to the next source.
- *
- * Invalid env values (non-numeric, zero, negative) are ignored with a silent
- * fallback to the default — the coordinator does not crash on a bad env.
+ * an overrideMs <= 0 is ignored; invalid env values are ignored with a silent
+ * fallback to the default, so the coordinator does not crash on a bad env
  */
 export function resolveSyncTimeoutMs(
   config: DatastoreConfig,
@@ -609,15 +425,8 @@ export function resolveSyncTimeoutMs(
 }
 
 /**
- * Resolve the effective lock acquisition timeout.
- *
- * Resolution order:
- *   1. `overrideMs` (per-invocation override)
- *   2. `SWAMP_LOCK_TIMEOUT_MS` env var (must parse as positive int)
- *   3. `DEFAULT_LOCK_TIMEOUT_MS` (60 seconds)
- *
- * Invalid env values (non-numeric, zero, negative) are ignored with a silent
- * fallback to the default.
+ * invalid env values (non-numeric, zero, negative) are ignored with a silent
+ * fallback to the default
  */
 export function resolveLockTimeoutMs(overrideMs?: number): number {
   if (overrideMs != null && overrideMs > 0) return overrideMs;
@@ -633,18 +442,9 @@ const DURABLE_ENV_TRUE = new Set(["1", "true", "yes", "on"]);
 const DURABLE_ENV_FALSE = new Set(["0", "false", "no", "off"]);
 
 /**
- * Resolve whether data writes are synced to disk before they are published
- * (swamp-club#4017). Only a v2 local datastore, or the local cache of a v2
- * extension datastore, syncs; v3 never does in the data repository.
- *
- * Resolution order:
- *   1. `config.durable` (explicit per-datastore config in `.swamp.yaml`)
- *   2. `SWAMP_DATASTORE_DURABLE` env var: `1`, `true`, `yes` or `on`, or
- *      `0`, `false`, `no` or `off`, in any case
- *   3. Off: durable writes are opt-in, since each write then costs several
- *      fsyncs
- *
- * An env value that is neither is ignored, so writes stay unsynced.
+ * only a v2 local datastore, or the local cache of a v2 extension datastore,
+ * syncs; durable is opt-in since each write then costs several fsyncs; an
+ * unrecognised env value is ignored so writes stay unsynced
  */
 export function resolveDurableWrites(config?: DatastoreConfig): boolean {
   if (config?.durable !== undefined) return config.durable;

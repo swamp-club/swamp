@@ -21,10 +21,8 @@ import { assert, assertEquals } from "@std/assert";
 import fc from "fast-check";
 import { placeShellData, type ShellDialect } from "./shell_data_placement.ts";
 
-/** Authored shell text around a splice: quotes, operators and plain words. */
 const authoredText = fc.stringMatching(/^[a-z "'$;|&<>()\n=-]{0,24}$/);
 
-/** Data text of any character a caller could send. */
 const dataText = fc.string({ minLength: 1, maxLength: 24, unit: "binary" });
 
 const dialect = fc.constantFrom<ShellDialect>("posix", "powershell");

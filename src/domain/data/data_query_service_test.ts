@@ -81,12 +81,10 @@ function makeRow(overrides: Partial<CatalogRow> = {}): CatalogRow {
     step_name: "",
     source: "",
     ...overrides,
-    // Rows default to a step latest exactly when they are latest.
     is_step_latest: overrides.is_step_latest ?? overrides.is_latest ?? 1,
   };
 }
 
-/** Closes `catalog` and removes `dir`, its temp repo, when disposed. */
 function cleanupOnDispose(catalog: CatalogStore, dir: string): Disposable {
   return {
     [Symbol.dispose]() {
@@ -200,11 +198,6 @@ Deno.test("DataQueryService: specName equality filters through the SQL pushdown"
   catalog.close();
 });
 
-/**
- * "live" is an active resource. "gone" was deleted: an active v1 under a
- * latest deletion marker at v2. "unknown" is a row whose lifecycle is not
- * known (pulled from a catalog export written before the column existed).
- */
 function seedLifecycleRows(catalog: CatalogStore): void {
   catalog.upsert(makeRow({ data_name: "live", id: "uuid-live" }));
   catalog.upsert(
@@ -333,7 +326,6 @@ Deno.test("DataQueryService: missing tag is lenient (no error)", () => {
     }),
   );
 
-  // tags.env doesn't exist on this record — should not match, not error
   const results = service.querySync('tags.env == "prod"') as DataRecord[];
   assertEquals(results.length, 0);
   catalog.close();
@@ -448,7 +440,6 @@ Deno.test("DataQueryService: attributes filter with content on disk", () => {
   using _cleanup = cleanupOnDispose(catalog, dir);
   catalog.markPopulated();
 
-  // Create data on disk so getContentSync can find it
   const dataDir = join(
     dir,
     ".swamp",
@@ -478,7 +469,6 @@ Deno.test("DataQueryService: attributes filter with content on disk", () => {
       createdAt: "2026-01-01T00:00:00.000Z",
     }),
   );
-  // Write a latest marker
   Deno.writeTextFileSync(
     join(dir, ".swamp", "data", "test-model", "model-001", "my-data", "latest"),
     "1",
@@ -609,14 +599,13 @@ Deno.test("DataQueryService: select loads attributes for map literal projection"
   const dataRepo = new FileSystemUnifiedDataRepository(dir, undefined, catalog);
   const service = new DataQueryService(catalog, dataRepo);
 
-  // Filter doesn't reference attributes, but select does (in a map literal).
-  // Without the fix, attributes wouldn't be loaded and CEL would throw "No such key".
+  // the filter does not reference attributes but select does; attributes must
+  // still load or CEL throws "No such key"
   const selectExpr = '{"name": name, "kernel": attributes.kernel}';
   const results = service.querySync('modelName == "ingest"', {
     select: selectExpr,
   });
   assertEquals(results.length, 1);
-  // Results are projected — each is a map with name and kernel
   const projected = results[0] as Record<string, unknown>;
   assertEquals(projected["name"], "my-data");
   assertEquals(projected["kernel"], "6.1.0");
@@ -692,9 +681,7 @@ Deno.test("DataQueryService: backfill triggers on unpopulated catalog", async ()
   const dbPath = join(dir, ".swamp", "data", "_catalog.db");
   const catalog = new CatalogStore(dbPath);
   using _cleanup = cleanupOnDispose(catalog, dir);
-  // Do NOT mark as populated
 
-  // Create actual data on disk for backfill to find
   const dataDir = join(
     dir,
     ".swamp",
@@ -732,7 +719,6 @@ Deno.test("DataQueryService: backfill triggers on unpopulated catalog", async ()
   const dataRepo = new FileSystemUnifiedDataRepository(dir, undefined, catalog);
   const service = new DataQueryService(catalog, dataRepo);
 
-  // Should trigger backfill since catalog is not populated
   const results = await service.query('modelName == "ingest"') as DataRecord[];
   assertEquals(results.length, 1);
   assertEquals(results[0].modelName, "ingest");
@@ -749,15 +735,11 @@ Deno.test("DataQueryService: backfill preserves catalog rows the walk cannot see
   const catalog = new CatalogStore(dbPath);
   using _cleanup = cleanupOnDispose(catalog, dir);
 
-  // Seed a row that represents data in the remote datastore but not on local
-  // disk (e.g. lazy hydration — metadata not yet pulled).
   catalog.upsert(makeRow({
     data_name: "remote-only",
     id: "00000000-0000-1000-8000-000000000099",
   }));
-  // Do NOT mark as populated — the next query must trigger backfill.
 
-  // Create one data item on disk for the walk to find.
   const dataDir = join(
     dir,
     ".swamp",
@@ -804,11 +786,6 @@ Deno.test("DataQueryService: backfill preserves catalog rows the walk cannot see
   catalog.close();
 });
 
-/**
- * Writes `my-data` versions under a fresh repo in `dir`: each version has
- * metadata.yaml, and raw unless it is listed in `withoutRaw`. The latest
- * marker names `marker` when given.
- */
 function writeBackfillVersions(
   dir: string,
   versions: number[],
@@ -852,7 +829,6 @@ function writeBackfillVersions(
   }
 }
 
-/** The catalog's `my-data` rows as version:is_latest, in version order. */
 function backfilledRows(catalog: CatalogStore): string[] {
   return [...catalog.iterate()]
     .filter((row) => row.data_name === "my-data")
@@ -916,7 +892,6 @@ Deno.test("DataQueryService: backfill stamps the repo namespace onto rebuilt row
   const dbPath = join(dir, ".swamp", "data", "_catalog.db");
   const catalog = new CatalogStore(dbPath);
   using _cleanup = cleanupOnDispose(catalog, dir);
-  // Do NOT mark as populated — query must trigger a backfill from disk.
 
   const dataDir = join(
     dir,
@@ -969,12 +944,7 @@ Deno.test("DataQueryService: backfill stamps the repo namespace onto rebuilt row
   catalog.close();
 });
 
-// ============================================================================
-// Implicit isLatest injection
-// ============================================================================
-
 function seedVersions(catalog: CatalogStore): void {
-  // Three versions of "my-data"; version 3 is the current latest.
   catalog.upsert(
     makeRow({ version: 1, is_latest: 0, id: "u1", size: 100 }),
   );
@@ -1023,7 +993,6 @@ Deno.test("DataQueryService: isLatest in predicate composes with version filter"
   const { catalog, service } = t;
   seedVersions(catalog);
 
-  // "the latest row, but only if its version number is > 1"
   const results = service.querySync(
     "isLatest == true && version > 1",
   ) as DataRecord[];
@@ -1035,7 +1004,6 @@ Deno.test("DataQueryService: isLatest in predicate composes with version filter"
 Deno.test("DataQueryService: string literal containing 'version' does not opt into history", () => {
   using t = setupTest();
   const { catalog, service } = t;
-  // Two distinct data items so we can tell injection is working.
   catalog.upsert(
     makeRow({
       data_name: "version-report",
@@ -1100,8 +1068,6 @@ Deno.test("DataQueryService: select version without history opt-in returns lates
 Deno.test("DataQueryService: catalog backfill works with metadata-only files (no raw)", async () => {
   const dir = Deno.makeTempDirSync({ prefix: "swamp-lazy-hydration-test-" });
   try {
-    // Create the data directory structure with metadata.yaml + latest but NO raw file
-    // This simulates lazy hydration state after a metadata-only pull
     const dataDir = join(
       dir,
       ".swamp",
@@ -1114,7 +1080,6 @@ Deno.test("DataQueryService: catalog backfill works with metadata-only files (no
     );
     ensureDirSync(dataDir);
 
-    // Write metadata.yaml with all required fields (id, version included)
     const metadata = {
       name: "lazy-data",
       id: "00000000-0000-1000-8000-000000000001",
@@ -1137,7 +1102,6 @@ Deno.test("DataQueryService: catalog backfill works with metadata-only files (no
       stringifyYaml(metadata as Record<string, unknown>),
     );
 
-    // Write the latest marker pointing to version 1
     const dataNameDir = join(
       dir,
       ".swamp",
@@ -1151,7 +1115,6 @@ Deno.test("DataQueryService: catalog backfill works with metadata-only files (no
 
     // Do NOT create a "raw" file — this is the key: lazy hydration skips raw
 
-    // Create catalog and repo with no pre-populated catalog (forces backfill)
     const dbPath = join(dir, ".swamp", "data", "_catalog.db");
     const catalogObj = new CatalogStore(dbPath);
     const dataRepo = new FileSystemUnifiedDataRepository(
@@ -1161,8 +1124,6 @@ Deno.test("DataQueryService: catalog backfill works with metadata-only files (no
     );
     const svc = new DataQueryService(catalogObj, dataRepo);
 
-    // Query with a predicate that doesn't need content — should trigger
-    // backfill from metadata.yaml and return the item
     const results = await svc.query("true") as DataRecord[];
     assertEquals(results.length, 1);
     assertEquals(results[0].name, "lazy-data");
@@ -1220,7 +1181,6 @@ Deno.test("DataQueryService: ns field is queryable for namespace filtering", () 
   ) as DataRecord[];
   assertEquals(allResults.length, 3);
 
-  // ns must also work in select projections
   const projected = service.querySync(
     'ns == "infra"',
     { select: "ns" },
@@ -1231,12 +1191,6 @@ Deno.test("DataQueryService: ns field is queryable for namespace filtering", () 
   catalog.close();
 });
 
-// ── Phase 6d: foreign content fetch ─────────────────────────────────────────
-
-/**
- * A service whose repository carries `fetcher`, as a repo context wires it,
- * and writes as `namespace` (solo unless given).
- */
 function setupForeignTest(
   fetcher: ForeignContentFetcher,
   namespace?: string,
@@ -1318,7 +1272,6 @@ Deno.test("DataQueryService: foreign content fetcher caches results across queri
   await service.query('ns == "security"', { loadAttributes: true });
   assertEquals(fetchCount, 1);
 
-  // Second query should hit the cache, not fetch again
   await service.query('ns == "security"', { loadAttributes: true });
   assertEquals(fetchCount, 1);
 
@@ -1349,7 +1302,6 @@ Deno.test("DataQueryService: foreign content fetcher does not fire for own names
   });
   const { catalog, service } = t;
 
-  // Own namespace is "" (solo mode)
   catalog.upsert(makeRow({
     namespace: "",
     model_name: "local",
@@ -1572,7 +1524,6 @@ Deno.test("DataQueryService: the foreign content cache drops its oldest body pas
     return Promise.resolve(jsonBytes({ relPath }));
   });
   const { catalog, service } = t;
-  // One more row than the cache holds.
   const count = 257;
   const name = (i: number) => `item-${String(i).padStart(3, "0")}`;
   for (let i = 0; i < count; i++) {
@@ -1592,8 +1543,6 @@ Deno.test("DataQueryService: the foreign content cache drops its oldest body pas
 
   catalog.close();
 });
-
-// ── Scoped backfill tests (issue #919) ─────────────────────────────────────
 
 function createOnDiskData(
   dir: string,
@@ -1645,9 +1594,7 @@ Deno.test("getLatestRecord: check-first returns write-through row without backfi
   const dir = Deno.makeTempDirSync({ prefix: "swamp-scoped-test-" });
   const dbPath = join(dir, ".swamp", "data", "_catalog.db");
   const catalog = new CatalogStore(dbPath);
-  // Do NOT mark populated — simulates invalidated catalog
 
-  // Create data on disk + upsert via write-through
   createOnDiskData(dir, "test-model", "model-001", "my-data", "ingest");
   catalog.upsertNewVersion(makeRow());
 
@@ -1697,9 +1644,7 @@ Deno.test("getLatestRecord: stale row falls through to scoped backfill", async (
   const dir = Deno.makeTempDirSync({ prefix: "swamp-scoped-stale-test-" });
   const dbPath = join(dir, ".swamp", "data", "_catalog.db");
   const catalog = new CatalogStore(dbPath);
-  // Do NOT mark populated
 
-  // Create a catalog row WITHOUT corresponding on-disk data (stale row)
   catalog.upsertNewVersion(makeRow({
     type_normalized: "stale-type",
     model_id: "stale-model",
@@ -1710,7 +1655,6 @@ Deno.test("getLatestRecord: stale row falls through to scoped backfill", async (
   const dataRepo = new FileSystemUnifiedDataRepository(dir, undefined, catalog);
   const service = new DataQueryService(catalog, dataRepo);
 
-  // Should detect stale row and return null (no on-disk data to find)
   const record = await service.getLatestRecord(
     "stale-model-name",
     "stale-data",
@@ -1724,9 +1668,7 @@ Deno.test("getLatestRecord: stale row falls through to scoped backfill", async (
 Deno.test("getLatestRecord: hydrates a lazily-synced row instead of treating it as stale", async () => {
   const dir = Deno.makeTempDirSync({ prefix: "swamp-latest-lazy-test-" });
   const catalog = new CatalogStore(join(dir, ".swamp", "data", "_catalog.db"));
-  // Do NOT mark populated — a datastore sync invalidates the catalog.
 
-  // A lazy-hydration datastore syncs metadata.yaml but not raw.
   createOnDiskData(dir, "test-model", "model-001", "my-data", "ingest");
   const rawPath = join(
     dir,
@@ -1803,9 +1745,7 @@ Deno.test("getLatestRecord: scoped backfill finds orphan data without full backf
   const dir = Deno.makeTempDirSync({ prefix: "swamp-scoped-orphan-test-" });
   const dbPath = join(dir, ".swamp", "data", "_catalog.db");
   const catalog = new CatalogStore(dbPath);
-  // Do NOT mark populated
 
-  // Create multiple data items on disk — only one is the target
   createOnDiskData(
     dir,
     "type-a",
@@ -1831,13 +1771,11 @@ Deno.test("getLatestRecord: scoped backfill finds orphan data without full backf
   const dataRepo = new FileSystemUnifiedDataRepository(dir, undefined, catalog);
   const service = new DataQueryService(catalog, dataRepo);
 
-  // Look up the orphan data — should find it via scoped backfill
   const record = await service.getLatestRecord("orphan-model", "orphan-output");
   assertNotEquals(record, null);
   assertEquals(record!.name, "orphan-output");
   assertEquals(record!.modelName, "orphan-model");
 
-  // Catalog should NOT be marked as populated (scoped backfill doesn't set it)
   assertEquals(catalog.isPopulated(), false);
 
   catalog.close();
@@ -1848,7 +1786,6 @@ Deno.test("getLatestRecord: query() still triggers full backfill independently",
   const dir = Deno.makeTempDirSync({ prefix: "swamp-scoped-query-test-" });
   const dbPath = join(dir, ".swamp", "data", "_catalog.db");
   const catalog = new CatalogStore(dbPath);
-  // Do NOT mark populated
 
   createOnDiskData(
     dir,
@@ -1868,12 +1805,10 @@ Deno.test("getLatestRecord: query() still triggers full backfill independently",
   const dataRepo = new FileSystemUnifiedDataRepository(dir, undefined, catalog);
   const service = new DataQueryService(catalog, dataRepo);
 
-  // getLatestRecord for one item — scoped backfill
   const record = await service.getLatestRecord("model-a", "result");
   assertNotEquals(record, null);
   assertEquals(catalog.isPopulated(), false);
 
-  // query() should trigger full backfill and find ALL data
   const results = await service.query('modelName == "model-b"') as DataRecord[];
   assertEquals(results.length, 1);
   assertEquals(results[0].modelName, "model-b");
@@ -1886,7 +1821,6 @@ Deno.test("getLatestRecord: query() still triggers full backfill independently",
 Deno.test("getLatestRecord: populated catalog returns null for missing data", async () => {
   using t = setupTest();
   const { catalog, service } = t;
-  // setupTest calls markPopulated — catalog is populated
 
   const record = await service.getLatestRecord("nonexistent", "missing");
   assertEquals(record, null);
@@ -1898,9 +1832,7 @@ Deno.test("getLatestRecord: namespace filtering works in scoped path", async () 
   const dir = Deno.makeTempDirSync({ prefix: "swamp-scoped-ns-test-" });
   const dbPath = join(dir, ".swamp", "data", "_catalog.db");
   const catalog = new CatalogStore(dbPath);
-  // Do NOT mark populated
 
-  // Create data on disk + catalog row with specific namespace
   createOnDiskData(dir, "type-a", "model-aaa", "result", "model-a");
   catalog.upsertNewVersion(makeRow({
     namespace: "team-alpha",
@@ -1913,7 +1845,6 @@ Deno.test("getLatestRecord: namespace filtering works in scoped path", async () 
   const dataRepo = new FileSystemUnifiedDataRepository(dir, undefined, catalog);
   const service = new DataQueryService(catalog, dataRepo);
 
-  // Lookup with matching namespace — should find
   const found = await service.getLatestRecord(
     "model-a",
     "result",
@@ -1921,7 +1852,6 @@ Deno.test("getLatestRecord: namespace filtering works in scoped path", async () 
   );
   assertNotEquals(found, null);
 
-  // Lookup with wrong namespace — should not find
   const notFound = await service.getLatestRecord(
     "model-a",
     "result",
@@ -1937,7 +1867,6 @@ Deno.test("getLatestRecord: exact data name skips specName ambiguity check (swam
   using t = setupTest();
   const { catalog, service } = t;
 
-  // Two data items with different names but the same specName "state"
   catalog.upsert(
     makeRow({
       data_name: "hs",
@@ -1968,7 +1897,6 @@ Deno.test("getLatestRecord: dataName matching specName still throws on ambiguity
   using t = setupTest();
   const { catalog, service } = t;
 
-  // Data name "state" matches its own specName "state" — ambiguity check fires
   catalog.upsert(
     makeRow({
       data_name: "state",
@@ -1994,11 +1922,6 @@ Deno.test("getLatestRecord: dataName matching specName still throws on ambiguity
 
   catalog.close();
 });
-
-// ---------------------------------------------------------------------------
-// SQL pushdown tests — verify that pushdown produces identical results to
-// full CEL evaluation for all predicate shapes.
-// ---------------------------------------------------------------------------
 
 Deno.test("DataQueryService pushdown: isLatest pushdown returns same results as CEL-only", () => {
   using t = setupTest();
@@ -2309,20 +2232,9 @@ Deno.test("DataQueryService: content stays raw string for non-JSON records", () 
   catalog.close();
 });
 
-// ============================================================================
-// Backfill must not delete rows for models the predicate never mentions.
-//
-// Full backfill commits with a replace, not an insert, so any model the disk
-// walk fails to see is deleted from the catalog rather than merely left
-// unindexed. A model whose data names are bare integers used to be invisible to
-// that walk, which meant *any* query — including one matching nothing — wiped
-// its rows. See swamp-club#1580.
-//
-// The type must be scoped (`@scope/name`) to reproduce: with a single-segment
-// type the misclassified branch is skipped by the `childSegments.length >= 2`
-// guard in collectAllData, so only multi-segment types are affected — which is
-// every model that comes from an extension.
-// ============================================================================
+// full backfill replaces catalog rows, so a model the disk walk misses loses
+// them; scoped types with bare-integer data names must stay visible, even to a
+// query that matches nothing
 
 Deno.test("DataQueryService: a non-matching query preserves rows for models with numeric data names", async () => {
   const dir = Deno.makeTempDirSync({ prefix: "swamp-query-numeric-names-" });
@@ -2382,13 +2294,11 @@ Deno.test("DataQueryService: a non-matching query preserves rows for models with
   const dataRepo = new FileSystemUnifiedDataRepository(dir, undefined, catalog);
   const service = new DataQueryService(catalog, dataRepo);
 
-  // A predicate that matches nothing at all, and never mentions this model.
   const results = await service.query(
     'name == "__nonexistent__"',
   ) as DataRecord[];
   assertEquals(results.length, 0);
 
-  // The query returning nothing is correct. Deleting the rows is the bug.
   assertEquals(
     catalog.count(),
     numericNames.length,
@@ -2409,7 +2319,6 @@ Deno.test("DataQueryService: skips stale catalog rows with missing backing files
     filterStaleRows: true,
   });
 
-  // Insert a catalog row whose backing file does NOT exist on disk.
   const staleRow = makeRow({
     model_name: "story-analyzer",
     data_name: "analysis",
@@ -2420,7 +2329,6 @@ Deno.test("DataQueryService: skips stale catalog rows with missing backing files
   });
   catalog.upsert(staleRow);
 
-  // Insert a live row WITH a backing file on disk.
   const liveRow = makeRow({
     model_name: "story-analyzer",
     data_name: "analysis",
@@ -2432,7 +2340,6 @@ Deno.test("DataQueryService: skips stale catalog rows with missing backing files
   });
   catalog.upsert(liveRow);
 
-  // Create the backing file for the live row only.
   const livePath = join(
     dir,
     ".swamp",
@@ -2453,7 +2360,6 @@ Deno.test("DataQueryService: skips stale catalog rows with missing backing files
     'modelName == "story-analyzer"',
   ) as DataRecord[];
 
-  // Only the live row should be returned; the stale row is skipped.
   assertEquals(
     results.length,
     1,
@@ -2493,7 +2399,6 @@ Deno.test("DataQueryService: a stale-looking row the unreadable-content lookup r
   const service = new DataQueryService(catalog, dataRepo, {
     filterStaleRows: true,
   });
-  // A row whose backing file is absent, as an unmaterialised v3 record's is.
   catalog.upsert(makeRow({
     model_name: "lost-model",
     data_name: "state",
@@ -2508,7 +2413,6 @@ Deno.test("DataQueryService: a stale-looking row the unreadable-content lookup r
       service.query('modelName == "lost-model"')
     );
     assertEquals(error, unreadable);
-    // data.latest's catalog lookup fails the same way.
     assertEquals(
       await assertRejects(() => service.getLatestRecord("lost-model", "state")),
       unreadable,
@@ -2577,7 +2481,6 @@ Deno.test("DataQueryService: filterStaleRows skips foreign namespace rows (no lo
     filterStaleRows: true,
   });
 
-  // Foreign namespace row — no backing file on disk (catalog-only pull).
   catalog.upsert(makeRow({
     namespace: "infra",
     model_name: "scanner",
@@ -2606,10 +2509,6 @@ Deno.test("DataQueryService: filterStaleRows skips foreign namespace rows (no lo
   catalog.close();
 });
 
-/**
- * One catalog row per entry, in order, each under its own data name. Only
- * live entries get a backing file, so the rest are stale.
- */
 function setupStaleRowsTest(entries: { name: string; live: boolean }[]): {
   service: DataQueryService;
   dataRepo: TracingDataRepository;
@@ -2679,7 +2578,6 @@ Deno.test("DataQueryService.query: a limited query over only stale rows returns 
 });
 
 Deno.test("DataQueryService.query: more stale rows than one widened batch still fill the page", async () => {
-  // A first batch of 1 and a widened batch of 4 both end in stale rows.
   const { service, cleanup } = setupStaleRowsTest([
     ...Array.from({ length: 10 }, (_, i) => ({
       name: `stale-${i}`,
@@ -2708,8 +2606,8 @@ Deno.test("DataQueryService.query: a limited query without stale rows reads only
 });
 
 Deno.test("DataQueryService.query: a limit of 0 returns nothing without include", async () => {
-  // Without include this returned one record: the match loop checked the
-  // limit only after pushing a match. The include path returned nothing.
+  // the match loop must check the limit before pushing a match, so a limit of 0
+  // returns nothing
   const { service, cleanup } = setupStaleRowsTest([{ name: "a", live: true }]);
   try {
     assertEquals(await queryNames(service, 0), []);
@@ -2718,9 +2616,6 @@ Deno.test("DataQueryService.query: a limit of 0 returns nothing without include"
   }
 });
 
-// --- computeLatestFlags tests ---
-
-/** Returns `version:is_latest:is_step_latest` for each row, in input order. */
 function flags(rows: CatalogRow[]): string[] {
   return rows.map((r) => `${r.version}:${r.is_latest}:${r.is_step_latest}`);
 }
@@ -2744,7 +2639,7 @@ Deno.test("computeLatestFlags: different workflow steps keep independent step la
   ];
   computeLatestFlags(rows);
 
-  // swamp-club#2520: one is_latest per name; each step keeps its latest.
+  // one is_latest per name; each step keeps its own latest
   assertEquals(flags(rows), ["1:0:0", "2:0:1", "3:1:1"]);
 });
 
@@ -2808,9 +2703,6 @@ Deno.test("computeLatestFlags: different type_normalized keep independent is_lat
   assertEquals(rows[1].is_latest, 1);
 });
 
-// --- Lazy body loading (swamp-club#2122) ---
-
-/** Counts body reads per data name and throws for names marked unreadable. */
 class TracingDataRepository extends FileSystemUnifiedDataRepository {
   readonly reads = new Map<string, number>();
   readonly unreadable = new Set<string>();
@@ -2991,10 +2883,6 @@ Deno.test("DataQueryService: successive queries see rewritten bodies", () => {
   assertEquals(results[0].attributes, { value: 2 });
   catalog.close();
 });
-
-// ============================================================================
-// includeContentPath — path is opt-in so it never leaves the process
-// ============================================================================
 
 function expectedContentPath(dir: string, catalog: CatalogStore): string {
   return new FileSystemUnifiedDataRepository(dir, undefined, catalog)
@@ -3251,8 +3139,6 @@ Deno.test("DataQueryService: returns sensitive vault references unresolved", asy
   }
 });
 
-// ── excludeModelTypes (swamp-club#2756) ─────────────────────────────────
-
 function seedControlPlane(catalog: CatalogStore): void {
   catalog.upsert(makeRow({
     type_normalized: "swamp/grant",
@@ -3292,7 +3178,6 @@ Deno.test("DataQueryService: excludeModelTypes drops the types whatever the pred
   ) as DataRecord[];
   assertEquals(targeted, []);
 
-  // Without the option the same records match.
   assertEquals(
     (service.querySync('modelType == "swamp/grant"') as DataRecord[]).length,
     1,
@@ -3344,7 +3229,6 @@ Deno.test("DataQueryService: excludeModelTypes hides an excluded latest record a
 Deno.test("getLatestRecord: excludeModelTypes holds while a full backfill is in flight", async () => {
   const dir = Deno.makeTempDirSync({ prefix: "swamp-exclude-backfill-" });
   const catalog = new CatalogStore(join(dir, ".swamp", "data", "_catalog.db"));
-  // Not populated, as after invalidate(): the next query starts a backfill.
   createOnDiskData(dir, "swamp/grant", "grant-001", "grant-main", "grant-abc");
   const dataRepo = new FileSystemUnifiedDataRepository(dir, undefined, catalog);
   const service = new DataQueryService(catalog, dataRepo);
@@ -3359,7 +3243,6 @@ Deno.test("getLatestRecord: excludeModelTypes holds while a full backfill is in 
   await filling;
 
   assertEquals(record, null);
-  // The same lookup without the option finds it once populated.
   assertEquals(
     (await service.getLatestRecord("grant-abc", "grant-main"))?.modelType,
     "swamp/grant",
@@ -3410,7 +3293,6 @@ Deno.test("checkSpecNameAmbiguity: excluded rows are neither peers nor named", (
     id: "data-grant-001",
   }));
 
-  // Without the exclusion the two rows are ambiguous, naming the grant.
   assertThrows(
     () => service.checkSpecNameAmbiguity("main", "shared"),
     UserError,
@@ -3420,8 +3302,8 @@ Deno.test("checkSpecNameAmbiguity: excluded rows are neither peers nor named", (
   catalog.close();
 });
 
-// A model retyped in place keeps its id; its rows under the old type are the
-// orphaned lineage data prune reclaims (swamp-club#2501).
+// a model retyped in place keeps its id; its rows under the old type are the
+// orphaned lineage data prune reclaims
 function upsertRetypedRows(
   catalog: CatalogStore,
   oldTypeDataName: string,
@@ -3560,18 +3442,15 @@ Deno.test("checkSpecNameAmbiguity: without a resolved identity the old-type row 
   catalog.close();
 });
 
-// The declared keys of T, without any string or number index signature.
 type DeclaredKeys<T> = keyof {
   [K in keyof T as string extends K ? never : number extends K ? never : K]:
     T[K];
 };
 
 Deno.test("DataQueryService: every DataRecord field resolves to the row's value in a select", () => {
-  // Typed against DataRecord so a new field fails type checking until it is
-  // listed here, and a field named after a cel-js constant (cel, type, int,
-  // ...) fails the probe instead of silently resolving to the built-in
-  // (swamp-club#2851). namespace is a CEL reserved word, so it is probed
-  // through its ns alias.
+  // typed against DataRecord so a new field fails type checking until listed
+  // here, and a field named like a cel-js constant fails the probe; namespace
+  // is a CEL reserved word, probed via its ns alias
   const fields: Record<DeclaredKeys<DataRecord>, string> = {
     id: "id",
     name: "name",
@@ -3611,7 +3490,6 @@ Deno.test("DataQueryService: every DataRecord field resolves to the row's value 
   }) as DataRecord[];
   for (const [field, identifier] of Object.entries(fields)) {
     const [projected] = service.querySync("true", { select: identifier });
-    // content of a JSON row is exposed as its parsed attributes.
     const expected = field === "content"
       ? record.attributes
       : record[field as keyof DataRecord];
@@ -3623,10 +3501,6 @@ Deno.test("DataQueryService: every DataRecord field resolves to the row's value 
   }
   catalog.close();
 });
-
-// ============================================================================
-// Freshness of an unpopulated catalog (swamp-club#2858)
-// ============================================================================
 
 Deno.test("getLatestRecord: an unpopulated row behind the on-disk latest marker returns the marker's version", async () => {
   const dir = Deno.makeTempDirSync({ prefix: "swamp-latest-marker-test-" });
@@ -3992,9 +3866,6 @@ Deno.test("DataQueryService: a backfill that started before an invalidate does n
   }
 });
 
-// latestRun("<workflow>") (swamp-club#2957)
-
-/** Two runs of "deploy" that wrote "out", and one model-method item. */
 function setupLatestRunTest() {
   const ctx = setupTest();
   ctx.catalog.upsert(makeRow({
@@ -4185,30 +4056,22 @@ Deno.test("DataQueryService.query: the resolver's error for an unknown workflow 
   catalog.close();
 });
 
-// ============================================================================
-// Lazy content hydration in query() (swamp-club#2962): a lazy-hydration
-// datastore syncs metadata only, so a matched row's raw file may be absent
-// until something downloads it. data get downloads it; query() must too.
-// ============================================================================
+// a lazy-hydration datastore syncs metadata only, so a matched row's raw file
+// may be absent; query() must download it, as data get does
 
 interface RemoteBody {
   name: string;
   specName?: string;
   body: unknown;
-  /** Stored bytes, instead of `body` as JSON. */
   bytes?: Uint8Array;
-  /** Defaults to application/json. */
   contentType?: string;
-  /** Write the body locally too, as if already hydrated. */
   local?: boolean;
-  /** The remote does not have the body either. */
   remoteMissing?: boolean;
   /**
-   * Bytes left in the cache instead of the body: what a metadata-only pull
-   * leaves after another host appended to the version (swamp-club#3178).
+   * bytes left in the cache instead of the body, as a metadata-only pull leaves
+   * after another host appended to the version
    */
   staleLocal?: Uint8Array;
-  /** The remote's bytes, when they differ from the recorded body. */
   remoteBytes?: Uint8Array;
   namespace?: string;
 }
@@ -4249,7 +4112,6 @@ function setupHydrationTest(bodies: RemoteBody[]): {
     const bytes = entry.bytes ??
       new TextEncoder().encode(JSON.stringify(entry.body));
     if (!entry.remoteMissing) remote.set(path, entry.remoteBytes ?? bytes);
-    // A lazy pull creates the version directory but skips raw.
     ensureDirSync(dirname(path));
     if (entry.local) Deno.writeFileSync(path, bytes);
     if (entry.staleLocal) Deno.writeFileSync(path, entry.staleLocal);
@@ -4260,7 +4122,6 @@ function setupHydrationTest(bodies: RemoteBody[]): {
         spec_name: entry.specName ?? "result",
         namespace: entry.namespace ?? "",
         content_type: entry.contentType ?? "application/json",
-        // A row records the size of the body it describes.
         size: bytes.length,
       }),
     );
@@ -4293,8 +4154,8 @@ Deno.test("DataQueryService.query: select content downloads a lazily-synced body
 });
 
 Deno.test("DataQueryService.query: select content downloads a lazily-synced binary or text body", async () => {
-  // swamp-club#2959 reads projected content after include; the read still
-  // downloads a body a lazy pull skipped, as data get does.
+  // projected content is read after include; the read still downloads a body a
+  // lazy pull skipped, as data get does
   const png = new Uint8Array([0x89, 0x50, 0x4e, 0x47]);
   const { service, hydrated, cleanup } = setupHydrationTest([
     { name: "logo", body: null, bytes: png, contentType: "image/png" },
@@ -4416,7 +4277,6 @@ Deno.test("DataQueryService.query: a body missing remotely too leaves empty attr
       select: "content",
     });
     assertEquals(results, [{}]);
-    // Tried once, then no further pass.
     assertEquals(hydrated, ["a"]);
   } finally {
     cleanup();
@@ -4517,9 +4377,8 @@ Deno.test("DataQueryService.query: later passes under a limit stay linear in bod
     assertEquals(results, []);
     assertEquals(hydrated.length, count);
     const reads = [...dataRepo.reads.values()].reduce((a, b) => a + b, 0);
-    // Doubling passes read about 5 bodies per row (misses and the final
-    // pass at the caller's limit included); one rescan per downloaded row
-    // would be about count * count / 2.
+    // doubling passes read a bounded number of bodies per row; a rescan per
+    // downloaded row would be quadratic
     assert(reads <= 6 * count, `${reads} body reads for ${count} rows`);
   } finally {
     cleanup();
@@ -4536,7 +4395,6 @@ Deno.test("DataQueryService.query: a body missing remotely is requested once acr
     })),
   ]);
   try {
-    // The first batch accepts only "gone", so the query grows the batch.
     const results = await service.query(
       'attributes.v > 0 || name == "gone"',
       {
@@ -4585,7 +4443,6 @@ Deno.test("DataQueryService.query: with include, a metadata predicate downloads 
       limit: 2,
     }) as DataRecord[];
     assertEquals(results.map((r) => r.name), ["row-00", "row-01"]);
-    // The include path matches in batches of four times the limit.
     assertEquals(hydrated.length, 8);
   } finally {
     cleanup();
@@ -4609,8 +4466,6 @@ Deno.test("DataQueryService.query: limit 0 still widens when downloaded rows sto
     cleanup();
   }
 });
-
-// --- Latest across workflow steps (swamp-club#2520) ---
 
 function writeStepVersions(catalog: CatalogStore, steps: string[]): void {
   steps.forEach((step, i) => {
@@ -4697,12 +4552,6 @@ Deno.test("DataQueryService.latestDataNamesForSpec: lists a name once when sever
   catalog.close();
 });
 
-// ============================================================================
-// Binary content (swamp-club#2959): a projection reads any item's bytes
-// without loss, and a predicate reading `content` on a non-text item fails.
-// ============================================================================
-
-/** Writes one stored item with raw bytes and indexes it in the catalog. */
 function writeContentItem(
   dir: string,
   catalog: CatalogStore,
@@ -4740,13 +4589,6 @@ const PNG_BYTES = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a]);
 // A UTF-16LE byte-order mark followed by "hi": not valid UTF-8.
 const UTF16_BYTES = new Uint8Array([0xff, 0xfe, 0x68, 0x00, 0x69, 0x00]);
 
-/**
- * Runs `fn` against a query service over a repo holding, in catalog order,
- * UTF-8 text (`notes`), a binary item (`logo`), text whose bytes are not
- * UTF-8 (`legacy`) and JSON (`info`). `reads` lists the data names whose
- * bytes were read, by either the sync or the async read. The rows carry the empty namespace; `namespace` sets
- * the repository's own. The repo is removed afterwards, pass or fail.
- */
 async function withContentItems(
   fn: (
     ctx: {
@@ -4802,8 +4644,8 @@ async function withContentItems(
       reads.push(dataName);
       return getContentSync(type, modelId, dataName, version);
     };
-    // query() reads projected content through the async getContent, which
-    // can download a lazily-synced body (swamp-club#2962).
+    // query() reads projected content through the async getContent, which can
+    // download a lazily-synced body
     const getContent = dataRepo.getContent.bind(dataRepo);
     dataRepo.getContent = (type, modelId, dataName, version) => {
       reads.push(dataName);
@@ -4875,13 +4717,11 @@ Deno.test("DataQueryService: select contentEncoding alone reads the bytes", asyn
 
 Deno.test("DataQueryService: select content is null when the bytes are not on this host", async () => {
   await withContentItems(({ catalog, service }) => {
-    // Indexed, but no stored body: a missing file.
     catalog.upsert(makeRow({
       data_name: "gone",
       id: "00000000-0000-1000-8000-000000000015",
       content_type: "image/png",
     }));
-    // Another namespace's items in a shared datastore, JSON included.
     catalog.upsert(makeRow({
       namespace: "other-repo",
       data_name: "theirs",
@@ -4918,7 +4758,6 @@ Deno.test("DataQueryService: a predicate reading content on a binary item fails,
     assertEquals(error.item.contentType, "image/png");
     assertStringIncludes(error.message, "ingest/logo version 1");
     assertStringIncludes(error.message, 'contentType.startsWith("text/")');
-    // The guard it suggests covers text/*; it names the other text types.
     assertStringIncludes(error.message, "JSON, YAML, XML or TOML");
     // The check uses the catalog's content type, never the binary's bytes.
     assertEquals(reads.includes("logo"), false);
@@ -5024,8 +4863,8 @@ Deno.test("DataQueryService: include decides before select reads any bytes", asy
       content: "hello world",
       contentEncoding: "utf-8",
     }]);
-    // JSON attributes load while matching, as before; no other body is read
-    // for a record include rejects.
+    // JSON attributes load while matching; no other body is read for a record
+    // include rejects
     assertEquals(reads.filter((name) => name !== "info"), ["notes"]);
   });
 });
@@ -5065,8 +4904,6 @@ Deno.test("DataQueryService: a content predicate reads text types beyond text/*"
     assertEquals(results.map((r) => r.name), ["manifest"]);
   });
 });
-
-// ── model() references (swamp-club#2960) ────────────────────────────────────
 
 const OLD_ID = "11111111-1111-4111-8111-111111111111";
 const NEW_ID = "22222222-2222-4222-8222-222222222222";
@@ -5211,7 +5048,6 @@ Deno.test("DataQueryService model(): concurrent queries keep their own resolutio
   ]) as [DataRecord[], DataRecord[]];
   assertEquals(a.map((r) => r.id), ["new-data"]);
   assertEquals(b.map((r) => r.id), ["old-data"]);
-  // Nothing leaks into a later query that uses no model() at all.
   assertEquals(
     (service.querySync('modelName == "ingest"') as DataRecord[]).length,
     2,
@@ -5252,8 +5088,6 @@ Deno.test("DataQueryService model(): rejected in --select, malformed or not", as
   );
   catalog.close();
 });
-
-// ── Rename forwards (swamp-club#2968) ───────────────────────────────────────
 
 /**
  * A populated catalog over a real repository, so renames write their markers
@@ -5561,8 +5395,6 @@ Deno.test("DataQueryService rename forwards: a stale catalog row under the old n
   catalog.close();
 });
 
-// ── modelType / modelId pushdown (swamp-club#3011) ──────────────────────
-
 function seedModelIdentities(catalog: CatalogStore): void {
   catalog.upsert(makeRow({
     type_normalized: "test-model",
@@ -5654,10 +5486,6 @@ Deno.test("DataQueryService: does not push modelId down from an OR branch", () =
   assertEquals(filters[0].includes("model_id = ?"), false);
   catalog.close();
 });
-
-// ============================================================================
-// Stale bodies after a metadata-only pull (swamp-club#3178, swamp-club#3179)
-// ============================================================================
 
 const staleBody = new TextEncoder().encode('{"value":1}');
 
@@ -5756,8 +5584,6 @@ Deno.test("getLatestRecord: a failed download still returns the record", async (
   }
 });
 
-// ── behavior() and behaviorName (swamp-club#3410) ──────────────────────────
-
 Deno.test("DataQueryService behavior(): matches exactly what model() matches", async () => {
   using t = setupModelTest();
   const { catalog, query } = t;
@@ -5826,7 +5652,6 @@ Deno.test("DataQueryService behavior(): refusals name the function as typed", as
     UserError,
     "behavior() is only available in swamp data query",
   );
-  // The model() wording is unchanged.
   await assertRejects(
     () => service.query('model("ingest")'),
     UserError,
@@ -5868,16 +5693,12 @@ Deno.test("DataQueryService behavior(): pushes down to SQL as model() and behavi
   catalog.close();
 });
 
-// ── Another namespace's content on v3 (swamp-club#3691) ─────────────────────
-
-/** A fetcher that reads the solo namespace too, as the v3 one does. */
 function soloReadingFetcher(
   read: (namespace: string, relPath: string) => Promise<Uint8Array | null>,
 ): ForeignContentFetcher {
   return Object.assign(read, { readsSoloNamespace: true });
 }
 
-/** The error a v3 read of a record it could not materialise throws. */
 function unreadableError(): UserError {
   return new UserError(
     "record unreadable",
@@ -6026,9 +5847,8 @@ Deno.test("DataQueryService: select content never fetches a foreign body through
 });
 
 /**
- * A write-through repository whose delete-kind method writes deletion
- * markers, as method_execution_service does, plus a way to rebuild a fresh
- * catalog from the same files (swamp-club#3698).
+ * a write-through repository whose delete-kind method writes deletion markers,
+ * plus a way to rebuild a fresh catalog from the same files
  */
 function setupDeletionTest() {
   const dir = Deno.makeTempDirSync({ prefix: "swamp-query-deletion-" });
@@ -6065,7 +5885,6 @@ function setupDeletionTest() {
   };
   const rename = (from: string, to: string) =>
     dataRepo.rename(type, modelId, from, to);
-  /** A fresh, unpopulated catalog over the same files. */
   const fresh = () => {
     const rebuilt = new CatalogStore(
       join(dir, `rebuilt-${crypto.randomUUID()}.db`),
@@ -6077,7 +5896,6 @@ function setupDeletionTest() {
   return { catalog, type, modelId, save, tombstone, rename, fresh, cleanup };
 }
 
-/** Every row as name@version:is_latest is_step_latest, sorted. */
 const rowsOf = (catalog: CatalogStore) =>
   [...catalog.iterate()]
     .map((r) => `${r.data_name}@${r.version}:${r.is_latest}${r.is_step_latest}`)
@@ -6178,20 +5996,6 @@ Deno.test("getLatestRecord: an unpopulated row behind a deletion marker another 
   }
 });
 
-// ============================================================================
-// The expression-facing query view (typed-secrets Section 6.2)
-// ============================================================================
-
-/**
- * A view the domain can test with, no Secret involved: its environment
- * answers a function the base lacks, the records it views carry a mark, its
- * projections wrap what the program answered, and it refuses the
- * expressions `refuses` names, as a refusal recorded in the view would.
- * Like the CEL adapter it answers a record as stored, the same object, when
- * the record belongs to a namespace other than `ownNamespace` (the solo
- * namespace unless given) or `asStored` selects it, standing in for a
- * record whose tag names no sensitive field.
- */
 function fakeView(
   refuses: (expression: string) => boolean = () => false,
   options: {
@@ -6252,7 +6056,6 @@ function fakeView(
   return { view, seen };
 }
 
-/** Writes one data item's bytes below `dir` as the repository lays them out. */
 function writeContent(
   dir: string,
   dataName: string,
@@ -6292,11 +6095,6 @@ function writeContent(
   );
 }
 
-/**
- * A query service over items written with their bytes. The repository is
- * solo unless `namespace` names its own; each row carries its item's
- * `namespace`, the empty namespace unless given.
- */
 function setupWithContent(
   items: Array<
     {
@@ -6519,8 +6317,8 @@ Deno.test("DataQueryService: a refusal the view raises fails the query from the 
       service.query('name == "my-data"', { view, select: "attributes.secret" }),
     QueryViewRefusal,
   );
-  // Without a view the same predicate skips the rows and the projection
-  // answers null, as today.
+  // without a view the same predicate skips the rows and the projection answers
+  // null
   assertEquals(
     (service.querySync("attributes.secret == 1") as DataRecord[]).length,
     0,
@@ -6567,8 +6365,6 @@ Deno.test("DataQueryService: under a view a content projection on a JSON record 
       `async ${name}`,
     );
   }
-  // The predicate reads JSON content through the view as well, parameters
-  // included.
   assertEquals(
     (service.querySync(
       'contentType != "application/octet-stream" && content.viewed == true',
@@ -6576,8 +6372,8 @@ Deno.test("DataQueryService: under a view a content projection on a JSON record 
     ) as DataRecord[]).map((r) => r.name).sort(),
     ["charset", "plain"],
   );
-  // The raw path keeps today's answers: parsed attributes for the strict
-  // JSON type, the JSON text for the parametrized one.
+  // the raw path answers parsed attributes for the strict JSON type and the
+  // JSON text for the parametrized one
   assertEquals(service.querySync('name == "plain"', { select: "content" }), [{
     a: 1,
   }]);
@@ -6629,7 +6425,6 @@ Deno.test("DataQueryService: under a view a foreign-namespace JSON record the vi
     }) as DataRecord[]).length,
     1,
   );
-  // The view is asked about the foreign record and answers it as stored.
   assert(seen.records.length > 0);
   for (const record of [...seen.records]) {
     assertEquals(record.namespace, "security");
@@ -6640,11 +6435,6 @@ Deno.test("DataQueryService: under a view a foreign-namespace JSON record the vi
 
 const CHARSET_JSON = "application/json; charset=utf-8";
 
-/**
- * Asserts that `name`, a record the view answers as stored, reads under the
- * view as the raw path reads it: its projected content, sync and async, and
- * each predicate's match.
- */
 async function assertReadsAsStored(
   service: DataQueryService,
   view: QueryView,
@@ -6895,7 +6685,6 @@ Deno.test("DataQueryService.queryPage: keyset pages neither skip nor repeat a ro
 
   const first = await pageNames(service, "true", { sort, limit: 3 });
   assertEquals(first.names, ["s6", "s5", "s4"]);
-  // A newer session lands above the cursor; an older one below it.
   catalog.upsert(
     sessionRow("newest", { startedAt: "2026-10-31T00:00:00.000Z" }),
   );

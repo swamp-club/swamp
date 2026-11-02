@@ -17,9 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// The behavior spelling of audit filters, policy rules and alert rules
-// (swamp-club#3334): matched in the stored model spelling.
-
 import { assertEquals } from "@std/assert";
 import {
   canonicalAuditAction,
@@ -100,7 +97,6 @@ Deno.test("AuditPolicy: a behavior-spelled rule matches the model-spelled action
   );
   assertEquals(policy.shouldHmac("execution", "model.method.run"), false);
   assertEquals(policy.evaluate("execution", "workflow.run"), "metadata");
-  // The rules as configured, never rewritten.
   assertEquals(policy.rules, rules);
   assertEquals(policy.rules[0].action, "behavior.method.run");
 });

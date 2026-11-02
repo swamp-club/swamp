@@ -27,12 +27,6 @@ import {
   CURSOR_AUDIT_HOOK_SHAPE,
 } from "../../../repo/repo_service.ts";
 
-/**
- * Verifies the per-tool configuration swamp wrote at init time is still
- * present and well-formed. Each tool has its own file layout and shape;
- * this check dispatches to the right parser.
- */
-
 const CONFIG_FILES: Record<string, string[]> = {
   kiro: [".kiro/agents/swamp.json"],
   claude: [".claude/settings.local.json"],
@@ -49,8 +43,8 @@ async function readJsonFile(path: string): Promise<unknown> {
 }
 
 /**
- * Fails when an event runs the swamp audit hook more than once — each copy
- * records every tool call, so the audit log would hold every row twice.
+ * each copy of the audit hook records every tool call, so a duplicate would put
+ * every row in the audit log twice
  */
 function duplicateAuditHookResult(
   hooks: Record<string, unknown>,
@@ -75,13 +69,8 @@ function duplicateAuditHookResult(
 }
 
 /**
- * Whether a kiro-cli agent config's `hooks` field holds a post-tool hook, in
- * either the 2.x object form (`{ postToolUse: [{ command }] }`) or the
- * universal array form current swamp writes
- * (`[{ trigger: "postToolUse", action: { command } }]`). Either way the hook
- * must run `swamp audit record --from-hook --tool kiro`. The command only has
- * to contain the audit hook: a command the user wrapped still records. (Repo
- * upgrade, which deletes hooks, matches swamp's exact command instead.)
+ * accepts the 2.x object form and the universal array form; the command only
+ * has to contain the audit hook, so a user-wrapped command still records
  */
 function hasKiroPostToolUseHook(hooks: unknown): boolean {
   const runsAudit = (command: unknown) =>

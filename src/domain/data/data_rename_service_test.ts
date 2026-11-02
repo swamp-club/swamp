@@ -96,14 +96,12 @@ Deno.test("rename: delegates to the data repository and maps the result", async 
   const service = new DataRenameService(dataRepo, definitionRepo);
   const result = await service.rename("my-model", "old-data", "new-data");
 
-  // The repository receives the resolved model type and definition id.
   assertEquals(calls.length, 1);
   assertEquals(calls[0].type.normalized, "aws/s3/bucket");
   assertEquals(calls[0].modelId, definition.id);
   assertEquals(calls[0].oldName, "old-data");
   assertEquals(calls[0].newName, "new-data");
 
-  // The result combines repository output with model identity.
   assertEquals(result.oldName, "old-data");
   assertEquals(result.newName, "new-data");
   assertEquals(result.modelType, "aws/s3/bucket");

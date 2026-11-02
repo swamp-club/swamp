@@ -31,7 +31,6 @@ import {
   withRemoteLockHolder,
 } from "./lock_holder_marker.ts";
 
-/** A fake env store that never touches the real process env. */
 function fakeEnv(initial: Record<string, string> = {}): {
   store: LockHolderEnvStore;
   values: Map<string, string>;
@@ -117,7 +116,6 @@ Deno.test("LockHolderMarker.markHoldingLocks: sets the holder to its own pid onc
   assertEquals(env.writes(), writes);
   assertEquals(env.values.get(SWAMP_LOCK_HOLDER_PID), "300");
   assertEquals(env.values.get(SWAMP_LOCK_ANCESTOR_PIDS), "200,300");
-  // Its own drain still skips the holder it inherited.
   assertEquals(sorted(marker.ancestorPids()), [200]);
 });
 
@@ -291,7 +289,6 @@ Deno.test("LockHolderMarker.lockRelation: a handed-down nonce is skipped whichev
   );
   assertEquals(relation({ pid: 999, nonce: "own" }), "ancestor");
   assertEquals(relation({ nonce: "own" }), "ancestor");
-  // The same holder's other locks are not held for this run.
   assertEquals(
     relation({ pid: 400, hostname: "h", nonce: "sibling" }),
     "other",
@@ -450,7 +447,6 @@ Deno.test("LockHolderMarker.childLockEnv: a child's drain skips its run's lock a
     relation({ pid: 200, hostname: "h", nonce: "run-b" }),
     "ancestor-other-run",
   );
-  // The grandparent handed down no list, so its locks match on the pid.
   assertEquals(relation({ pid: 100, hostname: "h", nonce: "x" }), "ancestor");
 });
 
@@ -585,8 +581,6 @@ Deno.test("withRemoteLockHolder: declares a same-host orchestrator an ancestor h
     OTHER: "kept",
   });
 
-  // A swamp started under the runner skips that lock and waits on the
-  // orchestrator's others.
   const child = new LockHolderMarker(fakeEnv(env).store, 900, () => "host-a");
   const relationTo = child.lockRelation();
   assertEquals(
@@ -613,8 +607,6 @@ Deno.test("withRemoteLockHolder: hands down the locks of an orchestrator on anot
     OTHER: "kept",
   });
 
-  // A swamp started under the runner skips that lock and waits on every
-  // other lock the orchestrator holds, and on a local process with its pid.
   const child = new LockHolderMarker(fakeEnv(env).store, 900, () => "host-a");
   const relationTo = child.lockRelation();
   assertEquals(
@@ -661,7 +653,6 @@ Deno.test("withRemoteLockHolder: drops malformed nonces and never adds the pid w
     )[SWAMP_LOCK_HOLDER_TOKENS],
     "500:ok",
   );
-  // No usable nonce, or no usable pid: nothing is handed over.
   for (
     const bad of [
       { ...holder, pid: 500, lockIds: ["a,1:b"] },
@@ -711,7 +702,6 @@ Deno.test("LockHolderMarker.forwardedLockTokens: sends what a child would inheri
 });
 
 Deno.test("LockHolderMarker.forwardedLockTokens: sends a list at the length limit and none over it", () => {
-  // Distinct nonces, the last padded so the list is exactly `length` long.
   const listOf = (length: number) => {
     let list = "100:n0";
     for (let i = 1; list.length + 16 < length; i++) list += `+n${i}`;
@@ -731,22 +721,25 @@ Deno.test("LockHolderMarker.forwardedLockTokens: sends a list at the length limi
   );
 });
 
-/** What a child started inside `marker`'s current scope would inherit. */
 const childTokens = (marker: LockHolderMarker): string | undefined =>
   marker.childLockEnv()[SWAMP_LOCK_HOLDER_TOKENS];
 
 Deno.test("LockHolderMarker.runAdopting: a run adopts the forwarded locks and holds its own too", async () => {
   const server = new LockHolderMarker(fakeEnv().store, 300);
 
-  const tokens = await server.runHolding(["a"], () =>
-    // Run B, requested by a client under run A, holding its own lock.
-    server.runAdopting("300:a", () =>
-      server.runHolding(["b"], () => Promise.resolve(childTokens(server)))));
+  const tokens = await server.runHolding(
+    ["a"],
+    () =>
+      server.runAdopting(
+        "300:a",
+        () =>
+          server.runHolding(["b"], () => Promise.resolve(childTokens(server))),
+      ),
+  );
 
   assertEquals(tokens, "300:a+b");
 });
 
-/** What a child of a request handler adopting `forwarded` would inherit. */
 const adopted = (
   server: LockHolderMarker,
   forwarded: string | undefined,
@@ -804,10 +797,6 @@ Deno.test("LockHolderMarker.runAdopting: a dispatch from an adopting run carries
   assertEquals(holder, { pid: 300, hostname: "host-a", lockIds: ["a", "b"] });
 });
 
-/**
- * Locks a run took, as a scope lends them: `reclaim` re-keys by bumping a
- * generation, and records each call in `log`.
- */
 function lentLocks(name: string, log: string[]): LentLocks {
   let generation = 1;
   return {
@@ -831,12 +820,10 @@ Deno.test("LockHolderMarker.beginChildHandOff: lends the scope's locks and recla
     await first.end();
     assertEquals(log, ["reclaim a-1"]);
 
-    // The next hop is lent the re-keyed lock.
     const second = await marker.beginChildHandOff();
     assertEquals(second.lent, { [SWAMP_LOCK_HOLDER_TOKENS]: "500:a-2" });
     assertEquals(marker.childLockEnv(), second.lent);
     await second.end();
-    // Ending twice reclaims once.
     await second.end();
   });
 
@@ -869,7 +856,6 @@ Deno.test("LockHolderMarker.beginChildHandOff: a nested scope's hop counts again
         [SWAMP_LOCK_HOLDER_TOKENS]: "500:outer-1+inner-1",
       });
       await innerHop.end();
-      // The outer scope still has a live hop, so only the inner reclaims.
       assertEquals(log, ["reclaim inner-1"]);
     });
     await outerHop.end();
@@ -892,7 +878,6 @@ Deno.test("LockHolderMarker.beginChildHandOff: the signal an end is given reache
   await marker.runHolding(recording("outer"), async () => {
     await marker.runHolding(recording("inner"), async () => {
       const hop = await marker.beginChildHandOff();
-      // The last hop of both scopes: one end reclaims both.
       await hop.end(signal);
     });
   });
@@ -993,12 +978,10 @@ Deno.test("LockHolderMarker.remoteHandOff: is bound to the scope it was built in
   await first.end();
   assertEquals(log, ["reclaim a-1"]);
 
-  // A retry is its own hand-off and carries the re-keyed lock.
   const retry = await source.begin();
   assertEquals(retry.lent?.lockIds, ["a-2"]);
   await retry.end();
 
-  // A dispatch made outside any scope lends nothing.
   const none = await marker.remoteHandOff().begin();
   assertEquals(none.lent, undefined);
   await none.end();

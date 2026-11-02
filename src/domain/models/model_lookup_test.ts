@@ -33,7 +33,6 @@ import type { DefinitionRepository } from "../definitions/repositories.ts";
 import { ModelType } from "./model_type.ts";
 import { modelRegistry } from "./model.ts";
 import { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
-// Import models barrel to register all model types (needed for findDefinitionByIdOrName tests)
 import "./models.ts";
 
 async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
@@ -58,13 +57,9 @@ Deno.test("isUuid returns true for valid UUID v4", () => {
 });
 
 Deno.test("isUuid returns true for non-v4 UUID versions", () => {
-  // UUIDv1
   assertEquals(isUuid("550e8400-e29b-11d4-a716-446655440000"), true);
-  // UUIDv3
   assertEquals(isUuid("550e8400-e29b-31d4-a716-446655440000"), true);
-  // UUIDv5 (from issue #1999)
   assertEquals(isUuid("de8ad612-90b7-56bc-82dc-ba90e425e6f6"), true);
-  // UUIDv7
   assertEquals(isUuid("01929b6e-f83d-7f32-8eb2-3a1f0b5e4c9d"), true);
 });
 
@@ -74,22 +69,17 @@ Deno.test("isUuid is case insensitive", () => {
 });
 
 Deno.test("isUuid returns false for invalid UUIDs", () => {
-  // Not a UUID at all
   assertEquals(isUuid("hello"), false);
   assertEquals(isUuid("my-model-name"), false);
 
-  // Wrong length
   assertEquals(isUuid("550e8400-e29b-41d4-a716-44665544000"), false);
   assertEquals(isUuid("550e8400-e29b-41d4-a716-4466554400000"), false);
 
-  // Wrong format (missing dashes)
   assertEquals(isUuid("550e8400e29b41d4a716446655440000"), false);
 
-  // Invalid version digit (0 and 9+ are not valid UUID versions)
   assertEquals(isUuid("550e8400-e29b-01d4-a716-446655440000"), false);
   assertEquals(isUuid("550e8400-e29b-91d4-a716-446655440000"), false);
 
-  // Invalid variant (4th group must start with 8, 9, a, or b)
   assertEquals(isUuid("550e8400-e29b-41d4-0716-446655440000"), false);
   assertEquals(isUuid("550e8400-e29b-41d4-c716-446655440000"), false);
 });
@@ -97,8 +87,6 @@ Deno.test("isUuid returns false for invalid UUIDs", () => {
 Deno.test("isUuid returns false for empty string", () => {
   assertEquals(isUuid(""), false);
 });
-
-// isPartialId tests
 
 Deno.test("isPartialId returns true for valid partial IDs (3+ hex chars)", () => {
   assertEquals(isPartialId("abc"), true);
@@ -128,8 +116,6 @@ Deno.test("isPartialId is case insensitive", () => {
   assertEquals(isPartialId("5EC"), true);
   assertEquals(isPartialId("AbC"), true);
 });
-
-// matchByPartialId tests
 
 Deno.test("matchByPartialId returns found for single match", () => {
   const items = [
@@ -184,7 +170,6 @@ Deno.test("matchByPartialId ignores dashes in partial ID", () => {
     { id: "5ece291a-46c0-4fe2-8a1b-123456789abc", item: "item1" },
   ];
 
-  // Partial ID with dashes should still match
   const result = matchByPartialId(items, "5ece-291a");
   assertEquals(result.status, "found");
 });
@@ -204,8 +189,6 @@ Deno.test("matchByPartialId matches full UUID", () => {
     assertEquals(result.match, "item1");
   }
 });
-
-// findDefinitionByIdOrName tests
 
 Deno.test("findDefinitionByIdOrName finds definition by name", async () => {
   await withTempDir(async (dir) => {
@@ -272,7 +255,6 @@ Deno.test("findDefinitionByIdGlobal reports a loaded definition's own type, not 
         globalArguments: {},
       });
       await repo.save(type, definition);
-      // Loading it populates the repository's id-to-path cache.
       await repo.findById(type, definition.id);
 
       const result = await findDefinitionByIdGlobal(repo, definition.id);
@@ -421,7 +403,6 @@ Deno.test("findDefinitionByIdGlobal with an expected name accepts only the defin
     const shell = ModelType.create("command/shell");
     const prod = Definition.create({ name: "prod-db", globalArguments: {} });
     await repo.save(shell, prod);
-    // A copied file that kept prod-db's id, renamed.
     const path = repo.getPath(shell, prod.id);
     await Deno.writeTextFile(
       join(dir, "models", shell.toDirectoryPath(), "safe-model.yaml"),
@@ -473,7 +454,6 @@ Deno.test("findDefinitionByIdOrName prefers name match over ID", async () => {
     const repo = new YamlDefinitionRepository(dir);
     const type = ModelType.create("command/shell");
 
-    // Create two definitions - one with a name that happens to be a UUID-like string
     const def1 = Definition.create({
       name: "abc123",
       version: 1,
@@ -489,20 +469,14 @@ Deno.test("findDefinitionByIdOrName prefers name match over ID", async () => {
     await repo.save(type, def1);
     await repo.save(type, def2);
 
-    // Looking up by name should find def1
     const result = await findDefinitionByIdOrName(repo, "abc123");
 
     assertEquals(result?.definition.name, "abc123");
   });
 });
 
-// --- UUID-gated ID fallback ---
-//
-// After a name miss, findDefinitionByIdGlobal compares IDs with strict
-// equality, so a non-UUID string can never match it — but reaching it parses
-// every definition in the repository once per registered model type. These
-// tests pin both halves: the outcome is unchanged, and the pointless work is
-// gone. Reads are counted, never timed (AGENTS.md forbids wall-clock asserts).
+// a non-UUID string can never match by id, so the id fallback must not re-parse
+// every definition per model type; reads are counted, never timed
 async function countingReads<T>(fn: () => Promise<T>): Promise<[T, number]> {
   const original = Deno.readTextFile;
   let count = 0;
@@ -529,10 +503,7 @@ Deno.test("findDefinitionByIdOrName skips the ID scan for a non-UUID miss", asyn
       findDefinitionByIdOrName(repo, "missing-model-name")
     );
 
-    // Outcome unchanged: still a miss.
     assertEquals(result, null);
-    // The name walk parses each definition once. Without the gate the ID
-    // fallback would then re-parse all of them again, once per registered type.
     assertEquals(reads <= 5, true);
   });
 });
@@ -543,8 +514,6 @@ Deno.test("findDefinitionByIdOrName still scans by ID for a UUID miss", async ()
     const type = ModelType.create("command/shell");
     await repo.save(type, Definition.create({ name: "resident" }));
 
-    // A well-formed UUID that matches nothing must still be searched for, and
-    // must still report a miss.
     const result = await findDefinitionByIdOrName(
       repo,
       "550e8400-e29b-41d4-a716-446655440000",

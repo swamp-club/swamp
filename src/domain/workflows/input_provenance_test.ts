@@ -105,9 +105,7 @@ Deno.test("workflowInputsProvenance: on a webhook run a trigger template does no
       .isWholeDataAt("a"),
     true,
   );
-  // A scheduled or manual run keeps its static literal authored.
   assertEquals(workflowInputsProvenance({ a: template }, wf).isAuthored, true);
-  // A webhook run's expression-free literal is still authored text.
   const plain = workflow({ a: { type: "string" } }, { a: "fixed" });
   assertEquals(
     workflowInputsProvenance({ a: "fixed" }, plain, { webhook: true })

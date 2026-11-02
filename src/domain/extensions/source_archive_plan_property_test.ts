@@ -43,7 +43,6 @@ const toSpecifier = (from: string, to: string) => {
   return rel.startsWith("../") ? rel : `./${rel}`;
 };
 
-/** A module layout: where each file lives in the repo, the kind directory, and imports between files. */
 const layout: fc.Arbitrary<Layout> = fc.record({
   kindDir: fc.constantFrom(
     ["extensions", "models"],
@@ -177,15 +176,12 @@ Deno.test("planSourceArchive (property): the plan does not depend on module or e
   );
 });
 
-// ── Bare-import rewrites (swamp-club#3637) ──────────────────────────────
-
 const BARE_IMPORTS = {
   ms: "npm:ms@2.1.3",
   "@std/path": "jsr:@std/path@^1",
   "lodash/": "npm:/lodash@4.17.21/",
 };
 
-/** Lines a module might hold: imports of mapped, unmapped and local names, and import text as data. */
 const arbModuleLine = fc.constantFrom(
   'import ms from "ms";',
   "import { join } from '@std/path';",
@@ -236,7 +232,6 @@ Deno.test("bareImportRewrites: changes only the specifiers it names", () => {
         "/m.ts",
       );
       const out = applySpecifierRewrites(source, rewrites);
-      // Undoing each rewrite at its own position restores the source.
       const outLines = out.split("\n");
       const sorted = [...rewrites].sort((a, b) =>
         b.span.start.line - a.span.start.line ||

@@ -25,8 +25,6 @@ import {
   VERSION_STALENESS_THRESHOLD_DAYS,
 } from "./version_staleness.ts";
 
-// --- parseDateFromVersion ---
-
 Deno.test("parseDateFromVersion extracts date from valid CalVer version", () => {
   const date = parseDateFromVersion("20260206.200442.0-sha.abc123");
   assertEquals(date, new Date(Date.UTC(2026, 1, 6)));
@@ -61,10 +59,8 @@ Deno.test("parseDateFromVersion returns null for empty string", () => {
   assertEquals(parseDateFromVersion(""), null);
 });
 
-// --- getVersionAgeDays ---
-
 Deno.test("getVersionAgeDays returns correct age for recent version", () => {
-  const now = new Date(Date.UTC(2026, 1, 16)); // Feb 16, 2026
+  const now = new Date(Date.UTC(2026, 1, 16));
   const age = getVersionAgeDays("20260206.200442.0-sha.abc123", now);
   assertEquals(age, 10);
 });
@@ -80,10 +76,8 @@ Deno.test("getVersionAgeDays returns null for unparseable version", () => {
   assertEquals(getVersionAgeDays("invalid", now), null);
 });
 
-// --- isVersionStale ---
-
 Deno.test("isVersionStale returns false for recent version", () => {
-  const now = new Date(Date.UTC(2026, 1, 16)); // 10 days after
+  const now = new Date(Date.UTC(2026, 1, 16));
   assertEquals(
     isVersionStale("20260206.200442.0-sha.abc123", now, 30),
     false,
@@ -91,7 +85,7 @@ Deno.test("isVersionStale returns false for recent version", () => {
 });
 
 Deno.test("isVersionStale returns true for old version", () => {
-  const now = new Date(Date.UTC(2026, 3, 6)); // ~59 days after
+  const now = new Date(Date.UTC(2026, 3, 6));
   assertEquals(
     isVersionStale("20260206.200442.0-sha.abc123", now, 30),
     true,
@@ -99,7 +93,7 @@ Deno.test("isVersionStale returns true for old version", () => {
 });
 
 Deno.test("isVersionStale returns false for exactly threshold days", () => {
-  const now = new Date(Date.UTC(2026, 2, 8)); // exactly 30 days after Feb 6
+  const now = new Date(Date.UTC(2026, 2, 8));
   assertEquals(
     isVersionStale("20260206.200442.0-sha.abc123", now, 30),
     false,
@@ -107,7 +101,7 @@ Deno.test("isVersionStale returns false for exactly threshold days", () => {
 });
 
 Deno.test("isVersionStale returns true for threshold + 1 days", () => {
-  const now = new Date(Date.UTC(2026, 2, 9)); // 31 days after Feb 6
+  const now = new Date(Date.UTC(2026, 2, 9));
   assertEquals(
     isVersionStale("20260206.200442.0-sha.abc123", now, 30),
     true,
@@ -118,8 +112,6 @@ Deno.test("isVersionStale returns false for unparseable version", () => {
   const now = new Date();
   assertEquals(isVersionStale("invalid", now, 30), false);
 });
-
-// --- VERSION_STALENESS_THRESHOLD_DAYS ---
 
 Deno.test("VERSION_STALENESS_THRESHOLD_DAYS is 30", () => {
   assertEquals(VERSION_STALENESS_THRESHOLD_DAYS, 30);

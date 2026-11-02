@@ -28,7 +28,6 @@ import {
 
 const arbStart = fc.integer({ min: 1, max: 1_000_000 });
 const arbRoot = fc.constantFrom("/a", "/b");
-/** A run of lease takes: each step repeats, follows or skips fences. */
 const arbSteps = fc.array(
   fc.record({ gap: fc.integer({ min: 0, max: 3 }), root: arbRoot }),
   { maxLength: 40 },
@@ -85,7 +84,6 @@ Deno.test("decideLineage: a gap or a root change restarts at the new fence, neve
       let record =
         decideLineage(undefined, ReplicaRoot.of("/a"), start).lineage;
       let fence = start;
-      // Every replica path a lineage began on: root and fence.
       const used = new Set([`/a:${start}`]);
       for (const { gap, root } of steps) {
         fence += gap;

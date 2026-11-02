@@ -112,7 +112,6 @@ function makeReport(
   };
 }
 
-/** Registers reports in the global registry for the duration of fn. */
 async function withReports(
   reports: Array<{ name: string; report: ReportDefinition }>,
   fn: () => Promise<void>,
@@ -247,7 +246,6 @@ Deno.test("runFor: succeeded run executes a required method-scope report and ret
 
     const refs = await new MethodReportRunner().runFor(harness.args);
 
-    // Markdown + JSON artifacts, with the scoped name sanitized.
     const sanitized = name.replace(/@/g, "").replace(/\//g, "-");
     assertEquals(refs.length, 2);
     assertEquals(refs[0].name, `report-${sanitized}`);
@@ -256,11 +254,9 @@ Deno.test("runFor: succeeded run executes a required method-scope report and ret
     assertEquals(refs[0].tags.type, "report");
     assertEquals(refs[0].tags.reportName, name);
 
-    // Persisted content matches the report result.
     assertEquals(harness.saved.length, 2);
     assertEquals(harness.saved[0].content, "# method");
 
-    // Events carry job/step identity and the method scope.
     assertEquals(harness.events.length, 2);
     assertEquals(harness.events[0], {
       kind: "report_started",
@@ -296,7 +292,6 @@ Deno.test("runFor: succeeded run also executes required model-scope reports", as
 
     const refs = await new MethodReportRunner().runFor(harness.args);
 
-    // Two artifacts per report, both scopes.
     assertEquals(refs.length, 4);
     assertEquals(modelScopeSeen, "model");
     assertEquals(modelScopeProvenance, harness.args.provenance);
@@ -341,8 +336,6 @@ Deno.test("runFor: a failing report emits report_failed without sinking the run"
 
     const refs = await new MethodReportRunner().runFor(harness.args);
 
-    // The good report's artifacts plus the failing report's fallback
-    // error artifacts are all surfaced into the run record.
     assertEquals(refs.length, 4);
     const goodSanitized = goodName.replace(/@/g, "").replace(/\//g, "-");
     const failSanitized = failingName.replace(/@/g, "").replace(/\//g, "-");
@@ -362,7 +355,6 @@ Deno.test("runFor: a failing report emits report_failed without sinking the run"
     assertEquals(failed[0].reportName, failingName);
     assertEquals(failed[0].error, "report exploded");
 
-    // The other report still completed.
     const completed = harness.events.filter((e) =>
       e.kind === "report_completed"
     );
@@ -431,15 +423,11 @@ Deno.test("runFor: failed run executes method-scope reports with the error and r
 
     const refs = await new MethodReportRunner().runFor(harness.args);
 
-    // The report ran with a structured failure context that includes
-    // the data the method persisted before it failed.
     assertEquals(seen?.executionStatus, "failed");
     assertEquals(seen?.errorMessage, "deploy blew up");
     assertEquals(seen?.dataHandles, [written]);
     assertEquals(seen?.provenance, harness.args.provenance);
 
-    // Its persisted artifacts are returned so the caller records them
-    // on the failed step, as it does for a successful one.
     const sanitized = name.replace(/@/g, "").replace(/\//g, "-");
     assertEquals(harness.saved.length, 2);
     assertEquals(refs.map((r) => r.name), [
@@ -598,12 +586,10 @@ Deno.test("runFor: unresolvable required report fails once and surfaces error ar
 
   const refs = await new MethodReportRunner().runFor(harness.args);
 
-  // The failure error artifacts are collected into the run record.
   const sanitized = missing.replace(/@/g, "").replace(/\//g, "-");
   assertEquals(refs.length, 2);
   assertEquals(refs[0].name, `report-${sanitized}`);
 
-  // The model-scope pass suppresses the duplicate failure emission.
   const failed = harness.events.filter((e) => e.kind === "report_failed");
   assertEquals(failed.length, 1);
   assertEquals(failed[0].reportName, missing);

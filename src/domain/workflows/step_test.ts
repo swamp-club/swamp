@@ -147,8 +147,6 @@ Deno.test("Step.fromData and toData roundtrip correctly", () => {
   assertEquals(restored.weight, original.weight);
 });
 
-// allowFailure field tests
-
 Deno.test("Step.create defaults allowFailure to false", () => {
   const task = StepTask.model("test-model", "run");
   const step = Step.create({
@@ -227,8 +225,6 @@ Deno.test("Step.fromData and toData roundtrip with allowFailure", () => {
   assertEquals(restored.allowFailure, original.allowFailure);
 });
 
-// Removed driver field tests (see design/enablers/remote-execution.md)
-
 Deno.test("StepSchema rejects removed driver field with actionable error", () => {
   const error = assertThrows(
     () =>
@@ -270,8 +266,6 @@ Deno.test("StepSchema rejects removed driverConfig field with actionable error",
     "The 'driverConfig' field has been removed",
   );
 });
-
-// forEach field tests
 
 Deno.test("Step.create creates step with forEach", () => {
   const task = StepTask.model("echo-model", "write");
@@ -378,11 +372,9 @@ Deno.test("StepSchema throws clear error for string dependsOn entries with step 
   );
 });
 
-// Unknown-key rejection tests (swamp-club#1240)
-
 Deno.test("StepSchema rejects typo'd placement key with did-you-mean suggestion", () => {
-  // 'lables' would previously be stripped silently, discarding the
-  // placement intent and running the step locally.
+  // an unknown key like 'lables' must be rejected, not stripped, or the
+  // placement intent is lost and the step runs locally
   const error = assertThrows(
     () =>
       StepSchema.parse({

@@ -256,8 +256,6 @@ Deno.test("AuditEmitter: durable sink receives every event while a non-durable s
   assertEquals(durableSink.received.map((e) => e.action), actions);
   assertEquals((await verifyChain(durableSink.received)).valid, true);
 
-  // Once its backoff ends the failing sink is moved up to what is still
-  // held, and the events it missed are counted against it alone.
   now += 60_000;
   await emitter.flush();
   assertEquals(emitter.droppedEvents("failing"), 8);
@@ -286,7 +284,6 @@ Deno.test("AuditEmitter: replay to a lagging sink keeps the durable chain valid"
 
   assertEquals(durableSink.received.map((e) => e.sequence), [1, 2, 3, 4]);
   assertEquals((await verifyChain(durableSink.received)).valid, true);
-  // The replayed copies are the ones the durable sink recorded.
   assertEquals(laggingSink.received, durableSink.received);
   await emitter.close();
 });
@@ -351,7 +348,6 @@ Deno.test("AuditEmitter: a timed-out write that later succeeds resumes delivery 
   hanging.release();
   await waitFor(() => hanging.writes === 2, "delivery to resume by itself");
 
-  // The late success counted as delivered, so only the newer event is sent.
   assertEquals(hanging.batches[1].map((e) => e.action), ["second"]);
   hanging.release();
   await emitter.close();
@@ -371,7 +367,6 @@ Deno.test("AuditEmitter: a timed-out write that later fails backs off from when 
   await emitter.flush();
   assertEquals(hanging.writes, 1);
 
-  // The sink answers with an error long after the timeout's own backoff.
   now += 5_000;
   hanging.fail();
   await emitter.flush();
@@ -401,7 +396,6 @@ Deno.test("AuditEmitter: a timed-out durable write is not written again while it
 
   durableSink.release();
   await waitFor(() => durableSink.writes === 2, "delivery to resume by itself");
-  // The late success counted as delivered, so only the newer event is sent.
   assertEquals(durableSink.batches[1].map((e) => e.action), ["second"]);
   durableSink.release();
   await waitFor(() => !emitter.durableStalled, "the stall to clear");
@@ -534,7 +528,6 @@ Deno.test("AuditEmitter: close delivers what a stalled durable sink missed once 
   await emitter.flush();
   emitter.emit(makeEvent("second"));
   await emitter.flush();
-  // The stalled write settles while close flushes the sinks.
   let flushes = 0;
   durableSink.flush = () => {
     if (flushes++ === 0) durableSink.release();
@@ -602,7 +595,6 @@ Deno.test("AuditEmitter: events lost to buffer overflow are not counted as a sin
 
   emitter.emit(makeEvent("action-1"));
   await emitter.flush();
-  // Four events before the next drain: two are overwritten unchained.
   for (let i = 2; i <= 5; i++) emitter.emit(makeEvent(`action-${i}`));
   await emitter.flush();
 
@@ -639,7 +631,6 @@ Deno.test("AuditEmitter: always-throwing sink is retried on a backoff, not back 
   await emitter.flush();
   assertEquals(failingSink.writes, 2);
 
-  // The second failure doubles the wait.
   now += 1_999;
   await emitter.flush();
   assertEquals(failingSink.writes, 2);
@@ -842,8 +833,6 @@ Deno.test("AuditEmitter: allows success for non-denied request", async () => {
   const allEvents = sink.written.flat();
   assertEquals(allEvents.length, 2);
 });
-
-// ── Integration tests for Phase 5 features ──────────────────────────
 
 Deno.test("AuditEmitter: uses HmacKeyRegistry for HMAC when provided", async () => {
   const sink = createMockSink("test");

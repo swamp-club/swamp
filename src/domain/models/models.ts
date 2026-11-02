@@ -17,44 +17,22 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Model registry barrel file.
- *
- * Importing this module triggers self-registration of all models.
- * Each model file uses defineModel() or defineAndRegister() at module level,
- * which registers the model with the global registry as a side effect.
- *
- * To add a new model:
- * 1. Create your model file (e.g., aws/s3/bucket/s3_bucket_model.ts)
- * 2. Use defineModel() or defineAndRegister() to define and register it
- * 3. Add an import for the file below
- */
-
-// Import all model files to trigger registration
 import "./command/shell/shell_model.ts";
 
-// Remote-execution control-plane models (worker pool, enrollment tokens,
-// step leases) — see design/enablers/remote-execution.md.
 import "./worker/worker_model.ts";
 import "./worker/enrollment_token_model.ts";
 import "./worker/step_lease_model.ts";
 import "./worker/pending_dispatch_model.ts";
 import "./worker/fleet_probe_model.ts";
 
-// Access control models (grants, groups, server tokens) — see
-// src/domain/access/ for the bounded context's shared value objects.
 import "./access/grant_model.ts";
 import "./access/group_model.ts";
 import "./access/server_token_model.ts";
 
-// Import all of the AWS models - the models in this file are created by the clover pipeline
 import "./aws/aws_models.ts";
 
-// Re-export the registry for convenient access
 export { modelRegistry } from "./model.ts";
 
-// Built-in infrastructure types are hidden from user-facing discovery
-// commands (swamp type search, shell completions, model create suggestions).
 import { modelRegistry } from "./model.ts";
 import { CONTROL_PLANE_MODEL_TYPES } from "./control_plane_types.ts";
 for (const type of CONTROL_PLANE_MODEL_TYPES) {

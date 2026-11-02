@@ -85,10 +85,8 @@ import {
 const logger = getLogger(["swamp", "models", "loader"]);
 
 /**
- * The extension rows targeting `typeNormalized` whose source still exists.
- * Rows whose source is gone are deleted, along with their bundles: a
- * surviving bundle would attach old code, and a missing one fails with
- * ENOENT when it is rebuilt (swamp-club#2490).
+ * rows whose source is gone are deleted with their bundles: a surviving bundle
+ * would attach old code, and a missing one fails with ENOENT on rebuild
  */
 function liveExtensionRows(
   catalog: ExtensionCatalogStore,
@@ -114,22 +112,18 @@ function liveExtensionRows(
 
 const attachedExtensions: Map<string, Map<string, string>> = new Map();
 
-/** The kind of member an extension adds to a model type. */
 export type ExtensionMemberKind = "method" | "check" | "resource";
 
 /**
- * Which extension contributed a member, and the exact definition object it
- * contributed. The definition reference tells an extension member apart
- * from a base-model member that happens to share its name: a member whose
- * current registry definition is not the recorded one did not come from
- * the recorded extension (swamp-club#2562).
+ * the definition reference tells an extension member from a base-model member
+ * sharing its name: one whose current definition is not the recorded one did
+ * not come from the recorded extension
  */
 interface MemberProvenance {
   readonly contributor: ExtensionContributor;
   readonly definition: unknown;
 }
 
-/** type -> `${kind}:${name}` -> provenance. */
 const memberProvenance: Map<string, Map<string, MemberProvenance>> = new Map();
 
 /**
@@ -150,7 +144,6 @@ interface CollisionState {
   losers: Set<string>;
 }
 
-/** type -> `${kind}:${name}` -> current collision state. */
 const memberCollisions: Map<string, Map<string, CollisionState>> = new Map();
 
 export function clearAttachedExtensions(): void {
@@ -168,17 +161,9 @@ export function removeAttachedExtensionsForType(
 }
 
 /**
- * Detaches from one model type the members that removed extension
- * sources added, leaving the base type and every other extension's
- * members in place (swamp-club#2745). A member a removed source had won
- * from another extension is freed: that extension loses its attached
- * mark, so the next attach pass processes it again and claims the name.
- *
- * `isRemoved` is asked about both spellings of a source: the catalog's
- * (attach marks) and the symlink-resolved one (member provenance and
- * collisions).
- *
- * @returns true when anything was detached or unmarked
+ * frees members a removed source had won: that extension loses its attached
+ * mark so the next pass claims the name; isRemoved is asked for both the
+ * catalog spelling and the symlink-resolved one
  */
 export function detachExtensionSources(
   typeNormalized: string,
@@ -241,11 +226,7 @@ export function detachExtensionSources(
   return changed;
 }
 
-/**
- * Every extension-member collision as currently resolved, sorted by type,
- * kind and name. Read by `swamp doctor extensions`; reflects attach state,
- * so it does not depend on warnings being re-emitted.
- */
+/** reflects attach state, so it does not depend on warnings being re-emitted */
 export function getExtensionMemberCollisions(): ExtensionMemberCollision[] {
   const out: ExtensionMemberCollision[] = [];
   for (const [type, members] of memberCollisions) {
@@ -317,9 +298,8 @@ type MemberResolution =
   | { readonly action: "refuse"; readonly winner: ExtensionContributor };
 
 /**
- * Decides what happens to one incoming member. Base-model members always
- * win; between extensions {@link compareExtensionPrecedence} decides, so
- * the outcome does not depend on attach order.
+ * base-model members always win; between extensions compareExtensionPrecedence
+ * decides, so the outcome does not depend on attach order
  */
 function resolveMember(
   type: string,
@@ -353,21 +333,14 @@ function markExtensionAttached(
 }
 
 /**
- * Which catalog source an attach pass processed. `sourcePath` is the path
- * as the catalog spells it — the key `attachPendingExtensionsForType`
- * looks up — which can differ from the contributor's symlink-resolved
- * identity.
+ * sourcePath is the path as the catalog spells it, which can differ from the
+ * contributor's symlink-resolved identity
  */
 export interface AttachRecord {
   readonly sourcePath: string;
   readonly fingerprint: string;
 }
 
-/**
- * Records that an extension file has been processed for a type: it goes
- * into `result.extended`, and — when the attach record is known — into
- * the attach map, so a later attach pass does not import it again.
- */
 function recordAttached(
   result: ExtensionLoadResult,
   file: string,
@@ -384,10 +357,6 @@ function recordAttached(
   }
 }
 
-/**
- * Pairs catalog extension rows with their contributors, sorted winner
- * first by {@link compareExtensionPrecedence}.
- */
 export function sortByPrecedence(
   rows: readonly ExtensionTypeRow[],
   contributorFor: (sourcePath: string) => ExtensionContributor,
@@ -766,11 +735,9 @@ function resolveExtensionAssets(
 }
 
 /**
- * Builds the self-contained bundle serve ships to workers, once per
- * registration. It bundles only the source the type was registered from:
- * once that source changed on disk, bundling it would ship workers code
- * the process does not run itself (swamp-club#3594), so it refuses until
- * a reload registers the type again.
+ * bundles only the source the type was registered from: once that changed on
+ * disk it refuses until a reload re-registers, so workers never get code the
+ * process does not run
  */
 function createBundleSourceFactory(
   typeNormalized: string,
@@ -841,10 +808,9 @@ export const modelKindAdapter: KindAdapter = {
   },
 
   extractTypeFromSource(source: string) {
-    // The model spelling first, as before the alias; `export const behavior`
-    // (swamp-club#3338) is read only from a file with neither `model` nor
-    // `extension`, so a model file that also exports an unrelated
-    // `behavior` reads as it always has.
+    // behavior is read only from a file with neither a model nor an extension
+    // export, so a model file that also exports an unrelated behavior reads as
+    // it always has
     const spelledModel = sourceFromExportDeclaration(
       source,
       /export\s+const\s+(model|extension)\s*[=:]/,
@@ -929,8 +895,8 @@ export const modelKindAdapter: KindAdapter = {
   },
 
   updateSourceFingerprint(typeNormalized: string, fingerprint: string): void {
-    // A pulled source typed like a built-in did not produce the built-in's
-    // code, so its fingerprint must not reach provenance (swamp-club#2746).
+    // a pulled source typed like a built-in did not produce the built-in's
+    // code, so its fingerprint must not reach provenance
     if (modelRegistry.isBuiltIn(typeNormalized)) return;
     const modelDef = modelRegistry.get(typeNormalized);
     if (modelDef) {
@@ -1001,8 +967,8 @@ export const modelKindAdapter: KindAdapter = {
       }
     }
 
-    // Control-plane records (grants, groups, tokens, the worker fleet) are
-    // never extended, on any attach path (swamp-club#2846).
+    // control-plane records (grants, groups, tokens, the worker fleet) are
+    // never extended, on any attach path
     if (isControlPlaneModelType(ext.type)) {
       result.failed.push({
         file,
@@ -1061,11 +1027,9 @@ export const modelKindAdapter: KindAdapter = {
       ...(ext.resources ?? {}),
     };
 
-    // Resolve every incoming member against what the type holds now, then
-    // apply additions and overrides in one registry merge. Refused members
-    // are recorded as they are resolved — they are not registered whatever
-    // the merge does. Provenance, and the collisions an override creates,
-    // change only after the merge succeeds.
+    // resolve every member against the type now, then apply in one registry
+    // merge; refused members are recorded as resolved; provenance and override
+    // collisions change only after the merge succeeds
     const additions: ExtensionMemberSet = {};
     const overrides: ExtensionMemberSet = {};
     const claimed: Array<{ key: string; definition: unknown }> = [];
@@ -1291,8 +1255,8 @@ export const modelKindAdapter: KindAdapter = {
     const base = modelRegistry.get(typeNormalized);
     if (!base) return;
 
-    // Attach the likely winner first so the common case needs no override.
-    // The outcome does not depend on this order (swamp-club#2562).
+    // attach the likely winner first so the common case needs no override; the
+    // outcome does not depend on this order
     const extensions = sortByPrecedence(
       liveExtensionRows(catalog, typeNormalized),
       contributorFor,
@@ -1310,10 +1274,8 @@ export const modelKindAdapter: KindAdapter = {
         extended: [],
         failed: [],
       };
-      // One extension that fails to import must not stop the rest from
-      // attaching (swamp-club#2557). It stays unmarked, so the next attach
-      // pass retries it.
-      // A processed extension is marked attached by processSecondaryExport.
+      // one extension failing to import must not stop the rest; it stays
+      // unmarked so the next attach pass retries it
       try {
         await modelKindAdapter.importAndExtendBundle!(
           entry,

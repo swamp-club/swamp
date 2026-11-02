@@ -21,314 +21,119 @@ import type { ControlPlaneStore } from "./control_plane_store.ts";
 import { UserError } from "../errors.ts";
 import { markModelWording, wordedText } from "../behavior_wording.ts";
 
-/** Describes what a sync operation is about. */
 export interface SyncContext {
   models?: ReadonlyArray<{ modelType: string; modelId: string }>;
 }
 
-/** Summary returned by {@link DatastoreSyncService.previewPush}. */
 export interface PushPreviewSummary {
-  /** Total files that would be pushed. */
   total: number;
-  /** Files new to the remote. */
   new: number;
-  /** Files changed since the last push. */
   changed: number;
-  /** Files deleted from the local cache (tombstones). */
   deleted: number;
 }
 
-/** Capabilities a sync service advertises to swamp core. */
 export interface SyncCapabilities {
   scopedSync?: boolean;
   lazyHydration?: boolean;
   /**
-   * When `true`, the extension correctly handles the `namespace` field
-   * on `DatastoreSyncOptions` — scoping its index walk and upload to
-   * `{namespace}/` in the remote datastore. Extensions that don't
-   * advertise this capability still receive the namespace field but
-   * are expected to ignore it and sync everything (solo-mode behavior).
+   * scopes the index walk and upload to {namespace}/; extensions without it
+   * still receive the namespace field but should ignore it and sync everything
+   * (solo-mode behavior)
    */
   namespacedSync?: boolean;
   /**
-   * When `true`, the extension supports two-phase push via
-   * {@link DatastoreSyncService.preparePush} +
-   * {@link DatastoreSyncService.commitPush}. Core splits the push so
-   * expensive file I/O runs outside the global lock (narrowing the
-   * critical section to the index merge only). Extensions that don't
-   * advertise this continue to use `pushChanged` under the global lock.
+   * core splits the push so expensive file I/O runs outside the global lock,
+   * narrowing it to the index merge; extensions without it use pushChanged
+   * under the global lock
    */
   twoPhaseSync?: boolean;
   /**
-   * When `true`, the extension supports {@link DatastoreSyncService.previewPush}
-   * — a dry-run that returns file counts without uploading anything.
-   * Core uses this to gate `sync --push` behind a confirmation prompt.
+   * a dry-run that returns file counts without uploading anything; core uses it
+   * to gate sync --push behind a confirmation prompt
    */
   previewPush?: boolean;
   /**
-   * When `true`, the extension supports
-   * {@link DatastoreSyncService.controlPlaneStore} — direct read/write
-   * access to small control-plane records that bypass the sync index and
-   * cache pipeline. Used for coordination state (instance heartbeats,
-   * pending run entries) in HA deployments.
+   * direct access to small control-plane records that bypass the sync index and
+   * cache pipeline, for coordination state in HA deployments
    */
   controlPlane?: boolean;
   /**
-   * When `true`, the extension supports the `subdirs` option on
-   * `pullChanged` — restricting the pull to a subset of datastore
-   * subdirectories (e.g. `config/` only). Used by the ConfigPoller
-   * to refresh managed configuration without pulling the entire datastore.
+   * restricts a pull to a subset of subdirectories so the ConfigPoller
+   * refreshes managed configuration without pulling the entire datastore
    */
   configRefresh?: boolean;
 }
 
 /**
- * Opaque manifest returned by {@link DatastoreSyncService.preparePush}
- * and consumed by {@link DatastoreSyncService.commitPush}.
- *
- * Core treats this as passthrough — it never inspects or validates the
- * contents. The extension defines what goes inside; core only
- * orchestrates when each phase runs.
+ * core treats the manifest as passthrough and never inspects or validates its
+ * contents; the extension defines what goes inside
  */
 export type PushManifest = { readonly __brand: unique symbol };
 
-/** Options accepted by sync service methods. */
 export interface DatastoreSyncOptions {
   /**
-   * Signal the caller uses to bound how long the sync may run. Extensions
-   * that honor this signal should abort in-flight work when it fires and
-   * reject with an error whose `name` is `"AbortError"` (or equivalent).
-   * Optional — extensions that ignore the signal remain correct, but swamp
-   * core will still enforce a hard deadline via `Promise.race` in the
-   * coordinator, so unbounded extensions do not block the CLI indefinitely.
+   * extensions that honor it abort in-flight work and reject with an
+   * AbortError; ones that ignore it stay correct, since core enforces a hard
+   * deadline via Promise.race in the coordinator
    */
   signal?: AbortSignal;
   /**
-   * Cache-relative path of the file about to be written or removed.
-   * Optional — omitted when core can't attribute the dirty signal to a
-   * single path (bulk mutations like `rename` or non-dry-run
-   * `collectGarbage`). Sync services that track per-path dirty state
-   * SHOULD treat absence as "fall back to full walk on next pushChanged."
-   *
-   * Path is forward-slash-normalized regardless of host OS, matching the
-   * cache-index key convention. Extensions consuming `relPath` for disk
-   * access on Windows MUST convert to native separators (e.g. via
-   * `@std/path` `join`) before `Deno.stat`/`Deno.readFile`/etc.
-   *
-   * Field scope: swamp core only sets this on `markDirty` calls. The
-   * field has no defined meaning on `pullChanged` or `pushChanged` —
-   * extensions can ignore it there. (It lives on the shared
-   * `DatastoreSyncOptions` for source compatibility, not because pull
-   * or push consume it.)
+   * omitted when core cannot attribute the change to one path; services
+   * tracking per-path dirty state should then fall back to a full walk.
+   * Forward-slash-normalized, so convert to native separators on Windows
    */
   relPath?: string;
-  /** Domain-level sync context, passed when the extension advertises scopedSync. */
   context?: SyncContext;
   /**
-   * Namespace whose data subtree this sync operation targets.
-   * When set, extensions SHOULD restrict their index walk / upload to
-   * the `{namespace}/` prefix in the remote datastore. When
-   * `undefined` or empty, the extension syncs everything — identical
-   * to pre-namespace behavior (solo mode).
-   *
-   * Orthogonal to `context`: namespace scopes *which namespace subtree*
-   * to sync; `context` scopes *which models* within that subtree.
+   * orthogonal to context: namespace scopes which subtree to sync, context
+   * scopes which models within it; undefined or empty syncs everything (solo
+   * mode)
    */
   namespace?: string;
   /**
-   * When `true`, `pullChanged` downloads only metadata files
-   * (`metadata.yaml`, `latest` markers, partition indexes) and skips
-   * content files (`raw`) under `data/`. Extensions that advertise
-   * `lazyHydration` in their capabilities SHOULD honor this flag;
-   * extensions that don't can safely ignore it.
-   *
-   * Set by swamp core when `hydrationStrategy` is `"lazy"` on the
-   * initial setup/hydration pull. Not set on subsequent scoped pulls
-   * (those always download everything the partition lists).
+   * set on the initial hydration pull when hydrationStrategy is lazy, not on
+   * later scoped pulls; extensions without lazyHydration can safely ignore it
    */
   metadataOnly?: boolean;
   /**
-   * Restricts `pullChanged` to the listed datastore subdirectories.
-   * When set, the extension SHOULD only pull paths under these prefixes
-   * instead of walking the entire datastore. Extensions that advertise
-   * `configRefresh` in their capabilities SHOULD honor this option;
-   * extensions that don't can safely ignore it and pull everything.
-   *
-   * Used by the ConfigPoller to efficiently refresh only the `config/`
-   * prefix without pulling runtime data.
+   * extensions that do not advertise configRefresh can safely ignore it and
+   * pull everything
    */
   subdirs?: readonly string[];
 }
 
-/**
- * Interface for datastore synchronization services.
- *
- * Extension datastores implement this interface to provide
- * bidirectional sync between a local cache and a remote backend.
- */
 export interface DatastoreSyncService {
   /**
-   * Pull changed files from the remote datastore to the local cache.
-   *
-   * Memory contract — implementations MUST obey these rules:
-   *
-   * 1. **No retained file content.** Downloaded file bodies (Uint8Array,
-   *    ArrayBuffer) MUST NOT be held in instance state after they are
-   *    written to the local cache. Stream file content directly to disk
-   *    or scope buffer references so they become unreachable once the
-   *    write completes.
-   * 2. **Serve lifetime awareness.** In `swamp serve`, the sync service
-   *    is a process-lifetime singleton on `ConnectionContext` — it is
-   *    NOT recreated per command. Any per-call state that accumulates
-   *    (file content buffers, intermediate data structures) leaks for
-   *    the lifetime of the process.
-   * 3. **Bounded internal indexes.** If the implementation maintains an
-   *    in-memory index of remote entries, prefer writing it to disk
-   *    after each pull rather than growing it across calls.
-   *
-   * **Return value.** Resolve to the number of files written to or removed
-   * from the local cache. Resolve to `0` only when the local cache is
-   * unchanged: core then skips invalidating the data catalog, so a `0`
-   * after writing files leaves queries stale. Resolve to `void` when the
-   * count is unknown; core treats it as changed.
+   * must not retain downloaded bodies (serve keeps one sync service for the
+   * process); resolve to files written or removed, 0 only when the cache is
+   * unchanged, since core then skips catalog invalidation
    */
   pullChanged(options?: DatastoreSyncOptions): Promise<number | void>;
   /**
-   * Push changed files from the local cache to the remote datastore.
-   *
-   * **Return value.** Resolve to the number of files uploaded to or deleted
-   * from the remote. Resolve to `0` only when nothing was sent: core then
-   * treats a change it needed published (the managed extension lockfile)
-   * as not published, and keeps it for a retry. Resolve to `void` when the
-   * count is unknown; core treats it as sent.
+   * resolve to files uploaded or deleted; 0 only when nothing was sent, as core
+   * then treats a needed change (the managed lockfile) as unpublished and
+   * retries; void when the count is unknown
    */
   pushChanged(options?: DatastoreSyncOptions): Promise<number | void>;
-  /** Advertise what this sync service supports. */
   capabilities?(): SyncCapabilities;
   /**
-   * Signal that the local cache has uncommitted work.
-   *
-   * Must be called before (or immediately after) any write into the cache
-   * directory that does not go through a sync-service method, so the next
-   * `pushChanged` fast path cannot short-circuit past the write. Implementations
-   * that cache a clean/dirty watermark (e.g. the s3/gcs zero-diff fast path
-   * described in `design/enablers/datastores.md`) MUST invalidate the watermark here.
-   * Implementations without a fast path MAY no-op.
-   *
-   * Implementations must be idempotent and cheap — swamp core calls this at
-   * the start of every repository-layer mutation that writes into the cache,
-   * and again once the write has landed (swamp-club#2421), and calls are not
-   * deduplicated. Called before the write begins so a crash mid-write still
-   * leaves the watermark dirty; called again after it so a push that ran
-   * while the write was in flight cannot have cleared the mark for good.
-   *
-   * Contract — the load-bearing rules every implementer needs to honor:
-   *
-   * 1. **Before and after the write.** Fires *before* the cache write
-   *    begins, and again once it has landed — after the write or removal
-   *    settles, including one that throws part-way (swamp-club#2421).
-   *    Extensions MUST NOT act synchronously on `options.relPath` — at
-   *    the first call the file isn't on disk yet. Treat `relPath` as a
-   *    hint to record for the next `pushChanged`. A push that starts
-   *    between the two calls can upload the old bytes (or re-upload a
-   *    file about to be removed); the second call re-marks the path, so
-   *    a push MUST NOT drop a mark recorded after it started.
-   * 2. **Absence-on-disk = delete.** When `pushChanged` later consumes a
-   *    recorded `relPath` and the file no longer exists in the cache, the
-   *    extension SHOULD delete the corresponding remote record. This
-   *    collapses create/update/delete into one signal — no separate
-   *    op-kind needed. After a removal the second call names a path that
-   *    is already gone.
-   * 3. **`undefined` `relPath` = bulk.** A call without `relPath` signals
-   *    a mutation core couldn't attribute to a single path. Extensions
-   *    maintaining a per-path dirty set MUST honor this by either
-   *    invalidating the set or flagging the next `pushChanged` for a
-   *    full walk.
-   * 4. **Process restart loses the set.** Extensions holding the dirty
-   *    set in memory MUST fall back to a full walk on the first
-   *    `pushChanged` after process start. Persisting the set to a
-   *    sidecar is allowed but optional.
-   * 5. **`relPath` is cache-relative**, relative to the directory
-   *    returned by `DatastoreProvider.resolveCachePath`. Path is
-   *    forward-slash-normalized; extensions consuming it for disk access
-   *    on Windows MUST convert to native separators.
-   * 6. **Backward compatibility.** `relPath` is optional; existing
-   *    implementations (`@swamp/s3-datastore`, `@swamp/gcs-datastore`,
-   *    filesystem no-op, every test mock) keep working unchanged because
-   *    the old single-watermark pattern still satisfies the contract.
-   * 7. **Field scope.** swamp core only sets `relPath` on `markDirty`
-   *    calls. The field has no defined meaning on `pullChanged` or
-   *    `pushChanged`.
-   * 8. **Bulk overrides per-path within one operation.** Some core
-   *    mutations emit a bulk signal AND one or more per-path signals
-   *    from the same logical operation (e.g. `rename` calls the dirty
-   *    hook upfront with no `relPath` for the tombstone + latest-marker
-   *    writes that don't decompose, then its internal `save()` of the
-   *    new name emits a per-path signal). Extensions MUST treat any
-   *    bulk signal as overriding per-path signals from the same
-   *    operation. Easiest implementation: keep both a `bulkInvalidated:
-   *    boolean` flag and the dirty set; in `pushChanged`, fall back to
-   *    a full walk when `bulkInvalidated` is true regardless of the
-   *    set's contents.
+   * called before and after each cache write; an absent file means delete, no
+   * relPath means bulk (full walk) and overrides per-path marks, and a restart
+   * loses an in-memory set so the first push walks fully
    */
   markDirty(options?: DatastoreSyncOptions): Promise<void>;
 
   /**
-   * Drop per-path dirty marks core made for changes it has since undone.
-   *
-   * A push refused because its model lock was lost (swamp-club#3485)
-   * discards the refused versions and puts back the datastore's copy of
-   * every file it removed. The marks those writes left would still make the
-   * next `pushChanged` walk them: a marked directory's remote entries the
-   * cache lacks are deleted (rule 2 of {@link markDirty}), and a marked file
-   * that differs is uploaded, over the new lock holder's versions and
-   * `latest` marker (swamp-club#4091). Core calls this once the cache holds
-   * what the datastore holds under each path.
-   *
-   * Contract:
-   *
-   * 1. **Exact keys only.** A mark is dropped when its key equals one of
-   *    `relPaths`. A mark on a parent or a child of a given path is a
-   *    different key and is kept.
-   * 2. **Only marks made before the call.** A `markDirty` that starts
-   *    while this call runs, or after it, keeps its mark: take the marks to
-   *    drop when the call begins, as a push snapshots its marks.
-   * 3. **Bulk and overflow stay.** A bulk mark ({@link markDirty} rule 3)
-   *    or an overflowed path set is never cleared here.
-   * 4. **Nothing remote.** No remote file is read or written, and no pull
-   *    watermark changes.
-   * 5. **Keys as `markDirty` received them.** `relPaths` are cache-relative
-   *    and forward-slash-normalized, with the namespace prefix when there is
-   *    one, exactly as {@link markDirty}'s `relPath` was. Normalize them the
-   *    same way before comparing.
-   * 6. **Idempotent.** A path with no mark is ignored.
-   *
-   * Optional — core treats the method's presence as the capability, and
-   * checks for it before calling. Without it a refused push leaves its
-   * marks, as before.
+   * drops marks for changes core undid after a refused push: exact keys only,
+   * only marks made before the call, bulk and overflow stay, nothing remote is
+   * touched, idempotent
    */
   clearDirty?(relPaths: readonly string[]): Promise<void>;
 
   /**
-   * Download a single file from the remote datastore by cache-relative path.
-   *
-   * Used for transparent content hydration when `hydrationStrategy` is
-   * `"lazy"`: the initial pull downloads only metadata files, and individual
-   * content files are fetched on demand when first accessed.
-   *
-   * Returns `true` if the file was downloaded successfully, `false` if the
-   * file does not exist on the remote. Implementations MUST write the file
-   * atomically (write to a temporary path, then rename) to avoid partial
-   * reads from concurrent consumers. Core checks that the file exists after
-   * a `true` result and raises {@link HydrateContractViolationError} when it
-   * does not.
-   *
-   * `relPath` is forward-slash-normalized and cache-relative (same
-   * convention as `DatastoreSyncOptions.relPath`). Extensions consuming
-   * it for disk access on Windows MUST convert to native separators.
-   *
-   * Optional — extensions without lazy hydration support do not implement
-   * this method. Core checks for its presence before calling.
+   * true if downloaded, false if absent remotely; must write atomically (temp
+   * path, then rename) to avoid partial reads; core raises
+   * HydrateContractViolationError if the file is missing after true
    */
   hydrateFile?(
     relPath: string,
@@ -336,79 +141,26 @@ export interface DatastoreSyncService {
   ): Promise<boolean>;
 
   /**
-   * Read one file as the remote datastore holds it, without touching the
-   * local cache.
-   *
-   * Resolves to the file's bytes, or `null` when the remote has no such
-   * file. Used where core must compare its cached copy of a file with the
-   * remote one before acting on it: `pullChanged` and `hydrateFile` would
-   * replace the local copy, including one with a change not pushed yet.
-   * A model lock's push also reads each data version it published back with
-   * it, and fails the step when the remote still lacks it after its retries
-   * (swamp-club#3146): a `null` must mean the file is absent at the
-   * namespaced key, never that an older root-level copy was not consulted.
-   *
-   * Contract:
-   *
-   * 1. **Nothing is written locally.** No file is created, replaced or
-   *    removed in the cache, and no dirty state or pull watermark changes.
-   * 2. **The remote's bytes, not the cache's.** A local file at `relPath`
-   *    that differs from the remote one is neither returned nor consulted.
-   * 3. **`relPath` is cache-relative** and forward-slash-normalized, as for
-   *    {@link hydrateFile}: it names the remote file that the cache file at
-   *    that path syncs with. With a namespace it starts with `{namespace}/`,
-   *    and the implementation must not add the namespace a second time.
-   * 4. **Namespace from `options`.** `options.namespace` is the namespace of
-   *    the calling repository, as on `pullChanged`. When it is unset or
-   *    empty the datastore has no namespace and `relPath` is read from its
-   *    root.
-   * 5. **A path that could leave the datastore is rejected.** Reject a
-   *    `relPath` that is absolute or has a `..` segment; never resolve it.
-   * 6. **Only a missing file is `null`.** Any other failure rejects, so a
-   *    caller never mistakes an unreachable remote for a deleted file.
-   *    Honor `options.signal` as the other methods do.
-   * 7. **No retained content.** The returned bytes MUST NOT be held in
-   *    instance state: in `swamp serve` the sync service lives as long as
-   *    the process. The whole file is returned in memory, so the method is
-   *    meant for small files such as run records.
-   *
-   * Optional — core treats the method's presence as the capability, and
-   * checks for it before calling.
+   * reads the remote's bytes without touching the cache; null only when the
+   * file is missing, any other failure rejects; rejects absolute or .. paths;
+   * must not retain bytes, meant for small files
    */
   fetchContent?(
     relPath: string,
     options?: DatastoreSyncOptions,
   ): Promise<Uint8Array | null>;
 
-  /**
-   * Export the local catalog for the given namespace as a flat JSON array
-   * at `{namespace}/.catalog-export.json` in the remote datastore.
-   *
-   * Called after `pushChanged` so the export reflects the latest state.
-   * Extensions that don't support catalog export omit this method.
-   */
+  /** called after pushChanged so the export reflects the latest state */
   exportCatalog?(namespace: string): Promise<void>;
 
-  /**
-   * Pull catalog exports from the given foreign namespaces and return
-   * the parsed rows. Each namespace's export lives at
-   * `{namespace}/.catalog-export.json` in the remote datastore.
-   *
-   * Returns one entry per namespace that was successfully fetched.
-   * Missing exports (namespace has no data yet) are silently skipped.
-   */
+  /** missing exports (a namespace with no data yet) are silently skipped */
   pullForeignCatalogs?(
     namespaces: readonly string[],
   ): Promise<CatalogExportEntry[]>;
 
   /**
-   * Download a single file from a foreign namespace in the remote
-   * datastore. Used for on-demand cross-namespace content access when
-   * a CEL expression references another namespace's data attributes.
-   *
-   * Returns the file contents, or `null` if the file does not exist.
-   * Fetched content is NOT persisted locally — it is ephemeral, cached
-   * only for the duration of the current command.
+   * fetched content is ephemeral: not persisted locally, cached only for the
+   * current command
    */
   fetchForeignContent?(
     namespace: string,
@@ -416,222 +168,62 @@ export interface DatastoreSyncService {
   ): Promise<Uint8Array | null>;
 
   /**
-   * Dry-run push that returns a summary of what would be uploaded.
-   *
-   * Called by `swamp datastore sync --push` (without `--confirm`) to
-   * show a preview before executing. Extensions that advertise
-   * `previewPush: true` in their capabilities MUST implement this.
-   *
-   * Contract:
-   * 1. Compute the diff between local cache and remote index.
-   * 2. Return counts — do NOT upload or mutate anything.
-   * 3. Honor the `namespace` option (scope to the namespace subtree).
-   *
-   * Optional — extensions without preview support omit this method.
-   * Core falls back to pushing without preview.
+   * compute the diff between local cache and remote index and return counts;
+   * upload and mutate nothing; honor the namespace option. Extensions
+   * advertising previewPush must implement it
    */
   previewPush?(options?: DatastoreSyncOptions): Promise<PushPreviewSummary>;
 
   /**
-   * Phase 1 of two-phase push: upload changed files to the remote.
-   *
-   * Called **outside** the global lock (but under per-model locks) so the
-   * expensive file I/O runs concurrently across writers to different
-   * models. Returns an opaque {@link PushManifest} that
-   * {@link commitPush} consumes to update the remote index.
-   *
-   * Contract:
-   * 1. Upload new/changed/deleted files to the remote backend.
-   * 2. Return a manifest describing what changed — core passes it
-   *    through to `commitPush` without inspection.
-   * 3. Do NOT update the remote index — that happens in `commitPush`
-   *    under the global lock.
-   * 4. Do NOT clear the dirty flag — if `commitPush` fails, the dirty
-   *    flag must remain set so the next push retries.
-   *
-   * Optional — only implemented by extensions that advertise
-   * `twoPhaseSync: true` in their capabilities.
+   * runs outside the global lock; uploads files but must not update the remote
+   * index or clear the dirty flag, so a failed commitPush leaves the next push
+   * to retry
    */
   preparePush?(options?: DatastoreSyncOptions): Promise<PushManifest>;
 
   /**
-   * Phase 2 of two-phase push: merge the manifest into the remote index.
-   *
-   * Called **under** the global lock so the index read-modify-write is
-   * serialized. Receives the manifest from {@link preparePush} and merges
-   * its entries into the current remote index — read the latest index,
-   * add/update/remove entries per the manifest, write the index back.
-   *
-   * Contract:
-   * 1. Read the **current** remote index (not a cached copy from
-   *    `preparePush` — another writer may have committed in between).
-   * 2. **Merge** manifest entries — never replace the entire index.
-   * 3. Clear the dirty flag only after the index write succeeds.
-   * 4. Return the number of files whose index entries were updated.
-   *
-   * Optional — only implemented by extensions that advertise
-   * `twoPhaseSync: true` in their capabilities.
+   * runs under the global lock: reads the current remote index, not a cached
+   * copy, merges manifest entries without replacing the index, and clears dirty
+   * only after the index write succeeds
    */
   commitPush?(
     manifest: PushManifest,
     options?: DatastoreSyncOptions,
   ): Promise<number | void>;
 
-  /**
-   * Return a {@link ControlPlaneStore} for direct read/write access to
-   * small control-plane records in the remote backend.
-   *
-   * Records bypass the sync index and cache pipeline entirely — they
-   * live under `_control/` in the remote datastore, scoped by namespace
-   * when configured.
-   *
-   * Optional — only implemented by extensions that advertise
-   * `controlPlane: true` in their capabilities. Core checks
-   * `caps?.controlPlane && syncService.controlPlaneStore` before calling.
-   */
   controlPlaneStore?(): ControlPlaneStore;
 
-  /**
-   * Detect and optionally remove foreign namespace data under the
-   * bound namespace.
-   *
-   * In `dryRun` mode, lists objects under `{namespace}/` and identifies
-   * any whose path starts with `{namespace}/{otherKnownNamespace}/`.
-   * With `dryRun: false`, deletes the foreign objects and rebuilds the
-   * namespace's remote index from the remaining (clean) objects.
-   *
-   * Optional — only implemented by extensions whose backend supports
-   * object listing and deletion (S3, GCS). Core duck-types the method's
-   * presence before calling.
-   */
   repairNamespaceContamination?(
     options?: RepairNamespaceContaminationOptions,
   ): Promise<NamespaceContaminationSummary>;
 
   /**
-   * Find cache files the remote has never received, and with `dryRun:
-   * false` upload them. Recovers files written into the cache behind the
-   * sync service and never marked, such as those an earlier
-   * `datastore setup extension` migration left (swamp-club#4100, #4112).
-   *
-   * Contract — implementations MUST obey these rules:
-   *
-   * 1. **What is unpushed.** A file is unpushed when it is a regular file
-   *    (checked with `lstat`; a symlink is never followed), passes exactly
-   *    the filter the push walk applies (internal sidecar and index files,
-   *    the catalog, `.namespace.json`, `_index/`, `_control/`, stray
-   *    doubled-namespace paths), lies under `{namespace}/` (or, with no
-   *    namespace, anywhere outside a foreign namespace's directory), is
-   *    absent from both the live remote index and the last-synced index,
-   *    and is not recorded as peer-deleted (rule 10).
-   * 2. **Local versions the remote lacks are reported, never uploaded.**
-   *    `alreadyPresent` counts files absent from the last-synced index whose
-   *    key the remote holds, as an index entry or an unindexed object, with
-   *    other bytes. `locallyModified` counts files whose content differs
-   *    from their last-synced entry, and `unknown` those whose entry has no
-   *    sha256, whose size matches and whose mtime does not, when `exact`
-   *    cannot settle them (rule 4). Both compare with the last-synced
-   *    index, never the live remote, so a stale copy is not a local change;
-   *    `peerDeleted` counts files recorded as peer-deleted (rule 10), and
-   *    `remoteMovedOn` last-synced keys the remote now holds with other
-   *    content, for information only. Each count is computed on its
-   *    own: a file can be in more than one.
-   * 3. **`dryRun` mutates nothing.** It finds unindexed objects with one
-   *    listing of the namespace prefix, never a request per key.
-   * 4. **`exact`.** Hash a file whose mtime differs from its last-synced
-   *    `localMtime`, never one whose mtime equals it. Settle an `unknown`
-   *    entry by comparing the local sha256 with a streamed sha256 of the
-   *    remote object when the remote entry is unchanged since last-synced.
-   * 5. **Shard index only.** Reject a remote whose index is a v1 monolith,
-   *    telling the user to run `swamp datastore sync --pull` and then
-   *    `swamp datastore migrate-index`.
-   * 6. **Create-only uploads.** Without `dryRun`, run the push preflight
-   *    (namespace binding, migration gates), upload each unpushed file with
-   *    a conditional create that records its sha256 (S3 `If-None-Match: *`,
-   *    GCS `ifGenerationMatch=0`), and commit index entries for the files
-   *    created, in batches, through the shard compare-and-swap, with the
-   *    size, mtime and sha256 a push writes. Never fall back to an
-   *    unconditional write: an endpoint without conditional create rejects.
-   *    Retry a conflicting create (HTTP 409) and a refused create that left
-   *    no object, up to a fixed attempt limit, then reject.
-   * 7. **Refused creates are settled in the same run.** When a create is
-   *    refused or an unindexed object already holds the key, compare its
-   *    recorded sha256 (or a streamed sha256) with the local file: equal is
-   *    an earlier upload of ours, indexed and counted as uploaded; other is
-   *    `alreadyPresent`, and the remote object is left as it is.
-   * 8. **Pending work is untouched.** Delete nothing, locally or remotely.
-   *    Never set or clear dirty state, so never reuse an upload helper that
-   *    marks the cache dirty; read it only to report `pendingChanges`.
-   *    Never advance the sync fingerprint (commit sequence, index ETag,
-   *    last-verified time). Merge the uploaded entries into the on-disk
-   *    last-synced index.
-   * 9. **Failures.** With no last-synced index, reject rather than guess.
-   *    Any other failure rejects, honoring `options.signal`; batches already
-   *    committed stay committed.
-   * 10. **Peer deletions are recorded.** A pull drops a key a peer deleted
-   *    from the last-synced index, and may keep the local copy (a release
-   *    that never removed copies, an edited or marked copy). That copy is
-   *    then absent from both indexes, like a file written behind the sync
-   *    service, and uploading it would bring the peer's delete back. So an
-   *    implementation that provides this method MUST, whenever any
-   *    operation drops a key from the last-synced index while a regular
-   *    file stays at its path, record the key in a peer-deleted record
-   *    persisted in the cache (an internal file the push walk skips), and
-   *    forget a recorded key once the remote holds it again or its local
-   *    file is gone. A path under a file that replaced its directory has no
-   *    file: treat that error as absence, never as a failure, or every
-   *    later pull fails on it. Report a recorded file in `peerDeleted`,
-   *    never in `unpushed`, and never upload it. A delete this cache pushed
-   *    leaves no local file, so it is not recorded, unless the push deleted
-   *    a file still on disk (a directory taken as absent). A delete pulled
-   *    before the implementation kept the record left none, so such a copy
-   *    still reads as unpushed.
-   *
-   * Optional — core treats the method's presence as the capability, and
-   * checks for it before calling.
+   * create-only uploads, never an unconditional write; deletes nothing, never
+   * marks dirty or advances the sync fingerprint; peer-deleted files are
+   * recorded and never uploaded; shard index only
    */
   repairUnpushedFiles?(
     options?: RepairUnpushedFilesOptions,
   ): Promise<UnpushedFilesSummary>;
 
-  /**
-   * Migrate the remote index from monolithic format to shard-first.
-   *
-   * Reads the existing monolithic `.datastore-index.json`, partitions all
-   * entries into shards, writes the shard files to `_index/`, and writes
-   * `_meta.json` with `version: 2`. Idempotent — running on an already-
-   * migrated index produces the same result.
-   *
-   * Must be called under the global distributed lock (structural command).
-   *
-   * Optional — only implemented by extensions whose index format supports
-   * shard-first partitioning. Core duck-types the method's presence before
-   * calling.
-   */
+  /** idempotent; must be called under the global distributed lock */
   migrateMonolithToShards?(
     options?: DatastoreSyncOptions,
   ): Promise<MigrateIndexResult>;
 }
 
-/** Summary of namespace contamination detection or repair. */
 export interface NamespaceContaminationSummary {
   foreignNamespaces: ReadonlyArray<{
     namespace: string;
     objectCount: number;
   }>;
   totalForeignObjects: number;
-  /** Number of foreign objects deleted. Zero when `dryRun` is `true`. */
   deleted: number;
 }
 
-/** Options for {@link DatastoreSyncService.repairNamespaceContamination}. */
 export interface RepairNamespaceContaminationOptions {
   signal?: AbortSignal;
   namespace?: string;
-  /**
-   * When `true`, detect contamination without deleting anything.
-   * When `false`, delete foreign objects and rebuild the namespace index.
-   */
   dryRun?: boolean;
 }
 
@@ -642,41 +234,25 @@ export interface RepairNamespaceContaminationOptions {
  */
 export const UNPUSHED_REPAIR_MIN_EXTENSION_VERSION = "2026.10.30.1";
 
-/** The datastore extensions that have a release implementing the repair. */
 export const UNPUSHED_REPAIR_EXTENSIONS: readonly string[] = [
   "@swamp/s3-datastore",
   "@swamp/gcs-datastore",
 ];
 
-/** Options for {@link DatastoreSyncService.repairUnpushedFiles}. */
 export interface RepairUnpushedFilesOptions {
   signal?: AbortSignal;
   namespace?: string;
-  /** When `true`, report without uploading anything. */
   dryRun?: boolean;
-  /**
-   * When `true`, compare content by sha256 where size and mtime cannot
-   * decide. Costlier; the default compares size and mtime only.
-   */
   exact?: boolean;
 }
 
-/** Summary of {@link DatastoreSyncService.repairUnpushedFiles}. */
 export interface UnpushedFilesSummary {
-  /**
-   * Files the remote has never received: every one found on a dry run, and
-   * those still not uploaded on a real run.
-   */
   unpushed: number;
-  /** Up to 20 of them, cache-relative with forward slashes. */
   samplePaths: readonly string[];
-  /** Local files whose key the remote holds with other bytes. */
   alreadyPresent: number;
   sampleAlreadyPresent: readonly string[];
-  /** Local files whose content differs from their last-synced entry. */
   locallyModified: number;
   sampleModified: readonly string[];
-  /** Local files that may differ from a last-synced entry with no sha256. */
   unknown: number;
   sampleUnknown: readonly string[];
   /**
@@ -685,33 +261,22 @@ export interface UnpushedFilesSummary {
    */
   peerDeleted: number;
   samplePeerDeleted: readonly string[];
-  /** Last-synced keys the remote now holds with other content. */
   remoteMovedOn: number;
-  /** Files uploaded and indexed. Zero when `dryRun` is `true`. */
   uploaded: number;
-  /** Whether the cache holds marks a push has not sent yet. */
   pendingChanges: boolean;
 }
 
-/** Result of a shard-first index migration. */
 export interface MigrateIndexResult {
   version: number;
   partitions: string[];
   commitSeq: number;
 }
 
-/** A single foreign catalog export: the namespace it came from and its rows. */
 export interface CatalogExportEntry {
   namespace: string;
   rows: readonly CatalogExportRow[];
 }
 
-/**
- * Portable catalog row used in `.catalog-export.json`. Contains the
- * metadata fields needed for cross-namespace queries but omits the
- * content. This is a flat serializable form — extensions write it as
- * JSON; core upserts it into the local catalog.
- */
 export interface CatalogExportRow {
   namespace: string;
   type_normalized: string;
@@ -720,24 +285,16 @@ export interface CatalogExportRow {
   id: string;
   version: number;
   is_latest: number;
-  /**
-   * Whether this row is its workflow step's latest version of the data
-   * name. Absent from exports written before swamp-club#2520, whose
-   * `is_latest` has that meaning instead.
-   */
+  /** absent in older exports, whose is_latest has this meaning instead */
   is_step_latest?: number;
   model_name: string;
   spec_name: string;
   data_type: string;
   content_type: string;
   lifetime: string;
-  /**
-   * Absent in exports written before the column existed; read as unknown.
-   */
+  /** absent in older exports; read as unknown */
   garbage_collection?: string;
-  /**
-   * Absent in exports written before the column existed; read as unknown.
-   */
+  /** absent in older exports; read as unknown */
   lifecycle?: string;
   owner_type: string;
   streaming: number;
@@ -752,71 +309,18 @@ export interface CatalogExportRow {
   source: string;
 }
 
-/** Direction of a sync operation. */
 export type SyncDirection = "push" | "pull";
 
-/**
- * Callback invoked by repositories before they write into the datastore cache.
- *
- * Thin indirection over {@link DatastoreSyncService.markDirty} so repositories
- * do not need a handle on the full sync service (or to know whether one is
- * registered at all). Undefined when the repository is wired against a
- * datastore with no sync service (e.g. filesystem) — callers treat it as a
- * no-op.
- *
- * **Internal vs public contract.** Repositories pass an absolute path (or
- * `undefined` for bulk mutations) — they don't have the cache root in scope.
- * The composition root in `repo_context.ts` wraps this hook with a helper
- * that converts the absolute path to a forward-slash cache-relative string
- * and forwards it to {@link DatastoreSyncService.markDirty} via
- * {@link DatastoreSyncOptions.relPath}. The full contract (8 rules
- * including pre-write timing, absence-on-disk semantics, restart behavior)
- * is documented on `DatastoreSyncService.markDirty`.
- */
 export type MarkDirtyHook = (relPath?: string) => Promise<void>;
 
-/**
- * Callback invoked by repositories when content is missing from the local cache.
- *
- * Thin indirection over {@link DatastoreSyncService.hydrateFile} so repositories
- * do not need a handle on the full sync service. Undefined when the datastore
- * does not support lazy hydration — callers treat absence as "file is genuinely
- * missing."
- *
- * **Internal vs public contract.** Repositories pass an absolute path —
- * they don't have the cache root in scope. The composition root in
- * `repo_context.ts` wraps this hook with a helper that converts the absolute
- * path to a forward-slash cache-relative string and forwards it to
- * {@link DatastoreSyncService.hydrateFile}. Same pattern as
- * {@link MarkDirtyHook}.
- *
- * Returns `true` if the file was successfully downloaded, `false` if the
- * file does not exist on the remote. A caller that holds something others
- * wait on passes `signal` to bound the download. The composition-root wrapper
- * verifies a `true` result for paths inside the cache and rejects with
- * {@link HydrateContractViolationError} when no file is there.
- */
 export type HydrateFileHook = (
   absPath: string,
   options?: { signal?: AbortSignal },
 ) => Promise<boolean>;
 
 /**
- * Asks the datastore whether content missing from the local cache is a
- * record it could not materialise (swamp-club#3617): a v3 read model leaves
- * the file absent when a chunk its content names is missing or damaged.
- * Repositories consult it only after a read of the content found no file,
- * and throw the error it returns, so the read fails loudly instead of
- * reading as absent. Undefined when the datastore has no such records.
- *
- * Takes the absolute path the repository read, spelled as the repository
- * spells it; resolves to the error to throw, or undefined when the content
- * is simply absent.
- *
- * `under`, when the datastore can answer it, lists the records under a
- * directory instead: for a read that cannot name the file it wants (a
- * lookup by an id the file name does not carry) and for a listing, which
- * would otherwise leave such a record out without a word.
+ * consulted only after a read found no file; the repository throws the returned
+ * error so the read fails loudly instead of reading as absent
  */
 export type UnreadableContentLookup =
   & ((absPath: string) => Promise<UserError | undefined>)
@@ -826,32 +330,12 @@ export type UnreadableContentLookup =
     ) => Promise<readonly UnreadableContentEntry[]>;
   };
 
-/** A record {@link UnreadableContentLookup}'s `under` lists. */
 export interface UnreadableContentEntry {
-  /** Its absolute path, spelled under the directory the caller gave. */
   readonly path: string;
-  /** The error a read of it throws. */
   readonly error: UserError;
-  /** What brings it back, or removes it. */
   readonly advice: string;
 }
 
-/**
- * Thrown when a datastore sync operation exceeds the configured timeout.
- *
- * Raised by the coordinator's hard `Promise.race` deadline, so it fires
- * regardless of whether the underlying extension honored the `AbortSignal`.
- * The message lists every available remedy inline — tune the timeout via
- * `--timeout` or the `SWAMP_DATASTORE_SYNC_TIMEOUT_MS` env var, update the
- * datastore extension (the s3/gcs fingerprint fast path short-circuits
- * zero-diff syncs), or release a stuck lock — so users get actionable
- * next steps without needing to chase docs. Version-free wording keeps
- * the message stable across extension releases.
- *
- * Extends `UserError` so the message renders clean (no stack trace) at
- * the CLI error boundary — the message is already hand-crafted to be
- * actionable, and a stack would bury the remedies.
- */
 export class SyncTimeoutError extends UserError {
   readonly label: string;
   readonly direction: SyncDirection;
@@ -889,16 +373,6 @@ export class SyncTimeoutError extends UserError {
   }
 }
 
-/**
- * Thrown when a datastore's `hydrateFile` reports success but the file is not
- * at the path core asked for.
- *
- * Core verifies the claim so a hydrate that wrote to the wrong place names
- * the datastore and both paths, instead of surfacing as a bare "No such file
- * or directory" from the retry read (swamp-club#2477).
- *
- * Extends `UserError` so the message renders clean at the CLI error boundary.
- */
 export class HydrateContractViolationError extends UserError {
   readonly datastoreType: string;
   readonly relPath: string;
@@ -919,38 +393,18 @@ export class HydrateContractViolationError extends UserError {
   }
 }
 
-/**
- * A data version a step or method run wrote, under its model's lock or for
- * the lock taken to publish it. The lock's push publishes each one and
- * checks the remote holds it (swamp-club#3146).
- */
 export interface WrittenVersion {
   readonly modelType: string;
   readonly modelId: string;
   readonly dataName: string;
   readonly version: number;
   /**
-   * The data id the run wrote the version with, unique to that write. A
-   * publish lock taken after an unlocked run tells its own version from
-   * another clone's of the same number by it (swamp-club#3934).
+   * unique to that write; lets a publish lock tell its own version from another
+   * clone's version of the same number
    */
   readonly dataId?: string;
 }
 
-/**
- * Thrown when the remote datastore still lacks a data version after the
- * lock's push published it and retried (swamp-club#3146). Another sync in
- * the same process (a parallel step of the run, another serve run, the serve
- * poller) can undo the earlier attempts, but the last one normally runs with
- * no other sync in the process (swamp-club#3860; a gate wait that times out
- * goes ahead ungated), so what undid it is most likely another swamp process
- * using the same repository, or a datastore that did not keep the files. A
- * workflow step or CLI method run that wrote the version fails with it; a
- * serve method run, which has already answered its client when it pushes,
- * logs it.
- *
- * Extends `UserError` so the message renders clean at the CLI error boundary.
- */
 export class UnpublishedDataVersionError extends UserError {
   readonly versions: readonly WrittenVersion[];
 
@@ -972,23 +426,16 @@ export class UnpublishedDataVersionError extends UserError {
   }
 }
 
-/** A model whose lock a run lost before its push, and who holds it now. */
 export interface LostModelLock {
   readonly modelType: string;
   readonly modelId: string;
-  /** The lock's current holder, or undefined when nobody holds it. */
   readonly heldBy?: { readonly holder: string; readonly pid: number };
 }
 
 /**
- * Thrown instead of a push when a model lock the run took no longer names
- * this process: someone ran `swamp datastore lock release --force`, or the
- * lock expired and another process took it (swamp-club#3373). Another run of
- * the model may have written the same data version since, and pushing would
- * overwrite it. Nothing is pushed, and the run's data versions are discarded
- * from this host's cache (swamp-club#3485).
- *
- * Extends `UserError` so the message renders clean at the CLI error boundary.
+ * thrown instead of a push when a model lock was lost: another run may have
+ * written the same version, so nothing is pushed and the run's versions are
+ * discarded from this cache
  */
 export class ModelLockLostError extends UserError {
   readonly lost: readonly LostModelLock[];
@@ -1016,23 +463,8 @@ export class ModelLockLostError extends UserError {
   }
 }
 
-/**
- * Thrown by the publish of a read or list run on a v2 extension datastore
- * when another clone wrote a data version with the same number while the
- * run was unlocked (swamp-club#3934). The run numbered its versions from
- * this host's cache; the pull under the publish lock replaced each such
- * version with the other clone's copy, so this host now holds the
- * datastore's copy, and the run's other versions were published.
- *
- * Extends `UserError` so the message renders clean at the CLI error boundary.
- */
 export class DataVersionConflictError extends UserError {
   readonly versions: readonly WrittenVersion[];
-  /**
-   * Why publishing the run's other versions failed as well, when it did:
-   * then they are not on the datastore either, and the conflict alone does
-   * not describe the publish.
-   */
   readonly publishFailure: unknown;
 
   constructor(
@@ -1063,13 +495,6 @@ export class DataVersionConflictError extends UserError {
   }
 }
 
-/**
- * True for a push error that leaves the run's data versions unpublished:
- * {@link UnpublishedDataVersionError}, which keeps them on this host only,
- * or {@link ModelLockLostError} and {@link DataVersionConflictError}, which
- * discard them.
- * A run that already failed keeps its own error and logs this one.
- */
 export function isUnpublishedDataError(
   error: unknown,
 ): error is

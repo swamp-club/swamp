@@ -252,7 +252,6 @@ Deno.test("enrollmentTokenModel: legacy record with boundMachineId migrates to b
     ENROLLMENT_TOKEN_MODEL_TYPE,
     "legacy",
   );
-  // Simulate a legacy record with boundMachineId instead of bindings.
   const legacyRecord = {
     name: "legacy",
     state: "enrolled",
@@ -266,12 +265,10 @@ Deno.test("enrollmentTokenModel: legacy record with boundMachineId migrates to b
   harness.store.set("token-main", legacyRecord as Record<string, unknown>);
   harness.vault.set("local/worker-token-legacy", "test-secret");
 
-  // Re-auth of the migrated machine should work.
   await enrollmentTokenModel.methods.redeem.execute(
     { presentedToken: "test-secret", machineId: "machine-1" },
     harness.context,
   );
-  // The second machine is rejected (maxEnrollments defaults to 1).
   const error = await assertRejects(
     () =>
       enrollmentTokenModel.methods.redeem.execute(
@@ -419,8 +416,6 @@ Deno.test("enrollmentTokenModel: revoke disconnects all bindings", async () => {
     "revoked",
   );
 });
-
-// --- prune_bindings ---
 
 Deno.test("enrollmentTokenModel: prune_bindings removes specified machineIds", async () => {
   const { context, store, plaintext } = await mintFleetToken(

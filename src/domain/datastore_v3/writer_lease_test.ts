@@ -99,7 +99,6 @@ Deno.test("judgeWriterLease: a holder judged alive or unknown is held until its 
         { fence: 3, record: record(), released: false },
         judgement({ now, judgeHolder: () => verdict }),
       );
-    // Renewed 5 s before NOW.
     assertEquals(judge(NOW).kind, "held");
     const expiry = NOW - 5_000 + TTL + WRITER_LEASE_CLOCK_SKEW_MS;
     assertEquals(judge(expiry).kind, "held");
@@ -134,7 +133,6 @@ Deno.test("judgeWriterLease: expiry is the TTL plus the clock-skew allowance aft
   const expiresAfter = lastRenewal + TTL + WRITER_LEASE_CLOCK_SKEW_MS;
   assertEquals(at(expiresAfter).kind, "held");
   assertEquals(at(expiresAfter + 1), { kind: "expired", reason: "ttl" });
-  // A smaller allowance expires it sooner.
   assertEquals(
     judgeWriterLease(
       records,
@@ -240,7 +238,6 @@ Deno.test("WriterFencedError: a replicating writer fenced after publishing says 
       "appear: the writer that took over may restore them. Check whether " +
       "they did before running the command again.",
   );
-  // Without replication the message is unchanged.
   assertEquals(
     new WriterFencedError(6, 7).message,
     "Another swamp process took over the writer lease of the v3 datastore " +
