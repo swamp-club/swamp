@@ -6723,12 +6723,12 @@ the budget cannot decide is not answered as missing:
 - `GET chunks/{sha256}` answers 503 `chunk_access_undecided`, naming no
   partition. A caller who already knows the hash learns only that more
   partitions reference it than the partition budget covers, never its
-  content. The commit budget gives no such answer: it is undecided only
-  once the caller could read some commit it checked, and refused (404, as
-  for a chunk nothing names) otherwise, so a long history the caller may
-  read none of never tells it whether guessed content is in it. Asking
-  again hits the same limit, so the client reports a 503 as a refusal, not
-  a chunk to wait for.
+  content. The commit budget gives no such answer: a definition's history
+  that runs it out without a vouch is refused (404, as for a chunk nothing
+  names), as a superseded chunk was before, so no history, padded with
+  commits the caller may read or not, tells it whether guessed content is
+  in it. Asking again hits the same limit, so the client reports a 503 as a
+  refusal, not a chunk to wait for.
 - `chunks/has` leaves the hash out. Only a writer asks, before it uploads,
   so it then carries or uploads the bytes, which vouch for themselves.
 - A commit naming the chunk without carrying it is refused
@@ -6770,11 +6770,12 @@ is still vouched for to a caller who may read the commit that named it, so
 a member catching up past a superseded version gets its chunk
 (swamp-club#4260). The live records are skipped, never waited on, while
 serve's read model is still catching up (after a restart, a restore or a
-takeover): the history decides alone, so an incomplete read model refuses no
-chunk. A live chunk is vouched for through its record whatever history sits
-in front of it, and only an old superseded version can run the commit
-budget out. A compaction between the commits and the base being read is
-decided again once, and undecided (never missing) if the point moves twice.
+takeover): the history decides alone, so an incomplete read model never
+refuses a chunk by itself. A live chunk is vouched for through its record
+whatever history sits in front of it, and only an old superseded version
+can run the commit budget out, which refuses it. A compaction between the
+commits and the base being read is decided again once, and undecided (never
+missing) if the point moves twice.
 
 **The compacted base** (swamp-club#4006). A checkout whose feed cursor is
 below the compaction point loads the base instead of the commits, and serve

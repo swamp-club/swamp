@@ -2660,10 +2660,10 @@ class DatastoreApi {
    *
    * History counts, not only what is live: a member catching up past a
    * superseded version needs its chunk (swamp-club#4260). A commit budget
-   * that runs out is undecided only once the caller could read some commit
-   * it checked: otherwise it is refused, as before, so the reply never
-   * tells a caller who may read none of the history whether guessed content
-   * is in it.
+   * that runs out without a vouch is refused, as a superseded chunk was
+   * before: answering undecided would tell a caller whether guessed content
+   * sits in history behind commits it may read, a same-named definition's
+   * of another type among them.
    */
   async #mayReadDefinitionChunk(
     partition: PartitionKey,
@@ -2695,8 +2695,6 @@ class DatastoreApi {
       }
     }
     const store = this.#v3.commitStore;
-    let readableSeen = false;
-    const outOfBudget = (): Vouch => readableSeen ? "undecided" : "refused";
     // A compaction between the commits and the base can move a commit
     // naming the chunk into the base already read: decided again once, and
     // undecided if the point moves twice.
@@ -2707,7 +2705,7 @@ class DatastoreApi {
         // Each page is sized to the commits the budget has left, so no
         // more are read than it allows.
         const left = budget.commitsLeft;
-        if (left <= 0) return outOfBudget();
+        if (left <= 0) return "refused";
         let start = Math.max(
           1,
           end - Math.min(DEFINITION_COMMITS_PAGE, left) + 1,
@@ -2747,17 +2745,16 @@ class DatastoreApi {
         }
         for (let i = page.length - 1; i >= 0; i--) {
           const { commit } = page[i];
-          if (!budget.spendCommit()) return outOfBudget();
+          if (!budget.spendCommit()) return "refused";
           if (
-            !this.#mayRead(
+            commit.chunkRefs().includes(sha256) &&
+            this.#mayRead(
               await commitReadAccessOf(partition, commit.ops, resolver),
               as,
             )
           ) {
-            continue;
+            return "vouched";
           }
-          readableSeen = true;
-          if (commit.chunkRefs().includes(sha256)) return "vouched";
         }
         end = start - 1;
       }

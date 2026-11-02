@@ -1730,30 +1730,32 @@ Deno.test({
 
 Deno.test({
   name:
-    "datastore API: a definition's history is read newest first, so its current version is vouched for within a budget an old version runs out (swamp-club#4260)",
+    "datastore API: a definition's history is read newest first, so a recent superseded version is vouched for within a budget an old one runs out, which is refused (swamp-club#4260)",
   sanitizeOps: false,
   sanitizeResources: false,
   fn: async () => {
     await withServer(
       bobReads("*"),
       async (server) => {
-        const { v1, v2 } = await supersededDefinition(
+        // Four versions, the fourth live: two commit reads reach the third,
+        // never the first.
+        const [first, , third] = await editDefinition(
           server,
           "shared",
           server.modelType.normalized,
+          0,
+          4,
+          "definition.create",
         );
-        // One commit read per request: v2's commit is the newest.
-        const current = await chunkRead(server, v2);
-        assertEquals(current.status, 200);
-        assertEquals(current.held, [v2]);
-        const old = await fetch(`${server.url}/chunks/${v1}`, {
-          headers: { authorization: "Bearer bob-token" },
-        });
-        assertEquals(old.status, 503);
-        assertEquals((await old.json()).code, "chunk_access_undecided");
+        const recent = await chunkRead(server, third);
+        assertEquals(recent.status, 200);
+        assertEquals(recent.held, [third]);
+        const old = await chunkRead(server, first);
+        assertEquals(old.status, 404);
+        assertEquals(old.held, []);
       },
       new UploadLedger(),
-      { vouchBudget: () => new VouchBudget(1024, 1) },
+      { vouchLimits: { partitions: 1024, commits: 2 } },
     );
   },
 });
@@ -1799,11 +1801,10 @@ Deno.test({
         );
         assertEquals(named.status, 403, JSON.stringify(named.json));
         assertEquals(named.json.code, "chunk_not_provided");
-        // One commit read: v2's, which bob may read, then the budget is out
-        // before v1's, so the chunk is undecided.
+        // No partition checks at all: the chunk is undecided.
       },
       ledger,
-      { vouchBudget: () => new VouchBudget(1024, 1) },
+      { vouchBudget: () => new VouchBudget(0, 10_000) },
     );
   },
 });
@@ -2188,6 +2189,45 @@ Deno.test({
       },
       new UploadLedger(),
       { vouchLimits: { partitions: 2, commits: 10_000 } },
+    );
+  },
+});
+
+Deno.test({
+  name:
+    "datastore API: a commit budget run out over a same-named type's commits the caller may read leaves a control-plane chunk refused as missing, never undecided (swamp-club#4260)",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    await withServer(
+      bobReads("*"),
+      async (server) => {
+        // A control-plane definition bob may not read, then a same-named one
+        // of an ordinary type he may, edited past the budget in front of it.
+        const [hidden] = await editDefinition(
+          server,
+          "shared",
+          "@swamp/grant",
+          0,
+          1,
+          "definition.create",
+        );
+        await editDefinition(
+          server,
+          "shared",
+          server.modelType.normalized,
+          1,
+          4,
+          "definition.create",
+        );
+        const guessed = await chunkRead(server, hidden);
+        const unnamed = await chunkRead(server, "e".repeat(64));
+        assertEquals(guessed.status, 404);
+        assertEquals(guessed.body, unnamed.body);
+        assertEquals(guessed.held, []);
+      },
+      new UploadLedger(),
+      { vouchLimits: { partitions: 1024, commits: 2 } },
     );
   },
 });
